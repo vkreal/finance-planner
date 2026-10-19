@@ -1,0 +1,11038 @@
+// Actions for the Finance Planner.
+//
+// Math (accrual / incurred basis):
+//   incurred(month)   = sum of "spending" transactions dated that month
+//                       (checking bills + card charges; refunds are negative
+//                       spending rows, so they net out automatically)
+//   yearlyLumps(month)= the part of incurred linked to a smoothed expense
+//   accrual(month)    = the sum of the per-bill monthly set-asides
+//                       (each bill's annualised amount / 12, rounded
+//                       per bill — the figures the bill cards show),
+//                       using each bill's version in effect for that month
+//                       (a yearly item annualises at its expected amount;
+//                       a periodic item annualises at per-bill × payments
+//                       per year — ×6 every other month, ×4 every 3
+//                       months, ×2 every 6 months — so its monthly
+//                       set-aside is per-bill divided by its period in
+//                       months). Smoothed bills
+//                       are versioned like monthly bills: editing an
+//                       amount or frequency creates a new version from
+//                       a chosen month onward and never rewrites earlier
+//                       months. Months BEFORE a bill's earliest version
+//                       contribute ZERO, except for legacy/migrated bills
+//                       flagged backfillBeforeFirstVersion (set only by
+//                       the 0007 migration for pre-existing bills): those
+//                       fall back to their earliest version so their
+//                       historic Aug/Sep/Oct numbers are preserved.
+//   smoothed(month)   = incurred - yearlyLumps + accrual
+//   cashOut(month)    = sum of ALL checking transactions that month
+//                       (spending + card payments + transfers) — what
+//                       really left checking
+//   reserve(month)    = opening reserve + sum over months up to this one
+//                       of (accrual - yearlyLumps)
+// Card payments and transfers are never "spending", so paying a card bill
+// can never double-count the charges already counted when incurred.
+//
+// Cash-out items: a month can instead be itemized — line items whose
+// sum IS the month's cash out. Precedence, one resolution used by every
+// surface (dashboard, YTD, explorer): items sum (when the month has at
+// least one item) > entered lump total > transactions. A month with
+// both items and an entered total uses the items sum; the entered total
+// stays stored and is shown as a reference so the user can reconcile.
+// Deleting all of a month's items returns it to its entered total.
+//
+// Monthly summary months (the user's original method): when a cash-out
+// total is entered for a month, that total IS the month's cash-out /
+// spending base — the month's transactions are never added on top of it.
+//   smoothed(month) = entered cash out
+//                     − yearly lump sums that left checking that month
+//                     + accrual
+//
+// Monthly bills (mortgage, etc.) are a recurring breakdown of what is
+// already inside the month's cash out. They are never added to spending
+// or cash out — left after monthly bills = cash out − monthly bills total.
+
+import {
+defineAction,
+z,
+type ActionsModule,
+type Ctx,
+} from "@hatch/space-sdk";
+import { and, asc, eq, sql } from "drizzle-orm";
+import { privileged } from "@space/privileged";
+import * as schema from "./schema";
+import {
+runRetirementFixtures,
+runRetirementTeethCheck,
+runTrinityBenchmark,
+TRINITY_PUBLISHED,
+} from "./retirementFixtures";
+import {
+runExtendedFixtures,
+runExtendedTeethCheck,
+runRetirementCasFixtures,
+runRothCasFixtures,
+runRothUiStateFixtures,
+} from "./extendedFixtures";
+import {
+applyRothUiWrite,
+parseRothUiState,
+playgroundFormState,
+ROTH_SECTION_IDS,
+ROTH_RESULTS_MODES,
+ROTH_UI_STATE_KEY,
+rothLabDials,
+rothUiStateResponse,
+setRothUiStateResponse,
+type SetRothUiStateResponse,
+} from "./rothUiStateCore";
+import {
+appendRetirementScenario,
+composeRetirementBaselineBlob,
+composeRetirementInputsBlob,
+composeRetirementScenarioBlob,
+decideRetirementBaselinePair,
+decideRetirementCapture,
+decideRothBlobWrite,
+decideRothBlobWriteChecked,
+decideRothResetAfterLoss,
+deleteRetirementScenario,
+parseRothBlobRevision,
+renameRetirementScenario,
+rothBlobRevisionState,
+rothBlobRevisionValue,
+rothFirstWritePlan,
+saveRothInputsOkResponse,
+withRothBlobRevision,
+type RetirementScenarioTransform,
+type RothBlobRevisionState,
+} from "./rothRevisionCore";
+import {
+BALANCE_SEMANTICS,
+CEILINGS_REPLACEMENT_SENTENCE,
+CONVERTED_ALREADY_DISTINCTION_SENTENCE,
+DRAW_ORDER_KEYS,
+FLEX_SEMANTICS,
+LAW_YEAR_SEMANTICS,
+PROTECT_MIN_SEMANTICS,
+ROTH_COMPARE_EXAMPLE,
+SAVE_FLATTENING_SENTENCE,
+SCORE_IDENTITIES,
+TIER_SEMANTICS,
+UNITS_SEMANTICS,
+WRITERS_READERS_RULE,
+mcScoreIn,
+nwPropertyKind,
+nwPropertyKindWithDefault,
+playgroundInputsFromArgs,
+playgroundYearIn,
+rothBalanceField,
+rothFilingStatus,
+updateMonthlyBillIn,
+withResolvedOverrideBalances,
+withSleeveEcho,
+yearlyFrequency,
+yearlyFrequencyWithDefault,
+type McScoreIn,
+} from "./apiContractCore";
+import { planImportBatch } from "./importCore";
+import {
+runTaxFixtures,
+runTaxTeethCheck,
+} from "./taxFixtures";
+import {
+blendedExpected,
+buildSimInputs as buildRetirementSimInputs,
+MONTE_CARLO_TAB_RUNS,
+runHistorical as runRetirementHistorical,
+runMonteCarlo as runRetirementMonteCarlo,
+simulate as simulateRetirement,
+solveMaxSpending as solveRetirementMaxSpending,
+STOCKS_PCT_DEFAULT,
+} from "./retirementEngines";
+import {
+DO_NOTHING_SPEC,
+ROTH_MC_CHECK_PATHS,
+ROTH_SCENARIO_LIMIT,
+ROTH_MC_CHECK_SEED,
+buildRothFunding,
+claimAgeLabel,
+consumeExecutionInputs,
+joinRothBlob,
+jointSearchNote,
+normalizeSsDeclarations,
+optimizerHeirSensitivity,
+optimizerSensitivity,
+planInputsFromSaved,
+playgroundPastePayload,
+pricePlanYearDetail,
+pricePlaygroundYear,
+resolvePlanBalances,
+runJointOptimizer,
+runOptimizer,
+runRothCompare,
+runRothMonteCarloCheck,
+runRothMonteCarloStats,
+splitRothBlob,
+type ClaimAgeInfo,
+type OptimizerCandidateSpec,
+type RothExecutionCents,
+type RothSavedLike,
+type ScoredCandidate,
+} from "./rothOptimizer";
+import {
+deriveSpendFromCashSleeveStartDollars,
+drawOrderFromKey,
+drawOrderKey,
+drawOrderLabel,
+type FillCeilings,
+type RothStrategy,
+} from "./taxEngine";
+import { runWorkYearsCompare } from "./workYears";
+import { CURRENT_LAW, TAX_LAW_YEARS, lawForYear } from "./taxLaw";
+import {
+BLANK_ROTH_GIFT,
+computeGiftComparison,
+giftValidationError,
+parseRothGift,
+type RothGiftStored,
+} from "./giftModel";
+import {
+SEED_RETIREMENT_AGE_FALLBACK,
+seedRothRecord,
+} from "./rothSeed";
+import {
+annualCentsForValues,
+createSpendingCore,
+dueMonthsFor,
+earliestYearlyVersion,
+latestVersion,
+latestYearlyVersion,
+monthOf,
+monthlyBillUpdateOutcome,
+monthlyBillUpdateSet,
+monthsBetween,
+paymentsPerYear,
+shiftMonth,
+versionInEffect,
+yearSummaryFloorMonth,
+yearlyVersionInEffect
+} from "./spendingCore";
+import {
+NW_SPLIT_BUCKETS,
+bucketSubtotals,
+buildNwSnapshotWritePlan,
+classByIdOf,
+effectiveBalanceCents,
+isCustodialAccount,
+isFutureSnapshotDate,
+isPropertyKind,
+nwBalanceRowPlain,
+propertyKindOf,
+snapshotTotals,
+splitPartsOf,
+todayDateString,
+validateNwBalanceSplits,
+validateNwSnapshotPayload,
+yearMovers,
+type CoreNwBalance,
+type NwPropertyKind,
+type NwSplitBucket,
+} from "./nwCore";
+import {
+BACKUP_FORMAT,
+BACKUP_SCHEMA_VERSION,
+RESTORE_ROTH_BLOB_KEY,
+backupNwAccount,
+backupPayload,
+backupSetting,
+normalizeBackupBalance,
+payloadKeyCheckValue,
+preflightRestoreBackup,
+stampRestoredRothBlob,
+} from "./restoreCore";
+import {
+buildClearAllPlan,
+isClearAllConfirmed,
+type ClearAllTable,
+} from "./clearDataCore";
+import {
+ENC_PREFIX,
+RESERVED_ENC_PREFIX_MESSAGE,
+hasReservedEncPrefix,
+} from "./encPrefixCore";
+
+const monthRe = /^\d{4}-(0[1-9]|1[0-2])$/;
+const dateRe = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+// dateRe alone accepts impossible calendar dates (2026-02-31 passes:
+// day 31 is in range for the pattern but February has no 31st). The
+// stored month is all the math uses, so such a row computed fine but
+// displayed a date that never existed. dateString additionally
+// requires a real calendar date.
+function isRealCalendarDate(s: string): boolean {
+  const y = Number(s.slice(0, 4));
+  const m = Number(s.slice(5, 7));
+  const d = Number(s.slice(8, 10));
+  if (!Number.isFinite(y) || m < 1 || m > 12 || d < 1) return false;
+  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+const dateString = z
+  .string()
+  .regex(dateRe)
+  .refine(isRealCalendarDate, "not a real calendar date");
+
+
+/* ============ Encryption at rest (app-level, AES-256-GCM) ============
+   Every user-entered financial value stored in the DB is ciphertext
+   text "enc:v1:<base64(nonce|ciphertext|tag)>" — amounts, balances,
+   names, descriptions, notes, categories, paid-by/account labels.
+   The 256-bit key comes from the privileged on-host key store (see
+   server/src/privileged.ts): it is never in the database, never in
+   client code, and never returned by any action. A key-check value
+   (encryption of a known constant, stored in settings under
+   "encryption_key_check_v1") is verified on every data load: a wrong
+   or missing key fails loudly instead of corrupting data. Reads
+   tolerate legacy plaintext (pre-encryption rows) and migrate them
+   in place, exactly once — the marker prefix makes migration
+   idempotent. This is app-level encryption only: the server still
+   decrypts to compute and display, exactly as before. */
+const KEY_CHECK_SETTING = "encryption_key_check_v1";
+const KEY_CHECK_PLAINTEXT = "hatch-encryption-check-v1";
+let cachedKeyBase64: string | null = null;
+let cachedCryptoKey: CryptoKey | null = null;
+
+function isEncrypted(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(ENC_PREFIX);
+}
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function getCryptoKey(ctx: Ctx): Promise<CryptoKey> {
+  const { keyBase64 } = await ctx.executePrivileged(
+    privileged.ensureEncryptionKey,
+    { spaceDir: ctx.spaceDir },
+  );
+  if (cachedCryptoKey && cachedKeyBase64 === keyBase64) return cachedCryptoKey;
+  const raw = base64ToBytes(keyBase64);
+  if (raw.length !== 32) {
+    throw new Error("Encryption key is invalid (expected 256-bit).");
+  }
+  cachedKeyBase64 = keyBase64;
+  cachedCryptoKey = await globalThis.crypto.subtle.importKey(
+    "raw",
+    raw,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt", "decrypt"],
+  );
+  return cachedCryptoKey;
+}
+async function encryptStr(key: CryptoKey, plain: string): Promise<string> {
+  // Reserved-prefix guard (cluster E, see ./encPrefixCore): a value
+  // starting with ENC_PREFIX is stored as-is ONLY when it verifies
+  // as genuine ciphertext under this key (an internal path
+  // re-storing a value it just read). A user-typed value that merely
+  // starts with those characters is not ciphertext — storing it
+  // verbatim would poison the row and break the next data load — so
+  // it is refused here, before any write, with the reserved message.
+  if (hasReservedEncPrefix(plain)) {
+    try {
+      await decryptStr(key, plain);
+      return plain;
+    } catch {
+      throw new Error(RESERVED_ENC_PREFIX_MESSAGE);
+    }
+  }
+  const nonce = new Uint8Array(12);
+  globalThis.crypto.getRandomValues(nonce);
+  const ct = new Uint8Array(
+    await globalThis.crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce },
+      key,
+      new TextEncoder().encode(plain),
+    ),
+  );
+  const combined = new Uint8Array(nonce.length + ct.length);
+  combined.set(nonce, 0);
+  combined.set(ct, nonce.length);
+  return ENC_PREFIX + bytesToBase64(combined);
+}
+async function decryptStr(key: CryptoKey, value: string): Promise<string> {
+  if (!isEncrypted(value)) return value;
+  try {
+    const combined = base64ToBytes(value.slice(ENC_PREFIX.length));
+    const nonce = combined.subarray(0, 12);
+    const ct = combined.subarray(12);
+    const plain = await globalThis.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: nonce },
+      key,
+      ct,
+    );
+    return new TextDecoder().decode(plain);
+  } catch {
+    throw new Error(
+      "Encrypted data cannot be decrypted — the encryption key may be missing or incorrect.",
+    );
+  }
+}
+async function decryptNum(key: CryptoKey, raw: unknown): Promise<number> {
+  if (typeof raw === "number") return raw;
+  const s = await decryptStr(key, String(raw ?? "0"));
+  const n = Number.parseInt(s, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+async function encryptNum(key: CryptoKey, cents: number): Promise<string> {
+  return encryptStr(key, String(Math.trunc(cents)));
+}
+async function decryptNullable(
+  key: CryptoKey,
+  value: string | null | undefined,
+): Promise<string | null> {
+  if (value == null) return null;
+  return decryptStr(key, value);
+}
+async function encryptNullable(
+  key: CryptoKey,
+  value: string | null | undefined,
+): Promise<string | null> {
+  if (value == null) return null;
+  return encryptStr(key, value);
+}
+// Verify (or create) the key-check value. Fails loudly on a wrong key.
+async function ensureKeyCheck(
+  _ctx: Ctx,
+  db: any,
+  key: CryptoKey,
+): Promise<void> {
+  const rows = await db.select().from(schema.settings);
+  const check = rows.find((r: any) => r.key === KEY_CHECK_SETTING);
+  if (check) {
+    const plain = await decryptStr(key, check.value);
+    if (plain !== KEY_CHECK_PLAINTEXT) {
+      throw new Error(
+        "Encryption key check failed — the stored key does not match this data. Refusing to read or write encrypted data.",
+      );
+    }
+    return;
+  }
+  const encrypted = await encryptStr(key, KEY_CHECK_PLAINTEXT);
+  await db
+    .insert(schema.settings)
+    .values({ key: KEY_CHECK_SETTING, value: encrypted })
+    .onConflictDoUpdate({
+      target: schema.settings.key,
+      set: { value: encrypted },
+    });
+}
+
+const txnKind = z.enum(["spending", "card_payment", "transfer"]);
+const sourceType = z.enum(["checking", "card"]);
+
+const txnInput = z.object({
+  date: dateString,
+  description: z.string().min(1).max(200),
+  amountCents: z.number().int(),
+  sourceType,
+  accountName: z.string().min(1).max(60),
+  kind: txnKind,
+  category: z.string().min(1).max(40),
+  yearlyExpenseId: z.number().int().positive().nullable().default(null),
+});
+
+const txnOut = z.object({
+  id: z.number(),
+  date: z.string(),
+  description: z.string(),
+  amountCents: z.number(),
+  sourceType: z.string(),
+  accountName: z.string(),
+  kind: z.string(),
+  category: z.string(),
+  yearlyExpenseId: z.number().nullable(),
+});
+
+const yearlyVersionOut = z.object({
+  id: z.number(),
+  expectedCents: z.number(),
+  frequency: z.string(),
+  annualCents: z.number(),
+  monthlyAccrualCents: z.number(),
+  effectiveFrom: z.string(),
+});
+
+const yearlyOut = z.object({
+  id: z.number(),
+  name: z.string(),
+  // "yearly" | "bimonthly" (every other month) | "quarterly" (every
+  // 3 months) | "semiannual" (every 6 months)
+  // Values below are the version in effect for the selected month.
+  frequency: z.string(),
+  // Payments per year for this frequency: 1, 6, 4, or 2 respectively.
+  paymentsPerYear: z.number(),
+  // As entered: per year for yearly items, per bill for periodic items.
+  expectedCents: z.number(),
+  // Annualised cost: expectedCents × paymentsPerYear.
+  annualCents: z.number(),
+  // Expected cost due SO FAR in the selected month's calendar year:
+  // expectedCents × duePaymentsToDate. The "differs" check compares
+  // the year-to-date actual against this — never against the full
+  // annualCents mid-year, which flagged every periodic bill whose
+  // remaining payments simply were not due yet. Once every payment
+  // for the year is due, this equals annualCents exactly.
+  expectedToDateCents: z.number(),
+  // Payments counted in expectedToDateCents: due months of this year
+  // that have arrived (and are not before the bill started), raised
+  // to the number of whole payments the recorded amount covers when
+  // more was paid than was due (an early payment still benchmarks at
+  // one payment's expected amount, not zero). The raise counts
+  // covered payments from the amount, never transaction rows — one
+  // due paid in two instalments covers one payment.
+  duePaymentsToDate: z.number(),
+  // This item's monthly set-aside: annualCents / 12 (per-bill ÷ 2 for
+  // every-other-month items, per-bill ÷ 3 for every-3-month items,
+  // per-bill ÷ 6 for every-6-month items).
+  monthlyAccrualCents: z.number(),
+  // Month the selected month's version took effect; null when the item
+  // has no versions (legacy fallback to the row itself) or when the
+  // item is not yet in effect for the selected month.
+  effectiveFrom: z.string().nullable(),
+  // False when the selected month is before this (non-legacy) bill's
+  // first version — it contributes $0 that month. True otherwise,
+  // including legacy bills whose earliest version backfills.
+  inEffectForMonth: z.boolean(),
+  // True only for legacy/migrated bills whose earliest version backfills
+  // months before it (set by migration, never for newly created bills).
+  backfillBeforeFirstVersion: z.boolean(),
+  // Newest version's values, regardless of month.
+  latestExpectedCents: z.number(),
+  latestFrequency: z.string(),
+  history: z.array(yearlyVersionOut),
+  dueMonth: z.number().nullable(),
+  // All due months (1-12) in a year: one for yearly items, six for
+  // every-other-month items, four for every-3-month items, two for
+  // every-6-month items — in each case stepping from the anchor month
+  // by the frequency's period.
+  dueMonths: z.array(z.number()),
+  paidByType: z.string(),
+  paidByName: z.string(),
+  category: z.string(),
+  keepLightsOn: z.boolean(),
+  actualThisYearCents: z.number(),
+  actualCountThisYear: z.number(),
+  lastActualDate: z.string().nullable(),
+  lastActualCents: z.number().nullable(),
+  status: z.string(),
+});
+
+const summaryOut = z.object({
+  month: z.string(),
+  cashOutCents: z.number(),
+});
+
+const oneOffOut = z.object({
+  id: z.number(),
+  month: z.string(),
+  description: z.string(),
+  amountCents: z.number(),
+  note: z.string().nullable(),
+});
+
+const oneOffInput = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+  description: z.string().min(1).max(200),
+  amountCents: z.number().int().nonnegative(),
+  note: z.string().max(1000).nullable().default(null),
+});
+
+const cashOutItemOut = z.object({
+  id: z.number(),
+  month: z.string(),
+  description: z.string(),
+  amountCents: z.number(),
+  note: z.string().nullable(),
+});
+
+const cashOutItemInput = z.object({
+  month: z.string().regex(monthRe),
+  description: z.string().min(1).max(200),
+  amountCents: z.number().int().nonnegative(),
+  note: z.string().max(1000).nullable().default(null),
+});
+
+const billVersionOut = z.object({
+  id: z.number(),
+  amountCents: z.number(),
+  effectiveFrom: z.string(),
+});
+
+const monthlyBillOut = z.object({
+  id: z.number(),
+  name: z.string(),
+  // Amount in effect for the dashboard's selected month (0 when the bill
+  // had no version in effect yet that month).
+  amountCents: z.number(),
+  // Month the selected month's amount took effect; null when none was
+  // in effect for the selected month.
+  effectiveFrom: z.string().nullable(),
+  // Newest version's amount, regardless of month.
+  latestAmountCents: z.number(),
+  paidBy: z.string(),
+  notes: z.string().nullable(),
+  category: z.string(),
+  keepLightsOn: z.boolean(),
+  history: z.array(billVersionOut),
+});
+
+const monthlyBillInput = z.object({
+  name: z.string().min(1).max(120),
+  amountCents: z.number().int().nonnegative(),
+  effectiveFrom: z.string().regex(monthRe),
+  paidBy: z.string().min(1).max(60),
+  notes: z.string().max(300).nullable().default(null),
+  category: z.string().min(1).max(60).default("Uncategorized"),
+  keepLightsOn: z.boolean().default(false),
+});
+
+type RawBillVersionRow = typeof schema.monthlyBillVersions.$inferSelect;
+type BillVersionRow = Omit<RawBillVersionRow, "amountCents"> & { amountCents: number };
+
+type RawYearlyVersionRow = typeof schema.yearlyExpenseVersions.$inferSelect;
+type YearlyVersionRow = Omit<RawYearlyVersionRow, "expectedCents"> & { expectedCents: number };
+
+type RawTxnRow = typeof schema.transactions.$inferSelect;
+type TxnRow = Omit<RawTxnRow, "amountCents"> & { amountCents: number };
+type RawYearlyRow = typeof schema.yearlyExpenses.$inferSelect;
+type YearlyRow = Omit<RawYearlyRow, "expectedCents"> & { expectedCents: number };
+type RawSummaryRow = typeof schema.monthlySummaries.$inferSelect;
+type SummaryRow = Omit<RawSummaryRow, "cashOutCents"> & { cashOutCents: number };
+type RawMonthlyBillRow = typeof schema.monthlyBills.$inferSelect;
+type MonthlyBillRow = Omit<RawMonthlyBillRow, "amountCents"> & { amountCents: number };
+type RawOneOffRow = typeof schema.monthlyOneOffs.$inferSelect;
+type OneOffRow = Omit<RawOneOffRow, "amountCents"> & { amountCents: number };
+type RawCashOutItemRow = typeof schema.monthlyCashOutItems.$inferSelect;
+type CashOutItemRow = Omit<RawCashOutItemRow, "amountCents"> & { amountCents: number };
+
+async function loadAll(ctx: Ctx) {
+  const db = ctx.db<typeof schema>();
+  const key = await getCryptoKey(ctx);
+  await ensureKeyCheck(ctx, db, key);
+  const rawTxns = await db
+    .select()
+    .from(schema.transactions)
+    .orderBy(asc(schema.transactions.date), asc(schema.transactions.id));
+  const rawYearly = await db
+    .select()
+    .from(schema.yearlyExpenses)
+    .orderBy(asc(schema.yearlyExpenses.id));
+  const rawYearlyVersions = await db
+    .select()
+    .from(schema.yearlyExpenseVersions)
+    .orderBy(asc(schema.yearlyExpenseVersions.id));
+  const rawSummaries = await db
+    .select()
+    .from(schema.monthlySummaries)
+    .orderBy(asc(schema.monthlySummaries.month));
+  const rawBills = await db
+    .select()
+    .from(schema.monthlyBills)
+    .orderBy(asc(schema.monthlyBills.id));
+  const rawBillVersions = await db
+    .select()
+    .from(schema.monthlyBillVersions)
+    .orderBy(asc(schema.monthlyBillVersions.id));
+  const rawOneOffs = await db
+    .select()
+    .from(schema.monthlyOneOffs)
+    .orderBy(asc(schema.monthlyOneOffs.month), asc(schema.monthlyOneOffs.id));
+  const rawCashOutItems = await db
+    .select()
+    .from(schema.monthlyCashOutItems)
+    .orderBy(asc(schema.monthlyCashOutItems.month), asc(schema.monthlyCashOutItems.id));
+  const settingRows = await db.select().from(schema.settings);
+
+  // Decrypt every row; any legacy plaintext field is encrypted and
+  // written back in place (migration, idempotent via the prefix).
+  const txns: TxnRow[] = [];
+  for (const r of rawTxns) {
+    const plain: TxnRow = {
+      ...r,
+      description: await decryptStr(key, r.description),
+      amountCents: await decryptNum(key, r.amountCents as unknown),
+      accountName: await decryptStr(key, r.accountName),
+      category: await decryptStr(key, r.category),
+    };
+    txns.push(plain);
+    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || !isEncrypted(r.accountName) || !isEncrypted(r.category)) {
+      await db.update(schema.transactions).set({
+        description: await encryptStr(key, plain.description),
+        amountCents: await encryptNum(key, plain.amountCents),
+        accountName: await encryptStr(key, plain.accountName),
+        category: await encryptStr(key, plain.category),
+      }).where(eq(schema.transactions.id, r.id));
+    }
+  }
+  const yearly: YearlyRow[] = [];
+  for (const r of rawYearly) {
+    const plain: YearlyRow = {
+      ...r,
+      name: await decryptStr(key, r.name),
+      expectedCents: await decryptNum(key, r.expectedCents as unknown),
+      paidByName: await decryptStr(key, r.paidByName),
+      category: await decryptStr(key, r.category),
+    };
+    yearly.push(plain);
+    if (!isEncrypted(r.name) || !isEncrypted(r.expectedCents) || !isEncrypted(r.paidByName) || !isEncrypted(r.category)) {
+      await db.update(schema.yearlyExpenses).set({
+        name: await encryptStr(key, plain.name),
+        expectedCents: await encryptNum(key, plain.expectedCents),
+        paidByName: await encryptStr(key, plain.paidByName),
+        category: await encryptStr(key, plain.category),
+      }).where(eq(schema.yearlyExpenses.id, r.id));
+    }
+  }
+  const yearlyVersions: YearlyVersionRow[] = [];
+  for (const r of rawYearlyVersions) {
+    const plain: YearlyVersionRow = { ...r, expectedCents: await decryptNum(key, r.expectedCents as unknown) };
+    yearlyVersions.push(plain);
+    if (!isEncrypted(r.expectedCents)) {
+      await db.update(schema.yearlyExpenseVersions).set({
+        expectedCents: await encryptNum(key, plain.expectedCents),
+      }).where(eq(schema.yearlyExpenseVersions.id, r.id));
+    }
+  }
+  const summaries: SummaryRow[] = [];
+  for (const r of rawSummaries) {
+    const plain: SummaryRow = { ...r, cashOutCents: await decryptNum(key, r.cashOutCents as unknown) };
+    summaries.push(plain);
+    if (!isEncrypted(r.cashOutCents)) {
+      await db.update(schema.monthlySummaries).set({
+        cashOutCents: await encryptNum(key, plain.cashOutCents),
+      }).where(eq(schema.monthlySummaries.month, r.month));
+    }
+  }
+  const bills: MonthlyBillRow[] = [];
+  for (const r of rawBills) {
+    const plain: MonthlyBillRow = {
+      ...r,
+      name: await decryptStr(key, r.name),
+      amountCents: await decryptNum(key, r.amountCents as unknown),
+      paidBy: await decryptStr(key, r.paidBy),
+      notes: await decryptNullable(key, r.notes),
+      category: await decryptStr(key, r.category),
+    };
+    bills.push(plain);
+    if (!isEncrypted(r.name) || !isEncrypted(r.amountCents) || !isEncrypted(r.paidBy) || (r.notes != null && !isEncrypted(r.notes)) || !isEncrypted(r.category)) {
+      await db.update(schema.monthlyBills).set({
+        name: await encryptStr(key, plain.name),
+        amountCents: await encryptNum(key, plain.amountCents),
+        paidBy: await encryptStr(key, plain.paidBy),
+        notes: await encryptNullable(key, plain.notes),
+        category: await encryptStr(key, plain.category),
+      }).where(eq(schema.monthlyBills.id, r.id));
+    }
+  }
+  const billVersions: BillVersionRow[] = [];
+  for (const r of rawBillVersions) {
+    const plain: BillVersionRow = { ...r, amountCents: await decryptNum(key, r.amountCents as unknown) };
+    billVersions.push(plain);
+    if (!isEncrypted(r.amountCents)) {
+      await db.update(schema.monthlyBillVersions).set({
+        amountCents: await encryptNum(key, plain.amountCents),
+      }).where(eq(schema.monthlyBillVersions.id, r.id));
+    }
+  }
+  const oneOffs: OneOffRow[] = [];
+  for (const r of rawOneOffs) {
+    const plain: OneOffRow = {
+      ...r,
+      description: await decryptStr(key, r.description),
+      amountCents: await decryptNum(key, r.amountCents as unknown),
+      note: await decryptNullable(key, r.note),
+    };
+    oneOffs.push(plain);
+    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || (r.note != null && !isEncrypted(r.note))) {
+      await db.update(schema.monthlyOneOffs).set({
+        description: await encryptStr(key, plain.description),
+        amountCents: await encryptNum(key, plain.amountCents),
+        note: await encryptNullable(key, plain.note),
+      }).where(eq(schema.monthlyOneOffs.id, r.id));
+    }
+  }
+  const cashOutItems: CashOutItemRow[] = [];
+  for (const r of rawCashOutItems) {
+    const plain: CashOutItemRow = {
+      ...r,
+      description: await decryptStr(key, r.description),
+      amountCents: await decryptNum(key, r.amountCents as unknown),
+      note: await decryptNullable(key, r.note),
+    };
+    cashOutItems.push(plain);
+    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || (r.note != null && !isEncrypted(r.note))) {
+      await db.update(schema.monthlyCashOutItems).set({
+        description: await encryptStr(key, plain.description),
+        amountCents: await encryptNum(key, plain.amountCents),
+        note: await encryptNullable(key, plain.note),
+      }).where(eq(schema.monthlyCashOutItems.id, r.id));
+    }
+  }
+  // Settings: only the opening reserve is financial content — decrypt
+  // it for consumers and migrate a legacy plaintext value in place.
+  // UI flags and the key-check value itself stay as stored.
+  const settingsMap = new Map<string, string>();
+  for (const r of settingRows) {
+    if (r.key === "opening_reserve_cents") {
+      const plainVal = isEncrypted(r.value) ? await decryptStr(key, r.value) : r.value;
+      settingsMap.set(r.key, plainVal);
+      if (!isEncrypted(r.value) && r.value !== "") {
+        const enc = await encryptStr(key, plainVal);
+        await db.update(schema.settings).set({ value: enc }).where(eq(schema.settings.key, r.key));
+      }
+    } else {
+      settingsMap.set(r.key, r.value);
+    }
+  }
+  return { db, key, txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems, settingsMap };
+}
+
+function yearlyOutFor(
+  y: YearlyRow,
+  txns: TxnRow[],
+  selectedMonth: string,
+  versions: YearlyVersionRow[] = [],
+): z.infer<typeof yearlyOut> {
+  const year = selectedMonth.slice(0, 4);
+  const linked = txns.filter(
+    (t) => t.yearlyExpenseId === y.id && t.kind === "spending",
+  );
+  const backfill = y.backfillBeforeFirstVersion === 1;
+  // The month this (non-legacy) bill started: its earliest version's
+  // effective-from. Legacy/backfill bills and bills with no versions
+  // have no start boundary — every month counts, as before. The
+  // due-month side below already ignores dues before this month; the
+  // payment side uses the same boundary (see thisYear).
+  const startMonth =
+    !backfill && versions.length > 0
+      ? (earliestYearlyVersion(versions)?.effectiveFrom ?? null)
+      : null;
+  // "This year" means year-to-date THROUGH the viewed month: a payment
+  // recorded in a later month must not leak into an earlier month's
+  // view. It did — a bill due in August with its payment recorded in
+  // November showed "Paid this year … in line with expected" (and a
+  // last-paid date in November) when October was viewed, and could
+  // never read as overdue for August–October. The expected-to-date
+  // benchmark below is already scoped to dues that have arrived by
+  // the viewed month; the actual side now uses the same window, and
+  // "last payment" likewise never names a date after the viewed month.
+  // Payments recorded BEFORE the bill itself started are excluded for
+  // the same reason pre-start dues are: a payment made before the
+  // bill's first version cannot cover a due that came after it — it
+  // did, so a semiannual bill that started in June read "ok" in
+  // August on the strength of a March payment, with its July due
+  // never paid and no overdue warning.
+  const thisYear = linked.filter(
+    (t) =>
+      t.date.startsWith(year) &&
+      monthOf(t.date) <= selectedMonth &&
+      (startMonth == null || monthOf(t.date) >= startMonth),
+  );
+  const actualThisYearCents = thisYear.reduce((s, t) => s + t.amountCents, 0);
+  const last = thisYear.length > 0 ? thisYear[thisYear.length - 1] : undefined;
+  const inEffectRaw = yearlyVersionInEffect(versions, selectedMonth, backfill);
+  const notStarted = inEffectRaw === null;
+  const inEffect = notStarted ? undefined : (inEffectRaw ?? undefined);
+  const latest = latestYearlyVersion(versions);
+  const effExpected = notStarted ? 0 : (inEffect?.expectedCents ?? y.expectedCents);
+  const effFrequency = notStarted
+    ? (latest?.frequency ?? y.frequency)
+    : (inEffect?.frequency ?? y.frequency);
+  const annualCents = notStarted
+    ? 0
+    : annualCentsForValues(effExpected, effFrequency);
+  // Due months follow the frequency in effect for the selected month.
+  const dueMonths = dueMonthsFor({ ...y, frequency: effFrequency as YearlyRow["frequency"] });
+  // Due months BEFORE the bill itself started do not count: a bill
+  // added in October whose pattern includes January was not owed
+  // anything in January — it can be neither overdue for January nor
+  // expected to have been paid for it. Legacy/backfill bills predate
+  // their first version, so for them every due month counts, exactly
+  // as before; bills with no versions at all use the row fallback
+  // and likewise count all.
+  const selMonthNum = Number(selectedMonth.slice(5, 7));
+  const relevantDues = dueMonths.filter(
+    (d) =>
+      startMonth == null ||
+      `${year}-${String(d).padStart(2, "0")}` >= startMonth,
+  );
+  // Expected-to-date benchmark for the "differs" check: the payments
+  // whose due months have arrived this year. Comparing the
+  // year-to-date actual against the FULL annualised cost instead
+  // flagged every periodic bill mid-year — a semiannual bill paid
+  // exactly on schedule in February "differed" from its annual total
+  // until the August payment landed. Recorded money beyond the due
+  // count (paid early) raises the benchmark to the number of whole
+  // payments the recorded AMOUNT covers, capped at a full year's
+  // payments, so an on-amount early payment never flags either. The
+  // count is derived from the amount, never from the number of
+  // transaction rows: one due paid in two instalments (two rows
+  // summing to exactly the expected amount) covers ONE payment —
+  // counting rows instead benchmarked it at two payments and flagged
+  // an exact payment as "differs". When all of the year's payments
+  // are due, the benchmark IS the annualised cost, as before.
+  const duesArrived = relevantDues.filter((d) => d <= selMonthNum).length;
+  const paidPayments =
+    effExpected > 0 && actualThisYearCents > 0
+      ? Math.ceil(actualThisYearCents / effExpected)
+      : 0;
+  const duePaymentsToDate = Math.max(
+    duesArrived,
+    Math.min(paidPayments, paymentsPerYear(effFrequency)),
+  );
+  const expectedToDateCents = effExpected * duePaymentsToDate;
+  let status = "ok";
+  if (notStarted) {
+    status = "not-started";
+  } else {
+    if (actualThisYearCents !== 0 && expectedToDateCents > 0) {
+      const diff = actualThisYearCents - expectedToDateCents;
+      const threshold = Math.max(Math.round(expectedToDateCents * 0.1), 2500);
+      if (Math.abs(diff) >= threshold) status = "differs";
+    }
+    if (status === "ok" && y.dueMonth != null) {
+      // Overdue once a due month has passed with no payment covering
+      // THAT due. Coverage is counted from the recorded amount (the
+      // same paidPayments figure as the benchmark above): the
+      // recorded money covers the earliest dues first, and the first
+      // due it does not reach decides. The previous check required
+      // NOTHING paid all year, so a periodic bill that paid its
+      // first due and missed a later one read "ok" whenever the
+      // missed amount fell inside the "differs" tolerance — a $20
+      // semiannual bill that paid January and missed July showed no
+      // warning at all in August. A payment recorded against a $0
+      // bill covers every due (there is nothing to owe).
+      const coveredPayments =
+        actualThisYearCents === 0
+          ? 0
+          : effExpected > 0
+            ? Math.min(paidPayments, relevantDues.length)
+            : relevantDues.length;
+      const firstUncoveredDue = relevantDues[coveredPayments] ?? null;
+      if (firstUncoveredDue != null && firstUncoveredDue < selMonthNum) {
+        status = "overdue";
+      } else if (actualThisYearCents === 0) {
+        status = "upcoming";
+      }
+    }
+    if (status === "ok" && y.dueMonth == null) status = "no-due-month";
+  }
+  return {
+    id: y.id,
+    name: y.name,
+    frequency: effFrequency,
+    paymentsPerYear: paymentsPerYear(effFrequency),
+    expectedCents: effExpected,
+    annualCents,
+    expectedToDateCents,
+    duePaymentsToDate,
+    monthlyAccrualCents: Math.round(annualCents / 12),
+    effectiveFrom: notStarted ? null : (inEffect?.effectiveFrom ?? null),
+    inEffectForMonth: !notStarted,
+    backfillBeforeFirstVersion: backfill,
+    latestExpectedCents: latest?.expectedCents ?? y.expectedCents,
+    latestFrequency: latest?.frequency ?? y.frequency,
+    history: [...versions]
+      .sort((a, c) =>
+        a.effectiveFrom === c.effectiveFrom
+          ? c.id - a.id
+          : a.effectiveFrom < c.effectiveFrom
+            ? 1
+            : -1,
+      )
+      .map((v) => ({
+        id: v.id,
+        expectedCents: v.expectedCents,
+        frequency: v.frequency,
+        annualCents: annualCentsForValues(v.expectedCents, v.frequency),
+        monthlyAccrualCents: Math.round(
+          annualCentsForValues(v.expectedCents, v.frequency) / 12,
+        ),
+        effectiveFrom: v.effectiveFrom,
+      })),
+    dueMonth: y.dueMonth ?? null,
+    dueMonths,
+    paidByType: y.paidByType,
+    paidByName: y.paidByName,
+    category: y.category,
+    keepLightsOn: y.keepLightsOn === 1,
+    actualThisYearCents,
+    actualCountThisYear: thisYear.length,
+    lastActualDate: last ? last.date : null,
+    lastActualCents: last ? last.amountCents : null,
+    status,
+  };
+}
+
+
+type RawNwBalanceRow = typeof schema.nwBalances.$inferSelect;
+type NwBalanceRow = Omit<
+  RawNwBalanceRow,
+  "balanceCents" | "splitHsaCents" | "splitRothCents" | "splitTaxableCents" | "splitNonTaxableCents" | "split529Cents" | "splitCashCents" | "splitPreTaxCents"
+> & {
+  balanceCents: number;
+  splitHsaCents: number | null;
+  splitRothCents: number | null;
+  splitTaxableCents: number | null;
+  splitNonTaxableCents: number | null;
+  split529Cents: number | null;
+  splitCashCents: number | null;
+  splitPreTaxCents: number | null;
+};
+
+// Tax buckets and property kinds live in server/src/nwCore.ts
+// (NW_SPLIT_BUCKETS / NW_PROPERTY_KINDS and the balance math are
+// imported from there — the single implementation the Net Worth and
+// Year Summary views and the accuracy fixtures all run).
+const nwSplitBucketEnum = z.enum(NW_SPLIT_BUCKETS);
+// The property-kind enum's ONE definition lives in
+// apiContractCore (API follow-on 3, finding F17) so the fixtures
+// pin the exact schema the actions publish.
+const nwPropertyKindEnum = nwPropertyKind;
+const NW_INCLUDE_PROPERTY_KEY = "nw_include_property";
+const NW_TARGET_KEY = "nw_target_cents";
+
+// Decrypt Net Worth rows; legacy plaintext migrates in place (once).
+async function loadNetWorthDecrypted(ctx: Ctx, db: any, key: CryptoKey) {
+  await ensureKeyCheck(ctx, db, key);
+  const rawAccounts = await db
+    .select()
+    .from(schema.nwAccounts)
+    .orderBy(asc(schema.nwAccounts.sortOrder), asc(schema.nwAccounts.id));
+  const rawSnaps = await db
+    .select()
+    .from(schema.nwSnapshots)
+    .orderBy(asc(schema.nwSnapshots.date));
+  const rawBalances = await db.select().from(schema.nwBalances);
+  const accounts = [];
+  for (const a of rawAccounts) {
+    const name = await decryptStr(key, a.name);
+    accounts.push({ ...a, name, propertyKind: propertyKindOf(a as { propertyKind?: string | null }), custodial: isCustodialAccount(a as { custodial?: number | null }) });
+    if (!isEncrypted(a.name)) {
+      await db
+        .update(schema.nwAccounts)
+        .set({ name: await encryptStr(key, name) })
+        .where(eq(schema.nwAccounts.id, a.id));
+    }
+  }
+  const snapshots = [];
+  for (const s of rawSnaps) {
+    const note = await decryptNullable(key, s.note);
+    snapshots.push({ ...s, note });
+    if (s.note != null && !isEncrypted(s.note)) {
+      await db.update(schema.nwSnapshots).set({ note: await encryptNullable(key, note) }).where(eq(schema.nwSnapshots.id, s.id));
+    }
+  }
+  const balances: NwBalanceRow[] = [];
+  for (const b of rawBalances) {
+    const balanceCents = await decryptNum(key, b.balanceCents as unknown);
+    const rawSplitHsa = (b as { splitHsaCents?: string | null }).splitHsaCents ?? null;
+    const rawSplitRoth = (b as { splitRothCents?: string | null }).splitRothCents ?? null;
+    const rawSplitTaxable = (b as { splitTaxableCents?: string | null }).splitTaxableCents ?? null;
+    const rawSplitNonTaxable = (b as { splitNonTaxableCents?: string | null }).splitNonTaxableCents ?? null;
+    const rawSplit529 = (b as { split529Cents?: string | null }).split529Cents ?? null;
+    const rawSplitCash = (b as { splitCashCents?: string | null }).splitCashCents ?? null;
+    const rawSplitPreTax = (b as { splitPreTaxCents?: string | null }).splitPreTaxCents ?? null;
+    const splitHsaCents = rawSplitHsa == null ? null : await decryptNum(key, rawSplitHsa as unknown);
+    const splitRothCents = rawSplitRoth == null ? null : await decryptNum(key, rawSplitRoth as unknown);
+    const splitTaxableCents = rawSplitTaxable == null ? null : await decryptNum(key, rawSplitTaxable as unknown);
+    const splitNonTaxableCents = rawSplitNonTaxable == null ? null : await decryptNum(key, rawSplitNonTaxable as unknown);
+    const split529Cents = rawSplit529 == null ? null : await decryptNum(key, rawSplit529 as unknown);
+    const splitCashCents = rawSplitCash == null ? null : await decryptNum(key, rawSplitCash as unknown);
+    const splitPreTaxCents = rawSplitPreTax == null ? null : await decryptNum(key, rawSplitPreTax as unknown);
+    balances.push({ ...b, balanceCents, splitHsaCents, splitRothCents, splitTaxableCents, splitNonTaxableCents, split529Cents, splitCashCents, splitPreTaxCents });
+    if (
+      !isEncrypted(b.balanceCents) ||
+      (rawSplitHsa != null && !isEncrypted(rawSplitHsa)) ||
+      (rawSplitRoth != null && !isEncrypted(rawSplitRoth)) ||
+      (rawSplitTaxable != null && !isEncrypted(rawSplitTaxable)) ||
+      (rawSplitNonTaxable != null && !isEncrypted(rawSplitNonTaxable)) ||
+      (rawSplit529 != null && !isEncrypted(rawSplit529)) ||
+      (rawSplitCash != null && !isEncrypted(rawSplitCash)) ||
+      (rawSplitPreTax != null && !isEncrypted(rawSplitPreTax))
+    ) {
+      await db.update(schema.nwBalances).set({
+        balanceCents: await encryptNum(key, balanceCents),
+        splitHsaCents: splitHsaCents == null ? null : await encryptNum(key, splitHsaCents),
+        splitRothCents: splitRothCents == null ? null : await encryptNum(key, splitRothCents),
+        splitTaxableCents: splitTaxableCents == null ? null : await encryptNum(key, splitTaxableCents),
+        splitNonTaxableCents: splitNonTaxableCents == null ? null : await encryptNum(key, splitNonTaxableCents),
+        split529Cents: split529Cents == null ? null : await encryptNum(key, split529Cents),
+        splitCashCents: splitCashCents == null ? null : await encryptNum(key, splitCashCents),
+        splitPreTaxCents: splitPreTaxCents == null ? null : await encryptNum(key, splitPreTaxCents),
+      }).where(eq(schema.nwBalances.id, b.id));
+    }
+  }
+  return { accounts, snapshots, balances };
+}
+
+/* ---------------- Net Worth seed ----------------
+   SAMPLE DATA — invented for demonstration on a fresh install.
+   These figures are synthetic round numbers with a plausible
+   growth arc; they are not any household's real balances.
+   Values are USD dollars per account in NW_SEED_ACCOUNTS
+   order; they are stored as integer cents. Seeding is
+   idempotent: seedNetWorth does nothing when any NW account
+   already exists. */
+const NW_SEED_ACCOUNTS = ["Brokerage", "Bank", "Retirement 401k", "Retirement IRA", "Investment", "HSA"];
+const NW_SEED: { date: string; values: number[] }[] = [
+  { date: "2025-12-03", values: [360000, 90000, 1800000, 200000, 150000, 10000] },
+  { date: "2025-12-06", values: [365000, 90500, 1815000, 201500, 151000, 10200] },
+  { date: "2025-12-24", values: [368000, 91000, 1830000, 203000, 152500, 10400] },
+  { date: "2026-01-06", values: [375000, 92000, 1845000, 204500, 153000, 10600] },
+  { date: "2026-01-24", values: [370000, 92500, 1835000, 205000, 152000, 10800] },
+  { date: "2026-01-31", values: [378000, 93000, 1850000, 206000, 154000, 11000] },
+  { date: "2026-04-26", values: [390000, 94000, 1900000, 210000, 158000, 11500] },
+  { date: "2026-05-09", values: [400000, 95000, 1950000, 214000, 162000, 12000] },
+  { date: "2026-05-31", values: [410000, 96000, 1980000, 217000, 165000, 12500] },
+  { date: "2026-08-13", values: [420000, 97000, 2020000, 220000, 168000, 13000] },
+  { date: "2026-09-04", values: [430000, 98000, 2050000, 223000, 170000, 13500] },
+  { date: "2026-09-22", values: [438000, 99000, 2080000, 226000, 172000, 14000] },
+  { date: "2026-10-05", values: [445000, 100000, 2100000, 228000, 175000, 14500] },
+];
+
+const nwBalanceEntry = z.object({
+  accountId: z.number().int().positive(),
+  // null = not recorded for that account on that date (no row stored).
+  // When `splits` is a non-empty array, the split amounts ARE the
+  // balance: the server stores their sum as the balance total and
+  // ignores balanceCents. Null/empty splits = a single whole balance.
+  balanceCents: z.number().int().nullable(),
+  splits: z
+    .array(
+      z.object({
+        bucket: nwSplitBucketEnum,
+        amountCents: z.number().int(),
+      }),
+    )
+    // One part per bucket in NW_SPLIT_BUCKETS (currently six: HSA,
+    // Roth, Taxable, Non-Taxable, 529, Cash) — the editor can submit
+    // all six, so the cap must cover every bucket.
+    .max(NW_SPLIT_BUCKETS.length)
+    .nullable()
+    .optional()
+    .default(null),
+});
+
+// Resolve one balance entry into the row values to store, or null when
+// the account was not recorded. The numeric resolution (split entries:
+// the stored total is the sum of the parts and each part goes in its
+// bucket column; whole entries: the balance as entered) is
+// nwBalanceRowPlain in nwCore.ts — this wrapper only encrypts its
+// fields. Property accounts never carry a tax-bucket split — their
+// balances are stored whole (noSplit forces the whole-balance path).
+// Custodial accounts never carry a split either, for the same reason.
+// CALLER CONTRACT (cluster C): every caller validates the payload
+// first (validateNwSnapshotPayload / validateNwBalanceSplits in
+// nwCore.ts), so a bucket can never appear twice in one entry's
+// splits here — duplicates are refused before any write, never
+// folded or silently dropped.
+async function nwBalanceRowValues(
+  key: CryptoKey,
+  entry: z.infer<typeof nwBalanceEntry>,
+  noSplit: boolean = false,
+): Promise<{
+  balanceCents: string;
+  splitHsaCents: string | null;
+  splitRothCents: string | null;
+  splitTaxableCents: string | null;
+  splitNonTaxableCents: string | null;
+  split529Cents: string | null;
+  splitCashCents: string | null;
+  splitPreTaxCents: string | null;
+} | null> {
+  const plain = nwBalanceRowPlain(entry, noSplit);
+  if (!plain) return null;
+  const enc = async (v: number | null): Promise<string | null> =>
+    v == null ? null : encryptNum(key, v);
+  return {
+    balanceCents: await encryptNum(key, plain.balanceCents),
+    splitHsaCents: await enc(plain.splitHsaCents),
+    splitRothCents: await enc(plain.splitRothCents),
+    splitTaxableCents: await enc(plain.splitTaxableCents),
+    splitNonTaxableCents: await enc(plain.splitNonTaxableCents),
+    split529Cents: await enc(plain.split529Cents),
+    splitCashCents: await enc(plain.splitCashCents),
+    splitPreTaxCents: await enc(plain.splitPreTaxCents),
+  };
+}
+
+type NwEncryptedRowValues = NonNullable<
+  Awaited<ReturnType<typeof nwBalanceRowValues>>
+>;
+
+const nwSnapshotInput = z.object({
+  date: dateString,
+  note: z.string().max(500).nullable().default(null),
+  balances: z.array(nwBalanceEntry).max(200),
+});
+
+const nwMutationOut = z.object({
+  ok: z.boolean(),
+  reason: z.string(),
+  id: z.number().nullable(),
+});
+
+/* The spending family's mutation result (API follow-on 3,
+   finding F22): an update/delete/setter that targets one row by
+   id (or one month) reports an honest { ok: false, reason } when
+   the target does not exist, instead of the old bare
+   { ok: true } success for a write that touched nothing. The
+   same shape deleteMonthlyBillVersion / deleteYearlyExpenseVersion
+   already published. */
+const okReasonResponse = z.object({ ok: z.boolean(), reason: z.string() });
+type OkReason = z.infer<typeof okReasonResponse>;
+
+/* ---------------- Backup / restore ----------------
+   exportbackup returns the COMPLETE dataset as one payload: every
+   spending table and every Net Worth table, with every encrypted
+   value decrypted to its true figure exactly as the other actions
+   return it (amounts as integer cents, text as plaintext).
+   restorebackup accepts that exact payload and replaces the entire
+   dataset with it, preserving ids and relationships, re-encrypting
+   every value on write. The settings array carries every settings
+   row; the opening reserve and the internal encryption key-check
+   constant are exported decrypted like every other figure (the
+   key-check is re-encrypted and re-validated on restore). */
+
+function backupTsToMs(v: unknown): number {
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : 0;
+  }
+  return 0;
+}
+function backupMsToDate(ms: number): Date {
+  return typeof ms === "number" && ms > 0 ? new Date(ms) : new Date();
+}
+
+/* The payload schemas live in server/src/restoreCore.ts (shared
+   with the accuracy fixtures): backupPayload and its row
+   schemas, BACKUP_FORMAT, and BACKUP_SCHEMA_VERSION are
+   imported from there. */
+
+const restoreBackupOut = z.object({
+  ok: z.boolean(),
+  reason: z.string(),
+});
+
+/* Builds the complete backup payload (every spending and Net Worth
+   table, decrypted to true figures). Shared by exportbackup and by
+   createBackupNow, so a manual backup created from the Backups panel
+   carries exactly the payload the weekly agent-run backups carry. */
+async function buildBackupPayload(
+  ctx: Ctx,
+): Promise<z.infer<typeof backupPayload>> {
+  const {
+    db,
+    key,
+    txns,
+    yearly,
+    yearlyVersions,
+    summaries,
+    bills,
+    billVersions,
+    oneOffs,
+    cashOutItems,
+    settingsMap,
+  } = await loadAll(ctx);
+  const { accounts, snapshots, balances } = await loadNetWorthDecrypted(
+    ctx,
+    db,
+    key,
+  );
+  const rawSettings = await db.select().from(schema.settings);
+  // The legacy nw_accounts.bucket column holds encrypted values
+  // for older rows (plaintext for newer ones) — decrypt either
+  // way so the payload carries only true figures.
+  const nwAccountsExport: z.infer<typeof backupNwAccount>[] = [];
+  for (const a of accounts) {
+    nwAccountsExport.push({
+      id: a.id,
+      name: a.name,
+      bucket: await decryptStr(
+        key,
+        (a as { bucket?: string }).bucket ?? "Unbucketed",
+      ),
+      propertyKind: propertyKindOf(a),
+      custodial: isCustodialAccount(a) ? 1 : 0,
+      sortOrder: a.sortOrder,
+      archived: a.archived,
+      createdAt: backupTsToMs(a.createdAt),
+    });
+  }
+  const settingsExport: z.infer<typeof backupSetting>[] = [];
+  for (const r of rawSettings) {
+    settingsExport.push({
+      key: r.key,
+      // The opening reserve is a financial figure, the key-check
+      // row is an encrypted constant, and the saved retirement
+      // inputs are an encrypted JSON blob: export all three
+      // decrypted like every other figure, so the payload can be
+      // restored under a different encryption key with nothing
+      // silently lost (the retirement blob previously travelled
+      // as ciphertext and a cross-key restore dropped the saved
+      // inputs while every other figure survived). All remaining
+      // settings (UI flags, the include-property toggle, the
+      // reserve start month) are stored plaintext already and
+      // are carried exactly as stored.
+      value:
+        r.key === "opening_reserve_cents"
+          ? (settingsMap.get(r.key) ?? r.value)
+          : r.key === KEY_CHECK_SETTING ||
+              r.key === "retirement_calc_inputs_v1" ||
+              r.key === "retirement_calc_baseline_v1" ||
+              r.key === "roth_conversion_inputs_v1"
+            ? await decryptStr(key, r.value)
+            : r.value,
+    });
+  }
+  return {
+    format: BACKUP_FORMAT,
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    yearlyExpenses: yearly.map((y) => ({
+      id: y.id,
+      name: y.name,
+      frequency: y.frequency,
+      expectedCents: y.expectedCents,
+      dueMonth: y.dueMonth ?? null,
+      paidByType: y.paidByType,
+      paidByName: y.paidByName,
+      backfillBeforeFirstVersion: y.backfillBeforeFirstVersion,
+      category: y.category,
+      keepLightsOn: y.keepLightsOn,
+      createdAt: backupTsToMs(y.createdAt),
+    })),
+    yearlyExpenseVersions: yearlyVersions.map((v) => ({
+      id: v.id,
+      expenseId: v.expenseId,
+      expectedCents: v.expectedCents,
+      frequency: v.frequency,
+      effectiveFrom: v.effectiveFrom,
+      createdAt: backupTsToMs(v.createdAt),
+    })),
+    transactions: txns.map((t) => ({
+      id: t.id,
+      date: t.date,
+      description: t.description,
+      amountCents: t.amountCents,
+      sourceType: t.sourceType,
+      accountName: t.accountName,
+      kind: t.kind,
+      category: t.category,
+      yearlyExpenseId: t.yearlyExpenseId ?? null,
+      createdAt: backupTsToMs(t.createdAt),
+    })),
+    monthlySummaries: summaries.map((s) => ({
+      month: s.month,
+      cashOutCents: s.cashOutCents,
+      createdAt: backupTsToMs(s.createdAt),
+      updatedAt: backupTsToMs(s.updatedAt),
+    })),
+    monthlyBills: bills.map((b) => ({
+      id: b.id,
+      name: b.name,
+      amountCents: b.amountCents,
+      paidBy: b.paidBy,
+      notes: b.notes ?? null,
+      category: b.category,
+      keepLightsOn: b.keepLightsOn,
+      collapsed: b.collapsed,
+      createdAt: backupTsToMs(b.createdAt),
+    })),
+    monthlyBillVersions: billVersions.map((v) => ({
+      id: v.id,
+      billId: v.billId,
+      amountCents: v.amountCents,
+      effectiveFrom: v.effectiveFrom,
+      createdAt: backupTsToMs(v.createdAt),
+    })),
+    monthlyOneOffs: oneOffs.map((o) => ({
+      id: o.id,
+      month: o.month,
+      description: o.description,
+      amountCents: o.amountCents,
+      note: o.note ?? null,
+      createdAt: backupTsToMs(o.createdAt),
+    })),
+    monthlyCashOutItems: cashOutItems.map((o) => ({
+      id: o.id,
+      month: o.month,
+      description: o.description,
+      amountCents: o.amountCents,
+      note: o.note ?? null,
+      createdAt: backupTsToMs(o.createdAt),
+    })),
+    nwAccounts: nwAccountsExport,
+    nwSnapshots: snapshots.map((s) => ({
+      id: s.id,
+      date: s.date,
+      note: s.note ?? null,
+      createdAt: backupTsToMs(s.createdAt),
+    })),
+    nwBalances: balances.map((b) => ({
+      id: b.id,
+      snapshotId: b.snapshotId,
+      accountId: b.accountId,
+      balanceCents: b.balanceCents,
+      splitHsaCents: b.splitHsaCents,
+      splitRothCents: b.splitRothCents,
+      splitTaxableCents: b.splitTaxableCents,
+      splitNonTaxableCents: b.splitNonTaxableCents,
+      split529Cents: b.split529Cents,
+      splitCashCents: b.splitCashCents,
+      splitPreTaxCents: b.splitPreTaxCents,
+    })),
+    settings: settingsExport,
+  };
+}
+
+/* ---------------- Retirement calculator storage ----------------
+   All calculator state lives in ONE encrypted JSON blob in settings
+   under "retirement_calc_inputs_v1": the input fields at the top
+   level, plus a "scenarios" array (up to 3 saved input sets). Keeping
+   scenarios inside the same blob means the backup export / restore
+   handling for that key (decrypt on export, re-encrypt on restore)
+   covers them with no extra cases, and every writer below merges
+   with the existing blob so saving inputs never wipes scenarios and
+   saving a scenario never wipes inputs. A Reset-to-defaults is just
+   a saveRetirementCalc with the default values (strategy Constant),
+   so it preserves scenarios by construction. */
+const RETIREMENT_KEY = "retirement_calc_inputs_v1";
+const retirementStrategy = z.enum(["constant", "percent", "guardrails", "phased"]);
+const retirementInputFields = {
+  portfolioCents: z.number().int().nullable(),
+  spendingCents: z.number().int().nullable(),
+  currentAge: z.number().int().min(0).max(120).nullable(),
+  retirementAge: z.number().int().min(0).max(120).nullable(),
+  endAge: z.number().int().min(0).max(130).nullable(),
+  stocksPct: z.number().min(0).max(100).nullable(),
+  extraIncomeCents: z.number().int().nullable(),
+  extraIncomeStartAge: z.number().int().min(0).max(120).nullable(),
+  expectedReturnPct: z.number().nullable(),
+  volatilityPct: z.number().min(0).nullable(),
+  strategy: retirementStrategy.nullable(),
+  percentOfPortfolio: z.number().min(0).max(100).nullable(),
+  // Guardrails knobs (percent values). Null = the professional
+  // default (cut 120%, raise 80%, adjustment 10%), substituted by
+  // the client wherever the strategy runs — the same blank-means-
+  // default pattern as expected return / volatility.
+  guardrailsCutPct: z.number().min(50).max(300).nullable(),
+  guardrailsRaisePct: z.number().min(50).max(300).nullable(),
+  guardrailsAdjustmentPct: z.number().min(1).max(50).nullable(),
+  // Phased knobs. Null = the defaults (step-down starts at 75,
+  // declining 1%/yr), substituted wherever the strategy runs —
+  // the same blank-means-default pattern as the guardrails knobs.
+  // Records stored before the phased strategy existed carry no
+  // such fields at all; the readers below resolve that absence
+  // to null, and hence to the defaults — stored records are
+  // never rewritten to add them. The start age's range runs to
+  // the end-age ceiling (130): a start at or beyond the plan's
+  // end age is valid and simply keeps the plan flat.
+  phaseStartAge: z.number().int().min(0).max(130).nullable(),
+  phaseDeclinePct: z.number().min(0).max(100).nullable(),
+};
+const retirementScenario = z.object({
+  name: z.string(),
+  ...retirementInputFields,
+});
+type RetirementScenario = z.infer<typeof retirementScenario>;
+type RetirementBlob = Record<string, unknown>;
+
+/* The blob-1 state read (API follow-on F23): the parsed blob
+   as readRetirementBlob returns it, its parsed scenarios, the
+   record's write revision (the lenient read shared with the
+   Roth record via rothRevisionCore — absent, non-integer, or
+   negative counts as 0, so a blob written before revisions
+   existed needs no backfill), and the stored raw value exactly
+   as read (the ciphertext), or undefined when no row exists.
+   The CAS writers predicate their guarded commits on that raw
+   value; pure readers use readRetirementBlob below. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRetirementBlobState(
+  db: any,
+  key: CryptoKey,
+): Promise<{
+  blob: RetirementBlob | null;
+  scenarios: RetirementScenario[];
+  revision: number;
+  storedRaw: string | undefined;
+}> {
+  const rows = await db.select().from(schema.settings);
+  const raw = rows.find((r: { key: string }) => r.key === RETIREMENT_KEY)?.value;
+  if (!raw) return { blob: null, scenarios: [], revision: 0, storedRaw: undefined };
+  try {
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const parsed = JSON.parse(plain) as unknown;
+    if (parsed == null || typeof parsed !== "object")
+      return { blob: null, scenarios: [], revision: 0, storedRaw: raw };
+    const blob = parsed as RetirementBlob;
+    return {
+      blob,
+      scenarios: parseRetirementScenarios(blob),
+      revision: parseRothBlobRevision(plain),
+      storedRaw: raw,
+    };
+  } catch {
+    return { blob: null, scenarios: [], revision: 0, storedRaw: raw };
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRetirementBlob(db: any, key: CryptoKey): Promise<RetirementBlob | null> {
+  return (await readRetirementBlobState(db, key)).blob;
+}
+
+/* The legacy unconditional blob-1 commit (a pre-encrypted
+   value): used when a writer supplied no baseRevision, or no
+   row exists yet to guard against. Guarded writes go through
+   commitSettingsValueGuarded on RETIREMENT_KEY instead. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function upsertRetirementBlobValue(db: any, enc: string): Promise<void> {
+  await db
+    .insert(schema.settings)
+    .values({ key: RETIREMENT_KEY, value: enc })
+    .onConflictDoUpdate({
+      target: schema.settings.key,
+      set: { value: enc },
+    });
+}
+
+function parseRetirementScenarios(blob: RetirementBlob | null): RetirementScenario[] {
+  if (!blob || !Array.isArray(blob.scenarios)) return [];
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const out: RetirementScenario[] = [];
+  for (const raw of blob.scenarios as unknown[]) {
+    if (raw == null || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const strat =
+      r.strategy === "constant" || r.strategy === "percent" || r.strategy === "guardrails" || r.strategy === "phased"
+        ? r.strategy
+        : null;
+    out.push({
+      name: typeof r.name === "string" && r.name !== "" ? r.name : "Scenario",
+      portfolioCents: num(r.portfolioCents),
+      spendingCents: num(r.spendingCents),
+      currentAge: num(r.currentAge),
+      retirementAge: num(r.retirementAge),
+      endAge: num(r.endAge),
+      stocksPct: num(r.stocksPct),
+      extraIncomeCents: num(r.extraIncomeCents),
+      extraIncomeStartAge: num(r.extraIncomeStartAge),
+      expectedReturnPct: num(r.expectedReturnPct),
+      volatilityPct: num(r.volatilityPct),
+      strategy: strat,
+      percentOfPortfolio: num(r.percentOfPortfolio),
+      guardrailsCutPct: num(r.guardrailsCutPct),
+      guardrailsRaisePct: num(r.guardrailsRaisePct),
+      guardrailsAdjustmentPct: num(r.guardrailsAdjustmentPct),
+      phaseStartAge: num(r.phaseStartAge),
+      phaseDeclinePct: num(r.phaseDeclinePct),
+    });
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+/* ---------------- Retirement plan baseline ----------------
+   The what-if comparison baseline for the Retirement view, stored
+   as its own encrypted JSON blob in settings under
+   "retirement_calc_baseline_v1": { kind, inputs } where inputs is
+   a full retirement input set (the same fields saveRetirementCalc
+   takes) and kind is "saved" (the user explicitly chose "Save as
+   my plan") or "session" (captured automatically from the saved
+   inputs record the first time the view is opened with no explicit
+   baseline stored — see getRetirementCalc). Living in settings
+   like the other calc state, it survives reloads and devices, and
+   the backup export / restore handling for encrypted settings keys
+   covers it (both lists name this key explicitly). */
+const RETIREMENT_BASELINE_KEY = "retirement_calc_baseline_v1";
+const retirementInputsShape = z.object({ ...retirementInputFields });
+type RetirementInputs = z.infer<typeof retirementInputsShape>;
+type RetirementBaselineKind = "saved" | "session";
+
+function retirementInputsFromRecord(
+  r: Record<string, unknown>,
+): RetirementInputs {
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  return {
+    portfolioCents: num(r.portfolioCents),
+    spendingCents: num(r.spendingCents),
+    currentAge: num(r.currentAge),
+    retirementAge: num(r.retirementAge),
+    endAge: num(r.endAge),
+    stocksPct: num(r.stocksPct),
+    extraIncomeCents: num(r.extraIncomeCents),
+    extraIncomeStartAge: num(r.extraIncomeStartAge),
+    expectedReturnPct: num(r.expectedReturnPct),
+    volatilityPct: num(r.volatilityPct),
+    strategy:
+      r.strategy === "constant" ||
+      r.strategy === "percent" ||
+      r.strategy === "guardrails" ||
+      r.strategy === "phased"
+        ? r.strategy
+        : null,
+    percentOfPortfolio: num(r.percentOfPortfolio),
+    guardrailsCutPct: num(r.guardrailsCutPct),
+    guardrailsRaisePct: num(r.guardrailsRaisePct),
+    guardrailsAdjustmentPct: num(r.guardrailsAdjustmentPct),
+    phaseStartAge: num(r.phaseStartAge),
+    phaseDeclinePct: num(r.phaseDeclinePct),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRetirementBaseline(
+  db: any,
+  key: CryptoKey,
+): Promise<{ kind: RetirementBaselineKind; inputs: RetirementInputs } | null> {
+  const rows = await db.select().from(schema.settings);
+  const raw = rows.find(
+    (r: { key: string }) => r.key === RETIREMENT_BASELINE_KEY,
+  )?.value;
+  if (!raw) return null;
+  try {
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const parsed = JSON.parse(plain) as unknown;
+    if (parsed == null || typeof parsed !== "object") return null;
+    const blob = parsed as Record<string, unknown>;
+    if (blob.inputs == null || typeof blob.inputs !== "object") return null;
+    return {
+      kind: blob.kind === "saved" ? "saved" : "session",
+      inputs: retirementInputsFromRecord(
+        blob.inputs as Record<string, unknown>,
+      ),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* The blob-2 state read (API follow-on F23): the baseline as
+   readRetirementBaseline returns it, plus the record's write
+   revision (the same lenient read — absent, non-integer, or
+   negative counts as 0) and the stored raw value exactly as
+   read, or undefined's sibling null when there is no usable
+   baseline. Returns null exactly when readRetirementBaseline
+   does (no row, or an unreadable / inputs-less document). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRetirementBaselineState(
+  db: any,
+  key: CryptoKey,
+): Promise<{
+  kind: RetirementBaselineKind;
+  inputs: RetirementInputs;
+  revision: number;
+  storedRaw: string;
+} | null> {
+  const rows = await db.select().from(schema.settings);
+  const raw = rows.find(
+    (r: { key: string }) => r.key === RETIREMENT_BASELINE_KEY,
+  )?.value;
+  if (!raw) return null;
+  try {
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const parsed = JSON.parse(plain) as unknown;
+    if (parsed == null || typeof parsed !== "object") return null;
+    const blob = parsed as Record<string, unknown>;
+    if (blob.inputs == null || typeof blob.inputs !== "object") return null;
+    return {
+      kind: blob.kind === "saved" ? "saved" : "session",
+      inputs: retirementInputsFromRecord(
+        blob.inputs as Record<string, unknown>,
+      ),
+      revision: parseRothBlobRevision(plain),
+      storedRaw: raw,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* The legacy unconditional blob-2 commit (a pre-encrypted
+   value): used when a writer supplied no baseBaselineRevision,
+   or no row exists yet to guard against. Guarded writes go
+   through commitSettingsValueGuarded on
+   RETIREMENT_BASELINE_KEY instead. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function upsertRetirementBaselineValue(db: any, enc: string): Promise<void> {
+  await db
+    .insert(schema.settings)
+    .values({ key: RETIREMENT_BASELINE_KEY, value: enc })
+    .onConflictDoUpdate({
+      target: schema.settings.key,
+      set: { value: enc },
+    });
+}
+
+/* ---------------- Retirement CAS shapes (F23) ----------------
+   The lite current record a refused Retirement write carries:
+   exactly the saved-state slice of getRetirementCalc's
+   response (the defaults block is NOT recomputed for a
+   refusal — the client already holds it from its load, and
+   rehydration concerns saved state only), plus both records'
+   revisions. Freshly read at refusal time, so the client
+   rehydrates to the latest saved version and re-bases both
+   writes from the one refusal. */
+const retirementLiteRecord = z.object({
+  saved: retirementInputsShape.nullable(),
+  scenarios: z.array(retirementScenario),
+  baseline: retirementInputsShape.nullable(),
+  baselineKind: z.enum(["saved", "session"]).nullable(),
+  revision: z.number().int().nonnegative(),
+  baselineRevision: z.number().int().nonnegative(),
+});
+type RetirementLiteRecord = z.infer<typeof retirementLiteRecord>;
+
+const saveRetirementCalcResponse = z.union([
+  z.object({
+    ok: z.literal(true),
+    revision: z.number().int().nonnegative(),
+  }),
+  z.object({
+    ok: z.literal(false),
+    conflict: z.literal(true),
+    revision: z.number().int().nonnegative(),
+    baselineRevision: z.number().int().nonnegative(),
+    record: retirementLiteRecord,
+  }),
+]);
+type SaveRetirementCalcResponse = z.infer<typeof saveRetirementCalcResponse>;
+
+const saveRetirementBaselineResponse = z.union([
+  z.object({
+    ok: z.literal(true),
+    revision: z.number().int().nonnegative(),
+    baselineRevision: z.number().int().nonnegative(),
+    baseline: retirementInputsShape,
+    baselineKind: z.literal("saved"),
+  }),
+  z.object({
+    ok: z.literal(false),
+    conflict: z.literal(true),
+    // Present only on the baseline-stage conflict: the working
+    // inputs WERE saved (blob 1 committed) but the baseline did
+    // not move. Absent on an inputs-stage refusal, where
+    // neither blob was written.
+    stage: z.literal("baseline").optional(),
+    revision: z.number().int().nonnegative(),
+    baselineRevision: z.number().int().nonnegative(),
+    record: retirementLiteRecord,
+  }),
+]);
+type SaveRetirementBaselineResponse = z.infer<
+  typeof saveRetirementBaselineResponse
+>;
+
+/* The three scenario writers' shared response (F23): the
+   verdict, the reason, the scenarios array after the attempt,
+   and blob 1's revision after the attempt — carried in
+   success AND failure shapes alike, so the client adopts the
+   fresh CAS base immediately. */
+const retirementScenarioWriteResponse = z.object({
+  ok: z.boolean(),
+  reason: z.string(),
+  scenarios: z.array(retirementScenario),
+  revision: z.number().int().nonnegative(),
+});
+type RetirementScenarioWriteResult = z.infer<
+  typeof retirementScenarioWriteResponse
+>;
+
+/* Read the lite record fresh (both blobs' current state) —
+   the ONE builder behind every F23 conflict response. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadRetirementLiteRecord(
+  db: any,
+  key: CryptoKey,
+): Promise<RetirementLiteRecord> {
+  const blobState = await readRetirementBlobState(db, key);
+  const baselineState = await readRetirementBaselineState(db, key);
+  return {
+    saved: blobState.blob
+      ? retirementInputsFromRecord(blobState.blob)
+      : null,
+    scenarios: blobState.scenarios,
+    baseline: baselineState?.inputs ?? null,
+    baselineKind: baselineState?.kind ?? null,
+    revision: blobState.revision,
+    baselineRevision: baselineState?.revision ?? 0,
+  };
+}
+
+/* One Retirement scenario write (F23): apply the caller's
+   name-keyed transform to the stored scenarios array and
+   commit the result with the revision stamped stored + 1,
+   through the guarded commit (see
+   commitSettingsValueGuarded). The scenario writers take no
+   baseRevision — discrete clicks, not autosaves — so instead
+   of refusing on a lost race they re-read ONCE and re-apply
+   the transform against the fresh blob (append / filter /
+   map by name are safely re-appliable, and the transform's
+   validation re-runs against the fresh array, so a delete
+   whose target vanished in the race returns the honest
+   not-found verdict). A second lost race returns the failure
+   shape carrying the freshest scenarios and revision. A
+   transform that declines to write (a validation failure, or
+   the rename no-op) returns its verdict against the current
+   array without touching storage. Either way the response
+   carries blob 1's revision after the attempt. The successor
+   spreads the PARSED stored document and stamps the revision
+   after the spread (composeRetirementScenarioBlob), so every
+   other top-level field is preserved exactly. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function mutateRetirementScenarios(
+  db: any,
+  key: CryptoKey,
+  transform: (
+    scenarios: RetirementScenario[],
+  ) => RetirementScenarioTransform<RetirementScenario>,
+): Promise<RetirementScenarioWriteResult> {
+  let state = await readRetirementBlobState(db, key);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const t = transform(state.scenarios);
+    if (!t.write) {
+      return {
+        ok: t.ok,
+        reason: t.reason,
+        scenarios: state.scenarios,
+        revision: state.revision,
+      };
+    }
+    const nextRevision = state.revision + 1;
+    const enc = await encryptStr(
+      key,
+      JSON.stringify(
+        composeRetirementScenarioBlob(
+          state.blob ?? {},
+          t.scenarios,
+          nextRevision,
+        ),
+      ),
+    );
+    if (state.storedRaw === undefined) {
+      // No row yet: the first write establishes revision 1.
+      await upsertRetirementBlobValue(db, enc);
+      return {
+        ok: t.ok,
+        reason: t.reason,
+        scenarios: t.scenarios,
+        revision: nextRevision,
+      };
+    }
+    if (
+      await commitSettingsValueGuarded(
+        db,
+        RETIREMENT_KEY,
+        state.storedRaw,
+        enc,
+      )
+    ) {
+      return {
+        ok: t.ok,
+        reason: t.reason,
+        scenarios: t.scenarios,
+        revision: nextRevision,
+      };
+    }
+    if (attempt === 0) {
+      // A concurrent write landed between our read and commit:
+      // re-read and re-apply the transform against the fresh blob.
+      state = await readRetirementBlobState(db, key);
+    }
+  }
+  // A second lost race: report the freshest state we can read.
+  const fresh = await readRetirementBlobState(db, key);
+  return {
+    ok: false,
+    reason: "The saved scenarios changed elsewhere — try again.",
+    scenarios: fresh.scenarios,
+    revision: fresh.revision,
+  };
+}
+
+/* ---------------- Roth Conversion storage ----------------
+   Same one-blob pattern as the Retirement calculator: inputs at
+   the top level plus a "scenarios" array (up to 50 saved fill
+   strategies — ROTH_SCENARIO_LIMIT in rothOptimizer.ts), one encrypted JSON value in settings under
+   "roth_conversion_inputs_v1". Every writer merges, so saving
+   inputs never wipes scenarios and vice versa, and the backup
+   export / restore handling for encrypted settings keys covers
+   this blob the same way it covers the Retirement one. */
+const ROTH_INPUTS_KEY = "roth_conversion_inputs_v1";
+// rothFilingStatus and DRAW_ORDER_KEYS (the six spending draw
+// orders, as the keys the tax engine defines) live in
+// server/src/apiContractCore.ts — extracted so the accuracy
+// fixtures pin the exact definitions the actions publish.
+const rothPayTaxFrom = z.enum(["taxable", "conversion"]);
+const rothCeilings = z.object({
+  bracketTopPct: z.number().nullable(),
+  irmaaTierCap: z.number().int().nullable(),
+  ltcgZeroCap: z.boolean(),
+  acaCliffCap: z.boolean(),
+  // Era-aware cliff cap (ERA-AWARE ACA CLIFF CAP build): when
+  // true, the ACA cliff cap defends the line only before the
+  // plan's acaStepDownYear. This key is OPTIONAL in both
+  // ceilings schemas (this lenient one and the strict compute
+  // variant below): a payload or stored record that omits the
+  // key validates and reads as false (parseRothInputs coerces
+  // with === true), so every record written before this build
+  // keeps pricing bit-identically with no migration write.
+  // The client always sends it. (The draw-order switch pair
+  // is a different case: the writers REQUIRE it, and it is
+  // omittable only in compute payloads — see rothComputeFields.)
+  acaCliffCapFamilyOnly: z.boolean().optional(),
+  magiCapCents: z.number().int().nullable(),
+  // ACA cliff safety buffer (CLIFF SAFETY BUFFER build): the
+  // plan's cliff targets aim this far BELOW the 400% FPL line.
+  // Required with null accepted, like magiCapCents — the
+  // client always sends it; null prices as no buffer.
+  acaCliffBufferCents: z.number().int().nullable(),
+});
+/* Strict ceilings for the COMPUTE actions only (Piece 3 of the
+   model-friendly API build): identical fields and constraints to
+   rothCeilings, but unknown keys are REJECTED instead of silently
+   stripped, so a misspelled ceiling key fails validation loudly
+   instead of quietly pricing without that ceiling. The writers
+   (saveRothInputs / saveRothScenario) keep the shared lenient
+   rothCeilings above — writers strict on required keys, readers
+   lenient there is the standing rule for SAVED records; the
+   compute boundary is the reverse by explicit user approval. */
+const rothCeilingsStrict = z.strictObject({
+  bracketTopPct: z.number().nullable(),
+  irmaaTierCap: z.number().int().nullable(),
+  ltcgZeroCap: z.boolean(),
+  acaCliffCap: z.boolean(),
+  // Optional even here (see rothCeilings): absence prices as
+  // false; an unknown key is still rejected.
+  acaCliffCapFamilyOnly: z.boolean().optional(),
+  magiCapCents: z.number().int().nullable(),
+  // Required with null accepted (see rothCeilings): a compute
+  // payload must name the buffer explicitly, null = none.
+  acaCliffBufferCents: z.number().int().nullable(),
+});
+/* Basis tiers (BASIS TIERS build): the taxable pool split
+   into up to 6 lots, each {sharePct, basisPct} — sharePct is
+   the tier's share of the combined taxable pool (taxable +
+   cash), basisPct the share of that tier that is basis. The
+   tier object is STRICT (an unknown key fails loudly, like the
+   compute ceilings), each % is bounded 0–100, and a non-empty
+   list's shares must sum to 100 within a small epsilon — the
+   writers enforce all of it through this one schema, which
+   rides rothInputFields into every writer and compute action.
+   Null (or an empty list, normalized to null by the reader) =
+   no tiers: the pool prices as one pool at taxableBasisPct. */
+const rothTaxableTier = z.strictObject({
+  sharePct: z.number().min(0).max(100),
+  basisPct: z.number().min(0).max(100),
+});
+const rothTaxableTiers = z
+  .array(rothTaxableTier)
+  .max(6)
+  .nullable()
+  .superRefine((tiers, ctx) => {
+    if (tiers == null || tiers.length === 0) return;
+    const sum = tiers.reduce((s, t) => s + t.sharePct, 0);
+    if (Math.abs(sum - 100) > 0.01) {
+      ctx.addIssue({
+        code: "custom",
+        message: `Taxable basis tier shares must add up to 100% (they add to ${sum}%).`,
+      });
+    }
+  });
+const rothInputFields = {
+  birthYearPrimary: z.number().int().min(1900).max(2100).nullable(),
+  birthYearSpouse: z.number().int().min(1900).max(2100).nullable(),
+  filingStatus: rothFilingStatus.nullable(),
+  pretaxCents: rothBalanceField,
+  // Per-spouse pre-tax (the spouse's own balance) and the survivor
+  // scenario — added with the per-spouse / survivor build. Null
+  // on records written before it = spouse's balance not entered
+  // (prices $0 / follows the Net Worth split rule on the client)
+  // and the scenario off, so an untouched record prices exactly
+  // as before. The first save after this build writes these
+  // fields at those same defaults.
+  pretaxSpouseCents: rothBalanceField,
+  survivorEnabled: z.boolean().nullable(),
+  survivorWho: z.enum(["primary", "spouse"]).nullable(),
+  survivorDeathYear: z.number().int().min(1900).max(2200).nullable(),
+  rothCents: rothBalanceField,
+  taxableCents: rothBalanceField,
+  // Exclude-from-plan (EXCLUDE-FROM-PLAN build): an amount of
+  // the snapshot-followed taxable pool (Taxable + Cash buckets)
+  // kept out of the plan's calculations entirely — not spent,
+  // not sold, not in the yield base, not in ending wealth —
+  // while Net Worth keeps the full amounts everywhere. It
+  // applies only while taxableCents is null (the balance
+  // follows the snapshot): resolvePlanBalances subtracts it
+  // from the followed pool, floored at $0, before basis-tier
+  // shares are computed; an explicit taxableCents override
+  // wins exactly as before and the exclusion is inert. Null
+  // on records written before this build = blank = no
+  // exclusion, so an untouched record prices bit-identically.
+  // A required key like every field here: null accepted,
+  // omission rejected. SCENARIOS: the field rides the shared
+  // record shape like every other balance field (the writers
+  // are strict on it for scenarios too), but it is NOT a
+  // Strategy Lab dial and a compare patch cannot use it to
+  // re-price a snapshot pool — the compare's base is already
+  // resolved when patches merge, so beside a frozen taxable
+  // balance it is inert there, exactly as it is beside any
+  // explicit override.
+  taxableExcludeCents: z.number().int().nullable(),
+  hsaCents: rothBalanceField,
+  taxableBasisPct: z.number().min(0).max(100).nullable(),
+  // Basis tiers: see rothTaxableTiers above. Null on records
+  // written before this build = blank = one pool at the basis
+  // % above, so an untouched record prices bit-identically.
+  taxableTiers: rothTaxableTiers,
+  // Taxable yields (TAXABLE YIELDS build): the taxable pool's
+  // annual dividend and interest yields, each a % of the
+  // year's starting taxable balance, priced as mandatory
+  // income for the year (dividends on the capital-gains stack,
+  // interest on the ordinary stack — see taxEngine). Null on
+  // records written before this build = blank = no yield
+  // modeled, so an untouched record prices bit-identically.
+  // Required keys like every field here: null accepted,
+  // omission rejected. Adding these two fields grows the
+  // saved-inputs schema by two leaf fields.
+  taxableDividendYieldPct: z.number().min(0).max(100).nullable(),
+  taxableInterestYieldPct: z.number().min(0).max(100).nullable(),
+  // Spend-from-cash (SPEND-FROM-CASH build): the % of each
+  // year's spending need paid from the taxable pool's cash
+  // tier first — no income, no gains, no MAGI from that share
+  // (see taxEngine's RothPlanInputs note for the semantics
+  // and the sleeve invariant). Null on records written before
+  // this build = blank = off, so an untouched record prices
+  // bit-identically. A required key like every field here:
+  // null accepted, omission rejected. The sleeve's SIZE is
+  // not a saved field: it is the snapshot Cash bucket portion
+  // of the pool, threaded server-side at pricing time (see
+  // resolveArgsBalances).
+  spendFromCashPct: z.number().min(0).max(100).nullable(),
+  // Flexible spending (FLEXIBLE SPENDING build): the % a
+  // year's spending need is cut when the PRIOR simulated
+  // year's applied return was negative, and the floor the
+  // cut can never take a year below, as a % of the base need
+  // (see apiContractCore's FLEX_SEMANTICS, published by
+  // describeApi). Null on records written before this build:
+  // flexCutPct null = blank = off, so an untouched record
+  // prices bit-identically; flexFloorPct null reads as 80
+  // inside a triggered cut. Required keys like every field
+  // here: null accepted, omission rejected.
+  flexCutPct: z.number().min(0).max(100).nullable(),
+  flexFloorPct: z.number().min(0).max(100).nullable(),
+  annualSpendingCents: z.number().int().nullable(),
+  retirementAge: z.number().int().min(0).max(120).nullable(),
+  endAge: z.number().int().min(0).max(130).nullable(),
+  expectedReturnPct: z.number().nullable(),
+  ssPrimaryAnnualCents: z.number().int().nullable(),
+  ssPrimaryStartAge: z.number().int().min(0).max(120).nullable(),
+  // Declared "No benefit" for either person's Social Security
+  // (generic, symmetric). Null on records written before this
+  // build = undeclared (false) with zero behavior change. Saves
+  // normalize via normalizeSsDeclarations: declared → amount
+  // null + flag true; amount present → flag false.
+  ssPrimaryNoBenefit: z.boolean().nullable(),
+  ssSpouseAnnualCents: z.number().int().nullable(),
+  ssSpouseStartAge: z.number().int().min(0).max(120).nullable(),
+  ssSpouseNoBenefit: z.boolean().nullable(),
+  otherOrdinaryCents: z.number().int().nullable(),
+  taxExemptInterestCents: z.number().int().nullable(),
+  convertedAlreadyCents: z.number().int().nullable(),
+  windowStartAge: z.number().int().min(0).max(120).nullable(),
+  windowStopAge: z.number().int().min(0).max(120).nullable(),
+  payTaxFrom: rothPayTaxFrom.nullable(),
+  protectMinTaxableCents: z.number().int().nullable(),
+  // Preserve-pre-tax reserve: a fixed nominal floor conversions
+  // may never cross, and the expected tax rate on the preserved
+  // amount. Both nullable; null on records written before this
+  // build = blank = no reserve / exit at the heir rate, so an
+  // untouched record prices bit-identically to before.
+  preservePretaxCents: z.number().int().nullable(),
+  preserveExitRatePct: z.number().min(0).max(100).nullable(),
+  // Earliest claiming age to consider (the claim floor) for
+  // the optimizer's joint claiming-age search: the crowned
+  // winner must claim at this age or later. Null on records
+  // written before this build = blank = no floor, so an
+  // untouched record crowns exactly the pre-build winner. It
+  // constrains only the crowning — never a priced figure —
+  // and below-floor ages are still priced and shown.
+  claimAgeFloor: z.number().int().min(62).max(70).nullable(),
+  spouseSoleBeneficiary: z.boolean().nullable(),
+  acaHouseholdSize: z.number().int().min(1).max(20).nullable(),
+  acaHouseholdSizeAfter: z.number().int().min(1).max(20).nullable(),
+  acaStepDownYear: z.number().int().min(1900).max(2200).nullable(),
+  // The household's college window, labeled by fall year.
+  // Drives ONLY the Roth view's FAFSA college-years watch-out
+  // (a conversion in tax year Y feeds the FAFSA for academic
+  // year Y+2). Null on records written before this build =
+  // blank = no college in the household = the watch-out never
+  // fires; every other input and figure is unaffected.
+  collegeFallFromYear: z.number().int().min(1900).max(2200).nullable(),
+  collegeFallThroughYear: z.number().int().min(1900).max(2200).nullable(),
+  acaBenchmarkCoupleCents: z.number().int().nullable(),
+  acaBenchmarkSingleCents: z.number().int().nullable(),
+  // Family benchmark (household of 3+). Null on records written
+  // before this build = blank = a household-3+ year falls back
+  // to the benchmark that priced it before (the couple figure
+  // in the family years), so an untouched record prices
+  // bit-identically to before.
+  acaBenchmarkFamilyCents: z.number().int().nullable(),
+  // Spouse ACA end age: the age the spouse leaves the
+  // marketplace for Medicare. Her ACA pricing runs while her
+  // age is under it, and her Medicare / IRMAA premium count
+  // starts at it; the primary's own 65 is untouched. Null on
+  // records written before this build = blank = 65, so an
+  // untouched record prices bit-identically to before. Whole
+  // ages 55–80 only: an out-of-range value fails validation
+  // loudly here (writers and compute actions alike) — it is
+  // never silently clamped.
+  acaSpouseEndAge: z.number().int().min(55).max(80).nullable(),
+  inflationPct: z.number().nullable(),
+  stateRatePct: z.number().min(0).max(100).nullable(),
+  heirRatePct: z.number().min(0).max(100).nullable(),
+  ceilings: rothCeilings.nullable(),
+  // Lifetime-Tax Optimizer variant flags carried by the working
+  // strategy and by saved scenarios, so a scenario saved from an
+  // optimizer result reproduces its schedule exactly. Null on
+  // blobs written before the optimizer existed = both off.
+  optimizerGuardrail: z.boolean().nullable(),
+  optimizerBunching: z.boolean().nullable(),
+  // Gain harvesting (option 8): a per-strategy toggle carried
+  // by the working inputs and by saved scenarios exactly like
+  // the optimizer variant flags above. When true, each
+  // simulated year — after its draws and conversions settle —
+  // realizes taxable gains up to the year's remaining 0%
+  // capital-gains space and steps the taxable basis up by the
+  // harvested amount, respecting every ceiling the strategy
+  // carries. Null on records written before this build = off,
+  // so an untouched record prices bit-identically to before.
+  gainsHarvest: z.boolean().nullable(),
+  // Spending draw order: the order the Taxable / Pre-tax / Roth
+  // buckets fund spending in after the year's forced RMD.
+  // Carried by the working inputs and by saved scenarios, so a
+  // scenario saved from an optimizer winner reproduces its
+  // schedule exactly. Null on blobs written before the
+  // draw-order build = the default order (Taxable → Pre-tax →
+  // Roth); the first save after this build writes the field at
+  // that same default for an untouched plan, so the saved
+  // plan's figures do not move.
+  drawOrder: z.enum(DRAW_ORDER_KEYS).nullable(),
+  // Draw-order switch: the age at which spending draws switch
+  // to a different order, and that after-order (same six-value
+  // enum as drawOrder). Both nullable; null on records written
+  // before this build = blank = no switch, so an untouched
+  // record prices bit-identically to before. If EITHER field is
+  // blank the switch is inert — the base draw order applies at
+  // every age. Adding these two fields grows the saved-inputs
+  // schema from 55 to 57 leaf fields.
+  drawOrderSwitchAge: z.number().int().min(0).max(120).nullable(),
+  drawOrderAfter: z.enum(DRAW_ORDER_KEYS).nullable(),
+  // Work-years job inputs (the Work years tab's "Your job"
+  // group): the yearly salary and what the employer puts into
+  // the 401(k) and the HSA per year. Saved plan fields like
+  // every other field here — they are the tab's defaults.
+  // Null on records written before this build = blank = no
+  // salary entered, so no work years are priced and every
+  // other figure is exactly as before.
+  yearlySalaryCents: z.number().int().nullable(),
+  employer401kCents: z.number().int().nullable(),
+  employerHsaCents: z.number().int().nullable(),
+};
+/* Compute-request variant of the plan-input shape: the SAME
+   properties, in the same order, with the same constraints —
+   except the two draw-order switch fields are OPTIONAL, so a
+   pricing payload that simply OMITS them validates and prices
+   the legacy behaviour (absent ≡ null; the handlers and
+   planInputsFromSaved already default them with ?? null).
+   Used by every read-only pricing action that takes the plan
+   inputs (optimizer, compare, Monte Carlo check, work-years,
+   gift compare, plan-year detail). The writers keep the strict
+   shape above: saveRothInputs (and saveRothScenario) persist
+   complete records, so every field stays required there. The
+   compare action's nested scenarios[].overrides object needs
+   no variant — it is already .partial(), so neither switch
+   key is required at that level. */
+const rothComputeFields = {
+  ...rothInputFields,
+  drawOrderSwitchAge: rothInputFields.drawOrderSwitchAge.optional(),
+  drawOrderAfter: rothInputFields.drawOrderAfter.optional(),
+  // Compute path only: the strict ceilings variant (unknown keys
+  // rejected). rothInputFields itself — and therefore the writers
+  // and the saved shape — keeps the lenient shared object.
+  ceilings: rothCeilingsStrict.nullable(),
+};
+/* Strict partial overrides for runRothCompare's scenarios: the
+   saved-shape fields, every one optional (a patch — no key
+   required), built inside a strictObject so an unknown or
+   misspelled override key fails validation instead of being
+   silently dropped, and with the strict ceilings variant nested.
+   Built from the rothInputFields record WITHOUT altering it:
+   each field schema is re-wrapped as .optional(). */
+function optionalFields<T extends Record<string, z.ZodType>>(fields: T): {
+  [K in keyof T]: z.ZodOptional<T[K]>;
+} {
+  return Object.fromEntries(
+    Object.entries(fields).map(([k, v]) => [k, v.optional()]),
+  ) as { [K in keyof T]: z.ZodOptional<T[K]> };
+}
+const rothOverridesStrict = z.strictObject({
+  ...optionalFields(rothInputFields),
+  ceilings: rothCeilingsStrict.nullable().optional(),
+});
+/* Execution-year ("This year") fields — PLAN-RECORD ONLY.
+   They live in the same saved inputs record, under their own
+   execution* keys, stamped with the calendar year they describe
+   (executionYear). They are deliberately NOT part of
+   rothInputFields: that object is shared by the scenario schema,
+   the scenario writers, and the optimizer request, and execution
+   fields must never leak into any of them — saved scenarios
+   neither carry nor restore them, and saving / loading /
+   deleting a scenario never touches them (the scenario writers
+   pass the inputs record through raw, execution keys included).
+   Only saveRothInputs — the plan record's own writer — accepts
+   them, and only getRothPlanner returns them (consumed for the
+   current calendar year via consumeExecutionInputs, so a stale
+   year stamp can never price). executionAlreadyConvertedCents
+   is the year-to-date conversions figure for the stamped year —
+   a DIFFERENT field from convertedAlreadyCents above, which
+   belongs to the plan window's first year. */
+const rothExecutionFields = {
+  executionYear: z.number().int().min(1900).max(2200).nullable(),
+  executionPretaxCents: z.number().int().nullable(),
+  executionPretaxSpouseCents: z.number().int().nullable(),
+  executionRothCents: z.number().int().nullable(),
+  executionTaxableCents: z.number().int().nullable(),
+  executionHsaCents: z.number().int().nullable(),
+  executionOtherOrdinaryCents: z.number().int().nullable(),
+  executionTaxExemptInterestCents: z.number().int().nullable(),
+  executionAlreadyConvertedCents: z.number().int().nullable(),
+};
+const rothExecutionResponse = z.object({
+  ...rothExecutionFields,
+  // True when a stored execution shape was stamped with an
+  // earlier calendar year and has been consumed as blank for
+  // the new year; clearedYear names the year that was cleared.
+  rolledOver: z.boolean(),
+  clearedYear: z.number().nullable(),
+});
+type RothExecutionResponse = z.infer<typeof rothExecutionResponse>;
+
+/* Market-uncertainty check fields — PLAN-RECORD ONLY, following
+   the execution-fields pattern exactly. The check's volatility
+   is a display preference of the Optimize workspace's
+   market-uncertainty panel: it lives in the same saved inputs
+   record under its own key, accepted ONLY by saveRothInputs and
+   returned ONLY by getRothPlanner (its own mcCheck block). It
+   is deliberately NOT part of rothInputFields: it never enters
+   scenarios, never reaches planInputsFromSaved, and never
+   affects planner / optimizer / compare / execution pricing.
+   Null / absent = the panel default of 15. */
+const rothMcCheckFields = {
+  mcVolatilityPct: z.number().min(0).max(100).nullable(),
+};
+const rothMcCheckResponse = z.object({ ...rothMcCheckFields });
+type RothMcCheckStored = z.infer<typeof rothMcCheckResponse>;
+
+/* Gift-stock what-if fields — PLAN-RECORD ONLY, following the
+   execution / mcCheck pattern exactly. The gift description
+   (one hypothetical gift of appreciated stock to one child)
+   lives in the same saved inputs record under its own gift*
+   keys, accepted ONLY by saveRothInputs, returned ONLY by
+   getRothPlanner (its own gift block), and read ONLY by the
+   runRothGiftCompare action. The fields are deliberately NOT
+   part of rothInputFields: they never enter scenarios, never
+   reach planInputsFromSaved, and never affect the Plan /
+   Optimize / Compare / Work years runs — the comparison
+   prices the plan twice itself (server/src/giftModel.ts).
+   All nullable; null on records written before this build =
+   blank = no gift described, so an untouched record is
+   exactly as before. Adding these seven fields grows the
+   saveRothInputs request from 60 to 67 fields. */
+const rothGiftFields = {
+  giftAge: z.number().int().min(0).max(120).nullable(),
+  giftAmountCents: z.number().int().nullable(),
+  giftBasisCents: z.number().int().nullable(),
+  giftKidBirthYear: z.number().int().min(1900).max(2100).nullable(),
+  giftKidStudent: z.boolean().nullable(),
+  giftKidOtherIncomeCents: z.number().int().nullable(),
+  giftSaleAge: z.number().int().min(0).max(120).nullable(),
+};
+const rothGiftResponse = z.object({ ...rothGiftFields });
+// The stored gift shape and its ONE parse live in
+// server/src/giftModel.ts (parseRothGift / BLANK_ROTH_GIFT,
+// imported above) so the accuracy fixtures pin the exact
+// parse the planner uses. parseRothInputs never sees these
+// keys — exactly like the execution and mcCheck blocks.
+
+/* ---------------- API contract & provenance (model-friendly API) ----------------
+   Version stamps shared by describeApi (Piece 1) and by the
+   provenance block on every pricing response (Piece 2) — ONE
+   definition, used identically everywhere:
+   - API_CONTRACT_VERSION: integer version of the action contract
+     (request/response shapes + conventions) published by
+     describeApi. Starts at 1; bump when a published shape or
+     convention changes incompatibly.
+   - ENGINE_VERSION: version stamp of the pricing engine (the
+     taxEngine / rothOptimizer / workYears / giftModel stack as
+     priced through these actions). Scheme: "engine-<n>", an
+     integer counter starting at 1; bump when engine pricing
+     behaviour changes. It is a stamp, not a calculation input —
+     no engine file reads it.
+   - Law versions are NOT constants here: lawYear and
+     lawYearsAvailable are derived at call time from taxLaw.ts
+     (CURRENT_LAW / TAX_LAW_YEARS), so they can never drift from
+     the tables the engine actually prices with. */
+const API_CONTRACT_VERSION = 10;
+const ENGINE_VERSION = "engine-1";
+
+const provenanceOut = z.object({
+  apiContractVersion: z.number().int(),
+  engineVersion: z.string(),
+  lawYear: z.number().int(),
+  lawYearsAvailable: z.array(z.number().int()),
+});
+type Provenance = z.infer<typeof provenanceOut>;
+
+function apiProvenance(): Provenance {
+  return {
+    apiContractVersion: API_CONTRACT_VERSION,
+    engineVersion: ENGINE_VERSION,
+    lawYear: CURRENT_LAW.year,
+    lawYearsAvailable: TAX_LAW_YEARS.map((l) => l.year),
+  };
+}
+
+/* The resolved plan inputs a pricing run actually priced, in the
+   saved-shape integer-cents form: the request payload with null
+   balances resolved from the latest Net Worth snapshot
+   (resolveArgsBalances), parsed back through parseRothInputs —
+   exactly the construction runRothCompare uses for its
+   per-scenario effectiveInputs. Null when the payload cannot be
+   parsed into the saved shape (defensive; a validated compute
+   payload always parses). */
+async function computeEffectiveInputs<T extends {
+  pretaxCents: number | null;
+  pretaxSpouseCents: number | null;
+  rothCents: number | null;
+  taxableCents: number | null;
+  hsaCents: number | null;
+  spendFromCashSleeveCents?: number | null;
+}>(ctx: Ctx, args: T): Promise<{ resolved: T; effectiveInputs: RothEffectiveInputs | null }> {
+  const resolved = await resolveArgsBalances(ctx, args);
+  const parsed = parseRothInputs(resolved);
+  // The echoed sleeve is the engine's effective starting
+  // sleeve, DERIVED from the same resolved payload the run
+  // prices with (R4-3, F7) — not the threaded transient, which
+  // can disagree with the priced sleeve in tiers mode, above
+  // the pool cap, or when spendFromCashPct is blank / 0. The
+  // sleeve-relevant outputs of planInputsFromSaved are
+  // start-year-independent, so this derivation prices the
+  // same sleeve the handler's own planInputsFromSaved call
+  // does.
+  // Every caller passes a full saved-shape payload (the same
+  // assumption parseRothInputs(resolved) above already makes);
+  // the generic constraint names only the balance fields this
+  // function itself reads, so the resolved payload is viewed
+  // as the saved shape for the engine-input construction.
+  const engineInputs = planInputsFromSaved(
+    resolved as unknown as RothSavedLike,
+    new Date().getFullYear(),
+  );
+  const sleeveCents =
+    engineInputs == null
+      ? null
+      : Math.round(deriveSpendFromCashSleeveStartDollars(engineInputs) * 100);
+  return {
+    resolved,
+    effectiveInputs: parsed == null ? null : withSleeveEcho(parsed, sleeveCents),
+  };
+}
+
+const rothSavedInputs = z.object({ ...rothInputFields });
+/* The compute-echo shape (API follow-on 2, finding F16): the
+   saved-shape inputs object extended with the priced
+   spend-from-cash sleeve — a transient the compute actions
+   accept and resolveArgsBalances threads, now echoed back so a
+   caller can see the sleeve size the run actually priced with
+   (integer cents, null when no sleeve was priced). Used for
+   EVERY compute action's effectiveInputs slot; getRothPlanner's
+   saved field and all writer responses keep rothSavedInputs —
+   the sleeve is not a saved field and never appears there. */
+const rothEffectiveInputsOut = z.object({
+  ...rothInputFields,
+  spendFromCashSleeveCents: z.number().int().nullable(),
+});
+type RothEffectiveInputs = z.infer<typeof rothEffectiveInputsOut>;
+const rothScenario = z.object({ name: z.string(), ...rothInputFields });
+/* The four Roth scenario writers' shared response (API
+   follow-on 1): the verdict, the reason, the scenarios array
+   after the attempt, and the record's revision after the
+   attempt — carried in success AND failure shapes alike, so
+   the client can adopt the fresh CAS base immediately. */
+const rothScenarioWriteResponse = z.object({
+  ok: z.boolean(),
+  reason: z.string(),
+  scenarios: z.array(rothScenario),
+  revision: z.number().int().nonnegative(),
+});
+type RothInputs = z.infer<typeof rothSavedInputs>;
+type RothScenario = z.infer<typeof rothScenario>;
+type RothStoredInputs = RothInputs &
+  RothExecutionCents &
+  RothMcCheckStored &
+  RothGiftStored;
+
+function parseRothInputs(raw: unknown): RothInputs | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const bool = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
+  const fs =
+    r.filingStatus === "mfj" || r.filingStatus === "single" || r.filingStatus === "hoh"
+      ? r.filingStatus
+      : null;
+  const ptf = r.payTaxFrom === "taxable" || r.payTaxFrom === "conversion" ? r.payTaxFrom : null;
+  let ceilings: RothInputs["ceilings"] = null;
+  if (r.ceilings != null && typeof r.ceilings === "object") {
+    const c = r.ceilings as Record<string, unknown>;
+    ceilings = {
+      bracketTopPct: num(c.bracketTopPct),
+      irmaaTierCap: num(c.irmaaTierCap),
+      ltcgZeroCap: c.ltcgZeroCap === true,
+      acaCliffCap: c.acaCliffCap === true,
+      // Absent on a record written before the era-aware build
+      // reads as false — the record prices exactly as before.
+      acaCliffCapFamilyOnly: c.acaCliffCapFamilyOnly === true,
+      magiCapCents: num(c.magiCapCents),
+      // Absent on a record written before the cliff-buffer
+      // build reads as null — no buffer, exactly as before.
+      acaCliffBufferCents: num(c.acaCliffBufferCents),
+    };
+  }
+  return {
+    birthYearPrimary: num(r.birthYearPrimary),
+    birthYearSpouse: num(r.birthYearSpouse),
+    filingStatus: fs,
+    pretaxCents: num(r.pretaxCents),
+    pretaxSpouseCents: num(r.pretaxSpouseCents),
+    survivorEnabled: bool(r.survivorEnabled),
+    survivorWho:
+      r.survivorWho === "primary" || r.survivorWho === "spouse"
+        ? r.survivorWho
+        : null,
+    survivorDeathYear: num(r.survivorDeathYear),
+    rothCents: num(r.rothCents),
+    taxableCents: num(r.taxableCents),
+    // Exclude-from-plan, read leniently like every field here:
+    // absent on a pre-build record reads as null = blank = no
+    // exclusion, bit-identical pricing.
+    taxableExcludeCents: num(r.taxableExcludeCents),
+    hsaCents: num(r.hsaCents),
+    taxableBasisPct: num(r.taxableBasisPct),
+    // Basis tiers, read leniently (readers lenient is the
+    // standing rule): keep the well-formed entries of a stored
+    // array — an entry needs two finite numbers — capped at 6;
+    // anything else (absent, not an array, no well-formed
+    // entry) reads as null = no tiers. The sum-to-100 rule is
+    // the writers' to enforce; the engine normalizes shares
+    // defensively, so a stored list can never split less than
+    // the whole pool.
+    taxableTiers: ((): { sharePct: number; basisPct: number }[] | null => {
+      if (!Array.isArray(r.taxableTiers)) return null;
+      const tiers: { sharePct: number; basisPct: number }[] = [];
+      for (const raw of r.taxableTiers as unknown[]) {
+        if (raw == null || typeof raw !== "object") continue;
+        const t = raw as Record<string, unknown>;
+        const sharePct = num(t.sharePct);
+        const basisPct = num(t.basisPct);
+        if (sharePct == null || basisPct == null) continue;
+        tiers.push({ sharePct, basisPct });
+        if (tiers.length >= 6) break;
+      }
+      return tiers.length > 0 ? tiers : null;
+    })(),
+    // Taxable yields, read leniently like every field here:
+    // absent on a pre-build record reads as null = blank = no
+    // yield modeled, bit-identical pricing.
+    taxableDividendYieldPct: num(r.taxableDividendYieldPct),
+    taxableInterestYieldPct: num(r.taxableInterestYieldPct),
+    // Spend-from-cash, read leniently like the yield fields:
+    // absent on a pre-build record reads as null = blank = off.
+    spendFromCashPct: num(r.spendFromCashPct),
+    // Flexible spending, read leniently like the fields
+    // above: absent on a pre-build record reads as null =
+    // off (cut) / floor 80 inside a triggered cut (floor).
+    flexCutPct: num(r.flexCutPct),
+    flexFloorPct: num(r.flexFloorPct),
+    annualSpendingCents: num(r.annualSpendingCents),
+    retirementAge: num(r.retirementAge),
+    endAge: num(r.endAge),
+    expectedReturnPct: num(r.expectedReturnPct),
+    ssPrimaryAnnualCents:
+      r.ssPrimaryNoBenefit === true ? null : num(r.ssPrimaryAnnualCents),
+    ssPrimaryStartAge: num(r.ssPrimaryStartAge),
+    ssPrimaryNoBenefit: bool(r.ssPrimaryNoBenefit),
+    ssSpouseAnnualCents:
+      r.ssSpouseNoBenefit === true ? null : num(r.ssSpouseAnnualCents),
+    ssSpouseStartAge: num(r.ssSpouseStartAge),
+    ssSpouseNoBenefit: bool(r.ssSpouseNoBenefit),
+    otherOrdinaryCents: num(r.otherOrdinaryCents),
+    taxExemptInterestCents: num(r.taxExemptInterestCents),
+    convertedAlreadyCents: num(r.convertedAlreadyCents),
+    windowStartAge: num(r.windowStartAge),
+    windowStopAge: num(r.windowStopAge),
+    payTaxFrom: ptf,
+    protectMinTaxableCents: num(r.protectMinTaxableCents),
+    preservePretaxCents: num(r.preservePretaxCents),
+    preserveExitRatePct: num(r.preserveExitRatePct),
+    claimAgeFloor: num(r.claimAgeFloor),
+    spouseSoleBeneficiary: bool(r.spouseSoleBeneficiary),
+    acaHouseholdSize: num(r.acaHouseholdSize),
+    acaHouseholdSizeAfter: num(r.acaHouseholdSizeAfter),
+    acaStepDownYear: num(r.acaStepDownYear),
+    collegeFallFromYear: num(r.collegeFallFromYear),
+    collegeFallThroughYear: num(r.collegeFallThroughYear),
+    acaBenchmarkCoupleCents: num(r.acaBenchmarkCoupleCents),
+    acaBenchmarkSingleCents: num(r.acaBenchmarkSingleCents),
+    acaBenchmarkFamilyCents: num(r.acaBenchmarkFamilyCents),
+    acaSpouseEndAge: num(r.acaSpouseEndAge),
+    inflationPct: num(r.inflationPct),
+    stateRatePct: num(r.stateRatePct),
+    heirRatePct: num(r.heirRatePct),
+    ceilings,
+    optimizerGuardrail: bool(r.optimizerGuardrail),
+    optimizerBunching: bool(r.optimizerBunching),
+    gainsHarvest: bool(r.gainsHarvest),
+    drawOrder:
+      typeof r.drawOrder === "string" &&
+      (DRAW_ORDER_KEYS as readonly string[]).includes(r.drawOrder)
+        ? (r.drawOrder as (typeof DRAW_ORDER_KEYS)[number])
+        : null,
+    drawOrderSwitchAge: num(r.drawOrderSwitchAge),
+    drawOrderAfter:
+      typeof r.drawOrderAfter === "string" &&
+      (DRAW_ORDER_KEYS as readonly string[]).includes(r.drawOrderAfter)
+        ? (r.drawOrderAfter as (typeof DRAW_ORDER_KEYS)[number])
+        : null,
+    yearlySalaryCents: num(r.yearlySalaryCents),
+    employer401kCents: num(r.employer401kCents),
+    employerHsaCents: num(r.employerHsaCents),
+  };
+}
+
+function parseRothScenarios(raw: unknown): RothScenario[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RothScenario[] = [];
+  for (const item of raw as unknown[]) {
+    if (item == null || typeof item !== "object") continue;
+    const parsed = parseRothInputs(item);
+    if (!parsed) continue;
+    const nameRaw = (item as Record<string, unknown>).name;
+    out.push({
+      name: typeof nameRaw === "string" && nameRaw !== "" ? nameRaw : "Scenario",
+      ...parsed,
+    });
+    if (out.length >= ROTH_SCENARIO_LIMIT) break;
+  }
+  return out;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRothBlob(
+  db: any,
+  key: CryptoKey,
+): Promise<{
+  inputs: RothInputs | null;
+  scenarios: RothScenario[];
+  execution: RothExecutionResponse;
+  mcVolatilityPct: number | null;
+  gift: RothGiftStored;
+  // The record's write revision (lenient read — see
+  // rothRevisionCore.ts): 0 for a blob written before revisions
+  // existed, and for an absent or unreadable row.
+  revision: number;
+  revisionState: RothBlobRevisionState;
+  // The stored raw value exactly as read (the ciphertext), or
+  // undefined when no row exists. saveRothInputs' guarded
+  // commit predicates on this value (API follow-on 1).
+  storedRaw: string | undefined;
+}> {
+  const currentYear = new Date().getFullYear();
+  const blankExecution: RothExecutionResponse = {
+    ...consumeExecutionInputs(null, currentYear).execution,
+    rolledOver: false,
+    clearedYear: null,
+  };
+  const blankGift = { ...BLANK_ROTH_GIFT };
+  const rows = await db.select().from(schema.settings);
+  const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
+  if (!raw)
+    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: undefined };
+  try {
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const parsed = JSON.parse(plain) as unknown;
+    if (parsed == null || typeof parsed !== "object")
+      return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
+    const blob = parsed as Record<string, unknown>;
+    // Execution inputs are consumed HERE, at load: a shape whose
+    // year stamp is not the current calendar year comes back
+    // blank (with the rollover reported), so a stale stamp can
+    // never reach the panel or a pricing run.
+    const consumed = consumeExecutionInputs(blob.inputs, currentYear);
+    // The market-uncertainty check's volatility preference rides
+    // along in the same record; parseRothInputs never sees it,
+    // so it can never reach a pricing path.
+    const inputsRec =
+      blob.inputs != null && typeof blob.inputs === "object"
+        ? (blob.inputs as Record<string, unknown>)
+        : null;
+    const mcVolRaw = inputsRec?.mcVolatilityPct;
+    return {
+      inputs: parseRothInputs(blob.inputs),
+      scenarios: parseRothScenarios(blob.scenarios),
+      execution: {
+        ...consumed.execution,
+        rolledOver: consumed.rolledOver,
+        clearedYear: consumed.clearedYear,
+      },
+      mcVolatilityPct:
+        typeof mcVolRaw === "number" && Number.isFinite(mcVolRaw) ? mcVolRaw : null,
+      // The gift what-if block rides along in the same record;
+      // parseRothInputs never sees it, so it can never reach a
+      // pricing path other than the gift comparison itself.
+      gift: parseRothGift(blob.inputs),
+      // The record's write revision: a sibling of `inputs` at
+      // the blob's top level, read leniently (absent, non-integer,
+      // or negative counts as 0) — parseRothInputs never sees it.
+      revision: parseRothBlobRevision(plain),
+      revisionState: rothBlobRevisionState(parsed),
+      storedRaw: raw,
+    };
+  } catch {
+    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
+  }
+}
+
+/* The encrypted-blob records' two commit paths (API
+   follow-on 1 — see rothRevisionCore.ts for the contract).
+   upsertRothBlobValue is the Roth record's legacy unconditional
+   write, used when a writer supplied no baseRevision (or no
+   row exists yet to guard against). commitSettingsValueGuarded
+   is the atomic CAS commit, generalized by settings key (F23)
+   so the Roth record and both Retirement records share the ONE
+   statement: ONE UPDATE whose WHERE clause requires the row
+   for `settingsKey` to still hold the raw value the writer
+   read, branched on the affected-row count — true means
+   exactly 1 row committed; false means a concurrent write
+   landed between the read and this commit and storage is
+   untouched by this invocation. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function upsertRothBlobValue(db: any, enc: string): Promise<void> {
+  await db
+    .insert(schema.settings)
+    .values({ key: ROTH_INPUTS_KEY, value: enc })
+    .onConflictDoUpdate({
+      target: schema.settings.key,
+      set: { value: enc },
+    });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function insertRothBlobValueIfAbsent(db: any, enc: string): Promise<boolean> {
+  const rows = await db
+    .insert(schema.settings)
+    .values({ key: ROTH_INPUTS_KEY, value: enc })
+    .onConflictDoNothing()
+    .returning({ key: schema.settings.key });
+  return rows.length === 1;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function commitSettingsValueGuarded(
+  db: any,
+  settingsKey: string,
+  storedRaw: string,
+  enc: string,
+): Promise<boolean> {
+  const updated = await db
+    .update(schema.settings)
+    .set({ value: enc })
+    .where(
+      and(
+        eq(schema.settings.key, settingsKey),
+        eq(schema.settings.value, storedRaw),
+      ),
+    )
+    .returning({ key: schema.settings.key });
+  return updated.length === 1;
+}
+
+/* Raw blob access for the SCENARIO writers (save / delete / rename
+   a scenario). Those writes must leave the saved inputs record
+   exactly as it was — byte-identical, nulls included — so they
+   never round-trip the inputs through parseRothInputs (which
+   normalizes: missing keys become explicit nulls and the ceilings
+   booleans coerce to false). Instead the inputs travel as the raw
+   parsed JSON value from splitRothBlob to joinRothBlob untouched;
+   only the scenarios array is parsed and rewritten. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRothBlobRaw(
+  db: any,
+  key: CryptoKey,
+): Promise<{
+  inputsRaw: unknown;
+  scenariosRaw: unknown;
+  scenarios: RothScenario[];
+  revision: number;
+  storedRaw: string | undefined;
+}> {
+  const rows = await db.select().from(schema.settings);
+  const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
+  if (!raw)
+    return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: undefined };
+  try {
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const split = splitRothBlob(plain);
+    if (!split)
+      return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: raw };
+    return {
+      inputsRaw: split.inputsRaw,
+      scenariosRaw: split.scenariosRaw,
+      scenarios: parseRothScenarios(split.scenariosRaw),
+      revision: rothBlobRevisionValue(split.revisionRaw),
+      storedRaw: raw,
+    };
+  } catch {
+    return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: raw };
+  }
+}
+
+/* One scenario write (API follow-on 1): apply the caller's
+   name-keyed transform to the stored scenarios array and commit
+   the result with the revision stamped stored + 1, through the
+   guarded commit (see commitSettingsValueGuarded). The scenario
+   writers take no baseRevision — discrete clicks, not autosaves
+   — so instead of refusing on a lost race they re-read ONCE and
+   re-apply the transform against the fresh blob (append /
+   filter-by-name / map-by-name are safely re-appliable, and the
+   transform's own validation — limit, duplicate name, missing
+   name — re-runs against the fresh array). A second lost race
+   returns the failure shape carrying the freshest scenarios and
+   revision. A transform that declines to write (a validation
+   failure) returns its verdict against the current array
+   without touching storage. Either way the response carries
+   the record's revision after the attempt, so the client can
+   adopt the fresh base for its next plan save immediately. */
+type RothScenarioTransform =
+  | { write: true; ok: boolean; reason: string; scenarios: RothScenario[] }
+  | { write: false; ok: boolean; reason: string };
+type RothScenarioWriteResult = {
+  ok: boolean;
+  reason: string;
+  scenarios: RothScenario[];
+  revision: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function mutateRothScenarios(
+  db: any,
+  key: CryptoKey,
+  transform: (scenarios: RothScenario[]) => RothScenarioTransform,
+): Promise<RothScenarioWriteResult> {
+  let blob = await readRothBlobRaw(db, key);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const t = transform(blob.scenarios);
+    if (!t.write) {
+      return { ok: t.ok, reason: t.reason, scenarios: blob.scenarios, revision: blob.revision };
+    }
+    const nextRevision = blob.revision + 1;
+    const enc = await encryptStr(
+      key,
+      joinRothBlob(blob.inputsRaw, t.scenarios, nextRevision),
+    );
+    if (blob.storedRaw === undefined) {
+      // No row yet: the first write establishes revision 1,
+      // insert-only so a concurrent first write is not eaten.
+      const inserted = await insertRothBlobValueIfAbsent(db, enc);
+      if (inserted) {
+        return { ok: t.ok, reason: t.reason, scenarios: t.scenarios, revision: nextRevision };
+      }
+      if (attempt === 0) {
+        blob = await readRothBlobRaw(db, key);
+        continue;
+      }
+      break;
+    }
+    if (await commitSettingsValueGuarded(db, ROTH_INPUTS_KEY, blob.storedRaw, enc)) {
+      return { ok: t.ok, reason: t.reason, scenarios: t.scenarios, revision: nextRevision };
+    }
+    if (attempt === 0) {
+      // A concurrent write landed between our read and commit:
+      // re-read and re-apply the transform against the fresh blob.
+      blob = await readRothBlobRaw(db, key);
+    }
+  }
+  // A second lost race: report the freshest state we can read.
+  const fresh = await readRothBlobRaw(db, key);
+  return {
+    ok: false,
+    reason: "The saved strategies changed elsewhere — try again.",
+    scenarios: fresh.scenarios,
+    revision: fresh.revision,
+  };
+}
+
+/* The seeded Roth plan record (fresh-user defaults), derived
+   EXACTLY as the fresh-open seed derives it — the derivation
+   itself is the ONE implementation in server/src/rothSeed.ts,
+   shared with the client's fresh-open path; only the three
+   Retirement-derived values are resolved here, from the same
+   sources the client's seed reads through getRetirementCalc:
+   the saved Retirement record (retirement age / expected
+   return / stocks mix) and the trailing True-cost default
+   spending (computeRetirementDefaults). Used ONLY by
+   resetRothPlanner: a fresh open never persists a record
+   server-side — the client seeds its form and its first
+   autosave writes this same record. */
+async function seedRothStoredInputs(
+  ctx: Ctx,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  key: CryptoKey,
+): Promise<RothStoredInputs> {
+  const { defaultSpendingAnnualCents } = await computeRetirementDefaults(ctx, db, key);
+  const retBlob = await readRetirementBlob(db, key);
+  const retSaved = retBlob ? retirementInputsFromRecord(retBlob) : null;
+  const seed = seedRothRecord(
+    {
+      annualSpendingCents: defaultSpendingAnnualCents,
+      retirementAge: retSaved?.retirementAge ?? SEED_RETIREMENT_AGE_FALLBACK,
+      expectedReturnPct:
+        retSaved?.expectedReturnPct ??
+        blendedExpected(retSaved?.stocksPct ?? STOCKS_PCT_DEFAULT),
+    },
+    new Date().getFullYear(),
+  );
+  return {
+    ...seed.inputs,
+    ...seed.execution,
+    mcVolatilityPct: seed.mcVolatilityPct,
+    ...seed.gift,
+  };
+}
+
+/* The stored Roth blob's commit state for the reset writer: the
+   scenarios array as the RAW parsed JSON value (splitRothBlob's
+   scenarios segment, untouched — the reset re-serializes it next
+   to the reseeded inputs via joinRothBlob, so the saved
+   scenarios pass through the reset byte-identical: same records,
+   same order, same fields), the record's current revision, and
+   the stored raw value the guarded commit predicates on. A
+   missing or unreadable blob reads as an empty array at
+   revision 0. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRothBlobRawState(
+  db: any,
+  key: CryptoKey,
+): Promise<{
+  scenariosRaw: unknown;
+  revision: number;
+  storedRaw: string | undefined;
+}> {
+  const rows = await db.select().from(schema.settings);
+  const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
+  if (!raw) return { scenariosRaw: [], revision: 0, storedRaw: undefined };
+  try {
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const split = splitRothBlob(plain);
+    if (!split) return { scenariosRaw: [], revision: 0, storedRaw: raw };
+    return {
+      scenariosRaw: split.scenariosRaw,
+      revision: rothBlobRevisionValue(split.revisionRaw),
+      storedRaw: raw,
+    };
+  } catch {
+    return { scenariosRaw: [], revision: 0, storedRaw: raw };
+  }
+}
+
+/* ---------------- Roth view UI state ----------------
+   The UI-state blob's schemas, defensive parse, and the
+   revision/CAS write contract live in
+   server/src/rothUiStateCore.ts — extracted so the accuracy
+   fixtures can pin the CAS rules without importing this
+   module. The getRothUiState / setRothUiState actions below
+   are its only storage path. */
+
+/* ---------------- Roth optimizer action shapes ----------------
+   The optimizer runs server-side (a few hundred full lifetime
+   simulations per scan, plus the two sensitivity re-runs) and
+   returns only the scored summaries — the client re-runs the
+   winner's parameters through the standard engine itself when it
+   needs the year-by-year schedule. Money in these outputs is
+   DOLLARS (the tax engine's units), unlike the stored inputs,
+   which are cents. */
+const optScoreOut = z.object({
+  name: z.string(),
+  windowLabel: z.string(),
+  windowStopAge: z.number(),
+  guardrail: z.boolean(),
+  bunching: z.boolean(),
+  ceilings: z.object({
+    bracketTopPct: z.number().nullable(),
+    irmaaTierCap: z.number().nullable(),
+    ltcgZeroCap: z.boolean(),
+    acaCliffCap: z.boolean(),
+    acaCliffCapFamilyOnly: z.boolean(),
+    magiCapCents: z.number().nullable(),
+    acaCliffBufferCents: z.number().nullable(),
+  }),
+  tax: z.number(),
+  penalty: z.number(),
+  irmaa: z.number(),
+  acaCredit: z.number(),
+  terminal: z.number(),
+  // Terminal split under a preserve reserve (dollars): the
+  // preserved ending pre-tax and its tax at the reserve's exit
+  // rate, and the excess and its tax at the heir rate. With no
+  // reserve set, preserved is $0 and the excess is the whole
+  // ending balance — the pre-reserve display.
+  terminalPreserved: z.number(),
+  preservedPretax: z.number(),
+  terminalExcess: z.number(),
+  excessPretax: z.number(),
+  netCost: z.number(),
+  // Lifetime Social Security collected under this candidate
+  // (dollars) — display only; not part of the score.
+  ssCollected: z.number(),
+  savingVsDoNothing: z.number(),
+  // Joint claiming-age search: the claiming ages this score was
+  // priced at and the yearly benefits they imply (dollars). For
+  // a spouse who was not searched these are the entered values.
+  claimPrimaryAge: z.number().nullable(),
+  claimSpouseAge: z.number().nullable(),
+  ssPrimaryAnnual: z.number(),
+  ssSpouseAnnual: z.number(),
+  claimLabel: z.string(),
+  // The spending draw order this score was priced under (the
+  // engine's order key) and its plain-language label — part of
+  // the recommendation, and stored on a scenario saved from the
+  // score so the schedule reproduces exactly.
+  drawOrder: z.string(),
+  drawOrderLabel: z.string(),
+});
+
+function toOptScore(
+  s: ScoredCandidate,
+  doNothingNetCost: number,
+): z.infer<typeof optScoreOut> {
+  return {
+    name: s.spec.name,
+    windowLabel: s.spec.windowLabel,
+    windowStopAge: s.spec.windowStopAge,
+    guardrail: s.spec.guardrail,
+    bunching: s.spec.bunching,
+    ceilings: {
+      bracketTopPct: s.spec.ceilings.bracketTopPct,
+      irmaaTierCap: s.spec.ceilings.irmaaTierCap,
+      ltcgZeroCap: s.spec.ceilings.ltcgZeroCap,
+      acaCliffCap: s.spec.ceilings.acaCliffCap,
+      acaCliffCapFamilyOnly: s.spec.ceilings.acaCliffCapFamilyOnly,
+      magiCapCents:
+        s.spec.ceilings.magiCap == null ? null : Math.round(s.spec.ceilings.magiCap * 100),
+      acaCliffBufferCents:
+        s.spec.ceilings.acaCliffBuffer == null
+          ? null
+          : Math.round(s.spec.ceilings.acaCliffBuffer * 100),
+    },
+    tax: s.cost.tax,
+    penalty: s.cost.penalty,
+    irmaa: s.cost.irmaa,
+    acaCredit: s.cost.acaCredit,
+    terminal: s.cost.terminal,
+    terminalPreserved: s.cost.terminalPreserved,
+    preservedPretax: s.cost.preservedPretax,
+    terminalExcess: s.cost.terminalExcess,
+    excessPretax: s.cost.excessPretax,
+    netCost: s.cost.netCost,
+    ssCollected: s.cost.ssCollected,
+    savingVsDoNothing:
+      Math.round((doNothingNetCost - s.cost.netCost) * 100) / 100,
+    claimPrimaryAge: s.claimAges.primaryAge,
+    claimSpouseAge: s.claimAges.spouseAge,
+    ssPrimaryAnnual: s.claimAges.primaryAnnual,
+    ssSpouseAnnual: s.claimAges.spouseAnnual,
+    claimLabel: claimAgeLabel(s.claimAges),
+    drawOrder: drawOrderKey(s.spec.drawOrder),
+    drawOrderLabel: drawOrderLabel(s.spec.drawOrder),
+  };
+}
+
+/* ---------------- Roth market-uncertainty check shapes --------
+   The check's request carries the two optimizer scores it
+   re-prices (the winner and Do Nothing) in exactly the fields
+   the client already holds from an optimizer score (the
+   optScoreOut shape), plus the plan payload and the check's
+   volatility. The handler rebuilds each candidate's spec and
+   claiming ages from the payload — ceilings' MAGI cap converts
+   cents back to dollars, the draw order resolves from its key —
+   so the module prices precisely the strategies the optimizer
+   scored. The doNothing slot is rebuilt with DO_NOTHING_SPEC's
+   key, which is how the module knows to price it as Do Nothing. */
+// mcScoreIn and its McScoreIn type live in
+// server/src/apiContractCore.ts — extracted so the accuracy
+// fixtures pin the exact tightened schema this action publishes.
+
+function mcCandidateFromScore(
+  score: McScoreIn,
+  isDoNothing: boolean,
+): { spec: OptimizerCandidateSpec; claimAges: ClaimAgeInfo } {
+  const ceilings: FillCeilings = {
+    bracketTopPct: score.ceilings.bracketTopPct,
+    irmaaTierCap: score.ceilings.irmaaTierCap,
+    ltcgZeroCap: score.ceilings.ltcgZeroCap,
+    acaCliffCap: score.ceilings.acaCliffCap,
+    acaCliffCapFamilyOnly: score.ceilings.acaCliffCapFamilyOnly === true,
+    magiCap: score.ceilings.magiCapCents == null ? null : score.ceilings.magiCapCents / 100,
+    acaCliffBuffer:
+      score.ceilings.acaCliffBufferCents == null
+        ? null
+        : score.ceilings.acaCliffBufferCents / 100,
+  };
+  return {
+    spec: {
+      key: isDoNothing ? DO_NOTHING_SPEC.key : `mc-winner:${score.name}`,
+      name: score.name,
+      ceilings,
+      windowStopAge: score.windowStopAge,
+      windowKind: "throughRmd",
+      windowLabel: "",
+      guardrail: score.guardrail,
+      bunching: score.bunching,
+      drawOrder: drawOrderFromKey(score.drawOrder),
+    },
+    claimAges: {
+      primaryAge: score.claimPrimaryAge,
+      spouseAge: score.claimSpouseAge,
+      primaryAnnual: score.ssPrimaryAnnual,
+      spouseAnnual: score.ssSpouseAnnual,
+      searchedPrimary: false,
+      searchedSpouse: false,
+    },
+  };
+}
+
+/* ---------------- Engine-access shapes & helpers ----------------
+   Compute-only access to the shipped engine (the engine-access
+   build): runPlaygroundYear prices ONE standalone year through
+   pricePlaygroundYear — the exact function the Playground tab
+   prices with — and runPlanYearDetail prices one year of a plan
+   plus its with/without-conversion two-pricing. Neither writes
+   anything. The plan-level compute actions (optimizer, MC check,
+   work-years, gift, plan-year detail) resolve null balance
+   fields from the latest Net Worth snapshot server-side, per
+   field, exactly as the client does (resolvePlanBalances in
+   rothOptimizer.ts) — an explicitly-passed balance is used
+   as-is, so a caller can no longer price a degenerate $0 plan
+   by passing the saved record's blank balances. */
+
+// The latest snapshot's bucket subtotals (cents), or null when
+// there is no snapshot. Same computation getRothPlanner serves.
+async function latestSnapshotSubtotals(ctx: Ctx) {
+  const db = ctx.db<typeof schema>();
+  const key = await getCryptoKey(ctx);
+  const nw = await loadNetWorthDecrypted(ctx, db, key);
+  const latest = nw.snapshots.length
+    ? nw.snapshots[nw.snapshots.length - 1]!
+    : null;
+  if (!latest) return null;
+  const rows = nw.balances.filter((b) => b.snapshotId === latest.id);
+  const classById = classByIdOf(nw.accounts);
+  const sub = bucketSubtotals(rows, classById);
+  return {
+    pretaxCents: sub["Pre-tax"],
+    rothCents: sub.Roth,
+    taxableCents: sub.Taxable,
+    cashCents: sub.Cash,
+    hsaCents: sub.HSA,
+  };
+}
+
+// Resolve a plan payload's null balances from the latest
+// snapshot. Fast path: every balance present → the payload is
+// returned untouched and the snapshot is never loaded.
+// SPEND-FROM-CASH sleeve threading (the same snapshot path):
+// the sleeve size is not a saved field — when the payload's
+// taxable balance FOLLOWS the snapshot (taxableCents null)
+// and the caller did not supply a sleeve explicitly, the
+// snapshot's Cash bucket subtotal is threaded onto the
+// resolved payload as spendFromCashSleeveCents, so the engine
+// prices the sleeve that is actually inside the folded pool.
+// An explicit taxableCents (no snapshot context for the pool)
+// leaves the sleeve exactly as supplied — absent = $0 cash,
+// pricing identical to spendFromCashPct blank.
+// EXCLUDE-FROM-PLAN sleeve rule (single pool): when an
+// exclusion applies on this same followed path, it is taken
+// out of the cash sleeve FIRST — the threaded sleeve is the
+// Cash bucket minus the exclusion, floored at $0 — so excluded
+// money can never be spent as sleeve cash; any exclusion
+// beyond the Cash bucket reduces the invested part of the
+// pool through resolvePlanBalances itself. (In tiers mode the
+// engine derives the sleeve from the reduced pool's cash
+// tier, so the tier shares rule applies there instead.)
+async function resolveArgsBalances<T extends {
+  pretaxCents: number | null;
+  pretaxSpouseCents: number | null;
+  rothCents: number | null;
+  taxableCents: number | null;
+  taxableExcludeCents?: number | null;
+  hsaCents: number | null;
+  spendFromCashSleeveCents?: number | null;
+}>(ctx: Ctx, args: T): Promise<T> {
+  if (
+    args.pretaxCents != null &&
+    args.rothCents != null &&
+    args.taxableCents != null &&
+    args.hsaCents != null
+  ) {
+    return args;
+  }
+  const snap = await latestSnapshotSubtotals(ctx);
+  const resolved = resolvePlanBalances(args, snap);
+  if (args.spendFromCashSleeveCents == null && args.taxableCents == null) {
+    const excludeCents = Math.max(0, args.taxableExcludeCents ?? 0);
+    resolved.spendFromCashSleeveCents =
+      snap?.cashCents == null
+        ? null
+        : Math.max(0, snap.cashCents - excludeCents);
+  }
+  return resolved;
+}
+
+// The strategy the planner runs for a payload: its saved
+// ceilings (all-off = Do Nothing, priced with no ceilings),
+// with the optimizer variant flags carried as the client
+// carries them on its current strategy.
+function strategyFromSavedArgs(args: {
+  ceilings: z.infer<typeof rothCeilings> | null;
+  optimizerGuardrail?: boolean | null;
+  optimizerBunching?: boolean | null;
+  gainsHarvest?: boolean | null;
+}): RothStrategy {
+  const c = args.ceilings;
+  const anyCeiling =
+    c != null &&
+    (c.bracketTopPct != null ||
+      c.irmaaTierCap != null ||
+      c.ltcgZeroCap ||
+      c.acaCliffCap ||
+      c.magiCapCents != null);
+  const ceilings: FillCeilings | null = anyCeiling
+    ? {
+        bracketTopPct: c.bracketTopPct,
+        irmaaTierCap: c.irmaaTierCap,
+        ltcgZeroCap: c.ltcgZeroCap,
+        acaCliffCap: c.acaCliffCap,
+        acaCliffCapFamilyOnly: c.acaCliffCapFamilyOnly === true,
+        magiCap: c.magiCapCents == null ? null : c.magiCapCents / 100,
+        acaCliffBuffer:
+          c.acaCliffBufferCents == null ? null : c.acaCliffBufferCents / 100,
+      }
+    : null;
+  return {
+    id: "current",
+    name: "Your fill settings",
+    ceilings,
+    guardrail: args.optimizerGuardrail ?? false,
+    bunching: args.optimizerBunching ?? false,
+    gainsHarvest: args.gainsHarvest ?? false,
+  };
+}
+
+// playgroundYearIn lives in server/src/apiContractCore.ts —
+// extracted so the accuracy fixtures pin the exact tightened
+// schema this action publishes.
+
+const bracketLayerOut = z.object({
+  ratePct: z.number(),
+  from: z.number(),
+  to: z.number().nullable(),
+  amount: z.number(),
+  tax: z.number(),
+});
+
+const playgroundYearOut = z.object({
+  interest: z.number(),
+  ordinaryDividends: z.number(),
+  otherOrdinary: z.number(),
+  otherOrdinaryTotal: z.number(),
+  rmdPriced: z.boolean(),
+  rmd: z.number(),
+  rmdDivisor: z.number().nullable(),
+  rmdTable: z.enum(["joint", "uniform"]).nullable(),
+  ssBenefits: z.number(),
+  ssTaxable: z.number(),
+  ssPctTaxed: z.number(),
+  taxExemptInterest: z.number(),
+  conversion: z.number(),
+  stockGain: z.number(),
+  qualifiedDividends: z.number(),
+  ltcgNet: z.number(),
+  ltcgPriced: z.number(),
+  capitalLoss: z.number(),
+  agi: z.number(),
+  magi: z.number(),
+  acaMagi: z.number(),
+  baseStandardDeduction: z.number(),
+  age65AddonTotal: z.number(),
+  count65: z.number(),
+  standardDeduction: z.number(),
+  seniorDeduction: z.number(),
+  deductions: z.number(),
+  taxableIncome: z.number(),
+  ordinaryTaxableIncome: z.number(),
+  gainsInTaxableIncome: z.number(),
+  bracketLayers: z.array(bracketLayerOut),
+  gainsAt0: z.number(),
+  gainsAt15: z.number(),
+  gainsAt20: z.number(),
+  gainsZeroRoomLeft: z.number(),
+  ordinaryTax: z.number(),
+  ltcgTax: z.number(),
+  niit: z.number(),
+  federalTax: z.number(),
+  stateTax: z.number(),
+  totalTax: z.number(),
+  landingBracketPct: z.number().nullable(),
+  landingBracketTop: z.number().nullable(),
+  landingRoomLeft: z.number().nullable(),
+  landingExactlyFilled: z.boolean(),
+  conversionFederalCost: z.number(),
+  conversionTotalCost: z.number(),
+  conversionExceedsBalance: z.boolean(),
+  aca: z.object({
+    applies: z.boolean(),
+    everyoneOnMedicare: z.boolean(),
+    householdSize: z.number().nullable(),
+    fpl: z.number().nullable(),
+    cliff: z.number().nullable(),
+    pctFpl: z.number().nullable(),
+    overCliff: z.boolean(),
+    positionDollars: z.number().nullable(),
+    credit: z.number().nullable(),
+    applicablePct: z.number().nullable(),
+  }),
+  irmaa: z.object({
+    applies: z.boolean(),
+    personsOnMedicare: z.number(),
+    tier: z.number(),
+    premiumYear: z.number(),
+    monthlyPerPerson: z.number(),
+    annualPerPerson: z.number(),
+    annualHousehold: z.number(),
+    nextTierLine: z.number().nullable(),
+    roomToNextTier: z.number().nullable(),
+  }),
+  gainsFlags: z.object({
+    gainsStack: z.number(),
+    hasGainsTyped: z.boolean(),
+    withoutMagi: z.number(),
+    withoutAcaMagi: z.number(),
+    withoutTier: z.number(),
+    acaFlag: z
+      .object({
+        kind: z.enum(["flipped-over", "flipped-under", "credit-changed"]),
+        gainsStack: z.number(),
+        typedOverCliff: z.boolean(),
+        withoutOverCliff: z.boolean(),
+        typedPositionDollars: z.number().nullable(),
+        withoutPositionDollars: z.number().nullable(),
+        typedCredit: z.number().nullable(),
+        withoutCredit: z.number().nullable(),
+        withoutAcaMagi: z.number(),
+        text: z.string(),
+      })
+      .nullable(),
+    irmaaFlag: z
+      .object({
+        kind: z.enum(["tier-up", "tier-down"]),
+        gainsStack: z.number(),
+        typedTier: z.number(),
+        withoutTier: z.number(),
+        premiumYear: z.number(),
+        line: z.number().nullable(),
+        text: z.string(),
+      })
+      .nullable(),
+  }),
+  saleAfterTax: z
+    .object({
+      proceeds: z.number(),
+      totalTax: z.number(),
+      leftover: z.number(),
+      text: z.string(),
+    })
+    .nullable(),
+});
+
+const playgroundPasteOut = z.object({
+  kind: z.string(),
+  version: z.number(),
+  taxYear: z.number(),
+  filingStatus: z.string(),
+  agePrimary: z.number(),
+  ageSpouse: z.number().nullable(),
+  onMedicarePrimary: z.boolean(),
+  onMedicareSpouse: z.boolean(),
+  interest: z.number(),
+  ordinaryDividends: z.number(),
+  otherOrdinary: z.number(),
+  taxExemptInterest: z.number(),
+  ssPrimary: z.number(),
+  ssSpouse: z.number(),
+  conversion: z.number(),
+  stockSold: z.number(),
+  stockBasis: z.number(),
+  qualifiedDividends: z.number(),
+  pretaxBalance: z.number().nullable(),
+  spouseSoleBeneficiary: z.boolean(),
+  acaHouseholdSize: z.number().nullable(),
+  acaBenchmarkAnnual: z.number().nullable(),
+  stateRatePct: z.number(),
+});
+
+const planYearRowOut = z.object({
+  year: z.number(),
+  agePrimary: z.number(),
+  ageSpouse: z.number().nullable(),
+  conversion: z.number(),
+  // Gain harvested into the 0% capital-gains space after the
+  // year's draws and conversions settled (dollars; $0 unless
+  // the plan's gainsHarvest toggle is on and space remained).
+  gainsHarvested: z.number(),
+  rmdPrimary: z.number(),
+  rmdSpouse: z.number(),
+  rmd: z.number(),
+  ssBenefits: z.number(),
+  ssTaxable: z.number(),
+  deductions: z.number(),
+  federalTax: z.number(),
+  stateTax: z.number(),
+  penalty: z.number(),
+  acaCreditKept: z.number(),
+  acaPriced: z.boolean(),
+  irmaaPaid: z.number(),
+  irmaaTierSet: z.number(),
+  magi: z.number(),
+  acaMagi: z.number(),
+  taxableIncome: z.number(),
+  bracketPct: z.number(),
+  effectiveMarginalPct: z.number().nullable(),
+  endingPretax: z.number(),
+  endingRoth: z.number(),
+  endingTaxable: z.number(),
+  endingHsa: z.number(),
+  // BASIS-DRIFT surfacing: the year's ending taxable basis
+  // (the basis-dollars ledger at year end — the starting %'s
+  // dollars after the year's draws carried their pro-rata
+  // share out, after-tax inflows and any harvest step-up came
+  // in, and no growth) and the year's realized gain from
+  // ordinary draws (tax payments from Taxable plus spending
+  // draws). Like every money figure in this row the VALUES
+  // are dollars (the plan-year response convention), so the
+  // names carry no Cents suffix — a Cents suffix in this row
+  // would claim cents the values do not hold.
+  endingTaxableBasis: z.number(),
+  drawGains: z.number(),
+  // TAXABLE YIELDS surfacing: the year's priced dividend and
+  // interest income (dollars) — the yield % of the year's
+  // starting taxable balance, already inside the row's magi /
+  // acaMagi / tax figures (dividends on the gains stack,
+  // interest on the ordinary stack). $0 when no yield is
+  // modeled.
+  dividendIncome: z.number(),
+  interestIncome: z.number(),
+  // SPEND-FROM-CASH surfacing: the year's cash-paid spending
+  // (dollars) — the spendFromCashPct share of the year's
+  // spending need paid from the cash sleeve (no income, no
+  // gains, no MAGI) — and the sleeve's balance at year end.
+  // Both $0 when spendFromCashPct is blank / 0 (off).
+  cashSpend: z.number(),
+  cashSleeveEnd: z.number(),
+  // SPEND SHORTFALL surfacing (FIX 3): the year's unfunded
+  // spending (dollars) — the spending need left after cash
+  // income, the tax channels' prior claim on balances, the
+  // cash sleeve, and the draw-order draws, measured on the
+  // final settlement. Spending only (unpaid tax is a
+  // different quantity). $0 when the year funds in full.
+  spendShortfall: z.number(),
+  // SETTLEMENT CONVERGENCE surfacing (LOW-1): whether the
+  // year's kept settlement was an exact fixed point of the
+  // settlement iteration (assumed feedback pair == created
+  // pair), and the kept round's residual mismatch per
+  // component in integer cents (both 0 when converged). A
+  // non-converged year was priced from the iteration's best
+  // iterated state, not an exact fixed point.
+  settlementConverged: z.boolean(),
+  settlementMismatchCents: z.object({
+    gains: z.number(),
+    pretax: z.number(),
+  }),
+});
+
+function toPlanYearRow(y: {
+  year: number;
+  agePrimary: number;
+  ageSpouse: number | null;
+  conversion: number;
+  gainsHarvested: number;
+  rmd: number;
+  ssBenefits: number;
+  federalTax: number;
+  stateTax: number;
+  penalty: number;
+  acaCreditKept: number;
+  acaPriced: boolean;
+  irmaaPaid: number;
+  irmaaTierSet: number;
+  magi: number;
+  acaMagi: number;
+  taxableIncome: number;
+  bracketPct: number;
+  effectiveMarginalPct: number | null;
+  pretaxEnd: number;
+  rothEnd: number;
+  taxableEnd: number;
+  hsaEnd: number;
+  spendShortfall: number;
+  detail: {
+    rmdPrimary: number;
+    rmdSpouse: number;
+    ssTaxable: number;
+    deductions: number;
+    taxableBasisDollars: number;
+    drawGains: number;
+    dividendIncome: number;
+    interestIncome: number;
+    cashSpend: number;
+    cashSleeveEnd: number;
+  };
+  settlementConverged: boolean;
+  settlementMismatchCents: { gains: number; pretax: number };
+}): z.infer<typeof planYearRowOut> {
+  return {
+    year: y.year,
+    agePrimary: y.agePrimary,
+    ageSpouse: y.ageSpouse,
+    conversion: y.conversion,
+    gainsHarvested: y.gainsHarvested,
+    rmdPrimary: y.detail.rmdPrimary,
+    rmdSpouse: y.detail.rmdSpouse,
+    rmd: y.rmd,
+    ssBenefits: y.ssBenefits,
+    ssTaxable: y.detail.ssTaxable,
+    deductions: y.detail.deductions,
+    federalTax: y.federalTax,
+    stateTax: y.stateTax,
+    penalty: y.penalty,
+    acaCreditKept: y.acaCreditKept,
+    acaPriced: y.acaPriced,
+    irmaaPaid: y.irmaaPaid,
+    irmaaTierSet: y.irmaaTierSet,
+    magi: y.magi,
+    acaMagi: y.acaMagi,
+    taxableIncome: y.taxableIncome,
+    bracketPct: y.bracketPct,
+    effectiveMarginalPct: y.effectiveMarginalPct,
+    endingPretax: y.pretaxEnd,
+    endingRoth: y.rothEnd,
+    endingTaxable: y.taxableEnd,
+    endingHsa: y.hsaEnd,
+    endingTaxableBasis: y.detail.taxableBasisDollars,
+    drawGains: y.detail.drawGains,
+    dividendIncome: y.detail.dividendIncome,
+    interestIncome: y.detail.interestIncome,
+    cashSpend: y.detail.cashSpend,
+    cashSleeveEnd: y.detail.cashSleeveEnd,
+    spendShortfall: y.spendShortfall,
+    settlementConverged: y.settlementConverged,
+    settlementMismatchCents: y.settlementMismatchCents,
+  };
+}
+
+/* ---------------- Year-funding row (runRothFunding) ----------
+   One row per priced year of the plan, all money in integer
+   cents (the runRothCompare convention — the field names carry
+   the Cents suffix because the values ARE cents). The row type
+   is RothFundingRow in rothOptimizer.ts; the action's purpose
+   entry in ACTION_PURPOSES defines every field's sign/scope. */
+const fundingRowOut = z.object({
+  year: z.number(),
+  agePrimary: z.number(),
+  ageSpouse: z.number().nullable(),
+  spendingCents: z.number(),
+  federalTaxCents: z.number(),
+  stateTaxCents: z.number(),
+  irmaaCents: z.number(),
+  totalNeedCents: z.number(),
+  ssCents: z.number(),
+  rmdCents: z.number(),
+  otherIncomeCents: z.number(),
+  interestYieldCents: z.number(),
+  dividendYieldCents: z.number(),
+  pretaxDrawCents: z.number(),
+  taxableSoldForSpendingCents: z.number(),
+  taxableSoldForTaxCents: z.number(),
+  cashSpendCents: z.number(),
+  rothDrawCents: z.number(),
+  salarySurplusCents: z.number(),
+  // Spend shortfall (FIX 3): the year's unfunded spending in
+  // integer cents — not a source; the eleven sources plus
+  // spendShortfallCents foot to totalNeedCents. $0 in every
+  // year the plan can fund.
+  spendShortfallCents: z.number(),
+  conversionCents: z.number(),
+  harvestSoldCents: z.number(),
+  magiCents: z.number(),
+  acaMagiCents: z.number(),
+  acaCliffCents: z.number().nullable(),
+  acaCreditCents: z.number(),
+  acaPriced: z.boolean(),
+  taxableIncomeCents: z.number(),
+  bracketPct: z.number(),
+  drawGainsCents: z.number(),
+  ssTaxableCents: z.number(),
+  // Settlement convergence (LOW-1): whether the year's kept
+  // settlement was an exact fixed point of the settlement
+  // iteration, and the kept round's residual mismatch per
+  // component in integer cents (both 0 when converged).
+  settlementConverged: z.boolean(),
+  settlementMismatchCents: z.object({
+    gains: z.number(),
+    pretax: z.number(),
+  }),
+});
+
+/* ---------------- Work-years compare shapes ----------------
+   The Work years tab's run is compute-only: the request is the
+   saved-plan-shaped inputs (rothInputFields, which now carry
+   the three job fields) plus up to three scratch quit ages
+   that are never persisted. Money in these outputs is DOLLARS
+   (the tax engine's units), like the optimizer outputs. */
+const workYearsLedgerOut = z.object({
+  grossSalary: z.number(),
+  federal: z.number(),
+  state: z.number(),
+  fica: z.number(),
+  pretaxContributions: z.number(),
+  rothContributions: z.number(),
+  hsaContributions: z.number(),
+  totalContributions: z.number(),
+  employeeContributions: z.number(),
+  employerContributions: z.number(),
+  surplusBanked: z.number(),
+  banked: z.number(),
+});
+const workYearsRowOut = z.object({
+  quitAge: z.number(),
+  workYears: z.number(),
+  // Balances at the quit age, after the roll (dollars).
+  balancesAtQuit: z.object({
+    pretax: z.number(),
+    roth: z.number(),
+    taxable: z.number(),
+    hsa: z.number(),
+  }),
+  ledger: workYearsLedgerOut,
+  winnerName: z.string(),
+  winnerWindowLabel: z.string(),
+  winnerClaimLabel: z.string(),
+  winnerNetCost: z.number(),
+  winnerTax: z.number(),
+  winnerPenalty: z.number(),
+  winnerIrmaa: z.number(),
+  winnerAcaCredit: z.number(),
+  winnerTerminal: z.number(),
+  doNothingNetCost: z.number(),
+  // Work years' own federal tax + state tax + FICA, and the
+  // all-in figures (optimizer net + work tax).
+  workTax: z.number(),
+  allInTax: z.number(),
+  doNothingAllInTax: z.number(),
+  claim67AllInTax: z.number().nullable(),
+  endingPretax: z.number(),
+  endingRoth: z.number(),
+  endingTaxable: z.number(),
+  endingHsa: z.number(),
+  endingNominal: z.number(),
+  endingAfterTax: z.number(),
+  ssCollected: z.number(),
+});
+
+/* ---------------- Data integrity checks ----------------
+   Standing invariants over the durable data, evaluated on every
+   data load: getDashboard surfaces the spending-side checks and
+   getNetWorth the Net Worth checks as plain warning lines (only
+   when a violation exists — a clean load shows nothing new), and
+   the runAccuracySelfCheck maintenance action runs all five.
+   A violation is REPORTED, never silently repaired: these checks
+   only read the decrypted data.
+   (a) NW snapshot totals. Totals are computed from the balance
+       rows at read time, never stored, so the check guards the
+       inputs to that computation: every balance row must belong
+       to an existing snapshot and an existing account, no
+       (snapshot, account) pair may repeat (it would be counted
+       twice), and each snapshot's total — with the property
+       treatment the current view setting implies — is recomputed
+       two independent ways, which must agree.
+   (b) NW bucket splits. When a balance carries split parts, the
+       parts must sum to the balance. A split stored on a property
+       account's balance is a violation: property balances are
+       served whole, so stored parts would be silently dropped.
+   (c) Bill version chains (monthly bills and yearly/periodic
+       expenses). Versions take effect from a month and run until
+       the next version, so two versions of one bill effective
+       from the SAME month overlap — a violation, as is a version
+       whose bill no longer exists.
+   (d) Recorded payments. A transaction linked to a yearly /
+       periodic expense must reference an expense that exists.
+   (e) Monthly cash-out items. A month's cash out resolves as
+       items sum > entered lump total > transactions, so a month
+       holding both items and a lump total is by design, NOT a
+       violation. The true stored-sum inconsistencies are
+       malformed rows: an item with a negative or non-integer
+       amount or an invalid month key, or a lump total stored
+       under an invalid month key. */
+
+type IntegrityViolation = { record: string; detail: string };
+type IntegrityCheck = {
+  id: string;
+  label: string;
+  checked: number;
+  violations: IntegrityViolation[];
+};
+
+function fmtMoneyCents(cents: number): string {
+  const neg = cents < 0;
+  const abs = Math.abs(cents);
+  const s = `$${Math.floor(abs / 100).toLocaleString("en-US")}.${String(abs % 100).padStart(2, "0")}`;
+  return neg ? `−${s}` : s;
+}
+
+type SpendingDataSubset = {
+  txns: TxnRow[];
+  yearly: YearlyRow[];
+  yearlyVersions: YearlyVersionRow[];
+  summaries: SummaryRow[];
+  bills: MonthlyBillRow[];
+  billVersions: BillVersionRow[];
+  cashOutItems: CashOutItemRow[];
+};
+type NwDataSubset = Awaited<ReturnType<typeof loadNetWorthDecrypted>>;
+
+function checkNwSnapshotTotals(
+  nw: NwDataSubset,
+  includeProperty: boolean,
+): IntegrityCheck {
+  const violations: IntegrityViolation[] = [];
+  const snapIds = new Set(nw.snapshots.map((s) => s.id));
+  const acctById = new Map(nw.accounts.map((a) => [a.id, a]));
+  const seenPairs = new Set<string>();
+  for (const b of nw.balances) {
+    if (!snapIds.has(b.snapshotId)) {
+      violations.push({
+        record: `Balance #${b.id}`,
+        detail: `belongs to snapshot #${b.snapshotId}, which no longer exists — it is left out of every Net Worth total.`,
+      });
+    }
+    if (!acctById.has(b.accountId)) {
+      violations.push({
+        record: `Balance #${b.id}`,
+        detail: `belongs to account #${b.accountId}, which no longer exists — totals treat it as an ordinary account.`,
+      });
+    }
+    const pair = `${b.snapshotId}:${b.accountId}`;
+    if (seenPairs.has(pair)) {
+      violations.push({
+        record: `Balance #${b.id}`,
+        detail:
+          "is a second balance for the same account on the same snapshot — it would be counted twice in that snapshot's total.",
+      });
+    }
+    seenPairs.add(pair);
+  }
+  for (const s of nw.snapshots) {
+    const contribution = (b: NwBalanceRow): number => {
+      const acct = acctById.get(b.accountId);
+      // Custodial balances are recorded but never counted.
+      if (acct && isCustodialAccount(acct)) return 0;
+      const kind = acct?.propertyKind ?? "none";
+      return isPropertyKind(kind) && !includeProperty
+        ? 0
+        : effectiveBalanceCents(kind, b.balanceCents);
+    };
+    let grouped = 0;
+    for (const b of nw.balances) {
+      if (b.snapshotId === s.id) grouped += contribution(b);
+    }
+    const flat = nw.balances
+      .filter((b) => b.snapshotId === s.id)
+      .reduce((sum, b) => sum + contribution(b), 0);
+    if (grouped !== flat) {
+      violations.push({
+        record: `Snapshot ${s.date}`,
+        detail: `two recomputations of its total disagree (${fmtMoneyCents(grouped)} vs ${fmtMoneyCents(flat)}).`,
+      });
+    }
+  }
+  return {
+    id: "nw-snapshot-totals",
+    label: "Net Worth snapshot totals",
+    checked: nw.snapshots.length,
+    violations,
+  };
+}
+
+function checkNwBucketSplits(nw: NwDataSubset): IntegrityCheck {
+  const violations: IntegrityViolation[] = [];
+  const acctById = new Map(nw.accounts.map((a) => [a.id, a]));
+  const snapById = new Map(nw.snapshots.map((s) => [s.id, s]));
+  let checked = 0;
+  for (const b of nw.balances) {
+    const parts = splitPartsOf(b);
+    if (parts.length === 0) continue;
+    checked++;
+    const acct = acctById.get(b.accountId);
+    const where = `${acct?.name ?? `Account #${b.accountId}`} on ${snapById.get(b.snapshotId)?.date ?? `snapshot #${b.snapshotId}`}`;
+    if (acct && isPropertyKind(acct.propertyKind)) {
+      violations.push({
+        record: where,
+        detail:
+          "a property balance carries tax-bucket split parts, which the totals ignore — the stored parts would be silently dropped.",
+      });
+    }
+    if (acct && isCustodialAccount(acct)) {
+      violations.push({
+        record: where,
+        detail:
+          "a custodial balance carries tax-bucket split parts — custodial balances are recorded whole and never counted, so the stored parts would be silently dropped.",
+      });
+    }
+    const sum = parts.reduce((s, p) => s + p.amountCents, 0);
+    if (sum !== b.balanceCents) {
+      violations.push({
+        record: where,
+        detail: `split parts add to ${fmtMoneyCents(sum)} but the balance is ${fmtMoneyCents(b.balanceCents)}.`,
+      });
+    }
+  }
+  return {
+    id: "nw-bucket-splits",
+    label: "Net Worth bucket splits",
+    checked,
+    violations,
+  };
+}
+
+function checkBillVersionChains(data: SpendingDataSubset): IntegrityCheck {
+  const violations: IntegrityViolation[] = [];
+  let checked = 0;
+  const chains: {
+    kindLabel: string;
+    ownerIds: Set<number>;
+    ownerName: Map<number, string>;
+    versions: { id: number; ownerId: number; effectiveFrom: string }[];
+  }[] = [
+    {
+      kindLabel: "Monthly bill",
+      ownerIds: new Set(data.bills.map((b) => b.id)),
+      ownerName: new Map(data.bills.map((b) => [b.id, b.name])),
+      versions: data.billVersions.map((v) => ({
+        id: v.id,
+        ownerId: v.billId,
+        effectiveFrom: v.effectiveFrom,
+      })),
+    },
+    {
+      kindLabel: "Yearly expense",
+      ownerIds: new Set(data.yearly.map((y) => y.id)),
+      ownerName: new Map(data.yearly.map((y) => [y.id, y.name])),
+      versions: data.yearlyVersions.map((v) => ({
+        id: v.id,
+        ownerId: v.expenseId,
+        effectiveFrom: v.effectiveFrom,
+      })),
+    },
+  ];
+  for (const chain of chains) {
+    const byOwner = new Map<number, { id: number; effectiveFrom: string }[]>();
+    for (const v of chain.versions) {
+      const arr = byOwner.get(v.ownerId) ?? [];
+      arr.push(v);
+      byOwner.set(v.ownerId, arr);
+    }
+    for (const [ownerId, versions] of byOwner) {
+      const label = `${chain.kindLabel} "${chain.ownerName.get(ownerId) ?? `#${ownerId}`}"`;
+      if (!chain.ownerIds.has(ownerId)) {
+        violations.push({
+          record: label,
+          detail: `${versions.length} stored version(s) belong to a bill that no longer exists.`,
+        });
+        continue;
+      }
+      checked++;
+      const seenMonths = new Set<string>();
+      for (const v of versions) {
+        if (seenMonths.has(v.effectiveFrom)) {
+          violations.push({
+            record: label,
+            detail: `has two versions effective from ${v.effectiveFrom} — their effective periods overlap.`,
+          });
+        }
+        seenMonths.add(v.effectiveFrom);
+      }
+    }
+  }
+  return {
+    id: "bill-version-chains",
+    label: "Bill version chains",
+    checked,
+    violations,
+  };
+}
+
+function checkPaymentReferences(data: SpendingDataSubset): IntegrityCheck {
+  const violations: IntegrityViolation[] = [];
+  const ids = new Set(data.yearly.map((y) => y.id));
+  let checked = 0;
+  for (const t of data.txns) {
+    if (t.yearlyExpenseId == null) continue;
+    checked++;
+    if (!ids.has(t.yearlyExpenseId)) {
+      violations.push({
+        record: `${t.date} "${t.description}" (${fmtMoneyCents(t.amountCents)})`,
+        detail: `is recorded against yearly bill #${t.yearlyExpenseId}, which no longer exists.`,
+      });
+    }
+  }
+  return {
+    id: "payment-references",
+    label: "Recorded payment references",
+    checked,
+    violations,
+  };
+}
+
+function checkCashOutItems(data: SpendingDataSubset): IntegrityCheck {
+  const violations: IntegrityViolation[] = [];
+  const months = new Set<string>();
+  for (const it of data.cashOutItems) {
+    months.add(it.month);
+    if (!monthRe.test(it.month)) {
+      violations.push({
+        record: `Cash-out item "${it.description}"`,
+        detail: `is stored under the invalid month "${it.month}".`,
+      });
+    }
+    if (!Number.isInteger(it.amountCents) || it.amountCents < 0) {
+      violations.push({
+        record: `Cash-out item "${it.description}" (${it.month})`,
+        detail: `has an invalid stored amount (${it.amountCents} cents).`,
+      });
+    }
+  }
+  for (const s of data.summaries) {
+    months.add(s.month);
+    if (!monthRe.test(s.month)) {
+      violations.push({
+        record: `Entered cash-out total for "${s.month}"`,
+        detail: "is stored under an invalid month key.",
+      });
+    }
+    if (!Number.isInteger(s.cashOutCents)) {
+      violations.push({
+        record: `Entered cash-out total for ${s.month}`,
+        detail: `has a non-integer stored amount (${s.cashOutCents} cents).`,
+      });
+    }
+  }
+  return {
+    id: "cash-out-items",
+    label: "Monthly cash-out items",
+    checked: months.size,
+    violations,
+  };
+}
+
+function integrityWarningLines(checks: IntegrityCheck[]): string[] {
+  const lines: string[] = [];
+  for (const c of checks) {
+    for (const v of c.violations) {
+      lines.push(`Data check — ${c.label}: ${v.record} — ${v.detail}`);
+    }
+  }
+  return lines;
+}
+
+/* ---------------- Entry defaults (new-bill forms) ----------------
+   Sticky "Paid from" values for the new-bill forms, persisted in
+   settings exactly like the app's other UI preferences. The monthly
+   form's Paid from is a single free-text label; the yearly form's is
+   a paid-by type ("checking" / "card") plus an account name. The
+   label values are user-entered account labels, so they are stored
+   encrypted at rest like every other paid-by label in the app; the
+   type is a structural enum and stays plain, like the yearly
+   expenses' own paid_by_type column. Updated (server-side) whenever
+   a bill is added or edited, so the next new-bill form pre-fills
+   with the value used last time. First-ever use (nothing stored)
+   falls back to the household's modal values: "Credit Card" for
+   monthly bills, "Checking" for yearly bills. Editing an existing
+   bill never reads these — it always shows the bill's own value. */
+const ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY = "entry_default_monthly_paid_from_v1";
+const ENTRY_DEFAULT_YEARLY_PAID_TYPE_KEY = "entry_default_yearly_paid_type_v1";
+const ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY = "entry_default_yearly_paid_name_v1";
+const MONTHLY_PAID_FROM_FALLBACK = "Credit Card";
+const YEARLY_PAID_NAME_FALLBACK = "Checking";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function upsertPlainSetting(db: any, settingKey: string, value: string): Promise<void> {
+  await db
+    .insert(schema.settings)
+    .values({ key: settingKey, value })
+    .onConflictDoUpdate({
+      target: schema.settings.key,
+      set: { value },
+    });
+}
+
+async function decryptSettingValue(
+  key: CryptoKey,
+  raw: string | undefined,
+): Promise<string | null> {
+  if (raw == null || raw === "") return null;
+  return isEncrypted(raw) ? decryptStr(key, raw) : raw;
+}
+
+/* ---------------- Retirement defaults ----------------
+   The live defaults every Retirement engine path reads:
+   the Net Worth-following starting portfolio (latest snapshot
+   total respecting the Include house & mortgage toggle, minus
+   that snapshot's 529 bucket subtotal) and the trailing True
+   cost annual spending. Computed here once and shared by
+   getRetirementCalc and the baseline-results action, so the
+   baseline is priced against exactly the same defaults as
+   the working plan. */
+async function computeRetirementDefaults(
+  ctx: Ctx,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  key: CryptoKey,
+): Promise<{
+  defaultPortfolioCents: number;
+  nwTotalCents: number;
+  bucket529Cents: number | null;
+  latestSnapshotHasAnySplit: boolean;
+  defaultSpendingAnnualCents: number;
+  // The exact window the trailing True cost average covers: the
+  // first and last month ("YYYY-MM") and how many months were
+  // averaged (up to 12 — fewer when the data starts later). The
+  // Retirement view's Annual spending provenance line names this
+  // window; it is display provenance only, computed from the
+  // same window the average itself uses.
+  defaultSpendingWindowStart: string | null;
+  defaultSpendingWindowEnd: string | null;
+  defaultSpendingMonths: number;
+  includeProperty: boolean;
+  // Factory default for the Current age field (fresh start, Reset
+  // to defaults, blank fallback — the same paths the stocks-%
+  // factory default feeds): the current calendar year minus the
+  // birth year stored in the Roth Conversion inputs, so the default
+  // ages with the user instead of going stale. When no birth year
+  // is stored, the fixed fallback 55 is kept. A saved current age
+  // is never overridden by this — it only fills a never-set field.
+  defaultCurrentAge: number;
+  // True when defaultCurrentAge was derived from a stored birth
+  // year (false when it is the fixed 55 fallback), so the view's
+  // helper copy can say where the number came from honestly.
+  defaultCurrentAgeFromBirthYear: boolean;
+}> {
+  const settingRows = await db.select().from(schema.settings);
+  const includeProperty =
+    settingRows.find((r: { key: string; value: string }) => r.key === NW_INCLUDE_PROPERTY_KEY)?.value === "1";
+
+  // --- default portfolio: latest snapshot total (toggle-aware) ---
+  const { accounts, snapshots: nwSnaps, balances } =
+    await loadNetWorthDecrypted(ctx, db, key);
+  const classById = classByIdOf(accounts);
+  let nwTotalCents = 0;
+  let bucket529Cents: number | null = null;
+  let latestSnapshotHasAnySplit = false;
+  const latestSnap = nwSnaps[nwSnaps.length - 1] ?? null;
+  if (latestSnap) {
+    const latestRows = balances.filter((b) => b.snapshotId === latestSnap.id);
+    // Route through nwCore's snapshotTotals — the single
+    // implementation of the property-toggle math every other
+    // consumer (Net Worth, Year Summary, Roth) uses — so there is
+    // exactly one place the property rule lives. Custodial
+    // balances are excluded there too, so they never reach the
+    // starting portfolio or the 529 auto-exclude basis.
+    nwTotalCents = snapshotTotals(latestRows, classById, includeProperty).totalCents;
+    bucket529Cents = bucketSubtotals(latestRows, classById)["529"];
+    latestSnapshotHasAnySplit = latestRows.some(
+      (b) => splitPartsOf(b).length > 0,
+    );
+  }
+  // The Net Worth-following starting portfolio — the ONE
+  // default every Retirement engine path reads (the live
+  // inputs' blank fallback, Reset to defaults, and scenario
+  // compare for a scenario with no portfolio of its own):
+  // the toggle-aware latest Net Worth total minus the latest
+  // snapshot's 529 (college) bucket subtotal. College money is
+  // spoken for, so it is not counted as retirement money while
+  // the field follows Net Worth. A snapshot with no 529 split
+  // excludes $0.
+  const defaultPortfolioCents = nwTotalCents - (bucket529Cents ?? 0);
+
+  // --- default spending: trailing True cost, annualised ---
+  const { txns, yearly, yearlyVersions, summaries, cashOutItems } =
+    await loadAll(ctx);
+  // The per-month computation (the per-bill-rounded accrual and
+  // the cash-out resolution behind the smoothed figure) lives in
+  // the shared spending core (server/src/spendingCore.ts) — the
+  // same code the dashboard runs — so this default can never
+  // drift from the Spending views on rounding.
+  const core = createSpendingCore({
+    txns,
+    yearly,
+    yearlyVersions,
+    summaries,
+    cashOutItems,
+  });
+  const effSmoothed = (m: string): number => core.eff(m).smoothed;
+  const monthCandidates = [
+    ...new Set([
+      ...txns.map((t) => monthOf(t.date)),
+      ...summaries.map((s) => s.month),
+      ...cashOutItems.map((it) => it.month),
+    ]),
+  ].sort();
+  const earliestMonth = monthCandidates[0] ?? null;
+  const nowD = new Date();
+  const currentMonthStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, "0")}`;
+  let defaultSpendingAnnualCents = 0;
+  let defaultSpendingWindowStart: string | null = null;
+  let defaultSpendingWindowEnd: string | null = null;
+  let defaultSpendingMonths = 0;
+  if (earliestMonth && earliestMonth <= currentMonthStr) {
+    // Mirror getDashboard's Actual average exactly: a trailing
+    // window of up to 12 months ending at the current month,
+    // counting every month in the window from the first month
+    // that has data — a month with no data still contributes
+    // its smoothed accrual, it is not skipped.
+    const windowStart = shiftMonth(currentMonthStr, -11);
+    const start =
+      earliestMonth > windowStart ? earliestMonth : windowStart;
+    const count = monthsBetween(start, currentMonthStr) + 1;
+    let sum = 0;
+    let m = start;
+    for (let i = 0; i < count; i++) {
+      sum += effSmoothed(m);
+      m = shiftMonth(m, 1);
+    }
+    if (count > 0) {
+      defaultSpendingAnnualCents = Math.round((sum / count) * 12);
+      defaultSpendingWindowStart = start;
+      defaultSpendingWindowEnd = currentMonthStr;
+      defaultSpendingMonths = count;
+    }
+  }
+  // --- default current age: from the Roth inputs' birth year ---
+  // Read-only here: this never writes the Roth blob — it only reads
+  // the birth year the user already stored there.
+  const rothBlob = await readRothBlob(db, key);
+  const birthYearPrimary = rothBlob.inputs?.birthYearPrimary ?? null;
+  const defaultCurrentAge =
+    birthYearPrimary != null
+      ? Math.min(120, Math.max(0, new Date().getFullYear() - birthYearPrimary))
+      : 55;
+  const defaultCurrentAgeFromBirthYear = birthYearPrimary != null;
+  return { defaultPortfolioCents, nwTotalCents, bucket529Cents, latestSnapshotHasAnySplit, defaultSpendingAnnualCents, defaultSpendingWindowStart, defaultSpendingWindowEnd, defaultSpendingMonths, includeProperty, defaultCurrentAge, defaultCurrentAgeFromBirthYear };
+}
+
+const accuracyFixtureSuiteSchema = z.object({
+  total: z.number(),
+  passed: z.number(),
+  results: z.array(
+    z.object({
+      id: z.string(),
+      kind: z.string(),
+      pass: z.boolean(),
+      failures: z.array(z.string()),
+    }),
+  ),
+});
+const accuracyTeethSchema = z.object({
+  corruptedCaseId: z.string(),
+  failedCount: z.number(),
+  pass: z.boolean(),
+});
+const accuracyTrinitySchema = z.array(
+  z.object({
+    mix: z.string(),
+    stocksPct: z.number(),
+    appSuccessRate: z.number(),
+    windows: z.number(),
+    publishedSuccessRate: z.number(),
+    withinTolerance: z.boolean(),
+  }),
+);
+const accuracyIntegritySchema = z.object({
+  totalViolations: z.number(),
+  checks: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      checked: z.number(),
+      violations: z.array(
+        z.object({ record: z.string(), detail: z.string() }),
+      ),
+    }),
+  ),
+});
+const accuracySuiteEnum = z.enum([
+  "tax",
+  "tax-teeth",
+  "tax-teeth-opt",
+  "extended",
+  "extended-teeth",
+  "retirement",
+  "retirement-teeth",
+  "integrity",
+  "ui-state",
+  "roth-cas",
+  "retirement-cas",
+]);
+const accuracySelfCheckResponse = z.object({
+  suite: z.string(),
+  note: z.string(),
+  fixtures: accuracyFixtureSuiteSchema.nullable(),
+  trinity: accuracyTrinitySchema.nullable(),
+  trinityCitation: z.string().nullable(),
+  extendedFixtures: accuracyFixtureSuiteSchema.nullable(),
+  taxFixtures: accuracyFixtureSuiteSchema.nullable(),
+  uiStateFixtures: accuracyFixtureSuiteSchema.nullable(),
+  rothCasFixtures: accuracyFixtureSuiteSchema.nullable(),
+  retirementCasFixtures: accuracyFixtureSuiteSchema.nullable(),
+  teeth: z.object({
+    retirement: accuracyTeethSchema.nullable(),
+    extended: accuracyTeethSchema.nullable(),
+    tax: accuracyTeethSchema.nullable(),
+  }),
+  integrity: accuracyIntegritySchema.nullable(),
+});
+type AccuracySelfCheckResponse = z.infer<typeof accuracySelfCheckResponse>;
+
+/* ---------------- describeApi: purposes ----------------
+   ONE purpose line per published action — the single record
+   describeApi reads. describeApi's response carries a self-check
+   (actionsMissingPurpose) listing any published action with no
+   entry here, so a future action added without a purpose is
+   visible in the contract itself rather than drifting silently. */
+const ACTION_PURPOSES: Record<string, string> = {
+  getDashboard: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles.",
+  getYearView: "One calendar year's spending: monthly true cost and cash out, totals, and the year's bills.",
+  getExplorer: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range.",
+  addTransaction: "Record one spending transaction (checking or card).",
+  updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
+  deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
+  importTransactions: "Import a batch of transactions at once (CSV import path). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. There is NO dedupe: importing the same rows again inserts them again.",
+  addYearlyExpense: "Add a yearly or periodic (smoothed) expense bill. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted.",
+  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched).",
+  setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist.",
+  deleteYearlyExpense: "Delete a yearly/periodic expense and its versions. Returns { ok: false, reason } when the id does not exist.",
+  deleteYearlyExpenseVersion: "Remove one version from a yearly/periodic expense's history.",
+  setYearlyDueMonth: "Set the due month of a yearly expense. Returns { ok: false, reason } when the id does not exist.",
+  addMonthlyOneOff: "Record a one-off expense against a month.",
+  updateMonthlyOneOff: "Edit a recorded one-off expense. Returns { ok: false, reason } when the id does not exist.",
+  deleteMonthlyOneOff: "Delete a recorded one-off expense. Returns { ok: false, reason } when the id does not exist.",
+  addCashOutItem: "Add an itemized cash-out line to a month.",
+  updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist.",
+  deleteCashOutItem: "Delete an itemized cash-out line from a month. Returns { ok: false, reason } when the id does not exist.",
+  updateSettings: "Update spending settings (opening reserve).",
+  upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions).",
+  deleteMonthlySummary: "Remove a month's entered cash-out total. Returns { ok: false, reason } when no total is recorded for that month.",
+  addMonthlyBill: "Add a monthly bill.",
+  updateMonthlyBill: "Edit a monthly bill's details. Only the fields actually sent are written: notes, category, and keepLightsOn are optional with no defaults, so an absent field preserves the stored value, while an explicitly sent notes: null clears the notes. Returns { ok: false, reason } when the id does not exist.",
+  setMonthlyBillCategory: "Set a monthly bill's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist.",
+  setYearlyCategory: "Set a yearly/periodic expense's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist.",
+  setMonthlyBillKeepLightsOn: "Toggle a monthly bill's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
+  setMonthlyBillsCollapsedAll: "Persist the Monthly bills section's collapsed/expanded state.",
+  setYearlyBillsCollapsedAll: "Persist the Yearly & periodic expenses section's collapsed/expanded state.",
+  setByCategoryCollapsedAll: "Persist the By category section's collapsed/expanded state.",
+  setYearInSpendingCollapsedAll: "Persist the Year in spending section's collapsed/expanded state.",
+  getExplainerState: "Read the explainer panel's expanded state.",
+  setExplainerExpanded: "Persist the explainer panel's expanded state.",
+  setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
+  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist.",
+  deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist.",
+  deleteMonthlyBillVersion: "Remove one version from a monthly bill's history.",
+  seedExamples: "Seed the example dataset into an empty tracker.",
+  clearAllData: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state. Requires confirm to carry the exact phrase \"delete everything\"; any other confirmation deletes nothing.",
+  seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data (no-op once accounts exist).",
+  getNetWorth: "Net Worth view: accounts, snapshots, totals, bucket split subtotals, and target progress.",
+  setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals.",
+  setNwTarget: "Set the Net Worth target amount.",
+  getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results.",
+  setRetirementAssumptionsCollapsed: "Persist the Retirement assumptions section's collapsed state.",
+  setRetirementSpendingUnit: "Persist the Retirement annual-spending entry unit (per year / per month).",
+  saveRetirementCalc: "Save the Retirement calculator inputs. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current lite record (saved inputs, scenarios, baseline, and both revisions) instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it.",
+  saveRetirementBaseline: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan'). Revision-checked (CAS) on BOTH records: a write whose baseRevision or baseBaselineRevision no longer matches the stored revision is refused before anything is written, with the current lite record and both revisions; a baseline commit that loses a commit-time race is retried once against the fresh baseline, and a second loss returns a stage \"baseline\" conflict (the working inputs were saved; the baseline did not move). Writes with no bases keep the legacy unchecked behaviour, and every accepted write bumps both revisions and returns them.",
+  getRetirementBaselineResults: "Price the saved Retirement baselines against the current defaults.",
+  saveRetirementScenario: "Save a Retirement scenario.",
+  deleteRetirementScenario: "Delete a saved Retirement scenario.",
+  renameRetirementScenario: "Rename a saved Retirement scenario.",
+  getRothPlanner: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, and the latest Net Worth snapshot subtotals.",
+  resetRothPlanner: "Reset the Roth plan record (plan inputs plus the execution-year, gift, and MC-volatility blocks) to the seeded fresh-user defaults; saved scenarios pass through untouched. The reset commits against the record it read, retrying against the freshest record a bounded number of times if another save lands first; if it keeps losing that race it is refused with the current record — the same conflict shape saveRothInputs returns — instead of overwriting the newer save.",
+  getRothUiState: "Read the Roth view's UI state (open sections, year table, workspace mode) plus the Playground form's remembered dial state, with the blob's current write revision.",
+  setRothUiState: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current blob and its revision instead of overwriting it.",
+  saveRothInputs: "Save the Roth plan record (inputs plus execution-year, MC-volatility, and gift blocks). Writers are strict: a complete record is required. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current record and its revision instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. " + SAVE_FLATTENING_SENTENCE + " " + CONVERTED_ALREADY_DISTINCTION_SENTENCE,
+  saveRothScenario: "Save the given plan inputs as a new named Roth scenario (complete record required).",
+  updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
+  deleteRothScenario: "Delete a saved Roth scenario by name.",
+  renameRothScenario: "Rename a saved Roth scenario.",
+  runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. Compute-only; saves nothing.",
+  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
+  runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
+  runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
+  runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing.",
+  runRothGiftCompare: "Price the plan as saved versus with a one-off gift of appreciated stock to a child, including the child's sale tax and the gift-tax exclusion check. Compute-only; saves nothing.",
+  runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced.",
+  runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
+  runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the eleven source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income (interestYieldCents, then dividendYieldCents — each the yield on the year's opening Taxable balance, reinvested in the engine's mechanics, so its application offsets the year's taxable sales, spending sales first), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits; taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — net of the yield cash applied to them; rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the eleven sources plus spendShortfallCents foot to totalNeedCents, except in a year whose tax bill the balances could not pay: that year foots short by the unpaid tax, which is not part of spendShortfallCents; and the shortfall is never reconciled into a source field. A year whose balances cannot cover its needs foots short by the unfunded amount. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Compute-only; saves nothing.",
+  getYearSummary: "Year summary for one year: spending figures and Net Worth movement on the same math as their own views. The Keep-the-lights-on floor is priced for the requested year: at the current month for the current year, otherwise at the last month included in that year's totals (or that year's December when it has none).",
+  setNwAccountsCollapsed: "Persist the Net Worth Accounts section's collapsed state.",
+  setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state.",
+  setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
+  addNwSnapshot: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
+  updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances.",
+  updateNwBalance: "Correct one account's balance in one snapshot (null removes it).",
+  deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist.",
+  addNwAccount: "Add a Net Worth account (ordinary, property, or custodial). An absent propertyKind defaults to \"none\"; an unknown propertyKind value is rejected, never defaulted.",
+  renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist.",
+  setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
+  deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
+  exportbackup: "Export the complete dataset as one decrypted backup payload.",
+  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids.",
+  listBackups: "List the encrypted backup files in the backups folder.",
+  deleteBackup: "Delete one backup-*.mstbak file from the backups folder.",
+  deleteAllBackups: "Delete every backup file in the backups folder.",
+  createBackupNow: "Create an encrypted backup file now from the current dataset (same payload as exportbackup).",
+  runAccuracySelfCheck: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, or data integrity) per call.",
+  describeApi: "Return the machine-readable API contract for every published action, generated live from the actions' own zod schemas, with version stamps and conventions.",
+};
+
+const describeApiResponse = z.object({
+  apiContractVersion: z.number().int(),
+  engineVersion: z.string(),
+  lawYear: z.number().int(),
+  lawYearsAvailable: z.array(z.number().int()),
+  units: z.string(),
+  deltaConvention: z.string(),
+  writersReadersRule: z.string(),
+  balanceSemantics: z.string(),
+  flexSemantics: z.string(),
+  protectMinSemantics: z.string(),
+  scoreIdentities: z.string(),
+  lawYearSemantics: z.string(),
+  tierSemantics: z.string(),
+  examples: z.array(
+    z.object({
+      action: z.string(),
+      note: z.string(),
+      request: z.unknown(),
+      response: z.unknown(),
+    }),
+  ),
+  actions: z.array(
+    z.object({
+      name: z.string(),
+      purpose: z.string(),
+      requestSchema: z.unknown(),
+      responseSchema: z.unknown(),
+    }),
+  ),
+  actionsMissingPurpose: z.array(z.string()),
+});
+type DescribeApiResponse = z.infer<typeof describeApiResponse>;
+
+/* Render one action schema for describeApi EXACTLY as the
+   published action surface (artifact.list_actions) renders a
+   request schema: zod's toJSONSchema with io "input" and
+   unrepresentable "any" — the same conversion, with the same
+   options, the runtime applies to each definition's request
+   schema when it publishes the action list. The io option is
+   what makes the additionalProperties flag truthful: under
+   io "output" (the toJSONSchema default) zod stamps
+   additionalProperties:false on EVERY object, but under
+   io "input" it stamps the flag only where the object's
+   catchall is z.never() — that is, exactly the z.strictObject
+   definitions, which are the ones that actually reject unknown
+   keys — at every nesting level, and omits the flag for plain
+   z.object definitions, whose unknown keys are stripped
+   instead. Strictness is therefore derived by zod itself from
+   each schema definition's catchall: there is no
+   hand-maintained list of strict actions or field paths, and a
+   future change of any object between strict and non-strict
+   shows up identically here and on the published surface with
+   no second edit. The same rendering is applied to response
+   schemas, so a response object claims closedness only if it
+   is actually strict (no response object is strict today). A
+   schema zod cannot represent yields undefined, mirroring the
+   published surface's fallback for that action. */
+function publishedJsonSchema(schema: z.ZodType) {
+  try {
+    return z.toJSONSchema(schema, { io: "input", unrepresentable: "any" });
+  } catch {
+    return undefined;
+  }
+}
+
+/* The getRothPlanner response shape, hoisted to ONE definition:
+   getRothPlanner serves it as-is, and the Roth writers' conflict
+   shape carries it as the current record. */
+const rothPlannerResponse = z.object({
+  snapshot: z
+    .object({
+      date: z.string(),
+      totalCents: z.number(),
+      pretaxCents: z.number().nullable(),
+      rothCents: z.number().nullable(),
+      taxableCents: z.number().nullable(),
+      hsaCents: z.number().nullable(),
+      cashCents: z.number().nullable(),
+      nonTaxableCents: z.number().nullable(),
+      bucket529Cents: z.number().nullable(),
+      // True when at least one balance in the latest snapshot
+      // carries split parts — i.e. the snapshot has actually
+      // been split into buckets. False means the bucket
+      // figures above are all null and the view must run on
+      // manual balance entries.
+      hasAnySplit: z.boolean(),
+    })
+    .nullable(),
+  saved: rothSavedInputs.nullable(),
+  scenarios: z.array(rothScenario),
+  execution: rothExecutionResponse,
+  // The market-uncertainty check's volatility preference —
+  // its own block, plan-record only (see rothMcCheckFields).
+  mcCheck: rothMcCheckResponse,
+  // The gift-stock what-if description — its own block,
+  // plan-record only (see rothGiftFields).
+  gift: rothGiftResponse,
+  // The record's write revision (API follow-on 1): writers pass
+  // it back as saveRothInputs' baseRevision so a stale save is
+  // refused instead of silently overwriting a newer one. 0 for
+  // a record written before revisions existed.
+  revision: z.number().int().nonnegative(),
+});
+type RothPlannerResponse = z.infer<typeof rothPlannerResponse>;
+
+/* saveRothInputs' response (API follow-on 1), mirroring
+   setRothUiStateResponse: an accepted write returns the
+   revision it stored; a refused write returns the CURRENT
+   planner record and its revision — exactly what
+   loadRothPlannerResponse returns at refusal time — so the
+   writer re-hydrates from it and re-bases. Storage is left
+   untouched on a refusal. */
+const saveRothInputsResponse = z.union([
+  saveRothInputsOkResponse,
+  z.object({
+    ok: z.literal(false),
+    conflict: z.literal(true),
+    revision: z.number().int().nonnegative(),
+    record: rothPlannerResponse,
+  }),
+]);
+type SaveRothInputsResponse = z.infer<typeof saveRothInputsResponse>;
+
+/* Load the full Roth planner read model (snapshot subtotals +
+   the saved record's parsed blocks) — the ONE implementation
+   behind getRothPlanner's handler and the conflict records the
+   Roth writers (saveRothInputs, resetRothPlanner) return. */
+async function loadRothPlannerResponse(ctx: Ctx): Promise<RothPlannerResponse> {
+  const db = ctx.db<typeof schema>();
+  const key = await getCryptoKey(ctx);
+  const nw = await loadNetWorthDecrypted(ctx, db, key);
+  const classById = classByIdOf(nw.accounts);
+  const settingRows = await db.select().from(schema.settings);
+  const includeProperty =
+    settingRows.find((r) => r.key === NW_INCLUDE_PROPERTY_KEY)?.value === "1";
+  const latest = nw.snapshots.length
+    ? nw.snapshots[nw.snapshots.length - 1]!
+    : null;
+  let snapshot: RothPlannerResponse["snapshot"] = null;
+  if (latest) {
+    const rows = nw.balances.filter((b) => b.snapshotId === latest.id);
+    const totals = snapshotTotals(rows, classById, includeProperty);
+    const sub = bucketSubtotals(rows, classById);
+    snapshot = {
+      date: latest.date,
+      totalCents: totals.totalCents,
+      pretaxCents: sub["Pre-tax"],
+      rothCents: sub.Roth,
+      taxableCents: sub.Taxable,
+      hsaCents: sub.HSA,
+      cashCents: sub.Cash,
+      nonTaxableCents: sub["Non-Taxable"],
+      bucket529Cents: sub["529"],
+      hasAnySplit: rows.some((b) => splitPartsOf(b).length > 0),
+    };
+  }
+  const blob = await readRothBlob(db, key);
+  return {
+    snapshot,
+    saved: blob.inputs,
+    scenarios: blob.scenarios,
+    execution: blob.execution,
+    mcCheck: { mcVolatilityPct: blob.mcVolatilityPct },
+    gift: blob.gift,
+    revision: blob.revision,
+  };
+}
+
+export const Actions = {
+  // Machine-readable API contract (model-friendly API, Piece 1):
+  // generated AT CALL TIME from the live action definitions —
+  // each action's request/response JSON schema comes from the
+  // SAME zod schema object passed to its defineAction (carried
+  // on the definition as .request/.response), converted with
+  // publishedJsonSchema above (the published surface's own
+  // conversion, so the additionalProperties flag means exactly
+  // what it means there). There is no hand-maintained schema
+  // copy to drift. Read-only: reads no data, writes nothing.
+  describeApi: defineAction({
+    // A-5(a): an optional action filter — a caller learning
+    // one action's contract passes { action: "<name>" } and
+    // gets the same response with the actions array narrowed
+    // to that one entry (empty when the name is not a
+    // published action). No argument = the whole contract,
+    // byte-stable apart from the fields the hardening package
+    // added.
+    request: z.object({ action: z.string().min(1).max(120).optional() }),
+    response: describeApiResponse,
+    async handler(_ctx, args): Promise<DescribeApiResponse> {
+      const entries = Object.entries(Actions);
+      const missing = entries
+        .map(([name]) => name)
+        .filter((name) => !(name in ACTION_PURPOSES));
+      const visible = args.action
+        ? entries.filter(([name]) => name === args.action)
+        : entries;
+      return {
+        ...apiProvenance(),
+        units: UNITS_SEMANTICS,
+        deltaConvention:
+          "runRothCompare deltas are scenario − baseline, in cents: delta = scenario − baseline. A negative deltaNetCostCents means the scenario costs less than the baseline; a positive deltaAcaCreditCents means the scenario keeps more ACA premium credit than the baseline.",
+        writersReadersRule: WRITERS_READERS_RULE,
+        balanceSemantics: BALANCE_SEMANTICS,
+        flexSemantics: FLEX_SEMANTICS,
+        protectMinSemantics: PROTECT_MIN_SEMANTICS,
+        scoreIdentities: SCORE_IDENTITIES,
+        lawYearSemantics: LAW_YEAR_SEMANTICS,
+        tierSemantics: TIER_SEMANTICS,
+        examples: [ROTH_COMPARE_EXAMPLE],
+        actions: visible.map(([name, def]) => ({
+          name,
+          purpose: ACTION_PURPOSES[name] ?? "",
+          requestSchema: publishedJsonSchema(def.request),
+          responseSchema: publishedJsonSchema(def.response),
+        })),
+        actionsMissingPurpose: missing,
+      };
+    },
+  }),
+
+  getDashboard: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ month: z.string().regex(monthRe) }),
+    response: z.object({
+      month: z.string(),
+      totalExpectedYearlyCents: z.number(),
+      totalAnnualCents: z.number(),
+      accrualCents: z.number(),
+      incurredCents: z.number(),
+      yearlyLumpsCents: z.number(),
+      smoothedCents: z.number(),
+      cashOutCents: z.number(),
+      isSummaryMonth: z.boolean(),
+      enteredCashOutCents: z.number().nullable(),
+      transactionIncurredCents: z.number(),
+      transactionCashOutCents: z.number(),
+      transactionCountThisMonth: z.number(),
+      yearlyLumpsCheckingCents: z.number(),
+      // Total of payments RECORDED against yearly/periodic expenses in
+      // the viewed month — every "spending" transaction linked to a
+      // smoothed expense, any paid-by channel, whether or not the month
+      // is an entered-total (summary) month. Display-only: it is NOT
+      // the effective lumps figure used by the smoothed formula (that
+      // one is yearlyLumpsCents, which counts checking-only lumps in
+      // summary months). A bill's actual payment month often differs
+      // from its scheduled due month, so this uses recorded payments,
+      // never the due schedule.
+      yearlyPaidOutCents: z.number(),
+      summaries: z.array(summaryOut),
+      // Cash-out items for the SELECTED month, and whether the selected
+      // month's cash out comes from items.
+      cashOutItems: z.array(cashOutItemOut),
+      cashOutItemsTotalCents: z.number(),
+      cashOutItemsCount: z.number(),
+      isItemsMonth: z.boolean(),
+      // Every month that has an entered total and/or items, with the
+      // resolved cash out (items sum wins over the entered total).
+      // enteredCashOutCents is null for item-only months; the entered
+      // total is still reported alongside the items sum so the UI can
+      // show the reconciliation difference when both exist.
+      cashOutMonths: z.array(
+        z.object({
+          month: z.string(),
+          enteredCashOutCents: z.number().nullable(),
+          itemsTotalCents: z.number(),
+          itemsCount: z.number(),
+          resolvedCashOutCents: z.number(),
+          items: z.array(cashOutItemOut),
+        }),
+      ),
+      monthlyBills: z.array(monthlyBillOut),
+      monthlyBillsTotalCents: z.number(),
+      // Section-level UI state: true when the whole Monthly bills list
+      // is collapsed (every bill shows header-only). One flag for the
+      // whole section, persisted server-side in settings so it survives
+      // reloads and works across devices. Default (no stored value) is
+      // COLLAPSED for all four sections; once the user toggles a
+      // section, the stored value ("1" collapsed / "0" expanded) wins.
+      monthlyBillsCollapsedAll: z.boolean(),
+      yearlyBillsCollapsedAll: z.boolean(),
+      byCategoryCollapsedAll: z.boolean(),
+      yearInSpendingCollapsedAll: z.boolean(),
+      // Sticky entry defaults for the NEW-bill forms (see the entry
+      // defaults note above): the Paid from value used last time, or
+      // the first-ever fallbacks — "Credit Card" for a new monthly
+      // bill, "Checking" (type "checking") for a new yearly bill.
+      // Display defaults only: they pre-fill a new form and never
+      // override a saved bill's own value.
+      lastMonthlyPaidFrom: z.string(),
+      lastYearlyPaidByType: z.string(),
+      lastYearlyPaidByName: z.string(),
+      categoryBreakdown: z.array(
+        z.object({
+          category: z.string(),
+          monthlyCents: z.number(),
+          smoothedCents: z.number(),
+          totalCents: z.number(),
+          billCount: z.number(),
+        }),
+      ),
+      categoryBreakdownTotalCents: z.number(),
+      billCategories: z.array(z.string()),
+      // "Keep the lights on" floor for the viewed month: checked monthly
+      // bills (amount in effect that month) + checked smoothed bills'
+      // set-aside for that month. A derived label grouping only — it
+      // feeds no other figure.
+      keepLightsOnMonthlyCents: z.number(),
+      keepLightsOnSmoothedCents: z.number(),
+      keepLightsOnTotalCents: z.number(),
+      // Year-to-date: for each month from January of the viewed month's
+      // calendar year through the viewed month, the SAME six quantities
+      // the Quick view tiles display for that month, summed. Computed
+      // with the identical per-month helpers as the tiles themselves, so
+      // tile and YTD always agree and the partition identity holds:
+      // everythingElse = cashOut − totalMonthly − yearlyPaidOut.
+      ytd: z.object({
+        trueCostCents: z.number(),
+        cashOutCents: z.number(),
+        totalMonthlyCents: z.number(),
+        everythingElseCents: z.number(),
+        keepLightsOnCents: z.number(),
+        yearlyPaidOutCents: z.number(),
+      }),
+      remainingOutflowCents: z.number(),
+      trailingMonthsCovered: z.number(),
+      trailingAvgCents: z.number(),
+      avgSmoothedCents: z.number(),
+      divergenceCents: z.number(),
+      divergencePct: z.number(),
+      reserveCents: z.number(),
+      reserveStartMonth: z.string().nullable(),
+      openingReserveCents: z.number(),
+      hasAnyData: z.boolean(),
+      monthTransactions: z.array(txnOut),
+      categories: z.array(
+        z.object({ category: z.string(), amountCents: z.number() }),
+      ),
+      history: z.array(
+        z.object({
+          month: z.string(),
+          incurredCents: z.number(),
+          cashOutCents: z.number(),
+          smoothedCents: z.number(),
+          yearlyLumpsCents: z.number(),
+          oneOffTotalCents: z.number(),
+          hasOneOff: z.boolean(),
+        }),
+      ),
+      oneOffs: z.array(oneOffOut),
+      oneOffsTotalCents: z.number(),
+      smoothedExcludingOneOffsCents: z.number(),
+      forecast: z.array(
+        z.object({
+          month: z.string(),
+          dueBills: z.array(
+            z.object({
+              id: z.number(),
+              name: z.string(),
+              frequency: z.string(),
+              expectedCents: z.number(),
+              // The amount this bill contributes to totalDueCents:
+              // the recorded actual for the month when one exists,
+              // otherwise the expected amount. The UI lists THIS
+              // figure per bill, so the listed bills always add up
+              // to the month's Total due (previously the list showed
+              // expectedCents while the total summed actuals, and the
+              // two disagreed whenever a recorded payment differed
+              // from the expected amount).
+              amountCents: z.number(),
+            }),
+          ),
+          totalDueCents: z.number(),
+          projectedReserveCents: z.number(),
+          shortfallCents: z.number(),
+        }),
+      ),
+      noDueMonthBills: z.array(
+        z.object({
+          id: z.number(),
+          name: z.string(),
+          frequency: z.string(),
+          expectedCents: z.number(),
+          annualCents: z.number(),
+        }),
+      ),
+      yearly: z.array(yearlyOut),
+      accountNames: z.array(z.string()),
+      // Data-integrity warning lines for this load (bill version
+      // chains, payment references, cash-out items). Empty when the
+      // stored data passes every check — the UI renders nothing
+      // for an empty list.
+      integrityWarnings: z.array(z.string()),
+    }),
+    async handler(ctx, args) {
+      const { txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems, settingsMap, key } =
+        await loadAll(ctx);
+      const month = args.month;
+      // Sticky entry defaults for the new-bill forms (fallbacks on
+      // first-ever use, before anything has been stored).
+      const storedMonthlyPaidFrom = await decryptSettingValue(
+        key,
+        settingsMap.get(ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY),
+      );
+      const lastMonthlyPaidFrom =
+        storedMonthlyPaidFrom && storedMonthlyPaidFrom.trim() !== ""
+          ? storedMonthlyPaidFrom
+          : MONTHLY_PAID_FROM_FALLBACK;
+      const storedYearlyPaidType = settingsMap.get(
+        ENTRY_DEFAULT_YEARLY_PAID_TYPE_KEY,
+      );
+      const lastYearlyPaidByType =
+        storedYearlyPaidType === "card" ? "card" : "checking";
+      const storedYearlyPaidName = await decryptSettingValue(
+        key,
+        settingsMap.get(ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY),
+      );
+      const lastYearlyPaidByName =
+        storedYearlyPaidName && storedYearlyPaidName.trim() !== ""
+          ? storedYearlyPaidName
+          : YEARLY_PAID_NAME_FALLBACK;
+      const openingReserveCents = Number(
+        settingsMap.get("opening_reserve_cents") ?? "0",
+      );
+      // The per-month computation (accrual, the cash-out resolution,
+      // the reserve, the forecast) lives in the shared spending core
+      // (server/src/spendingCore.ts) — the same code the Year Summary
+      // and the accuracy fixtures run.
+      const core = createSpendingCore({
+        txns,
+        yearly,
+        yearlyVersions,
+        summaries,
+        cashOutItems,
+        bills,
+        billVersions,
+        oneOffs,
+        openingReserveCents,
+        reserveStartSetting: settingsMap.get("reserve_start_month") ?? null,
+      });
+      const {
+        yearlyVersionsByExpense,
+        byMonth,
+        summaryByMonth,
+        itemsByMonth,
+        totalAnnualForMonth,
+        accrualForMonth,
+        eff,
+        earliest,
+        reserveStartMonth,
+        monthlyTotalForMonth,
+        keepLightsOnForMonth,
+      } = core;
+      const totalAnnualCents = totalAnnualForMonth(month);
+      const totalExpectedYearlyCents = totalAnnualCents;
+      const accrualCents = accrualForMonth(month);
+
+      const cur = core.monthAgg(month);
+      const curEff = eff(month);
+      const isSummaryMonth = summaryByMonth.has(month);
+      const isItemsMonth = itemsByMonth.has(month);
+      const smoothedCents = curEff.smoothed;
+
+      // Trailing window: up to 12 months ending at the selected month,
+      // but only months from the first month that has data.
+      const windowStart = shiftMonth(month, -11);
+      const coveredStart =
+        earliest && earliest > windowStart ? earliest : windowStart;
+      const trailingMonthsCovered =
+        earliest == null
+          ? 0
+          : Math.max(0, monthsBetween(coveredStart, month) + 1);
+      let trailingSum = 0;
+      let smoothedSum = 0;
+      for (let i = 0; i < trailingMonthsCovered; i++) {
+        const m = shiftMonth(coveredStart, i);
+        const e = eff(m);
+        trailingSum += e.incurred;
+        smoothedSum += e.smoothed;
+      }
+      const trailingAvgCents =
+        trailingMonthsCovered > 0
+          ? Math.round(trailingSum / trailingMonthsCovered)
+          : 0;
+      const avgSmoothedCents =
+        trailingMonthsCovered > 0
+          ? Math.round(smoothedSum / trailingMonthsCovered)
+          : 0;
+      const divergenceCents = avgSmoothedCents - trailingAvgCents;
+      const divergencePct =
+        trailingAvgCents !== 0
+          ? divergenceCents / Math.abs(trailingAvgCents)
+          : 0;
+
+      // Reserve: accrual minus lumps, accumulated from the start month.
+      // Summary months count only the lumps that left checking, matching
+      // the smoothed formula for those months.
+      const reserveCents = core.reserveThrough(month);
+
+      const oneOffsByMonth = new Map<string, number>();
+      for (const o of oneOffs) {
+        oneOffsByMonth.set(o.month, (oneOffsByMonth.get(o.month) ?? 0) + o.amountCents);
+      }
+      const monthOneOffs = oneOffs
+        .filter((o) => o.month === month)
+        .map((o) => ({
+          id: o.id,
+          month: o.month,
+          description: o.description,
+          amountCents: o.amountCents,
+          note: o.note ?? null,
+        }));
+      const oneOffsTotalCents = monthOneOffs.reduce((s, o) => s + o.amountCents, 0);
+      const smoothedExcludingOneOffsCents = smoothedCents - oneOffsTotalCents;
+
+      const history = [];
+      for (let i = 11; i >= 0; i--) {
+        const m = shiftMonth(month, -i);
+        const e = eff(m);
+        // Months before tracking started show nothing — the set-aside
+        // only applies once there is data.
+        const beforeStart = earliest != null && m < earliest;
+        const ooTotal = oneOffsByMonth.get(m) ?? 0;
+        history.push({
+          month: m,
+          incurredCents: e.incurred,
+          cashOutCents: e.cashOut,
+          smoothedCents: beforeStart ? 0 : e.smoothed,
+          yearlyLumpsCents: e.lumps,
+          oneOffTotalCents: ooTotal,
+          hasOneOff: ooTotal !== 0,
+        });
+      }
+
+      // ---- Forecast: the viewed month and the next 2 ----
+      // Computed by the shared spending core (see spendingCore.ts):
+      // recorded actuals where they exist, expected amounts for
+      // bills due, and a projected reserve that counts every
+      // recorded payment exactly once.
+      const forecast = core.forecastFor(month);
+
+      const noDueMonthBills = yearly
+        .filter((y) => y.dueMonth == null)
+        .map((y) => {
+          const vs = yearlyVersionsByExpense.get(y.id) ?? [];
+          const vRaw = yearlyVersionInEffect(vs, month, y.backfillBeforeFirstVersion === 1);
+          const latest = latestYearlyVersion(vs);
+          const effFreq = vRaw && vRaw !== null ? vRaw.frequency : (latest?.frequency ?? y.frequency);
+          const effExpected = vRaw && vRaw !== null ? vRaw.expectedCents : (latest?.expectedCents ?? y.expectedCents);
+          return {
+            id: y.id,
+            name: y.name,
+            frequency: effFreq as string,
+            expectedCents: effExpected,
+            annualCents: annualCentsForValues(effExpected, effFreq as string),
+          };
+        });
+
+      const catMap = new Map<string, number>();
+      for (const t of txns) {
+        if (monthOf(t.date) === month && t.kind === "spending") {
+          catMap.set(t.category, (catMap.get(t.category) ?? 0) + t.amountCents);
+        }
+      }
+      const categories = [...catMap.entries()]
+        .map(([category, amountCents]) => ({ category, amountCents }))
+        .filter((c) => c.amountCents !== 0)
+        .sort((a, b) => b.amountCents - a.amountCents);
+
+      const monthTransactions = txns
+        .filter((t) => monthOf(t.date) === month)
+        .map((t) => ({
+          id: t.id,
+          date: t.date,
+          description: t.description,
+          amountCents: t.amountCents,
+          sourceType: t.sourceType,
+          accountName: t.accountName,
+          kind: t.kind,
+          category: t.category,
+          yearlyExpenseId: t.yearlyExpenseId ?? null,
+        }))
+        .reverse();
+
+      const accountNames = [
+        ...new Set([
+          ...txns.map((t) => t.accountName),
+          ...yearly.map((y) => y.paidByName),
+          "Checking",
+        ]),
+      ];
+
+      // Bill amounts are versioned: this month's breakdown uses the
+      // version in effect for THIS month, so a future amount change
+      // never rewrites an earlier month's total or the amount left after monthly bills.
+      const versionsByBill = new Map<number, BillVersionRow[]>();
+      for (const v of billVersions) {
+        const arr = versionsByBill.get(v.billId) ?? [];
+        arr.push(v);
+        versionsByBill.set(v.billId, arr);
+      }
+      const billsOut = bills.map((b) => {
+        const vs = versionsByBill.get(b.id) ?? [];
+        const inEffect = versionInEffect(vs, month);
+        const latest = latestVersion(vs);
+        return {
+          id: b.id,
+          name: b.name,
+          amountCents: inEffect?.amountCents ?? 0,
+          effectiveFrom: inEffect?.effectiveFrom ?? null,
+          latestAmountCents: latest?.amountCents ?? b.amountCents,
+          paidBy: b.paidBy,
+          notes: b.notes ?? null,
+          category: b.category,
+          keepLightsOn: b.keepLightsOn === 1,
+          history: [...vs]
+            .sort((a, c) =>
+              a.effectiveFrom === c.effectiveFrom
+                ? c.id - a.id
+                : a.effectiveFrom < c.effectiveFrom
+                  ? 1
+                  : -1,
+            )
+            .map((v) => ({
+              id: v.id,
+              amountCents: v.amountCents,
+              effectiveFrom: v.effectiveFrom,
+            })),
+          _inEffectCents: inEffect?.amountCents ?? 0,
+        };
+      });
+      const monthlyBillsTotalCents = billsOut.reduce(
+        (s, b) => s + b._inEffectCents,
+        0,
+      );
+      const yearlyOuts = yearly.map((y) =>
+        yearlyOutFor(y, txns, month, yearlyVersionsByExpense.get(y.id) ?? []),
+      );
+      // By-category breakdown: a label-only grouping. Monthly part uses
+      // the amount version in effect for this month; smoothed part uses
+      // each bill's monthly set-aside for this month. Categories feed no
+      // other figure; the grand total is monthly bills total + accrual.
+      const catBreakMap = new Map<
+        string,
+        { monthlyCents: number; smoothedCents: number; billCount: number }
+      >();
+      for (const b of billsOut) {
+        const e = catBreakMap.get(b.category) ?? {
+          monthlyCents: 0,
+          smoothedCents: 0,
+          billCount: 0,
+        };
+        e.monthlyCents += b._inEffectCents;
+        e.billCount += 1;
+        catBreakMap.set(b.category, e);
+      }
+      for (const y of yearlyOuts) {
+        const e = catBreakMap.get(y.category) ?? {
+          monthlyCents: 0,
+          smoothedCents: 0,
+          billCount: 0,
+        };
+        e.smoothedCents += y.monthlyAccrualCents;
+        e.billCount += 1;
+        catBreakMap.set(y.category, e);
+      }
+      const categoryBreakdown = [...catBreakMap.entries()]
+        .map(([category, e]) => ({
+          category,
+          monthlyCents: e.monthlyCents,
+          smoothedCents: e.smoothedCents,
+          totalCents: e.monthlyCents + e.smoothedCents,
+          billCount: e.billCount,
+        }))
+        .sort(
+          (a, b) =>
+            b.totalCents - a.totalCents || a.category.localeCompare(b.category),
+        );
+      const categoryBreakdownTotalCents = categoryBreakdown.reduce(
+        (s, c) => s + c.totalCents,
+        0,
+      );
+      const billCategories = [
+        ...new Set([
+          ...bills.map((b) => b.category),
+          ...yearly.map((y) => y.category),
+        ]),
+      ].sort((a, b) => a.localeCompare(b));
+      // Keep-the-lights-on floor: the checked bills only, using this
+      // month's in-effect amounts — monthly bills at their version in
+      // effect, smoothed bills at their monthly set-aside in effect.
+      const keepLightsOnMonthlyCents = billsOut.reduce(
+        (s, b) => s + (b.keepLightsOn ? b._inEffectCents : 0),
+        0,
+      );
+      const keepLightsOnSmoothedCents = yearlyOuts.reduce(
+        (s, y) => s + (y.keepLightsOn ? y.monthlyAccrualCents : 0),
+        0,
+      );
+      const keepLightsOnTotalCents =
+        keepLightsOnMonthlyCents + keepLightsOnSmoothedCents;
+
+      // ---- Year-to-date (Quick view) ----
+      // Sum the six tile quantities over January of the viewed month's
+      // calendar year through the viewed month, using the same
+      // per-month figures the tiles show. Months before tracking
+      // started (before the earliest data month) contribute 0.
+      // The per-month totals come from the shared spending core
+      // (monthlyTotalForMonth / keepLightsOnForMonth, destructured
+      // above) — the same implementation every other surface uses.
+      const ytd = {
+        trueCostCents: 0,
+        cashOutCents: 0,
+        totalMonthlyCents: 0,
+        everythingElseCents: 0,
+        keepLightsOnCents: 0,
+        yearlyPaidOutCents: 0,
+      };
+      {
+        const jan = `${month.slice(0, 4)}-01`;
+        const n = monthsBetween(jan, month) + 1;
+        for (let i = 0; i < n; i++) {
+          const m = shiftMonth(jan, i);
+          if (earliest != null && m < earliest) continue;
+          const e = eff(m);
+          const mt = monthlyTotalForMonth(m);
+          const paid = byMonth.get(m)?.lumps ?? 0;
+          ytd.trueCostCents += e.smoothed;
+          ytd.cashOutCents += e.cashOut;
+          ytd.totalMonthlyCents += mt;
+          ytd.everythingElseCents += e.cashOut - mt - paid;
+          ytd.keepLightsOnCents += keepLightsOnForMonth(m);
+          ytd.yearlyPaidOutCents += paid;
+        }
+      }
+      return {
+        month,
+        totalExpectedYearlyCents,
+        totalAnnualCents,
+        accrualCents,
+        incurredCents: curEff.incurred,
+        yearlyLumpsCents: curEff.lumps,
+        smoothedCents,
+        cashOutCents: curEff.cashOut,
+        isSummaryMonth,
+        enteredCashOutCents: summaryByMonth.get(month) ?? null,
+        transactionIncurredCents: cur.incurred,
+        transactionCashOutCents: cur.cashOut,
+        transactionCountThisMonth: txns.filter(
+          (t) => monthOf(t.date) === month,
+        ).length,
+        yearlyLumpsCheckingCents: cur.lumpsChecking,
+        yearlyPaidOutCents: cur.lumps,
+        summaries: summaries.map((s) => ({
+          month: s.month,
+          cashOutCents: s.cashOutCents,
+        })),
+        cashOutItems: cashOutItems
+          .filter((it) => it.month === month)
+          .map((it) => ({
+            id: it.id,
+            month: it.month,
+            description: it.description,
+            amountCents: it.amountCents,
+            note: it.note ?? null,
+          })),
+        cashOutItemsTotalCents: itemsByMonth.get(month)?.total ?? 0,
+        cashOutItemsCount: itemsByMonth.get(month)?.count ?? 0,
+        isItemsMonth,
+        cashOutMonths: [
+          ...new Set([
+            ...summaries.map((s) => s.month),
+            ...cashOutItems.map((it) => it.month),
+          ]),
+        ]
+          .sort()
+          .map((m) => {
+            const entered = summaryByMonth.get(m) ?? null;
+            const items = itemsByMonth.get(m);
+            return {
+              month: m,
+              enteredCashOutCents: entered,
+              itemsTotalCents: items?.total ?? 0,
+              itemsCount: items?.count ?? 0,
+              resolvedCashOutCents: items ? items.total : (entered ?? 0),
+              items: cashOutItems
+                .filter((it) => it.month === m)
+                .map((it) => ({
+                  id: it.id,
+                  month: it.month,
+                  description: it.description,
+                  amountCents: it.amountCents,
+                  note: it.note ?? null,
+                })),
+            };
+          }),
+        monthlyBills: billsOut.map(({ _inEffectCents, ...b }) => b),
+        monthlyBillsTotalCents,
+        monthlyBillsCollapsedAll:
+          settingsMap.get("monthly_bills_collapsed_all") !== "0",
+        yearlyBillsCollapsedAll:
+          settingsMap.get("yearly_bills_collapsed_all") !== "0",
+        byCategoryCollapsedAll:
+          settingsMap.get("by_category_collapsed_all") !== "0",
+        yearInSpendingCollapsedAll:
+          settingsMap.get("year_in_spending_collapsed_all") !== "0",
+        lastMonthlyPaidFrom,
+        lastYearlyPaidByType,
+        lastYearlyPaidByName,
+        categoryBreakdown,
+        categoryBreakdownTotalCents,
+        billCategories,
+        keepLightsOnMonthlyCents,
+        keepLightsOnSmoothedCents,
+        keepLightsOnTotalCents,
+        ytd,
+        remainingOutflowCents: curEff.cashOut - monthlyBillsTotalCents,
+        trailingMonthsCovered,
+        trailingAvgCents,
+        avgSmoothedCents,
+        divergenceCents,
+        divergencePct,
+        reserveCents,
+        reserveStartMonth: reserveStartMonth ?? null,
+        openingReserveCents,
+        hasAnyData:
+          txns.length > 0 ||
+          yearly.length > 0 ||
+          summaries.length > 0 ||
+          bills.length > 0 ||
+          oneOffs.length > 0 ||
+          cashOutItems.length > 0,
+        monthTransactions,
+        categories,
+        history,
+        oneOffs: monthOneOffs,
+        oneOffsTotalCents,
+        smoothedExcludingOneOffsCents,
+        forecast,
+        noDueMonthBills,
+        yearly: yearlyOuts,
+        accountNames,
+        integrityWarnings: integrityWarningLines([
+          checkBillVersionChains({ txns, yearly, yearlyVersions, summaries, bills, billVersions, cashOutItems }),
+          checkPaymentReferences({ txns, yearly, yearlyVersions, summaries, bills, billVersions, cashOutItems }),
+          checkCashOutItems({ txns, yearly, yearlyVersions, summaries, bills, billVersions, cashOutItems }),
+        ]),
+      };
+    },
+  }),
+
+  // Read-only Year view for the Quick view: twelve month panels, each
+  // carrying that month's own Quick view figures. Reuses the exact
+  // same per-month computation as getDashboard / YTD / explorer: one
+  // math path, so a month panel and the Month-mode tiles for that
+  // month can never disagree. It never writes anything.
+  // `totals` sums the summary window only (January through the current
+  // month for the current year, the full year otherwise) over months
+  // that have data; panels cover all twelve months regardless.
+  getYearView: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ year: z.number().int().min(1900).max(2200) }),
+    response: z.object({
+      year: z.number(),
+      currentYear: z.number(),
+      currentMonth: z.string(),
+      windowStart: z.string(),
+      windowEnd: z.string(),
+      windowMonths: z.number(),
+      isCurrentYear: z.boolean(),
+      earliestMonth: z.string().nullable(),
+      hasAnyData: z.boolean(),
+      months: z.array(
+        z.object({
+          month: z.string(),
+          monthNum: z.number(),
+          inWindow: z.boolean(),
+          hasData: z.boolean(),
+          trueCostCents: z.number(),
+          cashOutCents: z.number(),
+          totalMonthlyCents: z.number(),
+          everythingElseCents: z.number(),
+          keepLightsOnCents: z.number(),
+          yearlyPaidOutCents: z.number(),
+          oneOffsTotalCents: z.number(),
+          oneOffsCount: z.number(),
+        }),
+      ),
+      totals: z.object({
+        trueCostCents: z.number(),
+        cashOutCents: z.number(),
+        totalMonthlyCents: z.number(),
+        everythingElseCents: z.number(),
+        keepLightsOnCents: z.number(),
+        yearlyPaidOutCents: z.number(),
+      }),
+    }),
+    async handler(ctx, args) {
+      const { txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems } =
+        await loadAll(ctx);
+      const year = args.year;
+
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonthStr = `${currentYear}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const isCurrentYear = year === currentYear;
+      const windowStart = `${year}-01`;
+      const windowEnd = isCurrentYear ? currentMonthStr : `${year}-12`;
+      const windowMonths = monthsBetween(windowStart, windowEnd) + 1;
+
+      // --- Same per-month computation as getDashboard: the
+      // shared spending core (server/src/spendingCore.ts) ---
+      const core = createSpendingCore({
+        txns,
+        yearly,
+        yearlyVersions,
+        summaries,
+        cashOutItems,
+        bills,
+        billVersions,
+        oneOffs,
+      });
+      const { byMonth, eff, monthlyTotalForMonth, keepLightsOnForMonth } = core;
+
+      const txnEarliest = txns.length > 0 ? monthOf(txns[0]?.date ?? windowStart) : null;
+      const sumEarliest = summaries.length > 0 ? (summaries[0]?.month ?? null) : null;
+      const itemEarliest = cashOutItems.length > 0 ? (cashOutItems[0]?.month ?? null) : null;
+      const earliestMonth =
+        [txnEarliest, sumEarliest, itemEarliest]
+          .filter((v): v is string => v != null)
+          .sort()[0] ?? null;
+
+      const oneOffsByMonth = new Map<string, { total: number; count: number }>();
+      for (const o of oneOffs) {
+        const cur = oneOffsByMonth.get(o.month) ?? { total: 0, count: 0 };
+        cur.total += o.amountCents;
+        cur.count += 1;
+        oneOffsByMonth.set(o.month, cur);
+      }
+
+      // A month "has data" when anything real happened or was in
+      // effect that month: a monthly bill version in effect, a
+      // smoothed bill whose first version has started (checked WITHOUT
+      // the legacy backfill fallback, so months before a bill existed
+      // don't count it), any transaction, an entered cash-out total,
+      // cash-out items, one-offs, or a recorded smoothed-bill payment.
+      // Months with bills in effect but no cash out yet (e.g. future
+      // months of the current year) still count — they get full
+      // panels with their real bill-based figures. The rule itself
+      // lives in the shared spending core (monthHasData).
+      const monthHasData = core.monthHasData;
+      const figuresForMonth = (m: string, hasData: boolean) => {
+        const oo = oneOffsByMonth.get(m) ?? { total: 0, count: 0 };
+        if (!hasData) {
+          return { trueCostCents: 0, cashOutCents: 0, totalMonthlyCents: 0, everythingElseCents: 0, keepLightsOnCents: 0, yearlyPaidOutCents: 0, oneOffsTotalCents: oo.total, oneOffsCount: oo.count };
+        }
+        const e = eff(m);
+        const mt = monthlyTotalForMonth(m);
+        const paid = byMonth.get(m)?.lumps ?? 0;
+        return {
+          trueCostCents: e.smoothed,
+          cashOutCents: e.cashOut,
+          totalMonthlyCents: mt,
+          everythingElseCents: e.cashOut - mt - paid,
+          keepLightsOnCents: keepLightsOnForMonth(m),
+          yearlyPaidOutCents: paid,
+          oneOffsTotalCents: oo.total,
+          oneOffsCount: oo.count,
+        };
+      };
+
+      const months = [];
+      const totals = { trueCostCents: 0, cashOutCents: 0, totalMonthlyCents: 0, everythingElseCents: 0, keepLightsOnCents: 0, yearlyPaidOutCents: 0 };
+      let hasAnyData = false;
+      for (let n = 1; n <= 12; n++) {
+        const m = `${year}-${String(n).padStart(2, "0")}`;
+        const inWindow = m >= windowStart && m <= windowEnd;
+        const hasData = monthHasData(m);
+        const figs = figuresForMonth(m, hasData);
+        if (hasData) hasAnyData = true;
+        if (hasData && inWindow) {
+          totals.trueCostCents += figs.trueCostCents;
+          totals.cashOutCents += figs.cashOutCents;
+          totals.totalMonthlyCents += figs.totalMonthlyCents;
+          totals.everythingElseCents += figs.everythingElseCents;
+          totals.keepLightsOnCents += figs.keepLightsOnCents;
+          totals.yearlyPaidOutCents += figs.yearlyPaidOutCents;
+        }
+        months.push({ month: m, monthNum: n, inWindow, hasData, ...figs });
+      }
+
+      return {
+        year,
+        currentYear,
+        currentMonth: currentMonthStr,
+        windowStart,
+        windowEnd,
+        windowMonths,
+        isCurrentYear,
+        earliestMonth,
+        hasAnyData,
+        months,
+        totals,
+      };
+    },
+  }),
+
+  // Read-only explorer ("slice & dice"). Reuses the exact same
+  // per-month computation as getDashboard: monthly bills at the
+  // version in effect for the month, smoothed bills at their monthly
+  // set-aside via yearlyOutFor / yearlyVersionInEffect, summary-month
+  // cash-out handling in eff(), and one-offs as explanation totals.
+  // It never writes anything.
+  getExplorer: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      fromMonth: z.string().regex(monthRe),
+      toMonth: z.string().regex(monthRe),
+      groupBy: z.enum(["category", "bill", "paidFrom", "keepLightsOn", "month"]),
+    }),
+    response: z.object({
+      fromMonth: z.string(),
+      toMonth: z.string(),
+      groupBy: z.string(),
+      months: z.array(z.string()),
+      earliestMonth: z.string().nullable(),
+      rows: z.array(
+        z.object({
+          label: z.string(),
+          valuesCents: z.array(z.number()),
+          totalCents: z.number(),
+        }),
+      ),
+      columnTotalsCents: z.array(z.number()),
+      grandTotalCents: z.number(),
+      monthRows: z.array(
+        z.object({
+          month: z.string(),
+          cashOutCents: z.number(),
+          trueCostCents: z.number(),
+          totalMonthlyCents: z.number(),
+          yearlyPaidOutCents: z.number(),
+          everythingElseCents: z.number(),
+          oneOffsCents: z.number(),
+        }),
+      ),
+      monthTotals: z.object({
+        cashOutCents: z.number(),
+        trueCostCents: z.number(),
+        totalMonthlyCents: z.number(),
+        yearlyPaidOutCents: z.number(),
+        everythingElseCents: z.number(),
+        oneOffsCents: z.number(),
+      }),
+    }),
+    async handler(ctx, args) {
+      const { txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems } =
+        await loadAll(ctx);
+      let fromMonth = args.fromMonth;
+      let toMonth = args.toMonth;
+      if (fromMonth > toMonth) {
+        const tmp = fromMonth;
+        fromMonth = toMonth;
+        toMonth = tmp;
+      }
+      // Cap the range at 36 months.
+      if (monthsBetween(fromMonth, toMonth) + 1 > 36) {
+        toMonth = shiftMonth(fromMonth, 35);
+      }
+      const monthCount = monthsBetween(fromMonth, toMonth) + 1;
+      const months: string[] = [];
+      for (let i = 0; i < monthCount; i++) months.push(shiftMonth(fromMonth, i));
+
+      const txnEarliest = txns.length > 0 ? monthOf(txns[0]?.date ?? fromMonth) : null;
+      const sumEarliest = summaries.length > 0 ? (summaries[0]?.month ?? null) : null;
+      const itemEarliest = cashOutItems.length > 0 ? (cashOutItems[0]?.month ?? null) : null;
+      const earliestMonth =
+        [txnEarliest, sumEarliest, itemEarliest]
+          .filter((v): v is string => v != null)
+          .sort()[0] ?? null;
+
+      // --- Same per-month computation as getDashboard: the
+      // shared spending core (server/src/spendingCore.ts). The
+      // core's version maps also feed the bill pivot below. ---
+      const core = createSpendingCore({
+        txns,
+        yearly,
+        yearlyVersions,
+        summaries,
+        cashOutItems,
+        bills,
+        billVersions,
+        oneOffs,
+      });
+      const {
+        yearlyVersionsByExpense,
+        versionsByBill,
+        byMonth,
+        eff,
+        monthlyTotalForMonth,
+      } = core;
+      const oneOffsByMonth = new Map<string, number>();
+      for (const o of oneOffs) {
+        oneOffsByMonth.set(o.month, (oneOffsByMonth.get(o.month) ?? 0) + o.amountCents);
+      }
+
+      // --- Month view rows (same aggregates as the Quick view) ---
+      const monthRows = months.map((m) => {
+        const e = eff(m);
+        const mt = monthlyTotalForMonth(m);
+        const paid = byMonth.get(m)?.lumps ?? 0;
+        return {
+          month: m,
+          cashOutCents: e.cashOut,
+          trueCostCents: e.smoothed,
+          totalMonthlyCents: mt,
+          yearlyPaidOutCents: paid,
+          everythingElseCents: e.cashOut - mt - paid,
+          oneOffsCents: oneOffsByMonth.get(m) ?? 0,
+        };
+      });
+      const monthTotals = monthRows.reduce(
+        (acc, r) => ({
+          cashOutCents: acc.cashOutCents + r.cashOutCents,
+          trueCostCents: acc.trueCostCents + r.trueCostCents,
+          totalMonthlyCents: acc.totalMonthlyCents + r.totalMonthlyCents,
+          yearlyPaidOutCents: acc.yearlyPaidOutCents + r.yearlyPaidOutCents,
+          everythingElseCents: acc.everythingElseCents + r.everythingElseCents,
+          oneOffsCents: acc.oneOffsCents + r.oneOffsCents,
+        }),
+        { cashOutCents: 0, trueCostCents: 0, totalMonthlyCents: 0, yearlyPaidOutCents: 0, everythingElseCents: 0, oneOffsCents: 0 },
+      );
+
+      // --- Bill pivot (all groupings except Month) ---
+      type BillEntry = { label: string; category: string; paidFrom: string; keepLightsOn: boolean; values: number[] };
+      const entries: BillEntry[] = [];
+      for (const b of bills) {
+        const values = months.map((m) => versionInEffect(versionsByBill.get(b.id) ?? [], m)?.amountCents ?? 0);
+        entries.push({ label: b.name, category: b.category, paidFrom: b.paidBy, keepLightsOn: b.keepLightsOn === 1, values });
+      }
+      for (const y of yearly) {
+        const values = months.map((m) => yearlyOutFor(y, txns, m, yearlyVersionsByExpense.get(y.id) ?? []).monthlyAccrualCents);
+        entries.push({ label: y.name, category: y.category, paidFrom: y.paidByName, keepLightsOn: y.keepLightsOn === 1, values });
+      }
+      const groupLabelFor = (e: BillEntry): string => {
+        if (args.groupBy === "bill") return e.label;
+        if (args.groupBy === "paidFrom") return e.paidFrom || "Checking";
+        if (args.groupBy === "keepLightsOn") return e.keepLightsOn ? "Keep the lights on" : "Not essential";
+        return e.category || "Uncategorized";
+      };
+      const groupMap = new Map<string, { label: string; valuesCents: number[] }>();
+      if (args.groupBy !== "month") {
+        for (const e of entries) {
+          const label = groupLabelFor(e);
+          const g = groupMap.get(label) ?? { label, valuesCents: months.map(() => 0) };
+          e.values.forEach((v, i) => {
+            g.valuesCents[i] = (g.valuesCents[i] ?? 0) + v;
+          });
+          groupMap.set(label, g);
+        }
+      }
+      const rows = [...groupMap.values()]
+        .map((g) => ({ label: g.label, valuesCents: g.valuesCents, totalCents: g.valuesCents.reduce((s, v) => s + v, 0) }))
+        .sort((a, b) => b.totalCents - a.totalCents || a.label.localeCompare(b.label));
+      // Everything else (day-to-day, not bills) is not part of the bill
+      // pivot above, but it is real money. Append it as ONE final row
+      // (after the sorted bill rows, never sorted into them) so each
+      // month column totals to that month's True cost and the grand
+      // total equals the range's total True cost. The row is therefore
+      // the True-cost residual — True cost minus the bill pivot's own
+      // column total — NOT the Quick view's cash-out-based Everything
+      // else (Cash out − Total monthly − Yearly paid out, kept as-is
+      // in monthRows / Month grouping). The two agree whenever a
+      // month's cash out equals its incurred spending with no card-paid
+      // smoothed bills, but True cost is incurred-based: card charges
+      // count in True cost before any cash leaves checking, and a
+      // card-paid smoothed bill in an entered-total month is subtracted
+      // from True cost only when it leaves checking. Using the
+      // cash-out figure here dropped exactly those amounts from the
+      // column totals (verified: a $500 card charge in a
+      // transaction-only month, and a $1,200 card-paid yearly bill in
+      // an entered-total month, each vanished from the totals).
+      if (args.groupBy !== "month") {
+        const everythingElseValues = monthRows.map(
+          (r, i) =>
+            r.trueCostCents -
+            rows.reduce((s, row) => s + (row.valuesCents[i] ?? 0), 0),
+        );
+        const everythingElseTotal = everythingElseValues.reduce((s, v) => s + v, 0);
+        if (rows.length > 0 || everythingElseValues.some((v) => v !== 0)) {
+          rows.push({
+            label: "Everything else",
+            valuesCents: everythingElseValues,
+            totalCents: everythingElseTotal,
+          });
+        }
+      }
+      const columnTotalsCents = months.map((_, i) => rows.reduce((s, r) => s + (r.valuesCents[i] ?? 0), 0));
+      const grandTotalCents = columnTotalsCents.reduce((s, v) => s + v, 0);
+
+      return {
+        fromMonth,
+        toMonth,
+        groupBy: args.groupBy as string,
+        months,
+        earliestMonth,
+        rows: args.groupBy === "month" ? [] : rows,
+        columnTotalsCents: args.groupBy === "month" ? [] : columnTotalsCents,
+        grandTotalCents: args.groupBy === "month" ? 0 : grandTotalCents,
+        monthRows,
+        monthTotals,
+      };
+    },
+  }),
+
+  addTransaction: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: txnInput,
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const [row] = await db
+        .insert(schema.transactions)
+        .values({
+          date: args.date,
+          description: await encryptStr(key, args.description),
+          amountCents: await encryptNum(key, args.amountCents),
+          sourceType: args.sourceType,
+          accountName: await encryptStr(key, args.accountName),
+          kind: args.kind,
+          category: await encryptStr(key, args.category),
+          yearlyExpenseId: args.yearlyExpenseId,
+        })
+        .returning({ id: schema.transactions.id });
+      if (!row) throw new Error("insert failed");
+      ctx.invalidateQueries();
+      return { id: row.id };
+    },
+  }),
+
+  updateTransaction: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: txnInput.extend({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const updated = await db
+        .update(schema.transactions)
+        .set({
+          date: args.date,
+          description: await encryptStr(key, args.description),
+          amountCents: await encryptNum(key, args.amountCents),
+          sourceType: args.sourceType,
+          accountName: await encryptStr(key, args.accountName),
+          kind: args.kind,
+          category: await encryptStr(key, args.category),
+          yearlyExpenseId: args.yearlyExpenseId,
+        })
+        .where(eq(schema.transactions.id, args.id))
+        .returning({ id: schema.transactions.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That transaction was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Transaction updated." };
+    },
+  }),
+
+  deleteTransaction: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const deleted = await db
+        .delete(schema.transactions)
+        .where(eq(schema.transactions.id, args.id))
+        .returning({ id: schema.transactions.id });
+      if (deleted.length === 0) {
+        return { ok: false, reason: "That transaction was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Transaction deleted." };
+    },
+  }),
+
+  importTransactions: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      rows: z.array(txnInput).min(1).max(1000),
+    }),
+    response: z.object({ imported: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      // ONE call is atomic (API follow-on 3, finding F12; the plan
+      // decision lives in ./importCore, the reserved-prefix
+      // decision in ./encPrefixCore): the whole batch is planned
+      // BEFORE any write — a value carrying the reserved prefix
+      // that is not genuine ciphertext refuses the whole import
+      // here with zero rows inserted. Verification runs first
+      // (one decrypt attempt per distinct prefixed value) so the
+      // pure plan sees a synchronous verifier.
+      const verified = new Set<string>();
+      for (const r of args.rows) {
+        for (const value of [r.description, r.accountName, r.category]) {
+          if (hasReservedEncPrefix(value) && !verified.has(value)) {
+            try {
+              await decryptStr(key, value);
+              verified.add(value);
+            } catch {
+              // Not genuine ciphertext: the plan refuses below.
+            }
+          }
+        }
+      }
+      const plan = planImportBatch(args.rows, (v) => verified.has(v));
+      if (!plan.ok) throw new Error(plan.reason);
+      // Build EVERY row's encrypted insert statement before any
+      // write executes, then run them as ONE db.batch: any
+      // failure throws with its reason and zero rows from this
+      // call are inserted (the client's per-batch retry can then
+      // never duplicate a landed prefix). No dedupe: importing
+      // the same rows again inserts them again.
+      type BatchItem = Parameters<typeof db.batch>[0][number];
+      const statements: BatchItem[] = [];
+      for (const r of args.rows) {
+        statements.push(
+          db.insert(schema.transactions).values({
+            date: r.date,
+            description: await encryptStr(key, r.description),
+            amountCents: await encryptNum(key, r.amountCents),
+            sourceType: r.sourceType,
+            accountName: await encryptStr(key, r.accountName),
+            kind: r.kind,
+            category: await encryptStr(key, r.category),
+            yearlyExpenseId: r.yearlyExpenseId,
+          }),
+        );
+      }
+      await db.batch(statements as [BatchItem, ...BatchItem[]]);
+      ctx.invalidateQueries();
+      return { imported: args.rows.length };
+    },
+  }),
+
+  addYearlyExpense: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      name: z.string().min(1).max(120),
+      frequency: yearlyFrequencyWithDefault,
+      expectedCents: z.number().int().nonnegative(),
+      dueMonth: z.number().int().min(1).max(12).nullable().default(null),
+      paidByType: sourceType,
+      paidByName: z.string().min(1).max(60),
+      category: z.string().min(1).max(60).default("Uncategorized"),
+      keepLightsOn: z.boolean().default(false),
+      effectiveFrom: z.string().regex(monthRe).optional(),
+    }),
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const encExpected = await encryptNum(key, args.expectedCents);
+      const [row] = await db
+        .insert(schema.yearlyExpenses)
+        .values({
+          name: await encryptStr(key, args.name),
+          frequency: args.frequency,
+          expectedCents: encExpected,
+          dueMonth: args.dueMonth,
+          paidByType: args.paidByType,
+          paidByName: await encryptStr(key, args.paidByName),
+          category: await encryptStr(key, args.category),
+          keepLightsOn: args.keepLightsOn ? 1 : 0,
+          // New bills never backfill: months before their first version
+          // contribute zero. Only the 0007 migration sets this to 1,
+          // and only for bills that existed before versioning.
+          backfillBeforeFirstVersion: 0,
+        })
+        .returning({ id: schema.yearlyExpenses.id });
+      if (!row) throw new Error("insert failed");
+      const now = new Date();
+      const eff = args.effectiveFrom ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      await db.insert(schema.yearlyExpenseVersions).values({
+        expenseId: row.id,
+        expectedCents: encExpected,
+        frequency: args.frequency,
+        effectiveFrom: eff,
+      });
+      // Remember this Paid from as the sticky default for the next
+      // new yearly bill (see the entry defaults note above).
+      await upsertPlainSetting(db, ENTRY_DEFAULT_YEARLY_PAID_TYPE_KEY, args.paidByType);
+      await upsertPlainSetting(
+        db,
+        ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY,
+        await encryptStr(key, args.paidByName),
+      );
+      ctx.invalidateQueries();
+      return { id: row.id };
+    },
+  }),
+
+  updateYearlyExpense: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      id: z.number().int().positive(),
+      name: z.string().min(1).max(120),
+      frequency: yearlyFrequencyWithDefault,
+      expectedCents: z.number().int().nonnegative(),
+      dueMonth: z.number().int().min(1).max(12).nullable().default(null),
+      paidByType: sourceType,
+      paidByName: z.string().min(1).max(60),
+      category: z.string().min(1).max(60).default("Uncategorized"),
+      keepLightsOn: z.boolean().default(false),
+      effectiveFrom: z.string().regex(monthRe).optional(),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      // Existence preflight (API follow-on 3, finding F22): a
+      // missing expense fails HERE, before any write — the old
+      // flow updated zero rows and then went on to INSERT version
+      // rows for the bogus id.
+      const [existingExpense] = await db
+        .select({ id: schema.yearlyExpenses.id })
+        .from(schema.yearlyExpenses)
+        .where(eq(schema.yearlyExpenses.id, args.id));
+      if (!existingExpense) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      const encExpectedArg = await encryptNum(key, args.expectedCents);
+      // Metadata (name, due month, paid-by, keep-the-lights-on flag)
+      // updates in place. Amount and
+      // frequency are versioned: a change creates / upserts a version
+      // for the chosen effective-from month and never rewrites versions
+      // for other months, so earlier months keep their set-aside.
+      // Recorded actual payments are separate transaction rows and are
+      // never rewritten here.
+      await db
+        .update(schema.yearlyExpenses)
+        .set({
+          name: await encryptStr(key, args.name),
+          dueMonth: args.dueMonth,
+          paidByType: args.paidByType,
+          paidByName: await encryptStr(key, args.paidByName),
+          category: await encryptStr(key, args.category),
+          keepLightsOn: args.keepLightsOn ? 1 : 0,
+        })
+        .where(eq(schema.yearlyExpenses.id, args.id));
+      const now = new Date();
+      const eff = args.effectiveFrom ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const existingRaw = await db
+        .select()
+        .from(schema.yearlyExpenseVersions)
+        .where(eq(schema.yearlyExpenseVersions.expenseId, args.id));
+      const existing: YearlyVersionRow[] = [];
+      for (const v of existingRaw) existing.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
+      if (existing.length === 0) {
+        // Legacy row with no versions: seed its current stored values as
+        // the baseline version (effective far in the past via its own
+        // row values are unknown here, so use the chosen month as the
+        // baseline too) then apply the new version if different — the
+        // simplest correct path is a single version at eff.
+        await db.insert(schema.yearlyExpenseVersions).values({
+          expenseId: args.id,
+          expectedCents: encExpectedArg,
+          frequency: args.frequency,
+          effectiveFrom: eff,
+        });
+      } else {
+        const sameMonth = existing.find((v) => v.effectiveFrom === eff);
+        if (sameMonth) {
+          await db
+            .update(schema.yearlyExpenseVersions)
+            .set({ expectedCents: encExpectedArg, frequency: args.frequency })
+            .where(eq(schema.yearlyExpenseVersions.id, sameMonth.id));
+        } else {
+          await db.insert(schema.yearlyExpenseVersions).values({
+            expenseId: args.id,
+            expectedCents: encExpectedArg,
+            frequency: args.frequency,
+            effectiveFrom: eff,
+          });
+        }
+      }
+      const allRaw = await db
+        .select()
+        .from(schema.yearlyExpenseVersions)
+        .where(eq(schema.yearlyExpenseVersions.expenseId, args.id));
+      const all: YearlyVersionRow[] = [];
+      for (const v of allRaw) all.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
+      const latest = latestYearlyVersion(all);
+      if (latest) {
+        await db
+          .update(schema.yearlyExpenses)
+          .set({ expectedCents: await encryptNum(key, latest.expectedCents), frequency: latest.frequency })
+          .where(eq(schema.yearlyExpenses.id, args.id));
+      }
+      // Remember this Paid from as the sticky default for the next
+      // new yearly bill (see the entry defaults note above).
+      await upsertPlainSetting(db, ENTRY_DEFAULT_YEARLY_PAID_TYPE_KEY, args.paidByType);
+      await upsertPlainSetting(
+        db,
+        ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY,
+        await encryptStr(key, args.paidByName),
+      );
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Yearly expense updated." };
+    },
+  }),
+
+  // Explicit version setter for a smoothed bill (mirrors
+  // setMonthlyBillAmount). Upserts the version for (expense,
+  // effectiveFrom); other months' versions are untouched.
+  setYearlyExpenseVersion: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      expenseId: z.number().int().positive(),
+      expectedCents: z.number().int().nonnegative(),
+      frequency: yearlyFrequency,
+      effectiveFrom: z.string().regex(monthRe),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      // Existence preflight (finding F22): a version must never
+      // be inserted for an expense that does not exist.
+      const [existingExpense] = await db
+        .select({ id: schema.yearlyExpenses.id })
+        .from(schema.yearlyExpenses)
+        .where(eq(schema.yearlyExpenses.id, args.expenseId));
+      if (!existingExpense) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      const encExpectedArg = await encryptNum(key, args.expectedCents);
+      const existing = await db
+        .select()
+        .from(schema.yearlyExpenseVersions)
+        .where(eq(schema.yearlyExpenseVersions.expenseId, args.expenseId));
+      const sameMonth = existing.find((v) => v.effectiveFrom === args.effectiveFrom);
+      if (sameMonth) {
+        await db
+          .update(schema.yearlyExpenseVersions)
+          .set({ expectedCents: encExpectedArg, frequency: args.frequency })
+          .where(eq(schema.yearlyExpenseVersions.id, sameMonth.id));
+      } else {
+        await db.insert(schema.yearlyExpenseVersions).values({
+          expenseId: args.expenseId,
+          expectedCents: encExpectedArg,
+          frequency: args.frequency,
+          effectiveFrom: args.effectiveFrom,
+        });
+      }
+      const allRaw = await db
+        .select()
+        .from(schema.yearlyExpenseVersions)
+        .where(eq(schema.yearlyExpenseVersions.expenseId, args.expenseId));
+      const all: YearlyVersionRow[] = [];
+      for (const v of allRaw) all.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
+      const latest = latestYearlyVersion(all);
+      if (latest) {
+        await db
+          .update(schema.yearlyExpenses)
+          .set({ expectedCents: await encryptNum(key, latest.expectedCents), frequency: latest.frequency })
+          .where(eq(schema.yearlyExpenses.id, args.expenseId));
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Version saved." };
+    },
+  }),
+
+  deleteYearlyExpense: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const [existingExpense] = await db
+        .select({ id: schema.yearlyExpenses.id })
+        .from(schema.yearlyExpenses)
+        .where(eq(schema.yearlyExpenses.id, args.id));
+      if (!existingExpense) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      await db
+        .update(schema.transactions)
+        .set({ yearlyExpenseId: null })
+        .where(eq(schema.transactions.yearlyExpenseId, args.id));
+      await db
+        .delete(schema.yearlyExpenseVersions)
+        .where(eq(schema.yearlyExpenseVersions.expenseId, args.id));
+      await db
+        .delete(schema.yearlyExpenses)
+        .where(eq(schema.yearlyExpenses.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Yearly expense deleted." };
+    },
+  }),
+
+  // Delete ONE version of a smoothed bill. The months that version
+  // covered fall back to the previous version (next-earliest
+  // effective-from); if the deleted version was the earliest and
+  // others remain, the bill simply starts at the next version.
+  // A bill's ONLY remaining version cannot be deleted — deleting
+  // the whole bill remains the deleteYearlyExpense flow above.
+  // Recorded transactions / actual payments are never touched.
+  deleteYearlyExpenseVersion: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ versionId: z.number().int().positive() }),
+    response: z.object({ ok: z.boolean(), reason: z.string() }),
+    async handler(
+      ctx,
+      args,
+    ): Promise<{ ok: boolean; reason: string }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const [target] = await db
+        .select()
+        .from(schema.yearlyExpenseVersions)
+        .where(eq(schema.yearlyExpenseVersions.id, args.versionId));
+      if (!target) {
+        return { ok: false, reason: "That history entry was not found." };
+      }
+      const all = await db
+        .select()
+        .from(schema.yearlyExpenseVersions)
+        .where(
+          eq(schema.yearlyExpenseVersions.expenseId, target.expenseId),
+        );
+      if (all.length <= 1) {
+        return {
+          ok: false,
+          reason:
+            "A bill must keep at least one history entry. To remove the bill entirely, delete the bill itself.",
+        };
+      }
+      await db
+        .delete(schema.yearlyExpenseVersions)
+        .where(eq(schema.yearlyExpenseVersions.id, args.versionId));
+      const remainingRaw = await db
+        .select()
+        .from(schema.yearlyExpenseVersions)
+        .where(
+          eq(schema.yearlyExpenseVersions.expenseId, target.expenseId),
+        );
+      const remaining: YearlyVersionRow[] = [];
+      for (const v of remainingRaw) remaining.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
+      const latest = latestYearlyVersion(remaining);
+      if (latest) {
+        await db
+          .update(schema.yearlyExpenses)
+          .set({
+            expectedCents: await encryptNum(key, latest.expectedCents),
+            frequency: latest.frequency,
+          })
+          .where(eq(schema.yearlyExpenses.id, target.expenseId));
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "History entry removed." };
+    },
+  }),
+
+  // Quick due-month setter: only the due-month anchor changes, never
+  // amounts, frequencies, or versions.
+  setYearlyDueMonth: defineAction({
+    request: z.object({
+      id: z.number().int().positive(),
+      dueMonth: z.number().int().min(1).max(12).nullable(),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const updated = await db
+        .update(schema.yearlyExpenses)
+        .set({ dueMonth: args.dueMonth })
+        .where(eq(schema.yearlyExpenses.id, args.id))
+        .returning({ id: schema.yearlyExpenses.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Due month saved." };
+    },
+  }),
+
+  addMonthlyOneOff: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: oneOffInput,
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const [row] = await db
+        .insert(schema.monthlyOneOffs)
+        .values({
+          month: args.month,
+          description: await encryptStr(key, args.description),
+          amountCents: await encryptNum(key, args.amountCents),
+          note: await encryptNullable(key, args.note),
+        })
+        .returning({ id: schema.monthlyOneOffs.id });
+      if (!row) throw new Error("insert failed");
+      ctx.invalidateQueries();
+      return { id: row.id };
+    },
+  }),
+
+  updateMonthlyOneOff: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: oneOffInput.extend({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const updated = await db
+        .update(schema.monthlyOneOffs)
+        .set({
+          month: args.month,
+          description: await encryptStr(key, args.description),
+          amountCents: await encryptNum(key, args.amountCents),
+          note: await encryptNullable(key, args.note),
+        })
+        .where(eq(schema.monthlyOneOffs.id, args.id))
+        .returning({ id: schema.monthlyOneOffs.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That one-off expense was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "One-off expense updated." };
+    },
+  }),
+
+  deleteMonthlyOneOff: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const deleted = await db
+        .delete(schema.monthlyOneOffs)
+        .where(eq(schema.monthlyOneOffs.id, args.id))
+        .returning({ id: schema.monthlyOneOffs.id });
+      if (deleted.length === 0) {
+        return { ok: false, reason: "That one-off expense was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "One-off expense deleted." };
+    },
+  }),
+
+  addCashOutItem: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: cashOutItemInput,
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const [row] = await db
+        .insert(schema.monthlyCashOutItems)
+        .values({
+          month: args.month,
+          description: await encryptStr(key, args.description),
+          amountCents: await encryptNum(key, args.amountCents),
+          note: await encryptNullable(key, args.note),
+        })
+        .returning({ id: schema.monthlyCashOutItems.id });
+      if (!row) throw new Error("insert failed");
+      ctx.invalidateQueries();
+      return { id: row.id };
+    },
+  }),
+
+  updateCashOutItem: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: cashOutItemInput.extend({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const updated = await db
+        .update(schema.monthlyCashOutItems)
+        .set({
+          month: args.month,
+          description: await encryptStr(key, args.description),
+          amountCents: await encryptNum(key, args.amountCents),
+          note: await encryptNullable(key, args.note),
+        })
+        .where(eq(schema.monthlyCashOutItems.id, args.id))
+        .returning({ id: schema.monthlyCashOutItems.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That cash-out item was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Cash-out item updated." };
+    },
+  }),
+
+  deleteCashOutItem: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const deleted = await db
+        .delete(schema.monthlyCashOutItems)
+        .where(eq(schema.monthlyCashOutItems.id, args.id))
+        .returning({ id: schema.monthlyCashOutItems.id });
+      if (deleted.length === 0) {
+        return { ok: false, reason: "That cash-out item was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Cash-out item deleted." };
+    },
+  }),
+
+  updateSettings: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      openingReserveCents: z.number().int(),
+      reserveStartMonth: z.string().regex(monthRe).nullable().default(null),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const encReserve = await encryptStr(key, String(args.openingReserveCents));
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "opening_reserve_cents",
+          value: encReserve,
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: encReserve },
+        });
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "reserve_start_month",
+          value: args.reserveStartMonth ?? "",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.reserveStartMonth ?? "" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  upsertMonthlySummary: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      month: z.string().regex(monthRe),
+      cashOutCents: z.number().int().nonnegative(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const now = new Date();
+      const encCashOut = await encryptNum(key, args.cashOutCents);
+      await db
+        .insert(schema.monthlySummaries)
+        .values({
+          month: args.month,
+          cashOutCents: encCashOut,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: schema.monthlySummaries.month,
+          set: { cashOutCents: encCashOut, updatedAt: now },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  deleteMonthlySummary: defineAction({
+    request: z.object({ month: z.string().regex(monthRe) }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const deleted = await db
+        .delete(schema.monthlySummaries)
+        .where(eq(schema.monthlySummaries.month, args.month))
+        .returning({ month: schema.monthlySummaries.month });
+      if (deleted.length === 0) {
+        return {
+          ok: false,
+          reason: "No cash-out total is recorded for that month.",
+        };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Cash-out total removed." };
+    },
+  }),
+
+  addMonthlyBill: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: monthlyBillInput,
+    response: z.object({ id: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const encAmount = await encryptNum(key, args.amountCents);
+      const [row] = await db
+        .insert(schema.monthlyBills)
+        .values({
+          name: await encryptStr(key, args.name),
+          amountCents: encAmount,
+          paidBy: await encryptStr(key, args.paidBy),
+          notes: await encryptNullable(key, args.notes),
+          category: await encryptStr(key, args.category),
+          keepLightsOn: args.keepLightsOn ? 1 : 0,
+        })
+        .returning({ id: schema.monthlyBills.id });
+      if (!row) throw new Error("insert failed");
+      await db.insert(schema.monthlyBillVersions).values({
+        billId: row.id,
+        amountCents: encAmount,
+        effectiveFrom: args.effectiveFrom,
+      });
+      // Remember this Paid from as the sticky default for the next
+      // new monthly bill (see the entry defaults note above).
+      await upsertPlainSetting(
+        db,
+        ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY,
+        await encryptStr(key, args.paidBy),
+      );
+      ctx.invalidateQueries();
+      return { id: row.id };
+    },
+  }),
+
+  updateMonthlyBill: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    // The request schema lives in apiContractCore
+    // (updateMonthlyBillIn): notes / category / keepLightsOn are
+    // optional with NO defaults (finding F18).
+    request: updateMonthlyBillIn,
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      // Existence preflight (finding F22).
+      const [existingBill] = await db
+        .select({ id: schema.monthlyBills.id })
+        .from(schema.monthlyBills)
+        .where(eq(schema.monthlyBills.id, args.id));
+      if (!existingBill) {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      // Write ONLY the fields the caller actually sent (finding
+      // F18): monthlyBillUpdateSet (spendingCore) builds the set
+      // from the parsed args — an absent field preserves the
+      // stored value; an explicitly sent notes: null clears the
+      // notes. The live form always sends all five fields, so it
+      // writes exactly what the old unconditional write did.
+      const plain = monthlyBillUpdateSet(args);
+      const set: {
+        name?: string;
+        paidBy?: string;
+        notes?: string | null;
+        category?: string;
+        keepLightsOn?: number;
+      } = {};
+      if (plain.name !== undefined) set.name = await encryptStr(key, plain.name);
+      if (plain.paidBy !== undefined) set.paidBy = await encryptStr(key, plain.paidBy);
+      if (plain.notes !== undefined) set.notes = await encryptNullable(key, plain.notes);
+      if (plain.category !== undefined) set.category = await encryptStr(key, plain.category);
+      if (plain.keepLightsOn !== undefined) set.keepLightsOn = plain.keepLightsOn;
+      const updated = await db
+        .update(schema.monthlyBills)
+        .set(set)
+        .where(eq(schema.monthlyBills.id, args.id))
+        .returning({ id: schema.monthlyBills.id });
+      // Affected-row check (R4-3, finding F10): a delete that
+      // won the race between the preflight above and this
+      // update is indistinguishable from a delete that happened
+      // first, so zero updated rows take the preflight's exact
+      // not-found shape — and the sticky paid-from default
+      // below writes ONLY on a committed row.
+      if (monthlyBillUpdateOutcome(updated.length) === "not-found") {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      // Remember this Paid from as the sticky default for the next
+      // new monthly bill (see the entry defaults note above).
+      await upsertPlainSetting(
+        db,
+        ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY,
+        await encryptStr(key, args.paidBy),
+      );
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Bill updated." };
+    },
+  }),
+
+  // Set a monthly bill's category. Label only — no amount, version,
+  // or total is touched. Blank falls back to "Uncategorized".
+  setMonthlyBillCategory: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      id: z.number().int().positive(),
+      category: z.string().max(60),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const updated = await db
+        .update(schema.monthlyBills)
+        .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized") })
+        .where(eq(schema.monthlyBills.id, args.id))
+        .returning({ id: schema.monthlyBills.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Category saved." };
+    },
+  }),
+
+  // Set a smoothed bill's category. Label only — no amount, frequency,
+  // version, or total is touched. Blank falls back to "Uncategorized".
+  setYearlyCategory: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      id: z.number().int().positive(),
+      category: z.string().max(60),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const updated = await db
+        .update(schema.yearlyExpenses)
+        .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized") })
+        .where(eq(schema.yearlyExpenses.id, args.id))
+        .returning({ id: schema.yearlyExpenses.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Category saved." };
+    },
+  }),
+
+  // Toggle a monthly bill's "Keep the lights on" check. Label only —
+  // no amount, version, or total is touched.
+  setMonthlyBillKeepLightsOn: defineAction({
+    request: z.object({
+      id: z.number().int().positive(),
+      keepLightsOn: z.boolean(),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const updated = await db
+        .update(schema.monthlyBills)
+        .set({ keepLightsOn: args.keepLightsOn ? 1 : 0 })
+        .where(eq(schema.monthlyBills.id, args.id))
+        .returning({ id: schema.monthlyBills.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Keep-the-lights-on flag saved." };
+    },
+  }),
+
+  // Set the Monthly bills section's collapsed-all UI state. Display
+  // only — one flag for the whole section, persisted server-side in
+  // settings so it survives reloads, new sessions, and devices.
+  // No amount, version, or total is touched.
+  setMonthlyBillsCollapsedAll: defineAction({
+    request: z.object({
+      collapsed: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "monthly_bills_collapsed_all",
+          value: args.collapsed ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.collapsed ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Set the Yearly & periodic expenses section's collapsed-all UI
+  // state. Display only — one flag for the whole section, persisted
+  // server-side in settings so it survives reloads, new sessions, and
+  // devices. Independent of the Monthly bills and By category flags.
+  // No amount, version, or total is touched.
+  setYearlyBillsCollapsedAll: defineAction({
+    request: z.object({
+      collapsed: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "yearly_bills_collapsed_all",
+          value: args.collapsed ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.collapsed ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Set the By category section's collapsed-all UI state. Display
+  // only — one flag for the whole section, persisted server-side in
+  // settings so it survives reloads, new sessions, and devices.
+  // Independent of the Monthly bills and Yearly bills flags.
+  // No amount, version, or total is touched.
+  setByCategoryCollapsedAll: defineAction({
+    request: z.object({
+      collapsed: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "by_category_collapsed_all",
+          value: args.collapsed ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.collapsed ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Set the Year in spending section's collapsed UI state. Display
+  // only — one flag for the whole section, persisted server-side in
+  // settings so it survives reloads, new sessions, and devices.
+  // Independent of the Monthly bills, Yearly bills, and By category
+  // flags. Default (absent) is collapsed. No amount, version, or
+  // total is touched.
+  setYearInSpendingCollapsedAll: defineAction({
+    request: z.object({
+      collapsed: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "year_in_spending_collapsed_all",
+          value: args.collapsed ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.collapsed ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // ---- Explainer ("one-line summary + More") UI state ----
+  // Every long section intro across the app renders as one summary
+  // line plus a "More" control that expands the section's full
+  // original text in place. Whether a given section's full text is
+  // expanded is display-only UI state, persisted server-side in
+  // settings under ONE JSON blob ("explainer_expanded_v1": a map of
+  // section id -> true) so it survives reloads, new sessions, and
+  // devices, exactly like the section collapse flags above. Default
+  // (no stored entry) is collapsed — summary line only. No amount,
+  // version, or total is ever touched by these actions.
+  getExplainerState: defineAction({
+    request: z.object({}),
+    response: z.object({
+      expanded: z.record(z.string(), z.boolean()),
+    }),
+    async handler(ctx): Promise<{ expanded: Record<string, boolean> }> {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.settings);
+      const raw = rows.find((r) => r.key === "explainer_expanded_v1")?.value;
+      if (!raw) return { expanded: {} };
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return { expanded: {} };
+        }
+        const out: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (v === true) out[k] = true;
+        }
+        return { expanded: out };
+      } catch {
+        return { expanded: {} };
+      }
+    },
+  }),
+
+  setExplainerExpanded: defineAction({
+    request: z.object({
+      id: z.string().min(1).max(80),
+      expanded: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.settings);
+      const raw = rows.find((r) => r.key === "explainer_expanded_v1")?.value;
+      let map: Record<string, boolean> = {};
+      if (raw) {
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (parsed != null && typeof parsed === "object" && !Array.isArray(parsed)) {
+            for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+              if (v === true) map[k] = true;
+            }
+          }
+        } catch {
+          map = {};
+        }
+      }
+      if (args.expanded) map[args.id] = true;
+      else delete map[args.id];
+      const value = JSON.stringify(map);
+      await db
+        .insert(schema.settings)
+        .values({ key: "explainer_expanded_v1", value })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Toggle a smoothed bill's "Keep the lights on" check. Label only —
+  // no amount, frequency, version, or total is touched.
+  setYearlyKeepLightsOn: defineAction({
+    request: z.object({
+      id: z.number().int().positive(),
+      keepLightsOn: z.boolean(),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const updated = await db
+        .update(schema.yearlyExpenses)
+        .set({ keepLightsOn: args.keepLightsOn ? 1 : 0 })
+        .where(eq(schema.yearlyExpenses.id, args.id))
+        .returning({ id: schema.yearlyExpenses.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Keep-the-lights-on flag saved." };
+    },
+  }),
+
+  // Set a bill's amount from a given month onward. This is the only way
+  // amounts change: it upserts the version for (bill, effectiveFrom) and
+  // never touches versions for other months, so earlier months keep the
+  // amount that was in effect then. Choosing an earlier effectiveFrom is
+  // the explicit way to correct a past month.
+  setMonthlyBillAmount: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      billId: z.number().int().positive(),
+      amountCents: z.number().int().nonnegative(),
+      effectiveFrom: z.string().regex(monthRe),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      // Existence preflight (finding F22): a version must never
+      // be inserted for a bill that does not exist.
+      const [existingBill] = await db
+        .select({ id: schema.monthlyBills.id })
+        .from(schema.monthlyBills)
+        .where(eq(schema.monthlyBills.id, args.billId));
+      if (!existingBill) {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      const encAmountArg = await encryptNum(key, args.amountCents);
+      const existing = await db
+        .select()
+        .from(schema.monthlyBillVersions)
+        .where(eq(schema.monthlyBillVersions.billId, args.billId));
+      const sameMonth = existing.find(
+        (v) => v.effectiveFrom === args.effectiveFrom,
+      );
+      if (sameMonth) {
+        await db
+          .update(schema.monthlyBillVersions)
+          .set({ amountCents: encAmountArg })
+          .where(eq(schema.monthlyBillVersions.id, sameMonth.id));
+      } else {
+        await db.insert(schema.monthlyBillVersions).values({
+          billId: args.billId,
+          amountCents: encAmountArg,
+          effectiveFrom: args.effectiveFrom,
+        });
+      }
+      const allRaw = await db
+        .select()
+        .from(schema.monthlyBillVersions)
+        .where(eq(schema.monthlyBillVersions.billId, args.billId));
+      const all: BillVersionRow[] = [];
+      for (const v of allRaw) all.push({ ...v, amountCents: await decryptNum(key, v.amountCents as unknown) });
+      const latest = latestVersion(all);
+      if (latest) {
+        await db
+          .update(schema.monthlyBills)
+          .set({ amountCents: await encryptNum(key, latest.amountCents) })
+          .where(eq(schema.monthlyBills.id, args.billId));
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Amount saved." };
+    },
+  }),
+
+  deleteMonthlyBill: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
+      const db = ctx.db<typeof schema>();
+      const [existingBill] = await db
+        .select({ id: schema.monthlyBills.id })
+        .from(schema.monthlyBills)
+        .where(eq(schema.monthlyBills.id, args.id));
+      if (!existingBill) {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      await db
+        .delete(schema.monthlyBillVersions)
+        .where(eq(schema.monthlyBillVersions.billId, args.id));
+      await db
+        .delete(schema.monthlyBills)
+        .where(eq(schema.monthlyBills.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Bill deleted." };
+    },
+  }),
+
+  // Delete ONE version of a monthly bill. The months that version
+  // covered fall back to the previous version (next-earliest
+  // effective-from); if the deleted version was the earliest and
+  // others remain, the bill simply starts at the next version.
+  // A bill's ONLY remaining version cannot be deleted — deleting
+  // the whole bill remains the deleteMonthlyBill flow above.
+  deleteMonthlyBillVersion: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ versionId: z.number().int().positive() }),
+    response: z.object({ ok: z.boolean(), reason: z.string() }),
+    async handler(
+      ctx,
+      args,
+    ): Promise<{ ok: boolean; reason: string }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const [target] = await db
+        .select()
+        .from(schema.monthlyBillVersions)
+        .where(eq(schema.monthlyBillVersions.id, args.versionId));
+      if (!target) {
+        return { ok: false, reason: "That history entry was not found." };
+      }
+      const all = await db
+        .select()
+        .from(schema.monthlyBillVersions)
+        .where(eq(schema.monthlyBillVersions.billId, target.billId));
+      if (all.length <= 1) {
+        return {
+          ok: false,
+          reason:
+            "A bill must keep at least one history entry. To remove the bill entirely, delete the bill itself.",
+        };
+      }
+      await db
+        .delete(schema.monthlyBillVersions)
+        .where(eq(schema.monthlyBillVersions.id, args.versionId));
+      const remainingRaw = await db
+        .select()
+        .from(schema.monthlyBillVersions)
+        .where(eq(schema.monthlyBillVersions.billId, target.billId));
+      const remaining: BillVersionRow[] = [];
+      for (const v of remainingRaw) remaining.push({ ...v, amountCents: await decryptNum(key, v.amountCents as unknown) });
+      const latest = latestVersion(remaining);
+      if (latest) {
+        await db
+          .update(schema.monthlyBills)
+          .set({ amountCents: await encryptNum(key, latest.amountCents) })
+          .where(eq(schema.monthlyBills.id, target.billId));
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "History entry removed." };
+    },
+  }),
+
+  seedExamples: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), reason: z.string() }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const existing = await db.select().from(schema.transactions).limit(1);
+      const existingY = await db.select().from(schema.yearlyExpenses).limit(1);
+      const existingS = await db.select().from(schema.monthlySummaries).limit(1);
+      const existingB = await db.select().from(schema.monthlyBills).limit(1);
+      if (
+        existing.length > 0 ||
+        existingY.length > 0 ||
+        existingS.length > 0 ||
+        existingB.length > 0
+      ) {
+        return {
+          ok: false,
+          reason: "Example data only loads into an empty tracker.",
+        };
+      }
+      const now = new Date();
+      const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const startMonth = shiftMonth(curMonth, -7);
+
+      const yearlySeed = [
+        { name: "Home insurance", expectedCents: 180000, dueMonth: 3, paidByType: "card" as const, paidByName: "Visa" },
+        { name: "Property tax", expectedCents: 540000, dueMonth: 11, paidByType: "checking" as const, paidByName: "Checking" },
+        { name: "Car insurance", expectedCents: 156000, dueMonth: 6, paidByType: "card" as const, paidByName: "Visa" },
+        { name: "Vehicle registration", expectedCents: 28000, dueMonth: 8, paidByType: "checking" as const, paidByName: "Checking" },
+        { name: "Warehouse club membership", expectedCents: 6500, dueMonth: 9, paidByType: "card" as const, paidByName: "Visa" },
+      ];
+      const yearlyIds = new Map<string, number>();
+      for (const y of yearlySeed) {
+        const encExpected = await encryptNum(key, y.expectedCents);
+        const [row] = await db
+          .insert(schema.yearlyExpenses)
+          .values({
+            name: await encryptStr(key, y.name),
+            expectedCents: encExpected,
+            dueMonth: y.dueMonth,
+            paidByType: y.paidByType,
+            paidByName: await encryptStr(key, y.paidByName),
+            category: await encryptStr(key, "Uncategorized"),
+            backfillBeforeFirstVersion: 0,
+          })
+          .returning({ id: schema.yearlyExpenses.id });
+        if (row) {
+          yearlyIds.set(y.name, row.id);
+          await db.insert(schema.yearlyExpenseVersions).values({
+            expenseId: row.id,
+            expectedCents: encExpected,
+            frequency: "yearly",
+            effectiveFrom: startMonth,
+          });
+        }
+      }
+
+      const groceries = [51200, 53800, 49700, 55100, 52400, 50900, 54300, 51800];
+      const dining = [16400, 18200, 14900, 19700, 17100, 15800, 18600, 16900];
+      const gas = [11800, 12400, 10900, 13100, 12200, 11500, 12800, 11900];
+      const fun = [8600, 9400, 7800, 10200, 8900, 8100, 9600, 8800];
+
+      const rows: { date: string; description: string; amountCents: number; sourceType: "checking" | "card"; accountName: string; kind: "spending" | "card_payment" | "transfer"; category: string; yearlyExpenseId?: number | null }[] = [];
+      for (let i = 0; i < 8; i++) {
+        const m = shiftMonth(startMonth, i);
+        const d = (day: number) => `${m}-${String(day).padStart(2, "0")}`;
+        const g = groceries[i] ?? 52000;
+        const dn = dining[i] ?? 17000;
+        const gs = gas[i] ?? 12000;
+        const fn = fun[i] ?? 9000;
+        rows.push(
+          { date: d(1), description: "Example — Mortgage / rent", amountCents: 185000, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Housing" },
+          { date: d(3), description: "Example — Groceries", amountCents: g, sourceType: "card", accountName: "Visa", kind: "spending", category: "Groceries" },
+          { date: d(6), description: "Example — Electric & water", amountCents: 13900 + i * 150, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Utilities" },
+          { date: d(9), description: "Example — Restaurants", amountCents: dn, sourceType: "card", accountName: "Visa", kind: "spending", category: "Dining" },
+          { date: d(12), description: "Example — Gas", amountCents: gs, sourceType: "card", accountName: "Visa", kind: "spending", category: "Transport" },
+          { date: d(15), description: "Example — Internet", amountCents: 7900, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Utilities" },
+          { date: d(18), description: "Example — Streaming & apps", amountCents: 4200, sourceType: "card", accountName: "Visa", kind: "spending", category: "Subscriptions" },
+          { date: d(21), description: "Example — Weekend / misc", amountCents: fn, sourceType: "card", accountName: "Visa", kind: "spending", category: "Other" },
+          { date: d(24), description: "Example — Visa bill payment", amountCents: g + dn + gs + fn + 4200, sourceType: "checking", accountName: "Checking", kind: "card_payment", category: "Other" },
+          { date: d(26), description: "Example — Transfer to savings", amountCents: 30000, sourceType: "checking", accountName: "Checking", kind: "transfer", category: "Other" },
+        );
+        const monthNum = Number(m.slice(5, 7));
+        if (monthNum === 3) {
+          rows.push({ date: d(10), description: "Example — Home insurance (yearly)", amountCents: 171000, sourceType: "card", accountName: "Visa", kind: "spending", category: "Insurance", yearlyExpenseId: yearlyIds.get("Home insurance") ?? null });
+        }
+        if (monthNum === 6) {
+          rows.push({ date: d(10), description: "Example — Car insurance (yearly)", amountCents: 156000, sourceType: "card", accountName: "Visa", kind: "spending", category: "Insurance", yearlyExpenseId: yearlyIds.get("Car insurance") ?? null });
+        }
+        if (monthNum === 8) {
+          rows.push(
+            { date: d(10), description: "Example — Vehicle registration (yearly)", amountCents: 34000, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Transport", yearlyExpenseId: yearlyIds.get("Vehicle registration") ?? null },
+            { date: d(14), description: "Example — Store refund", amountCents: -4500, sourceType: "card", accountName: "Visa", kind: "spending", category: "Other" },
+          );
+        }
+        if (monthNum === 9) {
+          rows.push({ date: d(10), description: "Example — Warehouse club membership (yearly)", amountCents: 6500, sourceType: "card", accountName: "Visa", kind: "spending", category: "Subscriptions", yearlyExpenseId: yearlyIds.get("Warehouse club membership") ?? null });
+        }
+      }
+      for (const r of rows) {
+        await db.insert(schema.transactions).values({
+          date: r.date,
+          description: await encryptStr(key, r.description),
+          amountCents: await encryptNum(key, r.amountCents),
+          sourceType: r.sourceType,
+          accountName: await encryptStr(key, r.accountName),
+          kind: r.kind,
+          category: await encryptStr(key, r.category),
+          yearlyExpenseId: r.yearlyExpenseId ?? null,
+        });
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Example data loaded." };
+    },
+  }),
+
+  // Delete ALL of the tracker's data — every spending table, every
+  // Net Worth table, and every settings row: the collapse flags, the
+  // NW target, the reserve settings, AND the saved planner data the
+  // settings table carries — the Retirement calculator record and
+  // baseline, the Roth plan record, and the Roth UI state. Nothing
+  // user-entered survives this: Net Worth accounts/snapshots/
+  // balances are deleted too (children first, settings last — the
+  // shared wipe plan in server/src/clearDataCore.ts).
+  // The safeguard is server-side: the request must carry confirm
+  // with the EXACT phrase "delete everything", and the gate
+  // (clearDataCore's isClearAllConfirmed) is checked before any
+  // delete statement is reachable — a missing, empty, or inexact
+  // confirmation returns { ok: false } and deletes nothing. No
+  // client calls this action today, so no UI confirmation exists
+  // to rely on; the gate here is the only one.
+  // The encryption key-check row goes with the other settings; the
+  // next data load recreates it via ensureKeyCheck.
+  clearAllData: defineAction({
+    request: z.object({ confirm: z.string() }),
+    response: z.object({ ok: z.boolean() }),
+    async handler(ctx, args): Promise<{ ok: boolean }> {
+      if (!isClearAllConfirmed(args.confirm)) {
+        return { ok: false };
+      }
+      const db = ctx.db<typeof schema>();
+      const wipeStep: Record<ClearAllTable, () => Promise<void>> = {
+        transactions: async () => { await db.delete(schema.transactions); },
+        yearlyExpenseVersions: async () => { await db.delete(schema.yearlyExpenseVersions); },
+        yearlyExpenses: async () => { await db.delete(schema.yearlyExpenses); },
+        monthlySummaries: async () => { await db.delete(schema.monthlySummaries); },
+        monthlyBillVersions: async () => { await db.delete(schema.monthlyBillVersions); },
+        monthlyBills: async () => { await db.delete(schema.monthlyBills); },
+        monthlyOneOffs: async () => { await db.delete(schema.monthlyOneOffs); },
+        monthlyCashOutItems: async () => { await db.delete(schema.monthlyCashOutItems); },
+        nwBalances: async () => { await db.delete(schema.nwBalances); },
+        nwSnapshots: async () => { await db.delete(schema.nwSnapshots); },
+        nwAccounts: async () => { await db.delete(schema.nwAccounts); },
+        settings: async () => { await db.delete(schema.settings); },
+      };
+      for (const stmt of buildClearAllPlan()) {
+        await wipeStep[stmt.table]();
+      }
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  /* ---------------- Net Worth actions ---------------- */
+
+  // Idempotent seed of the sample data. Does nothing when any NW
+  // account already exists, so re-running it can never duplicate.
+  seedNetWorth: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), seeded: z.boolean(), reason: z.string() }),
+    async handler(ctx): Promise<{ ok: boolean; seeded: boolean; reason: string }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const existing = await db.select().from(schema.nwAccounts).limit(1);
+      if (existing.length > 0) {
+        return { ok: true, seeded: false, reason: "Net Worth data already present — nothing seeded." };
+      }
+      const accountIds: number[] = [];
+      for (let i = 0; i < NW_SEED_ACCOUNTS.length; i++) {
+        const [row] = await db
+          .insert(schema.nwAccounts)
+          .values({ name: await encryptStr(key, NW_SEED_ACCOUNTS[i] ?? ""), sortOrder: i, archived: 0 })
+          .returning({ id: schema.nwAccounts.id });
+        if (!row) throw new Error("seed account insert failed");
+        accountIds.push(row.id);
+      }
+      for (const snap of NW_SEED) {
+        const [srow] = await db
+          .insert(schema.nwSnapshots)
+          .values({ date: snap.date, note: null })
+          .returning({ id: schema.nwSnapshots.id });
+        if (!srow) throw new Error("seed snapshot insert failed");
+        for (let i = 0; i < accountIds.length; i++) {
+          const dollars = snap.values[i];
+          const accountId = accountIds[i];
+          if (dollars == null || accountId == null) continue;
+          await db.insert(schema.nwBalances).values({
+            snapshotId: srow.id,
+            accountId,
+            balanceCents: await encryptNum(key, Math.round(dollars * 100)),
+          });
+        }
+      }
+      ctx.invalidateQueries();
+      return { ok: true, seeded: true, reason: "Net Worth history seeded from the sample dataset." };
+    },
+  }),
+
+  getNetWorth: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: z.object({
+      // View-level toggle: true only when the persisted
+      // "nw_include_property" setting is "1". Default (absent) = off,
+      // so property accounts are excluded from every total below.
+      includeProperty: z.boolean(),
+      // Editable net worth target in cents, stored in settings under
+      // "nw_target_cents". Null when no target has been set (the
+      // default) — the view then shows only a subtle set affordance.
+      targetCents: z.number().nullable(),
+      // Section fold state for the Net Worth view's Accounts and
+      // History sections, persisted in settings like the spending
+      // side's collapse flags. Default (absent) = collapsed; only an
+      // explicit "0" (user expanded it) reads as expanded.
+      accountsCollapsed: z.boolean(),
+      historyCollapsed: z.boolean(),
+      // The Growth chart's "Change since" baseline: the stored
+      // "nw_growth_since" setting when it holds a plain
+      // YYYY-MM-DD date, else null — the view then baselines
+      // growth at the first snapshot.
+      growthSinceDate: z.string().nullable(),
+      accounts: z.array(
+        z.object({
+          id: z.number(),
+          name: z.string(),
+          sortOrder: z.number(),
+          archived: z.boolean(),
+          propertyKind: nwPropertyKindEnum,
+          // True for a custodial account (e.g. UTMA/UGMA): recorded
+          // like any other account, but never counted in any total
+          // or calculation. Custodial accounts are never property
+          // accounts (propertyKind stays "none").
+          custodial: z.boolean(),
+        }),
+      ),
+      snapshots: z.array(
+        z.object({
+          id: z.number(),
+          date: z.string(),
+          note: z.string().nullable(),
+          // Grand total for this snapshot, respecting the toggle:
+          // property accounts contribute nothing when it is off;
+          // when on, property assets add and property liabilities
+          // subtract. Non-property balances count as entered.
+          totalCents: z.number(),
+          // Signed net of this snapshot's property accounts alone
+          // (assets − liabilities), whether or not the toggle is on.
+          // Null when no property account has a balance recorded.
+          // Invariant: when the toggle is on,
+          // totalCents = (non-property total) + (propertyNetCents ?? 0),
+          // and bucket subtotals (client-side, property excluded)
+          // + property net = totalCents.
+          propertyNetCents: z.number().nullable(),
+          // Sum of this snapshot's custodial balances, reported for
+          // display only — it is added to NO total. Null when no
+          // custodial account has a balance recorded.
+          custodialTotalCents: z.number().nullable(),
+          balances: z.array(
+            z.object({
+              accountId: z.number(),
+              balanceCents: z.number(),
+              // The balance's split across tax buckets. Empty array =
+              // no split: the whole balance counts as Unbucketed.
+              // When non-empty, the parts sum to balanceCents.
+              // Property accounts never carry splits.
+              splits: z.array(
+                z.object({ bucket: nwSplitBucketEnum, amountCents: z.number() }),
+              ),
+            }),
+          ),
+        }),
+      ),
+      // Data-integrity warning lines for this load (snapshot
+      // totals, bucket splits). Empty when the stored data passes
+      // every check — the UI renders nothing for an empty list.
+      integrityWarnings: z.array(z.string()),
+    }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const { accounts, snapshots: snaps, balances } = await loadNetWorthDecrypted(ctx, db, key);
+      const settingRows = await db.select().from(schema.settings);
+      const includeProperty =
+        settingRows.find((r) => r.key === NW_INCLUDE_PROPERTY_KEY)?.value === "1";
+      const accountsCollapsed =
+        settingRows.find((r) => r.key === "nw_accounts_collapsed")?.value !== "0";
+      const historyCollapsed =
+        settingRows.find((r) => r.key === "nw_history_collapsed")?.value !== "0";
+      const growthSinceRaw =
+        settingRows.find((r) => r.key === "nw_growth_since")?.value;
+      const growthSinceDate =
+        growthSinceRaw != null && dateRe.test(growthSinceRaw)
+          ? growthSinceRaw
+          : null;
+      const targetRaw = settingRows.find((r) => r.key === NW_TARGET_KEY)?.value;
+      let targetCents: number | null = null;
+      if (targetRaw != null && targetRaw !== "") {
+        if (isEncrypted(targetRaw)) {
+          const n = await decryptNum(key, targetRaw as unknown);
+          targetCents = Number.isFinite(n) && n > 0 ? n : null;
+        } else {
+          const n = Number.parseInt(targetRaw, 10);
+          targetCents = Number.isFinite(n) && n > 0 ? n : null;
+        }
+      }
+      const classById = classByIdOf(accounts);
+      const bySnapshot = new Map<
+        number,
+        { accountId: number; balanceCents: number; splits: { bucket: NwSplitBucket; amountCents: number }[] }[]
+      >();
+      // The raw rows alongside: snapshotTotals reads the split
+      // columns itself (nwCore's effective-balance rule), so it
+      // is fed the un-reshaped balances.
+      const rawBySnapshot = new Map<number, CoreNwBalance[]>();
+      for (const b of balances) {
+        const arr = bySnapshot.get(b.snapshotId) ?? [];
+        const cls = classById.get(b.accountId) ?? { kind: "none" as NwPropertyKind, custodial: false };
+        arr.push({
+          accountId: b.accountId,
+          balanceCents: b.balanceCents,
+          // Property and custodial accounts never carry splits.
+          splits: isPropertyKind(cls.kind) || cls.custodial ? [] : splitPartsOf(b),
+        });
+        bySnapshot.set(b.snapshotId, arr);
+        const raw = rawBySnapshot.get(b.snapshotId) ?? [];
+        raw.push(b);
+        rawBySnapshot.set(b.snapshotId, raw);
+      }
+      return {
+        includeProperty,
+        targetCents,
+        accountsCollapsed,
+        historyCollapsed,
+        growthSinceDate,
+        accounts: accounts.map((a) => ({
+          id: a.id,
+          name: a.name,
+          sortOrder: a.sortOrder,
+          archived: a.archived === 1,
+          propertyKind: propertyKindOf(a),
+          custodial: isCustodialAccount(a),
+        })),
+        snapshots: snaps.map((s) => {
+          const bs = bySnapshot.get(s.id) ?? [];
+          // The total / property-net math lives in the shared NW
+          // core (server/src/nwCore.ts) — the same code the Year
+          // Summary and the accuracy fixtures run.
+          const totals = snapshotTotals(rawBySnapshot.get(s.id) ?? [], classById, includeProperty);
+          return {
+            id: s.id,
+            date: s.date,
+            note: s.note ?? null,
+            totalCents: totals.totalCents,
+            propertyNetCents: totals.propertyNetCents,
+            custodialTotalCents: totals.custodialTotalCents,
+            balances: bs,
+          };
+        }),
+        integrityWarnings: integrityWarningLines([
+          checkNwSnapshotTotals({ accounts, snapshots: snaps, balances }, includeProperty),
+          checkNwBucketSplits({ accounts, snapshots: snaps, balances }),
+        ]),
+      };
+    },
+  }),
+
+  // Persist the Net Worth view's "Include house & mortgage" toggle.
+  // Display-scope only in the sense that it changes which accounts
+  // the totals/charts include — it never touches any account,
+  // snapshot, or balance row. Default (no stored value) is off.
+  setNwIncludeProperty: defineAction({
+    request: z.object({ include: z.boolean() }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: NW_INCLUDE_PROPERTY_KEY,
+          value: args.include ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.include ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Set (or clear) the editable net worth target. Stored in settings
+  // under "nw_target_cents" as a plain integer-cents string; null
+  // clears it (the row is deleted, returning to the empty default).
+  setNwTarget: defineAction({
+    request: z.object({
+      targetCents: z.number().int().positive().nullable(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      if (args.targetCents == null) {
+        await db
+          .delete(schema.settings)
+          .where(eq(schema.settings.key, NW_TARGET_KEY));
+      } else {
+        await db
+          .insert(schema.settings)
+          .values({ key: NW_TARGET_KEY, value: String(args.targetCents) })
+          .onConflictDoUpdate({
+            target: schema.settings.key,
+            set: { value: String(args.targetCents) },
+          });
+      }
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  /* ---------------- Retirement calculator ----------------
+     Inputs persist as one encrypted JSON blob in settings under
+     "retirement_calc_inputs_v1" (the existing settings mechanism).
+     Defaults are computed live from the app's own figures: the
+     starting portfolio is the latest snapshot total from
+     getNetWorth (respecting the Include house & mortgage toggle)
+     minus that snapshot's 529 (college) bucket subtotal,
+     and annual spending is the trailing True cost (smoothed)
+     average, annualised ×12, using the exact per-month eff() math
+     and the same trailing-12-month window as getDashboard's
+     Actual average. */
+  getRetirementCalc: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: z.object({
+      defaultPortfolioCents: z.number(),
+      // The toggle-aware latest Net Worth total BEFORE the 529
+      // exclusion, and the latest snapshot's 529 (college) bucket
+      // subtotal that was excluded from it (null = the snapshot has
+      // no 529 split, so $0 was excluded). The Starting portfolio
+      // note in the Retirement view shows the subtraction from
+      // these two figures; defaultPortfolioCents is the result.
+      nwTotalCents: z.number(),
+      bucket529Cents: z.number().nullable(),
+      latestSnapshotHasAnySplit: z.boolean(),
+      defaultSpendingAnnualCents: z.number(),
+      // The window the trailing True cost average covers (see
+      // computeRetirementDefaults): first/last month "YYYY-MM"
+      // (null when there is no data) and the number of months
+      // averaged. Display provenance for the Annual spending
+      // source line only — no engine reads these.
+      defaultSpendingWindowStart: z.string().nullable(),
+      defaultSpendingWindowEnd: z.string().nullable(),
+      defaultSpendingMonths: z.number(),
+      includeProperty: z.boolean(),
+      // Factory default for Current age (see computeRetirementDefaults):
+      // current year minus the birth year stored in the Roth inputs,
+      // or the fixed fallback 55 when no birth year is stored.
+      defaultCurrentAge: z.number(),
+      defaultCurrentAgeFromBirthYear: z.boolean(),
+      saved: z
+        .object({
+          portfolioCents: z.number().nullable(),
+          spendingCents: z.number().nullable(),
+          currentAge: z.number().nullable(),
+          retirementAge: z.number().nullable(),
+          endAge: z.number().nullable(),
+          stocksPct: z.number().nullable(),
+          extraIncomeCents: z.number().nullable(),
+          extraIncomeStartAge: z.number().nullable(),
+          expectedReturnPct: z.number().nullable(),
+          volatilityPct: z.number().nullable(),
+          strategy: retirementStrategy.nullable(),
+          percentOfPortfolio: z.number().nullable(),
+          guardrailsCutPct: z.number().nullable(),
+          guardrailsRaisePct: z.number().nullable(),
+          guardrailsAdjustmentPct: z.number().nullable(),
+          phaseStartAge: z.number().nullable(),
+          phaseDeclinePct: z.number().nullable(),
+        })
+        .nullable(),
+      scenarios: z.array(retirementScenario),
+      // The what-if comparison baseline (see the baseline storage
+      // note above): the input set the working inputs are compared
+      // against, and which kind it is — "saved" after an explicit
+      // "Make this my plan", "session" when it was captured from the
+      // saved inputs on first open. Null only when there is no
+      // saved inputs record yet to capture from.
+      baseline: retirementInputsShape.nullable(),
+      baselineKind: z.enum(["saved", "session"]).nullable(),
+      // The two records' write revisions (API follow-on F23):
+      // writers pass them back as saveRetirementCalc's
+      // baseRevision / saveRetirementBaseline's baseRevision +
+      // baseBaselineRevision so a stale save is refused instead
+      // of silently overwriting a newer one. 0 for a record
+      // written before revisions existed, and for an absent row.
+      revision: z.number().int().nonnegative(),
+      baselineRevision: z.number().int().nonnegative(),
+      // Assumptions group UI state: true when the Retirement
+      // view's Assumptions group (Expected return, Volatility) is
+      // collapsed. Persisted server-side in settings like the
+      // Spending sections' collapse flags, so it survives reloads
+      // and works across devices. Default (no stored value) is
+      // COLLAPSED. Display only — no engine reads it.
+      assumptionsCollapsed: z.boolean(),
+      // Spending-field entry unit UI state: which period the
+      // Retirement view's spending field opens in. Persisted
+      // server-side in settings like the Assumptions collapse
+      // flag, so it survives reloads and works across devices.
+      // Default (no stored value) is "month". Display only —
+      // the stored spending value is annual cents everywhere
+      // and no engine reads this.
+      spendingUnit: z.enum(["month", "year"]),
+    }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const {
+        defaultPortfolioCents,
+        nwTotalCents,
+        bucket529Cents,
+        latestSnapshotHasAnySplit,
+        defaultSpendingAnnualCents,
+        defaultSpendingWindowStart,
+        defaultSpendingWindowEnd,
+        defaultSpendingMonths,
+        includeProperty,
+        defaultCurrentAge,
+        defaultCurrentAgeFromBirthYear,
+      } = await computeRetirementDefaults(ctx, db, key);
+
+      // --- saved inputs (encrypted JSON in settings) ---
+      const blobState = await readRetirementBlobState(db, key);
+      const blob = blobState.blob;
+      const scenarios = blobState.scenarios;
+      const saved: RetirementInputs | null = blob
+        ? retirementInputsFromRecord(blob)
+        : null;
+
+      // --- baseline: the stored one wins; with none stored and a
+      // saved inputs record present, capture the session baseline
+      // from that record exactly as it stands at this first open
+      // and persist it, so it survives reloads and devices until
+      // an explicit "Make this my plan" replaces it. ---
+      // F23: the capture is INSERT-IF-ABSENT (guard-or-skip —
+      // decideRetirementCapture in rothRevisionCore.ts). A CAS
+      // refusal cannot be surfaced from inside a read, so the
+      // capture may CREATE the row, atomically, only if it is
+      // still absent at commit; it may never REPLACE one. (The
+      // pre-F23 read-then-upsert could land after a racing
+      // "Make this my plan" and silently replace the explicit
+      // saved baseline with a stale session capture.) A created
+      // row is a first write and establishes revision 1; if the
+      // insert no-ops (a racing writer landed first), the
+      // baseline state is re-read and THAT is returned instead
+      // of the captured candidate.
+      const baselineState = await readRetirementBaselineState(db, key);
+      let baselineRec: {
+        kind: RetirementBaselineKind;
+        inputs: RetirementInputs;
+      } | null = baselineState
+        ? { kind: baselineState.kind, inputs: baselineState.inputs }
+        : null;
+      let baselineRevision = baselineState?.revision ?? 0;
+      if (!baselineRec && saved) {
+        const settingRowsNow = await db.select().from(schema.settings);
+        const baselineExists = settingRowsNow.some(
+          (r: { key: string }) => r.key === RETIREMENT_BASELINE_KEY,
+        );
+        if (decideRetirementCapture(baselineExists) === "write") {
+          const enc = await encryptStr(
+            key,
+            JSON.stringify(
+              composeRetirementBaselineBlob("session", saved, 1),
+            ),
+          );
+          await db
+            .insert(schema.settings)
+            .values({ key: RETIREMENT_BASELINE_KEY, value: enc })
+            .onConflictDoNothing();
+          const after = await readRetirementBaselineState(db, key);
+          if (after) {
+            baselineRec = { kind: after.kind, inputs: after.inputs };
+            baselineRevision = after.revision;
+          }
+        }
+      }
+
+      // --- Assumptions group collapse flag (settings, plain) ---
+      const settingRows = await db.select().from(schema.settings);
+      const assumptionsCollapsed =
+        settingRows.find(
+          (r: { key: string }) => r.key === "retirement_assumptions_collapsed",
+        )?.value !== "0";
+
+      // --- Spending-field entry unit (settings, plain): the
+      // last-used unit wins; only an explicitly stored "year"
+      // opens per year — anything else (including no stored
+      // value) opens per month, the starting default. ---
+      const spendingUnit =
+        settingRows.find(
+          (r: { key: string }) => r.key === "retirement_spending_unit",
+        )?.value === "year"
+          ? ("year" as const)
+          : ("month" as const);
+
+      return { defaultPortfolioCents, nwTotalCents, bucket529Cents, latestSnapshotHasAnySplit, defaultSpendingAnnualCents, defaultSpendingWindowStart, defaultSpendingWindowEnd, defaultSpendingMonths, includeProperty, defaultCurrentAge, defaultCurrentAgeFromBirthYear, saved, scenarios, baseline: baselineRec?.inputs ?? null, baselineKind: baselineRec?.kind ?? null, revision: blobState.revision, baselineRevision, assumptionsCollapsed, spendingUnit };
+    },
+  }),
+
+  // Set the Retirement view Assumptions group's collapsed UI
+  // state. Display only — persisted server-side in settings so it
+  // survives reloads, new sessions, and devices, exactly like the
+  // Spending sections' set*CollapsedAll actions. No input,
+  // amount, or total is touched.
+  setRetirementAssumptionsCollapsed: defineAction({
+    request: z.object({
+      collapsed: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "retirement_assumptions_collapsed",
+          value: args.collapsed ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.collapsed ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Set the Retirement view spending field's entry unit (per
+  // year / per month). Display only — persisted server-side in
+  // settings so it survives reloads, new sessions, and devices,
+  // exactly like setRetirementAssumptionsCollapsed. The stored
+  // spending value is annual cents and is NOT touched: flipping
+  // the unit writes only this preference.
+  setRetirementSpendingUnit: defineAction({
+    request: z.object({
+      unit: z.enum(["month", "year"]),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "retirement_spending_unit",
+          value: args.unit,
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.unit },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  saveRetirementCalc: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    // baseRevision (API follow-on F23) is the CAS base: the
+    // blob-1 revision the writer's copy of the record was read
+    // at. It is stripped before the compose, so it can never be
+    // stored as a blob field — the revision lives as its own
+    // top-level key, stamped by the compose.
+    request: z.object({
+      ...retirementInputFields,
+      baseRevision: z.number().int().nonnegative().optional(),
+    }),
+    response: saveRetirementCalcResponse,
+    async handler(ctx, args): Promise<SaveRetirementCalcResponse> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const { baseRevision, ...fields } = args;
+      const state = await readRetirementBlobState(db, key);
+      // Fast-path CAS check on the decrypted read (mirrors
+      // saveRothInputs): a writer whose base is already stale
+      // (or from a "future" revision, or positive against an
+      // absent row, which reads as revision 0) is refused
+      // WITHOUT composing or encrypting anything, carrying the
+      // lite current record freshly read at refusal time.
+      // Storage is untouched.
+      const decision = decideRothBlobWrite(state.revision, baseRevision);
+      if (!decision.allowed) {
+        const record = await loadRetirementLiteRecord(db, key);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          baselineRevision: record.baselineRevision,
+          record,
+        };
+      }
+      const nextRevision = decision.nextRevision;
+      // Merge with the existing blob so saved scenarios survive
+      // every input save (including Reset to defaults). The
+      // revision stamp is EXPLICIT in the compose — spreading
+      // the request fields alone would drop a stored revision.
+      const enc = await encryptStr(
+        key,
+        JSON.stringify(
+          composeRetirementInputsBlob(fields, state.scenarios, nextRevision),
+        ),
+      );
+      if (baseRevision === undefined || state.storedRaw === undefined) {
+        // Legacy unchecked write (no baseRevision), or the
+        // first write establishing the row: unconditional
+        // upsert, as before — except the write still bumps the
+        // revision and returns it. A CAS base > 0 against an
+        // absent row never reaches here: the decision above
+        // already refused it (absent reads as revision 0).
+        await upsertRetirementBlobValue(db, enc);
+        ctx.invalidateQueries();
+        return { ok: true as const, revision: nextRevision };
+      }
+      // CAS write against an existing row: commit with ONE
+      // guarded UPDATE on the stored raw value. 0 affected rows
+      // means a concurrent write landed between this
+      // invocation's read and its commit: storage is untouched
+      // by this invocation, so refuse with the re-read lite
+      // record, exactly like the sequential conflict above.
+      const committed = await commitSettingsValueGuarded(
+        db,
+        RETIREMENT_KEY,
+        state.storedRaw,
+        enc,
+      );
+      if (committed) {
+        ctx.invalidateQueries();
+        return { ok: true as const, revision: nextRevision };
+      }
+      const record = await loadRetirementLiteRecord(db, key);
+      return {
+        ok: false as const,
+        conflict: true as const,
+        revision: record.revision,
+        baselineRevision: record.baselineRevision,
+        record,
+      };
+    },
+  }),
+
+  // "Make this my plan": make the given input set BOTH the working
+  // inputs (through the same merge saveRetirementCalc performs, so
+  // saved scenarios survive) AND the comparison baseline, marked
+  // as explicitly saved. From then on the baseline stays this
+  // record until the next explicit save — autosaves of the working
+  // inputs never move it.
+  saveRetirementBaseline: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    // baseRevision / baseBaselineRevision (API follow-on F23)
+    // are the CAS bases for blob 1 / blob 2 — the revisions the
+    // writer's copy of each record was read at. Both are
+    // stripped before any compose, so neither can be stored as
+    // a blob field.
+    request: z.object({
+      ...retirementInputFields,
+      baseRevision: z.number().int().nonnegative().optional(),
+      baseBaselineRevision: z.number().int().nonnegative().optional(),
+    }),
+    response: saveRetirementBaselineResponse,
+    async handler(ctx, args): Promise<SaveRetirementBaselineResponse> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const { baseRevision, baseBaselineRevision, ...fields } = args;
+      const blobState = await readRetirementBlobState(db, key);
+      const baselineState = await readRetirementBaselineState(db, key);
+      const baselineStored = baselineState?.revision ?? 0;
+      // Decide BOTH bases up front, on the decrypted reads: a
+      // refusal on either returns the inputs-conflict shape
+      // with NEITHER blob written (the pair-commit decision
+      // table, decideRetirementBaselinePair in
+      // rothRevisionCore.ts).
+      const inputsDecision = decideRothBlobWrite(
+        blobState.revision,
+        baseRevision,
+      );
+      const baselineDecision = decideRothBlobWrite(
+        baselineStored,
+        baseBaselineRevision,
+      );
+      const fastPath = decideRetirementBaselinePair({
+        inputsRefused: !inputsDecision.allowed,
+        baselineRefused: !baselineDecision.allowed,
+        baselineCommit: "not-run",
+        baselineRetry: "not-run",
+      });
+      if (fastPath === "inputs-conflict") {
+        const record = await loadRetirementLiteRecord(db, key);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          baselineRevision: record.baselineRevision,
+          record,
+        };
+      }
+      // --- Commit blob 1 exactly as saveRetirementCalc does ---
+      const nextRevision = inputsDecision.allowed
+        ? inputsDecision.nextRevision
+        : blobState.revision + 1;
+      const enc1 = await encryptStr(
+        key,
+        JSON.stringify(
+          composeRetirementInputsBlob(
+            fields,
+            blobState.scenarios,
+            nextRevision,
+          ),
+        ),
+      );
+      let inputsCommitted: boolean;
+      if (baseRevision === undefined || blobState.storedRaw === undefined) {
+        await upsertRetirementBlobValue(db, enc1);
+        inputsCommitted = true;
+      } else {
+        inputsCommitted = await commitSettingsValueGuarded(
+          db,
+          RETIREMENT_KEY,
+          blobState.storedRaw,
+          enc1,
+        );
+      }
+      if (!inputsCommitted) {
+        // The blob-1 commit itself lost the commit-time race:
+        // nothing of this invocation landed on either blob, so
+        // refuse with the fresh lite record, exactly like the
+        // fast-path conflict.
+        const record = await loadRetirementLiteRecord(db, key);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          baselineRevision: record.baselineRevision,
+          record,
+        };
+      }
+      // --- Commit blob 2: successor { kind: "saved", inputs:
+      // args, revision: baselineStored + 1 }, guarded on blob
+      // 2's stored raw when a base was supplied (legacy
+      // unchecked upsert when it wasn't) ---
+      const successShape = (newBaselineRevision: number) =>
+        ({
+          ok: true as const,
+          revision: nextRevision,
+          baselineRevision: newBaselineRevision,
+          baseline: fields,
+          baselineKind: "saved" as const,
+        }) satisfies SaveRetirementBaselineResponse;
+      if (
+        baseBaselineRevision === undefined ||
+        baselineState?.storedRaw === undefined
+      ) {
+        const nextBaselineRevision = baselineDecision.allowed
+          ? baselineDecision.nextRevision
+          : baselineStored + 1;
+        await upsertRetirementBaselineValue(
+          db,
+          await encryptStr(
+            key,
+            JSON.stringify(
+              composeRetirementBaselineBlob(
+                "saved",
+                fields,
+                nextBaselineRevision,
+              ),
+            ),
+          ),
+        );
+        ctx.invalidateQueries();
+        return successShape(nextBaselineRevision);
+      }
+      const nextBaselineRevision = baselineDecision.allowed
+        ? baselineDecision.nextRevision
+        : baselineStored + 1;
+      const enc2 = await encryptStr(
+        key,
+        JSON.stringify(
+          composeRetirementBaselineBlob(
+            "saved",
+            fields,
+            nextBaselineRevision,
+          ),
+        ),
+      );
+      const firstCommit = await commitSettingsValueGuarded(
+        db,
+        RETIREMENT_BASELINE_KEY,
+        baselineState.storedRaw,
+        enc2,
+      );
+      if (firstCommit) {
+        ctx.invalidateQueries();
+        return successShape(nextBaselineRevision);
+      }
+      // 0-row baseline commit: the successor is fully
+      // determined by the request, so re-read blob 2 ONCE and
+      // re-commit against the fresh raw, stamping the fresh
+      // revision + 1 (the retry-once analogue of the scenario
+      // writers' re-apply).
+      const freshBaseline = await readRetirementBaselineState(db, key);
+      let retryCommitted = false;
+      let retryRevision = nextBaselineRevision;
+      if (freshBaseline?.storedRaw !== undefined) {
+        retryRevision = freshBaseline.revision + 1;
+        const retryEnc = await encryptStr(
+          key,
+          JSON.stringify(
+            composeRetirementBaselineBlob("saved", fields, retryRevision),
+          ),
+        );
+        retryCommitted = await commitSettingsValueGuarded(
+          db,
+          RETIREMENT_BASELINE_KEY,
+          freshBaseline.storedRaw,
+          retryEnc,
+        );
+      } else {
+        // The baseline row vanished in the race: establishing
+        // it fresh (revision 1) is the retry's commit.
+        retryRevision = 1;
+        await upsertRetirementBaselineValue(
+          db,
+          await encryptStr(
+            key,
+            JSON.stringify(
+              composeRetirementBaselineBlob("saved", fields, retryRevision),
+            ),
+          ),
+        );
+        retryCommitted = true;
+      }
+      const pairOutcome = decideRetirementBaselinePair({
+        inputsRefused: false,
+        baselineRefused: false,
+        baselineCommit: "zero",
+        baselineRetry: retryCommitted ? "committed" : "zero",
+      });
+      if (pairOutcome === "success") {
+        ctx.invalidateQueries();
+        return successShape(retryRevision);
+      }
+      // A second 0-row: the honest stage: "baseline" conflict.
+      // Blob 1 IS committed (revision is its new value) and is
+      // NOT rolled back — a rollback write would itself be an
+      // unguarded clobber. The carried record shows the
+      // current, someone-else's baseline.
+      const record = await loadRetirementLiteRecord(db, key);
+      return {
+        ok: false as const,
+        conflict: true as const,
+        stage: "baseline" as const,
+        revision: record.revision,
+        baselineRevision: record.baselineRevision,
+        record,
+      };
+    },
+  }),
+
+  // Headline results for the BASELINE inputs, computed here with
+  // the same engines the view runs (the shared retirementEngines
+  // module), so each what-if delta compares a real engine run on
+  // the baseline against the live run on the working inputs —
+  // never arithmetic on displayed figures alone. The Historical
+  // and Monte Carlo success rates returned here are the engines'
+  // never-runs-out rates (neverOutSuccessRate) — the same
+  // predicate the tabs headline — so a success-point delta
+  // compares the same test on both sides. The Monte Carlo
+  // uses the view's current seed and run count, and the Max
+  // Spending solve uses the view's current solver engine / target,
+  // so both sides of every delta are priced identically.
+  getRetirementBaselineResults: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      mcSeed: z.number().int(),
+      solverEngine: z.enum(["historical", "montecarlo"]),
+      solverTarget: z.number(),
+    }),
+    response: z.object({
+      baselineKind: z.enum(["saved", "session"]).nullable(),
+      projectionEndingCents: z.number().nullable(),
+      historicalSuccessRate: z.number().nullable(),
+      historicalMedianCents: z.number().nullable(),
+      monteCarloSuccessRate: z.number().nullable(),
+      maxSpendingCents: z.number().nullable(),
+      maxSpendingSuccessRate: z.number().nullable(),
+    }),
+    async handler(ctx, args) {
+      const empty = {
+        baselineKind: null,
+        projectionEndingCents: null,
+        historicalSuccessRate: null,
+        historicalMedianCents: null,
+        monteCarloSuccessRate: null,
+        maxSpendingCents: null,
+        maxSpendingSuccessRate: null,
+      } as const;
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const baselineRec = await readRetirementBaseline(db, key);
+      if (!baselineRec) return { ...empty };
+      const { defaultPortfolioCents, defaultSpendingAnnualCents, defaultCurrentAge } =
+        await computeRetirementDefaults(ctx, db, key);
+      const built = buildRetirementSimInputs(baselineRec.inputs, {
+        portfolioCents: defaultPortfolioCents,
+        spendingCents: defaultSpendingAnnualCents,
+        defaultCurrentAge,
+      });
+      if (!built) return { ...empty, baselineKind: baselineRec.kind };
+      const { inputs, stocks, expected, vol } = built;
+      const years = Math.max(0, inputs.endAge - inputs.currentAge);
+      const projPath = simulateRetirement(
+        inputs,
+        Array.from({ length: years }, () => expected),
+      );
+      const hist = runRetirementHistorical(inputs, stocks);
+      const mc = runRetirementMonteCarlo(
+        inputs,
+        expected,
+        vol,
+        args.mcSeed,
+        MONTE_CARLO_TAB_RUNS,
+      );
+      const target = Math.min(100, Math.max(0, args.solverTarget));
+      const solver = solveRetirementMaxSpending(
+        inputs,
+        stocks,
+        expected,
+        vol,
+        args.solverEngine,
+        target,
+        args.mcSeed,
+      );
+      return {
+        baselineKind: baselineRec.kind,
+        projectionEndingCents: projPath[projPath.length - 1] ?? null,
+        historicalSuccessRate: hist?.neverOutSuccessRate ?? null,
+        historicalMedianCents: hist?.medianEnding ?? null,
+        monteCarloSuccessRate: mc?.neverOutSuccessRate ?? null,
+        maxSpendingCents: solver?.maxSpendingCents ?? null,
+        maxSpendingSuccessRate: solver?.successRate ?? null,
+      };
+    },
+  }),
+
+  // Save the full current input set as a scenario (up to 3). The
+  // name is auto-assigned the smallest free "Scenario N" slot. The
+  // inputs part of the blob is preserved exactly. The write goes
+  // through mutateRetirementScenarios (guarded commit, revision
+  // bumped, one re-read-and-retry on a lost race — F23).
+  saveRetirementScenario: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      ...retirementInputFields,
+    }),
+    response: retirementScenarioWriteResponse,
+    async handler(ctx, args): Promise<RetirementScenarioWriteResult> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const res = await mutateRetirementScenarios(db, key, (scenarios) =>
+        appendRetirementScenario(scenarios, args),
+      );
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  deleteRetirementScenario: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ name: z.string().min(1).max(60) }),
+    response: retirementScenarioWriteResponse,
+    async handler(ctx, args): Promise<RetirementScenarioWriteResult> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const res = await mutateRetirementScenarios(db, key, (scenarios) =>
+        deleteRetirementScenario(scenarios, args.name),
+      );
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  // Rename a saved scenario. Names identify scenarios for load and
+  // delete, so the new name must be non-blank (after trimming) and
+  // must not collide with a different scenario's name. The stored
+  // inputs and the blob's other fields are preserved exactly.
+  renameRetirementScenario: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      name: z.string().min(1).max(60),
+      newName: z.string().min(1).max(60),
+    }),
+    response: retirementScenarioWriteResponse,
+    async handler(ctx, args): Promise<RetirementScenarioWriteResult> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const res = await mutateRetirementScenarios(db, key, (scenarios) =>
+        renameRetirementScenario(scenarios, args.name, args.newName),
+      );
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  /* ---------------- Roth Conversion planner ----------------
+     Inputs and saved strategies live in the settings table as ONE
+     encrypted JSON blob (ROTH_INPUTS_KEY), mirroring the
+     Retirement calculator's blob: the inputs writer merges so a
+     save never wipes the saved scenarios, and vice versa. All
+     money fields are integer cents (the tax engine works in
+     dollars; the client converts at the boundary). Every field is
+     nullable: null means "use the client-side default / seed". */
+  getRothPlanner: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: rothPlannerResponse,
+    async handler(ctx): Promise<RothPlannerResponse> {
+      return loadRothPlannerResponse(ctx);
+    },
+  }),
+
+  // Reset the Roth plan record to the seeded defaults (the
+  // fresh-user record): the plan inputs AND the This-year
+  // execution block AND the gift block AND the MC-check
+  // volatility all return to their seed values, derived by the
+  // ONE seed implementation (server/src/rothSeed.ts, via
+  // seedRothStoredInputs) from the current Retirement record
+  // state and the latest snapshot conventions — balances seed
+  // as null, which is what "follow the snapshot" means in the
+  // saved record. SCENARIO SAFETY: the saved scenarios array is
+  // carried through RAW (readRothBlobRawState + joinRothBlob),
+  // never parsed or rewritten, so it passes through the reset
+  // byte-identical — same records, same order, same fields.
+  // REVISION (R4-2 / F3): the reset commits against the record
+  // it read — guarded against the raw value the scenarios were
+  // read from, or insert-only when no row exists — and stamps
+  // revision = current + 1, never restarting the counter, so any
+  // writer holding a pre-reset base conflicts cleanly afterwards
+  // instead of accidentally matching a recycled 0. If another
+  // save lands first, the reset re-reads and retries against the
+  // freshest record a bounded number of times (scenarios still
+  // pass through from the freshest read); if it keeps losing
+  // that race it is refused with the current record — the same
+  // conflict shape saveRothInputs returns — instead of
+  // overwriting the newer save. No code path writes
+  // unconditionally.
+  // resetRothPlanner deliberately returns saveRothInputsResponse
+  // — the SAME union saveRothInputs uses — so the family has
+  // one conflict shape.
+  resetRothPlanner: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: saveRothInputsResponse,
+    async handler(ctx): Promise<SaveRothInputsResponse> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      const stored = await seedRothStoredInputs(ctx, db, key);
+      let state = await readRothBlobRawState(db, key);
+      let lost = 0;
+      for (;;) {
+        const enc = await encryptStr(
+          key,
+          joinRothBlob(stored, state.scenariosRaw, state.revision + 1),
+        );
+        let committed: boolean;
+        if (state.storedRaw === undefined) {
+          committed = await insertRothBlobValueIfAbsent(db, enc);
+        } else {
+          committed = await commitSettingsValueGuarded(db, ROTH_INPUTS_KEY, state.storedRaw, enc);
+        }
+        if (committed) {
+          ctx.invalidateQueries();
+          return { ok: true as const, revision: state.revision + 1 };
+        }
+        lost += 1;
+        if (decideRothResetAfterLoss(lost) === "refuse") {
+          const record = await loadRothPlannerResponse(ctx);
+          return {
+            ok: false as const,
+            conflict: true as const,
+            revision: record.revision,
+            record,
+          };
+        }
+        state = await readRothBlobRawState(db, key);
+      }
+    },
+  }),
+
+  // The Roth view's guided-layout UI state: which input
+  // sections are open, whether the Year-by-year table is
+  // expanded, and which results workspace is showing — plus
+  // the Playground view's remembered form state. Display and
+  // form state only — defaults (no stored blob) are "Your
+  // money" open, every other section closed, the year table
+  // collapsed, the Plan workspace, and a fresh Playground
+  // form. The response carries the blob's current write
+  // revision, which writers pass back as baseRevision when
+  // they save (see setRothUiState).
+  getRothUiState: defineAction({
+    request: z.object({}),
+    response: rothUiStateResponse,
+    async handler(ctx): Promise<z.infer<typeof rothUiStateResponse>> {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.settings);
+      return parseRothUiState(rows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value);
+    },
+  }),
+
+  // Persist one piece of the Roth view's UI state (one section's
+  // open flag, the year table's expanded flag, or the results
+  // workspace mode) or the Playground form's complete remembered
+  // state, merged into the stored blob so the pieces persist
+  // independently. Display and form state only — no plan input,
+  // scenario, or amount is touched.
+  // Revision/CAS: a writer passes baseRevision — the revision
+  // its copy of the blob was read at. If the stored revision
+  // has moved on (a concurrent save from another tab or device
+  // landed first), the write is refused with the current blob
+  // and its revision, and storage is left untouched; the
+  // writer re-merges against the current blob and retries at
+  // the fresh revision. A write with no baseRevision keeps the
+  // legacy unchecked behaviour. Either way, an accepted write
+  // bumps the revision by one and returns it.
+  // The CAS commit is atomic, not just checked: against an
+  // existing row it is a single UPDATE whose predicate requires
+  // the revision inside the stored blob to still equal
+  // baseRevision at commit time, verified by the statement's
+  // affected-row count — so two invocations that both read
+  // revision N before either commits cannot both succeed; the
+  // second's UPDATE matches 0 rows and it is refused with the
+  // re-read current blob, exactly like a sequential conflict.
+  setRothUiState: defineAction({
+    request: z.object({
+      section: z.enum(ROTH_SECTION_IDS).optional(),
+      open: z.boolean().optional(),
+      yearTableOpen: z.boolean().optional(),
+      mode: z.enum(ROTH_RESULTS_MODES).optional(),
+      labDials: rothLabDials.optional(),
+      playground: playgroundFormState.optional(),
+      labBaselineName: z.string().max(120).nullable().optional(),
+      labDialsOpen: z.boolean().optional(),
+      watchOutsOpen: z.boolean().optional(),
+      assumptionsOpen: z.boolean().optional(),
+      ceilCustomOpen: z.boolean().optional(),
+      baseRevision: z.number().int().nonnegative().optional(),
+    }),
+    response: setRothUiStateResponse,
+    async handler(ctx, args): Promise<SetRothUiStateResponse> {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.settings);
+      const storedRaw = rows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value;
+      const result = applyRothUiWrite(
+        storedRaw,
+        args.baseRevision,
+        (state) => {
+          if (args.section !== undefined && args.open !== undefined) {
+            state.open[args.section] = args.open;
+          }
+          if (args.yearTableOpen !== undefined) {
+            state.yearTableOpen = args.yearTableOpen;
+          }
+          if (args.mode !== undefined) {
+            state.mode = args.mode;
+          }
+          if (args.labDials !== undefined) {
+            state.labDials = args.labDials;
+          }
+          if (args.playground !== undefined) {
+            state.playground = args.playground;
+          }
+          if (args.labBaselineName !== undefined) {
+            state.labBaselineName = args.labBaselineName;
+          }
+          if (args.labDialsOpen !== undefined) {
+            state.labDialsOpen = args.labDialsOpen;
+          }
+          if (args.watchOutsOpen !== undefined) {
+            state.watchOutsOpen = args.watchOutsOpen;
+          }
+          if (args.assumptionsOpen !== undefined) {
+            state.assumptionsOpen = args.assumptionsOpen;
+          }
+          if (args.ceilCustomOpen !== undefined) {
+            state.ceilCustomOpen = args.ceilCustomOpen;
+          }
+        },
+      );
+      if (result.status === "conflict") {
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: result.revision,
+          state: result.state,
+        };
+      }
+      if (args.baseRevision === undefined || storedRaw === undefined) {
+        // Legacy unchecked write (no baseRevision), or the first
+        // write establishing the row: unconditional upsert, as
+        // before. A CAS base > 0 against an absent row never
+        // reaches here — applyRothUiWrite already refused it
+        // above, carrying the lenient-parsed default state at
+        // revision 0, and nothing was written.
+        await db
+          .insert(schema.settings)
+          .values({ key: ROTH_UI_STATE_KEY, value: result.raw })
+          .onConflictDoUpdate({
+            target: schema.settings.key,
+            set: { value: result.raw },
+          });
+        ctx.invalidateQueries();
+        return { ok: true as const, revision: result.revision };
+      }
+      // CAS write against an existing row: commit with ONE
+      // guarded UPDATE. Its predicate re-checks, inside the same
+      // statement that writes, that the revision stored in the
+      // blob still equals the writer's base — the CASE over
+      // json_extract reproduces parseRothUiState's lenient
+      // revision read (unparseable blob, missing key, non-integer
+      // or negative revision all count as 0), the same predicate
+      // commitGuardedRothUiWrite mirrors in rothUiStateCore.ts.
+      // Exactly 1 affected row is the commit. 0 rows means a
+      // concurrent write landed between this invocation's read
+      // above and this commit and advanced the stored revision
+      // past the base: storage is untouched by this invocation,
+      // so re-read the current blob and refuse with it, exactly
+      // like the sequential conflict above.
+      const baseRevision = args.baseRevision;
+      const updated = await db
+        .update(schema.settings)
+        .set({ value: result.raw })
+        .where(
+          and(
+            eq(schema.settings.key, ROTH_UI_STATE_KEY),
+            sql`(case when json_valid(${schema.settings.value}) = 0 then 0 when json_extract(${schema.settings.value}, '$.revision') is null then 0 when typeof(json_extract(${schema.settings.value}, '$.revision')) <> 'integer' then 0 when json_extract(${schema.settings.value}, '$.revision') < 0 then 0 else json_extract(${schema.settings.value}, '$.revision') end) = ${baseRevision}`,
+          ),
+        )
+        .returning({ key: schema.settings.key });
+      if (updated.length === 1) {
+        ctx.invalidateQueries();
+        return { ok: true as const, revision: result.revision };
+      }
+      const currentRows = await db.select().from(schema.settings);
+      const current = parseRothUiState(
+        currentRows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value,
+      );
+      return {
+        ok: false as const,
+        conflict: true as const,
+        revision: current.revision,
+        state: current,
+      };
+    },
+  }),
+
+  saveRothInputs: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    // The plan record's own writer is the ONLY writer that
+    // accepts the execution-year fields — they save WITH the
+    // plan inputs, in the same record. The scenario writers use
+    // rothInputFields alone and the pricing requests (the
+    // optimizer request included) spread rothComputeFields, so
+    // execution fields can never leak into a scenario or a
+    // pricing request. The market-uncertainty check's volatility
+    // preference follows the same rule (rothMcCheckFields).
+    // baseRevision (API follow-on 1) is the CAS base: the
+    // revision the writer's copy of the record was read at.
+    request: z.object({
+      ...rothInputFields,
+      ...rothExecutionFields,
+      ...rothMcCheckFields,
+      ...rothGiftFields,
+      baseRevision: z.number().int().nonnegative().optional(),
+    }),
+    response: saveRothInputsResponse,
+    async handler(ctx, args): Promise<SaveRothInputsResponse> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      // Merge: saving inputs never wipes saved scenarios.
+      // Normalize the declared "No benefit" state so declaration
+      // and amount never coexist in storage. baseRevision is the
+      // CAS base ONLY: it is stripped before normalization (which
+      // spreads its input into the stored record), so the
+      // revision can never leak into `inputs` — it lives as a
+      // sibling key at the blob's top level, stamped below.
+      const { baseRevision, ...recordArgs } = args;
+      const normalized = normalizeSsDeclarations(recordArgs);
+      const stored: RothStoredInputs = {
+        ...normalized,
+        giftAge: args.giftAge,
+        giftAmountCents: args.giftAmountCents,
+        giftBasisCents: args.giftBasisCents,
+        giftKidBirthYear: args.giftKidBirthYear,
+        giftKidStudent: args.giftKidStudent,
+        giftKidOtherIncomeCents: args.giftKidOtherIncomeCents,
+        giftSaleAge: args.giftSaleAge,
+        executionYear: args.executionYear,
+        executionPretaxCents: args.executionPretaxCents,
+        executionPretaxSpouseCents: args.executionPretaxSpouseCents,
+        executionRothCents: args.executionRothCents,
+        executionTaxableCents: args.executionTaxableCents,
+        executionHsaCents: args.executionHsaCents,
+        executionOtherOrdinaryCents: args.executionOtherOrdinaryCents,
+        executionTaxExemptInterestCents: args.executionTaxExemptInterestCents,
+        executionAlreadyConvertedCents: args.executionAlreadyConvertedCents,
+        mcVolatilityPct: args.mcVolatilityPct,
+      };
+      const blob = await readRothBlob(db, key);
+      // Fast-path CAS check on the decrypted read: a writer
+      // whose base is already stale (or from a "future"
+      // revision, or positive against an absent row, which
+      // reads as revision 0) is refused WITHOUT composing or
+      // encrypting anything, carrying the current record exactly
+      // as loadRothPlannerResponse returns it. Storage is
+      // untouched.
+      const decision = decideRothBlobWriteChecked(blob.revisionState, baseRevision);
+      if (!decision.allowed) {
+        const record = await loadRothPlannerResponse(ctx);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          record,
+        };
+      }
+      const nextRevision = decision.nextRevision;
+      const enc = await encryptStr(
+        key,
+        JSON.stringify(
+          withRothBlobRevision(
+            { inputs: stored, scenarios: blob.scenarios },
+            nextRevision,
+          ),
+        ),
+      );
+      const plan = rothFirstWritePlan(blob.storedRaw !== undefined, baseRevision);
+      if (plan === "insert-only") {
+        const inserted = await insertRothBlobValueIfAbsent(db, enc);
+        if (inserted) {
+          ctx.invalidateQueries();
+          return { ok: true as const, revision: nextRevision };
+        }
+        const record = await loadRothPlannerResponse(ctx);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          record,
+        };
+      }
+      if (baseRevision === undefined) {
+        // Legacy unchecked write (no baseRevision): unconditional
+        // upsert, exactly as before — except the write still bumps
+        // the revision and returns it. This covers the legacy
+        // first write (plan "legacy-upsert") and the no-base
+        // existing-row case. A CAS base > 0 against an absent row
+        // never reaches here: the decision above already refused
+        // it (absent reads as revision 0).
+        await upsertRothBlobValue(db, enc);
+        ctx.invalidateQueries();
+        return { ok: true as const, revision: nextRevision };
+      }
+      if (blob.storedRaw === undefined) {
+        const record = await loadRothPlannerResponse(ctx);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          record,
+        };
+      }
+      // CAS write against an existing row: commit with ONE
+      // guarded UPDATE (see commitSettingsValueGuarded). 0
+      // affected rows means a concurrent write landed between
+      // this invocation's read and its commit: storage is
+      // untouched by this invocation, so refuse with the
+      // re-read current record, exactly like the sequential
+      // conflict above.
+      const committed = await commitSettingsValueGuarded(db, ROTH_INPUTS_KEY, blob.storedRaw, enc);
+      if (committed) {
+        ctx.invalidateQueries();
+        return { ok: true as const, revision: nextRevision };
+      }
+      const record = await loadRothPlannerResponse(ctx);
+      return {
+        ok: false as const,
+        conflict: true as const,
+        revision: record.revision,
+        record,
+      };
+    },
+  }),
+
+  saveRothScenario: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ ...rothInputFields }),
+    response: rothScenarioWriteResponse,
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      // Merge: saving a scenario never wipes the working inputs —
+      // and never rewrites them either: the inputs record goes back
+      // exactly as it was stored (raw passthrough, nulls included).
+      // The write goes through mutateRothScenarios (guarded
+      // commit, revision bumped, one re-read-and-retry on a lost
+      // race — API follow-on 1).
+      const res = await mutateRothScenarios(db, key, (scenarios) => {
+        if (scenarios.length >= ROTH_SCENARIO_LIMIT) {
+          return {
+            write: false,
+            ok: false,
+            reason:
+              "You can keep up to 50 saved Roth strategies. Delete one first, then save this one.",
+          };
+        }
+        const used = new Set(scenarios.map((s) => s.name));
+        let n = scenarios.length + 1;
+        while (used.has(`Scenario ${n}`)) n += 1;
+        const normalized = normalizeSsDeclarations(args);
+        return {
+          write: true,
+          ok: true,
+          reason: `Saved as Scenario ${n}. Open Saved strategies to rename, load, or delete it.`,
+          scenarios: [...scenarios, { name: `Scenario ${n}`, ...normalized }],
+        };
+      });
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  deleteRothScenario: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ name: z.string().min(1).max(120) }),
+    response: rothScenarioWriteResponse,
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      const res = await mutateRothScenarios(db, key, (scenarios) => {
+        const next = scenarios.filter((s) => s.name !== args.name);
+        if (next.length === scenarios.length) {
+          return { write: false, ok: false, reason: "That scenario no longer exists." };
+        }
+        return {
+          write: true,
+          ok: true,
+          reason: `Deleted ${args.name}.`,
+          scenarios: next,
+        };
+      });
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  renameRothScenario: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      name: z.string().min(1).max(120),
+      newName: z.string().max(120),
+    }),
+    response: rothScenarioWriteResponse,
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      const trimmed = args.newName.trim();
+      const res = await mutateRothScenarios(db, key, (scenarios) => {
+        if (!trimmed) {
+          return { write: false, ok: false, reason: "Enter a name for the scenario." };
+        }
+        if (
+          trimmed !== args.name &&
+          scenarios.some((s) => s.name.toLowerCase() === trimmed.toLowerCase())
+        ) {
+          return {
+            write: false,
+            ok: false,
+            reason: `A scenario named "${trimmed}" already exists.`,
+          };
+        }
+        const next = scenarios.map((s) =>
+          s.name === args.name ? { ...s, name: trimmed } : s,
+        );
+        if (!next.some((s) => s.name === trimmed)) {
+          return { write: false, ok: false, reason: "That scenario no longer exists." };
+        }
+        return {
+          write: true,
+          ok: true,
+          reason: `Renamed ${args.name} to ${trimmed}.`,
+          scenarios: next,
+        };
+      });
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  /* Replace one saved scenario's record in place (the Strategy
+     Lab's editor): the same full-record writer contract as
+     saveRothScenario — a complete record is required and the
+     "No benefit" declarations are normalized the same way —
+     but the scenario keeps its name and its place in the
+     library instead of appending a new auto-named row. The
+     working inputs record passes through raw, untouched,
+     exactly like the other scenario writers. */
+  updateRothScenario: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      name: z.string().min(1).max(120),
+      ...rothInputFields,
+    }),
+    response: rothScenarioWriteResponse,
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      const { name, ...record } = args;
+      const res = await mutateRothScenarios(db, key, (scenarios) => {
+        if (!scenarios.some((s) => s.name === name)) {
+          return { write: false, ok: false, reason: "That scenario no longer exists." };
+        }
+        const normalized = normalizeSsDeclarations(record);
+        return {
+          write: true,
+          ok: true,
+          reason: `Saved changes to ${name}.`,
+          scenarios: scenarios.map((s) =>
+            s.name === name ? { name, ...normalized } : s,
+          ),
+        };
+      });
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  // Lifetime-Tax Optimizer (Option 2): exhaustive scan of
+  // level-ceiling strategies through the shared tax engine,
+  // scored on lifetime net cost (tax + penalties + IRMAA − ACA
+  // credit kept + terminal tax on leftover pre-tax at the heir
+  // rate). The main run is the JOINT search: each entered Social
+  // Security benefit's claiming age (every age 62–70) is varied
+  // together with the conversion strategies (see
+  // runJointOptimizer for the staged shape), and the winner and
+  // runner-ups carry their claiming ages and derived benefits.
+  // The joint search keeps the plan's draw order for every
+  // combination; a separate fixed-age run (orderWinner /
+  // orderRunnersUp below) holds the claiming ages at the
+  // entered ones and searches all six draw orders against the
+  // same strategy set, so the draw order itself competes there.
+  // Read-only: it prices the inputs it is given and saves
+  // nothing — saving the winner is the existing saveRothScenario
+  // with the winner's parameters, claiming ages and draw order
+  // included. The sensitivity strip re-runs the search at the
+  // expected return ±1%, and the heir-rate strip re-runs it at
+  // heir rates of 0%, 22%, and 32%, both at the entered claiming
+  // ages and the plan's draw order (display only — neither strip
+  // writes anything).
+  runRothOptimizer: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      // Transient FAFSA-reportable assets (cents), assembled
+      // client-side — display-layer only (gates the college
+      // watch-out in priced results). Deliberately NOT part of
+      // rothInputFields: it is never persisted and never enters
+      // a scenario; planInputsFromSaved passes it through to the
+      // engine field.
+      fafsaReportableAssetsCents: z.number().int().nullable().optional(),
+      // Transient spend-from-cash sleeve size (cents) — the
+      // snapshot Cash bucket portion of the taxable pool; never
+      // persisted, never part of rothInputFields. Absent = the
+      // server threads it from the snapshot when the taxable
+      // balance follows the snapshot (see resolveArgsBalances).
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      effectiveInputs: rothEffectiveInputsOut.nullable(),
+      candidatesTested: z.number(),
+      doNothing: optScoreOut.nullable(),
+      winner: optScoreOut.nullable(),
+      runnersUp: z.array(optScoreOut),
+      // Draw-order search at the entered claiming ages (the
+      // fixed-age run). When no claiming age was searched, the
+      // joint run IS this run and these are its own scores.
+      orderTested: z.number(),
+      orderWinner: optScoreOut.nullable(),
+      orderDoNothing: optScoreOut.nullable(),
+      orderRunnersUp: z.array(optScoreOut),
+      orderWinnerIsCurrent: z.boolean(),
+      orderWinnerIsDoNothing: z.boolean(),
+      sensitivity: z.array(
+        z.object({
+          returnPct: z.number(),
+          winnerName: z.string(),
+          windowLabel: z.string(),
+          drawOrderLabel: z.string(),
+          netCost: z.number(),
+          // Lifetime Social Security collected under the varied
+          // run's winner (dollars) — display only, beside the net
+          // cost, in the same whole-dollar format as the winner
+          // card. The engine accumulates it on every plan result.
+          ssCollected: z.number(),
+          changed: z.boolean(),
+        }),
+      ),
+      heirRateSensitivity: z.array(
+        z.object({
+          heirRatePct: z.number(),
+          winnerName: z.string(),
+          windowLabel: z.string(),
+          drawOrderLabel: z.string(),
+          guardrail: z.boolean(),
+          bunching: z.boolean(),
+          netCost: z.number(),
+          ssCollected: z.number(),
+          savingVsDoNothing: z.number(),
+          isCurrentRate: z.boolean(),
+        }),
+      ),
+      claimCombosTested: z.number(),
+      claimSearchNote: z.string(),
+      // The claim floor in effect for this run (62–70), or null
+      // when none is set.
+      claimAgeFloor: z.number().nullable(),
+      // Per-claiming-age pricing table: one row per primary
+      // claiming age the joint search varied, carrying that
+      // age's best fully-priced candidate as a full score.
+      // Empty when the primary's claiming age was not searched.
+      claimAgeTable: z.array(
+        z.object({
+          primaryAge: z.number(),
+          primaryAnnual: z.number(),
+          survivorAnnual: z.number(),
+          belowFloor: z.boolean(),
+          isWinner: z.boolean(),
+          best: optScoreOut,
+        }),
+      ),
+    }),
+    async handler(ctx, args) {
+      const empty = {
+        candidatesTested: 0,
+        doNothing: null,
+        winner: null,
+        runnersUp: [],
+        orderTested: 0,
+        orderWinner: null,
+        orderDoNothing: null,
+        orderRunnersUp: [],
+        orderWinnerIsCurrent: false,
+        orderWinnerIsDoNothing: false,
+        sensitivity: [],
+        heirRateSensitivity: [],
+        claimCombosTested: 0,
+        claimSearchNote: "",
+        claimAgeFloor: null,
+        claimAgeTable: [],
+      };
+      const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args);
+      const inputs = planInputsFromSaved(resolved, new Date().getFullYear());
+      if (!inputs) {
+        return {
+          ok: false,
+          reason:
+            "The optimizer needs a birth year before it can price a plan — enter it above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const ageNow = inputs.startYear - inputs.birthYearPrimary;
+      if (inputs.endAgePrimary <= ageNow) {
+        return {
+          ok: false,
+          reason:
+            "The plan end age is not after the current age, so there is no lifetime to optimize — raise the end age above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const res = runJointOptimizer(inputs);
+      const dnCost = res.doNothing.cost.netCost;
+      const winnerKey = res.winner.spec.key;
+      // Draw-order search at the entered claiming ages: the
+      // fixed-age run, which prices all six draw orders against
+      // the full strategy set. When no claiming age was searched
+      // there is only one combination and the joint run above IS
+      // the fixed-age run — reuse it instead of pricing the same
+      // scan twice.
+      const fixedAge = res.jointSearch.combosTested > 1 ? runOptimizer(inputs) : res;
+      const fixedDnCost = fixedAge.doNothing.cost.netCost;
+      const orderWinnerIsDoNothing = fixedAge.winner.spec.key === DO_NOTHING_SPEC.key;
+      const orderWinnerIsCurrent =
+        !orderWinnerIsDoNothing &&
+        drawOrderKey(fixedAge.winner.spec.drawOrder) === drawOrderKey(inputs.drawOrder);
+      const sensitivity = [-1, 1].map((delta) => {
+        const s = optimizerSensitivity(inputs, delta);
+        return {
+          returnPct: Math.round(s.returnPct * 100) / 100,
+          winnerName: s.winner.spec.name,
+          windowLabel: s.winner.spec.windowLabel,
+          drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
+          netCost: s.winner.cost.netCost,
+          ssCollected: s.winner.cost.ssCollected,
+          changed: s.winner.spec.key !== winnerKey,
+        };
+      });
+      const heirRateSensitivity = [0, 22, 32].map((rate) => {
+        const s = optimizerHeirSensitivity(inputs, rate);
+        return {
+          heirRatePct: rate,
+          winnerName: s.winner.spec.name,
+          windowLabel: s.winner.spec.windowLabel,
+          drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
+          guardrail: s.winner.spec.guardrail,
+          bunching: s.winner.spec.bunching,
+          netCost: s.winner.cost.netCost,
+          ssCollected: s.winner.cost.ssCollected,
+          savingVsDoNothing:
+            Math.round((s.doNothing.cost.netCost - s.winner.cost.netCost) * 100) / 100,
+          isCurrentRate: rate === inputs.heirRatePct,
+        };
+      });
+      return {
+        ok: true,
+        reason:
+          res.jointSearch.combosTested > 1
+            ? `Searched ${res.jointSearch.combosTested} claiming-age combinations jointly with the conversion strategies — screened each combination, then fully priced ${res.candidatesTested} candidates (including Do Nothing) across every combination.`
+            : `Tested ${res.candidatesTested} strategies (including Do Nothing), each a full lifetime simulation.`,
+        provenance: apiProvenance(),
+        effectiveInputs,
+        candidatesTested: res.candidatesTested,
+        doNothing: toOptScore(res.doNothing, dnCost),
+        winner: toOptScore(res.winner, dnCost),
+        runnersUp: res.runnersUp.map((s) => toOptScore(s, dnCost)),
+        orderTested: fixedAge.candidatesTested,
+        orderWinner: toOptScore(fixedAge.winner, fixedDnCost),
+        orderDoNothing: toOptScore(fixedAge.doNothing, fixedDnCost),
+        orderRunnersUp: fixedAge.runnersUp.map((s) => toOptScore(s, fixedDnCost)),
+        orderWinnerIsCurrent,
+        orderWinnerIsDoNothing,
+        sensitivity,
+        heirRateSensitivity,
+        claimCombosTested: res.jointSearch.combosTested,
+        claimSearchNote: jointSearchNote(res.jointSearch),
+        claimAgeFloor: res.jointSearch.claimAgeFloor ?? null,
+        claimAgeTable: res.claimAgeTable.map((row) => ({
+          primaryAge: row.primaryAge,
+          primaryAnnual: row.primaryAnnual,
+          survivorAnnual: row.survivorAnnual,
+          belowFloor: row.belowFloor,
+          isWinner: row.isWinner,
+          best: toOptScore(row.best, dnCost),
+        })),
+      };
+    },
+  }),
+
+  // Engine-side scenario compare (saves nothing, like
+  // runRothOptimizer): prices an ordered list of NAMED scenarios
+  // against one base plan. Each scenario is a partial patch over
+  // the base saved shape (drawOrder, drawOrderSwitchAge /
+  // drawOrderAfter, ceilings, optimizerGuardrail /
+  // optimizerBunching, survivor fields, claiming ages,
+  // payTaxFrom, window ages, ACA fields — any saved field may be
+  // patched; a key set to null clears it, an absent key inherits
+  // the base). Each scenario is priced as ONE FIXED strategy
+  // through simulateRothPlan — no candidate search — and the
+  // response carries, per scenario and in request order: the
+  // headline results in integer cents (net cost, total federal +
+  // state tax, pre-59½ penalty, IRMAA, ACA credit kept, terminal
+  // tax, Social Security collected, and the ending balances),
+  // the effective strategy description, the scenario's merged
+  // effective inputs echoed back (provenance), and the deltas of
+  // net cost and ACA credit versus the baseline scenario —
+  // computed in the engine, in cents, as scenario − baseline
+  // (a negative net-cost delta = the scenario costs less). The
+  // baseline is the scenario named by baselineName, defaulting
+  // to the first scenario. A Do Nothing scenario is an ordinary
+  // patch (ceilings: null) and can serve as the baseline.
+  runRothCompare: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      // Transient FAFSA-reportable assets (cents) — same
+      // display-layer passthrough as runRothOptimizer; never
+      // persisted, never part of rothInputFields.
+      fafsaReportableAssetsCents: z.number().int().nullable().optional(),
+      // Transient spend-from-cash sleeve size (cents) — the
+      // snapshot Cash bucket portion of the taxable pool; never
+      // persisted, never part of rothInputFields. Absent = the
+      // server threads it from the snapshot when the taxable
+      // balance follows the snapshot (see resolveArgsBalances).
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+      baselineName: z.string().min(1).max(120).nullable().optional(),
+      scenarios: z
+        .array(
+          z.strictObject({
+            name: z.string().min(1).max(120),
+            overrides: rothOverridesStrict,
+          }),
+        )
+        .min(1)
+        // Sized for the Strategy Lab: a full library (50 saved
+        // strategies) plus the current-plan and Do Nothing rows
+        // prices in one run.
+        .max(60),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      baselineName: z.string().nullable(),
+      deltaConvention: z.string(),
+      scenarios: z.array(
+        z.object({
+          name: z.string(),
+          strategyDescription: z.string(),
+          netCostCents: z.number(),
+          totalTaxCents: z.number(),
+          penaltyCents: z.number(),
+          irmaaCents: z.number(),
+          acaCreditCents: z.number(),
+          terminalCents: z.number(),
+          ssCollectedCents: z.number(),
+          endingPretaxCents: z.number(),
+          endingRothCents: z.number(),
+          endingTaxableCents: z.number(),
+          endingHsaCents: z.number(),
+          endingAfterTaxWealthCents: z.number(),
+          deltaNetCostCents: z.number(),
+          deltaAcaCreditCents: z.number(),
+          effectiveInputs: rothEffectiveInputsOut,
+        }),
+      ),
+    }),
+    async handler(ctx, args) {
+      const resolved = await resolveArgsBalances(ctx, args);
+      const result = runRothCompare(
+        resolved,
+        args.scenarios.map((s) => ({ name: s.name, overrides: s.overrides })),
+        new Date().getFullYear(),
+        args.baselineName ?? null,
+      );
+      const fallbackInputs = parseRothInputs(resolved);
+      return {
+        ok: result.ok,
+        reason: result.reason,
+        provenance: apiProvenance(),
+        baselineName: result.baselineName,
+        deltaConvention:
+          "Deltas are scenario − baseline, in cents: a negative deltaNetCostCents means the scenario costs less than the baseline; a positive deltaAcaCreditCents means the scenario keeps more ACA premium credit than the baseline.",
+        scenarios: result.scenarios.map((s) => {
+          const scenarioInputs = planInputsFromSaved(s.saved, new Date().getFullYear());
+          return {
+          name: s.name,
+          strategyDescription: s.strategyDescription,
+          netCostCents: s.netCostCents,
+          totalTaxCents: s.totalTaxCents,
+          penaltyCents: s.penaltyCents,
+          irmaaCents: s.irmaaCents,
+          acaCreditCents: s.acaCreditCents,
+          terminalCents: s.terminalCents,
+          ssCollectedCents: s.ssCollectedCents,
+          endingPretaxCents: s.endingPretaxCents,
+          endingRothCents: s.endingRothCents,
+          endingTaxableCents: s.endingTaxableCents,
+          endingHsaCents: s.endingHsaCents,
+          endingAfterTaxWealthCents: s.endingAfterTaxWealthCents,
+          deltaNetCostCents: s.deltaNetCostCents,
+          deltaAcaCreditCents: s.deltaAcaCreditCents,
+          // The echo carries the merged scenario's DERIVED
+          // sleeve (the engine's effective starting sleeve for
+          // that scenario, R4-3 F7), not the threaded
+          // transient — attached exactly like the other
+          // compute echoes. Balance keys pass through
+          // withResolvedOverrideBalances first (hardening
+          // package, finding A-2): an override's explicit null
+          // priced that balance at $0, so the echo shows the
+          // resolved 0 — the value that priced — not the null
+          // that was sent.
+          effectiveInputs: withSleeveEcho(
+            withResolvedOverrideBalances(
+              parseRothInputs(s.saved) ?? fallbackInputs ?? (resolved as z.infer<typeof rothSavedInputs>),
+              s.saved,
+            ),
+            scenarioInputs == null
+              ? null
+              : Math.round(deriveSpendFromCashSleeveStartDollars(scenarioInputs) * 100),
+          ),
+          };
+        }),
+      };
+    },
+  }),
+
+  // Read-only market-uncertainty check (saves nothing, like
+  // runRothOptimizer): re-prices the optimizer's winning strategy
+  // and Do Nothing across ROTH_MC_CHECK_PATHS varied return paths
+  // from the one fixed stream (ROTH_MC_CHECK_SEED), both priced
+  // from the same series on each path, and reports how robust
+  // the win is. The volatility is the request's own
+  // mcVolatilityPct — a panel preference that rides along here
+  // only; it is not part of the plan payload and prices nothing
+  // else.
+  runRothMonteCarloCheck: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      winner: mcScoreIn,
+      doNothing: mcScoreIn,
+      mcVolatilityPct: z.number().min(0).max(100),
+      // Transient FAFSA-reportable assets (cents) — same
+      // display-layer passthrough as runRothOptimizer; never
+      // persisted, never part of rothInputFields.
+      fafsaReportableAssetsCents: z.number().int().nullable().optional(),
+      // Transient spend-from-cash sleeve size (cents) — the
+      // snapshot Cash bucket portion of the taxable pool; never
+      // persisted, never part of rothInputFields. Absent = the
+      // server threads it from the snapshot when the taxable
+      // balance follows the snapshot (see resolveArgsBalances).
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      effectiveInputs: rothEffectiveInputsOut.nullable(),
+      pathsRun: z.number(),
+      winRatePct: z.number(),
+      medianAdvantage: z.number(),
+      p10Advantage: z.number(),
+      p90Advantage: z.number(),
+      winnerMedianNetCost: z.number(),
+      doNothingMedianNetCost: z.number(),
+      volatilityPct: z.number(),
+      winnerName: z.string(),
+    }),
+    async handler(ctx, args) {
+      const empty = {
+        pathsRun: 0,
+        winRatePct: 0,
+        medianAdvantage: 0,
+        p10Advantage: 0,
+        p90Advantage: 0,
+        winnerMedianNetCost: 0,
+        doNothingMedianNetCost: 0,
+        volatilityPct: args.mcVolatilityPct,
+        winnerName: args.winner.name,
+      };
+      const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args);
+      const inputs = planInputsFromSaved(resolved, new Date().getFullYear());
+      if (!inputs) {
+        return {
+          ok: false,
+          reason:
+            "The market-uncertainty check needs a birth year before it can price a plan — enter it above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const ageNow = inputs.startYear - inputs.birthYearPrimary;
+      if (inputs.endAgePrimary <= ageNow) {
+        return {
+          ok: false,
+          reason:
+            "The plan end age is not after the current age, so there is no lifetime to stress-test — raise the end age above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const check = runRothMonteCarloCheck(
+        inputs,
+        mcCandidateFromScore(args.winner, false),
+        mcCandidateFromScore(args.doNothing, true),
+        {
+          volatilityPct: args.mcVolatilityPct,
+          pathCount: ROTH_MC_CHECK_PATHS,
+          seed: ROTH_MC_CHECK_SEED,
+        },
+      );
+      return {
+        ok: true,
+        reason: `Priced the winning strategy and Do Nothing across ${check.pathsRun} varied-return paths at ${args.mcVolatilityPct}% volatility.`,
+        provenance: apiProvenance(),
+        effectiveInputs,
+        pathsRun: check.pathsRun,
+        winRatePct: check.winRatePct,
+        medianAdvantage: check.medianAdvantage,
+        p10Advantage: check.p10Advantage,
+        p90Advantage: check.p90Advantage,
+        winnerMedianNetCost: check.winnerMedianNetCost,
+        doNothingMedianNetCost: check.doNothingMedianNetCost,
+        volatilityPct: args.mcVolatilityPct,
+        winnerName: args.winner.name,
+      };
+    },
+  }),
+
+  // Monte Carlo stats for arbitrary scenarios (compute-only;
+  // saves nothing, like runRothCompare): the sibling of the
+  // market-uncertainty check above. Where the check prices the
+  // optimizer's winner against Do Nothing and keeps only each
+  // path's net cost, this prices COMPARE scenarios — the same
+  // base payload + scenario patches runRothCompare accepts,
+  // basis tiers included — across the check's fixed paired
+  // stream (ROTH_MC_CHECK_PATHS paths, ROTH_MC_CHECK_SEED), and
+  // reports the per-path detail the check discards: how many
+  // paths ever ran an unfunded-spending year, and the ending
+  // wealth / ending pre-tax / net cost percentiles, all in
+  // integer cents (the runRothCompare convention). The scenario
+  // cap is a runtime budget, not a library limit: every
+  // scenario costs ROTH_MC_CHECK_PATHS full simulations, so
+  // four scenarios is the check's own two-candidate sizing
+  // doubled — well inside the worker budget on a typical plan.
+  runRothMonteCarloStats: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      // Transient FAFSA-reportable assets (cents) — same
+      // display-layer passthrough as runRothCompare; never
+      // persisted, never part of rothInputFields.
+      fafsaReportableAssetsCents: z.number().int().nullable().optional(),
+      // Transient spend-from-cash sleeve size (cents) — same
+      // passthrough as runRothCompare. Absent = the server
+      // threads it from the snapshot when the taxable balance
+      // follows the snapshot (see resolveArgsBalances).
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+      // Required, no default: an omitted or misspelled key
+      // fails validation instead of silently pricing at some
+      // assumed volatility (the F6/F20 lesson).
+      volatilityPct: z.number().min(0).max(100),
+      scenarios: z
+        .array(
+          z.strictObject({
+            name: z.string().min(1).max(120),
+            overrides: rothOverridesStrict,
+          }),
+        )
+        .min(1)
+        .max(4),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      effectiveInputs: rothEffectiveInputsOut.nullable(),
+      volatilityPct: z.number(),
+      scenarios: z.array(
+        z.object({
+          name: z.string(),
+          strategyDescription: z.string(),
+          pathsRun: z.number(),
+          pathsWithShortfall: z.number(),
+          neverShortfallRatePct: z.number(),
+          totalShortfallP50Cents: z.number(),
+          totalShortfallP90Cents: z.number(),
+          endingAfterTaxWealthP10Cents: z.number(),
+          endingAfterTaxWealthP50Cents: z.number(),
+          endingAfterTaxWealthP90Cents: z.number(),
+          endingPretaxP10Cents: z.number(),
+          endingPretaxP50Cents: z.number(),
+          endingPretaxP90Cents: z.number(),
+          netCostP10Cents: z.number(),
+          netCostP50Cents: z.number(),
+          netCostP90Cents: z.number(),
+        }),
+      ),
+    }),
+    async handler(ctx, args) {
+      const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args);
+      const result = runRothMonteCarloStats(
+        resolved,
+        args.scenarios.map((s) => ({ name: s.name, overrides: s.overrides })),
+        new Date().getFullYear(),
+        {
+          volatilityPct: args.volatilityPct,
+          pathCount: ROTH_MC_CHECK_PATHS,
+          seed: ROTH_MC_CHECK_SEED,
+        },
+      );
+      return {
+        ok: result.ok,
+        reason: result.reason,
+        provenance: apiProvenance(),
+        effectiveInputs,
+        volatilityPct: args.volatilityPct,
+        scenarios: result.scenarios,
+      };
+    },
+  }),
+
+  // Work years compare (the Roth view's "Work years" tab):
+  // compute-only — it prices the inputs it is given plus up to
+  // three scratch quit ages and saves nothing. For each quit
+  // age the work years are rolled forward by the tested
+  // work-year engine (server/src/workYears.ts: contribution
+  // stack from the law tables, salary-year federal tax through
+  // the shared priceYear path, FICA in code), then the rolled
+  // balances are priced with the existing joint optimizer.
+  // The all-in lifetime tax is the optimizer's net cost plus
+  // the work years' own federal tax + state tax + FICA. A quit age equal
+  // to the plan's window-start age prices zero work years and
+  // reproduces the plain optimizer run exactly; a blank / $0
+  // salary prices no work years at any age.
+  runWorkYearsCompare: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      quitAges: z.array(z.number().int()).min(1).max(3),
+      fafsaReportableAssetsCents: z.number().int().nullable().optional(),
+      // Transient spend-from-cash sleeve size (cents) — the
+      // snapshot Cash bucket portion of the taxable pool; never
+      // persisted, never part of rothInputFields. Absent = the
+      // server threads it from the snapshot when the taxable
+      // balance follows the snapshot (see resolveArgsBalances).
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      effectiveInputs: rothEffectiveInputsOut.nullable(),
+      rows: z.array(workYearsRowOut),
+    }),
+    async handler(ctx, args) {
+      const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args);
+      const inputs = planInputsFromSaved(resolved, new Date().getFullYear());
+      if (!inputs) {
+        return {
+          ok: false,
+          reason:
+            "The work-years compare needs a birth year before it can price a plan — enter it above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          rows: [],
+        };
+      }
+      const ages = [...args.quitAges].sort((a, b) => a - b);
+      const distinct = new Set(ages);
+      if (
+        distinct.size !== ages.length ||
+        ages.some((a) => a < inputs.windowStartAge || a > 75)
+      ) {
+        return {
+          ok: false,
+          reason: `Quit ages must be distinct, at least your window-start age (${inputs.windowStartAge}), and no more than 75.`,
+          provenance: apiProvenance(),
+          effectiveInputs,
+          rows: [],
+        };
+      }
+      const job = {
+        salary: (args.yearlySalaryCents ?? 0) / 100,
+        employer401k: (args.employer401kCents ?? 0) / 100,
+        employerHsa: (args.employerHsaCents ?? 0) / 100,
+      };
+      const compared = runWorkYearsCompare(inputs, job, ages);
+      return {
+        ok: true,
+        reason:
+          job.salary > 0
+            ? `Priced quitting at ${ages.join(", ")} — work years rolled forward, then each priced with the joint optimizer.`
+            : "No salary is entered, so no work years were priced — every row is the plan as it stands.",
+        provenance: apiProvenance(),
+        effectiveInputs,
+        rows: compared.map((row) => ({
+          quitAge: row.quitAge,
+          workYears: row.workYears,
+          balancesAtQuit: {
+            pretax: row.roll.balances.pretax,
+            roth: row.roll.balances.roth,
+            taxable: row.roll.balances.taxable,
+            hsa: row.roll.balances.hsa,
+          },
+          ledger: {
+            grossSalary: row.roll.totals.grossSalary,
+            federal: row.roll.totals.federal,
+            state: row.roll.totals.state,
+            fica: row.roll.totals.fica,
+            pretaxContributions: row.roll.totals.pretaxContributions,
+            rothContributions: row.roll.totals.rothContributions,
+            hsaContributions: row.roll.totals.hsaContributions,
+            totalContributions: row.roll.totals.totalContributions,
+            employeeContributions: row.roll.totals.employeeContributions,
+            employerContributions: row.roll.totals.employerContributions,
+            surplusBanked: row.roll.totals.surplusBanked,
+            banked: row.roll.totals.banked,
+          },
+          winnerName: row.optimizer.winner.spec.name,
+          winnerWindowLabel: row.optimizer.winner.spec.windowLabel,
+          winnerClaimLabel: claimAgeLabel(row.optimizer.winner.claimAges),
+          winnerNetCost: row.optimizer.winner.cost.netCost,
+          winnerTax: row.optimizer.winner.cost.tax,
+          winnerPenalty: row.optimizer.winner.cost.penalty,
+          winnerIrmaa: row.optimizer.winner.cost.irmaa,
+          winnerAcaCredit: row.optimizer.winner.cost.acaCredit,
+          winnerTerminal: row.optimizer.winner.cost.terminal,
+          doNothingNetCost: row.optimizer.doNothing.cost.netCost,
+          workTax: row.workTax,
+          allInTax: row.allInTax,
+          doNothingAllInTax:
+            Math.round((row.optimizer.doNothing.cost.netCost + row.workTax) * 100) / 100,
+          claim67AllInTax: row.claim67AllInTax,
+          endingPretax: row.optimizer.winner.result.endingPretax,
+          endingRoth: row.optimizer.winner.result.endingRoth,
+          endingTaxable: row.optimizer.winner.result.endingTaxable,
+          endingHsa: row.optimizer.winner.result.endingHsa,
+          endingNominal: row.endingNominal,
+          endingAfterTax: row.endingAfterTax,
+          ssCollected: row.optimizer.winner.cost.ssCollected,
+        })),
+      };
+    },
+  }),
+
+  // Gift stock compare (the Roth view's "Gift stock" tab):
+  // compute-only — it prices the inputs it is given plus the
+  // gift description (the plan-record-only gift fields, carried
+  // on this request alone) and saves nothing. The plan is
+  // priced twice with the joint optimizer by the gift model
+  // (server/src/giftModel.ts): as saved — plus the
+  // counterfactual sale gain in the sale year when a sale age
+  // is set — and with the gifted shares removed from the
+  // Taxable bucket at the gift year. The gift fields never
+  // enter planInputsFromSaved, so no other run can see them.
+  // Money in these outputs is DOLLARS (the tax engine's
+  // units), like the optimizer outputs.
+  runRothGiftCompare: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      ...rothGiftFields,
+      // Transient FAFSA-reportable assets (cents) — same
+      // display-layer passthrough as runRothOptimizer; never
+      // persisted, never part of rothInputFields.
+      fafsaReportableAssetsCents: z.number().int().nullable().optional(),
+      // Transient spend-from-cash sleeve size (cents) — the
+      // snapshot Cash bucket portion of the taxable pool; never
+      // persisted, never part of rothInputFields. Absent = the
+      // server threads it from the snapshot when the taxable
+      // balance follows the snapshot (see resolveArgsBalances).
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      effectiveInputs: rothEffectiveInputsOut.nullable(),
+      hasGift: z.boolean(),
+      giftAge: z.number().nullable(),
+      giftYear: z.number().nullable(),
+      typedAmount: z.number(),
+      effectiveAmount: z.number(),
+      effectiveBasis: z.number(),
+      capped: z.boolean(),
+      taxableAtGiftYear: z.number(),
+      salePriced: z.boolean(),
+      saleAge: z.number().nullable(),
+      saleYear: z.number().nullable(),
+      baseline: z
+        .object({
+          winnerName: z.string(),
+          claimLabel: z.string(),
+          claimPrimaryAge: z.number().nullable(),
+          netCost: z.number(),
+          endingAfterTax: z.number(),
+        })
+        .nullable(),
+      withGift: z
+        .object({
+          winnerName: z.string(),
+          claimLabel: z.string(),
+          claimPrimaryAge: z.number().nullable(),
+          netCost: z.number(),
+          endingAfterTax: z.number(),
+        })
+        .nullable(),
+      child: z
+        .object({
+          kidAge: z.number().nullable(),
+          valueAtSale: z.number(),
+          gain: z.number(),
+          kiddieGate: z.boolean(),
+          kiddieThreshold: z.number(),
+          parentsMarginalCgRate: z.number(),
+          childTax: z.number().nullable(),
+          netToChild: z.number(),
+        })
+        .nullable(),
+      giftTax: z
+        .object({
+          exclusionPerDonor: z.number(),
+          donors: z.number(),
+          exclusionAvailable: z.number(),
+          excess: z.number(),
+          withinExclusion: z.boolean(),
+        })
+        .nullable(),
+      fafsaApplies: z.boolean(),
+    }),
+    async handler(ctx, args) {
+      const empty = {
+        hasGift: false,
+        giftAge: null,
+        giftYear: null,
+        typedAmount: 0,
+        effectiveAmount: 0,
+        effectiveBasis: 0,
+        capped: false,
+        taxableAtGiftYear: 0,
+        salePriced: false,
+        saleAge: null,
+        saleYear: null,
+        baseline: null,
+        withGift: null,
+        child: null,
+        giftTax: null,
+        fafsaApplies: false,
+      };
+      const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args);
+      const inputs = planInputsFromSaved(resolved, new Date().getFullYear());
+      if (!inputs) {
+        return {
+          ok: false,
+          reason:
+            "The gift comparison needs a birth year before it can price a plan — enter it above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const ageNow = inputs.startYear - inputs.birthYearPrimary;
+      if (inputs.endAgePrimary <= ageNow) {
+        return {
+          ok: false,
+          reason:
+            "The plan end age is not after the current age, so there is no lifetime to price — raise the end age above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const amount = (args.giftAmountCents ?? 0) / 100;
+      if (amount <= 0) {
+        return {
+          ok: true,
+          reason: "No gift amount is entered yet.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const giftParams = {
+        giftAge: args.giftAge,
+        amount,
+        basis: (args.giftBasisCents ?? 0) / 100,
+        kidBirthYear: args.giftKidBirthYear,
+        kidStudent: args.giftKidStudent === true,
+        kidOtherIncome: (args.giftKidOtherIncomeCents ?? 0) / 100,
+        saleAge: args.giftSaleAge,
+      };
+      // Age guards (shared with the model and the client —
+      // see giftAgeGuardMessage in giftModel.ts): an
+      // out-of-window or inconsistent description returns
+      // the plain message with NO priced ledgers.
+      const guardError = giftValidationError(inputs, giftParams);
+      if (guardError) {
+        return { ok: false, reason: guardError, provenance: apiProvenance(), effectiveInputs, ...empty };
+      }
+      const cmp = computeGiftComparison(inputs, giftParams);
+      return {
+        ok: true,
+        provenance: apiProvenance(),
+        effectiveInputs,
+        reason: cmp.salePriced
+          ? `Priced the plan as saved (with the sale at age ${cmp.saleAge} priced in) and with the gift at age ${cmp.giftAge} — each a full joint optimizer run.`
+          : `Priced the plan as saved and with the gift at age ${cmp.giftAge} — each a full joint optimizer run. No sale year is set, so no sale is priced on either side.`,
+        hasGift: cmp.hasGift,
+        giftAge: cmp.giftAge,
+        giftYear: cmp.giftYear,
+        typedAmount: cmp.typedAmount,
+        effectiveAmount: cmp.effectiveAmount,
+        effectiveBasis: cmp.effectiveBasis,
+        capped: cmp.capped,
+        taxableAtGiftYear: cmp.taxableAtGiftYear,
+        salePriced: cmp.salePriced,
+        saleAge: cmp.saleAge,
+        saleYear: cmp.saleYear,
+        baseline: cmp.baseline,
+        withGift: cmp.withGift,
+        child: cmp.child,
+        giftTax: cmp.giftTax,
+        fafsaApplies: cmp.fafsaApplies,
+      };
+    },
+  }),
+
+  // Single-year pricing (engine access, part 1): prices ONE
+  // standalone year with EXACTLY the Playground's dial set and
+  // semantics, through pricePlaygroundYear — the same function
+  // the Playground tab prices with, shared via rothOptimizer.ts;
+  // the math is not forked. The request schema rejects negative
+  // amounts with a validation error (otherOrdinary excepted —
+  // it keeps its sign by design, since a loss is legitimate),
+  // so the handler passes the validated dials through directly
+  // and normalizes nothing silently; the client's one dial
+  // construction clamps at typing time, so the tab never emits
+  // a dial set this action refuses. The only transformations
+  // left are the filing-status spouse coercions (a non-MFJ
+  // return's spouse fields are inert), which are status
+  // semantics, not clamps. Compute-only: nothing is read from
+  // or written to the database. The response is the full
+  // readout PLUS the canonical paste payload for the
+  // Playground's loader, built from the priced inputs, so
+  // pasting it back reproduces this exact pricing in the tab.
+  runPlaygroundYear: defineAction({
+    request: playgroundYearIn,
+    response: z.object({
+      provenance: provenanceOut,
+      // The law row the year actually priced under: a taxYear
+      // with no published row prices under the newest published
+      // row (the lawForYear fallback), and this names that row.
+      lawYearUsed: z.number().int(),
+      result: playgroundYearOut,
+      pastePayload: playgroundPasteOut,
+      pasteText: z.string(),
+    }),
+    async handler(_ctx, args) {
+      const inputs = playgroundInputsFromArgs(args);
+      const result = pricePlaygroundYear(inputs);
+      const pastePayload = playgroundPastePayload(inputs);
+      return {
+        provenance: apiProvenance(),
+        lawYearUsed: lawForYear(args.taxYear).year,
+        result,
+        pastePayload,
+        pasteText: JSON.stringify(pastePayload),
+      };
+    },
+  }),
+
+  // Plan-year detail (engine access, part 2): runs the planner
+  // (the payload's own ceilings strategy, as the Plan tab runs
+  // it) and returns the target year's complete row PLUS the
+  // with/without-conversion two-pricing for that year — the
+  // same plan re-priced with that year's conversion forced to
+  // $0 (pricePlanYearDetail in rothOptimizer.ts) — so a
+  // watch-out decomposition is engine output, not a derivation.
+  // The target is a calendar year (targetYear) or the primary's
+  // age that year (targetAge); targetYear wins when both are
+  // given. Balances resolve server-side like the other
+  // plan-level actions. Compute-only: saves nothing.
+  runPlanYearDetail: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      targetYear: z.number().int().min(1900).max(2200).nullable().optional(),
+      targetAge: z.number().int().min(0).max(130).nullable().optional(),
+      fafsaReportableAssetsCents: z.number().int().nullable().optional(),
+      // Transient spend-from-cash sleeve size (cents) — the
+      // snapshot Cash bucket portion of the taxable pool; never
+      // persisted, never part of rothInputFields. Absent = the
+      // server threads it from the snapshot when the taxable
+      // balance follows the snapshot (see resolveArgsBalances).
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      effectiveInputs: rothEffectiveInputsOut.nullable(),
+      targetYear: z.number().nullable(),
+      targetAge: z.number().nullable(),
+      row: planYearRowOut.nullable(),
+      withoutRow: planYearRowOut.nullable(),
+      deltaFederal: z.number(),
+      deltaState: z.number(),
+      deltaIrmaa: z.number(),
+      deltaAcaCredit: z.number(),
+      conversionCost: z.number(),
+      effectiveRatePct: z.number().nullable(),
+    }),
+    async handler(ctx, args) {
+      const empty = {
+        targetYear: null,
+        targetAge: null,
+        row: null,
+        withoutRow: null,
+        deltaFederal: 0,
+        deltaState: 0,
+        deltaIrmaa: 0,
+        deltaAcaCredit: 0,
+        conversionCost: 0,
+        effectiveRatePct: null,
+      };
+      const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args);
+      const inputs = planInputsFromSaved(resolved, new Date().getFullYear());
+      if (!inputs) {
+        return {
+          ok: false,
+          reason:
+            "The plan-year detail needs a birth year before it can price a plan — enter it above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const targetYear =
+        args.targetYear ?? (args.targetAge != null ? inputs.birthYearPrimary + args.targetAge : null);
+      if (targetYear == null) {
+        return {
+          ok: false,
+          reason: "Name the year to price — a calendar year or an age — and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+        };
+      }
+      const detail = pricePlanYearDetail(
+        inputs,
+        strategyFromSavedArgs(resolved),
+        targetYear,
+      );
+      if (!detail) {
+        return {
+          ok: false,
+          reason: `The plan does not price ${targetYear} — it runs from ${inputs.startYear} to age ${inputs.endAgePrimary}.`,
+          provenance: apiProvenance(),
+          effectiveInputs,
+          ...empty,
+          targetYear,
+          targetAge: targetYear - inputs.birthYearPrimary,
+        };
+      }
+      return {
+        ok: true,
+        reason: `Priced ${targetYear} (age ${detail.with.agePrimary}) with the plan's fill settings, and again with that year's conversion forced to $0.`,
+        provenance: apiProvenance(),
+        effectiveInputs,
+        targetYear,
+        targetAge: detail.with.agePrimary,
+        row: toPlanYearRow(detail.with),
+        withoutRow: toPlanYearRow(detail.without),
+        deltaFederal: detail.deltaFederal,
+        deltaState: detail.deltaState,
+        deltaIrmaa: detail.deltaIrmaa,
+        deltaAcaCredit: detail.deltaAcaCredit,
+        conversionCost: detail.conversionCost,
+        effectiveRatePct: detail.effectiveRatePct,
+      };
+    },
+  }),
+
+  // Year funding (YEAR FUNDING build): price the plan exactly
+  // as given — its own ceilings strategy, as the Plan tab runs
+  // it — in ONE simulation and return every priced year's
+  // funding ledger (buildRothFunding in rothOptimizer.ts, from
+  // the engine's settlement internals). Following the
+  // plan-year-detail payload conventions: balances resolve
+  // server-side, unknown request keys are rejected, and the
+  // response carries provenance + the effective inputs priced.
+  // Compute-only: saves nothing.
+  runRothFunding: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.strictObject({
+      ...rothComputeFields,
+      // Transient spend-from-cash sleeve size (cents) — same
+      // passthrough as the other compute actions; absent = the
+      // server threads it from the snapshot when the taxable
+      // balance follows the snapshot.
+      spendFromCashSleeveCents: z.number().int().nullable().optional(),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      provenance: provenanceOut,
+      effectiveInputs: rothEffectiveInputsOut.nullable(),
+      years: z.array(fundingRowOut),
+    }),
+    async handler(ctx, args) {
+      const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args);
+      const inputs = planInputsFromSaved(resolved, new Date().getFullYear());
+      if (!inputs) {
+        return {
+          ok: false,
+          reason:
+            "Year funding needs a birth year before it can price a plan — enter it above and run again.",
+          provenance: apiProvenance(),
+          effectiveInputs,
+          years: [],
+        };
+      }
+      const years = buildRothFunding(inputs, strategyFromSavedArgs(resolved));
+      return {
+        ok: true,
+        reason: `Priced ${years.length} year${years.length === 1 ? "" : "s"} of the plan as saved and funded each year's spending and tax bill from its own settlement.`,
+        provenance: apiProvenance(),
+        effectiveInputs,
+        years,
+      };
+    },
+  }),
+
+  // Read-only Year summary: for one chosen year, the spending
+  // figures (reusing the exact per-month math of getYearView) and
+  // the Net Worth figures (reusing the exact per-snapshot totals of
+  // getNetWorth, including the "Include house & mortgage" setting).
+  // It never writes anything. availableYears is the union of every
+  // year present in the data (NW snapshot years plus spending years).
+  getYearSummary: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ year: z.number().int().min(1900).max(2200) }),
+    response: z.object({
+      year: z.number(),
+      availableYears: z.array(z.number()),
+      includeProperty: z.boolean(),
+      spending: z.object({
+        hasData: z.boolean(),
+        months: z.array(
+          z.object({
+            month: z.string(),
+            monthNum: z.number(),
+            trueCostCents: z.number(),
+            cashOutCents: z.number(),
+          }),
+        ),
+        totalTrueCostCents: z.number(),
+        totalCashOutCents: z.number(),
+        averageTrueCostCents: z.number(),
+        monthsWithData: z.number(),
+        highestMonth: z
+          .object({
+            month: z.string(),
+            monthNum: z.number(),
+            trueCostCents: z.number(),
+            oneOffsCents: z.number(),
+          })
+          .nullable(),
+        lowestMonth: z
+          .object({
+            month: z.string(),
+            monthNum: z.number(),
+            trueCostCents: z.number(),
+            oneOffsCents: z.number(),
+          })
+          .nullable(),
+        totalOneOffsCents: z.number(),
+        topCategories: z.array(
+          z.object({ label: z.string(), totalCents: z.number() }),
+        ),
+        keepLightsOnFloorCents: z.number(),
+        lastMonthInProgress: z.boolean(),
+        excludedPayments: z.array(
+          z.object({
+            month: z.string(),
+            monthNum: z.number(),
+            totalCents: z.number(),
+            count: z.number(),
+          }),
+        ),
+      }),
+      trend: z.array(
+        z.object({
+          year: z.number(),
+          monthsWithData: z.number(),
+          trueCostCents: z.number().nullable(),
+          nwChangeCents: z.number().nullable(),
+          nwEndingCents: z.number().nullable(),
+        }),
+      ),
+      netWorth: z.object({
+        hasData: z.boolean(),
+        snapshotCount: z.number(),
+        firstDate: z.string().nullable(),
+        firstTotalCents: z.number().nullable(),
+        lastDate: z.string().nullable(),
+        lastTotalCents: z.number().nullable(),
+        priorYearLastDate: z.string().nullable(),
+        priorYearLastTotalCents: z.number().nullable(),
+        changeCents: z.number().nullable(),
+        changePctFrac: z.number().nullable(),
+        movers: z.array(
+          z.object({
+            accountId: z.number(),
+            accountName: z.string(),
+            startCents: z.number().nullable(),
+            endCents: z.number().nullable(),
+            changeCents: z.number(),
+          }),
+        ),
+      }),
+    }),
+    async handler(ctx, args) {
+      const year = args.year;
+      const { txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems } =
+        await loadAll(ctx);
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      const { accounts, snapshots: nwSnaps, balances } =
+        await loadNetWorthDecrypted(ctx, db, key);
+      const settingRows = await db.select().from(schema.settings);
+      const includeProperty =
+        settingRows.find((r) => r.key === NW_INCLUDE_PROPERTY_KEY)?.value === "1";
+
+      // ---- available years (union of all data) ----
+      const yearSet = new Set<number>();
+      for (const s of nwSnaps) yearSet.add(Number(s.date.slice(0, 4)));
+      for (const t of txns) yearSet.add(Number(t.date.slice(0, 4)));
+      for (const s of summaries) yearSet.add(Number(s.month.slice(0, 4)));
+      for (const it of cashOutItems) yearSet.add(Number(it.month.slice(0, 4)));
+      for (const o of oneOffs) yearSet.add(Number(o.month.slice(0, 4)));
+      if (yearSet.size === 0) yearSet.add(year);
+      const availableYears = [...yearSet].sort((a, b) => a - b);
+
+      // ---- spending: same helpers as getYearView ----
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonthStr = `${currentYear}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const isCurrentYear = year === currentYear;
+      const windowStart = `${year}-01`;
+      const windowEnd = isCurrentYear ? currentMonthStr : `${year}-12`;
+      // The per-month computation (accrual, the cash-out resolution,
+      // month selection) lives in the shared spending core
+      // (server/src/spendingCore.ts) — the same code the dashboard
+      // and the accuracy fixtures run.
+      const core = createSpendingCore({
+        txns,
+        yearly,
+        yearlyVersions,
+        summaries,
+        cashOutItems,
+        bills,
+        billVersions,
+        oneOffs,
+      });
+      const eff = core.eff;
+      const monthHasData = core.monthHasData;
+      const spendingMonths: { month: string; monthNum: number; trueCostCents: number; cashOutCents: number }[] = [];
+      let totalTrueCostCents = 0;
+      let totalCashOutCents = 0;
+      for (let n = 1; n <= 12; n++) {
+        const m = `${year}-${String(n).padStart(2, "0")}`;
+        const inWindow = m >= windowStart && m <= windowEnd;
+        if (!inWindow) continue;
+        if (!monthHasData(m)) continue;
+        const e = eff(m);
+        spendingMonths.push({ month: m, monthNum: n, trueCostCents: e.smoothed, cashOutCents: e.cashOut });
+        totalTrueCostCents += e.smoothed;
+        totalCashOutCents += e.cashOut;
+      }
+      const monthsWithData = spendingMonths.length;
+      const averageTrueCostCents =
+        monthsWithData > 0 ? Math.round(totalTrueCostCents / monthsWithData) : 0;
+      // Payments already recorded for months after the last month
+      // these totals include (for the current year the window ends
+      // at the current month) are NOT in the totals above; the view
+      // names them in a footnote rather than dropping them silently.
+      const lastIncludedMonth =
+        spendingMonths[spendingMonths.length - 1]?.month ?? null;
+      const excludedPayments =
+        lastIncludedMonth != null
+          ? core.recordedPaymentsAfter(year, lastIncludedMonth)
+          : [];
+
+      // ---- Year in spending aggregates (presentation only; every
+      // figure below is composed from the same core primitives the
+      // dashboard and Slice & dice run — no second implementation) ----
+      const totalOneOffsCents = spendingMonths.reduce(
+        (s, m) => s + core.oneOffTotalForMonth(m.month),
+        0,
+      );
+      const monthWithOneOffs = (m: (typeof spendingMonths)[number]) => ({
+        month: m.month,
+        monthNum: m.monthNum,
+        trueCostCents: m.trueCostCents,
+        oneOffsCents: core.oneOffTotalForMonth(m.month),
+      });
+      let highestMonth: ReturnType<typeof monthWithOneOffs> | null = null;
+      let lowestMonth: ReturnType<typeof monthWithOneOffs> | null = null;
+      for (const m of spendingMonths) {
+        if (highestMonth == null || m.trueCostCents > highestMonth.trueCostCents) {
+          highestMonth = monthWithOneOffs(m);
+        }
+        if (lowestMonth == null || m.trueCostCents < lowestMonth.trueCostCents) {
+          lowestMonth = monthWithOneOffs(m);
+        }
+      }
+      // The lights-on floor is priced for the REQUESTED year
+      // (finding F14): the current year uses the current month
+      // (unchanged from before); any other year uses its own last
+      // included month — or its December when it has none — so a
+      // past year's floor reflects that year's bill versions, not
+      // today's. The choice is yearSummaryFloorMonth in
+      // spendingCore; the floor math itself is unchanged.
+      const keepLightsOnFloorCents = core.keepLightsOnForMonth(
+        yearSummaryFloorMonth({
+          year,
+          currentYear,
+          currentMonth: currentMonthStr,
+          lastIncludedMonth,
+        }),
+      );
+      const lastMonthInProgress =
+        isCurrentYear && lastIncludedMonth != null && lastIncludedMonth === currentMonthStr;
+      // Top categories: the Slice & dice category pivot over exactly
+      // the year's included months — monthly bills at the version in
+      // effect for the month, smoothed bills at their monthly accrual
+      // (core.billMonthlyAccrual, the same accrual yearlyOutFor
+      // reports), grouped by bill category (empty → "Uncategorized"),
+      // plus the "Everything else" residual row (True cost − the
+      // pivot's own total) so the rows sum exactly to True cost.
+      // The residual competes for a top-5 place like any other row.
+      const topCategories: { label: string; totalCents: number }[] = (() => {
+        if (spendingMonths.length === 0) return [];
+        const groupMap = new Map<string, number>();
+        const addTo = (label: string, cents: number) =>
+          groupMap.set(label, (groupMap.get(label) ?? 0) + cents);
+        for (const b of bills) {
+          const label = b.category || "Uncategorized";
+          for (const m of spendingMonths) {
+            addTo(
+              label,
+              versionInEffect(core.versionsByBill.get(b.id) ?? [], m.month)
+                ?.amountCents ?? 0,
+            );
+          }
+        }
+        for (const y of yearly) {
+          const label = y.category || "Uncategorized";
+          for (const m of spendingMonths) {
+            addTo(label, core.billMonthlyAccrual(y, m.month));
+          }
+        }
+        const rows = [...groupMap.entries()].map(([label, totalCents]) => ({
+          label,
+          totalCents,
+        }));
+        const pivotTotal = rows.reduce((s, r) => s + r.totalCents, 0);
+        rows.push({
+          label: "Everything else",
+          totalCents: totalTrueCostCents - pivotTotal,
+        });
+        rows.sort(
+          (a, b) => b.totalCents - a.totalCents || a.label.localeCompare(b.label),
+        );
+        return rows.slice(0, 5);
+      })();
+
+      // ---- net worth: same per-snapshot totals as getNetWorth ----
+      const classById = classByIdOf(accounts);
+      const balancesBySnapshot = new Map<number, typeof balances>();
+      for (const b of balances) {
+        const arr = balancesBySnapshot.get(b.snapshotId) ?? [];
+        arr.push(b);
+        balancesBySnapshot.set(b.snapshotId, arr);
+      }
+      const totalForSnapshot = (snapId: number): number =>
+        snapshotTotals(balancesBySnapshot.get(snapId) ?? [], classById, includeProperty)
+          .totalCents;
+      const yearPrefix = `${year}-`;
+      const yearSnaps = nwSnaps.filter((s) => s.date.startsWith(yearPrefix));
+      const firstSnap = yearSnaps[0] ?? null;
+      const lastSnap = yearSnaps[yearSnaps.length - 1] ?? null;
+      // The last snapshot before this year starts — the anchor the
+      // Net Worth view's Year to date is measured from. The change
+      // below is instead measured from this year's FIRST snapshot,
+      // so the view discloses both anchors and the movement between
+      // this prior snapshot and the year's first one.
+      const priorSnaps = nwSnaps.filter((s) => s.date < `${year}-01-01`);
+      const priorSnap = priorSnaps[priorSnaps.length - 1] ?? null;
+      const priorYearLastDate = priorSnap?.date ?? null;
+      const priorYearLastTotalCents =
+        priorSnap != null ? totalForSnapshot(priorSnap.id) : null;
+      let netWorthOut: {
+        hasData: boolean;
+        snapshotCount: number;
+        firstDate: string | null;
+        firstTotalCents: number | null;
+        lastDate: string | null;
+        lastTotalCents: number | null;
+        priorYearLastDate: string | null;
+        priorYearLastTotalCents: number | null;
+        changeCents: number | null;
+        changePctFrac: number | null;
+        movers: { accountId: number; accountName: string; startCents: number | null; endCents: number | null; changeCents: number }[];
+      };
+      if (!firstSnap || !lastSnap) {
+        netWorthOut = {
+          hasData: false,
+          snapshotCount: 0,
+          firstDate: null,
+          firstTotalCents: null,
+          lastDate: null,
+          lastTotalCents: null,
+          priorYearLastDate,
+          priorYearLastTotalCents,
+          changeCents: null,
+          changePctFrac: null,
+          movers: [],
+        };
+      } else {
+        const firstTotal = totalForSnapshot(firstSnap.id);
+        const lastTotal = totalForSnapshot(lastSnap.id);
+        const change = lastTotal - firstTotal;
+        const pct = firstTotal !== 0 ? change / firstTotal : null;
+        // The movers math lives in the shared NW core
+        // (server/src/nwCore.ts) — the same code the accuracy
+        // fixtures run.
+        const movers = yearMovers(
+          accounts,
+          balancesBySnapshot.get(firstSnap.id) ?? [],
+          balancesBySnapshot.get(lastSnap.id) ?? [],
+          classById,
+          includeProperty,
+          firstSnap.id === lastSnap.id,
+        );
+        netWorthOut = {
+          hasData: true,
+          snapshotCount: yearSnaps.length,
+          firstDate: firstSnap.date,
+          firstTotalCents: firstTotal,
+          lastDate: lastSnap.date,
+          lastTotalCents: lastTotal,
+          priorYearLastDate,
+          priorYearLastTotalCents,
+          changeCents: change,
+          changePctFrac: pct,
+          movers,
+        };
+      }
+
+      // ---- Multi-year trend: one row per available year, on the
+      // same window rule + monthHasData + eff for spending and the
+      // same first→last snapshot anchors (with the same
+      // includeProperty setting) as the blocks above. A year with
+      // fewer than two snapshots has no change; a year with no
+      // snapshots has no ending figure either. ----
+      const trend = availableYears.map((trendYear) => {
+        const trendIsCurrent = trendYear === currentYear;
+        const trendStart = `${trendYear}-01`;
+        const trendEnd = trendIsCurrent ? currentMonthStr : `${trendYear}-12`;
+        let trendMonths = 0;
+        let trendTrueCost = 0;
+        for (let n = 1; n <= 12; n++) {
+          const m = `${trendYear}-${String(n).padStart(2, "0")}`;
+          if (m < trendStart || m > trendEnd) continue;
+          if (!monthHasData(m)) continue;
+          trendMonths += 1;
+          trendTrueCost += eff(m).smoothed;
+        }
+        const trendSnaps = nwSnaps.filter((s) =>
+          s.date.startsWith(`${trendYear}-`),
+        );
+        const trendFirst = trendSnaps[0] ?? null;
+        const trendLast = trendSnaps[trendSnaps.length - 1] ?? null;
+        return {
+          year: trendYear,
+          monthsWithData: trendMonths,
+          trueCostCents: trendMonths > 0 ? trendTrueCost : null,
+          nwChangeCents:
+            trendFirst != null && trendLast != null && trendFirst.id !== trendLast.id
+              ? totalForSnapshot(trendLast.id) - totalForSnapshot(trendFirst.id)
+              : null,
+          nwEndingCents: trendLast != null ? totalForSnapshot(trendLast.id) : null,
+        };
+      });
+
+      return {
+        year,
+        availableYears,
+        includeProperty,
+        spending: {
+          hasData: monthsWithData > 0,
+          months: spendingMonths,
+          totalTrueCostCents,
+          totalCashOutCents,
+          averageTrueCostCents,
+          monthsWithData,
+          highestMonth,
+          lowestMonth,
+          totalOneOffsCents,
+          topCategories,
+          keepLightsOnFloorCents,
+          lastMonthInProgress,
+          excludedPayments,
+        },
+        trend,
+        netWorth: netWorthOut,
+      };
+    },
+  }),
+
+  // Set the Net Worth Accounts section's collapsed UI state.
+  // Display only — persisted server-side in settings so it survives
+  // reloads, new sessions, and devices. Absent = collapsed (the
+  // default); the client stores an explicit value on first toggle.
+  setNwAccountsCollapsed: defineAction({
+    request: z.object({
+      collapsed: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "nw_accounts_collapsed",
+          value: args.collapsed ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.collapsed ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Set the Net Worth History section's collapsed UI state. Display
+  // only, persisted like the Accounts flag, independent of it.
+  // Absent = collapsed (the default).
+  setNwHistoryCollapsed: defineAction({
+    request: z.object({
+      collapsed: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "nw_history_collapsed",
+          value: args.collapsed ? "1" : "0",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.collapsed ? "1" : "0" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  // Set the Net Worth Growth chart's "Change since" baseline
+  // snapshot date. Stored in settings under "nw_growth_since" as
+  // a plain YYYY-MM-DD string; null clears it (stored empty,
+  // which getNetWorth reads back as null), returning the growth
+  // baseline to the first snapshot. Display only.
+  setNwGrowthSince: defineAction({
+    request: z.object({
+      date: z.string().regex(dateRe).nullable(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({
+          key: "nw_growth_since",
+          value: args.date ?? "",
+        })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: args.date ?? "" },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  addNwSnapshot: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: nwSnapshotInput,
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      if (isFutureSnapshotDate(args.date, todayDateString())) {
+        return {
+          ok: false,
+          reason: "Snapshot date can't be in the future",
+          id: null,
+        };
+      }
+      const [dupe] = await db
+        .select()
+        .from(schema.nwSnapshots)
+        .where(eq(schema.nwSnapshots.date, args.date));
+      if (dupe) {
+        return {
+          ok: false,
+          reason: `A snapshot already exists for ${args.date} — edit that snapshot instead.`,
+          id: dupe.id,
+        };
+      }
+      /* ---- FULL preflight — before ANY write (cluster C) ----
+         Every balance entry's accountId must reference an existing
+         account, no accountId may appear twice in the payload, and
+         no bucket may appear twice within one entry's splits. Any
+         failure returns here with zero writes. */
+      const { accounts } = await loadNetWorthDecrypted(ctx, db, key);
+      const classById = classByIdOf(accounts);
+      const validation = validateNwSnapshotPayload(args.balances, accounts);
+      if (!validation.ok) {
+        return { ok: false, reason: validation.reason, id: null };
+      }
+      // Reserved-prefix check on the note (cluster E): the trimmed
+      // note is the exact value encryptNullable would store, so a
+      // note carrying the reserved prefix is refused here, in the
+      // preflight, with zero writes.
+      if (hasReservedEncPrefix(args.note?.trim() ? args.note.trim() : null)) {
+        return { ok: false, reason: RESERVED_ENC_PREFIX_MESSAGE, id: null };
+      }
+      /* ---- Build every row value BEFORE the write ----
+         All fallible work (encryption included) happens here, so
+         nothing after this point can fail partway for a payload
+         reason. Entries that resolve to null (unrecorded) produce
+         no row, exactly as before. */
+      const encNote = await encryptNullable(
+        key,
+        args.note?.trim() ? args.note.trim() : null,
+      );
+      const rows: ({ accountId: number } & NwEncryptedRowValues)[] = [];
+      for (const b of args.balances) {
+        const cls = classById.get(b.accountId);
+        const values = await nwBalanceRowValues(
+          key,
+          b,
+          // Property and custodial balances are stored whole.
+          cls != null && (isPropertyKind(cls.kind) || cls.custodial),
+        );
+        if (!values) continue;
+        rows.push({ accountId: b.accountId, ...values });
+      }
+      /* ---- ONE atomic batch: header + balances, all or nothing ----
+         The new snapshot's id is pre-derived at the statement level
+         as max(existing snapshot id) + 1 (1 when the table is
+         empty) and carried explicitly by the header insert, so the
+         balance inserts in the SAME batch can reference it — no
+         second commit and no follow-up fix-up write. The derived id
+         cannot collide with an existing row (it exceeds every
+         existing id); if it somehow did, the batch's primary-key
+         failure would roll the whole batch back atomically rather
+         than land partially. */
+      const [maxRow] = await db
+        .select({ maxId: sql<number | null>`max(${schema.nwSnapshots.id})` })
+        .from(schema.nwSnapshots);
+      const newSnapshotId = (maxRow?.maxId ?? 0) + 1;
+      const plan = buildNwSnapshotWritePlan({
+        mode: "add",
+        snapshotId: newSnapshotId,
+        date: args.date,
+        note: encNote,
+        rows,
+      });
+      type BatchItem = Parameters<typeof db.batch>[0][number];
+      const statements: BatchItem[] = plan.map((stmt): BatchItem => {
+        switch (stmt.op) {
+          case "insertSnapshot":
+            return db.insert(schema.nwSnapshots).values({
+              id: stmt.snapshotId,
+              date: stmt.date,
+              note: stmt.note,
+            });
+          case "insertBalance": {
+            const { accountId, ...values } = stmt.row;
+            return db.insert(schema.nwBalances).values({
+              snapshotId: stmt.snapshotId,
+              accountId,
+              ...values,
+            });
+          }
+          default:
+            throw new Error(`Unexpected add-plan statement: ${stmt.op}`);
+        }
+      });
+      await db.batch(statements as [BatchItem, ...BatchItem[]]);
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Snapshot added.", id: newSnapshotId };
+    },
+  }),
+
+  updateNwSnapshot: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: nwSnapshotInput.extend({ id: z.number().int().positive() }),
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const [target] = await db
+        .select()
+        .from(schema.nwSnapshots)
+        .where(eq(schema.nwSnapshots.id, args.id));
+      if (!target) return { ok: false, reason: "That snapshot was not found.", id: null };
+      if (isFutureSnapshotDate(args.date, todayDateString())) {
+        return {
+          ok: false,
+          reason: "Snapshot date can't be in the future",
+          id: null,
+        };
+      }
+      const [dupe] = await db
+        .select()
+        .from(schema.nwSnapshots)
+        .where(eq(schema.nwSnapshots.date, args.date));
+      if (dupe && dupe.id !== args.id) {
+        return {
+          ok: false,
+          reason: `Another snapshot already exists for ${args.date} — pick a different date or edit that snapshot.`,
+          id: dupe.id,
+        };
+      }
+      /* ---- FULL preflight — before ANY write (cluster C) ----
+         Runs before the header update AND before the balance
+         delete: every balance entry's accountId must reference an
+         existing account, no accountId may appear twice in the
+         payload, and no bucket may appear twice within one entry's
+         splits. Any failure returns here with zero writes — the
+         snapshot keeps its prior date, note, and balances. */
+      const { accounts } = await loadNetWorthDecrypted(ctx, db, key);
+      const classById = classByIdOf(accounts);
+      const validation = validateNwSnapshotPayload(args.balances, accounts);
+      if (!validation.ok) {
+        return { ok: false, reason: validation.reason, id: null };
+      }
+      // Reserved-prefix check on the note (cluster E): the trimmed
+      // note is the exact value encryptNullable would store, so a
+      // note carrying the reserved prefix is refused here, in the
+      // preflight, with zero writes.
+      if (hasReservedEncPrefix(args.note?.trim() ? args.note.trim() : null)) {
+        return { ok: false, reason: RESERVED_ENC_PREFIX_MESSAGE, id: null };
+      }
+      /* ---- Build every row value BEFORE the write ---- */
+      const encNote = await encryptNullable(
+        key,
+        args.note?.trim() ? args.note.trim() : null,
+      );
+      const rows: ({ accountId: number } & NwEncryptedRowValues)[] = [];
+      for (const b of args.balances) {
+        const cls = classById.get(b.accountId);
+        const values = await nwBalanceRowValues(
+          key,
+          b,
+          // Property and custodial balances are stored whole.
+          cls != null && (isPropertyKind(cls.kind) || cls.custodial),
+        );
+        if (!values) continue;
+        rows.push({ accountId: b.accountId, ...values });
+      }
+      /* ---- ONE atomic batch: header update, balance delete, and
+         one insert per stored balance row land together or not at
+         all — a failure mid-write can no longer leave the snapshot
+         emptied or partial. */
+      const plan = buildNwSnapshotWritePlan({
+        mode: "update",
+        snapshotId: args.id,
+        date: args.date,
+        note: encNote,
+        rows,
+      });
+      type BatchItem = Parameters<typeof db.batch>[0][number];
+      const statements: BatchItem[] = plan.map((stmt): BatchItem => {
+        switch (stmt.op) {
+          case "updateSnapshot":
+            return db
+              .update(schema.nwSnapshots)
+              .set({ date: stmt.date, note: stmt.note })
+              .where(eq(schema.nwSnapshots.id, stmt.snapshotId));
+          case "deleteBalances":
+            return db
+              .delete(schema.nwBalances)
+              .where(eq(schema.nwBalances.snapshotId, stmt.snapshotId));
+          case "insertBalance": {
+            const { accountId, ...values } = stmt.row;
+            return db.insert(schema.nwBalances).values({
+              snapshotId: stmt.snapshotId,
+              accountId,
+              ...values,
+            });
+          }
+          default:
+            throw new Error(`Unexpected update-plan statement: ${stmt.op}`);
+        }
+      });
+      await db.batch(statements as [BatchItem, ...BatchItem[]]);
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Snapshot saved.", id: args.id };
+    },
+  }),
+
+  // Correct ONE account's balance in ONE snapshot — the quick fix for
+  // a mistyped amount (e.g. an extra $80,000 typed into a new account).
+  // Unlike updateNwSnapshot this touches nothing else in the snapshot:
+  // every other account's recorded balance stays exactly as it was.
+  // balanceCents null (and no splits) removes that account's balance
+  // from the snapshot, as if it had never been recorded on that date.
+  updateNwBalance: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: nwBalanceEntry.extend({
+      snapshotId: z.number().int().positive(),
+    }),
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const [snapshot] = await db
+        .select()
+        .from(schema.nwSnapshots)
+        .where(eq(schema.nwSnapshots.id, args.snapshotId));
+      if (!snapshot) {
+        return { ok: false, reason: "That snapshot was not found.", id: null };
+      }
+      const [account] = await db
+        .select()
+        .from(schema.nwAccounts)
+        .where(eq(schema.nwAccounts.id, args.accountId));
+      if (!account) {
+        return { ok: false, reason: "That account was not found.", id: null };
+      }
+      // Duplicate-bucket rejection (cluster C): this action shares
+      // the snapshot writers' row-resolution path, so a bucket
+      // listed twice in the splits is refused here too, before any
+      // write — never folded with the first amount silently dropped.
+      const splitsCheck = validateNwBalanceSplits(
+        args.splits ?? null,
+        await decryptStr(key, account.name),
+      );
+      if (!splitsCheck.ok) {
+        return { ok: false, reason: splitsCheck.reason, id: null };
+      }
+      const values = await nwBalanceRowValues(
+        key,
+        { accountId: args.accountId, balanceCents: args.balanceCents, splits: args.splits ?? null },
+        // Property and custodial balances are stored whole.
+        isPropertyKind(account.propertyKind as NwPropertyKind) ||
+          isCustodialAccount(account),
+      );
+      const [existing] = await db
+        .select()
+        .from(schema.nwBalances)
+        .where(
+          and(
+            eq(schema.nwBalances.snapshotId, args.snapshotId),
+            eq(schema.nwBalances.accountId, args.accountId),
+          ),
+        );
+      if (!values) {
+        if (existing) {
+          await db
+            .delete(schema.nwBalances)
+            .where(eq(schema.nwBalances.id, existing.id));
+        }
+        ctx.invalidateQueries();
+        return {
+          ok: true,
+          reason: "Balance removed from that snapshot.",
+          id: args.snapshotId,
+        };
+      }
+      if (existing) {
+        await db
+          .update(schema.nwBalances)
+          .set(values)
+          .where(eq(schema.nwBalances.id, existing.id));
+      } else {
+        await db.insert(schema.nwBalances).values({
+          snapshotId: args.snapshotId,
+          accountId: args.accountId,
+          ...values,
+        });
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Balance saved.", id: args.snapshotId };
+    },
+  }),
+
+  deleteNwSnapshot: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const [existingSnapshot] = await db
+        .select({ id: schema.nwSnapshots.id })
+        .from(schema.nwSnapshots)
+        .where(eq(schema.nwSnapshots.id, args.id));
+      if (!existingSnapshot) {
+        return { ok: false, reason: "That snapshot was not found.", id: null };
+      }
+      await db
+        .delete(schema.nwBalances)
+        .where(eq(schema.nwBalances.snapshotId, args.id));
+      await db
+        .delete(schema.nwSnapshots)
+        .where(eq(schema.nwSnapshots.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Snapshot deleted.", id: args.id };
+    },
+  }),
+
+  addNwAccount: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      name: z.string().min(1).max(80),
+      propertyKind: nwPropertyKindWithDefault,
+      // Custodial (e.g. UTMA/UGMA): recorded but never counted.
+      // A custodial account is never a property account — when
+      // this is true the stored propertyKind is forced to "none".
+      custodial: z.boolean().optional().default(false),
+    }),
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const name = args.name.trim();
+      if (!name) return { ok: false, reason: "Give the account a name.", id: null };
+      if (hasReservedEncPrefix(args.name.trim())) {
+        return { ok: false, reason: RESERVED_ENC_PREFIX_MESSAGE, id: null };
+      }
+      const allRaw = await db.select().from(schema.nwAccounts);
+      const all = [];
+      for (const a of allRaw) all.push({ ...a, name: await decryptStr(key, a.name) });
+      if (all.some((a) => a.name.toLowerCase() === name.toLowerCase())) {
+        return { ok: false, reason: `An account named “${name}” already exists.`, id: null };
+      }
+      const sortOrder = all.reduce((m, a) => Math.max(m, a.sortOrder), -1) + 1;
+      const [row] = await db
+        .insert(schema.nwAccounts)
+        .values({
+          name: await encryptStr(key, name),
+          sortOrder,
+          archived: 0,
+          propertyKind: args.custodial ? "none" : (args.propertyKind ?? "none"),
+          custodial: args.custodial ? 1 : 0,
+        })
+        .returning({ id: schema.nwAccounts.id });
+      if (!row) throw new Error("insert failed");
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Account added.", id: row.id };
+    },
+  }),
+
+  renameNwAccount: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      id: z.number().int().positive(),
+      name: z.string().min(1).max(80),
+      // Optional so older callers that only rename keep working;
+      // when present, the account's property flag is updated too.
+      propertyKind: nwPropertyKindEnum.optional(),
+      // Optional like propertyKind: when present, the account's
+      // custodial flag is updated too. Marking an account
+      // custodial forces its propertyKind to "none" (a custodial
+      // account is never a property account).
+      custodial: z.boolean().optional(),
+    }),
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const name = args.name.trim();
+      if (!name) return { ok: false, reason: "Give the account a name.", id: null };
+      if (hasReservedEncPrefix(args.name.trim())) {
+        return { ok: false, reason: RESERVED_ENC_PREFIX_MESSAGE, id: null };
+      }
+      const allRaw = await db.select().from(schema.nwAccounts);
+      const all = [];
+      for (const a of allRaw) all.push({ ...a, name: await decryptStr(key, a.name) });
+      // Existence check (finding F22): renaming a missing account
+      // must not report success for an update that touched nothing.
+      if (!all.some((a) => a.id === args.id)) {
+        return { ok: false, reason: "That account was not found.", id: null };
+      }
+      if (
+        all.some(
+          (a) => a.id !== args.id && a.name.toLowerCase() === name.toLowerCase(),
+        )
+      ) {
+        return { ok: false, reason: `An account named “${name}” already exists.`, id: null };
+      }
+      await db
+        .update(schema.nwAccounts)
+        .set({
+          name: await encryptStr(key, name),
+          ...(args.custodial === true
+            ? { propertyKind: "none" as const }
+            : args.propertyKind
+              ? { propertyKind: args.propertyKind }
+              : {}),
+          ...(args.custodial !== undefined
+            ? { custodial: args.custodial ? 1 : 0 }
+            : {}),
+        })
+        .where(eq(schema.nwAccounts.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Account saved.", id: args.id };
+    },
+  }),
+
+  setNwAccountArchived: defineAction({
+    request: z.object({ id: z.number().int().positive(), archived: z.boolean() }),
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const updated = await db
+        .update(schema.nwAccounts)
+        .set({ archived: args.archived ? 1 : 0 })
+        .where(eq(schema.nwAccounts.id, args.id))
+        .returning({ id: schema.nwAccounts.id });
+      if (updated.length === 0) {
+        return { ok: false, reason: "That account was not found.", id: null };
+      }
+      ctx.invalidateQueries();
+      return {
+        ok: true,
+        reason: args.archived ? "Account archived." : "Account restored.",
+        id: args.id,
+      };
+    },
+  }),
+
+  // Permanent removal of an account and every balance it has in
+  // every snapshot. Two deliberate guards make this unreachable by
+  // accident: the account must already be archived (archiving is
+  // the first step; this action refuses a live account), and
+  // property accounts (the house, its mortgage) are never
+  // hard-deletable through this action. Custodial accounts follow
+  // the NORMAL rule (archived first, like ordinary accounts) — only
+  // property accounts are refused. Snapshot totals are computed
+  // from the remaining balances, so they recompute on their own.
+  deleteNwAccount: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: nwMutationOut,
+    async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
+      const db = ctx.db<typeof schema>();
+      const [account] = await db
+        .select()
+        .from(schema.nwAccounts)
+        .where(eq(schema.nwAccounts.id, args.id));
+      if (!account) {
+        return { ok: false, reason: "That account no longer exists.", id: null };
+      }
+      if (account.archived !== 1) {
+        return {
+          ok: false,
+          reason:
+            "Archive the account first — only archived accounts can be deleted permanently.",
+          id: args.id,
+        };
+      }
+      if (isPropertyKind(propertyKindOf(account))) {
+        return {
+          ok: false,
+          reason: "Property accounts can't be deleted permanently.",
+          id: args.id,
+        };
+      }
+      await db
+        .delete(schema.nwBalances)
+        .where(eq(schema.nwBalances.accountId, args.id));
+      await db
+        .delete(schema.nwAccounts)
+        .where(eq(schema.nwAccounts.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true, reason: "Account deleted permanently.", id: args.id };
+    },
+  }),
+
+  /* ---------------- Backup / restore actions ---------------- */
+
+  // Returns the complete dataset as one payload (see the backup
+  // schema above). No UI calls this directly — it exists for
+  // agent-run encrypted backups; the Backups panel's create button
+  // uses the same payload builder via createBackupNow. All values
+  // are decrypted to their true figures, exactly as the other
+  // actions return them.
+  exportbackup: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: backupPayload,
+    async handler(ctx): Promise<z.infer<typeof backupPayload>> {
+      return buildBackupPayload(ctx);
+    }
+  }),
+
+  // Replaces the ENTIRE dataset with the given backup payload
+  // (the exact shape exportbackup returns), preserving ids and
+  // relationships and re-encrypting every value on write. After a
+  // restore, getDashboard / getNetWorth return figures identical
+  // to the exported ones.
+  restorebackup: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: backupPayload,
+    response: restoreBackupOut,
+    async handler(ctx, args): Promise<z.infer<typeof restoreBackupOut>> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+
+      /* ---- FULL preflight — before ANY write (cluster A) ----
+         The payload arrives schema-validated by the action contract
+         (with restoreCore's legacy defaults applied: a missing
+         propertyKind restores as "none", missing split keys as
+         null). Everything else that can refuse the restore is
+         checked here, against the payload alone: its own encryption
+         key-check under the current key, every enum, intra-payload
+         uniqueness, and referential integrity. Any failure returns
+         ok:false with zero writes — the current data is untouched,
+         byte for byte. */
+      const keyCheckValue = payloadKeyCheckValue(args);
+      let payloadKeyCheckValid: boolean | null = null;
+      if (keyCheckValue != null) {
+        if (isEncrypted(keyCheckValue)) {
+          // An older export carrying the key-check as ciphertext:
+          // it validates only if it decrypts under the CURRENT key
+          // to the known constant.
+          try {
+            payloadKeyCheckValid =
+              (await decryptStr(key, keyCheckValue)) === KEY_CHECK_PLAINTEXT;
+          } catch {
+            payloadKeyCheckValid = false;
+          }
+        } else {
+          // Current exports carry the key-check decrypted, like
+          // every other figure in the payload.
+          payloadKeyCheckValid = keyCheckValue === KEY_CHECK_PLAINTEXT;
+        }
+      }
+      const preflight = preflightRestoreBackup(args, payloadKeyCheckValid);
+      if (!preflight.ok) {
+        return { ok: false, reason: preflight.reason };
+      }
+
+      /* ---- Build every row value (encrypting as we go) ----
+         All fallible work — encryption included — happens here,
+         before the replacement, so nothing after this point can
+         fail partway for a payload reason. Settings are built
+         first (the key-check is re-validated at the end). The
+         settings stored encrypted at rest (opening reserve,
+         key-check, saved retirement inputs) are re-encrypted here
+         when the payload carries them decrypted; a payload from an
+         older export that still carries one as ciphertext under
+         the same key is stored as-is. Net Worth balances are
+         normalised by restoreCore's rule: a non-empty split IS the
+         balance, so balanceCents is recomputed from the parts
+         exactly as every normal writer computes it. */
+      // R4-2 / F4: the restored Roth blob is stamped a new
+      // generation — read the CURRENT Roth row's revision once,
+      // before the build loop, leniently parsed.
+      const currentSettingRows = await db.select().from(schema.settings);
+      const currentRothRow = currentSettingRows.find(
+        (r: { key: string }) => r.key === RESTORE_ROTH_BLOB_KEY,
+      );
+      let preRestoreRothRevision = 0;
+      if (currentRothRow?.value) {
+        if (isEncrypted(currentRothRow.value)) {
+          try {
+            preRestoreRothRevision = parseRothBlobRevision(
+              await decryptStr(key, currentRothRow.value),
+            );
+          } catch {
+            preRestoreRothRevision = 0;
+          }
+        } else {
+          preRestoreRothRevision = parseRothBlobRevision(currentRothRow.value);
+        }
+      }
+      const settingsRows: (typeof schema.settings.$inferInsert)[] = [];
+      for (const s of args.settings) {
+        let stored = s.value;
+        if (
+          s.key === "opening_reserve_cents" ||
+          s.key === KEY_CHECK_SETTING ||
+          s.key === "retirement_calc_inputs_v1" ||
+          s.key === "retirement_calc_baseline_v1" ||
+          s.key === "roth_conversion_inputs_v1"
+        ) {
+          if (isEncrypted(s.value)) {
+            // Reserved-prefix verification (cluster E): a value for
+            // one of these encrypted-at-rest keys that CARRIES the
+            // prefix is stored as-is only when it genuinely
+            // decrypts under the current key. One that does not is
+            // fake ciphertext (or another key's) and would break
+            // every later load, so the restore is refused here —
+            // while rows are still only being built, before the
+            // atomic batch, with zero writes.
+            let decrypted: string;
+            try {
+              decrypted = await decryptStr(key, s.value);
+            } catch {
+              return {
+                ok: false,
+                reason:
+                  "A saved planner value in that backup can't be decrypted with this app's encryption key, so the restore was refused — nothing was changed.",
+              };
+            }
+            if (s.key === RESTORE_ROTH_BLOB_KEY) {
+              const stamped = stampRestoredRothBlob(decrypted, preRestoreRothRevision);
+              stored = stamped != null ? await encryptStr(key, stamped) : s.value;
+            } else {
+              stored = s.value;
+            }
+          } else if (s.key === RESTORE_ROTH_BLOB_KEY) {
+            const stamped = stampRestoredRothBlob(s.value, preRestoreRothRevision);
+            stored = stamped != null ? await encryptStr(key, stamped) : await encryptStr(key, s.value);
+          } else {
+            stored = await encryptStr(key, s.value);
+          }
+        }
+        settingsRows.push({ key: s.key, value: stored });
+      }
+      const yearlyExpenseRows: (typeof schema.yearlyExpenses.$inferInsert)[] = [];
+      for (const y of args.yearlyExpenses) {
+        yearlyExpenseRows.push({
+          id: y.id,
+          name: await encryptStr(key, y.name),
+          frequency: y.frequency as typeof schema.yearlyExpenses.$inferInsert.frequency,
+          expectedCents: await encryptNum(key, y.expectedCents),
+          dueMonth: y.dueMonth,
+          paidByType: y.paidByType as typeof schema.yearlyExpenses.$inferInsert.paidByType,
+          paidByName: await encryptStr(key, y.paidByName),
+          backfillBeforeFirstVersion: y.backfillBeforeFirstVersion,
+          category: await encryptStr(key, y.category),
+          keepLightsOn: y.keepLightsOn,
+          createdAt: backupMsToDate(y.createdAt),
+        });
+      }
+      const yearlyExpenseVersionRows: (typeof schema.yearlyExpenseVersions.$inferInsert)[] = [];
+      for (const v of args.yearlyExpenseVersions) {
+        yearlyExpenseVersionRows.push({
+          id: v.id,
+          expenseId: v.expenseId,
+          expectedCents: await encryptNum(key, v.expectedCents),
+          frequency: v.frequency as typeof schema.yearlyExpenseVersions.$inferInsert.frequency,
+          effectiveFrom: v.effectiveFrom,
+          createdAt: backupMsToDate(v.createdAt),
+        });
+      }
+      const monthlyBillRows: (typeof schema.monthlyBills.$inferInsert)[] = [];
+      for (const b of args.monthlyBills) {
+        monthlyBillRows.push({
+          id: b.id,
+          name: await encryptStr(key, b.name),
+          amountCents: await encryptNum(key, b.amountCents),
+          paidBy: await encryptStr(key, b.paidBy),
+          notes: await encryptNullable(key, b.notes),
+          category: await encryptStr(key, b.category),
+          keepLightsOn: b.keepLightsOn,
+          collapsed: b.collapsed,
+          createdAt: backupMsToDate(b.createdAt),
+        });
+      }
+      const monthlyBillVersionRows: (typeof schema.monthlyBillVersions.$inferInsert)[] = [];
+      for (const v of args.monthlyBillVersions) {
+        monthlyBillVersionRows.push({
+          id: v.id,
+          billId: v.billId,
+          amountCents: await encryptNum(key, v.amountCents),
+          effectiveFrom: v.effectiveFrom,
+          createdAt: backupMsToDate(v.createdAt),
+        });
+      }
+      const monthlySummaryRows: (typeof schema.monthlySummaries.$inferInsert)[] = [];
+      for (const s of args.monthlySummaries) {
+        monthlySummaryRows.push({
+          month: s.month,
+          cashOutCents: await encryptNum(key, s.cashOutCents),
+          createdAt: backupMsToDate(s.createdAt),
+          updatedAt: backupMsToDate(s.updatedAt),
+        });
+      }
+      const monthlyOneOffRows: (typeof schema.monthlyOneOffs.$inferInsert)[] = [];
+      for (const o of args.monthlyOneOffs) {
+        monthlyOneOffRows.push({
+          id: o.id,
+          month: o.month,
+          description: await encryptStr(key, o.description),
+          amountCents: await encryptNum(key, o.amountCents),
+          note: await encryptNullable(key, o.note),
+          createdAt: backupMsToDate(o.createdAt),
+        });
+      }
+      const monthlyCashOutItemRows: (typeof schema.monthlyCashOutItems.$inferInsert)[] = [];
+      for (const o of args.monthlyCashOutItems) {
+        monthlyCashOutItemRows.push({
+          id: o.id,
+          month: o.month,
+          description: await encryptStr(key, o.description),
+          amountCents: await encryptNum(key, o.amountCents),
+          note: await encryptNullable(key, o.note),
+          createdAt: backupMsToDate(o.createdAt),
+        });
+      }
+      const transactionRows: (typeof schema.transactions.$inferInsert)[] = [];
+      for (const t of args.transactions) {
+        transactionRows.push({
+          id: t.id,
+          date: t.date,
+          description: await encryptStr(key, t.description),
+          amountCents: await encryptNum(key, t.amountCents),
+          sourceType: t.sourceType as typeof schema.transactions.$inferInsert.sourceType,
+          accountName: await encryptStr(key, t.accountName),
+          kind: t.kind as typeof schema.transactions.$inferInsert.kind,
+          category: await encryptStr(key, t.category),
+          yearlyExpenseId: t.yearlyExpenseId,
+          createdAt: backupMsToDate(t.createdAt),
+        });
+      }
+      const nwAccountRows: (typeof schema.nwAccounts.$inferInsert)[] = [];
+      for (const a of args.nwAccounts) {
+        nwAccountRows.push({
+          id: a.id,
+          name: await encryptStr(key, a.name),
+          bucket: a.bucket,
+          // Preflight has already validated propertyKind against
+          // the enum, so this cast can no longer smuggle an
+          // unrecognised value into "none".
+          propertyKind: a.propertyKind as typeof schema.nwAccounts.$inferInsert.propertyKind,
+          custodial: isCustodialAccount(a) ? 1 : 0,
+          sortOrder: a.sortOrder,
+          archived: a.archived,
+          createdAt: backupMsToDate(a.createdAt),
+        });
+      }
+      const nwSnapshotRows: (typeof schema.nwSnapshots.$inferInsert)[] = [];
+      for (const s of args.nwSnapshots) {
+        nwSnapshotRows.push({
+          id: s.id,
+          date: s.date,
+          note: await encryptNullable(key, s.note),
+          createdAt: backupMsToDate(s.createdAt),
+        });
+      }
+      const nwBalanceRows: (typeof schema.nwBalances.$inferInsert)[] = [];
+      for (const raw of args.nwBalances) {
+        const b = normalizeBackupBalance(raw);
+        nwBalanceRows.push({
+          id: b.id,
+          snapshotId: b.snapshotId,
+          accountId: b.accountId,
+          balanceCents: await encryptNum(key, b.balanceCents),
+          splitHsaCents:
+            b.splitHsaCents == null ? null : await encryptNum(key, b.splitHsaCents),
+          splitRothCents:
+            b.splitRothCents == null ? null : await encryptNum(key, b.splitRothCents),
+          splitTaxableCents:
+            b.splitTaxableCents == null
+              ? null
+              : await encryptNum(key, b.splitTaxableCents),
+          splitNonTaxableCents:
+            b.splitNonTaxableCents == null
+              ? null
+              : await encryptNum(key, b.splitNonTaxableCents),
+          split529Cents:
+            b.split529Cents == null ? null : await encryptNum(key, b.split529Cents),
+          splitCashCents:
+            b.splitCashCents == null ? null : await encryptNum(key, b.splitCashCents),
+          splitPreTaxCents:
+            b.splitPreTaxCents == null ? null : await encryptNum(key, b.splitPreTaxCents),
+        });
+      }
+
+      /* ---- ONE atomic batch: wipe + insert, all or nothing ----
+         The platform's batch is the atomic multi-statement write
+         set (the SDK deliberately offers no transaction handle):
+         if any statement fails, none of them land and the previous
+         dataset survives whole. Rows are inserted in chunks so no
+         single statement carries an unbounded row count. */
+      type BatchItem = Parameters<typeof db.batch>[0][number];
+      const statements: BatchItem[] = [];
+      // Wipe every table, children before parents.
+      statements.push(db.delete(schema.nwBalances));
+      statements.push(db.delete(schema.nwSnapshots));
+      statements.push(db.delete(schema.nwAccounts));
+      statements.push(db.delete(schema.transactions));
+      statements.push(db.delete(schema.yearlyExpenseVersions));
+      statements.push(db.delete(schema.monthlyBillVersions));
+      statements.push(db.delete(schema.monthlyOneOffs));
+      statements.push(db.delete(schema.monthlyCashOutItems));
+      statements.push(db.delete(schema.monthlySummaries));
+      statements.push(db.delete(schema.monthlyBills));
+      statements.push(db.delete(schema.yearlyExpenses));
+      statements.push(db.delete(schema.settings));
+      const CHUNK = 100;
+      const pushInserts = <T,>(table: any, rows: T[]): void => {
+        for (let i = 0; i < rows.length; i += CHUNK) {
+          statements.push(db.insert(table).values(rows.slice(i, i + CHUNK) as any));
+        }
+      };
+      pushInserts(schema.settings, settingsRows);
+      pushInserts(schema.yearlyExpenses, yearlyExpenseRows);
+      pushInserts(schema.yearlyExpenseVersions, yearlyExpenseVersionRows);
+      pushInserts(schema.monthlyBills, monthlyBillRows);
+      pushInserts(schema.monthlyBillVersions, monthlyBillVersionRows);
+      pushInserts(schema.monthlySummaries, monthlySummaryRows);
+      pushInserts(schema.monthlyOneOffs, monthlyOneOffRows);
+      pushInserts(schema.monthlyCashOutItems, monthlyCashOutItemRows);
+      pushInserts(schema.transactions, transactionRows);
+      pushInserts(schema.nwAccounts, nwAccountRows);
+      pushInserts(schema.nwSnapshots, nwSnapshotRows);
+      pushInserts(schema.nwBalances, nwBalanceRows);
+      await db.batch(statements as [BatchItem, ...BatchItem[]]);
+
+      // Recreate / verify the encryption key-check for the restored
+      // settings (creates it when the payload did not carry one).
+      await ensureKeyCheck(ctx, db, key);
+      ctx.invalidateQueries();
+      return {
+        ok: true,
+        reason: `Backup restored: ${args.monthlyBills.length} monthly bills, ${args.yearlyExpenses.length} yearly expenses, ${args.transactions.length} transactions, ${args.nwAccounts.length} Net Worth accounts, ${args.nwSnapshots.length} snapshots, ${args.nwBalances.length} balances.`,
+      };
+    },
+  }),
+
+  /* ---------------- Backup files (outside the app) ----------------
+     The encrypted backups live as files named backup-*.mstbak in
+     this space's own backups folder (<spaceDir>/backups), outside
+     the app so they survive its deletion. These actions list and
+     delete those REAL files, read live on every call. The former
+     workspace-level folder (~/workspace/spending-tracker-backups)
+     is a READ-ONLY legacy union: its files are still listed and
+     restorable, but are never written, deleted, or pruned from
+     here — delete, delete-all, and the newest-12 prune operate only
+     on this space's own files. All filesystem work goes through
+     the privileged handlers, which execute the rules in
+     backupCore.ts and only ever touch files matching
+     backup-*.mstbak in one of those two folders — never
+     mst-crypt.mjs, never any key file, never anything else. */
+
+  listBackups: defineAction({
+    privileged: [privileged.listBackups],
+    request: z.object({}),
+    response: z.object({
+      backups: z.array(
+        z.object({
+          name: z.string(),
+          sizeBytes: z.number(),
+          modifiedMs: z.number(),
+        }),
+      ),
+    }),
+    async handler(ctx) {
+      const { backups } = await ctx.executePrivileged(
+        privileged.listBackups,
+        { spaceDir: ctx.spaceDir },
+      );
+      return { backups };
+    },
+  }),
+
+  deleteBackup: defineAction({
+    privileged: [privileged.deleteBackup],
+    request: z.object({ filename: z.string().min(1).max(120) }),
+    response: z.object({ ok: z.boolean(), reason: z.string() }),
+    async handler(
+      ctx,
+      args,
+    ): Promise<{ ok: boolean; reason: string }> {
+      // Defence in depth alongside the privileged check: refuse
+      // anything that is not a plain backup-*.mstbak filename.
+      if (
+        !/^backup-[A-Za-z0-9][A-Za-z0-9._-]*\.mstbak$/.test(args.filename) ||
+        args.filename.includes("..") ||
+        args.filename.includes("/") ||
+        args.filename.includes("\\")
+      ) {
+        return {
+          ok: false,
+          reason:
+            "Refused: only backup-*.mstbak files in the backups folder can be deleted.",
+        };
+      }
+      const res = await ctx.executePrivileged(privileged.deleteBackup, {
+        spaceDir: ctx.spaceDir,
+        filename: args.filename,
+      });
+      ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  deleteAllBackups: defineAction({
+    privileged: [privileged.deleteAllBackups],
+    request: z.object({}),
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      deletedCount: z.number(),
+    }),
+    async handler(
+      ctx,
+    ): Promise<{ ok: boolean; reason: string; deletedCount: number }> {
+      const res = await ctx.executePrivileged(
+        privileged.deleteAllBackups,
+        { spaceDir: ctx.spaceDir },
+      );
+      ctx.invalidateQueries();
+      return res;
+    },
+  }),
+
+  // Creates a backup right now, from the Backups panel: builds the
+  // exact payload exportbackup returns and hands it to the
+  // privileged handler, which encrypts it with the existing A1
+  // scheme (public key only) and writes it into the same backups
+  // folder listBackups reads, under the same newest-12 rotation the
+  // weekly backups use. Read-only with respect to app data: nothing
+  // in the dataset is created, changed, or deleted.
+  createBackupNow: defineAction({
+    privileged: [privileged.ensureEncryptionKey, privileged.createBackup],
+    request: z.object({}),
+    response: z.object({
+      ok: z.boolean(),
+      filename: z.string().nullable(),
+      reason: z.string(),
+      prunedCount: z.number(),
+    }),
+    async handler(
+      ctx,
+    ): Promise<{
+      ok: boolean;
+      filename: string | null;
+      reason: string;
+      prunedCount: number;
+    }> {
+      const payload = await buildBackupPayload(ctx);
+      const res = await ctx.executePrivileged(privileged.createBackup, {
+        spaceDir: ctx.spaceDir,
+        payloadJson: JSON.stringify(payload),
+      });
+      if (res.ok) ctx.invalidateQueries();
+      return res;
+    },
+  }),
+  /* ---------------- Accuracy self-check (maintenance) ----------------
+     Not a user-facing feature: no screen calls this. It runs ONE
+     suite per invocation so each call completes well inside the
+     space-worker time cap — the combined suites previously timed
+     out. Pass `suite` to select: "tax", "tax-teeth",
+     "tax-teeth-opt", "extended",
+     "extended-teeth", "retirement" (fixtures + Trinity benchmark),
+     "retirement-teeth", "integrity" (the five data-integrity
+     checks over durable data), "ui-state" (the Roth UI-state
+     blob's revision/CAS write contract), "roth-cas" (the Roth
+     plan record's revision/CAS write contract), or
+     "retirement-cas" (the two Retirement records' revision/CAS
+     write contract). The full verification is the
+     sequence of those per-suite calls; each returns the same
+     per-suite counts/results shape as before, with the suites
+     that did not run left null. A call with no `suite` does NOT
+     silently skip suites: it runs only the fast integrity suite
+     and says so explicitly in `note`. It reads data and changes
+     nothing. */
+  runAccuracySelfCheck: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({ suite: accuracySuiteEnum.optional() }),
+    response: accuracySelfCheckResponse,
+    async handler(ctx, args): Promise<AccuracySelfCheckResponse> {
+      const empty: AccuracySelfCheckResponse = {
+        suite: args.suite ?? "none",
+        note: "",
+        fixtures: null,
+        trinity: null,
+        trinityCitation: null,
+        extendedFixtures: null,
+        taxFixtures: null,
+        uiStateFixtures: null,
+        rothCasFixtures: null,
+        retirementCasFixtures: null,
+        teeth: { retirement: null, extended: null, tax: null },
+        integrity: null,
+      };
+      const loadIntegrity = async (): Promise<
+        z.infer<typeof accuracyIntegritySchema>
+      > => {
+        const data = await loadAll(ctx);
+        const nw = await loadNetWorthDecrypted(ctx, data.db, data.key);
+        const includeProperty =
+          data.settingsMap.get(NW_INCLUDE_PROPERTY_KEY) === "1";
+        const checks = [
+          checkNwSnapshotTotals(nw, includeProperty),
+          checkNwBucketSplits(nw),
+          checkBillVersionChains(data),
+          checkPaymentReferences(data),
+          checkCashOutItems(data),
+        ];
+        return {
+          totalViolations: checks.reduce(
+            (n, c) => n + c.violations.length,
+            0,
+          ),
+          checks,
+        };
+      };
+      switch (args.suite) {
+        case "tax":
+          return {
+            ...empty,
+            suite: "tax",
+            note: "Ran the tax fixtures suite only.",
+            taxFixtures: runTaxFixtures(),
+          };
+        case "tax-teeth":
+          return {
+            ...empty,
+            suite: "tax-teeth",
+            note: "Ran the tax teeth suite (core corrupted-case check) only. Run suite tax-teeth-opt for the per-optimizer-case teeth check.",
+            teeth: {
+              retirement: null,
+              extended: null,
+              tax: runTaxTeethCheck("core"),
+            },
+          };
+        case "tax-teeth-opt":
+          return {
+            ...empty,
+            suite: "tax-teeth-opt",
+            note: "Ran the tax teeth suite (per-optimizer-case check) only.",
+            teeth: {
+              retirement: null,
+              extended: null,
+              tax: runTaxTeethCheck("opt"),
+            },
+          };
+        case "extended":
+          return {
+            ...empty,
+            suite: "extended",
+            note: "Ran the extended fixtures suite only.",
+            extendedFixtures: runExtendedFixtures(),
+          };
+        case "extended-teeth":
+          return {
+            ...empty,
+            suite: "extended-teeth",
+            note: "Ran the extended teeth suite only.",
+            teeth: {
+              retirement: null,
+              extended: runExtendedTeethCheck(),
+              tax: null,
+            },
+          };
+        case "retirement":
+          return {
+            ...empty,
+            suite: "retirement",
+            note: "Ran the retirement fixtures suite (including the Trinity benchmark) only.",
+            fixtures: runRetirementFixtures(),
+            trinity: runTrinityBenchmark(),
+            trinityCitation: TRINITY_PUBLISHED.citation,
+          };
+        case "retirement-teeth":
+          return {
+            ...empty,
+            suite: "retirement-teeth",
+            note: "Ran the retirement teeth suite only.",
+            teeth: {
+              retirement: runRetirementTeethCheck(),
+              extended: null,
+              tax: null,
+            },
+          };
+        case "integrity":
+          return {
+            ...empty,
+            suite: "integrity",
+            note: "Ran the integrity suite only.",
+            integrity: await loadIntegrity(),
+          };
+        case "ui-state":
+          return {
+            ...empty,
+            suite: "ui-state",
+            note: "Ran the Roth UI-state CAS fixtures suite only.",
+            uiStateFixtures: runRothUiStateFixtures(),
+          };
+        case "roth-cas":
+          return {
+            ...empty,
+            suite: "roth-cas",
+            note: "Ran the Roth plan-record CAS fixtures suite only.",
+            rothCasFixtures: runRothCasFixtures(),
+          };
+        case "retirement-cas":
+          return {
+            ...empty,
+            suite: "retirement-cas",
+            note: "Ran the Retirement records CAS fixtures suite only.",
+            retirementCasFixtures: runRetirementCasFixtures(),
+          };
+        default:
+          return {
+            ...empty,
+            suite: "none",
+            note: "No suite selected: ran only the fast integrity suite. The tax, tax-teeth, tax-teeth-opt, extended, extended-teeth, retirement, retirement-teeth, ui-state, roth-cas, and retirement-cas suites were NOT run. Call again with suite set to one of: tax, tax-teeth, tax-teeth-opt, extended, extended-teeth, retirement, retirement-teeth, integrity, ui-state, roth-cas, retirement-cas.",
+            integrity: await loadIntegrity(),
+          };
+      }
+    },
+  }),
+} satisfies ActionsModule;
