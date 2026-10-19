@@ -581,11 +581,8 @@ export function RothConversion() {
   const [labConfirmDelete, setLabConfirmDelete] = useState<string | null>(null);
   // The row awaiting load confirmation (only ever a row whose
   // record differs from the working plan — a matching row loads
-  // immediately), and the strategy most recently loaded, whose
-  // confirmation message renders beside the Saved strategies
-  // list where the click happened.
+  // immediately).
   const [labConfirmLoad, setLabConfirmLoad] = useState<string | null>(null);
-  const [labLoadedName, setLabLoadedName] = useState<string | null>(null);
   // Strategy-editor fields (strings, like every other field
   // in this view; the tri-state variant flags keep the saved
   // record's null until the checkbox is actually toggled).
@@ -1642,7 +1639,6 @@ export function RothConversion() {
       const fresh = await api.getRothPlanner({});
       queryClient.setQueryData(["rothplanner"], fresh);
       rehydrateFromRecord(fresh);
-      setLabLoadedName(null);
       setPlanConflictMsg("");
       setScenarioMsg("Plan reset to the seeded defaults. Your saved strategies were kept.");
       queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
@@ -1721,7 +1717,6 @@ export function RothConversion() {
       planRevisionRef.current = Math.max(planRevisionRef.current, res.revision);
       setScenarioMsg(res.reason);
       if (res.ok) {
-        setLabLoadedName(null);
         setLabConfirmLoad(null);
         setLabConfirmDelete(null);
       }
@@ -1735,7 +1730,6 @@ export function RothConversion() {
       setScenarioMsg(res.reason);
       if (res.ok) {
         setRenamingName(null);
-        setLabLoadedName(null);
         setLabConfirmLoad(null);
         setLabConfirmDelete(null);
       }
@@ -2303,14 +2297,12 @@ export function RothConversion() {
     JSON.stringify(currentPlanPayload()) === JSON.stringify(scenarioAppliedPayload(sc));
   // The load itself, unchanged: the strategy's full record
   // becomes the working inputs and autosaves; the saved
-  // strategy is never mutated. Feedback lands both at the
-  // long-standing message site and beside the Saved
-  // strategies list, where the click happened.
+  // strategy is never mutated. Feedback lands at the
+  // long-standing message site.
   const loadLabScenario = (sc: ScenarioRow) => {
     setLabConfirmLoad(null);
     applyInputs(sc);
     setScenarioMsg(`Loaded ${sc.name} — the working inputs now match it.`);
-    setLabLoadedName(sc.name);
   };
   const requestLabLoad = (sc: ScenarioRow) => {
     if (planMatchesScenario(sc)) {
@@ -2318,7 +2310,6 @@ export function RothConversion() {
       return;
     }
     setLabConfirmDelete(null);
-    setLabLoadedName(null);
     setLabConfirmLoad(sc.name);
   };
   const buildLabRequest = (): LabRequest => {
@@ -4434,6 +4425,20 @@ export function RothConversion() {
       !(key === "survivorWho" && labDialsObjForCount.survivorEnabled !== true),
   ).length;
 
+  // Loaded-plan indicator: the saved strategies whose inputs
+  // exactly reproduce the current plan, derived once per render
+  // with the same projections planMatchesScenario compares —
+  // the current payload is stringified once here, then each
+  // scenario's applied payload is compared against it. Both
+  // indicator surfaces (the Plan form header line and the
+  // Strategy Lab badges / no-match line) read this one set.
+  const currentPlanJson = JSON.stringify(currentPlanPayload());
+  const matchedScenarios = data.scenarios.filter(
+    (sc) => JSON.stringify(scenarioAppliedPayload(sc)) === currentPlanJson,
+  );
+  const matchedScenarioSet = new Set(matchedScenarios);
+  const matchedNames = matchedScenarios.map((sc) => sc.name);
+
   return (
     <div>
       <h1 className="pt-5 text-xl font-semibold">Roth Conversion</h1>
@@ -4501,6 +4506,12 @@ export function RothConversion() {
           No Net Worth snapshot yet — enter the starting balances manually below.
         </p>
       )}
+
+      <p className="mt-4 text-sm text-[var(--dim)]">
+        {matchedScenarios.length > 0
+          ? `Plan matches: ${matchedNames.join(", ")}`
+          : "Current plan isn't a saved strategy."}
+      </p>
 
       {rothSection("household", "Household", householdSummary, (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -7694,9 +7705,9 @@ export function RothConversion() {
               </span>
             )}
           </div>
-          {labLoadedName && (
+          {matchedScenarios.length === 0 && (
             <p className="mt-3 text-sm text-[var(--dim)]" aria-live="polite">
-              Loaded {labLoadedName} — the working inputs now match it.
+              {"Current plan isn't a saved strategy."}
             </p>
           )}
           {data.scenarios.length === 0 && (
@@ -7750,6 +7761,11 @@ export function RothConversion() {
                 ) : (
                   <>
                     <span className="font-medium">{sc.name}</span>
+                    {matchedScenarioSet.has(sc) && (
+                      <span className="rounded-full border border-[var(--accent)] px-2 py-0.5 text-xs font-medium whitespace-nowrap text-[var(--accent)]">
+                        Loaded in plan
+                      </span>
+                    )}
                     <span className="text-xs text-[var(--dim)]">
                       {sc.ceilings == null ||
                       (sc.ceilings.bracketTopPct == null &&
