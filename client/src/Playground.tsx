@@ -1,0 +1,3017 @@
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type ApiResponse } from "./api";
+import {
+ceilChipActiveCls,
+ceilChipCls,
+FILING_LABELS,
+fmtDollars,
+fmtMoneyInput,
+hintCls,
+InfoNote,
+inputCls,
+moneyField,
+numField,
+parseDollars,
+parseIntField,
+parseNum,
+pctField,
+sectionCls,
+SEED_BIRTH_YEAR_PRIMARY,
+SEED_BIRTH_YEAR_SPOUSE,
+SEED_SS_PRIMARY_CENTS,
+SEED_SS_START_AGE,
+type FilingStatus,
+type RetData,
+type RothData,
+} from "./rothShared";
+// The tax engine and law tables live server-side (shared with the
+// accuracy self-check fixtures) — see server/src/taxEngine.ts and
+// server/src/taxLaw.ts. The client runs the same code the fixtures
+// pin, so what is priced here is what is tested there.
+import { irmaaTierUpTo } from "@space/server/taxEngine";
+import { lawForYear, TAX_LAW_YEARS } from "@space/server/taxLaw";
+import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
+import { parsePlaygroundPaste, pricePlaygroundYear, solvePlaygroundBracketFill, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
+
+/* The Playground view — one standalone year priced from typed
+   dials through the shared engine (pricePlaygroundYear in
+   rothOptimizer.ts). The form's dials are REMEMBERED between
+   sessions in the app's UI-state store (the playground field
+   of the Roth UI-state blob — see the persistence block
+   below), so the numbers being played with are still there on
+   the next visit; "Reset playground" wipes them back to the
+   fresh blank form. Nothing here is ever saved to the plan
+   record or enters a scenario. Promoted from a Roth-view tab
+   to a top-level view — same dials, same pricing, same
+   readouts; "Start from my numbers" reads the Roth record
+   (below) exactly as it did from inside the Roth view. */
+
+/* Income-stacking model — the ONE computation behind both the
+   Playground readout's full stacking chart and the sticky play
+   strip's mini bar, so the two can never draw different stacks
+   for the same priced year. Presentation ONLY: every amount is
+   read straight off the priced result (`pg`,
+   pricePlaygroundYear's own fields) and the SAME law row the
+   pricing used (lawForYear for the dialed year + filing status,
+   fallback row included); this computes nothing but layout —
+   cumulative offsets, widths, band spans, and marker positions.
+   Sourcing: Interest ← pg.interest; Ordinary dividends ←
+   pg.ordinaryDividends; Other ordinary income ← pg.otherOrdinary;
+   Taxable Social Security ← pg.ssTaxable; RMD ← pg.rmd (only when
+   pg.rmdPriced); Conversion ← pg.conversion (stacked last);
+   Deductions ← pg.deductions; ordinary taxable income ←
+   pg.ordinaryTaxableIncome; total taxable income ←
+   pg.taxableIncome; gains ← pg.ltcgPriced, split as
+   pg.qualifiedDividends + pg.stockGain; bracket tops/rates and
+   the capital-gains thresholds ← law.brackets / law.rates /
+   law.ltcgZeroTop / law.ltcg20Floor for the filing status.
+   The track is the gross stack (AGI) laid over a taxable-income
+   axis offset by deductions: a bracket top T sits at track
+   position deductions + T, so the bar foots as gross stack −
+   deductions = taxable income, and a filled bracket's conversion
+   segment ends exactly on that top's dashed line. The hatched
+   overlay covers the first `deductions` of the stack — the
+   sheltered part. */
+const STACK_HATCH_STYLE = {
+  backgroundImage:
+    "repeating-linear-gradient(45deg, rgba(255,255,255,0.5) 0 5px, rgba(0,0,0,0.22) 5px 10px)",
+} as const;
+
+/* Muted per-bracket colours for the stacking chart's bracket
+   markers (10 / 12 / 22 / 24, in band order): each marker's
+   dashed line, its top label, and its bottom-legend text all
+   share the one colour, in the full chart and in the play
+   strip's mini bar alike (the colour rides on the marker
+   objects buildStackModel returns). The ACA cliff keeps
+   var(--warn) and the 0% gains line keeps the
+   qualified-dividends green (#65a30d); the 20%-floor tick is
+   not part of this scheme. */
+const STACK_MARKER_COLORS = ["#64748b", "#6ea8d8", "#5f6caf", "#7a5c8f"] as const;
+
+type StackSeg = {
+  key: string;
+  label: string;
+  short?: string;
+  amount: number;
+  color: string;
+};
+type StackSegPos = StackSeg & {
+  leftPct: number;
+  widthPct: number;
+  wide: boolean;
+};
+
+function buildStackModel(
+  pg: PlaygroundYearResult,
+  pgYearNum: number,
+  pgFiling: FilingStatus,
+) {
+  const law = lawForYear(pgYearNum);
+  const fs = pgFiling;
+  const tops = law.brackets[fs];
+  const rates = law.rates;
+  const ordSegs: StackSeg[] = [
+    { key: "interest", label: "Interest", amount: pg.interest, color: "#2563eb" },
+    { key: "orddiv", label: "Ordinary dividends", short: "Ord dividends", amount: pg.ordinaryDividends, color: "#0891b2" },
+    { key: "other", label: "Other ordinary income", short: "Other income", amount: pg.otherOrdinary, color: "#d97706" },
+    { key: "ss", label: "Taxable Social Security", short: "Taxable SS", amount: pg.ssTaxable, color: "#dc2626" },
+  ];
+  if (pg.rmdPriced) {
+    ordSegs.push({ key: "rmd", label: "RMD", amount: pg.rmd, color: "#7c3aed" });
+  }
+  ordSegs.push({ key: "conv", label: "Pre-tax money out", short: "Pre-tax out", amount: pg.conversion, color: "#14705a" });
+  const visibleOrdSegs = ordSegs.filter((s) => s.amount !== 0);
+  const grossOrd = ordSegs.reduce((a, s) => a + s.amount, 0);
+  const deductions = pg.deductions;
+  const ordinaryTaxable = pg.ordinaryTaxableIncome;
+  const gainsTotal = pg.ltcgPriced;
+  const grossTotal = grossOrd + gainsTotal;
+  const top24 = tops[3] ?? 0;
+  // The taxable axis runs to the top of the highest bracket the
+  // ordinary stack reaches into — the smallest bracket top at or
+  // above the ordinary taxable income — so a fill into a higher
+  // bracket extends the axis by construction. Only when the
+  // ordinary stack passes the 24% top does the axis fall back to
+  // covering the full taxable income (gains included).
+  const axisTaxableMax = (() => {
+    const reached = tops.find(
+      (t) => t != null && pg.ordinaryTaxableIncome <= t,
+    );
+    return reached != null ? reached : Math.max(top24, pg.taxableIncome);
+  })();
+  const trackMax = Math.max(deductions + axisTaxableMax, grossTotal);
+  const pct = (trackVal: number) =>
+    trackMax > 0 ? Math.max(0, Math.min(100, (trackVal / trackMax) * 100)) : 0;
+  const taxX = (taxableVal: number) => pct(deductions + taxableVal);
+  const bands = [0, 1, 2, 3].map((i) => ({
+    rate: rates[i] ?? 0,
+    from: i === 0 ? 0 : (tops[i - 1] ?? 0),
+    to: tops[i] ?? 0,
+  }));
+  const markers = bands.map((b, i) => ({
+    ...b,
+    room: b.to - ordinaryTaxable,
+    // The marker's one colour (line, top label, legend text —
+    // both charts) and whether its top falls inside the axis:
+    // a marker beyond the axis cap draws no line (the ACA-line
+    // precedent), though its label stays, pinned at the chart's
+    // right edge.
+    color: STACK_MARKER_COLORS[i] ?? "var(--dim)",
+    inAxis: b.to <= axisTaxableMax,
+  }));
+  let cum = 0;
+  const ordPos: StackSegPos[] = visibleOrdSegs.map((s) => {
+    const start = cum;
+    cum += s.amount;
+    const left = Math.min(start, cum);
+    const widthPct = pct(Math.abs(s.amount));
+    return { ...s, leftPct: pct(left), widthPct, wide: widthPct >= 9 };
+  });
+  const gainsSegs: StackSeg[] = [];
+  if (gainsTotal > 0 && pg.stockGain >= 0) {
+    if (pg.qualifiedDividends > 0) {
+      gainsSegs.push({ key: "qualdiv", label: "Qualified dividends", short: "Qual div", amount: pg.qualifiedDividends, color: "#65a30d" });
+    }
+    if (pg.stockGain > 0) {
+      gainsSegs.push({ key: "ltgain", label: "Long-term gain", short: "LT gain", amount: pg.stockGain, color: "#ea580c" });
+    }
+  } else if (gainsTotal > 0) {
+    gainsSegs.push({ key: "ltgainnet", label: "Long-term gains (net)", short: "LT gains", amount: gainsTotal, color: "#ea580c" });
+  }
+  let gCum = grossOrd;
+  const gainsPos: StackSegPos[] = gainsSegs.map((s) => {
+    const start = gCum;
+    gCum += s.amount;
+    const widthPct = pct(Math.abs(s.amount));
+    return { ...s, leftPct: pct(Math.max(0, start)), widthPct, wide: widthPct >= 12 };
+  });
+  // The legend lists EVERY segment with its full name and
+  // amount, so no figure depends on an in-bar label fitting:
+  // in-bar labels are the short form and can truncate on narrow
+  // screens or under the deductions hatch without hiding any
+  // number.
+  const legendSegs = [...ordPos, ...gainsPos];
+  const zeroTop = law.ltcgZeroTop[fs];
+  const floor20 = law.ltcg20Floor[fs];
+  const show20 = gainsTotal > 0 && pg.taxableIncome >= floor20;
+  return {
+    bands,
+    markers,
+    ordPos,
+    gainsPos,
+    visibleOrdSegs,
+    gainsSegs,
+    legendSegs,
+    deductions,
+    ordinaryTaxable,
+    gainsTotal,
+    grossOrd,
+    axisTaxableMax,
+    zeroTop,
+    floor20,
+    show20,
+    pct,
+    taxX,
+    hatchStyle: STACK_HATCH_STYLE,
+  };
+}
+
+/* The play strip's sale-leftover segment — derived from the
+   sale and the year's total tax alone, using the
+   engine-composed sale-after-tax leftover itself. Returns
+   null when no sale is in play (and when nothing is priced),
+   so the strip then renders exactly as before. `warn` marks
+   the over-the-sale form for the strip's warn colour
+   treatment. `note` is the segment's own plain-terms
+   explanation for the strip's ⓘ tooltip, interpolating
+   the SAME displayed figures the form itself was composed
+   from (no new arithmetic). The total tax is the same sum
+   of displayed components the readout's sale-after-tax line
+   uses — round(federal) + round(state) — so the totals
+   agree exactly. */
+function pgSaleLeftoverSegment(
+  pg: PlaygroundYearResult | null,
+  sold: string,
+): { text: string; warn: boolean; note: string } | null {
+  if (pg == null) return null;
+  const proceeds = Math.round(Math.max(0, parseDollars(sold) ?? 0));
+  if (proceeds <= 0 || pg.saleAfterTax == null) return null;
+  const totalTax = Math.round(pg.federalTax) + Math.round(pg.stateTax);
+  const leftover = pg.saleAfterTax.leftover;
+  if (leftover >= 0) {
+    return {
+      text: `${fmtDollars(leftover)} left`,
+      warn: false,
+      note: `What's left of the sale after this year's total tax. The sale brought in ${fmtDollars(proceeds)} and the year's total tax is ${fmtDollars(totalTax)}, so ${fmtDollars(leftover)} of the sale stays.`,
+    };
+  }
+  return {
+    text: `Tax ${fmtDollars(-leftover)} over the sale`,
+    warn: true,
+    note: `This year's total tax is ${fmtDollars(totalTax)} — more than the sale brought in (${fmtDollars(proceeds)}), by ${fmtDollars(-leftover)}. That much of the tax has to come from somewhere else.`,
+  };
+}
+
+/* Held fill target — a bracket top (its rate pct) or the ACA
+   cliff chip's target. One union drives the whole Hold system:
+   tapping any fill chip records its target here, and the hold
+   effect re-solves for whichever target is recorded. */
+type PgHeldTarget = number | "aca";
+
+/* ACA-cliff fill solve for the Playground's ACA cliff chip —
+   presentation/client ONLY, exactly like the bracket-fill
+   chips: it reprices candidate pre-tax amounts through the
+   shared engine (pricePlaygroundYear — the same code the
+   readout prices and the fixtures pin) and never computes tax
+   itself. Returns the pre-tax money out (to the cent) that
+   lands the year's ACA MAGI exactly on the 400%-of-FPL cliff
+   the engine reports for the typed year + household size, or
+   null when the priced year has no hard cliff to aim at (the
+   ACA block does not apply — everyone on Medicare — no
+   household size typed, or a coverage year before 2026, whose
+   enhanced credit has no cliff by design: acaCreditFor's
+   hasCliff rule). The solve iterates against the engine
+   rather than subtracting displayed figures, so every MAGI
+   component the engine counts is in the answer — interest,
+   ordinary and qualified dividends, other ordinary income,
+   tax-exempt interest, the stock sale's gain, the year's RMD,
+   and Social Security at the amount the engine counts toward
+   ACA MAGI as the draw rises. ACA MAGI is non-decreasing in
+   the pre-tax amount, so a cent-level binary search over
+   engine pricings finds the largest amount whose ACA MAGI is
+   at or under the cliff — in the ordinary slope-1 case that
+   amount prices ACA MAGI exactly on the cliff. Honest edges,
+   mirroring solvePlaygroundBracketFill: other income alone
+   already past the cliff → $0 (nothing can pull it back); a
+   typed balance whose maximum drawable amount (balance −
+   RMD) cannot reach the cliff → that maximum. */
+function solvePlaygroundAcaCliffFill(
+  inp: PlaygroundYearInputs,
+): number | null {
+  if (inp.taxYear < 2026) return null;
+  const zero = pricePlaygroundYear({ ...inp, conversion: 0 });
+  const cliff = zero.aca.cliff;
+  if (!zero.aca.applies || cliff == null) return null;
+  const pastCliff = (conversion: number): boolean =>
+    pricePlaygroundYear({ ...inp, conversion }).acaMagi > cliff + 1e-9;
+  if (zero.acaMagi >= cliff - 1e-9) return 0;
+  // Cap: never set more than can actually come out of a typed
+  // balance (the RMD comes out first). If even the cap does
+  // not reach the cliff, the cap is the answer.
+  let capCents: number | null = null;
+  if (inp.pretaxBalance != null) {
+    capCents = Math.max(0, Math.round((inp.pretaxBalance - zero.rmd) * 100));
+    if (!pastCliff(capCents / 100)) return Math.round(capCents) / 100;
+  }
+  // Upper bound (cents) past the cliff: grow from the slope-1
+  // estimate until the engine says it crosses.
+  let hiCents = Math.max(
+    100,
+    Math.round((cliff - zero.acaMagi) * 100),
+  );
+  if (capCents != null) hiCents = Math.min(hiCents, capCents);
+  while (!pastCliff(hiCents / 100)) {
+    hiCents = hiCents * 2 + 100;
+    if (capCents != null && hiCents >= capCents) {
+      hiCents = capCents;
+      break;
+    }
+    if (hiCents > 1_000_000_000) break; // $10M — far past any cliff
+  }
+  // Binary search: the largest cent amount whose ACA MAGI is
+  // not past the cliff.
+  let loCents = 0;
+  let hi = hiCents;
+  while (loCents < hi) {
+    const mid = Math.floor((loCents + hi + 1) / 2);
+    if (!pastCliff(mid / 100)) {
+      loCents = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return Math.round(loCents) / 100;
+}
+
+/* The remembered Playground form state, in the exact shape
+   the UI-state store carries it (getRothUiState's playground
+   field) — the form's dials in their own typed-string units. */
+type PgSavedForm = ApiResponse<typeof api, "getRothUiState">["playground"];
+
+export function Playground() {
+  const rq = useQuery({ queryKey: ["rothplanner"], queryFn: () => api.getRothPlanner({}) });
+  // Remembered form state rides the Roth UI-state blob (its
+  // own query key, so this view's cache entry is independent
+  // of the Roth view's).
+  const pgUiQ = useQuery({
+    queryKey: ["playgroundui"],
+    queryFn: () => api.getRothUiState({}),
+  });
+  const pgQueryClient = useQueryClient();
+  /* Revision (CAS) tracking for this view's writes into the
+     shared UI-state blob: the revision the remembered form was
+     last read or successfully saved at. Saves pass it as
+     baseRevision (see savePgCas in the persistence block
+     below); a conflict means another writer saved first, and
+     the save re-merges against the server's current blob and
+     retries once at the fresh revision, so the most recent
+     edits are never silently dropped. Null until the first
+     read lands. */
+  const pgRevisionRef = useRef<number | null>(null);
+  // Keep this view's cached copy in step with every save, so
+  // leaving and returning within the session re-hydrates the
+  // latest form, never a stale one.
+  const cachePgForm = (pg: PgSavedForm, revision: number) => {
+    pgQueryClient.setQueryData<ApiResponse<typeof api, "getRothUiState">>(
+      ["playgroundui"],
+      (old) => (old ? { ...old, playground: pg, revision } : old),
+    );
+  };
+  const retq = useQuery({
+    queryKey: ["retirementcalc"],
+    queryFn: () => api.getRetirementCalc({}),
+  });
+  const pgPrefillSource = useMemo(
+    () => pgPrefillSourceFrom(rq.data, retq.data),
+    [rq.data, retq.data],
+  );
+  const pgPrefillBlockerName = useMemo(
+    () => pgPrefillBlocker(rq.data, retq.data),
+    [rq.data, retq.data],
+  );
+
+  /* Playground inputs — the form's own state. The dials persist
+     in the app's UI-state store (see the persistence block
+     below) so the form remembers them between sessions, but
+     nothing here is ever saved to the plan record or enters a
+     scenario: the playground prices ONE standalone year from
+     typed dials through the shared engine
+     (pricePlaygroundYear in rothOptimizer.ts) so a user can ask
+     "what if I convert $X and sell $Y of stock?" without
+     touching the plan. "Start from my numbers" prefills the
+     dials from the saved plan; "Reset playground" clears them
+     back to blanks/defaults and clears the remembered copy.
+     The Medicare checkboxes default to each person's age being
+     65+ (a null override = follow the age) until the user
+     toggles one. pgSoleBeneficiary is not a visible dial — it
+     is carried from the plan by the prefill (default on) and
+     only steers the RMD's Joint Life rule. */
+  const currentCalendarYear = new Date().getFullYear();
+  const [pgYear, setPgYear] = useState(String(currentCalendarYear));
+  const [pgFiling, setPgFiling] = useState<FilingStatus>("mfj");
+  const [pgAgeP, setPgAgeP] = useState("");
+  const [pgAgeS, setPgAgeS] = useState("");
+  const [pgMedP, setPgMedP] = useState<boolean | null>(null);
+  const [pgMedS, setPgMedS] = useState<boolean | null>(null);
+  const [pgInterest, setPgInterest] = useState("");
+  const [pgOrdDiv, setPgOrdDiv] = useState("");
+  const [pgOther, setPgOther] = useState("");
+  const [pgTaxExempt, setPgTaxExempt] = useState("");
+  const [pgSsP, setPgSsP] = useState("");
+  const [pgSsS, setPgSsS] = useState("");
+  const [pgConversion, setPgConversion] = useState("");
+  const [pgSold, setPgSold] = useState("");
+  const [pgBasis, setPgBasis] = useState("");
+  const [pgQualDiv, setPgQualDiv] = useState("");
+  const [pgPretax, setPgPretax] = useState("");
+  const [pgAcaSize, setPgAcaSize] = useState("");
+  const [pgBenchmark, setPgBenchmark] = useState("");
+  /* Benchmark source record — remembered with the rest of the
+     form, like every other playground dial: what the most
+     recent "Start from my numbers" prefill loaded into the
+     benchmark dial (which saved figure, and whether the couple
+     figure is standing in for a blank family figure). It
+     drives ONLY the source caption under the dial (see
+     pgBenchmarkCaption below): it never feeds pricing, the
+     fill chips, or the paste payload. Reset and a successful
+     paste-load clear it; a prefill that loads no figure leaves
+     it null, so no caption shows. */
+  type PgBenchmarkSource =
+    | { kind: "family"; value: number }
+    | { kind: "couple"; value: number }
+    | { kind: "couple-fallback"; value: number }
+    | { kind: "single"; value: number };
+  const [pgBenchmarkLoaded, setPgBenchmarkLoaded] =
+    useState<PgBenchmarkSource | null>(null);
+  const [pgStateRate, setPgStateRate] = useState("0");
+  const [pgSoleBeneficiary, setPgSoleBeneficiary] = useState(true);
+  /* Hold-the-fill state — remembered with the rest of the
+     form, like every other playground dial, so a held target
+     is still held (and still solving) when the form reopens.
+     pgHoldOn is the toggle;
+     pgHeldTarget is the target of the most recently tapped
+     fill chip — a bracket pct (10/12/22/24) or "aca" for the
+     ACA cliff chip (null until a chip is tapped this session).
+     While pgHoldOn && pgHeldTarget != null, any change to
+     another dial re-solves the conversion for that target (see
+     the hold effect below) so the year stays on the bracket top
+     or on the ACA cliff. Typing in the conversion dial releases
+     the hold (pgHoldOn off; the target is kept as the
+     last-tapped target, so toggling Hold back on resumes it);
+     switching Hold off also releases while keeping the target.
+     Reset / prefill / a successful paste-load clear BOTH. */
+  const [pgHoldOn, setPgHoldOn] = useState(false);
+  const [pgHeldTarget, setPgHeldTarget] = useState<PgHeldTarget | null>(null);
+  /* Fold state for the playground's five input sections —
+     remembered with the rest of the form, like every other
+     playground dial, so the form reopens with the same
+     sections open. Folding is visual only: the pricing below
+     reads the dial state above, so values typed in a folded
+     section keep pricing exactly as if the section were open. */
+  type PgSectionId = "year" | "income" | "conversion" | "stock" | "aca";
+  const PG_SECTIONS_OPEN: Record<PgSectionId, boolean> = {
+    year: true,
+    income: true,
+    conversion: true,
+    stock: true,
+    aca: true,
+  };
+  const [pgOpenSections, setPgOpenSections] =
+    useState<Record<PgSectionId, boolean>>(PG_SECTIONS_OPEN);
+  const togglePgSection = (id: PgSectionId) =>
+    setPgOpenSections((p) => ({ ...p, [id]: !p[id] }));
+  // One collapsible playground input section as its own card
+  // panel, reusing the app's card treatment verbatim — sectionCls,
+  // the same class the Roth view's sections (rothSection) and the
+  // other result panels use (rounded border, surface background,
+  // px-4 py-4 padding; its mt-4 is the consistent gap between
+  // cards). The heading sits at the top of the card with the
+  // title itself a real button carrying aria-expanded and the
+  // app's ▾/▸ disclosure glyph; folding hides the whole card
+  // body and the heading row stays visible inside the card,
+  // folded or open.
+  const pgSectionCard = (id: PgSectionId, title: string, children: ReactNode) => (
+    <section className={sectionCls} aria-label={title}>
+      <h3 className="text-base font-semibold">
+        <button
+          type="button"
+          aria-expanded={pgOpenSections[id]}
+          aria-label={`${title} section`}
+          className="flex w-full items-center justify-between gap-3 text-left"
+          onClick={() => togglePgSection(id)}
+        >
+          <span>{title}</span>
+          <span aria-hidden="true" className="shrink-0 text-[var(--dim)]">
+            {pgOpenSections[id] ? "▾" : "▸"}
+          </span>
+        </button>
+      </h3>
+      {pgOpenSections[id] && children}
+    </section>
+  );
+  /* Remembered form state — hydration + save. On load, a
+     stored form (the playground field of the Roth UI-state
+     blob) is applied to the dials once; from then on the form
+     saves itself as the user plays (debounced, no save
+     button). Hydration is one-shot (the pgInit guard), exactly
+     like the Strategy Lab dials: a later refetch never
+     overwrites dials being edited. Saves fire only AFTER
+     hydration, so a first open can never overwrite a stored
+     form with the fresh defaults — and if the state read
+     fails, the form simply behaves as the old scratch form
+     (nothing saves, no error surface). The plan record and
+     scenarios are never written by any of this: the only
+     writer is setRothUiState's playground field. */
+  const [pgInit, setPgInit] = useState(false);
+  // "Reset playground" confirmation — shown in place of the
+  // reset link while a reset is being confirmed (the app-wide
+  // reset rule: confirmation whenever a reset clears saved
+  // values, and the remembered copy is a saved value now).
+  const [pgConfirmReset, setPgConfirmReset] = useState(false);
+  const pgSavedJsonRef = useRef<string | null>(null);
+  const pgForceWholesaleRef = useRef(false);
+  // The form's JSON as of the latest render — lets an async
+  // save tell whether the user has typed past the snapshot it
+  // started from before applying a merged form back to the
+  // dials (never over newer typing).
+  const pgFormJsonRef = useRef("");
+  const applyPgSavedForm = (s: PgSavedForm) => {
+    setPgYear(s.year);
+    setPgFiling(s.filing);
+    setPgAgeP(s.agePrimary);
+    setPgAgeS(s.ageSpouse);
+    setPgMedP(s.medicarePrimary);
+    setPgMedS(s.medicareSpouse);
+    setPgInterest(s.interest);
+    setPgOrdDiv(s.ordinaryDividends);
+    setPgOther(s.otherOrdinary);
+    setPgTaxExempt(s.taxExemptInterest);
+    setPgSsP(s.ssPrimary);
+    setPgSsS(s.ssSpouse);
+    setPgConversion(s.conversion);
+    setPgSold(s.stockSold);
+    setPgBasis(s.stockBasis);
+    setPgQualDiv(s.qualifiedDividends);
+    setPgPretax(s.pretaxBalance);
+    setPgAcaSize(s.acaHouseholdSize);
+    setPgBenchmark(s.acaBenchmark);
+    setPgBenchmarkLoaded(s.benchmarkSource);
+    setPgStateRate(s.stateRate);
+    setPgSoleBeneficiary(s.soleBeneficiary);
+    setPgHoldOn(s.holdOn);
+    setPgHeldTarget(s.heldTarget);
+    setPgOpenSections(s.openSections);
+  };
+  useEffect(() => {
+    if (!pgUiQ.data || pgInit) return;
+    const s = pgUiQ.data.playground;
+    applyPgSavedForm(s);
+    pgSavedJsonRef.current = JSON.stringify(s);
+    pgRevisionRef.current = pgUiQ.data.revision;
+    setPgInit(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pgUiQ.data, pgInit]);
+  // Keep the tracked revision in step with refetches (the
+  // server invalidates this query after writes, ours included).
+  // A stale in-flight refetch can only move it backwards into a
+  // conflict on the next save, which the save's merge-and-retry
+  // resolves — never into a silent overwrite.
+  useEffect(() => {
+    if (pgUiQ.data) pgRevisionRef.current = pgUiQ.data.revision;
+  }, [pgUiQ.data]);
+  // The complete form as one snapshot, in the store's shape —
+  // rebuilt every render from the dial state above.
+  const pgFormSnapshot: PgSavedForm = {
+    year: pgYear,
+    filing: pgFiling,
+    agePrimary: pgAgeP,
+    ageSpouse: pgAgeS,
+    medicarePrimary: pgMedP,
+    medicareSpouse: pgMedS,
+    interest: pgInterest,
+    ordinaryDividends: pgOrdDiv,
+    otherOrdinary: pgOther,
+    taxExemptInterest: pgTaxExempt,
+    ssPrimary: pgSsP,
+    ssSpouse: pgSsS,
+    conversion: pgConversion,
+    stockSold: pgSold,
+    stockBasis: pgBasis,
+    qualifiedDividends: pgQualDiv,
+    pretaxBalance: pgPretax,
+    acaHouseholdSize: pgAcaSize,
+    acaBenchmark: pgBenchmark,
+    benchmarkSource: pgBenchmarkLoaded,
+    stateRate: pgStateRate,
+    soleBeneficiary: pgSoleBeneficiary,
+    holdOn: pgHoldOn,
+    heldTarget: pgHeldTarget,
+    openSections: pgOpenSections,
+  };
+  const pgFormJson = JSON.stringify(pgFormSnapshot);
+  pgFormJsonRef.current = pgFormJson;
+  /* The three-way per-field merge the save below (and its
+     conflict retry) runs: for each field, the side that moved
+     away from the last-synced value wins — the local form for
+     fields the user just edited here, the stored form for
+     fields another writer changed. */
+  const mergePgForms = (
+    local: PgSavedForm,
+    stored: PgSavedForm,
+    lastSynced: PgSavedForm,
+  ): PgSavedForm => {
+    const localRecord = local as unknown as Record<string, unknown>;
+    const storedRecord = stored as unknown as Record<string, unknown>;
+    const lastRecord = lastSynced as unknown as Record<string, unknown>;
+    const mergedRecord: Record<string, unknown> = {};
+    const keys = new Set<string>([
+      ...Object.keys(localRecord),
+      ...Object.keys(storedRecord),
+      ...Object.keys(lastRecord),
+    ]);
+    for (const key of keys) {
+      const localVal = localRecord[key];
+      const storedVal = storedRecord[key];
+      const lastVal = lastRecord[key];
+      mergedRecord[key] =
+        JSON.stringify(localVal) !== JSON.stringify(lastVal) ? localVal : storedVal;
+    }
+    return mergedRecord as unknown as PgSavedForm;
+  };
+  /* One revision-checked (CAS) save of the remembered form,
+     with a single conflict retry. `snapshot` is the form to
+     store; `baseRevision` is the revision that snapshot was
+     derived from; `startedJson` is the form JSON the save
+     began from — a conflict-merged form is applied back to
+     the dials only while the form still shows exactly that
+     JSON, never over newer typing. On success the tracked
+     revision and last-synced JSON move to the saved snapshot.
+     On conflict (another writer's save landed first), the
+     three-way merge runs again with the server's current form
+     as the stored side and the merged form retries at the
+     server's revision — the user's own changed fields win, so
+     the most recent edits are never silently dropped. With
+     `wholesale` (Reset, paste, prefill — deliberate whole-form
+     replacements) the retry stores the snapshot itself. Any
+     failure leaves the tracked state untouched; the next edit
+     re-saves. Nothing here surfaces an error, exactly as
+     before: this is remembered form state, not plan data.
+     The write is ALWAYS revision-checked — it never reaches
+     setRothUiState without a baseRevision. When the tracked
+     revision is still null (the first state read failed, or
+     a save somehow fires before it lands), the current state
+     is fetched first and its revision adopted: on the
+     non-wholesale path the fetched form feeds the same
+     fresh-read/merge flow the debounced save runs, so another
+     writer's newer fields survive; on the wholesale path the
+     snapshot replaces the form whole, checked at the fetched
+     revision. If that fetch fails the write is skipped
+     entirely; the next edit re-saves. */
+  const savePgCas = async (
+    snapshot: PgSavedForm,
+    baseRevision: number | null,
+    startedJson: string,
+    wholesale = false,
+  ): Promise<void> => {
+    let formToSave = snapshot;
+    let base = baseRevision;
+    if (base == null) {
+      let fresh: ApiResponse<typeof api, "getRothUiState">;
+      try {
+        fresh = await api.getRothUiState({});
+      } catch {
+        return;
+      }
+      base = fresh.revision;
+      pgRevisionRef.current = fresh.revision;
+      if (!wholesale) {
+        const storedJson = JSON.stringify(fresh.playground);
+        if (storedJson !== pgSavedJsonRef.current) {
+          let lastSyncedSnapshot: PgSavedForm | null = null;
+          try {
+            lastSyncedSnapshot = pgSavedJsonRef.current
+              ? (JSON.parse(pgSavedJsonRef.current) as PgSavedForm)
+              : null;
+          } catch {
+            lastSyncedSnapshot = null;
+          }
+          if (lastSyncedSnapshot) {
+            const mergedSnapshot = mergePgForms(
+              snapshot,
+              fresh.playground,
+              lastSyncedSnapshot,
+            );
+            formToSave = mergedSnapshot;
+            if (
+              JSON.stringify(mergedSnapshot) !== startedJson &&
+              pgFormJsonRef.current === startedJson
+            ) {
+              applyPgSavedForm(mergedSnapshot);
+            }
+          }
+        }
+      }
+    }
+    let res: ApiResponse<typeof api, "setRothUiState">;
+    try {
+      res = await api.setRothUiState({
+        playground: formToSave,
+        baseRevision: base,
+      });
+    } catch {
+      return;
+    }
+    if (res.ok) {
+      pgRevisionRef.current = res.revision;
+      pgSavedJsonRef.current = JSON.stringify(formToSave);
+      cachePgForm(formToSave, res.revision);
+      return;
+    }
+    let lastSyncedSnapshot: PgSavedForm | null = null;
+    try {
+      lastSyncedSnapshot = pgSavedJsonRef.current
+        ? (JSON.parse(pgSavedJsonRef.current) as PgSavedForm)
+        : null;
+    } catch {
+      lastSyncedSnapshot = null;
+    }
+    const merged =
+      wholesale || !lastSyncedSnapshot
+        ? formToSave
+        : mergePgForms(formToSave, res.state.playground, lastSyncedSnapshot);
+    let retry: ApiResponse<typeof api, "setRothUiState">;
+    try {
+      retry = await api.setRothUiState({
+        playground: merged,
+        baseRevision: res.revision,
+      });
+    } catch {
+      return;
+    }
+    if (!retry.ok) return;
+    pgRevisionRef.current = retry.revision;
+    pgSavedJsonRef.current = JSON.stringify(merged);
+    cachePgForm(merged, retry.revision);
+    if (
+      JSON.stringify(merged) !== startedJson &&
+      pgFormJsonRef.current === startedJson
+    ) {
+      applyPgSavedForm(merged);
+    }
+  };
+  useEffect(() => {
+    if (!pgInit) return;
+    if (pgFormJson === pgSavedJsonRef.current) {
+      pgForceWholesaleRef.current = false;
+      return;
+    }
+    const localJson = pgFormJson;
+    const localSnapshot = JSON.parse(localJson) as PgSavedForm;
+    const t = setTimeout(async () => {
+      if (pgForceWholesaleRef.current) {
+        pgForceWholesaleRef.current = false;
+        await savePgCas(localSnapshot, pgRevisionRef.current, localJson, true);
+        return;
+      }
+      const lastSyncedJson = pgSavedJsonRef.current;
+      let storedSnapshot: PgSavedForm;
+      let storedJson: string;
+      let storedRevision: number;
+      try {
+        const fresh = await api.getRothUiState({});
+        storedSnapshot = fresh.playground;
+        storedJson = JSON.stringify(storedSnapshot);
+        storedRevision = fresh.revision;
+      } catch {
+        await savePgCas(localSnapshot, pgRevisionRef.current, localJson);
+        return;
+      }
+      pgRevisionRef.current = storedRevision;
+      if (storedJson === lastSyncedJson) {
+        await savePgCas(localSnapshot, storedRevision, localJson);
+        return;
+      }
+      let lastSyncedSnapshot: PgSavedForm | null = null;
+      try {
+        lastSyncedSnapshot = lastSyncedJson
+          ? (JSON.parse(lastSyncedJson) as PgSavedForm)
+          : null;
+      } catch {
+        lastSyncedSnapshot = null;
+      }
+      if (!lastSyncedSnapshot) {
+        await savePgCas(localSnapshot, storedRevision, localJson);
+        return;
+      }
+      const mergedSnapshot = mergePgForms(
+        localSnapshot,
+        storedSnapshot,
+        lastSyncedSnapshot,
+      );
+      const mergedJson = JSON.stringify(mergedSnapshot);
+      await savePgCas(mergedSnapshot, storedRevision, localJson);
+      if (mergedJson !== localJson && pgFormJsonRef.current === localJson) {
+        applyPgSavedForm(mergedSnapshot);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pgInit, pgFormJson]);
+  /* Playground paste loader — the paste box itself is NOT
+     remembered: the box, its error line, and its loaded note
+     are never persisted, never reach an action, and a reload
+     clears them. The dials a successful paste sets ARE
+     remembered, exactly like typed values (they persist
+     through the save above). Pasting is equivalent to typing:
+     the pasted payload (the canonical object the
+     runPlaygroundYear action emits) is validated WHOLE by
+     parsePlaygroundPaste — the shared validator in
+     rothOptimizer.ts — before any dial is touched, so a
+     malformed paste changes nothing, the remembered copy
+     included, and shows one plain error line. On success every
+     dial is set from the payload as ordinary form state. */
+  const [pgPasteText, setPgPasteText] = useState("");
+  const [pgPasteError, setPgPasteError] = useState<string | null>(null);
+  const [pgPasteLoaded, setPgPasteLoaded] = useState(false);
+  const applyPgPaste = () => {
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(pgPasteText);
+    } catch {
+      setPgPasteError("That paste is not valid JSON — nothing was loaded.");
+      setPgPasteLoaded(false);
+      return;
+    }
+    const res = parsePlaygroundPaste(parsedJson);
+    if (!res.ok) {
+      setPgPasteError(res.error);
+      setPgPasteLoaded(false);
+      return;
+    }
+    const inp = res.inputs;
+    pgForceWholesaleRef.current = true;
+    const moneyOrBlank = (n: number | null) =>
+      n == null ? "" : fmtMoneyInput(n);
+    setPgOpenSections(PG_SECTIONS_OPEN);
+    setPgYear(String(inp.taxYear));
+    setPgFiling(inp.filingStatus);
+    setPgAgeP(String(inp.agePrimary));
+    setPgAgeS(inp.ageSpouse != null ? String(inp.ageSpouse) : "");
+    setPgMedP(inp.onMedicarePrimary);
+    setPgMedS(inp.onMedicareSpouse);
+    setPgInterest(fmtMoneyInput(inp.interest));
+    setPgOrdDiv(fmtMoneyInput(inp.ordinaryDividends));
+    setPgOther(fmtMoneyInput(inp.otherOrdinary));
+    setPgTaxExempt(fmtMoneyInput(inp.taxExemptInterest));
+    setPgSsP(fmtMoneyInput(inp.ssPrimary));
+    setPgSsS(fmtMoneyInput(inp.ssSpouse));
+    setPgConversion(fmtMoneyInput(inp.conversion));
+    setPgSold(fmtMoneyInput(inp.stockSold));
+    setPgBasis(fmtMoneyInput(inp.stockBasis));
+    setPgQualDiv(fmtMoneyInput(inp.qualifiedDividends));
+    setPgPretax(moneyOrBlank(inp.pretaxBalance));
+    setPgAcaSize(inp.acaHouseholdSize != null ? String(inp.acaHouseholdSize) : "");
+    setPgBenchmark(moneyOrBlank(inp.acaBenchmarkAnnual));
+    // A paste-load is the user's own typed value, not a plan
+    // prefill — clear the benchmark source record (no caption).
+    setPgBenchmarkLoaded(null);
+    setPgStateRate(String(inp.stateRatePct));
+    setPgSoleBeneficiary(inp.spouseSoleBeneficiary);
+    // A successful paste-load releases the hold.
+    setPgHoldOn(false);
+    setPgHeldTarget(null);
+    setPgPasteError(null);
+    setPgPasteLoaded(true);
+  };
+
+  const resetPlayground = () => {
+    setPgConfirmReset(false);
+    setPgPasteText("");
+    setPgPasteError(null);
+    setPgPasteLoaded(false);
+    setPgYear(String(new Date().getFullYear()));
+    setPgFiling("mfj");
+    setPgAgeP("");
+    setPgAgeS("");
+    setPgMedP(null);
+    setPgMedS(null);
+    setPgInterest("");
+    setPgOrdDiv("");
+    setPgOther("");
+    setPgTaxExempt("");
+    setPgSsP("");
+    setPgSsS("");
+    setPgConversion("");
+    setPgSold("");
+    setPgBasis("");
+    setPgQualDiv("");
+    setPgPretax("");
+    setPgAcaSize("");
+    setPgBenchmark("");
+    setPgBenchmarkLoaded(null);
+    setPgStateRate("0");
+    setPgSoleBeneficiary(true);
+    // Reset releases the hold.
+    setPgHoldOn(false);
+    setPgHeldTarget(null);
+    setPgOpenSections(PG_SECTIONS_OPEN);
+    // Reset also clears the REMEMBERED copy, immediately (not
+    // just via the debounced save), so a reload straight after
+    // confirming still opens on the blank form. The fresh
+    // snapshot mirrors the dial resets above field for field.
+    const fresh: PgSavedForm = {
+      year: String(new Date().getFullYear()),
+      filing: "mfj",
+      agePrimary: "",
+      ageSpouse: "",
+      medicarePrimary: null,
+      medicareSpouse: null,
+      interest: "",
+      ordinaryDividends: "",
+      otherOrdinary: "",
+      taxExemptInterest: "",
+      ssPrimary: "",
+      ssSpouse: "",
+      conversion: "",
+      stockSold: "",
+      stockBasis: "",
+      qualifiedDividends: "",
+      pretaxBalance: "",
+      acaHouseholdSize: "",
+      acaBenchmark: "",
+      benchmarkSource: null,
+      stateRate: "0",
+      soleBeneficiary: true,
+      holdOn: false,
+      heldTarget: null,
+      openSections: PG_SECTIONS_OPEN,
+    };
+    pgForceWholesaleRef.current = false;
+    pgSavedJsonRef.current = JSON.stringify(fresh);
+    void savePgCas(fresh, pgRevisionRef.current, JSON.stringify(fresh), true);
+  };
+
+  // Playground result: the form's dials priced live through
+  // the shared engine (pricePlaygroundYear in rothOptimizer.ts —
+  // the same code the accuracy fixtures pin). No tax math lives
+  // here: the client only parses the typed fields and renders
+  // what the engine returns. Null until an age for the primary
+  // is entered (the engine needs an age for the 65+ deduction
+  // add-ons and the RMD clock).
+  const pgAgePNum = parseIntField(pgAgeP);
+  const pgAgeSNum = parseIntField(pgAgeS);
+  const pgMedPEffective = pgMedP ?? (pgAgePNum != null && pgAgePNum >= 65);
+  const pgMedSEffective = pgMedS ?? (pgAgeSNum != null && pgAgeSNum >= 65);
+  // The one construction of the playground's engine inputs from
+  // the typed dials — the readout's pricing and the bracket-fill
+  // chips' solve both build from it, so they can never disagree
+  // about what "everything else typed" means.
+  const buildPgInputs = (conversion: number): PlaygroundYearInputs => {
+    // Negative dial values clamp to 0 at this one construction,
+    // so a typo'd minus can never price invisibly (a negative
+    // state rate, for instance, used to price a negative state
+    // tax while its row stayed hidden). The ONE exception is
+    // "Other ordinary income", which keeps its sign — it can be
+    // a genuine loss. A typed ACA household size of 0 or less
+    // reads as blank (no ACA pricing), like an empty size dial.
+    const clamp0 = (n: number) => Math.max(0, n);
+    const money0 = (s: string) => clamp0(parseDollars(s) ?? 0);
+    const money0OrNull = (s: string) => {
+      const n = parseDollars(s);
+      return n == null ? null : clamp0(n);
+    };
+    const acaSize = parseIntField(pgAcaSize);
+    return {
+      taxYear: parseIntField(pgYear) ?? new Date().getFullYear(),
+      filingStatus: pgFiling,
+      agePrimary: pgAgePNum ?? 0,
+      ageSpouse: pgFiling === "mfj" ? pgAgeSNum : null,
+      onMedicarePrimary: pgMedPEffective,
+      onMedicareSpouse: pgFiling === "mfj" ? pgMedSEffective : false,
+      interest: money0(pgInterest),
+      ordinaryDividends: money0(pgOrdDiv),
+      otherOrdinary: parseDollars(pgOther) ?? 0,
+      taxExemptInterest: money0(pgTaxExempt),
+      ssPrimary: money0(pgSsP),
+      ssSpouse: pgFiling === "mfj" ? money0(pgSsS) : 0,
+      conversion: clamp0(conversion),
+      stockSold: money0(pgSold),
+      stockBasis: money0(pgBasis),
+      qualifiedDividends: money0(pgQualDiv),
+      pretaxBalance: money0OrNull(pgPretax),
+      spouseSoleBeneficiary: pgSoleBeneficiary,
+      acaHouseholdSize: acaSize != null && acaSize > 0 ? acaSize : null,
+      acaBenchmarkAnnual: money0OrNull(pgBenchmark),
+      stateRatePct: clamp0(parseNum(pgStateRate) ?? 0),
+    };
+  };
+  const playgroundResult: PlaygroundYearResult | null = useMemo(() => {
+    if (pgAgePNum == null || pgAgePNum <= 0) return null;
+    return pricePlaygroundYear(buildPgInputs(parseDollars(pgConversion) ?? 0));
+    // buildPgInputs is rebuilt every render from the same dial
+    // state listed below; the memo keys on that state directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
+    pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgConversion,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
+    pgBenchmark, pgStateRate,
+  ]);
+
+  // Zero-conversion pricing of the same dials — the hold
+  // captions read their overage from it (display arithmetic
+  // only, through the same pricePlaygroundYear the readout
+  // uses). Null until an age is entered, like the readout.
+  const pgZeroResult: PlaygroundYearResult | null = useMemo(() => {
+    if (pgAgePNum == null || pgAgePNum <= 0) return null;
+    return pricePlaygroundYear(buildPgInputs(0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
+    pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
+    pgBenchmark, pgStateRate,
+  ]);
+
+  // Bracket-fill chips: set the conversion dial to the exact
+  // amount that fills the named bracket, solved through the
+  // shared engine (solvePlaygroundBracketFill) against every
+  // other dial as currently typed — income first, the RMD
+  // first, §86 feedback included; gains don't shrink it. The
+  // chips set the dial only — the dial then persists like any
+  // typed value — and typing over the dial afterwards works as
+  // before.
+  // Tapping a chip ALSO records it as the held target — the
+  // most recently tapped top — whether or not Hold is on, so
+  // switching Hold on afterwards holds that top.
+  const applyPgBracketFill = (bracketTopPct: number) => {
+    if (pgAgePNum == null || pgAgePNum <= 0) return;
+    setPgHeldTarget(bracketTopPct);
+    const fill = solvePlaygroundBracketFill(buildPgInputs(0), bracketTopPct);
+    setPgConversion(fmtMoneyInput(fill));
+  };
+
+  // ACA cliff chip: the same quick-set pattern aimed at the
+  // ACA cliff instead of a bracket top — set the conversion
+  // dial to the exact amount that lands the year's ACA MAGI on
+  // the 400%-of-FPL cliff, solved through the shared engine
+  // (solvePlaygroundAcaCliffFill) against every other dial as
+  // currently typed, the stock sale's gain included. Tapping
+  // it ALSO records "aca" as the held target, exactly like a
+  // bracket chip, so Hold re-solves to the cliff. When the
+  // priced year has no hard cliff the chip is disabled (see
+  // pgAcaCliffNote below) and this never runs; the null guard
+  // is the backstop.
+  const applyPgAcaCliffFill = () => {
+    if (pgAgePNum == null || pgAgePNum <= 0) return;
+    const fill = solvePlaygroundAcaCliffFill(buildPgInputs(0));
+    if (fill == null) return;
+    setPgHeldTarget("aca");
+    setPgConversion(fmtMoneyInput(fill));
+  };
+
+  /* Hold-the-fill effect: while Hold is on and a target is
+     set, ANY change to any other dial (every input that feeds
+     buildPgInputs except the conversion itself) re-solves the
+     conversion for the held target and updates the conversion
+     dial, so the year stays on that bracket top — or, for the
+     ACA cliff target, ACA MAGI stays on the cliff — and the
+     stacking chart below re-renders from the same priced
+     result, so the conversion segment's end stays glued to the
+     held line. The solve is
+     idempotent: solving an already-solved state returns the
+     same value, and the effect only writes state when the
+     solved value differs (by more than half a cent) from the
+     dial's current value, so it cannot loop. Typing in the
+     conversion dial releases the hold first (its onEdit), so
+     this effect never fights a manual entry. */
+  useEffect(() => {
+    if (!pgHoldOn || pgHeldTarget == null) return;
+    if (pgAgePNum == null || pgAgePNum <= 0) return;
+    // The held target picks the solver: a bracket pct re-solves
+    // to that bracket top; "aca" re-solves to the ACA cliff (a
+    // null cliff solve — the year no longer has a hard cliff —
+    // leaves the dial exactly as it stands).
+    let fill: number | null;
+    if (pgHeldTarget === "aca") {
+      fill = solvePlaygroundAcaCliffFill(buildPgInputs(0));
+    } else {
+      fill = solvePlaygroundBracketFill(buildPgInputs(0), pgHeldTarget);
+    }
+    if (fill == null) return;
+    const current = parseDollars(pgConversion) ?? 0;
+    if (Math.abs(current - fill) > 0.005) {
+      setPgConversion(fmtMoneyInput(fill));
+    }
+    // buildPgInputs is rebuilt every render from the dial state
+    // listed below; pgConversion is read for the idempotence
+    // guard but deliberately NOT a trigger — a solver write
+    // must not re-trigger the solve (the guard would stop it,
+    // but there is nothing new to solve).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    pgHoldOn, pgHeldTarget,
+    pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
+    pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
+    pgBenchmark, pgStateRate,
+  ]);
+
+  // "Start from my numbers": prefill the dials from the
+  // saved plan (the working plan inputs, which already carry the
+  // Net Worth-resolved balances). Ages derive from the plan's
+  // birth years for the playground's chosen tax year; Social
+  // Security is the plan's amount when the chosen year reaches
+  // that person's claim age, else $0; the ACA size follows the
+  // plan's step-down year; the benchmark keys on who is on the
+  // marketplace that year (see the pick below). Starting here
+  // never writes the plan, and editing the dials never writes
+  // back — the prefilled dials simply become the remembered
+  // form state, like typed values.
+  const prefillPlayground = () => {
+    if (!pgPrefillSource) return;
+    pgForceWholesaleRef.current = true;
+    // Prefilling releases the hold.
+    setPgHoldOn(false);
+    setPgHeldTarget(null);
+    // Unfold all five sections so the user sees everything it set.
+    setPgOpenSections(PG_SECTIONS_OPEN);
+    const taxYear = parseIntField(pgYear) ?? new Date().getFullYear();
+    const ageP = taxYear - pgPrefillSource.birthYearPrimary;
+    const ageS =
+      pgPrefillSource.birthYearSpouse != null ? taxYear - pgPrefillSource.birthYearSpouse : null;
+    setPgFiling(pgPrefillSource.filingStatus);
+    setPgAgeP(String(ageP));
+    setPgAgeS(ageS != null ? String(ageS) : "");
+    setPgMedP(null);
+    setPgMedS(null);
+    setPgSsP(
+      pgPrefillSource.ssPrimaryStartAge != null && ageP >= pgPrefillSource.ssPrimaryStartAge
+        ? fmtMoneyInput(pgPrefillSource.ssPrimaryNoBenefit ? 0 : pgPrefillSource.ssPrimaryAnnual)
+        : "0",
+    );
+    setPgSsS(
+      ageS != null &&
+        pgPrefillSource.ssSpouseStartAge != null &&
+        ageS >= pgPrefillSource.ssSpouseStartAge
+        ? fmtMoneyInput(pgPrefillSource.ssSpouseNoBenefit ? 0 : pgPrefillSource.ssSpouseAnnual)
+        : "0",
+    );
+    const size =
+      pgPrefillSource.acaStepDownYear != null && taxYear >= pgPrefillSource.acaStepDownYear
+        ? pgPrefillSource.acaHouseholdSizeAfter
+        : pgPrefillSource.acaHouseholdSize;
+    setPgAcaSize(String(size));
+    // Benchmark pick keys on who is on the marketplace in the
+    // chosen year (by the ages just derived), mirroring the
+    // plan engine: both spouses under 65 → the family figure
+    // at household 3+ (couple figure when no family figure is
+    // entered), the couple figure at household 2; only ONE
+    // spouse under 65 → the one-spouse figure, whatever the
+    // household size. When neither is under 65 no marketplace
+    // year is in view and the household-size pick stands. The
+    // pick also records WHICH figure it loaded (the fallback
+    // case distinctly) in pgBenchmarkLoaded, so the caption
+    // under the dial can name the actual source; the record
+    // is display-only and changes nothing priced.
+    const primaryOnMarket = ageP < 65;
+    const spouseOnMarket = ageS != null && ageS < 65;
+    const benchPick: PgBenchmarkSource | null =
+      primaryOnMarket !== spouseOnMarket
+        ? pgPrefillSource.acaBenchmarkSingle != null
+          ? { kind: "single", value: pgPrefillSource.acaBenchmarkSingle }
+          : null
+        : size >= 3
+          ? pgPrefillSource.acaBenchmarkFamily != null
+            ? { kind: "family", value: pgPrefillSource.acaBenchmarkFamily }
+            : pgPrefillSource.acaBenchmarkCouple != null
+              ? {
+                  kind: "couple-fallback",
+                  value: pgPrefillSource.acaBenchmarkCouple,
+                }
+              : null
+          : size === 2
+            ? pgPrefillSource.acaBenchmarkCouple != null
+              ? { kind: "couple", value: pgPrefillSource.acaBenchmarkCouple }
+              : null
+            : pgPrefillSource.acaBenchmarkSingle != null
+              ? { kind: "single", value: pgPrefillSource.acaBenchmarkSingle }
+              : null;
+    setPgBenchmark(benchPick != null ? fmtMoneyInput(benchPick.value) : "");
+    setPgBenchmarkLoaded(benchPick);
+    const pretaxTotal = pgPrefillSource.pretaxStart + (pgPrefillSource.pretaxSpouseStart ?? 0);
+    setPgPretax(pretaxTotal > 0 ? fmtMoneyInput(pretaxTotal) : "");
+    setPgStateRate(String(pgPrefillSource.stateRatePct));
+    setPgSoleBeneficiary(pgPrefillSource.spouseSoleBeneficiary);
+  };
+
+  /* Hold captions — display arithmetic ONLY, from the priced
+     results above (the current-conversion readout and the
+     zero-conversion pricing), never a second calculator. The
+     can't-hold captions render only while Hold is on with a
+     target set, under the fill chips row, and they are mutually
+     exclusive: past-the-target requires the zero-conversion
+     pricing to already exceed the target (ordinary taxable
+     income past the bracket top, or ACA MAGI past the cliff),
+     while balance-capped requires it to be under the target
+     with the held conversion sitting exactly at the balance
+     cap (balance − RMD) — its shortfall measured to the same
+     target (bracket top, or cliff − priced ACA MAGI). A typed
+     $0 balance with income under the target lands in the capped
+     case (cap $0); with no balance typed, a $0 fill from
+     income alone is the past-the-target case. */
+  const pgHoldActive = pgHoldOn && pgHeldTarget != null;
+  /* ACA cliff availability — the SAME applicability rule the
+     chip, its disabled note, the can't-hold captions, and the
+     stacking chart's cliff line all follow: the priced year's
+     ACA block applies with a cliff figure AND the coverage
+     year carries a hard cliff (2026+; the 2025 enhanced credit
+     has none, by the engine's hasCliff rule). Read off the
+     priced result, never a second calculation. */
+  const pgTaxYearNum = parseIntField(pgYear) ?? new Date().getFullYear();
+  const pgAcaHasHardCliff =
+    pgTaxYearNum >= 2026 &&
+    playgroundResult != null &&
+    playgroundResult.aca.applies &&
+    playgroundResult.aca.cliff != null;
+  const pgHeldCliffDollars: number | null =
+    pgHeldTarget === "aca"
+      ? (pgZeroResult?.aca.cliff ?? playgroundResult?.aca.cliff ?? null)
+      : null;
+  /* Why the ACA cliff chip cannot be used right now — shown
+     under the fill chips whenever an age is entered (so a year
+     is priced) but the priced year has no hard cliff. Null
+     whenever the chip is live. */
+  const pgAcaCliffNote: string | null = (() => {
+    if (playgroundResult == null || pgAcaHasHardCliff) return null;
+    if (pgTaxYearNum < 2026) {
+      return `No ACA cliff in ${pgTaxYearNum} — the enhanced credit has no cliff.`;
+    }
+    if (playgroundResult.aca.everyoneOnMedicare || !playgroundResult.aca.applies) {
+      return "No ACA cliff — everyone in the household is on Medicare.";
+    }
+    return "Enter an ACA household size in ACA & state below to use the ACA cliff fill.";
+  })();
+  const pgHeldTopDollars: number | null = (() => {
+    if (pgHeldTarget == null || pgHeldTarget === "aca") return null;
+    const law = lawForYear(parseIntField(pgYear) ?? new Date().getFullYear());
+    const idx = law.rates.indexOf(pgHeldTarget);
+    if (idx < 0) return null;
+    const top = law.brackets[pgFiling][idx];
+    return top != null && Number.isFinite(top) ? top : null;
+  })();
+  const pgHoldCantCaption: string | null = (() => {
+    if (!pgHoldActive || pgHeldTarget == null) return null;
+    if (playgroundResult == null || pgZeroResult == null) return null;
+    if (pgHeldTarget === "aca") {
+      // The cliff can't-hold captions mirror the bracket ones:
+      // the overage comes from the zero-pre-tax pricing, and
+      // the cap is the typed balance after the RMD, as today.
+      if (!pgAcaHasHardCliff) return null;
+      const cliff = pgZeroResult.aca.cliff;
+      if (cliff == null) return null;
+      const zeroAca = pgZeroResult.acaMagi;
+      if (zeroAca > cliff + 0.005) {
+        return `Already past the ACA cliff without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - cliff)} over the ACA cliff.`;
+      }
+      const balRaw = parseDollars(pgPretax);
+      if (balRaw != null) {
+        const bal = Math.max(0, balRaw);
+        const cap = Math.max(0, bal - playgroundResult.rmd);
+        const conv = parseDollars(pgConversion) ?? 0;
+        const short = cliff - playgroundResult.acaMagi;
+        if (Math.abs(conv - cap) <= 0.01 && short > 0.5) {
+          return `Pre-tax balance caps the fill at ${fmtDollars(cap)} — ${fmtDollars(short)} short of the ACA cliff.`;
+        }
+      }
+      return null;
+    }
+    if (pgHeldTopDollars == null) return null;
+    const top = pgHeldTopDollars;
+    const zeroOrd = pgZeroResult.ordinaryTaxableIncome;
+    if (zeroOrd > top + 0.005) {
+      return `Already past the ${pgHeldTarget}% top without any pre-tax money out — held at $0, still ${fmtDollars(zeroOrd - top)} over.`;
+    }
+    const balRaw = parseDollars(pgPretax);
+    if (balRaw != null) {
+      const bal = Math.max(0, balRaw);
+      const cap = Math.max(0, bal - playgroundResult.rmd);
+      const conv = parseDollars(pgConversion) ?? 0;
+      const short = top - playgroundResult.ordinaryTaxableIncome;
+      if (Math.abs(conv - cap) <= 0.01 && short > 0.5) {
+        return `Pre-tax balance caps the fill at ${fmtDollars(cap)} — ${fmtDollars(short)} short of the ${pgHeldTarget}% top.`;
+      }
+    }
+    return null;
+  })();
+  /* The held-at-the-cliff readout: while the ACA cliff target
+     is held (and no can't-hold caption applies — the render
+     shows this only when pgHoldCantCaption is null), the
+     caption names the target it is holding, in the same place
+     and style as the can't-hold captions. */
+  const pgHoldCliffCaption: string | null = (() => {
+    if (!pgHoldActive || pgHeldTarget !== "aca") return null;
+    if (!pgAcaHasHardCliff || pgHeldCliffDollars == null) return null;
+    return `Holding at the ACA cliff — ${fmtDollars(pgHeldCliffDollars)}`;
+  })();
+
+  /* Benchmark source caption — display ONLY, rendered under
+     the ACA benchmark dial in the ACA & state section. While
+     the dial still holds exactly the figure the prefill loaded
+     (pgBenchmarkLoaded), the caption names that plan source —
+     the fallback case (couple figure standing in for a blank
+     family figure) distinctly. The moment the typed value
+     differs from the loaded figure the caption stops claiming
+     a plan source and marks the value as the user's own typed
+     value; editing back to exactly the loaded figure restores
+     the source caption. With no prefill on record there is no
+     caption at all. The caption reads only the dial text and
+     the recorded pick — it never alters pricing, the dial's
+     behaviour, the fill chips, or the paste payload. */
+  const PG_BENCH_SOURCE_CAPTIONS: Record<PgBenchmarkSource["kind"], string> = {
+    family: "From your plan: family benchmark",
+    couple: "From your plan: couple benchmark",
+    "couple-fallback": "From your plan: couple benchmark (family not set)",
+    single: "From your plan: one-spouse benchmark",
+  };
+  const pgBenchmarkCaption: string | null = (() => {
+    if (pgBenchmarkLoaded == null) return null;
+    const current = parseDollars(pgBenchmark);
+    /* A blank dial holds no value at all, so it gets no
+       caption — "Your typed value" is only true when a
+       non-null typed value is actually present. */
+    if (current == null) return null;
+    if (Math.abs(current - pgBenchmarkLoaded.value) < 0.005) {
+      return PG_BENCH_SOURCE_CAPTIONS[pgBenchmarkLoaded.kind];
+    }
+    return "Your typed value";
+  })();
+
+  return (
+    <div>
+        <section className={sectionCls} aria-label="Playground">
+          {/* Sticky play strip — a pure render over the SAME
+              priced result (`playgroundResult`) the readout below
+              renders: no new state, no storage, no actions, and
+              no pricing of its own. It pins at the top of the
+              Playground tab while the tab scrolls so the live
+              figures stay in view next to the dials. The app has
+              no sticky/fixed header of its own (the view switch
+              above scrolls away; the only fixed element is the
+              pointer-events-none safe-area scrim), so the strip
+              pins at the window's top, offset only by the
+              device's safe-area inset top — 0 on desktop. The
+              mini bar renders buildStackModel, the readout
+              chart's own segment computation, at a slim height:
+              same segments in engine order, deductions hatch at
+              the start, bracket-band shading behind, and the
+              10/12/22/24 tops as tick marks from the same model;
+              no legend and no in-bar labels (the full chart
+              below keeps all of that). */}
+          {(() => {
+            const pg = playgroundResult;
+            const stripYearNum =
+              parseIntField(pgYear) ?? new Date().getFullYear();
+            const statuses: { key: string; text: string; warn: boolean }[] = [];
+            if (
+              pg != null &&
+              pg.aca.applies &&
+              pg.aca.cliff != null &&
+              pg.aca.positionDollars != null
+            ) {
+              // Composed from pg's ACA fields exactly as the
+              // readout states them: the stack note's room line
+              // and "No ACA cliff in {year}." phrasing, and the
+              // takeaway's over-the-cliff figure. The engine's
+              // cliff exists only for coverage 2026+ (its
+              // hasCliff rule), so a 2025 year shows the note's
+              // no-cliff line instead of a position.
+              if (stripYearNum < 2026) {
+                statuses.push({
+                  key: "aca",
+                  text: `No ACA cliff in ${stripYearNum}`,
+                  warn: false,
+                });
+              } else if (pg.aca.overCliff) {
+                statuses.push({
+                  key: "aca",
+                  text: `Over the ACA cliff by ${fmtDollars(-pg.aca.positionDollars)}`,
+                  warn: true,
+                });
+              } else {
+                statuses.push({
+                  key: "aca",
+                  text: `ACA cliff: ${fmtDollars(pg.aca.positionDollars)} of room`,
+                  warn: false,
+                });
+              }
+            }
+            if (pg != null && pg.irmaa.applies && pg.irmaa.tier >= 1) {
+              statuses.push({
+                key: "irmaa",
+                text: `IRMAA Tier ${pg.irmaa.tier}`,
+                warn: true,
+              });
+            }
+            const model =
+              pg != null ? buildStackModel(pg, stripYearNum, pgFiling) : null;
+            const saleSegment = pgSaleLeftoverSegment(pg, pgSold);
+            // The MAGI figure's own ⓘ note: static copy, except
+            // the ACA cliff amount in the parenthetical — the
+            // priced year's own cliff (the same pg.aca.cliff the
+            // ACA status above reads), present only when the ACA
+            // applies to this year and a cliff actually exists
+            // for the priced year. The engine carries the
+            // 400%-of-FPL dollar line in every year, but the
+            // cliff behaviour exists only for coverage 2026+
+            // (hasCliff = coverageYear >= 2026) — the same
+            // coverage-year rule the ACA status above uses for
+            // its no-cliff branch — so in 2025 the parenthetical
+            // is omitted entirely.
+            const magiNote = `MAGI — modified adjusted gross income: every dollar of income the year counts, added up before deductions — interest, dividends, other income, any RMD, the taxable part of Social Security, the pre-tax money out, and gains — with tax-exempt interest added back (that's the 'modified' part). It's the yardstick for both cliffs: the ACA cliff${
+              pg != null && stripYearNum >= 2026 && pg.aca.applies && pg.aca.cliff != null
+                ? ` (this year: ${fmtDollars(pg.aca.cliff)})`
+                : ""
+            } and the IRMAA tiers are lines drawn on MAGI. The ACA's version also counts the part of Social Security that isn't taxed.`;
+            return (
+              <div
+                className="sticky z-30 mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-md"
+                style={{ top: "var(--twsa-safe-area-inset-top, 0px)" }}
+                aria-label="Play strip — live summary of the priced year"
+              >
+                {model != null && pg != null ? (
+                  <div
+                    className="relative h-3.5 min-w-[7rem] flex-1 basis-40 overflow-hidden rounded-sm"
+                    role="img"
+                    aria-label={`Income stack in miniature: ${
+                      model.legendSegs.length > 0
+                        ? model.legendSegs
+                            .map((s) => `${s.label} ${fmtDollars(s.amount)}`)
+                            .join(", ")
+                        : "no income typed"
+                    }, less deductions ${fmtDollars(model.deductions)}`}
+                  >
+                    <div className="absolute inset-0" aria-hidden="true">
+                      {model.bands.map((b, i) => (
+                        <div
+                          key={b.rate}
+                          className="absolute top-0 bottom-0"
+                          style={{
+                            left: `${model.taxX(b.from)}%`,
+                            width: `${Math.max(0, model.taxX(b.to) - model.taxX(b.from))}%`,
+                            background:
+                              i % 2 === 0
+                                ? "rgba(128,128,128,0.07)"
+                                : "rgba(20,89,76,0.08)",
+                          }}
+                        />
+                      ))}
+                    </div>
+                    {model.gainsPos.map((s) => (
+                      <div
+                        key={s.key}
+                        className="absolute top-0 h-3.5"
+                        style={{
+                          left: `${s.leftPct}%`,
+                          width: `${s.widthPct}%`,
+                          background: s.color,
+                        }}
+                        aria-hidden="true"
+                      />
+                    ))}
+                    {model.ordPos.map((s) => (
+                      <div
+                        key={s.key}
+                        className="absolute top-0 h-3.5 border-r border-[var(--bg)]"
+                        style={{
+                          left: `${s.leftPct}%`,
+                          width: `${s.widthPct}%`,
+                          background: s.color,
+                        }}
+                        aria-hidden="true"
+                      />
+                    ))}
+                    {model.deductions > 0 && (
+                      <div
+                        className="pointer-events-none absolute top-0 h-3.5 border-r-2 border-dashed border-[var(--text)]"
+                        style={{
+                          left: 0,
+                          width: `${model.pct(model.deductions)}%`,
+                          ...model.hatchStyle,
+                        }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <div
+                      className="pointer-events-none absolute inset-0"
+                      aria-hidden="true"
+                    >
+                      {model.markers
+                        .filter((m) => m.inAxis)
+                        .map((m) => (
+                          <div
+                            key={m.rate}
+                            className="absolute top-0 bottom-0 border-l border-dashed"
+                            style={{
+                              left: `${model.taxX(m.to)}%`,
+                              borderColor: m.color,
+                            }}
+                          />
+                        ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className="relative h-3.5 min-w-[7rem] flex-1 basis-40 overflow-hidden rounded-sm border border-[var(--border)]"
+                    role="img"
+                    aria-label="Income stack in miniature: nothing priced yet"
+                  >
+                    <div
+                      className="absolute inset-0"
+                      style={STACK_HATCH_STYLE}
+                      aria-hidden="true"
+                    />
+                  </div>
+                )}
+                <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+                  <span>
+                    Total federal tax{" "}
+                    <span className="font-bold text-[var(--accent)]">
+                      {fmtDollars(pg?.federalTax ?? 0)}
+                    </span>
+                  </span>
+                  <span aria-hidden="true" className="text-[var(--dim)]">
+                    ·
+                  </span>
+                  <span>
+                    MAGI {fmtDollars(pg?.magi ?? 0)}
+                    {pg != null && (
+                      <InfoNote
+                        text={magiNote}
+                        ariaLabel="About MAGI in the play strip"
+                        viewportClamp
+                      />
+                    )}
+                  </span>
+                  {statuses.map((s) => (
+                    <span key={s.key} className="contents">
+                      <span aria-hidden="true" className="text-[var(--dim)]">
+                        ·
+                      </span>
+                      <span
+                        className={
+                          s.warn
+                            ? "font-medium text-[var(--warn)]"
+                            : "text-[var(--dim)]"
+                        }
+                      >
+                        {s.text}
+                      </span>
+                    </span>
+                  ))}
+                  {saleSegment != null && (
+                    <span className="contents">
+                      <span aria-hidden="true" className="text-[var(--dim)]">
+                        ·
+                      </span>
+                      <span
+                        className={
+                          saleSegment.warn
+                            ? "font-medium text-[var(--warn)]"
+                            : undefined
+                        }
+                      >
+                        {saleSegment.text}
+                        <InfoNote
+                          text={saleSegment.note}
+                          ariaLabel="About the sale figure in the play strip"
+                          align="right"
+                          viewportClamp
+                        />
+                      </span>
+                    </span>
+                  )}
+                </p>
+              </div>
+            );
+          })()}
+          <h2 className="text-base font-semibold">Playground</h2>
+          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+            One year, your numbers: type the year&rsquo;s income, the pre-tax money taken out,
+            and a stock sale, and this prices where the year lands — which bracket
+            it fills, whether it stays under the ACA cliff, and what
+            it does to IRMAA. It runs through the same engine as the plan, so the
+            two can never disagree. The form remembers its dials between visits,
+            so the numbers you were playing with are still here when you come
+            back — and your plan is never touched. “Reset playground” wipes the
+            form back to blank.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              aria-label="Start from my numbers"
+              className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+              disabled={!pgPrefillSource}
+              onClick={prefillPlayground}
+            >
+              Start from my numbers
+            </button>
+            {!pgConfirmReset ? (
+              <button
+                type="button"
+                aria-label="Reset playground"
+                className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)]"
+                onClick={() => setPgConfirmReset(true)}
+              >
+                Reset playground
+              </button>
+            ) : (
+              <>
+                <span className="text-sm text-[var(--bad)]">
+                  Reset playground? This clears every dial and the copy saved
+                  for next time, back to a blank form.
+                </span>
+                <button
+                  type="button"
+                  aria-label="Reset playground"
+                  className="rounded-[var(--radius)] bg-[var(--bad)] px-4 py-2 text-sm font-medium text-white"
+                  onClick={resetPlayground}
+                >
+                  Reset playground
+                </button>
+                <button
+                  type="button"
+                  aria-label="Cancel reset"
+                  className="rounded-[var(--radius)] border border-[var(--border)] px-4 py-2 text-sm font-medium hover:text-[var(--accent)]"
+                  onClick={() => setPgConfirmReset(false)}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+            {!pgPrefillSource && (
+              <span className="text-sm text-[var(--dim)]">
+                {pgPrefillBlockerName != null
+                  ? `“Start from my numbers” needs a pricable plan — the saved plan is missing its ${pgPrefillBlockerName}.`
+                  : "“Start from my numbers” needs a pricable plan."}
+              </span>
+            )}
+          </div>
+
+          <div className="mt-3 max-w-3xl">
+            <label
+              className="block text-sm font-medium text-[var(--text)]"
+              htmlFor="roth-pg-paste"
+            >
+              Load inputs from a paste
+            </label>
+            <p className={hintCls}>
+              Paste the inputs block from a priced answer and every dial
+              below fills at once — the same as typing them.
+            </p>
+            <textarea
+              id="roth-pg-paste"
+              aria-label="Load inputs paste box"
+              className={`${inputCls} mt-2 font-mono text-xs`}
+              rows={3}
+              value={pgPasteText}
+              onChange={(e) => {
+                setPgPasteText(e.target.value);
+                setPgPasteLoaded(false);
+              }}
+              placeholder='{"kind":"playground-year","version":1,…}'
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                aria-label="Load inputs"
+                className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                disabled={pgPasteText.trim() === ""}
+                onClick={applyPgPaste}
+              >
+                Load inputs
+              </button>
+              {pgPasteLoaded && !pgPasteError && (
+                <span className="text-sm text-[var(--dim)]" role="note">
+                  Loaded — the dials below now hold the pasted inputs.
+                </span>
+              )}
+            </div>
+            {pgPasteError && (
+              <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+                {pgPasteError}
+              </p>
+            )}
+          </div>
+
+          {pgSectionCard("year", "The year", (
+            <>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div>
+              <div className="mb-1 flex items-center">
+                <label
+                  className="block text-sm font-medium text-[var(--text)]"
+                  htmlFor="roth-pg-year"
+                >
+                  Tax year
+                </label>
+                <InfoNote
+                  text="The year you're pricing. Brackets, deductions, and the ACA and IRMAA lines all come from that year's tax law."
+                  ariaLabel="About tax year"
+                />
+              </div>
+              <select
+                id="roth-pg-year"
+                aria-label="Tax year"
+                className={inputCls}
+                value={pgYear}
+                onChange={(e) => setPgYear(e.target.value)}
+              >
+                {TAX_LAW_YEARS.map((l) => (
+                  <option key={l.year} value={String(l.year)}>
+                    {l.year}
+                  </option>
+                ))}
+              </select>
+              <p className={hintCls}>
+                {(() => {
+                  const dialedYear =
+                    parseIntField(pgYear) ?? new Date().getFullYear();
+                  const lawYear = lawForYear(dialedYear).year;
+                  return lawYear !== dialedYear
+                    ? `No ${dialedYear} law row in the app’s tax tables yet — priced under the ${lawYear} law row.`
+                    : "Priced under that year’s law row in the app’s tax tables.";
+                })()}
+              </p>
+            </div>
+            <div>
+              <div className="mb-1 flex items-center">
+                <label
+                  className="block text-sm font-medium text-[var(--text)]"
+                  htmlFor="roth-pg-filing"
+                >
+                  Filing status
+                </label>
+                <InfoNote
+                  text="How the return is filed — married filing jointly, single, or head of household. It sets the bracket widths, the standard deduction, and which spouse fields apply."
+                  ariaLabel="About filing status"
+                  align="right"
+                />
+              </div>
+              <select
+                id="roth-pg-filing"
+                aria-label="Filing status"
+                className={inputCls}
+                value={pgFiling}
+                onChange={(e) => setPgFiling(e.target.value as FilingStatus)}
+              >
+                {(Object.keys(FILING_LABELS) as FilingStatus[]).map((k) => (
+                  <option key={k} value={k}>
+                    {FILING_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {numField("Your age that year", pgAgeP, setPgAgeP, {
+              hint: "Ages drive the 65+ standard-deduction add-ons and the senior deduction.",
+              info: "Your age in that year. Turning 65 adds extra standard deduction, and age is what the required minimum distribution (RMD) rules key off.",
+            })}
+            {pgFiling === "mfj" &&
+              numField("Spouse age that year", pgAgeS, setPgAgeS, {
+                info: "Your spouse's age in that year. A spouse who is 65 or older adds the same extra standard deduction, counted the same way yours is.",
+                infoAlign: "right",
+              })}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+            <span className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                aria-label="You are on Medicare"
+                className="mt-1 h-4 w-4"
+                checked={pgMedPEffective}
+                onChange={(e) => setPgMedP(e.target.checked)}
+              />
+              <span className="text-sm">
+                On Medicare — you
+                <InfoNote
+                  text="Medicare usually starts at 65. People on Medicare get no ACA credit; instead their income sets IRMAA surcharges on Medicare premiums two years later."
+                  ariaLabel="About being on Medicare"
+                />
+                <span className="block text-xs text-[var(--dim)]">
+                  Follows your age (65+) until you change it. Medicare decides
+                  IRMAA vs ACA below.
+                </span>
+              </span>
+            </span>
+            {pgFiling === "mfj" && (
+              <span className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  aria-label="Spouse is on Medicare"
+                  className="mt-1 h-4 w-4"
+                  checked={pgMedSEffective}
+                  onChange={(e) => setPgMedS(e.target.checked)}
+                />
+                <span className="text-sm">
+                  On Medicare — spouse
+                  <InfoNote
+                    text="Medicare usually starts at 65. People on Medicare get no ACA credit; instead their income sets IRMAA surcharges on Medicare premiums two years later."
+                    ariaLabel="About spouse being on Medicare"
+                    align="right"
+                  />
+                  <span className="block text-xs text-[var(--dim)]">
+                    Follows the spouse&rsquo;s age (65+) until you change it.
+                  </span>
+                </span>
+              </span>
+            )}
+          </div>
+            </>
+          ))}
+
+          {pgSectionCard("income", "Income for the year", (
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {moneyField("Interest", pgInterest, setPgInterest, {
+              info: "Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income.",
+            })}
+            {moneyField("Ordinary dividends (non-qualified)", pgOrdDiv, setPgOrdDiv, {
+              info: "Dividends that don't qualify for the lower capital-gains rate — from things like REITs and money funds (like SPAXX and VMFXX). Taxed as ordinary income.",
+              infoAlign: "right",
+            })}
+            {moneyField("Other ordinary income (wages, pension)", pgOther, setPgOther, {
+              info: "Everything else taxed at the regular rates — wages, pensions, rent, and withdrawals from a traditional IRA or 401(k). It stacks on the same shelf as interest and pre-tax money out.",
+            })}
+            {moneyField("Tax-exempt interest", pgTaxExempt, setPgTaxExempt, {
+              hint: "Not taxed itself, but counts toward MAGI, ACA income, and how much Social Security is taxed.",
+              info: "Interest from municipal bonds. You pay no tax on it — but it still counts toward how much of your Social Security is taxed, and toward the ACA and IRMAA income tests. Tax-free is not invisible.",
+              infoAlign: "right",
+            })}
+            {moneyField("Your Social Security that year", pgSsP, setPgSsP, {
+              hint: "The year's total benefits. Blank counts as $0.",
+              info: "Your yearly Social Security check before any tax. Up to 85% of it can be taxed, depending on your other income.",
+            })}
+            {pgFiling === "mfj" &&
+              moneyField("Spouse Social Security that year", pgSsS, setPgSsS, {
+                info: "Your spouse's yearly Social Security check before any tax. Up to 85% of it can be taxed, depending on your other income.",
+                infoAlign: "right",
+              })}
+          </div>
+          ))}
+
+          {pgSectionCard("conversion", "Pre-tax money out", (
+            <>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {moneyField("Pre-tax money out (draw or conversion)", pgConversion, setPgConversion, {
+              hint: pgHoldActive && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
+                ? pgHeldTarget === "aca"
+                  ? pgHeldCliffDollars != null
+                    ? `Auto — holding at the ACA cliff — ${fmtDollars(pgHeldCliffDollars)}`
+                    : "Auto — holding the ACA cliff"
+                  : `Auto — holding the ${pgHeldTarget}% top`
+                : "The dial: type how much leaves the pre-tax account this year — drawn to spend or converted to Roth, it is taxed the same — and watch where the year lands below.",
+              info: "Money that leaves your pre-tax account this year — drawn out to spend, or converted into your Roth. The full amount counts as ordinary income this year either way.",
+              onEdit: () => {
+                // Typing in the conversion dial releases the
+                // hold — the typed value stands. (Programmatic
+                // writes from the chips / hold effect call
+                // setPgConversion directly and never land here;
+                // moneyField calls onEdit only from its change
+                // handler, not from its blur reformat.)
+                if (pgHoldOn) setPgHoldOn(false);
+              },
+            })}
+            {moneyField("Pre-tax balance (prior Dec 31)", pgPretax, setPgPretax, {
+              hint: "Optional. When entered, the year's RMD is priced on this balance (Joint Life when it applies) and the pre-tax money out is checked against what's left after the RMD.",
+              info: "What was in your traditional IRA / 401(k) on the prior Dec 31. Entering it lets the playground price this year's required minimum distribution (RMD) and check the pre-tax money out fits. Blank = no RMD priced.",
+              infoAlign: "right",
+            })}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="flex items-center text-sm text-[var(--dim)]">
+              Fill to:
+              <InfoNote
+                text="Sets the pre-tax money out amount for you: exactly enough to fill this tax bracket — or, with the ACA cliff chip, to land ACA household income exactly on the 400% poverty-line cliff — given everything else you've typed. The bracket tops are the ceilings of the 10%, 12%, 22% and 24% brackets."
+                ariaLabel="About fill to"
+              />
+            </span>
+            {[10, 12, 22, 24].map((pct) => (
+              <button
+                key={pct}
+                type="button"
+                aria-label={`Fill to the top of the ${pct}% bracket`}
+                className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
+                disabled={pgAgePNum == null || pgAgePNum <= 0}
+                onClick={() => applyPgBracketFill(pct)}
+              >
+                {pct}%
+              </button>
+            ))}
+            <button
+              type="button"
+              aria-label="Fill to the ACA cliff"
+              className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
+              disabled={pgAgePNum == null || pgAgePNum <= 0 || !pgAcaHasHardCliff}
+              onClick={applyPgAcaCliffFill}
+            >
+              ACA cliff
+            </button>
+            <button
+              type="button"
+              aria-label="Hold the fill"
+              aria-pressed={pgHoldOn}
+              className={pgHoldOn ? ceilChipActiveCls : ceilChipCls}
+              onClick={() => setPgHoldOn((v) => !v)}
+            >
+              Hold{pgHoldOn && pgHeldTarget != null ? (pgHeldTarget === "aca" ? " · ACA cliff" : ` · ${pgHeldTarget}%`) : ""}
+            </button>
+            <span className="flex items-center text-xs text-[var(--dim)]">
+              Hold keeps the fill on the tapped target as other dials change.
+              <InfoNote
+                text="With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff. Typing an amount yourself, or switching Hold off, releases it."
+                ariaLabel="About hold the fill"
+              />
+            </span>
+          </div>
+          {pgAcaCliffNote && (
+            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+              {pgAcaCliffNote}
+            </p>
+          )}
+          {pgHoldOn && pgHeldTarget == null && (
+            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+              Tap a fill chip to hold that target.
+            </p>
+          )}
+          {pgHoldCantCaption && (
+            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+              {pgHoldCantCaption}
+            </p>
+          )}
+          {pgHoldCliffCaption && !pgHoldCantCaption && (
+            <p className="mt-1 text-sm text-[var(--dim)]" role="note">
+              {pgHoldCliffCaption}
+            </p>
+          )}
+            </>
+          ))}
+
+          {pgSectionCard("stock", "Stock sale (long-term)", (
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {moneyField("Stock sold", pgSold, setPgSold, {
+              info: "The total sale price of the stock you sell — what you receive for it. Only the part of this above your cost basis is a gain.",
+            })}
+            {moneyField("Cost basis of stock sold", pgBasis, setPgBasis, {
+              hint: "Gain (or loss) = amount sold − basis, priced through the gains stack with the qualified dividends.",
+              info: "What you originally paid for the stock. Only the part of the sale above this is gain — the rest is your own money coming back, untaxed.",
+              infoAlign: "right",
+            })}
+            {moneyField("Qualified dividends", pgQualDiv, setPgQualDiv, {
+              info: "Dividends that qualify for the lower tax rate — your 1099-DIV marks these as qualified dividends. They ride the lower 0% / 15% / 20% gains staircase instead of the ordinary rates.",
+            })}
+          </div>
+          ))}
+
+          {pgSectionCard("aca", "ACA & state", (
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {numField("ACA household size", pgAcaSize, setPgAcaSize, {
+              hint: "Sets the 400% poverty-line cliff. Needed to see the ACA position.",
+              info: "How many people are in your tax household for health coverage. It sets the poverty line your income is measured against — a bigger household means a higher ACA cliff.",
+            })}
+            <div>
+              {moneyField("ACA benchmark premium / yr", pgBenchmark, setPgBenchmark, {
+                hint: "Needed to price the premium credit. Blank shows the cliff position only.",
+                info: "The yearly price of your area's benchmark Silver plan before any credit. The credit covers the part above a set share of your income — and vanishes entirely over the cliff.",
+                infoAlign: "right",
+              })}
+              {pgBenchmarkCaption && (
+                <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                  {pgBenchmarkCaption}
+                </p>
+              )}
+            </div>
+            {pctField("State tax rate for this year", pgStateRate, setPgStateRate, {
+              hint: "Flat rate on taxable income, the plan's state model. 0 = none.",
+              info: "Your state's flat tax rate on taxable income, as a percent. Leave it at 0 to price federal tax only.",
+            })}
+          </div>
+          ))}
+
+          {playgroundResult == null && (
+            <p className="mt-4 text-sm text-[var(--dim)]" role="note">
+              Enter your age for the year above and the year is priced here —
+              bracket landing, ACA cliff, and IRMAA, all from the same engine as
+              the plan.
+            </p>
+          )}
+          {playgroundResult != null &&
+            (() => {
+              const pg = playgroundResult;
+              const pgYearNum = parseIntField(pgYear) ?? new Date().getFullYear();
+              // The entered pre-tax balance as buildPgInputs prices
+              // it (negatives clamped to 0) — the readout's RMD
+              // subtext and balance watch-out read it from here so
+              // they name the same balance the engine priced.
+              const pgPretaxRaw = parseDollars(pgPretax);
+              const pgPretaxBalance =
+                pgPretaxRaw == null ? null : Math.max(0, pgPretaxRaw);
+              const pgBalanceLeftAfterRmd =
+                pgPretaxBalance == null ? null : pgPretaxBalance - pg.rmd;
+              const takeawayParts: string[] = [];
+              if (pg.conversion <= 0) {
+                takeawayParts.push("No pre-tax money out typed");
+              } else if (pg.landingBracketPct != null) {
+                takeawayParts.push(
+                  pg.landingExactlyFilled
+                    ? `Pre-tax money out fills the ${pg.landingBracketPct}% bracket exactly`
+                    : pg.landingRoomLeft != null
+                      ? `Pre-tax money out lands in the ${pg.landingBracketPct}% bracket with ${fmtDollars(pg.landingRoomLeft)} of room left in it`
+                      : `Pre-tax money out lands in the ${pg.landingBracketPct}% bracket`,
+                );
+              } else {
+                takeawayParts.push(
+                  "The pre-tax money out is fully sheltered by deductions — none of it is taxed",
+                );
+              }
+              takeawayParts.push(`MAGI ${fmtDollars(pg.magi)}`);
+              if (pg.aca.applies && pg.aca.cliff != null && pg.aca.positionDollars != null) {
+                // The cliff delta is measured from ACA household
+                // income, not MAGI — when the two differ (partly
+                // untaxed Social Security), the clause prints the
+                // ACA figure it is measured from, so the delta
+                // foots from a number on this line.
+                const acaPos = pg.aca.positionDollars;
+                const acaDelta = pg.aca.overCliff
+                  ? `over the ACA cliff by ${fmtDollars(-acaPos)}`
+                  : `under the ACA cliff by ${fmtDollars(acaPos)}`;
+                takeawayParts.push(
+                  pg.acaMagi !== pg.magi
+                    ? `ACA household income ${fmtDollars(pg.acaMagi)} — ${acaDelta}`
+                    : acaDelta,
+                );
+              }
+              if (pg.irmaa.applies) {
+                takeawayParts.push(
+                  `IRMAA Tier ${pg.irmaa.tier} for ${pg.irmaa.premiumYear}`,
+                );
+              }
+              const stackRow = (
+                label: string,
+                value: string,
+                sub?: string,
+                highlightValue?: boolean,
+              ) => (
+                <div>
+                  <dt className="text-[var(--dim)]">{label}</dt>
+                  <dd className="tnum font-medium">
+                    {highlightValue ? (
+                      <span className="font-bold text-[var(--accent)]">{value}</span>
+                    ) : (
+                      value
+                    )}
+                  </dd>
+                  {sub && <dd className="text-xs text-[var(--dim)]">{sub}</dd>}
+                </div>
+              );
+              /* Income-stacking chart — presentation ONLY. The
+                 segment model (segments, positions, bands,
+                 markers, hatch) comes from buildStackModel above
+                 — the same computation the sticky play strip's
+                 mini bar renders from, so the two always agree.
+                 Every figure is read straight off the priced
+                 result (`pg`, pricePlaygroundYear's own fields);
+                 see buildStackModel's comment for the sourcing. */
+              const stackChart = (() => {
+                const {
+                  bands,
+                  markers,
+                  ordPos,
+                  gainsPos,
+                  visibleOrdSegs,
+                  gainsSegs,
+                  legendSegs,
+                  deductions,
+                  ordinaryTaxable,
+                  gainsTotal,
+                  axisTaxableMax,
+                  zeroTop,
+                  floor20,
+                  show20,
+                  pct,
+                  taxX,
+                  hatchStyle,
+                } = buildStackModel(pg, pgYearNum, pgFiling);
+                /* ACA cliff line — presentation ONLY, derived
+                   from the priced result in the chart's own
+                   coordinates: the line sits at the taxable-axis
+                   position cliff − (acaMagi − taxableIncome), so
+                   a year priced exactly on the cliff (acaMagi =
+                   cliff) draws the line exactly at the stack's
+                   end (taxableIncome's position). The offset is
+                   read off the priced year — NOT assumed to be
+                   the deductions — because tax-exempt interest
+                   and the untaxed part of Social Security move
+                   the MAGI↔taxable gap. Shown only when the
+                   priced year carries a hard cliff (the same
+                   applicability rule as the ACA cliff chip: ACA
+                   applies with a cliff figure, coverage 2026+)
+                   and the derived position falls inside the
+                   drawn axis; outside the axis no line is drawn
+                   rather than a misleading one. */
+                const acaCliffLine = (() => {
+                  if (pgYearNum < 2026) return null;
+                  if (!pg.aca.applies || pg.aca.cliff == null) return null;
+                  const taxablePos =
+                    pg.aca.cliff - (pg.acaMagi - pg.taxableIncome);
+                  if (taxablePos < 0 || taxablePos > axisTaxableMax) {
+                    return null;
+                  }
+                  return { xPct: taxX(taxablePos), cliff: pg.aca.cliff };
+                })();
+                return (
+                  <div className="mt-3" aria-label="Income stacking chart">
+                    <h3 className="text-sm font-semibold">Income stack</h3>
+                    <p className="mt-1 text-xs text-[var(--dim)]">
+                      On a taxable-income axis. The hatched start of the bar is
+                      the {fmtDollars(deductions)} of deductions sheltering the
+                      first dollars — the stack nets to{" "}
+                      {fmtDollars(ordinaryTaxable)} of ordinary taxable income
+                      {gainsTotal > 0
+                        ? `, ${fmtDollars(pg.taxableIncome)} with gains on top`
+                        : ""}
+                      .
+                    </p>
+                    <div className="relative mt-1 h-11" aria-hidden="true">
+                      {markers.map((m, i) => (
+                        <span
+                          key={m.rate}
+                          className="tnum absolute text-[11px] whitespace-nowrap"
+                          style={{
+                            color: m.color,
+                            left: m.inAxis ? `${taxX(m.to)}%` : "100%",
+                            top: i % 2 === 0 ? 0 : 18,
+                            transform: !m.inAxis
+                              ? "translateX(-92%)"
+                              : i === 0
+                                ? "translateX(-8%)"
+                                : i === markers.length - 1
+                                  ? "translateX(-92%)"
+                                  : "translateX(-50%)",
+                          }}
+                        >
+                          {m.rate}% ·{" "}
+                          {m.room > 0.5
+                            ? `${fmtDollars(m.room)} left`
+                            : m.room >= -0.5
+                              ? "filled"
+                              : "passed"}
+                        </span>
+                      ))}
+                    </div>
+                    {gainsTotal > 0 && (
+                      <div className="relative h-4" aria-hidden="true">
+                        <span
+                          className="tnum absolute text-[11px] whitespace-nowrap"
+                          style={{
+                            color: "#65a30d",
+                            left: `${taxX(zeroTop)}%`,
+                            transform:
+                              taxX(zeroTop) > 85
+                                ? "translateX(-92%)"
+                                : taxX(zeroTop) < 15
+                                  ? "translateX(-8%)"
+                                  : "translateX(-50%)",
+                          }}
+                        >
+                          0% gains end · {fmtDollars(zeroTop)}
+                        </span>
+                        {show20 && (
+                          <span
+                            className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
+                            style={{
+                              left: `${taxX(floor20)}%`,
+                              transform: "translateX(-92%)",
+                            }}
+                          >
+                            20% from {fmtDollars(floor20)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div className="relative">
+                      <div className="absolute inset-0" aria-hidden="true">
+                        {bands.map((b, i) => (
+                          <div
+                            key={b.rate}
+                            className="absolute top-0 bottom-0"
+                            style={{
+                              left: `${taxX(b.from)}%`,
+                              width: `${Math.max(0, taxX(b.to) - taxX(b.from))}%`,
+                              background:
+                                i % 2 === 0
+                                  ? "rgba(128,128,128,0.07)"
+                                  : "rgba(20,89,76,0.08)",
+                            }}
+                          />
+                        ))}
+                      </div>
+                      {gainsTotal > 0 && (
+                        <div className="relative h-5" role="img" aria-label={`Gains stack: ${gainsSegs.map((s) => `${s.label} ${fmtDollars(s.amount)}`).join(", ")}`}>
+                          {gainsPos.map((s) => (
+                            <div
+                              key={s.key}
+                              className="absolute top-0 flex h-5 items-center justify-center overflow-hidden"
+                              style={{
+                                left: `${s.leftPct}%`,
+                                width: `${s.widthPct}%`,
+                                background: s.color,
+                              }}
+                            >
+                              {s.wide && (
+                                <span className="truncate px-1 text-[11px] font-medium text-white">
+                                  {s.short ?? s.label} {fmtDollars(s.amount)}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                          <div
+                            className="absolute top-0 bottom-0 border-l-2 border-dashed"
+                            style={{ left: `${taxX(zeroTop)}%`, borderColor: "#65a30d" }}
+                            aria-hidden="true"
+                          />
+                          {show20 && (
+                            <div
+                              className="absolute top-0 bottom-0 border-l-2 border-dashed"
+                              style={{ left: `${taxX(floor20)}%`, borderColor: "#ea580c" }}
+                              aria-hidden="true"
+                            />
+                          )}
+                        </div>
+                      )}
+                      <div
+                        className={`relative h-10 ${gainsTotal > 0 ? "mt-1" : ""}`}
+                        role="img"
+                        aria-label={`Ordinary income stack: ${visibleOrdSegs.map((s) => `${s.label} ${fmtDollars(s.amount)}`).join(", ")}, less deductions ${fmtDollars(deductions)}, nets to ${fmtDollars(ordinaryTaxable)} of ordinary taxable income`}
+                      >
+                        {ordPos.map((s) => (
+                          <div
+                            key={s.key}
+                            className="absolute top-0 flex h-10 items-center justify-center overflow-hidden border-r border-[var(--bg)]"
+                            style={{
+                              left: `${s.leftPct}%`,
+                              width: `${s.widthPct}%`,
+                              background: s.color,
+                            }}
+                          >
+                            {s.wide && (
+                              <span className="truncate px-1 text-[11px] font-medium text-white">
+                                {s.short ?? s.label} {fmtDollars(s.amount)}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                        {deductions > 0 && (
+                          <div
+                            className="pointer-events-none absolute top-0 h-10 border-r-2 border-dashed border-[var(--text)]"
+                            style={{ left: 0, width: `${pct(deductions)}%`, ...hatchStyle }}
+                            aria-hidden="true"
+                          />
+                        )}
+                      </div>
+                      <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+                        {markers
+                          .filter((m) => m.inAxis)
+                          .map((m) => (
+                            <div
+                              key={m.rate}
+                              className="absolute top-0 bottom-0 border-l border-dashed"
+                              style={{ left: `${taxX(m.to)}%`, borderColor: m.color }}
+                            />
+                          ))}
+                        <div
+                          className="absolute top-0 bottom-0 border-l"
+                          style={{ left: `${taxX(0)}%`, borderColor: "var(--dim)" }}
+                        />
+                        {zeroTop <= axisTaxableMax && (
+                          <div
+                            className="absolute top-0 bottom-0 border-l-2 border-dashed"
+                            style={{
+                              left: `${taxX(zeroTop)}%`,
+                              borderColor: "#65a30d",
+                            }}
+                          />
+                        )}
+                        {acaCliffLine != null && (
+                          <div
+                            className="absolute top-0 bottom-0 border-l-2 border-dashed"
+                            style={{
+                              left: `${acaCliffLine.xPct}%`,
+                              borderColor: "var(--warn)",
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <div className="relative mt-1 h-4" aria-hidden="true">
+                      <span
+                        className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
+                        style={{
+                          left: `${taxX(0)}%`,
+                          transform:
+                            taxX(0) < 15 ? "translateX(-8%)" : "translateX(-50%)",
+                        }}
+                      >
+                        $0 taxable
+                      </span>
+                      {acaCliffLine != null && (
+                        <span
+                          className="tnum absolute text-[11px] font-medium whitespace-nowrap"
+                          style={{
+                            left: `${acaCliffLine.xPct}%`,
+                            color: "var(--warn)",
+                            transform:
+                              acaCliffLine.xPct > 85
+                                ? "translateX(-92%)"
+                                : acaCliffLine.xPct < 15
+                                  ? "translateX(-8%)"
+                                  : "translateX(-50%)",
+                          }}
+                        >
+                          ACA cliff · MAGI {fmtDollars(acaCliffLine.cliff)}
+                        </span>
+                      )}
+                      <span
+                        className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
+                        style={{ right: 0 }}
+                      >
+                        {fmtDollars(axisTaxableMax)}
+                      </span>
+                    </div>
+                    {legendSegs.length > 0 && (
+                      <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                        {legendSegs.map((s) => (
+                          <span key={s.key} className="inline-flex items-center gap-1.5">
+                            <span
+                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                              style={{ background: s.color }}
+                              aria-hidden="true"
+                            />
+                            {s.label}{" "}
+                            <span className="tnum font-medium text-[var(--text)]">
+                              {fmtDollars(s.amount)}
+                            </span>
+                          </span>
+                        ))}
+                      </p>
+                    )}
+                    <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
+                          style={hatchStyle}
+                          aria-hidden="true"
+                        />
+                        Deductions{" "}
+                        <span className="font-medium text-[var(--text)]">
+                          −{fmtDollars(deductions)}
+                        </span>
+                      </span>
+                      {markers.map((m) => (
+                        <span key={m.rate} style={{ color: m.color }}>
+                          {m.rate}% top {fmtDollars(m.to)} —{" "}
+                          {m.room > 0.5
+                            ? `${fmtDollars(m.room)} left`
+                            : m.room >= -0.5
+                              ? "filled exactly"
+                              : `passed by ${fmtDollars(-m.room)}`}
+                        </span>
+                      ))}
+                    </p>
+                    {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
+                      <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                        No income typed yet — the stack will draw here as you
+                        type.
+                      </p>
+                    )}
+                  </div>
+                );
+              })();
+              /* Income-stack cliff markers — presentation ONLY:
+                 insertions into the "How {year} stacks up" stack
+                 below, plus one closing room note under it. No
+                 figure is priced here: the ACA cliff, the ACA
+                 position, the IRMAA tier, the per-person monthly
+                 surcharge, the premium year, and the next IRMAA
+                 line with its room all come straight off the
+                 priced result (`pg` — the same fields the ACA &
+                 IRMAA block above prints). The one line not
+                 stored on the result — the IRMAA tier line the
+                 landed tier crossed (the floor of the landed
+                 tier) — is read from the SAME law row the pricing
+                 used, through the engine's own classifier helper
+                 irmaaTierUpTo(tier − 1, …) at the playground's 0%
+                 inflation, exactly as pricePlaygroundYear derives
+                 its stored nextTierLine from irmaaTierUpTo(tier, …).
+                 Placement: the stack's additive rows are walked
+                 in their printed order, accumulating TWO running
+                 totals — one per MAGI definition — from the SAME
+                 row values the block prints. Every printed row
+                 counts the same toward both MAGIs except Social
+                 Security received: IRMAA MAGI counts only the
+                 TAXABLE part (pg.ssTaxable) while ACA MAGI counts
+                 the FULL benefit (pg.ssBenefits) — that is the
+                 whole difference between the two totals (MAGI =
+                 AGI + tax-exempt interest; ACA MAGI = MAGI + the
+                 untaxed part of Social Security), so the two
+                 markers can correctly land on different rows.
+                 Tax-exempt interest counts toward both (it is the
+                 printed row between Social Security and the
+                 conversion). A marker is inserted immediately
+                 after the first row whose cumulative total for
+                 its own MAGI passes its line (strictly over —
+                 the engine's own tests: ACA overCliff is
+                 acaMagi > cliff, and an IRMAA tier starts once
+                 MAGI is over the previous tier's ceiling). The
+                 AGI / deduction / taxable-income rows after the
+                 gains row are not additive to MAGI and never
+                 carry a marker. The ACA cliff exists only for
+                 coverage 2026+ (the engine's hasCliff rule in
+                 acaCreditFor): in 2025 the result still carries
+                 the 400%-of-FPL figure, but no marker is placed
+                 and the closing note says so instead. */
+              const stackBlock = (() => {
+                type StackEntry = {
+                  key: string;
+                  node: ReactNode;
+                  aca: number;
+                  irmaa: number;
+                };
+                const additive: StackEntry[] = [
+                  {
+                    key: "interest",
+                    node: stackRow("Interest", fmtDollars(pg.interest)),
+                    aca: pg.interest,
+                    irmaa: pg.interest,
+                  },
+                  {
+                    key: "orddiv",
+                    node: stackRow("Ordinary dividends", fmtDollars(pg.ordinaryDividends)),
+                    aca: pg.ordinaryDividends,
+                    irmaa: pg.ordinaryDividends,
+                  },
+                  {
+                    key: "other",
+                    node: stackRow("Other ordinary income", fmtDollars(pg.otherOrdinary)),
+                    aca: pg.otherOrdinary,
+                    irmaa: pg.otherOrdinary,
+                  },
+                  {
+                    key: "rmd",
+                    node: pg.rmdPriced
+                      ? stackRow(
+                          "RMD for the year",
+                          fmtDollars(pg.rmd),
+                          pg.rmdDivisor != null
+                            ? `Balance ÷ ${pg.rmdDivisor} (${pg.rmdTable === "joint" ? "Joint Life" : "Uniform Lifetime"} table)`
+                            : pgPretaxBalance === 0
+                              ? "No RMD — the pre-tax balance entered is $0"
+                              : "No RMD due at this age",
+                        )
+                      : stackRow("RMD for the year", "Not priced"),
+                    aca: pg.rmd,
+                    irmaa: pg.rmd,
+                  },
+                  {
+                    key: "ss",
+                    node: stackRow(
+                      "Social Security received",
+                      fmtDollars(pg.ssBenefits),
+                      pg.ssBenefits > 0
+                        ? `of which taxable: ${fmtDollars(pg.ssTaxable)} (${pg.ssPctTaxed}% under §86)`
+                        : undefined,
+                    ),
+                    aca: pg.ssBenefits,
+                    irmaa: pg.ssTaxable,
+                  },
+                  {
+                    key: "taxexempt",
+                    node: stackRow(
+                      "Tax-exempt interest",
+                      fmtDollars(pg.taxExemptInterest),
+                      "Not in AGI; counted in MAGI",
+                    ),
+                    aca: pg.taxExemptInterest,
+                    irmaa: pg.taxExemptInterest,
+                  },
+                  {
+                    key: "conversion",
+                    node: stackRow("Pre-tax money out", fmtDollars(pg.conversion)),
+                    aca: pg.conversion,
+                    irmaa: pg.conversion,
+                  },
+                  {
+                    key: "gains",
+                    node: stackRow(
+                      "Long-term gains priced",
+                      fmtDollars(pg.ltcgPriced),
+                      `Sale gain ${fmtDollars(pg.stockGain)} + qualified dividends ${fmtDollars(pg.qualifiedDividends)}`,
+                    ),
+                    aca: pg.ltcgPriced,
+                    irmaa: pg.ltcgPriced,
+                  },
+                ];
+                // The ACA section applies for these markers when
+                // the result carries a cliff figure — set only
+                // when a household size was entered and not
+                // everyone in the household is on Medicare.
+                const acaApplies = pg.aca.cliff != null;
+                const acaHasCliff = acaApplies && pgYearNum >= 2026;
+                const acaCrossed = acaHasCliff && pg.aca.overCliff;
+                const acaCliff = pg.aca.cliff ?? 0;
+                const irmaaLine =
+                  pg.irmaa.applies && pg.irmaa.tier >= 1
+                    ? irmaaTierUpTo(
+                        pg.irmaa.tier - 1,
+                        pgFiling,
+                        lawForYear(pgYearNum),
+                        pgYearNum,
+                        0,
+                      )
+                    : null;
+                let acaCum = 0;
+                let irmaaCum = 0;
+                let acaAfter = -1;
+                let irmaaAfter = -1;
+                additive.forEach((e, i) => {
+                  acaCum += e.aca;
+                  irmaaCum += e.irmaa;
+                  if (acaCrossed && acaAfter === -1 && acaCum > acaCliff) acaAfter = i;
+                  if (irmaaLine != null && irmaaAfter === -1 && irmaaCum > irmaaLine) irmaaAfter = i;
+                });
+                // A crossed line's marker always renders: if the
+                // running totals never passed it mid-stack (only
+                // possible on a sub-cent rounding seam), it lands
+                // after the last additive row instead.
+                if (acaCrossed && acaAfter === -1) acaAfter = additive.length - 1;
+                if (irmaaLine != null && irmaaAfter === -1) irmaaAfter = additive.length - 1;
+                const markerCls =
+                  "col-span-2 rounded-[var(--radius)] bg-[var(--warn-soft)] px-2.5 py-1.5 text-xs font-medium text-[var(--warn)] sm:col-span-3 sm:text-sm";
+                const acaMarker = acaCrossed ? (
+                  <div className={markerCls} role="note">
+                    <span aria-hidden="true">⚠</span>{" "}
+                    {`ACA cliff crossed — ${fmtDollars(acaCliff)} (400% of FPL). Over the cliff, the premium credit is $0.`}
+                  </div>
+                ) : null;
+                const irmaaMarker =
+                  irmaaLine != null ? (
+                    <div className={markerCls} role="note">
+                      <span aria-hidden="true">⚠</span>{" "}
+                      {`IRMAA Tier ${pg.irmaa.tier} line crossed — ${fmtDollars(irmaaLine)}. Surcharge $${pg.irmaa.monthlyPerPerson.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo per person in ${pg.irmaa.premiumYear}.`}
+                    </div>
+                  ) : null;
+                // Closing room note: one part per applicable line
+                // NOT crossed (a crossed ACA cliff is the marker's
+                // story, not the note's; IRMAA keeps its next-line
+                // distance even when a lower line was crossed).
+                const noteParts: string[] = [];
+                if (acaApplies) {
+                  if (!acaHasCliff) {
+                    noteParts.push(`No ACA cliff in ${pgYearNum}.`);
+                  } else if (!acaCrossed && pg.aca.positionDollars != null) {
+                    noteParts.push(
+                      `ACA cliff: ${fmtDollars(pg.aca.positionDollars)} of room`,
+                    );
+                  }
+                }
+                if (pg.irmaa.applies && pg.irmaa.nextTierLine != null) {
+                  noteParts.push(
+                    `Next IRMAA line (Tier ${pg.irmaa.tier + 1} at ${fmtDollars(pg.irmaa.nextTierLine)}): ${fmtDollars(pg.irmaa.roomToNextTier ?? 0)} away`,
+                  );
+                }
+                return (
+                  <>
+                    <h3 className="text-sm font-semibold">
+                      How {pgYearNum} stacks up
+                    </h3>
+                    <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                      {additive.map((e, i) => (
+                        <Fragment key={e.key}>
+                          {e.node}
+                          {acaAfter === i ? acaMarker : null}
+                          {irmaaAfter === i ? irmaaMarker : null}
+                        </Fragment>
+                      ))}
+                      {stackRow("AGI", fmtDollars(pg.agi))}
+                      {stackRow(
+                        "Standard deduction",
+                        fmtDollars(pg.standardDeduction),
+                        pg.age65AddonTotal > 0
+                          ? `includes ${fmtDollars(pg.age65AddonTotal)} of 65+ add-ons (${pg.count65} ${pg.count65 === 1 ? "person" : "people"} 65+)`
+                          : undefined,
+                      )}
+                      {pg.seniorDeduction > 0 &&
+                        stackRow("Senior deduction (65+)", fmtDollars(pg.seniorDeduction))}
+                      {stackRow("Taxable income", fmtDollars(pg.taxableIncome))}
+                    </dl>
+                    {noteParts.length > 0 && (
+                      <p className="tnum mt-2 text-xs text-[var(--dim)]" role="note">
+                        {noteParts.join(" · ")}
+                      </p>
+                    )}
+                  </>
+                );
+              })();
+              return (
+                <>
+                <div className="mt-4 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-4 py-3">
+                  <p className="tnum text-base font-medium">
+                    {takeawayParts.join(" · ")}
+                  </p>
+
+                  {stackChart}
+
+                  {!pg.rmdPriced && (
+                    <p className="mt-2 text-sm" role="note">
+                      No pre-tax balance entered — no RMD priced, and the
+                      pre-tax money out isn&rsquo;t capped.
+                    </p>
+                  )}
+                  {pg.conversionExceedsBalance && (
+                    <p className="mt-2 text-sm" role="note">
+                      <strong>Watch out:</strong> the pre-tax money out typed is more
+                      than the pre-tax balance left after the RMD (
+                      {fmtDollars(pgBalanceLeftAfterRmd ?? 0)}), so it couldn&rsquo;t all come out of
+                      that balance — the tax below still prices the amount typed.
+                    </p>
+                  )}
+                  {pg.stockGain < 0 && pg.capitalLoss === 0 && (
+                    <p className="mt-2 text-sm" role="note">
+                      The sale itself is a {fmtDollars(-pg.stockGain)} long-term
+                      loss; in the gains stack it offsets the qualified dividends
+                      entered.
+                    </p>
+                  )}
+                  {pg.capitalLoss > 0 && (
+                    <p className="mt-2 text-sm" role="note">
+                      <strong>Net long-term loss of {fmtDollars(pg.capitalLoss)}:</strong>{" "}
+                      priced as $0 of gains — the loss first offsets the qualified
+                      dividends entered. This one-year pricing doesn&rsquo;t model
+                      the $3,000-a-year capital-loss deduction or loss
+                      carryforwards.
+                    </p>
+                  )}
+
+                </div>
+
+                <div className="flex flex-col gap-4">
+                  <section className={sectionCls} aria-label="ACA and IRMAA">
+                  <h3 className="text-sm font-semibold">ACA &amp; IRMAA</h3>
+                  {pg.aca.everyoneOnMedicare ? (
+                    <p className="mt-1 text-sm">
+                      No ACA — everyone in the household is on Medicare.
+                    </p>
+                  ) : pg.aca.cliff == null ? (
+                    <p className="mt-1 text-sm">
+                      ACA: enter a household size above to see where this year
+                      sits against the 400% poverty-line cliff.
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm">
+                      ACA cliff for a household of {pg.aca.householdSize}:{" "}
+                      {fmtDollars(pg.aca.cliff)} (400% of the poverty line).{" "}
+                      {pg.aca.overCliff
+                        ? `ACA household income is over the cliff by ${fmtDollars(-(pg.aca.positionDollars ?? 0))} — the premium credit is $0 at the cliff.`
+                        : `ACA household income is under the cliff by ${fmtDollars(pg.aca.positionDollars ?? 0)}`}
+                      {!pg.aca.overCliff &&
+                        (pg.aca.credit != null ? (
+                          <>
+                            {" — estimated credit "}
+                            <span className="font-bold text-[var(--accent)]">
+                              {fmtDollars(pg.aca.credit)}
+                            </span>
+                            {" at the ACA benchmark premium entered."}
+                          </>
+                        ) : (
+                          " — enter an ACA benchmark premium above to price the credit."
+                        ))}
+                      {pg.aca.pctFpl != null && pg.aca.pctFpl < 138 && (
+                        <>
+                          {" "}
+                          Under 138% of the poverty line, coverage routes to
+                          Medicaid in most states rather than a marketplace plan —
+                          treat any credit as flagged, not bankable.
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {pg.gainsFlags.acaFlag != null && (
+                    <p className="mt-1 text-sm font-medium" role="note">
+                      {pg.gainsFlags.acaFlag.text}
+                    </p>
+                  )}
+                  {pg.irmaa.applies ? (
+                    <p className="mt-1 text-sm">
+                      IRMAA: this year&rsquo;s MAGI sets Tier {pg.irmaa.tier} for{" "}
+                      {pg.irmaa.premiumYear}.{" "}
+                      {pg.irmaa.tier === 0
+                        ? "Tier 0 carries no surcharge."
+                        : `Surcharge ${fmtDollars(pg.irmaa.monthlyPerPerson)}/mo per person on Medicare — ${fmtDollars(pg.irmaa.annualHousehold)}/yr for the household (${pg.irmaa.personsOnMedicare} on Medicare).`}{" "}
+                      {pg.irmaa.nextTierLine != null
+                        ? `MAGI is ${fmtDollars(pg.irmaa.roomToNextTier ?? 0)} under the next tier line at ${fmtDollars(pg.irmaa.nextTierLine)}.`
+                        : "That is the top tier — there is no higher line."}
+                    </p>
+                  ) : (
+                    !pg.aca.everyoneOnMedicare && (
+                      <p className="mt-1 text-sm">
+                        No IRMAA — nobody in the household is on Medicare.
+                      </p>
+                    )
+                  )}
+                  {pg.gainsFlags.irmaaFlag != null && (
+                    <p className="mt-1 text-sm font-medium" role="note">
+                      {pg.gainsFlags.irmaaFlag.text}
+                    </p>
+                  )}
+                  </section>
+
+                  <section className={sectionCls} aria-label={`How ${pgYearNum} stacks up`}>
+                    {stackBlock}
+                  </section>
+
+                  <section className={sectionCls} aria-label="Bracket landing">
+                  <h3 className="text-sm font-semibold">Bracket landing</h3>
+                  {pg.conversion > 0 && pg.landingBracketPct != null ? (
+                    <p className="mt-1 text-sm">
+                      The last dollar of pre-tax money out lands in the{" "}
+                      {pg.landingBracketPct}% bracket
+                      {pg.landingBracketTop != null
+                        ? ` (top ${fmtDollars(pg.landingBracketTop)})`
+                        : " (the top bracket — no ceiling)"}
+                      {pg.landingExactlyFilled
+                        ? " — filled exactly, $0 of room left."
+                        : pg.landingRoomLeft != null
+                          ? ` — ${fmtDollars(pg.landingRoomLeft)} of room left in the bracket.`
+                          : "."}
+                    </p>
+                  ) : pg.conversion > 0 ? (
+                    <p className="mt-1 text-sm">
+                      None of the pre-tax money out is taxed — the year&rsquo;s deductions
+                      shelter all of it.
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm">
+                      No pre-tax money out typed — type an amount above to see where it would
+                      land.
+                    </p>
+                  )}
+                  {pg.conversion > 0 && (
+                    <p className="mt-1 text-sm">
+                      The pre-tax money out itself costs{" "}
+                      <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
+                      of federal tax —{" "}
+                      {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
+                      of the amount taken out
+                      {pg.conversionTotalCost !== pg.conversionFederalCost
+                        ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
+                        : ""}
+                      . That&rsquo;s the year&rsquo;s tax with the pre-tax money out minus
+                      the same year priced at $0 of pre-tax money out.
+                    </p>
+                  )}
+                  {pg.bracketLayers.length > 0 && (
+                    <p className="mt-1 text-sm text-[var(--dim)]">
+                      Ordinary income is taxed as:{" "}
+                      {pg.bracketLayers
+                        .map((l) => `${l.ratePct}% × ${fmtDollars(l.amount)}`)
+                        .join(" + ")}
+                      .
+                    </p>
+                  )}
+
+                  </section>
+
+                  <section className={sectionCls} aria-label="Gains stack">
+                  <h3 className="text-sm font-semibold">Gains stack</h3>
+                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                    {stackRow("Taxed at 0%", fmtDollars(pg.gainsAt0))}
+                    {stackRow("Taxed at 15%", fmtDollars(pg.gainsAt15))}
+                    {stackRow("Taxed at 20%", fmtDollars(pg.gainsAt20))}
+                    {stackRow(
+                      "0% gains room left",
+                      fmtDollars(pg.gainsZeroRoomLeft),
+                    )}
+                    {stackRow(
+                      "Net investment income tax",
+                      fmtDollars(pg.niit),
+                      "Priced on gains and qualified dividends — interest and ordinary dividends are not counted in its base",
+                    )}
+                  </dl>
+
+                  </section>
+
+                  <section className={sectionCls} aria-label="Tax for the year">
+                  <h3 className="text-sm font-semibold">Tax for the year</h3>
+                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                    {stackRow("Federal tax on ordinary income", fmtDollars(pg.ordinaryTax))}
+                    {stackRow(
+                      "Federal tax on gains",
+                      fmtDollars(pg.ltcgTax + pg.niit),
+                      pg.niit > 0
+                        ? `${fmtDollars(pg.ltcgTax)} gains tax + ${fmtDollars(pg.niit)} NIIT`
+                        : undefined,
+                    )}
+                    {stackRow("Total federal tax", fmtDollars(pg.federalTax), undefined, true)}
+                    {pg.stateTax > 0 &&
+                      stackRow("State tax", fmtDollars(pg.stateTax))}
+                    {stackRow("MAGI", fmtDollars(pg.magi))}
+                    {pg.acaMagi !== pg.magi &&
+                      stackRow(
+                        "ACA household income",
+                        fmtDollars(pg.acaMagi),
+                        "MAGI plus the untaxed part of Social Security",
+                      )}
+                  </dl>
+                  {pg.saleAfterTax != null && (
+                    <p className="mt-2 text-sm" role="note">
+                      {(() => {
+                        // Sale-after-tax highlight: only the final
+                        // "{leftover} of it is left." segment is
+                        // emphasised — bold in the accent colour; the
+                        // rest of the sentence keeps its styling. The
+                        // split is taken from the engine's own composed
+                        // string at its final ", " (the one before the
+                        // leftover figure — grouped dollar figures
+                        // never contain ", "), so the displayed text
+                        // stays byte-identical. The variant where the
+                        // year's tax exceeds the proceeds phrases the
+                        // outcome differently (no "of it is left."
+                        // tail) and renders exactly as composed.
+                        const sat = pg.saleAfterTax;
+                        const cut =
+                          sat.leftover >= 0 &&
+                          sat.text.endsWith(" of it is left.")
+                            ? sat.text.lastIndexOf(", ") + 2
+                            : -1;
+                        if (cut < 2) return sat.text;
+                        return (
+                          <>
+                            {sat.text.slice(0, cut)}
+                            <span className="font-bold text-[var(--accent)]">
+                              {sat.text.slice(cut)}
+                            </span>
+                          </>
+                        );
+                      })()}
+                    </p>
+                  )}
+
+                  </section>
+                </div>
+                </>
+              );
+            })()}
+        </section>
+    </div>
+  );
+}
+
+/* "Start from my numbers" source — the fields the prefill
+   reads, resolved from the Roth record (getRothPlanner) and
+   the Retirement record (getRetirementCalc) EXACTLY as the
+   Roth view resolves its working plan inputs on load: a saved
+   value wins; a balance not saved follows the latest Net
+   Worth snapshot's bucket subtotal (the primary pre-tax field
+   takes the bucket remainder after the spouse's saved split,
+   floored at $0); spending, retirement age, and expected
+   return fall back to the Retirement record, then the seeds.
+   The same pricability gates the Roth view's planInputs memo
+   applies decide whether a plan exists at all (birth year in
+   1930–2015, spending present and non-negative, a retirement
+   age, an expected return, and an end age after the current
+   age): when they fail there is no pricable plan and the
+   prefill stays disabled, exactly as before. Money leaves the
+   record in cents and lands in dollars — the units the plan
+   inputs, and the prefill, speak. */
+type PgPrefillSource = {
+  birthYearPrimary: number;
+  birthYearSpouse: number | null;
+  filingStatus: FilingStatus;
+  pretaxStart: number;
+  pretaxSpouseStart: number;
+  ssPrimaryAnnual: number;
+  ssPrimaryStartAge: number | null;
+  ssPrimaryNoBenefit: boolean;
+  ssSpouseAnnual: number;
+  ssSpouseStartAge: number | null;
+  ssSpouseNoBenefit: boolean;
+  acaHouseholdSize: number;
+  acaHouseholdSizeAfter: number;
+  acaStepDownYear: number | null;
+  acaBenchmarkCouple: number | null;
+  acaBenchmarkSingle: number | null;
+  acaBenchmarkFamily: number | null;
+  stateRatePct: number;
+  spouseSoleBeneficiary: boolean;
+};
+
+function pgPrefillSourceFrom(
+  data: RothData | undefined,
+  ret: RetData | undefined,
+): PgPrefillSource | null {
+  if (!data || !ret) return null;
+  const s = data.saved;
+  const snap = data.snapshot;
+  const retSaved = ret.saved;
+  const seedRetAge = retSaved?.retirementAge ?? 57;
+  const seedReturn =
+    retSaved?.expectedReturnPct ??
+    blendedExpected(retSaved?.stocksPct ?? STOCKS_PCT_DEFAULT);
+  const seedSpendingCents = ret.defaultSpendingAnnualCents;
+  const byP = s ? s.birthYearPrimary : SEED_BIRTH_YEAR_PRIMARY;
+  const spendCents = s
+    ? (s.annualSpendingCents ?? seedSpendingCents)
+    : seedSpendingCents;
+  const retAge = s ? (s.retirementAge ?? seedRetAge) : seedRetAge;
+  const endAge = s ? (s.endAge ?? 95) : 95;
+  const expRet = s ? (s.expectedReturnPct ?? seedReturn) : seedReturn;
+  if (byP == null || byP < 1930 || byP > 2015) return null;
+  if (spendCents < 0) return null;
+  if (retAge == null || endAge == null || expRet == null) return null;
+  if (endAge <= new Date().getFullYear() - byP) return null;
+  const wifeSavedCents = s ? s.pretaxSpouseCents : null;
+  const primaryEffectiveCents = s
+    ? (s.pretaxCents ??
+      (snap?.pretaxCents != null
+        ? Math.max(0, snap.pretaxCents - (wifeSavedCents ?? 0))
+        : null))
+    : (snap?.pretaxCents ?? null);
+  return {
+    birthYearPrimary: byP,
+    birthYearSpouse: s ? s.birthYearSpouse : SEED_BIRTH_YEAR_SPOUSE,
+    filingStatus: s ? (s.filingStatus ?? "mfj") : "mfj",
+    pretaxStart: (primaryEffectiveCents ?? 0) / 100,
+    pretaxSpouseStart: (wifeSavedCents ?? 0) / 100,
+    ssPrimaryAnnual: s
+      ? s.ssPrimaryNoBenefit === true
+        ? 0
+        : (s.ssPrimaryAnnualCents ?? 0) / 100
+      : SEED_SS_PRIMARY_CENTS / 100,
+    ssPrimaryStartAge: s ? s.ssPrimaryStartAge : SEED_SS_START_AGE,
+    ssPrimaryNoBenefit: s ? s.ssPrimaryNoBenefit === true : false,
+    ssSpouseAnnual: s
+      ? s.ssSpouseNoBenefit === true
+        ? 0
+        : (s.ssSpouseAnnualCents ?? 0) / 100
+      : 0,
+    ssSpouseStartAge: s ? s.ssSpouseStartAge : null,
+    ssSpouseNoBenefit: s ? s.ssSpouseNoBenefit === true : false,
+    acaHouseholdSize: s ? (s.acaHouseholdSize ?? 1) : 5,
+    acaHouseholdSizeAfter: s
+      ? (s.acaHouseholdSizeAfter ?? s.acaHouseholdSize ?? 1)
+      : 2,
+    acaStepDownYear: s ? s.acaStepDownYear : null,
+    acaBenchmarkCouple:
+      s?.acaBenchmarkCoupleCents == null
+        ? null
+        : s.acaBenchmarkCoupleCents / 100,
+    acaBenchmarkSingle:
+      s?.acaBenchmarkSingleCents == null
+        ? null
+        : s.acaBenchmarkSingleCents / 100,
+    acaBenchmarkFamily:
+      s?.acaBenchmarkFamilyCents == null
+        ? null
+        : s.acaBenchmarkFamilyCents / 100,
+    stateRatePct: s ? (s.stateRatePct ?? 0) : 0,
+    spouseSoleBeneficiary: s ? (s.spouseSoleBeneficiary ?? true) : true,
+  };
+}
+
+/* The prefill's blocker, named: mirrors pgPrefillSourceFrom's
+   pricability gates in the same order and returns the plain
+   name of the first input that fails, so the disabled note
+   beside "Start from my numbers" can say what the saved plan
+   is missing. Returns null when no specific input is at fault
+   — the records are still loading, or every gate passes (the
+   prefill is enabled then anyway). The resolutions below are
+   pgPrefillSourceFrom's own, gate for gate: the birth year
+   keeps NO fallback (a missing or out-of-range birth year
+   disables the prefill), and the end age falls back to 95,
+   the server's planInputsFromSaved default. */
+function pgPrefillBlocker(
+  data: RothData | undefined,
+  ret: RetData | undefined,
+): string | null {
+  if (!data || !ret) return null;
+  const s = data.saved;
+  const retSaved = ret.saved;
+  const seedRetAge = retSaved?.retirementAge ?? 57;
+  const seedReturn =
+    retSaved?.expectedReturnPct ??
+    blendedExpected(retSaved?.stocksPct ?? STOCKS_PCT_DEFAULT);
+  const seedSpendingCents = ret.defaultSpendingAnnualCents;
+  const byP = s ? s.birthYearPrimary : SEED_BIRTH_YEAR_PRIMARY;
+  if (byP == null || byP < 1930 || byP > 2015) return "birth year";
+  const spendCents = s
+    ? (s.annualSpendingCents ?? seedSpendingCents)
+    : seedSpendingCents;
+  if (spendCents < 0) return "annual spending";
+  const retAge = s ? (s.retirementAge ?? seedRetAge) : seedRetAge;
+  if (retAge == null) return "retirement age";
+  const expRet = s ? (s.expectedReturnPct ?? seedReturn) : seedReturn;
+  if (expRet == null) return "expected return";
+  const endAge = s ? (s.endAge ?? 95) : 95;
+  if (endAge == null || endAge <= new Date().getFullYear() - byP)
+    return "end age";
+  return null;
+}

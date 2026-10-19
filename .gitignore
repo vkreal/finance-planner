@@ -1,0 +1,29 @@
+# Data — never committed (the owner's entered data lives here)
+app.db
+app.db-shm
+app.db-wal
+*.db
+backups/
+
+# Secrets
+.secrets/
+
+# Dependencies & build outputs
+node_modules/
+.bun-cache/
+.space-build/
+.space-build-cvm/
+.harness/
+dist/
+
+# Agent working files
+audits/
+
+# OS / editor
+.DS_Store
+*.log
+
+# Generated / incremental build state (added at GitHub prep, 2026-10-19)
+*.tsbuildinfo.*
+dist-cvm/
+server/.generated/

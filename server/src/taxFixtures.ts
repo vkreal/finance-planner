@@ -1,0 +1,15513 @@
+// Tax-engine accuracy fixtures — pinned cases for the Roth
+// Conversion tax engine (server/src/taxEngine.ts + taxLaw.ts),
+// run by the runAccuracySelfCheck maintenance action alongside
+// the Retirement and Extended suites.
+//
+// Every expected value below was derived BY HAND from the
+// statute / published table named in the case's note — NOT copied
+// from the engine's output.
+//
+// MAINTENANCE RULE: an expected value may only be changed after
+// the new number has been verified by an independent
+// recomputation from the cited source — a moved number is a
+// finding until then.
+
+import {
+DEFAULT_DRAW_ORDER,
+DRAW_ORDER_OPTIONS,
+acaCreditFor,
+deriveSpendFromCashSleeveStartDollars,
+drawOrderFromKey,
+drawOrderKey,
+fillConversion,
+flexSpendingNeed,
+irmaaAnnualPerPerson,
+irmaaTierFor,
+priceYear,
+rmdForYear,
+simulateRothPlan,
+type PriceYearInput,
+type RothPlanInputs,
+type RothStrategy,
+} from "./taxEngine";
+import {
+DO_NOTHING_SPEC,
+ROTH_MC_CHECK_SEED,
+claimAgeCombos,
+claimAgeLabel,
+consumeExecutionInputs,
+countCeilingViolations,
+executionDollarsFromCents,
+fafsaReportableAssets,
+fullRetirementAgeMonths,
+joinRothBlob,
+jointSearchNote,
+netCostBreakdown,
+normalizeSsDeclarations,
+optimizerHeirSensitivity,
+parsePlaygroundPaste,
+planInputsFromSaved,
+planNetCost,
+playgroundGainsComparison,
+playgroundPastePayload,
+pricePlanYearDetail,
+resolvePlanBalances,
+playgroundSaleAfterTax,
+priceExecutionYear,
+pricePlaygroundYear,
+rothMcReturnSeries,
+rothMcShockSeries,
+rothMcStream,
+ROTH_SCENARIO_LIMIT,
+runJointOptimizer,
+runOptimizer,
+runRothCompare,
+runRothMonteCarloCheck,
+runRothMonteCarloStats,
+scoreAllCandidates,
+solvePlaygroundBracketFill,
+splitRothBlob,
+ssAnnualAtClaimAge,
+ssBenefitFactor,
+buildCompareScenario,
+buildOptimizerCandidates,
+buildRothFunding,
+candidateStrategy,
+type RothCompareBaseSaved,
+type RothCompareOverrides,
+type RothSavedLike,
+type ScoredCandidate,
+} from "./rothOptimizer";
+import { parseRothBlobRevision } from "./rothRevisionCore";
+import { CURRENT_LAW, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear } from "./taxLaw";
+import { playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
+import { computeGiftComparison, parseRothGift } from "./giftModel";
+import {
+priceOneWorkYear,
+rollWorkYears,
+runWorkYearsCompare,
+type WorkYearJob,
+} from "./workYears";
+
+export type TaxFixtureCase = {
+  id: string;
+  kind: "tax";
+  note: string;
+  expected: Record<string, number | string | null>;
+  actual: () => Record<string, number | string | null>;
+};
+
+const basePrice = (over: Partial<PriceYearInput>): PriceYearInput => ({
+  calendarYear: 2026,
+  filingStatus: "mfj",
+  agePrimary: 60,
+  ageSpouse: 49,
+  otherOrdinary: 0,
+  rmd: 0,
+  conversion: 0,
+  extraPreTaxDraw: 0,
+  ssBenefits: 0,
+  taxExemptInterest: 0,
+  ltcg: 0,
+  inflationPct: 2.5,
+  stateRatePct: 0,
+  ...over,
+});
+
+export const TAX_FIXTURES: TaxFixtureCase[] = [
+  {
+    id: "tax-rmd-divisors",
+    kind: "tax",
+    note: "RMD divisors (IRS Pub. 590-B): Uniform Lifetime at 75 = 24.6, so $1,000,000 → $40,650.41. Joint Life (spouse sole beneficiary, 10 years younger) at owner 80 / spouse 70 = 20.2, so $1,000,000 → $49,504.95. RMD age by birth year (SECURE 2.0): 1955 → 73, 1975 → 75; historical cohorts: 1948 → 70.5 (pre-July-1949 RMD age), 1949 → 72, 1950 → 72.",
+    expected: {
+      uniformDivisor: 24.6,
+      uniformRmd: 40650.41,
+      jointDivisor: 20.2,
+      jointRmd: 49504.95,
+      rmdAge1955: 73,
+      rmdAge1975: 75,
+      rmdAge1948: 70.5,
+      rmdAge1949: 72,
+      rmdAge1950: 72,
+    },
+    actual: () => {
+      const uniform = rmdForYear({
+        priorDec31PreTax: 1000000,
+        agePrimary: 75,
+        ageSpouse: 64,
+        birthYearPrimary: 1951,
+        spouseSoleBeneficiary: false,
+      });
+      const joint = rmdForYear({
+        priorDec31PreTax: 1000000,
+        agePrimary: 80,
+        ageSpouse: 70,
+        birthYearPrimary: 1951,
+        spouseSoleBeneficiary: true,
+      });
+      return {
+        uniformDivisor: uniform.divisor,
+        uniformRmd: uniform.rmd,
+        jointDivisor: joint.divisor,
+        jointRmd: joint.rmd,
+        rmdAge1955: rmdAgeForBirthYear(1955),
+        rmdAge1975: rmdAgeForBirthYear(1975),
+        rmdAge1948: rmdAgeForBirthYear(1948),
+        rmdAge1949: rmdAgeForBirthYear(1949),
+        rmdAge1950: rmdAgeForBirthYear(1950),
+      };
+    },
+  },
+  {
+    id: "tax-ss-torpedo-emr",
+    kind: "tax",
+    note: "Social Security torpedo (IRC §86): MFJ 2026, $100,000 of benefits, $80,000 conversion, no other income. Provisional income $130,000 → taxable SS = $6,000 + 85% × ($130,000 − $44,000) = $79,100; AGI $159,100; taxable income $126,900 (22% bracket); federal tax $17,342. The next $100 of conversion pulls $85 more of SS into income, so it is taxed on $185 at 22% — an effective marginal rate of 40.7%.",
+    expected: {
+      ssTaxable: 79100,
+      taxableIncome: 126900,
+      bracket: 22,
+      federalTax: 17342,
+      emr: 40.7,
+    },
+    actual: () => {
+      const at = priceYear(
+        basePrice({ agePrimary: 64, ageSpouse: 60, conversion: 80000, ssBenefits: 100000 }),
+      );
+      const plus = priceYear(
+        basePrice({ agePrimary: 64, ageSpouse: 60, conversion: 80100, ssBenefits: 100000 }),
+      );
+      return {
+        ssTaxable: at.ssTaxable,
+        taxableIncome: at.taxableIncome,
+        bracket: at.marginalBracketPct,
+        federalTax: at.federalTax,
+        emr: Math.round((plus.federalTax - at.federalTax) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "tax-irmaa-dollar-over",
+    kind: "tax",
+    note: "IRMAA cliff (CMS Nov 2025, 2026 premiums): joint MAGI of exactly $218,000 is Tier 0 (no surcharge); $218,001 is Tier 1 — Part B surcharge $81.20/mo + Part D $14.50/mo = $1,148.40/yr per person, $2,296.80/yr for a couple. $1 over the line buys the whole year.",
+    expected: { tierAt: 0, tierOver: 1, perPersonAnnual: 1148.4, coupleAnnual: 2296.8 },
+    actual: () => {
+      const at = priceYear(basePrice({ otherOrdinary: 218000 }));
+      const over = priceYear(basePrice({ otherOrdinary: 218001 }));
+      const perPerson = irmaaAnnualPerPerson(1, CURRENT_LAW);
+      return {
+        tierAt: at.irmaaTier,
+        tierOver: over.irmaaTier,
+        perPersonAnnual: perPerson,
+        coupleAnnual: Math.round(perPerson * 2 * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "tax-aca-dollar-over-cliff",
+    kind: "tax",
+    note: "ACA cliff (2026 coverage, 2025 FPL $21,150 for a household of 2 → 400% = $84,600; Rev. Proc. 2025-25 applicable % at 400% = 9.96%): at MAGI $84,600 with a $20,000 benchmark premium, expected contribution is $8,426.16 and the credit kept is $11,573.84. At $84,601 the credit is $0 — the whole year is lost for $1.",
+    expected: { creditAt: 11573.84, creditOver: 0, cliff: 84600 },
+    actual: () => {
+      const at = acaCreditFor({
+        magi: 84600,
+        householdSize: 2,
+        coverageYear: 2026,
+        benchmarkAnnual: 20000,
+      });
+      const over = acaCreditFor({
+        magi: 84601,
+        householdSize: 2,
+        coverageYear: 2026,
+        benchmarkAnnual: 20000,
+      });
+      return { creditAt: at.credit, creditOver: over.credit, cliff: at.cliff };
+    },
+  },
+  {
+    id: "tax-aca-2025-mid-band",
+    kind: "tax",
+    note: "ACA 2025 mid-band (enhanced schedule, Rev. Proc. 2024-35): coverage 2025 uses the 2024 guidelines — household of 1 FPL $15,060, so MAGI $30,120 is exactly 200% FPL. The 150–200% band rises 0% → 2.00%, so at its top edge the applicable percentage is exactly 2.00%; expected contribution 2.00% × $30,120 = $602.40; credit on a $10,000 benchmark = $10,000 − $602.40 = $9,397.60.",
+    expected: { applicablePct: 2, credit: 9397.6, pctFpl: 200, overCliff: 0 },
+    actual: () => {
+      const r = acaCreditFor({
+        magi: 30120,
+        householdSize: 1,
+        coverageYear: 2025,
+        benchmarkAnnual: 10000,
+      });
+      return {
+        applicablePct: r.applicablePct,
+        credit: r.credit,
+        pctFpl: r.pctFpl,
+        overCliff: r.overCliff ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-aca-2025-above-400-no-cliff",
+    kind: "tax",
+    note: "ACA 2025 above 400% FPL (enhanced schedule — NO cliff in 2025): household of 1, MAGI $75,300 = 500% of the $15,060 FPL (2024 guidelines). Above 400% the applicable percentage stays at its 8.5% cap: expected contribution 8.5% × $75,300 = $6,400.50; credit on a $20,000 benchmark = $20,000 − $6,400.50 = $13,599.50, and overCliff is false — the cliff returns only for 2026+ coverage.",
+    expected: { applicablePct: 8.5, credit: 13599.5, pctFpl: 500, overCliff: 0 },
+    actual: () => {
+      const r = acaCreditFor({
+        magi: 75300,
+        householdSize: 1,
+        coverageYear: 2025,
+        benchmarkAnnual: 20000,
+      });
+      return {
+        applicablePct: r.applicablePct,
+        credit: r.credit,
+        pctFpl: r.pctFpl,
+        overCliff: r.overCliff ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-niit-tax-exempt-interest-excluded",
+    kind: "tax",
+    note: "NIIT (§1411) MAGI excludes tax-exempt interest: 2026 single, $140,000 of other ordinary income + $50,000 of long-term gains → AGI $190,000; with $20,000 of tax-exempt interest the IRMAA MAGI is $210,000, but §1411 MAGI adds back only foreign-income exclusions — NOT tax-exempt interest — so it stays $190,000, under the $200,000 single threshold, and the NIIT is $0. (Had the $20,000 been added back, §1411 MAGI of $210,000 would price 3.8% × min($50,000, $10,000) = $380 of NIIT.)",
+    expected: { agi: 190000, magi: 210000, niit: 0 },
+    actual: () => {
+      const p = priceYear(
+        basePrice({
+          filingStatus: "single",
+          ageSpouse: null,
+          otherOrdinary: 140000,
+          taxExemptInterest: 20000,
+          ltcg: 50000,
+        }),
+      );
+      return { agi: p.agi, magi: p.magi, niit: p.niit };
+    },
+  },
+  {
+    id: "tax-fpl-newest-row-fallback",
+    kind: "tax",
+    note: "FPL newest-row fallback: guideline years beyond the newest row (2026) resolve to the 2026 guidelines — household of 1 = $15,960, household of 5 = $15,960 + 4 × $5,680 = $38,680 — checked at guideline 2027 and 2035. Coverage 2027 (guideline 2026) household-of-2 cliff stays 4 × $21,640 = $86,560, and coverage 2028 (guideline 2027, resolved by the fallback) has the same $86,560 cliff — this case pins the newest-row fallback itself.",
+    expected: {
+      fpl1_2027: 15960,
+      fpl5_2027: 38680,
+      fpl1_2035: 15960,
+      fpl5_2035: 38680,
+      cliff2027: 86560,
+      cliff2028: 86560,
+    },
+    actual: () => {
+      const c27 = acaCreditFor({
+        magi: 40000,
+        householdSize: 2,
+        coverageYear: 2027,
+        benchmarkAnnual: 20000,
+      });
+      const c28 = acaCreditFor({
+        magi: 40000,
+        householdSize: 2,
+        coverageYear: 2028,
+        benchmarkAnnual: 20000,
+      });
+      return {
+        fpl1_2027: fplFor(1, 2027),
+        fpl5_2027: fplFor(5, 2027),
+        fpl1_2035: fplFor(1, 2035),
+        fpl5_2035: fplFor(5, 2035),
+        cliff2027: c27.cliff,
+        cliff2028: c28.cliff,
+      };
+    },
+  },
+  {
+    id: "tax-fill-12-no-other-income",
+    kind: "tax",
+    note: "Fill to the top of the 12% bracket, no other income (2026 MFJ): taxable income = conversion − $32,200 standard deduction, and the top of the 12% bracket is $100,800 of taxable income, so the fill is a $133,000 gross conversion landing exactly on $100,800 taxable.",
+    expected: { fill: 133000, taxableAtFill: 100800 },
+    actual: () => {
+      const fill = fillConversion({
+        base: basePrice({}),
+        ceilings: {
+          bracketTopPct: 12,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: false,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+        maxConversion: 500000,
+        acaCliff: null,
+      });
+      const priced = priceYear(basePrice({ conversion: fill }));
+      return { fill, taxableAtFill: priced.taxableIncome };
+    },
+  },
+  {
+    id: "tax-aca-magi-adds-back-untaxed-ss",
+    kind: "tax",
+    note: "ACA household income (§36B) vs IRMAA MAGI: MFJ 2026, $60,000 of Social Security, $50,000 conversion, no other income. Provisional income $80,000 → taxable SS = $6,000 + 85% × $36,000 = $36,600; AGI $86,600; IRMAA MAGI $86,600. ACA MAGI adds back the NON-taxable $23,400 of benefits → $110,000, exceeding IRMAA MAGI by exactly the untaxed share.",
+    expected: { magi: 86600, acaMagi: 110000, untaxedShare: 23400 },
+    actual: () => {
+      const p = priceYear(
+        basePrice({ agePrimary: 64, ageSpouse: 60, conversion: 50000, ssBenefits: 60000 }),
+      );
+      return {
+        magi: p.magi,
+        acaMagi: p.acaMagi,
+        untaxedShare: Math.round((p.acaMagi - p.magi) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "tax-fill-aca-cliff-caps-aca-magi",
+    kind: "tax",
+    note: "Fill capped at the ACA cliff must land ACA MAGI at or under the cliff ($84,600, household of 2, 2026 coverage). With $60,000 of Social Security flowing, ACA MAGI = conversion + $60,000 (taxable and untaxed benefits both count), so the fill is $24,600 and ACA MAGI at the fill is exactly $84,600 — while IRMAA MAGI there is only $39,610 (provisional $54,600 → taxable SS $15,010; AGI $39,610). Capping IRMAA MAGI instead would have blown through the cliff.",
+    expected: { fill: 24600, acaMagiAtFill: 84600, magiAtFill: 39610 },
+    actual: () => {
+      const base = basePrice({ agePrimary: 64, ageSpouse: 60, ssBenefits: 60000 });
+      const fill = fillConversion({
+        base,
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+        maxConversion: 500000,
+        acaCliff: 84600,
+      });
+      const priced = priceYear({ ...base, conversion: fill });
+      return { fill, acaMagiAtFill: priced.acaMagi, magiAtFill: priced.magi };
+    },
+  },
+  {
+    id: "tax-hoh-2026-bracket-tops",
+    kind: "tax",
+    note: "2026 head-of-household bracket tops (Rev. Proc. 2025-32): the 24% bracket tops at $201,750 of taxable income and the 32% bracket at $256,200 (NOT the single filer's $201,775 / $256,225). Priced check: HOH standard deduction $24,150, so $225,899 of ordinary income → $201,749 taxable → marginal 24%; $225,900 → $201,750 taxable → marginal 32%.",
+    expected: { top24: 201750, top32: 256200, bracketBelowTop: 24, bracketAtTop: 32 },
+    actual: () => {
+      const below = priceYear(
+        basePrice({ filingStatus: "hoh", ageSpouse: null, otherOrdinary: 225899 }),
+      );
+      const at = priceYear(
+        basePrice({ filingStatus: "hoh", ageSpouse: null, otherOrdinary: 225900 }),
+      );
+      return {
+        top24: TAX_LAW_2026.brackets.hoh[3] ?? null,
+        top32: TAX_LAW_2026.brackets.hoh[4] ?? null,
+        bracketBelowTop: below.marginalBracketPct,
+        bracketAtTop: at.marginalBracketPct,
+      };
+    },
+  },
+  {
+    id: "tax-senior-deduction-phaseout-on-agi",
+    kind: "tax",
+    note: "OBBBA senior-deduction phase-out (§224): MAGI for the phase-out adds back only foreign-income exclusions — NOT tax-exempt interest. 2026 MFJ, both spouses 65+, $100,000 ordinary income + $60,000 tax-exempt interest: AGI is $100,000 (under the $150,000 phase-out start) even though MAGI-for-IRMAA is $160,000, so the full $12,000 senior deduction is preserved.",
+    expected: { agi: 100000, magi: 160000, seniorDeduction: 12000 },
+    actual: () => {
+      const p = priceYear(
+        basePrice({
+          agePrimary: 66,
+          ageSpouse: 65,
+          otherOrdinary: 100000,
+          taxExemptInterest: 60000,
+        }),
+      );
+      return { agi: p.agi, magi: p.magi, seniorDeduction: p.seniorDeduction };
+    },
+  },
+  {
+    id: "tax-senior-deduction-phaseout",
+    kind: "tax",
+    note: "OBBBA senior deduction (2026, MFJ, both spouses 65+): $6,000 each = $12,000 at MAGI $150,000; it phases out at 6% of MAGI over $150,000 per person, so at MAGI $200,000 each spouse's $6,000 is reduced by $3,000 — total $6,000. Standard deduction check: $32,200 + 2 × $1,650 age-65 add-ons = $35,500.",
+    expected: { seniorAt150k: 12000, seniorAt200k: 6000, standardDeduction: 35500 },
+    actual: () => {
+      const at150 = priceYear(
+        basePrice({ agePrimary: 66, ageSpouse: 65, otherOrdinary: 150000 }),
+      );
+      const at200 = priceYear(
+        basePrice({ agePrimary: 66, ageSpouse: 65, otherOrdinary: 200000 }),
+      );
+      return {
+        seniorAt150k: at150.seniorDeduction,
+        seniorAt200k: at200.seniorDeduction,
+        standardDeduction: at150.standardDeduction,
+      };
+    },
+  },
+  {
+    id: "tax-senior-deduction-deflated-2028",
+    kind: "tax",
+    note: "OBBBA senior deduction deflated into today's dollars (hand-derived): the §224 figures are statutory (not indexed), so priceYear deflates BOTH the $6,000 per-person amount and the phase-out start by deflationFactor — the same convention the engine already applies to the §86 thresholds and the NIIT threshold (deflator 1/(1+inflation)^(year − 2026); 1.0 in 2025–2026, so base-law-year pricing is unchanged). Shape: 2028 MFJ, primary 66 / spouse 60 (one person 65+), $160,000 of ordinary income, 2.5% inflation. Derivation: deflator = 1 / 1.025^2 = 0.9518143962. Deflated base = $6,000 × 0.9518143962 = $5,710.89; deflated phase-out start = $150,000 × 0.9518143962 = $142,772.16; excess = $160,000 − $142,772.16 = $17,227.84; phase-out = 6% × $17,227.84 = $1,033.67; deduction = $5,710.89 − $1,033.67 = $4,677.22. (The pre-fix undeflated math gave $6,000 − 6% × $10,000 = $5,400 — $722.78 more.) Tax: deductions = $32,200 standard + $1,650 age-65 add-on + $4,677.22 = $38,527.22, taxable income $121,472.78 — the whole $722.78 deduction loss lands in the 22% bracket (MFJ 22% span $100,800–$211,400), so federal tax = $2,480 + $9,120 + 22% × $20,672.78 = $16,148.01, exactly $159.01 (= $722.78 × 22%) above the pre-fix $15,989. Control: the identical shape priced in 2026 (deflator 1.0) keeps the nominal $5,400 deduction and $15,989 tax, bit-identical to the pre-fix engine.",
+    expected: { senior2028: 4677.22, fed2028: 16148.01, senior2026: 5400, fed2026: 15989 },
+    actual: () => {
+      const p28 = priceYear(
+        basePrice({ calendarYear: 2028, agePrimary: 66, ageSpouse: 60, otherOrdinary: 160000 }),
+      );
+      const p26 = priceYear(
+        basePrice({ calendarYear: 2026, agePrimary: 66, ageSpouse: 60, otherOrdinary: 160000 }),
+      );
+      return {
+        senior2028: p28.seniorDeduction,
+        fed2028: p28.federalTax,
+        senior2026: p26.seniorDeduction,
+        fed2026: p26.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-unpayable-tax-debits-balances",
+    kind: "tax",
+    note: "Priced tax must leave a balance (payment waterfall): pre-tax $2,000,000, taxable $0, spending $200,000/yr, Do Nothing, 0% return. The age-60 year draws $200,000 of spending from pre-tax, which prices $26,340 of federal tax (taxable income $167,800 = $200,000 − $32,200 standard deduction; tax $2,480 + $9,120 + 22% × $67,000). With no cash, no taxable balance, and no conversion, the tax is debited from pre-tax below the (empty) floor — and under the settlement iteration (FIX 1) that debit is itself a distribution in the 22% bracket (total income $200,000 + T keeps taxable income under the $211,400 bracket top), so the fixed point is T = $26,340 + 22% × T → T = $26,340 / 0.78 = $33,769.23 and ending pre-tax is $2,000,000 − $200,000 − $33,769.23 = $1,766,230.77. (Pre-fix this case pinned the uniterated $26,340 / $1,773,660 — the debit was taken but never priced.)",
+    expected: { federalTax: 33769.23, pretaxEnd: 1766230.77 },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1966,
+        birthYearSpouse: 1977,
+        endAgePrimary: 60,
+        retirementAge: 60,
+        pretaxStart: 2000000,
+        annualSpending: 200000,
+        windowStartAge: 60,
+        protectMinTaxable: 50000,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      return { federalTax: y?.federalTax ?? null, pretaxEnd: y?.pretaxEnd ?? null };
+    },
+  },
+  {
+    id: "tax-settle-iteration-pretax-debit-taxed",
+    kind: "tax",
+    note: "SETTLEMENT ITERATION, Finding A (FIX 1; hand-derived fixed point): MFJ 2026, age 57, other ordinary income $100,000 = spending $100,000, pre-tax $100,000, Taxable $0, no Social Security, 0% return, Do Nothing. The year's only income source above the $100,000 is the pre-tax debit that pays the tax — itself a taxable distribution. First pricing: taxable income $67,800 ($100,000 − $32,200 standard deduction), tax $2,480 + 12% × $43,000 = $7,640. Paying it from pre-tax adds $T of income in the 12% bracket, so the fixed point is T = $7,640 + 12% × T → T = $7,640 / 0.88 = $8,681.82, and pre-tax ends at $100,000 − $8,681.82 = $91,318.18 with MAGI $108,681.82. (Before the fix the debit was never priced: tax $7,640, pre-tax $92,360, MAGI $100,000.)",
+    expected: { federalTax: 8681.82, pretaxEnd: 91318.18, magi: 108681.82 },
+    actual: () => {
+      const plan = basePlan({
+        otherOrdinaryAnnual: 100000,
+        annualSpending: 100000,
+        pretaxStart: 100000,
+        taxableStart: 0,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      return {
+        federalTax: y?.federalTax ?? null,
+        pretaxEnd: y?.pretaxEnd ?? null,
+        magi: y?.magi ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-settle-iteration-delta-sale-gains",
+    kind: "tax",
+    note: "SETTLEMENT ITERATION, Finding B (FIX 1; hand-derived fixed point): MFJ 2026, other ordinary income $200,000 = spending $200,000, pre-tax $0, Taxable $100,000 at 0% basis, no Social Security, 0% return, Do Nothing. Tax on the ordinary income alone is $26,340 (taxable income $167,800). Every dollar of tax is paid by a Taxable sale at 0% basis, so every dollar of tax paid is also a dollar of realized gain, all of it in the 15% band (MAGI stays under the $250,000 NIIT threshold): the self-funding fixed point is T = $26,340 + 0.15 × T → T = $26,340 / 0.85 = $30,988.24, Taxable ends at $100,000 − $30,988.24 = $69,011.76, and the year's priced gains equal the tax itself, $30,988.24. (Before the fix exactly one feedback round ran: tax $30,291, Taxable $69,709, gains $26,340 — the reprice-delta sale's gains were never priced.)",
+    expected: { federalTax: 30988.24, taxableEnd: 69011.76, drawGains: 30988.24 },
+    actual: () => {
+      const plan = basePlan({
+        otherOrdinaryAnnual: 200000,
+        annualSpending: 200000,
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 0,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      return {
+        federalTax: y?.federalTax ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        drawGains: y?.detail.drawGains ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-settle-iteration-tiers-delta-sale",
+    kind: "tax",
+    note: "SETTLEMENT ITERATION on the basis-tiers path (FIX 1; hand-derived fixed point): Finding B's shape with the $100,000 pool in two tiers — 10% at 100% basis ($10,000 / $10,000) and 90% at 0% ($90,000 / $0). Tax-channel sales consume the highest basis ratio first, so the first $10,000 of sales realizes no gain and every sale dollar after that is all gain, all at 15% (MAGI under the NIIT threshold, ordinary taxable income $167,800 already past the 0% top): total gains G = T − $10,000 and T = $26,340 + 0.15 × G → 0.85 × T = $26,340 − $1,500 = $24,840 → T = $29,223.53, G = $19,223.53, Taxable ends at $70,776.47 and the pool's basis is fully consumed ($0). Tier sale order is unchanged — the iteration only prices what the delta and overflow sales realize.",
+    expected: { federalTax: 29223.53, taxableEnd: 70776.47, drawGains: 19223.53, basisEnd: 0 },
+    actual: () => {
+      const plan = basePlan({
+        otherOrdinaryAnnual: 200000,
+        annualSpending: 200000,
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 10,
+        taxableTiers: [
+          { sharePct: 10, basisPct: 100 },
+          { sharePct: 90, basisPct: 0 },
+        ],
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      return {
+        federalTax: y?.federalTax ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        drawGains: y?.detail.drawGains ?? null,
+        basisEnd: y?.detail.taxableBasisDollars ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-settle-iteration-cliff-cap-pretax-overflow",
+    kind: "tax",
+    note: "SETTLEMENT ITERATION in a cliff-capped year with a pre-tax overflow debit (FIX 1; hand-derived): MFJ 2026, age 57, household of 2 on the marketplace (benchmark $20,000; the 2026-coverage cliff is 400% of the 2025-guideline FPL for 2, $21,150 × 4 = $84,600), other income $40,000, spending $100,000, pre-tax $500,000, Taxable $0, tax paid from the conversion, ACA-cliff-cap strategy. The conversion is competed to $0 (the capped draw and the tax debit take the room first), so the year's $5,792 of tax (taxable income $52,400 at the landing: $2,480 + 12% × $27,600) overflows to a pre-tax debit — priced income under the iteration, so the draw cap must leave room for it: the draw lands at $38,808 and $40,000 + $38,808 + $5,792 = $84,600, ACA MAGI exactly on the cliff (one cent more of draw prices $84,600.01 and forfeits the credit). The credit at the line is $20,000 − 9.96% × $84,600 = $11,573.84, and pre-tax ends at $500,000 − $38,808 − $5,792 = $455,400. The year's priced pre-tax draw (detail) is the full $44,600 — draw plus tax debit.",
+    expected: {
+      conversion: 0,
+      federalTax: 5792,
+      acaMagi: 84600,
+      cliff: 84600,
+      credit: 11573.84,
+      pretaxEnd: 455400,
+      pricedPretaxDraw: 44600,
+    },
+    actual: () => {
+      const plan = basePlan({
+        otherOrdinaryAnnual: 40000,
+        annualSpending: 100000,
+        pretaxStart: 500000,
+        taxableStart: 0,
+        payTaxFrom: "conversion",
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 20000,
+      });
+      const res = simulateRothPlan(plan, FILL_ACA_ONLY);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        federalTax: y?.federalTax ?? null,
+        acaMagi: y?.acaMagi ?? null,
+        cliff: y?.detail.aca.cliff ?? null,
+        credit: y?.acaCreditKept ?? null,
+        pretaxEnd: y?.pretaxEnd ?? null,
+        pricedPretaxDraw: y?.detail.extraPreTaxDraw ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-settle-iteration-penalty-overflow-feedback",
+    kind: "tax",
+    note: "SETTLEMENT ITERATION composed with the pre-59½ withholding penalty (FIX 1; hand-derived): age 57, other income $120,000 = spending, pre-tax $500,000 with a $490,000 preserve floor, so the Fill 12% conversion is capped at $10,000 (the fill room is $13,000). First pricing: income $130,000, taxable $97,800, tax $11,240. Withheld from the conversion, the grossed-up distribution ($11,240 + $1,248.89) exceeds the $10,000 conversion, so the conversion is the whole distribution: penalty 10% × $10,000 = $1,000, it pays $9,000 of tax, and the $2,240 overflow debits pre-tax — an iterated distribution in the 12% bracket: E = $2,240 + 12% × E → E = $2,545.45, final tax $11,240 + 12% × $2,545.45 = $11,545.45, MAGI $132,545.45, Roth receives $0, and pre-tax ends at $500,000 − $10,000 − $2,545.45 = $487,454.55. The penalty itself is unchanged ($1,000 — it applies exactly where it applied before); only the overflow debit's income is newly priced. Priced taxable income $100,345.45 stays under the 12% top, so the ceiling loop does not shrink the conversion.",
+    expected: {
+      conversion: 10000,
+      federalTax: 11545.45,
+      penalty: 1000,
+      rothEnd: 0,
+      pretaxEnd: 487454.55,
+      magi: 132545.45,
+      pricedPretaxDraw: 2545.45,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 500000,
+        taxableStart: 0,
+        otherOrdinaryAnnual: 120000,
+        annualSpending: 120000,
+        preservePretax: 490000,
+        payTaxFrom: "conversion",
+      });
+      const res = simulateRothPlan(plan, FILL_12);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        federalTax: y?.federalTax ?? null,
+        penalty: y?.penalty ?? null,
+        rothEnd: y?.rothEnd ?? null,
+        pretaxEnd: y?.pretaxEnd ?? null,
+        magi: y?.magi ?? null,
+        pricedPretaxDraw: y?.detail.extraPreTaxDraw ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-settle-iteration-saturated-bounded",
+    kind: "tax",
+    note: "SETTLEMENT ITERATION, bounded on a pathological year (FIX 1; hand-derived): Finding A's shape with an 80% flat state rate, so each pre-tax tax debit is taxed at 12% federal + 80% state = a feedback factor above 1 — the debit grows every round ($61,880 of combined tax first: federal $7,640 + state 80% × $67,800 = $54,240) until it saturates at the whole $100,000 pre-tax balance. At an assumed $100,000 debit the priced year is income $200,000 (federal $26,340 on taxable $167,800; state 80% × $167,800 = $134,240) and the debit the settlement takes is again the capped $100,000, so the iteration terminates on that saturated settlement instead of looping: pre-tax ends at $0 and the unpaid remainder of the $160,580 due is the pre-existing balances-run-out outcome, unchanged. The iteration cap and the best-iterated-state return bound every year the same way.",
+    expected: { federalTax: 26340, stateTax: 134240, pretaxEnd: 0, magi: 200000 },
+    actual: () => {
+      const plan = basePlan({
+        otherOrdinaryAnnual: 100000,
+        annualSpending: 100000,
+        pretaxStart: 100000,
+        taxableStart: 0,
+        stateRatePct: 80,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      return {
+        federalTax: y?.federalTax ?? null,
+        stateTax: y?.stateTax ?? null,
+        pretaxEnd: y?.pretaxEnd ?? null,
+        magi: y?.magi ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-already-converted-tops-up",
+    kind: "tax",
+    note: "\"Already converted this year\" tops the fill up: Fill 12% (2026 MFJ target $133,000, per the fill fixture) with $50,000 already converted → year-1 additional conversion $83,000, total priced conversion $133,000, MAGI $133,000. Only the additional $83,000 moves buckets: Roth ends at $83,000 and pre-tax drops by $83,000 (to $917,000), not by $133,000.",
+    expected: {
+      conversion: 133000,
+      conversionAlready: 50000,
+      additional: 83000,
+      magi: 133000,
+      rothEnd: 83000,
+      pretaxEnd: 917000,
+    },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000, convertedAlreadyThisYear: 50000 });
+      const res = simulateRothPlan(plan, FILL_12);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        conversionAlready: y?.conversionAlready ?? null,
+        additional:
+          y != null ? Math.round((y.conversion - y.conversionAlready) * 100) / 100 : null,
+        magi: y?.magi ?? null,
+        rothEnd: y?.rothEnd ?? null,
+        pretaxEnd: y?.pretaxEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-aca-cap-inactive-year-converts-zero",
+    kind: "tax",
+    note: "ACA-capped fill with ACA inactive must convert $0, never drain pre-tax: both spouses 65+ (ages 70/68), window 70–74, pre-tax $2,000,000, strategy = Fill capped at ACA cliff only. With nobody on the marketplace there is no cliff; the ACA cap alone active means the year's conversion is $0 (pre-tax untouched at $2,000,000 with 0% return and no spending).",
+    expected: { conversion: 0, pretaxEnd: 2000000 },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1956,
+        birthYearSpouse: 1958,
+        endAgePrimary: 70,
+        retirementAge: 60,
+        pretaxStart: 2000000,
+        windowStartAge: 70,
+        windowStopAge: 74,
+      });
+      const res = simulateRothPlan(plan, FILL_ACA_ONLY);
+      const y = res.years[0];
+      return { conversion: y?.conversion ?? null, pretaxEnd: y?.pretaxEnd ?? null };
+    },
+  },
+  {
+    id: "tax-withholding-penalty-grossed-up",
+    kind: "tax",
+    note: "Pre-59½ withholding penalty is grossed up: at 57 the penalty is itself an early distribution, so penalty = 10% of the FULL withheld distribution. Fill 12% ($133,000 conversion, $11,600 tax) with tax withheld from the conversion: penalty = $11,600 / 9 = $1,288.89 (not 10% × $11,600 = $1,160), total withheld $12,888.89, and Roth receives $133,000 − $12,888.89 = $120,111.11.",
+    expected: { conversion: 133000, penalty: 1288.89, rothEnd: 120111.11 },
+    actual: () => {
+      const plan = basePlan({ payTaxFrom: "conversion" });
+      const res = simulateRothPlan(plan, FILL_12);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        penalty: y?.penalty ?? null,
+        rothEnd: y?.rothEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-withholding-penalty-overflow-tax-only",
+    kind: "tax",
+    note: "Pre-59½ penalty gross-up applies ONLY to the portion of withheld tax the conversion actually absorbs: age 57, pre-tax $10,000 fully converted (Fill 12% — other income $120,000 leaves $13,000 of 12% space, so all $10,000 converts), other income $120,000 = spending, Taxable $5,000 at a $5,000 floor. Federal tax on $130,000 AGI (taxable $97,800) is $2,480 + 12% × $73,000 = $11,240. The $10,000 conversion is the only early distribution (none of it reaches Roth): penalty = 10% × $10,000 = $1,000, total due $12,240, the conversion pays $9,000 of tax + $1,000 penalty, and the $2,240 overflow is debited from Taxable below the floor with NO penalty — Taxable ends at $5,000 − $2,240 = $2,760. (The old gross-up-first math charged $1,248.89 and left $2,511.11.)",
+    expected: { conversion: 10000, federalTax: 11240, penalty: 1000, taxableEnd: 2760, rothEnd: 0 },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 10000,
+        taxableStart: 5000,
+        protectMinTaxable: 5000,
+        otherOrdinaryAnnual: 120000,
+        annualSpending: 120000,
+      });
+      const res = simulateRothPlan(plan, FILL_12);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        federalTax: y?.federalTax ?? null,
+        penalty: y?.penalty ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        rothEnd: y?.rothEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-aca-pricing-starts-at-retirement",
+    kind: "tax",
+    note: "ACA pricing starts at the retirement-age year: plan starting at 55 (born 1975, spouse 1985) with retirement age 57 and both benchmark premiums entered ($20,000), other income $40,000, household of 2, Do Nothing. Ages 55–56 are pre-retirement — not marketplace years — so no credit is priced (acaPriced 0, credit $0) even though both spouses are under 65. From 57 the credit prices: 2032 coverage uses guideline 2031, which the newest-row fallback resolves to the 2026 guidelines — FPL $21,640 for a household of 2, MAGI $40,000 = 184.84% FPL, applicable % 4.19 + 2.41 × (34.84/50) = 5.8694%, expected contribution $2,347.77, credit $20,000 − $2,347.77 = $17,652.23. (Under the pre-fallback 2025-row pricing this year read FPL $21,150 / 189.13% / $17,569.66; this case now pins the newest-row fallback. Re-pinned 2026-10-14 after hand-reconciling the $82.57 delta to the guideline change alone — MAGI, benchmark, and the 2026 applicable-% table are unchanged.)",
+    expected: {
+      priced55: 0,
+      priced56: 0,
+      priced57: 1,
+      credit55: 0,
+      credit56: 0,
+      credit57: 17652.23,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2030,
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        endAgePrimary: 57,
+        retirementAge: 57,
+        pretaxStart: 0,
+        otherOrdinaryAnnual: 40000,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 20000,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y55 = res.years[0];
+      const y56 = res.years[1];
+      const y57 = res.years[2];
+      return {
+        priced55: y55 ? (y55.acaPriced ? 1 : 0) : null,
+        priced56: y56 ? (y56.acaPriced ? 1 : 0) : null,
+        priced57: y57 ? (y57.acaPriced ? 1 : 0) : null,
+        credit55: y55?.acaCreditKept ?? null,
+        credit56: y56?.acaCreditKept ?? null,
+        credit57: y57?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-aca-family-benchmark-prices-family-year",
+    kind: "tax",
+    note: "Family benchmark prices a household-5 year (hand-derived, IRC §36B + Rev. Proc. 2025-25): both spouses under 65 and on the marketplace from the retirement year (born 1969 / 1980, retire at 57, plan year 2026), household of 5, other income $120,000, Do Nothing. FPL for a household of 5 on the 2025 guidelines is $15,650 + 4 × $5,500 = $37,650 (cliff $150,600); MAGI $120,000 is 318.73% of FPL, inside the flat 300–400% band, so the applicable percentage is 9.96% and the expected contribution is $11,952. With the family benchmark entered at $32,000 the year's benchmark is the FAMILY figure — not the couple $20,000 or the one-spouse $15,000 — and the credit is $32,000 − $11,952 = $22,048.",
+    expected: {
+      benchmark: 32000,
+      credit: 20048,
+      lifetimeAcaKept: 20048,
+      pctFpl: 318.73,
+      applicablePct: 9.96,
+      cliff: 150600,
+    },
+    actual: () => {
+      const plan = basePlan({
+        endAgePrimary: 57,
+        retirementAge: 57,
+        pretaxStart: 0,
+        otherOrdinaryAnnual: 120000,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 15000,
+        acaBenchmarkFamily: 32000,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      return {
+        benchmark: y?.detail.aca.benchmark ?? null,
+        credit: y?.acaCreditKept ?? null,
+        lifetimeAcaKept: res.lifetimeAcaKept,
+        pctFpl: y?.detail.aca.pctFpl ?? null,
+        applicablePct: y?.detail.aca.applicablePct ?? null,
+        cliff: y?.detail.aca.cliff ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-aca-family-benchmark-spouse-only-year-prices-single",
+    kind: "tax",
+    note: "Family benchmark must NOT price a spouse-only marketplace year (the who's-covered pin, hand-derived on the family case's shape): primary born 1960 is 66 in 2026 and on Medicare, spouse born 1980 is 46 and the only one on ACA, household size still 5, other income $120,000, Do Nothing, family benchmark entered at $32,000. Household size drives only the FPL math — FPL for a household of 5 is $37,650 (cliff $150,600), MAGI $120,000 is 318.73% of FPL, applicable percentage 9.96%, expected contribution $11,952 — but the benchmark is the ONE-SPOUSE figure $15,000, so the credit is $15,000 − $11,952 = $4,848, exactly the credit the same shape prices with the family field blank (diff $0). Pricing off the family figure here would invent $32,000 − $15,000 = $17,200 of phantom benchmark.",
+    expected: {
+      benchmark: 15000,
+      credit: 3048,
+      creditBlankFamily: 3048,
+      creditDiff: 0,
+      lifetimeAcaKept: 3048,
+    },
+    actual: () => {
+      const shape = {
+        birthYearPrimary: 1960,
+        endAgePrimary: 66,
+        retirementAge: 57,
+        pretaxStart: 0,
+        otherOrdinaryAnnual: 120000,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 15000,
+      };
+      const withFamily = simulateRothPlan(
+        basePlan({ ...shape, acaBenchmarkFamily: 32000 }),
+        DO_NOTHING,
+      );
+      const blankFamily = simulateRothPlan(
+        basePlan({ ...shape, acaBenchmarkFamily: null }),
+        DO_NOTHING,
+      );
+      const y = withFamily.years[0];
+      const creditBlank = blankFamily.years[0]?.acaCreditKept ?? null;
+      return {
+        benchmark: y?.detail.aca.benchmark ?? null,
+        credit: y?.acaCreditKept ?? null,
+        creditBlankFamily: creditBlank,
+        creditDiff:
+          y?.acaCreditKept != null && creditBlank != null
+            ? Math.round((y.acaCreditKept - creditBlank) * 100) / 100
+            : null,
+        lifetimeAcaKept: withFamily.lifetimeAcaKept,
+      };
+    },
+  },
+  {
+    id: "tax-aca-family-blank-identity",
+    kind: "tax",
+    note: "Blank family benchmark = today's behaviour (the identity pin): the SAME household-5 shape as tax-aca-family-benchmark-prices-family-year with the family field blank prices off the COUPLE benchmark — benchmark $20,000, credit $20,000 − $11,952 = $10,048 — and is bit-identical to a plan built the pre-build way (the family key absent entirely): lifetime ACA credit kept, lifetime federal tax, and ending pre-tax all diff $0. A blank family field can never move a figure.",
+    expected: {
+      benchmark: 20000,
+      credit: 8048,
+      acaDiff: 0,
+      fedDiff: 0,
+      pretaxDiff: 0,
+    },
+    actual: () => {
+      const shape = {
+        endAgePrimary: 57,
+        retirementAge: 57,
+        pretaxStart: 0,
+        otherOrdinaryAnnual: 120000,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 15000,
+      };
+      const blank = simulateRothPlan(
+        basePlan({ ...shape, acaBenchmarkFamily: null }),
+        DO_NOTHING,
+      );
+      const absentPlan = basePlan({ ...shape });
+      delete absentPlan.acaBenchmarkFamily;
+      const absent = simulateRothPlan(absentPlan, DO_NOTHING);
+      const y = blank.years[0];
+      const d = (a: number, b: number) => Math.round((a - b) * 100) / 100;
+      return {
+        benchmark: y?.detail.aca.benchmark ?? null,
+        credit: y?.acaCreditKept ?? null,
+        acaDiff: d(blank.lifetimeAcaKept, absent.lifetimeAcaKept),
+        fedDiff: d(blank.lifetimeFederalTax, absent.lifetimeFederalTax),
+        pretaxDiff: d(blank.endingPretax, absent.endingPretax),
+      };
+    },
+  },
+  {
+    id: "tax-aca-benchmark-household-2-and-1-unchanged",
+    kind: "tax",
+    note: "Household-2 and household-1 years are unchanged by the family field, even with a family benchmark entered (hand-derived as in the family case: the 300–400% FPL band is a flat 9.96%). Household of 2 (both spouses on the marketplace, other income $70,000; FPL $21,150, cliff $84,600, MAGI 330.97% of FPL, expected contribution $6,972): the benchmark stays the COUPLE $20,000 and the credit is $20,000 − $6,972 = $15,028 — the family $32,000 does not apply below a household of 3. Household of 1 (spouse born 1960 is 66 and on Medicare, so only the primary is on the marketplace; other income $50,000; FPL $15,650, cliff $62,600, MAGI 319.49% of FPL, expected contribution $4,980): the benchmark stays the ONE-SPOUSE $15,000 and the credit is $15,000 − $4,980 = $11,820.",
+    expected: {
+      bench2: 20000,
+      credit2: 13028,
+      bench1: 15000,
+      credit1: 10020,
+    },
+    actual: () => {
+      const hh2 = simulateRothPlan(
+        basePlan({
+          endAgePrimary: 57,
+          retirementAge: 57,
+          pretaxStart: 0,
+          otherOrdinaryAnnual: 70000,
+          acaHouseholdSize: 2,
+          acaHouseholdSizeAfter: 2,
+          acaBenchmarkCouple: 20000,
+          acaBenchmarkSingle: 15000,
+          acaBenchmarkFamily: 32000,
+        }),
+        DO_NOTHING,
+      );
+      const hh1 = simulateRothPlan(
+        basePlan({
+          birthYearSpouse: 1960,
+          endAgePrimary: 57,
+          retirementAge: 57,
+          pretaxStart: 0,
+          otherOrdinaryAnnual: 50000,
+          acaHouseholdSize: 1,
+          acaHouseholdSizeAfter: 1,
+          acaBenchmarkCouple: 20000,
+          acaBenchmarkSingle: 15000,
+          acaBenchmarkFamily: 32000,
+        }),
+        DO_NOTHING,
+      );
+      const y2 = hh2.years[0];
+      const y1 = hh1.years[0];
+      return {
+        bench2: y2?.detail.aca.benchmark ?? null,
+        credit2: y2?.acaCreditKept ?? null,
+        bench1: y1?.detail.aca.benchmark ?? null,
+        credit1: y1?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "aca-family-saved-shape-passthrough",
+    kind: "tax",
+    note: "Saved-shape passthrough for the family benchmark: a saved record carrying acaBenchmarkFamilyCents $32,000 (with couple $20,000 / one-spouse $15,000) converts through planInputsFromSaved — the one conversion the planner read, the optimizer, and a loaded scenario all flow through — to a plan whose household-5 year prices off the family figure (benchmark $32,000, credit $22,048 on the family case's hand-derived shape: MAGI $120,000 at 318.73% of the $37,650 FPL, 9.96% applicable, $11,952 expected). The same record with the family cents null converts to a blank family field and the year prices off the couple figure instead (benchmark $20,000, credit $8,048) — the saved-shape form of the blank identity.",
+    expected: {
+      familyDollars: 34000,
+      benchSet: 34000,
+      creditSet: 22048,
+      benchBlank: 20000,
+      creditBlank: 8048,
+    },
+    actual: () => {
+      const savedLike = (familyCents: number | null): RothSavedLike => ({
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 0,
+        rothCents: 0,
+        taxableCents: 0,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 57,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: 0,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: 0,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 12000000,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: 2000000,
+        acaBenchmarkSingleCents: 1500000,
+        acaBenchmarkFamilyCents: familyCents,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      });
+      const setInputs = planInputsFromSaved(savedLike(3400000), 2026);
+      const blankInputs = planInputsFromSaved(savedLike(null), 2026);
+      const setRes = setInputs ? simulateRothPlan(setInputs, DO_NOTHING) : null;
+      const blankRes = blankInputs ? simulateRothPlan(blankInputs, DO_NOTHING) : null;
+      return {
+        familyDollars: setInputs?.acaBenchmarkFamily ?? null,
+        benchSet: setRes?.years[0]?.detail.aca.benchmark ?? null,
+        creditSet: setRes?.years[0]?.acaCreditKept ?? null,
+        benchBlank: blankRes?.years[0]?.detail.aca.benchmark ?? null,
+        creditBlank: blankRes?.years[0]?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-aca-cliff-converges-with-gain-bearing-tax-payment",
+    kind: "tax",
+    note: "Fill ceilings bind the FINAL priced year (convergence): Fill capped at the ACA cliff only, MFJ 2026, household of 3 (cliff $106,600), no spending, no SS, tax paid from Taxable at 60% basis (40% gains). Solved conversion-only, the fill is $106,600 and its $8,432 tax (taxable $74,400: $2,480 + 12% × $49,600) realizes $3,372.80 of gains, pushing final ACA MAGI to $109,972.80 and the credit to $0. Iterating to convergence: re-solving against the realized gains gives $103,200 (the largest $100 step with conversion + $3,372.80 ≤ $106,600); its tax is $8,024 (taxable $71,000), realizing $3,209.60 of gains (taxed at 0% — ordinary taxable income $71,000 is inside the $98,900 0% space), so final ACA MAGI is $103,200 + $3,209.60 = $106,409.60 ≤ cliff. Credit at 399.29% FPL (flat 9.96% band): $20,000 − 9.96% × $106,409.60 = $9,401.60 kept.",
+    expected: { conversion: 103200, acaMagi: 106409.6, federalTax: 8024, credit: 9401.6 },
+    actual: () => {
+      const plan = basePlan({
+        taxableBasisPct: 60,
+        taxableStart: 1000000,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 20000,
+      });
+      const res = simulateRothPlan(plan, FILL_ACA_ONLY);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        acaMagi: y?.acaMagi ?? null,
+        federalTax: y?.federalTax ?? null,
+        credit: y?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-aca-cliff-converges-with-gain-bearing-spending",
+    kind: "tax",
+    note: "Same ACA-cliff convergence with $50,000/yr of spending drawn from Taxable (60% basis): the conversion-only fill ($106,600) plus $58,432 of taxable draws ($8,432 tax + $50,000 spending) realizes $23,372.80 of gains → final ACA MAGI $129,972.80, credit $0. Re-solving against those gains gives $83,200 (largest $100 step with conversion + $23,372.80 ≤ $106,600); its tax is $5,624 (taxable $51,000: $2,480 + 12% × $26,200), total draws $55,624 realize $22,249.60 of gains (0% space), so final ACA MAGI is $83,200 + $22,249.60 = $105,449.60 ≤ cliff, and the credit is $20,000 − 9.96% × $105,449.60 = $9,497.22.",
+    expected: { conversion: 83200, acaMagi: 105449.6, federalTax: 5624, credit: 9497.22 },
+    actual: () => {
+      const plan = basePlan({
+        taxableBasisPct: 60,
+        taxableStart: 1000000,
+        annualSpending: 50000,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 20000,
+      });
+      const res = simulateRothPlan(plan, FILL_ACA_ONLY);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        acaMagi: y?.acaMagi ?? null,
+        federalTax: y?.federalTax ?? null,
+        credit: y?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-irmaa-cap-converges-with-gain-bearing-spending",
+    kind: "tax",
+    note: "IRMAA Tier 1 cap (MAGI ≤ $274,000, 2026 MFJ) with gain-bearing draws: $50,000 spending from Taxable at 60% basis. The conversion-only fill is $274,000; its tax plus the spending draw realizes $37,291.20 of gains → final MAGI $311,291.20, Tier 2. Re-solving against the settled gains gives $233,600, whose settlement is a fixed point of the settlement iteration (FIX 1): every Taxable sale realizes 40% gains, so gains = 40% × ($50,000 spending + the tax T itself) and MAGI = $233,600 + gains = $269,546.71 — Tier 1 — with gains $35,946.71 and T = $39,866.78 satisfying gains = 40% × $89,866.78 exactly. Final federal tax: ordinary tax on $201,400 = $33,732, plus 15% on the gains (ordinary income is past the 0% space) $5,392.01, plus NIIT 3.8% × min($35,946.71, $269,546.71 − $250,000) = $742.77 → $39,866.78. (Pre-fix this pinned conversion $236,700 / MAGI $270,465.60 / tax $40,256.53: the reprice-delta sale's gains were unpriced, so the re-solve worked against $33,765.60 of gains instead of the full $35,946.71.)",
+    expected: { conversion: 233600, magi: 269546.71, tier: 1, federalTax: 39866.78 },
+    actual: () => {
+      const plan = basePlan({
+        taxableBasisPct: 60,
+        taxableStart: 1000000,
+        annualSpending: 50000,
+      });
+      const res = simulateRothPlan(plan, FILL_IRMAA1_ONLY);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        magi: y?.magi ?? null,
+        tier: y?.irmaaTierSet ?? null,
+        federalTax: y?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-bracket-cap-converges-with-pretax-draws",
+    kind: "tax",
+    note: "Bracket cap with pre-tax draws: age 60 (no withholding penalty), Fill 12% (taxable-income cap $100,800), Taxable $0, spending $50,050 drawn entirely from Pre-tax. The conversion-only fill is $133,000; settled with the $50,050 extra pre-tax draw its taxable income is $150,850 — the 22% bracket. Re-solving against the settled draw gives $71,900: at that conversion the settlement is a fixed point of the settlement iteration (FIX 1) — the first pricing (conversion + the $6,006 feedback debit) taxes $4,988.72, the draw reprices the year to $10,994.72, and the $6,006.00 reprice delta is debited from Pre-tax, exactly the feedback the pricing carried. Priced taxable income is $71,900 + $50,050 + $6,006 − $32,200 = $95,756 (under the $100,800 cap), marginal bracket 12%, federal tax $2,480 + 12% × ($95,756 − $24,800) = $10,994.72, AGI $127,956. (Pre-fix this pinned conversion $82,900 / tax $11,594 / AGI $132,950: the delta's pre-tax debit was never priced, so the re-solve never saw it.)",
+    expected: { conversion: 71900, bracket: 12, federalTax: 10994.72, agi: 127956 },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1966,
+        birthYearSpouse: 1977,
+        endAgePrimary: 60,
+        retirementAge: 60,
+        windowStartAge: 60,
+        annualSpending: 50050,
+      });
+      const res = simulateRothPlan(plan, FILL_12);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        bracket: y?.bracketPct ?? null,
+        federalTax: y?.federalTax ?? null,
+        agi: y?.agi ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-generic-elevated-rate-pill-text",
+    kind: "tax",
+    note: "Generic elevated-rate pill wording: a $50,000 MAGI-capped conversion in the 10% bracket with a 5% state rate is really taxed at 15.0% (10% federal + 5% state on the next $100), with no Social Security phasing in (no benefits at all). The pill must use the non-attributing parenthetical — in the seeded defaults (WA 0% state tax, basis blank) the usual causes are the $100-step bracket-edge straddle, the OBBBA senior-deduction phase-out, or NIIT, none of which the old \"(state tax / gains displacement)\" text admitted.",
+    expected: {
+      conversion: 50000,
+      emr: 15,
+      pill: "Effective rate above the bracket rate — the next $100 of conversion in this year would be taxed at 15.0%, not the 10% bracket rate (causes other than Social Security phase-in: this year's income straddling the top of the bracket, state tax, capital-gains displacement, or a deduction phase-out).",
+    },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000, stateRatePct: 5 });
+      const res = simulateRothPlan(plan, MAGI_CAP_50K);
+      const y = res.years[0];
+      const pill = y?.warnings.find((w) => w.kind === "torpedo")?.text ?? null;
+      return {
+        conversion: y?.conversion ?? null,
+        emr: y?.effectiveMarginalPct ?? null,
+        pill,
+      };
+    },
+  },
+  {
+    id: "tax-irmaa-tier5-pill-uses-deflated-floor",
+    kind: "tax",
+    note: "IRMAA Tier 5 \"just over the line\" pill proximity uses the SAME deflated floor as irmaaTierFor: the raw Tier 5 floor is $750,000 MFJ (Tier 4 ceiling $749,999), fixed through 2028 and deflated for the 2027–2028 steps — at 2.5% inflation the 2028 floor is $749,999 / 1.025² ≈ $713,861. In 2028 at age 63, MAGI $715,000 is ≈$1,139 over that floor (within the $2,500 proximity band → pill fires, count 1), while MAGI $720,000 is ≈$6,139 over (outside the band → no pill, count 0). Against the raw $750,000 floor both would have fired (each is ≤ $2,500 over-or-under it in the old subtraction), so the 720,000 case pins the deflation.",
+    expected: { tierAt715k: 5, pillAt715k: 1, tierAt720k: 5, pillAt720k: 0 },
+    actual: () => {
+      const mk = (magi: number) =>
+        simulateRothPlan(
+          basePlan({
+            startYear: 2028,
+            birthYearPrimary: 1965,
+            birthYearSpouse: 1976,
+            endAgePrimary: 63,
+            pretaxStart: 0,
+            otherOrdinaryAnnual: magi,
+          }),
+          DO_NOTHING,
+        ).years[0];
+      const y715 = mk(715000);
+      const y720 = mk(720000);
+      return {
+        tierAt715k: y715?.irmaaTierSet ?? null,
+        pillAt715k: y715 ? y715.warnings.filter((w) => w.kind === "irmaa").length : null,
+        tierAt720k: y720?.irmaaTierSet ?? null,
+        pillAt720k: y720 ? y720.warnings.filter((w) => w.kind === "irmaa").length : null,
+      };
+    },
+  },
+  {
+    id: "tax-irmaa-tier4-cap-uses-deflated-top",
+    kind: "tax",
+    note: "IRMAA Tier 4 CAP uses the SAME deflated top-of-tier boundary as the classifier (irmaaTierUpTo): the Tier 4 ceiling is $749,999 MFJ in the 2026 law row, fixed through 2028, so in today's dollars at 2.5% inflation the 2028 top of Tier 4 is $749,999 / 1.025² = $713,859.85 — not the raw $749,999. Direct fill (2028, no other income): the largest $100 step at or under $713,859.85 is $713,800. Through the full simulation (age 57 in 2028, $50,000 of spending drawn from Taxable at 60% basis, conversion tax withheld from the conversion): that fill's spending draw realizes $20,000 of gains (40% × $50,000), landing final MAGI at $733,800 — over the deflated cap and Tier 5 by the classifier, though under the raw ceiling — so the convergence check (same deflated cap) re-solves against the settled gains to $691,900, and the settled year lands at $691,900 + $21,904 = $713,804 MAGI — under the $713,859.85 deflated cap, classified Tier 4. The $21,904 of gains is the $20,000 spending-draw gains plus $1,904 the settlement iteration (FIX 1) prices from the tax channels' own Taxable sales (the reprice delta and the unpaid-tax debit, at the pool's 40% gain rate). Final federal tax: ordinary tax on $659,700 of ordinary taxable income ($713,804 AGI − $32,200 standard deduction − $21,904 gains) is $2,480 + $9,120 + $24,332 + $46,116 + $34,848 + 35% × $147,250 = $168,433.50, plus 20% on the $21,904 gains (ordinary income is past the 20% floor) $4,380.80, plus NIIT 3.8% × $21,904 $832.35 → $173,646.65. (Pre-FIX-1 this pinned conversion $693,800 / MAGI $713,800 / tax $173,858.50, with only the $20,000 of draw gains priced. Before the cap fix the same plan settled at MAGI $749,900 — between $713,859.85 and $750,000 — classified and priced Tier 5 while the raw-ceiling machinery reported the Tier 4 cap respected.)",
+    expected: { fillDirect: 713800, conversion: 691900, magi: 713804, tier: 4, federalTax: 173646.65 },
+    actual: () => {
+      const fillDirect = fillConversion({
+        base: basePrice({ calendarYear: 2028 }),
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: 4,
+          ltcgZeroCap: false,
+          acaCliffCap: false,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+        maxConversion: 2000000,
+        acaCliff: null,
+      });
+      const plan = basePlan({
+        startYear: 2032,
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        endAgePrimary: 57,
+        retirementAge: 57,
+        pretaxStart: 2000000,
+        taxableStart: 1000000,
+        taxableBasisPct: 60,
+        annualSpending: 50000,
+        payTaxFrom: "conversion",
+      });
+      const res = simulateRothPlan(plan, FILL_IRMAA4_ONLY);
+      const y = res.years[0];
+      return {
+        fillDirect,
+        conversion: y?.conversion ?? null,
+        magi: y?.magi ?? null,
+        tier: y?.irmaaTierSet ?? null,
+        federalTax: y?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-detail-priceyear-layers",
+    kind: "tax",
+    note: "\"Show the math\" price-year breakdown, hand-derived: (a) the torpedo case (MFJ 2026, $80,000 conversion, $100,000 SS) has $126,900 of ordinary taxable income, taxed in layers 10% × $24,800 = $2,480, 12% × $76,000 = $9,120, 22% × $26,100 = $5,742 — layers sum to the $17,342 ordinary tax. (b) $150,000 of long-term gains alone: taxable income $117,800 (after the $32,200 standard deduction), all of it gains — $98,900 at 0% (the MFJ 0% top), $18,900 at 15%, $0 at 20%, gains tax $2,835, no NIIT (MAGI $150,000 < $250,000), no ordinary layers. (c) Both spouses 65+ at $150,000: standard deduction = $32,200 base + 2 × $1,650 add-ons = $35,500, senior deduction $12,000.",
+    expected: {
+      layers: "10:24800:2480|12:76000:9120|22:26100:5742",
+      layersSumToOrdinaryTax: 0,
+      gainsAt0: 98900,
+      gainsAt15: 18900,
+      gainsAt20: 0,
+      gainsTax: 2835,
+      gainsLayers: 0,
+      baseStd: 32200,
+      addonTotal: 3300,
+      standardDeduction: 35500,
+      seniorDeduction: 12000,
+    },
+    actual: () => {
+      const p = priceYear(
+        basePrice({ agePrimary: 64, ageSpouse: 60, conversion: 80000, ssBenefits: 100000 }),
+      );
+      const g = priceYear(basePrice({ ltcg: 150000 }));
+      const s = priceYear(
+        basePrice({ agePrimary: 66, ageSpouse: 65, otherOrdinary: 150000 }),
+      );
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      return {
+        layers: p.bracketLayers.map((l) => `${l.ratePct}:${l.amount}:${l.tax}`).join("|"),
+        layersSumToOrdinaryTax: r2(
+          p.bracketLayers.reduce((a, l) => a + l.tax, 0) - p.ordinaryTax,
+        ),
+        gainsAt0: g.gainsAt0,
+        gainsAt15: g.gainsAt15,
+        gainsAt20: g.gainsAt20,
+        gainsTax: g.ltcgTax,
+        gainsLayers: g.bracketLayers.length,
+        baseStd: s.baseStandardDeduction,
+        addonTotal: s.age65AddonTotal,
+        standardDeduction: s.standardDeduction,
+        seniorDeduction: s.seniorDeduction,
+      };
+    },
+  },
+  {
+    id: "tax-detail-year-reconciles",
+    kind: "tax",
+    note: "\"Show the math\" reconciliation on a settled plan year ($50,000 MAGI-capped conversion, age 57, $60,000 of Social Security from 57, $59,000 spending, Taxable $1,000,000 at 60% basis so the tax payment realizes gains): the panel's components must reconcile with the year row exactly — income pieces (other + RMD + conversion + extra pre-tax draw + gains + taxable SS) sum to AGI; deductions = standard + senior; AGI − deductions = taxable income; bracket-layer amounts sum to ordinary taxable income and layer taxes sum to ordinary tax; gains at 0/15/20 sum to the gains in taxable income and price to the gains tax at 15%/20%; ordinary tax + gains tax + NIIT = the row's federal tax. The same detail must equal a direct priceYear call on the settled inputs, field for field. Social Security is only partly taxable this year (0 < taxable < 85% of benefits) and gains were realized (> 0).",
+    expected: {
+      incomeToAgi: 0,
+      deductionsSum: 0,
+      agiToTaxable: 0,
+      layerAmounts: 0,
+      layerTaxes: 0,
+      gainsStack: 0,
+      gainsTaxFromStack: 0,
+      stackToFederal: 0,
+      detailVsPriceYearTax: 0,
+      detailVsPriceYearTaxable: 0,
+      ssPartiallyTaxable: 1,
+      gainsRealized: 1,
+    },
+    actual: () => {
+      const plan = basePlan({
+        taxableStart: 1000000,
+        taxableBasisPct: 60,
+        annualSpending: 59000,
+        ssPrimaryAnnual: 60000,
+        ssPrimaryStartAge: 57,
+      });
+      const res = simulateRothPlan(plan, MAGI_CAP_50K);
+      const y = res.years[0];
+      const d = y?.detail;
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      if (!y || !d) {
+        return {
+          incomeToAgi: null, deductionsSum: null, agiToTaxable: null,
+          layerAmounts: null, layerTaxes: null, gainsStack: null,
+          gainsTaxFromStack: null, stackToFederal: null,
+          detailVsPriceYearTax: null, detailVsPriceYearTaxable: null,
+          ssPartiallyTaxable: null, gainsRealized: null,
+        };
+      }
+      const direct = priceYear({
+        calendarYear: y.year,
+        filingStatus: "mfj",
+        agePrimary: y.agePrimary,
+        ageSpouse: y.ageSpouse,
+        otherOrdinary: d.otherOrdinary,
+        rmd: y.rmd,
+        conversion: y.conversion,
+        extraPreTaxDraw: d.extraPreTaxDraw,
+        ssBenefits: y.ssBenefits,
+        taxExemptInterest: d.taxExemptInterest,
+        ltcg: d.ltcg,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+      });
+      return {
+        incomeToAgi: r2(
+          d.otherOrdinary + y.rmd + y.conversion + d.extraPreTaxDraw + d.ltcg + d.ssTaxable - d.agi,
+        ),
+        deductionsSum: r2(d.standardDeduction + d.seniorDeduction - d.deductions),
+        agiToTaxable: r2(d.agi - d.deductions - y.taxableIncome),
+        layerAmounts: r2(
+          d.bracketLayers.reduce((a, l) => a + l.amount, 0) - d.ordinaryTaxableIncome,
+        ),
+        layerTaxes: r2(d.bracketLayers.reduce((a, l) => a + l.tax, 0) - d.ordinaryTax),
+        gainsStack: r2(d.gainsAt0 + d.gainsAt15 + d.gainsAt20 - d.gainsInTaxableIncome),
+        gainsTaxFromStack: r2(0.15 * d.gainsAt15 + 0.2 * d.gainsAt20 - d.ltcgTax),
+        stackToFederal: r2(d.ordinaryTax + d.ltcgTax + d.niit - y.federalTax),
+        detailVsPriceYearTax: r2(direct.federalTax - y.federalTax),
+        detailVsPriceYearTaxable: r2(direct.taxableIncome - y.taxableIncome),
+        ssPartiallyTaxable: d.ssTaxable > 0 && d.ssTaxable < 0.85 * y.ssBenefits ? 1 : 0,
+        gainsRealized: d.ltcg > 0 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-detail-rmd-line",
+    kind: "tax",
+    note: "\"Show the math\" RMD line: at 75 with a $1,000,000 prior Dec 31 pre-tax balance, the detail names the balance, the divisor, and the table — Uniform Lifetime 24.6 → $40,650.41 when the spouse is not sole beneficiary; Joint Life 25.3 (owner 75 / spouse 64) → $39,525.69 when she is sole beneficiary and 11 years younger.",
+    expected: {
+      uniformPrior: 1000000,
+      uniformDivisor: 24.6,
+      uniformTable: "uniform",
+      uniformRmd: 40650.41,
+      jointPrior: 1000000,
+      jointDivisor: 25.3,
+      jointTable: "joint",
+      jointRmd: 39525.69,
+    },
+    actual: () => {
+      const mk = (sole: boolean) =>
+        simulateRothPlan(
+          basePlan({
+            birthYearPrimary: 1951,
+            birthYearSpouse: 1962,
+            endAgePrimary: 75,
+            retirementAge: 60,
+            pretaxStart: 1000000,
+            spouseSoleBeneficiary: sole,
+          }),
+          DO_NOTHING,
+        ).years[0];
+      const u = mk(false);
+      const j = mk(true);
+      return {
+        uniformPrior: u?.detail.priorPretaxBalance ?? null,
+        uniformDivisor: u?.detail.rmdDivisor ?? null,
+        uniformTable: u?.detail.rmdTable ?? null,
+        uniformRmd: u?.rmd ?? null,
+        jointPrior: j?.detail.priorPretaxBalance ?? null,
+        jointDivisor: j?.detail.rmdDivisor ?? null,
+        jointTable: j?.detail.rmdTable ?? null,
+        jointRmd: j?.rmd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-detail-fill-irmaa-aca",
+    kind: "tax",
+    note: "\"Show the math\" fill / IRMAA / ACA details: (a) Fill 12% with no other income stops at the bracket top — the cap record shows taxable income $100,800 of the $100,800 cap, $0 of room, bound = true, bound label names the 12% bracket. (b) IRMAA lookback: a Do Nothing plan from 65 with $300,000/yr of other income pays its first priced IRMAA at 67 (2028), Tier 2 on 2026 MAGI of $300,000 — (Part B $405.80 − $202.90 standard + Part D $37.50) × 12 = $2,884.80 for the one person on Medicare; at 65 the paid tier is null (the setting MAGI predates the plan). (c) ACA detail for the priced 57 year of the retirement-start plan (2028 coverage, household of 2, $20,000 benchmark): guideline 2027 resolves by the newest-row fallback to the 2026 guidelines, so the cliff is $86,560, income is 184.84% of the $21,640 poverty line, applicable % 5.87, credit $17,652.23. (Re-pinned 2026-10-14 from cliff $84,600 / 189.13% / 6.08 / $17,569.66 — the delta is the guideline change alone, as in tax-aca-pricing-starts-at-retirement.)",
+    expected: {
+      capActual: 100800,
+      capCap: 100800,
+      capRoom: 0,
+      capBound: 1,
+      boundLabel: "Top of the 12% bracket",
+      paidTierAt65: null,
+      paidTierAt67: 2,
+      paidSourceYear: 2026,
+      paidSourceMagi: 300000,
+      irmaaPaidAt67: 2884.8,
+      tierSetAt67: 2,
+      acaCliff: 86560,
+      acaPctFpl: 184.84,
+      acaApplicablePct: 5.87,
+      acaCredit: 17652.23,
+      acaBenchmark: 20000,
+    },
+    actual: () => {
+      const fillRes = simulateRothPlan(basePlan({ taxableStart: 1000000 }), FILL_12);
+      const fy = fillRes.years[0];
+      const cap = fy?.detail.fill.caps[0];
+      const irmaaRes = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1972,
+          endAgePrimary: 67,
+          retirementAge: 65,
+          windowStartAge: 65,
+          pretaxStart: 0,
+          otherOrdinaryAnnual: 300000,
+          annualSpending: 300000,
+        }),
+        DO_NOTHING,
+      );
+      const y65 = irmaaRes.years[0];
+      const y67 = irmaaRes.years[2];
+      const acaRes = simulateRothPlan(
+        basePlan({
+          startYear: 2030,
+          birthYearPrimary: 1975,
+          birthYearSpouse: 1985,
+          endAgePrimary: 57,
+          retirementAge: 57,
+          pretaxStart: 0,
+          otherOrdinaryAnnual: 40000,
+          acaHouseholdSize: 2,
+          acaHouseholdSizeAfter: 2,
+          acaBenchmarkCouple: 20000,
+          acaBenchmarkSingle: 20000,
+        }),
+        DO_NOTHING,
+      );
+      const ay = acaRes.years[2];
+      return {
+        capActual: cap?.actual ?? null,
+        capCap: cap?.cap ?? null,
+        capRoom: cap?.room ?? null,
+        capBound: cap ? (cap.bound ? 1 : 0) : null,
+        boundLabel: fy?.detail.fill.boundLabel ?? null,
+        paidTierAt65: y65?.detail.irmaa.paidTier ?? null,
+        paidTierAt67: y67?.detail.irmaa.paidTier ?? null,
+        paidSourceYear: y67?.detail.irmaa.paidSourceYear ?? null,
+        paidSourceMagi: y67?.detail.irmaa.paidSourceMagi ?? null,
+        irmaaPaidAt67: y67?.irmaaPaid ?? null,
+        tierSetAt67: y67?.detail.irmaa.tierSet ?? null,
+        acaCliff: ay?.detail.aca.cliff ?? null,
+        acaPctFpl: ay?.detail.aca.pctFpl ?? null,
+        acaApplicablePct: ay?.detail.aca.applicablePct ?? null,
+        acaCredit: ay?.acaCreditKept ?? null,
+        acaBenchmark: ay?.detail.aca.benchmark ?? null,
+      };
+    },
+  },
+  {
+    id: "opt-never-worse-than-do-nothing",
+    kind: "tax",
+    note: "Optimizer floor: Do Nothing is in the candidate set, so the winner can never score worse than Do Nothing on the optimizer's own objective (lifetime tax + penalties + IRMAA − ACA credit kept + terminal tax on leftover pre-tax at the heir rate). Checked on two unlike plans — the Social Security torpedo plan and the ACA plan below — and the scan tests the full candidate grid for each: 252 strategies × all six draw orders, plus Do Nothing at the plan's order = 1,513 scored candidates. (The count was 253 before the draw-order search existed; no price in this suite moved when the grid grew.)",
+    expected: { candidatesTorpedo: 1513, candidatesAca: 1513, winnerBeatsTorpedo: 1, winnerBeatsAca: 1 },
+    actual: () => {
+      const torp = runOptimizer(optTorpedoPlan());
+      const aca = runOptimizer(optAcaPlan());
+      return {
+        candidatesTorpedo: torp.candidatesTested,
+        candidatesAca: aca.candidatesTested,
+        winnerBeatsTorpedo: torp.winner.cost.netCost <= torp.doNothing.cost.netCost + 0.005 ? 1 : 0,
+        winnerBeatsAca: aca.winner.cost.netCost <= aca.doNothing.cost.netCost + 0.005 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "opt-zero-pretax-crowning",
+    kind: "tax",
+    note: "Do Nothing tie-break crowning: the golden (anchor) plan shape with the pre-tax balance zeroed — nothing can convert, so within any one claiming-age combination every candidate prices the identical plan and ties exactly. The joint search prices 2,277 candidates (9 claiming-age combinations × 253); the best combination (claim 64) ties all 253 of its candidates at net −$196,615.12, Do Nothing's own score there, and the crowned winner must BE Do Nothing (claim 64), not the alphabetically-first converting candidate. The fixed/draw-order search at the entered claiming ages ties all 1,513 candidates at −$141,651.72 and must likewise crown Do Nothing. Before the tie-break, both searches crowned a converting candidate on the key tie-break despite the exact tie.",
+    expected: {
+      candidates: 2277,
+      tiedAtWinningNet: 253,
+      winnerIsDoNothing: 1,
+      winnerNet: -141264,
+      winnerClaimAge: 65,
+      doNothingNet: -141264,
+      fixedCandidates: 1513,
+      fixedTied: 1513,
+      fixedWinnerIsDoNothing: 1,
+      fixedWinnerNet: -111936,
+    },
+    actual: () => {
+      const base = goldenWorkPlan();
+      if (!base) {
+        return {
+          candidates: null, tiedAtWinningNet: null, winnerIsDoNothing: null,
+          winnerNet: null, winnerClaimAge: null, doNothingNet: null,
+          fixedCandidates: null, fixedTied: null, fixedWinnerIsDoNothing: null,
+          fixedWinnerNet: null,
+        };
+      }
+      const plan = { ...base, pretaxStart: 0, pretaxSpouseStart: 0 };
+      const joint = runJointOptimizer(plan);
+      const fixed = runOptimizer(plan);
+      return {
+        candidates: joint.candidatesTested,
+        tiedAtWinningNet: joint.scored.filter(
+          (s) => s.cost.netCost === joint.winner.cost.netCost,
+        ).length,
+        winnerIsDoNothing: joint.winner.spec.key === DO_NOTHING_SPEC.key ? 1 : 0,
+        winnerNet: joint.winner.cost.netCost,
+        winnerClaimAge: joint.winner.claimAges.primaryAge,
+        doNothingNet: joint.doNothing.cost.netCost,
+        fixedCandidates: fixed.candidatesTested,
+        fixedTied: fixed.scored.filter(
+          (s) => s.cost.netCost === fixed.winner.cost.netCost,
+        ).length,
+        fixedWinnerIsDoNothing: fixed.winner.spec.key === DO_NOTHING_SPEC.key ? 1 : 0,
+        fixedWinnerNet: fixed.winner.cost.netCost,
+      };
+    },
+  },
+  {
+    id: "opt-torpedo-guardrail-pauses-fill",
+    kind: "tax",
+    note: "Torpedo guardrail: born 1961, Social Security $48,000/yr from 65, pre-tax $1,200,000, window 65–74. The naive Fill 22% converts $204,700 in the first year (2026), blowing straight through the phase-in until benefits are 85% taxed. The optimizer's winner converts $87,800 that year, and the Fill 22% candidate WITH the marginal-rate guardrail converts $40,900 — the guardrail stops the fill where the next $100 would be taxed above 22% (the torpedo zone), which is the guardrail effect visible in the schedule. (Winner conversion RE-PINNED by the BASIS-DRIFT build from $87,800: the torpedo plan's basis % is an explicitly set 100% at a 3% return, so the drift ledger erodes the basis share as the balance compounds and the winner's lifetime pricing — not its first year, which is identical — re-solves to a smaller first-year fill. The naive and guardrail first-year figures are year-1 prices and are unmoved, as drift requires.) (Re-pinned under the settlement iteration, FIX 1 — the winner's first-year fill moves from the drift-era $88,200 back to $87,800: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: { naiveConv: 204700, winnerConv: 87800, guardrailConv: 40900, winnerLess: 1, guardrailLess: 1 },
+    actual: () => {
+      const plan = optTorpedoPlan();
+      const naive = simulateRothPlan(plan, FILL_22).years[0];
+      const scored = scoreAllCandidates(plan);
+      const winner = scored[0];
+      const g22 = scored.find(
+        (s) =>
+          s.spec.guardrail &&
+          !s.spec.bunching &&
+          s.spec.windowKind === "stopRmd" &&
+          drawOrderKey(s.spec.drawOrder) === drawOrderKey(DEFAULT_DRAW_ORDER) &&
+          s.spec.ceilings.bracketTopPct === 22 &&
+          s.spec.ceilings.irmaaTierCap == null &&
+          !s.spec.ceilings.acaCliffCap &&
+          s.spec.ceilings.magiCap == null,
+      );
+      const naiveConv = naive?.conversion ?? null;
+      const winnerConv = winner?.result.years[0]?.conversion ?? null;
+      const guardrailConv = g22?.result.years[0]?.conversion ?? null;
+      return {
+        naiveConv,
+        winnerConv,
+        guardrailConv,
+        winnerLess: naiveConv != null && winnerConv != null && winnerConv < naiveConv ? 1 : 0,
+        guardrailLess:
+          naiveConv != null && guardrailConv != null && guardrailConv < naiveConv ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "opt-terminal-term-drives-conversion",
+    kind: "tax",
+    note: "Terminal term: other ordinary income $120,000/yr (= spending, so no spending draws — but conversion taxes are paid from Taxable, and those payments are draws), pre-tax $1,500,000, return 4%. At an heir rate of 0% leftover pre-tax is free in the objective, so the winner converts $685,100 over the plan; at 22% the terminal tax on what is left standing makes converting now worthwhile and the winner converts $1,627,700 — the winner moves toward MORE conversion when the terminal term is priced, which is exactly why the term is required. (Conversions RE-PINNED by the BASIS-DRIFT build from $720,000 / $1,625,100: the plan's basis % is an explicitly set 100% at a 4% return, so tax payments out of Taxable in later years realize drifted gains the flat model priced at $0, and both winners re-solve.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: { convHeir0: 685100, convHeir22: 1627700, moreAt22: 1 },
+    actual: () => {
+      const totalConv = (heirRatePct: number) => {
+        const res = runOptimizer(optTerminalPlan(heirRatePct));
+        return Math.round(
+          res.winner.result.years.reduce((s, y) => s + y.conversion, 0) * 100,
+        ) / 100;
+      };
+      const convHeir0 = totalConv(0);
+      const convHeir22 = totalConv(22);
+      return { convHeir0, convHeir22, moreAt22: convHeir22 > convHeir0 ? 1 : 0 };
+    },
+  },
+  {
+    id: "opt-heir-rate-sensitivity-strip",
+    kind: "tax",
+    note: "Heir-rate sensitivity strip: on the terminal-term plan (pre-tax $1,500,000, other income $120,000/yr, Do Nothing ends with $2,703,646.46 of pre-tax still standing), the strip re-runs the whole search at heir rates 0% / 22% / 32% with nothing else changed. At 0% leftover pre-tax is free, so a $200,000 MAGI cap wins converting $685,100 and saving only $19,818.50 vs Do Nothing. At 22% the winner flips to Fill 24% converting $1,627,700, and the saving grows to $574,518.68; at 32% the same winner's saving grows again to $844,883.33 — the higher the heir rate, the more Do Nothing's ending pre-tax balance is charged, so converting is worth more. And at the plan's own (saved) rate of 22%, the strip's figures equal the main optimizer run's figures exactly — same winner, same net cost, same saving — because the strip line IS a full optimizer run at that rate, not a re-pricing of the main run. (Conversions and savings RE-PINNED by the BASIS-DRIFT build from $720,000 / $1,625,100 / $1,625,100 and $23,519.13 / $580,869.31 / $851,233.96 — same set-100%-basis drift mechanism as opt-terminal-term-drives-conversion; Do Nothing's own net is unmoved here because its tax is paid from surplus cash, so no taxable draw ever realizes a drifted gain.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      stripMatchesMainWinner: 1,
+      stripMatchesMainNetCost: 1,
+      stripMatchesMainSaving: 1,
+      winnerFlipsFromZeroRate: 1,
+      convHeir0: 685100,
+      convHeir22: 1627700,
+      convHeir32: 1627700,
+      savingGrowsWithRate: 1,
+      savingHeir0: 19818.5,
+      savingHeir22: 574518.68,
+      savingHeir32: 844883.33,
+      doNothingChargedMoreWithRate: 1,
+    },
+    actual: () => {
+      const plan = optTerminalPlan(22);
+      const main = runOptimizer(plan);
+      const strip = [0, 22, 32].map((rate) => optimizerHeirSensitivity(plan, rate));
+      const at = (rate: number) => strip.find((s) => s.heirRatePct === rate);
+      const s0 = at(0);
+      const s22 = at(22);
+      const s32 = at(32);
+      const totalConv = (w: ScoredCandidate) =>
+        Math.round(w.result.years.reduce((sum, y) => sum + y.conversion, 0) * 100) / 100;
+      const saving = (s: { winner: ScoredCandidate; doNothing: ScoredCandidate }) =>
+        Math.round((s.doNothing.cost.netCost - s.winner.cost.netCost) * 100) / 100;
+      return {
+        stripMatchesMainWinner:
+          s22 && s22.winner.spec.key === main.winner.spec.key ? 1 : 0,
+        stripMatchesMainNetCost:
+          s22 && s22.winner.cost.netCost === main.winner.cost.netCost ? 1 : 0,
+        stripMatchesMainSaving:
+          s22 &&
+          saving(s22) ===
+            Math.round((main.doNothing.cost.netCost - main.winner.cost.netCost) * 100) / 100
+            ? 1
+            : 0,
+        winnerFlipsFromZeroRate:
+          s0 && s22 && s0.winner.spec.key !== s22.winner.spec.key ? 1 : 0,
+        convHeir0: s0 ? totalConv(s0.winner) : null,
+        convHeir22: s22 ? totalConv(s22.winner) : null,
+        convHeir32: s32 ? totalConv(s32.winner) : null,
+        savingGrowsWithRate:
+          s0 && s22 && s32 && saving(s0) < saving(s22) && saving(s22) < saving(s32)
+            ? 1
+            : 0,
+        savingHeir0: s0 ? saving(s0) : null,
+        savingHeir22: s22 ? saving(s22) : null,
+        savingHeir32: s32 ? saving(s32) : null,
+        doNothingChargedMoreWithRate:
+          s0 && s22 && s32 &&
+          s0.doNothing.cost.netCost < s22.doNothing.cost.netCost &&
+          s22.doNothing.cost.netCost < s32.doNothing.cost.netCost
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "opt-aca-bunching-beats-level-cliff",
+    kind: "tax",
+    note: "ACA bunching: both spouses under 65 from 57, other income $35,000/yr, benchmark premium $12,000/yr priced, pre-tax $900,000, 0% return. The best LEVEL cliff-respecting candidate (fill up to the ACA cliff every year) scores a $17,861.40 lifetime net cost; the best bunching candidate — alternate a big conversion year (credit forfeited) with a $0 year (credit kept at the low applicable percentage) — scores $5,027.63. On this constructed case the alternating schedule beats the level cliff schedule on the same net-cost objective. (Re-pinned 2026-10-14 for the newest-row FPL fallback, hand-reconciled against the pre-fallback run: bunching's winner is the same candidate with identical tax / terminal / conversions — only its kept credits moved, +$63.22 in each $0 year 2029–2043 and +$64.65 in 2044, +$570.41 in all, so its net fell $5,598.04 → $5,027.63. The level-cliff winner converts $1,900/yr more in 2028–2034 as the household-of-2 cliff rises $84,600 → $86,560: tax +$1,543.43, terminal −$2,810.35 (ending pre-tax −$12,774.31 × 22%), kept credits −$555.61 — net $18,572.71 → $17,861.40.)",
+    expected: { bestBunching: 5027.63, bestLevelCliff: 17861.4, bunchingWins: 1 },
+    actual: () => {
+      const scored = scoreAllCandidates(optAcaPlan());
+      const bunch = scored.filter((s) => s.spec.bunching);
+      const cliff = scored.filter((s) => s.spec.ceilings.acaCliffCap && !s.spec.bunching);
+      const bestBunching = bunch[0]?.cost.netCost ?? null;
+      const bestLevelCliff = cliff[0]?.cost.netCost ?? null;
+      return {
+        bestBunching,
+        bestLevelCliff,
+        bunchingWins:
+          bestBunching != null && bestLevelCliff != null && bestBunching < bestLevelCliff
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "opt-winner-reproduces-from-saved-parameters",
+    kind: "tax",
+    note: "Winner reproduction: the winner's saved parameters — its ceilings, its window stop age, and its guardrail / bunching flags — re-run through the standard engine reproduce the optimizer's reported lifetime totals to the cent (federal tax, IRMAA, ACA credit kept, ending pre-tax, and the net-cost objective). This is what makes a one-click Save-as-scenario of the winner exact rather than approximate.",
+    expected: { fedDiff: 0, irmaaDiff: 0, acaDiff: 0, pretaxDiff: 0, netCostDiff: 0 },
+    actual: () => {
+      const plan = optAcaPlan();
+      const winner = runOptimizer(plan).winner;
+      const repro = simulateRothPlan(
+        { ...plan, windowStopAge: winner.spec.windowStopAge },
+        candidateStrategy(winner.spec),
+      );
+      const rb = netCostBreakdown(repro, plan.heirRatePct);
+      const d = (a: number, b: number) => Math.round((a - b) * 100) / 100;
+      return {
+        fedDiff: d(repro.lifetimeFederalTax, winner.result.lifetimeFederalTax),
+        irmaaDiff: d(repro.lifetimeIrmaa, winner.result.lifetimeIrmaa),
+        acaDiff: d(repro.lifetimeAcaKept, winner.result.lifetimeAcaKept),
+        pretaxDiff: d(repro.endingPretax, winner.result.endingPretax),
+        netCostDiff: d(rb.netCost, winner.cost.netCost),
+      };
+    },
+  },
+  {
+    id: "opt-scenario-save-preserves-inputs",
+    kind: "tax",
+    note: "Scenario save is side-effect-free on the saved inputs: a save + delete round trip through the scenario writers' raw split/join (splitRothBlob / joinRothBlob — the only path saveRothScenario / deleteRothScenario / renameRothScenario use for the inputs record) leaves the saved Roth inputs byte-identical, null optimizerGuardrail / optimizerBunching included. The inputs record under test carries both variant flags as explicit nulls ('never set' — the state of a record written before the optimizer existed). DELIBERATE RE-PIN (API follow-on 1): this fixture previously pinned the whole blob string unchanged across the round trip; since the revision-locking build a scenario save legitimately ADVANCES the record's revision (each write stamps stored + 1 through joinRothBlob's third argument, the path mutateRothScenarios runs), so the whole string changes by design. The invariant actually being pinned is unchanged — the INPUTS SEGMENT byte-identical and the scenarios restored — plus the revision advanced by exactly 2 across the round trip (the original blob is a legacy two-key document at revision 0, so the final document is exactly the original plus a trailing revision key at 2). The two-argument join form still produces today's two-key document byte-for-byte (pinned below), so every other split/join call site is unaffected.",
+    expected: {
+      inputsPreservedAfterSave: 1,
+      scenarioCountAfterSave: 1,
+      guardrailStillNull: 1,
+      bunchingStillNull: 1,
+      inputsPreservedAfterDelete: 1,
+      scenarioCountAfterDelete: 0,
+      revisionAfterSave: 1,
+      revisionAfterRoundTrip: 2,
+      finalBlobExactAfterRoundTrip: 1,
+      twoArgJoinStillTwoKey: 1,
+    },
+    actual: () => {
+      // The saved inputs record under test, as a compact JSON
+      // literal so key order and explicit nulls are pinned exactly.
+      const inputsJson =
+        '{"birthYearPrimary":1975,"birthYearSpouse":1985,"filingStatus":"mfj","pretaxCents":null,"rothCents":null,"taxableCents":null,"hsaCents":null,"taxableBasisPct":null,"annualSpendingCents":8707584,"retirementAge":57,"endAge":95,"expectedReturnPct":5.75,"ssPrimaryAnnualCents":4800000,"ssPrimaryStartAge":67,"ssSpouseAnnualCents":null,"ssSpouseStartAge":null,"otherOrdinaryCents":null,"taxExemptInterestCents":null,"convertedAlreadyCents":null,"windowStartAge":57,"windowStopAge":74,"payTaxFrom":"taxable","protectMinTaxableCents":5000000,"spouseSoleBeneficiary":true,"acaHouseholdSize":3,"acaHouseholdSizeAfter":2,"acaStepDownYear":null,"acaBenchmarkCoupleCents":null,"acaBenchmarkSingleCents":null,"inflationPct":2.5,"stateRatePct":0,"heirRatePct":22,"ceilings":{"bracketTopPct":12,"irmaaTierCap":null,"ltcgZeroCap":false,"acaCliffCap":false,"magiCapCents":null},"optimizerGuardrail":null,"optimizerBunching":null}';
+      const original = `{"inputs":${inputsJson},"scenarios":[]}`;
+      const scenario = { name: "Scenario 1", ...(JSON.parse(inputsJson) as object) };
+      // Save: split the stored blob, join it back with the new
+      // scenario appended and the revision stamped stored + 1 —
+      // the inputs travel as the raw value (the exact path
+      // mutateRothScenarios runs for saveRothScenario).
+      const before = splitRothBlob(original);
+      const afterSave = before
+        ? joinRothBlob(before.inputsRaw, [scenario], parseRothBlobRevision(original) + 1)
+        : "";
+      const savedSplit = splitRothBlob(afterSave);
+      const savedScenarios = savedSplit
+        ? (savedSplit.scenariosRaw as unknown[])
+        : [];
+      const savedInputs = savedSplit
+        ? (savedSplit.inputsRaw as Record<string, unknown>)
+        : {};
+      // Delete: same split/join with the scenario removed again,
+      // revision stamped once more.
+      const afterDelete = savedSplit
+        ? joinRothBlob(savedSplit.inputsRaw, [], parseRothBlobRevision(afterSave) + 1)
+        : "";
+      const finalSplit = splitRothBlob(afterDelete);
+      const finalScenarios = finalSplit
+        ? (finalSplit.scenariosRaw as unknown[])
+        : [null];
+      return {
+        inputsPreservedAfterSave:
+          savedSplit && JSON.stringify(savedSplit.inputsRaw) === inputsJson ? 1 : 0,
+        scenarioCountAfterSave: savedScenarios.length,
+        guardrailStillNull:
+          "optimizerGuardrail" in savedInputs && savedInputs.optimizerGuardrail === null
+            ? 1
+            : 0,
+        bunchingStillNull:
+          "optimizerBunching" in savedInputs && savedInputs.optimizerBunching === null
+            ? 1
+            : 0,
+        inputsPreservedAfterDelete:
+          finalSplit && JSON.stringify(finalSplit.inputsRaw) === inputsJson ? 1 : 0,
+        scenarioCountAfterDelete: finalScenarios.length,
+        revisionAfterSave: parseRothBlobRevision(afterSave),
+        revisionAfterRoundTrip: parseRothBlobRevision(afterDelete),
+        finalBlobExactAfterRoundTrip:
+          afterDelete === `{"inputs":${inputsJson},"scenarios":[],"revision":2}` ? 1 : 0,
+        twoArgJoinStillTwoKey:
+          before && joinRothBlob(before.inputsRaw, []) === original ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "ss-claim-age-factors",
+    kind: "tax",
+    note: "Social Security claiming-age factors (SSA statutory adjustments against FRA): born 1960 or later → FRA 67 (804 months); born 1955 → 66y2m (794 months); born 1943 → 66 (792 months). Anchored at FRA, claiming at 62 is 60 months early: 36 × 5/9% + 24 × 5/12% = 30% reduction → 70% of PIA, so a $48,000 anchor pays $33,600 at 62. Delaying to 70 is 36 months × 2/3% = +24% → $59,520. Hand-computed mid ages: 64 is exactly 36 months early → exactly 20% off → $38,400; 65 is 24 months early → 24 × 5/9% = 13⅓% off → $48,000 × 13/15 = $41,600. Re-anchoring: $48,000 entered at 65 implies a PIA of $48,000 / (13/15) = $58,292.31, which at 70 (124%) pays $68,676.92.",
+    expected: {
+      fra1955: 794,
+      fra1960: 804,
+      fra1943: 792,
+      factor62: 0.7,
+      factor70: 1.24,
+      annual62: 33600,
+      annual64: 38400,
+      annual65: 41600,
+      annual70: 59520,
+      anchor65to70: 68676.92,
+    },
+    actual: () => ({
+      fra1955: fullRetirementAgeMonths(1955),
+      fra1960: fullRetirementAgeMonths(1960),
+      fra1943: fullRetirementAgeMonths(1943),
+      factor62: ssBenefitFactor(62, 1975),
+      factor70: ssBenefitFactor(70, 1975),
+      annual62: ssAnnualAtClaimAge(48000, 67, 62, 1975),
+      annual64: ssAnnualAtClaimAge(48000, 67, 64, 1975),
+      annual65: ssAnnualAtClaimAge(48000, 67, 65, 1975),
+      annual70: ssAnnualAtClaimAge(48000, 67, 70, 1975),
+      anchor65to70: ssAnnualAtClaimAge(48000, 65, 70, 1961),
+    }),
+  },
+  {
+    id: "joint-maxifi-property",
+    kind: "tax",
+    note: "MaxiFi property — separate optima are not joint optima: on the torpedo plan ($48,000 of Social Security entered at 65, pre-tax $1,200,000, window 65–74, plan to 85), the best conversion strategy at the ENTERED claim age scores a $181,984.20 lifetime net cost, and the best claiming age under Do Nothing (claim at 62) scores $370,130.65 — but the JOINT winner (claim at 62 for $38,769.23/yr) scores $165,393.40, beating the fixed-claim optimum by $16,590.80 and the best Do Nothing claim by $204,737.25. The joint result's Do Nothing is the best Do Nothing found (at claim 62), priced exactly as the standalone scan prices it. (RE-PINNED by the BASIS-DRIFT build: pre-drift the joint winner claimed at 70 and netted $156,545.03 against a $183,813.90 fixed best. The torpedo plan's basis % is an explicitly set 100% at a 3% return, so under drift the basis share erodes as the balance compounds, later draws and tax payments realize gains the flat model priced at $0, and both searches re-solve — the fixed best rises $1,080.43 and the joint crown moves to claim 62. Do Nothing's best-claim net is unmoved: its spending is covered by benefits and RMDs, so it never draws Taxable into drifted-gain territory. The property itself — joint beats both separate optima — is what the pin protects, and it holds.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo plan's primary (born 1961) is 66 in 2027 and 67 in 2028, and priceYear now deflates the statutory §224 figures into today's dollars at the plan's 2.5% inflation — 2027: $6,000/1.025 = $5,853.66 per person over a $150,000/1.025 = $146,341.46 phase-out start; 2028: $6,000/1.025² = $5,710.89 over $142,772.16 — where the old pins priced the nominal $6,000 / $150,000 in both years. Those two years reprice for every candidate and both searches re-solve: the fixed best rises $119.00 and the joint winner falls $16.99. Do Nothing's best-claim net is unmoved — at its 2027/2028 AGI the deduction is fully phased out under both the nominal and the deflated figures. The corrected fixed best is cross-validated to the cent by opt-ss-collected-carried-by-scores and mc-check-zero-vol-equals-deterministic, the corrected joint winner by claim-table-per-age-best and claim-floor-edges-and-blank.)",
+    expected: {
+      combos: 9,
+      jointNetCost: 165393.4,
+      jointClaimAge: 62,
+      jointAnnual: 38769.23,
+      jointLabel: "You claim at 62",
+      fixedBestNetCost: 181984.2,
+      bestDnClaimNetCost: 370130.65,
+      jointBeatsFixedBy: 16590.8,
+      jointBeatsDnClaimBy: 204737.25,
+      jointDnIsBestDnClaim: 1,
+    },
+    actual: () => {
+      const plan = optTorpedoPlan();
+      const joint = runJointOptimizer(plan);
+      const fixed = runOptimizer(plan);
+      let bestDn = Infinity;
+      for (const c of claimAgeCombos(plan)) {
+        const r = simulateRothPlan(c.inputs, DO_NOTHING);
+        bestDn = Math.min(bestDn, netCostBreakdown(r, plan.heirRatePct).netCost);
+      }
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      return {
+        combos: joint.jointSearch.combosTested,
+        jointNetCost: joint.winner.cost.netCost,
+        jointClaimAge: joint.winner.claimAges.primaryAge,
+        jointAnnual: joint.winner.claimAges.primaryAnnual,
+        jointLabel: claimAgeLabel(joint.winner.claimAges),
+        fixedBestNetCost: fixed.winner.cost.netCost,
+        bestDnClaimNetCost: bestDn,
+        jointBeatsFixedBy: r2(fixed.winner.cost.netCost - joint.winner.cost.netCost),
+        jointBeatsDnClaimBy: r2(bestDn - joint.winner.cost.netCost),
+        jointDnIsBestDnClaim: joint.doNothing.cost.netCost === bestDn ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "joint-spouse-blank-searches-entered-spouse-only",
+    kind: "tax",
+    note: "Spouse-blank case: only a spouse with an ENTERED benefit is searched. The torpedo plan enters only the primary benefit ($48,000 at 65, spouse blank), so the claim space is the 9 primary ages 62–70 with the spouse age left null on every combination and searchedSpouse false throughout. Entering a spouse benefit too makes the space the full 9 × 9 = 81 combinations; entering neither leaves the single entered combination.",
+    expected: {
+      combosPrimaryOnly: 9,
+      spouseSearched: 0,
+      spouseAgeAlwaysNull: 1,
+      primaryAgesCover62to70: 1,
+      combosBothEntered: 81,
+      combosNoneEntered: 1,
+    },
+    actual: () => {
+      const combos = claimAgeCombos(optTorpedoPlan());
+      const ages = new Set(combos.map((c) => c.claimAges.primaryAge));
+      const both = claimAgeCombos(
+        basePlan({ ssPrimaryAnnual: 48000, ssPrimaryStartAge: 67, ssSpouseAnnual: 30000, ssSpouseStartAge: 67 }),
+      );
+      const none = claimAgeCombos(basePlan({}));
+      return {
+        combosPrimaryOnly: combos.length,
+        spouseSearched: combos.some((c) => c.claimAges.searchedSpouse) ? 1 : 0,
+        spouseAgeAlwaysNull: combos.every((c) => c.claimAges.spouseAge == null) ? 1 : 0,
+        primaryAgesCover62to70:
+          ages.size === 9 && Math.min(...[...ages].map((a) => a ?? 0)) === 62 && Math.max(...[...ages].map((a) => a ?? 0)) === 70 ? 1 : 0,
+        combosBothEntered: both.length,
+        combosNoneEntered: none.length,
+      };
+    },
+  },
+  {
+    id: "joint-winner-reproduces-from-saved-parameters",
+    kind: "tax",
+    note: "Saved joint winner reproduces exactly: a scenario saved from the joint winner stores the winner's claiming ages as its Social Security start-age inputs and the derived benefits as its amounts, alongside the strategy's ceilings, window stop, and variant flags. Re-running those stored parameters through the standard engine — exactly what loading the scenario in Plan mode does — reproduces the joint winner's lifetime totals to the cent (federal + state tax, IRMAA, ACA credit kept, ending pre-tax, and the net-cost objective).",
+    expected: { claimAge: 62, fedDiff: 0, irmaaDiff: 0, acaDiff: 0, pretaxDiff: 0, netCostDiff: 0 },
+    actual: () => {
+      const plan = optTorpedoPlan();
+      const winner = runJointOptimizer(plan).winner;
+      const repro = simulateRothPlan(
+        {
+          ...plan,
+          windowStopAge: winner.spec.windowStopAge,
+          ssPrimaryStartAge: winner.claimAges.primaryAge,
+          ssPrimaryAnnual: winner.claimAges.primaryAnnual,
+          ssSpouseStartAge: winner.claimAges.spouseAge,
+          ssSpouseAnnual: winner.claimAges.spouseAnnual,
+        },
+        candidateStrategy(winner.spec),
+      );
+      const rb = netCostBreakdown(repro, plan.heirRatePct);
+      const d = (a: number, b: number) => Math.round((a - b) * 100) / 100;
+      return {
+        claimAge: winner.claimAges.primaryAge,
+        fedDiff: d(repro.lifetimeFederalTax + repro.lifetimeStateTax, winner.result.lifetimeFederalTax + winner.result.lifetimeStateTax),
+        irmaaDiff: d(repro.lifetimeIrmaa, winner.result.lifetimeIrmaa),
+        acaDiff: d(repro.lifetimeAcaKept, winner.result.lifetimeAcaKept),
+        pretaxDiff: d(repro.endingPretax, winner.result.endingPretax),
+        netCostDiff: d(rb.netCost, winner.cost.netCost),
+      };
+    },
+  },
+  {
+    id: "opt-winner-respects-its-ceilings",
+    kind: "tax",
+    note: "Ceiling respect: in the winning schedule of both optimizer fixture plans, no year where the strategy actually converted breaches a switched-on ceiling in its final priced figures (bracket top / 0%-gains space on taxable income, IRMAA tier cap / custom cap on MAGI, ACA cliff on ACA MAGI) — the engine's fill-to-convergence behavior holds for optimizer candidates exactly as for hand-picked fills.",
+    expected: { torpedoViolations: 0, acaViolations: 0 },
+    actual: () => {
+      const torpPlan = optTorpedoPlan();
+      const torp = runOptimizer(torpPlan).winner;
+      const acaPlan = optAcaPlan();
+      const aca = runOptimizer(acaPlan).winner;
+      return {
+        torpedoViolations: countCeilingViolations(torpPlan, torp.spec, torp.result),
+        acaViolations: countCeilingViolations(acaPlan, aca.spec, aca.result),
+      };
+    },
+  },
+  {
+    id: "draw-order-pretax-first-wins",
+    kind: "tax",
+    note: "Draw order decides a plan (hand-computed): two years (ages 60–61, born 1966), spending $120,000/yr, no other income, no Social Security, 0% return, Taxable $200,000 at 100% basis (draws realize no gains), Pre-tax $200,000, Roth $0, heir rate 22%, Do Nothing. Taxable-first orders (Taxable → Pre-tax → Roth, Taxable → Roth → Pre-tax, Roth → Taxable → Pre-tax — the Roth balance is $0): year 1 draws $120,000 of Taxable (no tax); year 2 draws the last $80,000 of Taxable then $40,000 of Pre-tax, pricing $780 of first-pass tax (10% × ($40,000 − $32,200 standard deduction)) which is debited from Pre-tax — and under the settlement iteration (FIX 1) that debit is itself a distribution in the 10% bracket, so the settled tax is the fixed point T = $780 / (1 − 0.10) = $866.67 — ending Pre-tax $159,133.33, lifetime tax $866.67, net cost $866.67 + 22% × $159,133.33 = $35,876.00. Pre-tax-first orders (Pre-tax → Taxable → Roth, Pre-tax → Roth → Taxable, Roth → Pre-tax → Taxable): year 1 draws $120,000 of Pre-tax — tax $2,480 + 12% × $63,000 = $10,040, paid from Taxable; year 2 draws the last $80,000 of Pre-tax then $40,000 of Taxable — tax $2,480 + 12% × $23,000 = $5,240 — Pre-tax ends at $0, lifetime tax $15,280, net cost $15,280. The optimizer (conversion window set to start at 65, after this plan ends, so no candidate can convert and only the order separates the candidates) finds the same result: a Pre-tax-first winner at $15,280, beating Do Nothing at the plan's order by $20,596. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      costTaxablePretaxRoth: 35876,
+      costTaxableRothPretax: 35876,
+      costPretaxTaxableRoth: 15280,
+      costPretaxRothTaxable: 15280,
+      costRothTaxablePretax: 35876,
+      costRothPretaxTaxable: 15280,
+      optimizerWinnerNetCost: 15280,
+      optimizerWinnerFirstBucket: "pretax",
+      optimizerSaving: 20596,
+    },
+    actual: () => {
+      const plan = drawOrderPlan();
+      const cost = (key: string) =>
+        netCostBreakdown(
+          simulateRothPlan({ ...plan, drawOrder: drawOrderFromKey(key) }, DO_NOTHING),
+          plan.heirRatePct,
+        ).netCost;
+      const res = runOptimizer(plan);
+      return {
+        costTaxablePretaxRoth: cost("taxable-pretax-roth"),
+        costTaxableRothPretax: cost("taxable-roth-pretax"),
+        costPretaxTaxableRoth: cost("pretax-taxable-roth"),
+        costPretaxRothTaxable: cost("pretax-roth-taxable"),
+        costRothTaxablePretax: cost("roth-taxable-pretax"),
+        costRothPretaxTaxable: cost("roth-pretax-taxable"),
+        optimizerWinnerNetCost: res.winner.cost.netCost,
+        optimizerWinnerFirstBucket: res.winner.spec.drawOrder[0] ?? null,
+        optimizerSaving:
+          Math.round((res.doNothing.cost.netCost - res.winner.cost.netCost) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "draw-order-rmd-forced-first",
+    kind: "tax",
+    note: "RMDs are never reordered: at 75 (born 1951, spouse born 1962 and sole beneficiary, 11 years younger) the RMD on a $1,000,000 prior Dec 31 Pre-tax balance is $1,000,000 / 25.3 (Joint Life table) = $39,525.69 under every one of the six draw orders — it leaves Pre-tax before any discretionary draw, whatever the order. With no spending need, the RMD cash is the year's only flow: deductions ($32,200 standard deduction + $1,650 age-65 add-on for the one spouse over 65 + $6,000 OBBBA senior deduction = $39,850) exceed the RMD, so federal tax is $0 and the whole $39,525.69 is saved into Taxable as surplus. Ending balances are identical under all six orders: Pre-tax $960,474.31, Taxable $39,525.69.",
+    expected: {
+      rmd: 39525.69,
+      federalTax: 0,
+      pretaxEnd: 960474.31,
+      taxableEnd: 39525.69,
+      allOrdersSamePretax: 1,
+      allOrdersSameTaxable: 1,
+      allOrdersSameRmd: 1,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1951,
+        birthYearSpouse: 1962,
+        endAgePrimary: 75,
+        retirementAge: 60,
+        pretaxStart: 1000000,
+      });
+      const years = DRAW_ORDER_OPTIONS.map(
+        (o) => simulateRothPlan({ ...plan, drawOrder: o.order }, DO_NOTHING).years[0],
+      );
+      const first = years[0];
+      const same = (pick: (y: (typeof years)[number]) => number | null) =>
+        first != null && years.every((y) => y != null && pick(y) === pick(first)) ? 1 : 0;
+      return {
+        rmd: first?.rmd ?? null,
+        federalTax: first?.federalTax ?? null,
+        pretaxEnd: first?.pretaxEnd ?? null,
+        taxableEnd: first?.taxableEnd ?? null,
+        allOrdersSamePretax: same((y) => y?.pretaxEnd ?? null),
+        allOrdersSameTaxable: same((y) => y?.taxableEnd ?? null),
+        allOrdersSameRmd: same((y) => y?.rmd ?? null),
+      };
+    },
+  },
+  {
+    id: "draw-order-saved-winner-reproduces",
+    kind: "tax",
+    note: "A saved winner with a non-default draw order reproduces exactly: the draw-order plan's optimizer winner (a Pre-tax-first order, $15,280 net cost) is stored the way saveRothScenario stores it — the plan's saved fields (integer cents) with the winner's window stop and its draw order key — and re-run through the saved-inputs conversion (planInputsFromSaved, the one conversion both the optimizer action and a loaded scenario flow through) plus the winner's strategy. The reproduction matches the winner's lifetime totals to the cent, and the saved draw order round-trips into the engine inputs unchanged: the order is part of what a scenario stores, not a display detail.",
+    expected: {
+      fedDiff: 0,
+      irmaaDiff: 0,
+      acaDiff: 0,
+      pretaxDiff: 0,
+      netCostDiff: 0,
+      savedOrderMatchesWinner: 1,
+    },
+    actual: () => {
+      const plan = drawOrderPlan();
+      const winner = runOptimizer(plan).winner;
+      const savedLike: RothSavedLike = {
+        birthYearPrimary: 1966,
+        birthYearSpouse: 1977,
+        filingStatus: "mfj",
+        pretaxCents: 20000000,
+        rothCents: 0,
+        taxableCents: 20000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 12000000,
+        retirementAge: 60,
+        endAge: 61,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: 0,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: 0,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 65,
+        windowStopAge: winner.spec.windowStopAge,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: drawOrderKey(winner.spec.drawOrder),
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const reproInputs = planInputsFromSaved(savedLike, plan.startYear);
+      const repro = reproInputs
+        ? simulateRothPlan(reproInputs, candidateStrategy(winner.spec))
+        : null;
+      const rb = repro ? netCostBreakdown(repro, plan.heirRatePct) : null;
+      const d = (a: number, b: number) => Math.round((a - b) * 100) / 100;
+      return {
+        fedDiff: repro ? d(repro.lifetimeFederalTax, winner.result.lifetimeFederalTax) : null,
+        irmaaDiff: repro ? d(repro.lifetimeIrmaa, winner.result.lifetimeIrmaa) : null,
+        acaDiff: repro ? d(repro.lifetimeAcaKept, winner.result.lifetimeAcaKept) : null,
+        pretaxDiff: repro ? d(repro.endingPretax, winner.result.endingPretax) : null,
+        netCostDiff: rb ? d(rb.netCost, winner.cost.netCost) : null,
+        savedOrderMatchesWinner:
+          reproInputs &&
+          drawOrderKey(reproInputs.drawOrder) === drawOrderKey(winner.spec.drawOrder)
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "draw-order-protect-minimum-every-order",
+    kind: "tax",
+    note: "The protect-minimum floor binds tax payment identically under every draw order — the order governs spending draws only: age 60 (born 1966), other income $120,000 exactly equal to spending $120,000 (no spending deficit, so no draw order can move a dollar), Fill 12% converts $13,000 (taxable income without converting is $120,000 − $32,200 = $87,800; the top of the 12% bracket is $100,800), federal tax $2,480 + 12% × $76,000 = $11,600. Taxable holds exactly the $5,000 protect-minimum, so $0 of the tax can be paid from Taxable: the whole $11,600 is withheld from the conversion, Roth receives $13,000 − $11,600 = $1,400, and Taxable ends at exactly $5,000 — the floor respected to the dollar under Roth → Taxable → Pre-tax (a Pre-tax-last order), and identical under the default order.",
+    expected: {
+      conversion: 13000,
+      federalTax: 11600,
+      taxableEnd: 5000,
+      rothEnd: 1400,
+      pretaxEnd: 487000,
+      sameAsDefault: 1,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1966,
+        birthYearSpouse: 1977,
+        endAgePrimary: 60,
+        retirementAge: 60,
+        pretaxStart: 500000,
+        taxableStart: 5000,
+        protectMinTaxable: 5000,
+        otherOrdinaryAnnual: 120000,
+        annualSpending: 120000,
+      });
+      const at = (key: string) =>
+        simulateRothPlan({ ...plan, drawOrder: drawOrderFromKey(key) }, FILL_12)
+          .years[0];
+      const dflt = at("taxable-pretax-roth");
+      const last = at("roth-taxable-pretax");
+      const fields = ["conversion", "federalTax", "taxableEnd", "rothEnd", "pretaxEnd"] as const;
+      return {
+        conversion: last?.conversion ?? null,
+        federalTax: last?.federalTax ?? null,
+        taxableEnd: last?.taxableEnd ?? null,
+        rothEnd: last?.rothEnd ?? null,
+        pretaxEnd: last?.pretaxEnd ?? null,
+        sameAsDefault:
+          dflt != null && last != null && fields.every((f) => dflt[f] === last[f])
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "wife-rmd-own-clock",
+    kind: "tax",
+    note: "Wife's RMD runs on HER OWN clock (Part 1): The primary filer born 1951, wife born 1962, plan from 2031 (The primary filer 80, wife 69) to The primary filer 86 (wife 75), Do Nothing, 0% return, no spending. The primary filer's pre-tax is $0; the wife's is $246,000. At wife 69 her balance has NO RMD — The primary filer being 80 does not start her clock. Her first RMD lands in her own age-75 year (2037): prior Dec 31 balance $246,000 (untouched until then) ÷ Uniform Lifetime divisor 24.6 = $10,000 — the Uniform table, never Joint Life, because her spouse is older. Her balance ends that year at $236,000 (the $10,000 of RMD income is fully sheltered by the $35,500 MFJ standard deduction at both-65+, so no tax is debited).",
+    expected: {
+      rmdAtWife69: 0,
+      rmdSpouseAt69: 0,
+      rmdAtWife75: 10000,
+      rmdSpouseAt75: 10000,
+      divisorSpouse75: 24.6,
+      tableSpouse75: "uniform",
+      wifeEnd75: 236000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          startYear: 2031,
+          birthYearPrimary: 1951,
+          birthYearSpouse: 1962,
+          endAgePrimary: 86,
+          retirementAge: 60,
+          pretaxStart: 0,
+          pretaxSpouseStart: 246000,
+        }),
+        DO_NOTHING,
+      );
+      const y69 = res.years[0];
+      const y75 = res.years[6];
+      return {
+        rmdAtWife69: y69?.rmd ?? null,
+        rmdSpouseAt69: y69?.detail.rmdSpouse ?? null,
+        rmdAtWife75: y75?.rmd ?? null,
+        rmdSpouseAt75: y75?.detail.rmdSpouse ?? null,
+        divisorSpouse75: y75?.detail.rmdDivisorSpouse ?? null,
+        tableSpouse75: y75?.detail.rmdTableSpouse ?? null,
+        wifeEnd75: y75?.pretaxSpouseEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "conversion-sourcing-primary-first",
+    kind: "tax",
+    note: "Conversion sourcing (Part 1): the fill draws The primary filer's pre-tax first and touches the wife's only after his is exhausted. Age 57, no other income, Fill 12% (a $133,000 conversion, per the fill fixture), Taxable $1,000,000 at 100% basis paying the $11,600 tax. Case A — The primary filer $50,000, wife $100,000: the $133,000 fill drains The primary filer's $50,000 completely, then takes $83,000 of the wife's, leaving her $17,000; Roth receives the full $133,000. Case B — The primary filer $200,000, wife $100,000: the same fill is covered by The primary filer's balance alone, so the wife's $100,000 is untouched and The primary filer ends at $67,000.",
+    expected: {
+      conversionA: 133000,
+      sampleEndA: 0,
+      wifeEndA: 17000,
+      rothEndA: 133000,
+      conversionB: 133000,
+      sampleEndB: 67000,
+      wifeEndB: 100000,
+    },
+    actual: () => {
+      const a = simulateRothPlan(
+        basePlan({ pretaxStart: 50000, pretaxSpouseStart: 100000, taxableStart: 1000000 }),
+        FILL_12,
+      ).years[0];
+      const b = simulateRothPlan(
+        basePlan({ pretaxStart: 200000, pretaxSpouseStart: 100000, taxableStart: 1000000 }),
+        FILL_12,
+      ).years[0];
+      return {
+        conversionA: a?.conversion ?? null,
+        sampleEndA: a?.pretaxPrimaryEnd ?? null,
+        wifeEndA: a?.pretaxSpouseEnd ?? null,
+        rothEndA: a?.rothEnd ?? null,
+        conversionB: b?.conversion ?? null,
+        sampleEndB: b?.pretaxPrimaryEnd ?? null,
+        wifeEndB: b?.pretaxSpouseEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "survivor-tax-penalty",
+    kind: "tax",
+    note: "The widow's penalty, demonstrated (Part 2): $100,000/yr of other ordinary income (= spending, so no draws), The primary filer born 1961, wife born 1972, The primary filer dies in 2027. The death year (2027) still files MFJ: standard deduction $32,200 + one $1,650 age-65 add-on (The primary filer 66, wife 55) = $33,850, plus the OBBBA senior deduction — deflated into today's dollars under FIX 4 (the §224 figures are statutory, not indexed): the 2027 deflator at the plan's 2.5% inflation is 1/1.025, so the per-person amount is $6,000/1.025 = $5,853.66 and the phase-out start $150,000/1.025 = $146,341.46; AGI $100,000 is under the deflated start, so the full $5,853.66 stands → taxable $100,000 − $33,850 − $5,853.66 = $60,296.34 → tax $2,480 + 12% × $35,496.34 = $6,739.56. (Pre-FIX 4 this year priced the nominal $6,000: taxable $60,150, tax $6,722 — the $146.34 of deflated deduction at the 12% margin is the whole $17.56 difference.) The next year (2028) the survivor (wife, 56) files Single: standard deduction $16,100, no add-ons, no senior deduction → taxable $83,900 → tax $1,240 + 12% × $38,000 + 22% × $33,500 = $13,170. The SAME income costs $6,430.44 more as a single filer — the penalty, in exact dollars.",
+    expected: {
+      filingDeathYear: "mfj",
+      filingNextYear: "single",
+      deathMarker: 1,
+      survivorMarker: 1,
+      taxDeathYear: 6739.56,
+      taxNextYear: 13170,
+      penaltyDiff: 6430.44,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1972,
+          endAgePrimary: 67,
+          retirementAge: 65,
+          pretaxStart: 0,
+          otherOrdinaryAnnual: 100000,
+          annualSpending: 100000,
+          survivorEnabled: true,
+          survivorWho: "primary",
+          survivorDeathYear: 2027,
+        }),
+        DO_NOTHING,
+      );
+      const yd = res.years[1];
+      const yn = res.years[2];
+      return {
+        filingDeathYear: yd?.filingStatus ?? null,
+        filingNextYear: yn?.filingStatus ?? null,
+        deathMarker: yd?.isDeathYear ? 1 : 0,
+        survivorMarker: yn?.isSurvivorYear ? 1 : 0,
+        taxDeathYear: yd?.federalTax ?? null,
+        taxNextYear: yn?.federalTax ?? null,
+        penaltyDiff:
+          yd && yn ? Math.round((yn.federalTax - yd.federalTax) * 100) / 100 : null,
+      };
+    },
+  },
+  {
+    id: "survivor-ss-larger-benefit-only",
+    kind: "tax",
+    note: "Survivor Social Security (Part 2): The primary filer's benefit $40,000/yr from 62 (born 1964), wife's $25,000/yr from 62 (born 1965), The primary filer dies in 2028. Both benefits price through the death year — 2026: $40,000 (wife is 61, not yet claiming); 2027: $65,000; 2028 (death year): $65,000. From 2029 the survivor keeps only the LARGER of the two benefits at its claim-age amount: $40,000 (The primary filer's), not her own $25,000 and not the $65,000 sum.",
+    expected: { ss2026: 40000, ss2027: 65000, ssDeathYear: 65000, ssAfter: 40000 },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1964,
+          birthYearSpouse: 1965,
+          endAgePrimary: 65,
+          retirementAge: 62,
+          pretaxStart: 0,
+          ssPrimaryAnnual: 40000,
+          ssPrimaryStartAge: 62,
+          ssSpouseAnnual: 25000,
+          ssSpouseStartAge: 62,
+          survivorEnabled: true,
+          survivorWho: "primary",
+          survivorDeathYear: 2028,
+        }),
+        DO_NOTHING,
+      );
+      return {
+        ss2026: res.years[0]?.ssBenefits ?? null,
+        ss2027: res.years[1]?.ssBenefits ?? null,
+        ssDeathYear: res.years[2]?.ssBenefits ?? null,
+        ssAfter: res.years[3]?.ssBenefits ?? null,
+      };
+    },
+  },
+  {
+    id: "survivor-inherited-ira-survivor-clock",
+    kind: "tax",
+    note: "Inherited IRA (Part 2; death-year RMD corrected — this pin previously asserted a $0 death-year RMD under the old combine-immediately simplification): The primary filer (born 1951) dies in 2031 (age 80, wife 69) holding $500,000 of pre-tax; the wife (born 1962) holds $246,000. In the death year The primary filer still takes his OWN final RMD exactly as if he had lived: $500,000 ÷ 20.9 (Joint Life table, owner 80 / spouse 69 — she is sole beneficiary and 11 years younger) = $23,923.44, all on his side; his wife, 69, is under her own RMD age (75) and takes none. Only the REMAINDER combines on her side from the next year: his side ends the death year at $500,000 − $23,923.44 = $476,076.56, so her combined prior balance is $476,076.56 + $246,000 = $722,076.56, his side $0. No combined RMD while she is under 75 (2032–2036). Her first combined RMD lands in her age-75 year (2037): $722,076.56 ÷ 24.6 (Uniform) = $29,352.71, all of it on the spouse's side of the split.",
+    expected: {
+      rmdDeathYear: 23923.44,
+      rmdPrimaryDeathYear: 23923.44,
+      divisorPrimaryDeathYear: 20.9,
+      tablePrimaryDeathYear: "joint",
+      primaryEndDeathYear: 476076.56,
+      spouseEndDeathYear: 246000,
+      priorSpouse2037: 722076.56,
+      priorPrimary2037: 0,
+      rmd2037: 29352.71,
+      rmdSpouse2037: 29352.71,
+      rmdPrimary2037: 0,
+      divisorSpouse2037: 24.6,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          startYear: 2031,
+          birthYearPrimary: 1951,
+          birthYearSpouse: 1962,
+          endAgePrimary: 86,
+          retirementAge: 60,
+          pretaxStart: 500000,
+          pretaxSpouseStart: 246000,
+          survivorEnabled: true,
+          survivorWho: "primary",
+          survivorDeathYear: 2031,
+        }),
+        DO_NOTHING,
+      );
+      const y31 = res.years[0];
+      const y37 = res.years[6];
+      return {
+        rmdDeathYear: y31?.rmd ?? null,
+        rmdPrimaryDeathYear: y31?.detail.rmdPrimary ?? null,
+        divisorPrimaryDeathYear: y31?.detail.rmdDivisorPrimary ?? null,
+        tablePrimaryDeathYear: y31?.detail.rmdTablePrimary ?? null,
+        primaryEndDeathYear: y31?.pretaxPrimaryEnd ?? null,
+        spouseEndDeathYear: y31?.pretaxSpouseEnd ?? null,
+        priorSpouse2037: y37?.detail.priorPretaxSpouse ?? null,
+        priorPrimary2037: y37?.detail.priorPretaxPrimary ?? null,
+        rmd2037: y37?.rmd ?? null,
+        rmdSpouse2037: y37?.detail.rmdSpouse ?? null,
+        rmdPrimary2037: y37?.detail.rmdPrimary ?? null,
+        divisorSpouse2037: y37?.detail.rmdDivisorSpouse ?? null,
+      };
+    },
+  },
+  {
+    id: "survivor-death-year-rmd-spouse-dies",
+    kind: "tax",
+    note: "Death-year RMD when the WIFE dies (Part 2, symmetric with the pin above): The primary filer born 1951, wife born 1953; she dies in 2031 (The primary filer 80, wife 78) holding $300,000 of pre-tax; The primary filer holds $400,000. In the death year each spouse still takes their own RMD exactly as if both had lived: hers is $300,000 ÷ 22.0 (Uniform Lifetime, age 78) = $13,636.36, on her side; his is $400,000 ÷ 20.2 (Uniform, age 80 — he is only 2 years older, so the Joint Life table never applied to him here) = $19,801.98, on his side; the year's total RMD is $33,438.34. The remainders combine on HIS side from the next year: ($400,000 − $19,801.98) + ($300,000 − $13,636.36) = $666,561.66, her side $0 — and the combined survivor RMD starts that next year on his clock: $666,561.66 ÷ 19.4 (Uniform, age 81) = $34,358.85, all on the primary's side.",
+    expected: {
+      rmdDeathYear: 33438.34,
+      rmdSpouseDeathYear: 13636.36,
+      divisorSpouseDeathYear: 22,
+      rmdPrimaryDeathYear: 19801.98,
+      divisorPrimaryDeathYear: 20.2,
+      priorPrimary2032: 666561.66,
+      priorSpouse2032: 0,
+      rmd2032: 34358.85,
+      rmdPrimary2032: 34358.85,
+      divisorPrimary2032: 19.4,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          startYear: 2031,
+          birthYearPrimary: 1951,
+          birthYearSpouse: 1953,
+          endAgePrimary: 81,
+          retirementAge: 60,
+          pretaxStart: 400000,
+          pretaxSpouseStart: 300000,
+          survivorEnabled: true,
+          survivorWho: "spouse",
+          survivorDeathYear: 2031,
+        }),
+        DO_NOTHING,
+      );
+      const y31 = res.years[0];
+      const y32 = res.years[1];
+      return {
+        rmdDeathYear: y31?.rmd ?? null,
+        rmdSpouseDeathYear: y31?.detail.rmdSpouse ?? null,
+        divisorSpouseDeathYear: y31?.detail.rmdDivisorSpouse ?? null,
+        rmdPrimaryDeathYear: y31?.detail.rmdPrimary ?? null,
+        divisorPrimaryDeathYear: y31?.detail.rmdDivisorPrimary ?? null,
+        priorPrimary2032: y32?.detail.priorPretaxPrimary ?? null,
+        priorSpouse2032: y32?.detail.priorPretaxSpouse ?? null,
+        rmd2032: y32?.rmd ?? null,
+        rmdPrimary2032: y32?.detail.rmdPrimary ?? null,
+        divisorPrimary2032: y32?.detail.rmdDivisorPrimary ?? null,
+      };
+    },
+  },
+  {
+    id: "survivor-fill-uses-single-ceilings",
+    kind: "tax",
+    note: "Survivor-year fills use SINGLE ceilings (Part 2): The primary filer (born 1961) dies in 2027; the conversion window is age 67 only — 2028, the first survivor year, when his wife (born 1972) is 56 and files Single. Fill 12% must stop at the SINGLE top of the 12% bracket: taxable income $50,400 (not the MFJ $100,800), so with the $16,100 single standard deduction the conversion is $66,500 and the federal tax is $1,240 + 12% × $38,000 = $5,800. (The tax is withheld from the conversion at 56, so a grossed-up early-withholding penalty also prices — it does not change the fill, the taxable income, or the tax.) Also pinned: the death-year RMD is $0 — The primary filer dies at 66, UNDER his RMD age (75, born 1961), so even under the corrected death-year treatment there is no final RMD to take from his $500,000.",
+    expected: {
+      rmdDeathYear: 0,
+      filing: "single",
+      conversion: 66500,
+      taxableIncome: 50400,
+      capTop: 50400,
+      federalTax: 5800,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1972,
+          endAgePrimary: 67,
+          retirementAge: 65,
+          pretaxStart: 500000,
+          windowStartAge: 67,
+          windowStopAge: 67,
+          survivorEnabled: true,
+          survivorWho: "primary",
+          survivorDeathYear: 2027,
+        }),
+        FILL_12,
+      );
+      const y = res.years[2];
+      return {
+        rmdDeathYear: res.years[1]?.rmd ?? null,
+        filing: y?.filingStatus ?? null,
+        conversion: y?.conversion ?? null,
+        taxableIncome: y?.taxableIncome ?? null,
+        capTop: y?.detail.fill.caps[0]?.cap ?? null,
+        federalTax: y?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "opt-survivor-never-worse-than-do-nothing",
+    kind: "tax",
+    note: "Optimizer under a survivor scenario (Part 2): Do Nothing is in the candidate set at the same survivor inputs (The primary filer dies in 2038; pre-tax split $800,000 his / $400,000 hers), so the winner — searched over the same survivor-priced years, single-filer years included — can never score worse than Do Nothing on the optimizer's own objective.",
+    expected: { winnerBeatsSurvivorDn: 1 },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1961,
+        birthYearSpouse: 1972,
+        endAgePrimary: 80,
+        retirementAge: 65,
+        pretaxStart: 800000,
+        pretaxSpouseStart: 400000,
+        taxableStart: 600000,
+        annualSpending: 60000,
+        expectedReturnPct: 3,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 65,
+        windowStartAge: 65,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2038,
+      });
+      const res = runOptimizer(plan);
+      return {
+        winnerBeatsSurvivorDn:
+          res.winner.cost.netCost <= res.doNothing.cost.netCost + 0.005 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "takeaway-multi-ceiling-inputs",
+    kind: "tax",
+    note: "One-line takeaway inputs (Plan summary): a funded multi-ceiling plan — born 1969 / spouse 1970, pre-tax $5,000,000, Taxable $1,000,000, spending $40,000/yr, 0% return, window 57–74, plan to 75, household of 2 with both ACA benchmarks priced at $20,000 — filled to the top of the 24% bracket, capped at IRMAA Tier 1 and at the ACA cliff. These are exactly the figures the takeaway sentence consumes: the plan's and Do Nothing's lifetime net costs (netCostBreakdown at the 22% heir rate), the converted years where each non-bracket cap bound the fill, and the ending pre-tax with its terminal tax. The ACA cliff for a household of 2 is $84,600 in 2026 coverage (2025 guidelines) and $86,560 from 2027 coverage on (2026 guidelines; guideline 2027+ resolves by the newest-row fallback) — it is the tightest ceiling while either spouse is under 65, so it binds every converted year 2026–2034; once both are 65 (2035 on) the IRMAA Tier 1 ceiling ($274,000 MAGI) binds instead — 2035–2040; no converted year after 2040 is bound by it. The 0% capital-gains and custom MAGI caps are not switched on, so their bound sets are empty. The plan still leaves $1,687,488.56 of pre-tax standing, charged $371,247.48 of terminal tax. (Re-pinned 2026-10-14 for the newest-row fallback, hand-reconciled against the pre-fallback run: conversions in 2028–2034 rise $84,600 → $86,500/yr (+$1,900 × 7 = +$13,300) as the cliff rises; lifetime tax +$1,438.48, kept ACA credits −$1,324.68 (7 × −$189.24 at the higher cliff), ending pre-tax −$12,666.18 (+$13,300 converted, partly offset by the 2044 RMD falling $536.70 = $13,202.88 / 24.6), terminal −$2,786.56 = 22% × $12,666.18 — net $722,015.14 → $721,991.74. Do Nothing keeps no credit in any year, so its net is unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      planNetCost: 726091.54,
+      doNothingNetCost: 1081614,
+      endingPretax: 1687488.56,
+      terminal: 371247.48,
+      acaBoundYears: "2026,2027,2028,2029,2030,2031,2032,2033,2034",
+      irmaaBoundYears: "2035,2036,2037,2038,2039,2040",
+      ltcgBoundYears: "",
+      magiBoundYears: "",
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1970,
+        endAgePrimary: 75,
+        retirementAge: 57,
+        pretaxStart: 5000000,
+        taxableStart: 1000000,
+        annualSpending: 40000,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 20000,
+        acaBenchmarkSingle: 20000,
+      });
+      const strategy: RothStrategy = {
+        id: "takeaway-multi",
+        name: "Fill 24% + IRMAA Tier 1 + ACA cliff",
+        ceilings: {
+          bracketTopPct: 24,
+          irmaaTierCap: 1,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+      };
+      const res = simulateRothPlan(plan, strategy);
+      const dn = simulateRothPlan(plan, DO_NOTHING);
+      const boundYears = (kind: string): string => {
+        const years: number[] = [];
+        for (const y of res.years) {
+          if (y.detail.fill.outcome !== "converted") continue;
+          const cap = y.detail.fill.caps.find((c) => c.kind === kind);
+          if (cap?.bound) years.push(y.year);
+        }
+        return years.join(",");
+      };
+      const planBd = netCostBreakdown(res, plan.heirRatePct);
+      return {
+        planNetCost: planBd.netCost,
+        doNothingNetCost: netCostBreakdown(dn, plan.heirRatePct).netCost,
+        endingPretax: res.endingPretax,
+        terminal: planBd.terminal,
+        acaBoundYears: boundYears("acaCliff"),
+        irmaaBoundYears: boundYears("irmaa"),
+        ltcgBoundYears: boundYears("ltcgZero"),
+        magiBoundYears: boundYears("magi"),
+      };
+    },
+  },
+  {
+    id: "takeaway-converts-nothing-aca-inactive-only-ceiling",
+    kind: "tax",
+    note: "Takeaway converts-nothing repro (a): the ACA cliff is the ONLY ceiling switched on and ACA is inactive in every window year — born 1956 / spouse 1958 (ages 70/68 in 2026, both 65+ throughout), window 70–74, plan to 72, pre-tax $2,000,000, no spending, 0% return. With nobody on the marketplace there is no cliff for the cap to bind against, so the engine's fill outcome in each of the three window years (2026–2028) is aca-inactive-only-ceiling and conversions are $0 — the facts the corrected takeaway sentence consumes when it says the only ceiling switched on (the ACA limit) never applied in the window years, instead of claiming there was no room under the ceilings.",
+    expected: {
+      windowOutcomes:
+        "aca-inactive-only-ceiling,aca-inactive-only-ceiling,aca-inactive-only-ceiling",
+      totalConversion: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1956,
+        birthYearSpouse: 1958,
+        endAgePrimary: 72,
+        retirementAge: 60,
+        pretaxStart: 2000000,
+        windowStartAge: 70,
+        windowStopAge: 74,
+      });
+      const res = simulateRothPlan(plan, FILL_ACA_ONLY);
+      const windowYears = res.years.filter((y) => y.detail.fill.inWindow);
+      return {
+        windowOutcomes: windowYears.map((y) => y.detail.fill.outcome).join(","),
+        totalConversion: res.years.reduce((a, y) => a + y.conversion, 0),
+      };
+    },
+  },
+  {
+    id: "takeaway-converts-nothing-pretax-empty",
+    kind: "tax",
+    note: "Takeaway converts-nothing repro (b): the pre-tax balance is spent down by spending draws BEFORE the window opens — born 1969, pre-tax $50,000, no Taxable or Roth, spending $30,000/yr from retirement at 57 drawn pre-tax first (draw order Pre-tax → Taxable → Roth), window 60–74, plan to 65, Fill 12%. The draws leave $20,000 after 2026 and $0 after 2027, so every window year (2029–2034, ages 60–65) prices with the engine's pretax-empty outcome and $0 conversions — the facts the corrected takeaway sentence consumes when it says the pre-tax balance was already gone by the window years, instead of claiming there was no room under the ceilings.",
+    expected: {
+      windowOutcomes:
+        "pretax-empty,pretax-empty,pretax-empty,pretax-empty,pretax-empty,pretax-empty",
+      totalConversion: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 50000,
+        annualSpending: 30000,
+        windowStartAge: 60,
+        windowStopAge: 74,
+        endAgePrimary: 65,
+        drawOrder: drawOrderFromKey("pretax-taxable-roth"),
+      });
+      const res = simulateRothPlan(plan, FILL_12);
+      const windowYears = res.years.filter((y) => y.detail.fill.inWindow);
+      return {
+        windowOutcomes: windowYears.map((y) => y.detail.fill.outcome).join(","),
+        totalConversion: res.years.reduce((a, y) => a + y.conversion, 0),
+      };
+    },
+  },
+  {
+    id: "takeaway-ending-zero-not-by-conversion",
+    kind: "tax",
+    note: "Takeaway ending-clause repro: a $0 ending pre-tax that spending draws caused, not a conversion — born 1969, pre-tax $120,000, no Taxable or Roth, spending $15,000/yr from 57, window 57–58, filled to a $48,000 MAGI cap. The window years convert $31,300 each ($62,600 total, priced against the $15,000 pre-tax spending draw each year — less than the naive $33,000 = $48,000 cap − $15,000 draw, because under the settlement iteration (FIX 1) the year's tax debit out of pre-tax is itself priced into the year's MAGI), leaving $24,400 standing at the window close; the $15,000 draws then leave $9,400 after 2028 and empty the balance in 2029 (age 60), a year with $0 conversion and the outside-window outcome. The first pretaxEnd === 0 year is therefore 2029 with conversion $0 and outcome outside-window — the facts the corrected takeaway sentence consumes when it uses the plain ending clause instead of claiming the pre-tax was fully converted by age 60. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      windowConversionTotal: 62600,
+      firstZeroYear: 2029,
+      firstZeroAge: 60,
+      firstZeroConversion: 0,
+      firstZeroOutcome: "outside-window",
+      endingPretax: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 120000,
+        annualSpending: 15000,
+        windowStartAge: 57,
+        windowStopAge: 58,
+        endAgePrimary: 70,
+      });
+      const res = simulateRothPlan(plan, MAGI_CAP_48K);
+      const windowYears = res.years.filter((y) => y.detail.fill.inWindow);
+      const firstZero = res.years.find((y) => y.pretaxEnd === 0);
+      return {
+        windowConversionTotal: windowYears.reduce((a, y) => a + y.conversion, 0),
+        firstZeroYear: firstZero?.year ?? null,
+        firstZeroAge: firstZero?.agePrimary ?? null,
+        firstZeroConversion: firstZero?.conversion ?? null,
+        firstZeroOutcome: firstZero?.detail.fill.outcome ?? null,
+        endingPretax: res.endingPretax,
+      };
+    },
+  },
+  {
+    id: "takeaway-already-converted-only-no-ceilings",
+    kind: "tax",
+    note: "Takeaway already-converted-only repro 1: no ceilings switched on with $50,000 already converted this year — pre-tax $1,000,000, plan to 74 (window 57–74, all 18 window years), 0% return, no spending. The engine prices the $50,000 already-made conversion in the first year and the strategy adds $0 in every year, so every window year's fill outcome is no-ceilings, total priced conversion is $50,000 (all of it the already-made part), and total additional is $0 — the facts the corrected takeaway consumes when it takes the converts-nothing family instead of inventing a Convert-from-age-57-to-74 strategy. Ending pre-tax is $998,022.22, not $1,000,000: the already-made conversion is still priced as income, and with Taxable at $0 its tax is debited from pre-tax — a debit the settlement iteration (FIX 1) itself prices as a distribution, so the settled tax is the fixed point $1,977.78 on taxable income $19,777.78 (= $50,000 + the $1,977.78 debit − $32,200 standard deduction, at 10%) — a tax debit, not a conversion outflow, so the additional/already split the sentence keys on is unchanged. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      windowOutcomes:
+        "no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings,no-ceilings",
+      totalConversion: 50000,
+      totalAdditional: 0,
+      totalAlready: 50000,
+      endingPretax: 998022.22,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 1000000,
+        convertedAlreadyThisYear: 50000,
+        endAgePrimary: 74,
+      });
+      const strategy: RothStrategy = { id: "no-ceilings", name: "No ceilings", ceilings: null };
+      const res = simulateRothPlan(plan, strategy);
+      const windowYears = res.years.filter((y) => y.detail.fill.inWindow);
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      return {
+        windowOutcomes: windowYears.map((y) => y.detail.fill.outcome).join(","),
+        totalConversion: r2(res.years.reduce((a, y) => a + y.conversion, 0)),
+        totalAdditional: r2(
+          res.years.reduce((a, y) => a + (y.conversion - y.conversionAlready), 0),
+        ),
+        totalAlready: r2(res.years.reduce((a, y) => a + y.conversionAlready, 0)),
+        endingPretax: res.endingPretax,
+      };
+    },
+  },
+  {
+    id: "takeaway-already-converted-only-fill12-overshoot",
+    kind: "tax",
+    note: "Takeaway already-converted-only repro 2: Fill 12% with $200,000 already converted this year, window 57–57 only, plan to 57, pre-tax $1,000,000, 0% return. The already-made $200,000 alone overshoots the top of the 12% bracket — taxable income is $201,569.23 (the $200,000 conversion plus the settlement's own $33,769.23 pre-tax tax debit, itself priced as a distribution under the settlement iteration (FIX 1): the 10% / 12% / 22% layers on $201,569.23 sum to exactly that $33,769.23 of tax, less the $32,200 standard deduction) — so the engine's window outcome is already-converted-only, the year's priced conversion is $200,000 with $200,000 of it the already-made part and $0 additional, and total additional across the plan is $0 — the facts the corrected takeaway consumes when it takes the converts-nothing family instead of claiming the plan filled to the top of the 12% bracket. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      windowOutcome: "already-converted-only",
+      conversion: 200000,
+      conversionAlready: 200000,
+      additional: 0,
+      taxableIncome: 201569.23,
+      totalAdditional: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 1000000,
+        convertedAlreadyThisYear: 200000,
+        windowStartAge: 57,
+        windowStopAge: 57,
+        endAgePrimary: 57,
+      });
+      const res = simulateRothPlan(plan, FILL_12);
+      const windowYears = res.years.filter((y) => y.detail.fill.inWindow);
+      const y = windowYears[0];
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      return {
+        windowOutcome: y?.detail.fill.outcome ?? null,
+        conversion: y?.conversion ?? null,
+        conversionAlready: y?.conversionAlready ?? null,
+        additional: y != null ? r2(y.conversion - y.conversionAlready) : null,
+        taxableIncome: y?.taxableIncome ?? null,
+        totalAdditional: r2(
+          res.years.reduce((a, yy) => a + (yy.conversion - yy.conversionAlready), 0),
+        ),
+      };
+    },
+  },
+  {
+    id: "takeaway-ending-zero-draw-shared",
+    kind: "tax",
+    note: "Takeaway ending-clause draw-shared repro: pre-tax $48,500, spending $15,000/yr, window 57–58, plan to 60, filled to a $48,000 MAGI cap, 0% return. The first pretaxEnd === 0 year is 2026 (age 57): its additional (strategy) conversion is $45,500 AND it carries a $3,000 pre-tax spending draw, so cumulative non-conversion outflows across the whole plan — computed with the client's exact formula (Σ rmd + Σ detail.extraPreTaxDraw + Σ balance-identity residual taxDebit = max(0, (priorPretaxBalance − rmd − additional − extraPreTaxDraw) − pretaxEnd / growth), growth = 1 at this fixture's 0% return) — are $3,000, not $0. Total additional is $45,500 and ending pre-tax is $0 — the facts the corrected takeaway consumes when it uses the plain ending clause instead of claiming the pre-tax was fully converted by age 57.",
+    expected: {
+      firstZeroYear: 2026,
+      firstZeroAge: 57,
+      firstZeroAdditional: 45500,
+      firstZeroExtraDraw: 3000,
+      cumulativeNonConversionOutflows: 3000,
+      totalAdditional: 45500,
+      endingPretax: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 48500,
+        annualSpending: 15000,
+        windowStartAge: 57,
+        windowStopAge: 58,
+        endAgePrimary: 60,
+      });
+      const res = simulateRothPlan(plan, MAGI_CAP_48K);
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const growth = 1 + plan.expectedReturnPct / 100;
+      let cumulative = 0;
+      for (const y of res.years) {
+        const additional = y.conversion - y.conversionAlready;
+        const taxDebit = Math.max(
+          0,
+          y.detail.priorPretaxBalance - y.rmd - additional - y.detail.extraPreTaxDraw - y.pretaxEnd / growth,
+        );
+        cumulative += y.rmd + y.detail.extraPreTaxDraw + taxDebit;
+      }
+      const firstZero = res.years.find((y) => y.pretaxEnd === 0);
+      return {
+        firstZeroYear: firstZero?.year ?? null,
+        firstZeroAge: firstZero?.agePrimary ?? null,
+        firstZeroAdditional:
+          firstZero != null ? r2(firstZero.conversion - firstZero.conversionAlready) : null,
+        firstZeroExtraDraw: firstZero?.detail.extraPreTaxDraw ?? null,
+        cumulativeNonConversionOutflows: r2(cumulative),
+        totalAdditional: r2(
+          res.years.reduce((a, y) => a + (y.conversion - y.conversionAlready), 0),
+        ),
+        endingPretax: res.endingPretax,
+      };
+    },
+  },
+  {
+    id: "ss-no-benefit-plan-equals-entered-zero",
+    kind: "tax",
+    note: "Declared \"No benefit\" prices EXACTLY like an entered $0 (Plan path, full-result equality): a declared field carries a stored amount ($48,000 primary / $30,000 spouse at 65/67) with its No-benefit flag set — the flag zeroes it — and every strategy's full simulation (every year, every total) is byte-identical to the same plan with $0 entered and no flag. Checked for Do Nothing, Fill 12%, and Fill 22%, for the primary alone, the spouse alone, and both declared together. Blank (no amount, no flag) also prices at $0, as it always has.",
+    expected: {
+      primaryDoNothingEqual: 1,
+      primaryFill12Equal: 1,
+      primaryFill22Equal: 1,
+      spouseFill12Equal: 1,
+      bothFill22Equal: 1,
+      blankSpouseFill12Equal: 1,
+    },
+    actual: () => {
+      const eq = (a: unknown, b: unknown) => (JSON.stringify(a) === JSON.stringify(b) ? 1 : 0);
+      const rich = {
+        birthYearPrimary: 1961,
+        birthYearSpouse: 1972,
+        endAgePrimary: 85,
+        retirementAge: 65,
+        pretaxStart: 1200000,
+        taxableStart: 600000,
+        annualSpending: 60000,
+        expectedReturnPct: 3,
+        windowStartAge: 65,
+      };
+      const declaredPrimary = basePlan({
+        ...rich,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 65,
+        ssPrimaryNoBenefit: true,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+      });
+      const zeroPrimary = basePlan({
+        ...rich,
+        ssPrimaryAnnual: 0,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+      });
+      const declaredSpouse = basePlan({
+        ...rich,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+        ssSpouseNoBenefit: true,
+      });
+      const zeroSpouse = basePlan({
+        ...rich,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnual: 0,
+        ssSpouseStartAge: 67,
+      });
+      const declaredBoth = basePlan({
+        ...rich,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 65,
+        ssPrimaryNoBenefit: true,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+        ssSpouseNoBenefit: true,
+      });
+      const zeroBoth = basePlan({
+        ...rich,
+        ssPrimaryAnnual: 0,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnual: 0,
+        ssSpouseStartAge: 67,
+      });
+      const blankSpouse = basePlan({
+        ...rich,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnual: 0,
+        ssSpouseStartAge: null,
+      });
+      return {
+        primaryDoNothingEqual: eq(
+          simulateRothPlan(declaredPrimary, DO_NOTHING),
+          simulateRothPlan(zeroPrimary, DO_NOTHING),
+        ),
+        primaryFill12Equal: eq(
+          simulateRothPlan(declaredPrimary, FILL_12),
+          simulateRothPlan(zeroPrimary, FILL_12),
+        ),
+        primaryFill22Equal: eq(
+          simulateRothPlan(declaredPrimary, FILL_22),
+          simulateRothPlan(zeroPrimary, FILL_22),
+        ),
+        spouseFill12Equal: eq(
+          simulateRothPlan(declaredSpouse, FILL_12),
+          simulateRothPlan(zeroSpouse, FILL_12),
+        ),
+        bothFill22Equal: eq(
+          simulateRothPlan(declaredBoth, FILL_22),
+          simulateRothPlan(zeroBoth, FILL_22),
+        ),
+        blankSpouseFill12Equal: eq(
+          simulateRothPlan(blankSpouse, FILL_12),
+          simulateRothPlan(zeroSpouse, FILL_12),
+        ),
+      };
+    },
+  },
+  {
+    id: "ss-no-benefit-optimizer-claiming-equals-zero",
+    kind: "tax",
+    note: "Declared \"No benefit\" prices EXACTLY like an entered $0 (Optimizer + claiming-age search + heir sensitivity): on the torpedo plan with the primary declared (stored $48,000, flag set) vs $0 entered, the fixed-age optimizer's winner key and net cost, Do Nothing cost, and candidate count are identical; the claiming-age combo count is identical (a declared benefit is never searched); the joint optimizer's winner net cost is identical; and the heir-rate sensitivity winner at 22% is identical. The spouse-declared variant (both benefits entered, spouse declared vs spouse $0) likewise gives an identical joint winner.",
+    expected: {
+      optWinnerKeyEqual: 1,
+      optWinnerCostDiff: 0,
+      optDoNothingCostDiff: 0,
+      optCandidatesDiff: 0,
+      claimCombosDiff: 0,
+      jointWinnerCostDiff: 0,
+      heirWinnerCostDiff: 0,
+      spouseJointWinnerCostDiff: 0,
+    },
+    actual: () => {
+      const d = (a: number, b: number) => Math.round((a - b) * 100) / 100;
+      const declared = { ...optTorpedoPlan(), ssPrimaryNoBenefit: true };
+      const zero = { ...optTorpedoPlan(), ssPrimaryAnnual: 0 };
+      const optD = runOptimizer(declared);
+      const optZ = runOptimizer(zero);
+      const jointD = runJointOptimizer(declared);
+      const jointZ = runJointOptimizer(zero);
+      const heirD = optimizerHeirSensitivity(declared, 22);
+      const heirZ = optimizerHeirSensitivity(zero, 22);
+      const bothBase = basePlan({
+        birthYearPrimary: 1961,
+        birthYearSpouse: 1972,
+        endAgePrimary: 85,
+        retirementAge: 65,
+        pretaxStart: 1200000,
+        taxableStart: 600000,
+        annualSpending: 60000,
+        expectedReturnPct: 3,
+        windowStartAge: 65,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+      });
+      const spouseDeclared = { ...bothBase, ssSpouseNoBenefit: true };
+      const spouseZero = { ...bothBase, ssSpouseAnnual: 0 };
+      return {
+        optWinnerKeyEqual: optD.winner.spec.key === optZ.winner.spec.key ? 1 : 0,
+        optWinnerCostDiff: d(optD.winner.cost.netCost, optZ.winner.cost.netCost),
+        optDoNothingCostDiff: d(optD.doNothing.cost.netCost, optZ.doNothing.cost.netCost),
+        optCandidatesDiff: optD.candidatesTested - optZ.candidatesTested,
+        claimCombosDiff: claimAgeCombos(declared).length - claimAgeCombos(zero).length,
+        jointWinnerCostDiff: d(jointD.winner.cost.netCost, jointZ.winner.cost.netCost),
+        heirWinnerCostDiff: d(heirD.winner.cost.netCost, heirZ.winner.cost.netCost),
+        spouseJointWinnerCostDiff: d(
+          runJointOptimizer(spouseDeclared).winner.cost.netCost,
+          runJointOptimizer(spouseZero).winner.cost.netCost,
+        ),
+      };
+    },
+  },
+  {
+    id: "ss-no-benefit-survivor-equals-zero",
+    kind: "tax",
+    note: "Declared \"No benefit\" prices EXACTLY like an entered $0 (Survivor path): the primary dies in 2028; the spouse's benefit is declared (stored $25,000, flag set) vs $0 entered — full simulations identical under Do Nothing and Fill 12%. Symmetrically, with the PRIMARY declared (stored $40,000 — the larger stored amount — flag set) vs $0 entered, simulations are identical, and the survivor keeps the spouse's $25,000 (the larger EFFECTIVE benefit), not the declared person's stored $40,000: from 2029 the priced benefit is $25,000 in the declared case.",
+    expected: {
+      spouseDeclaredDoNothingEqual: 1,
+      spouseDeclaredFill12Equal: 1,
+      primaryDeclaredDoNothingEqual: 1,
+      survivorBenefitWhenPrimaryDeclared: 25000,
+    },
+    actual: () => {
+      const eq = (a: unknown, b: unknown) => (JSON.stringify(a) === JSON.stringify(b) ? 1 : 0);
+      const survBase = {
+        birthYearPrimary: 1964,
+        birthYearSpouse: 1965,
+        endAgePrimary: 70,
+        retirementAge: 62,
+        pretaxStart: 500000,
+        taxableStart: 300000,
+        annualSpending: 40000,
+        ssPrimaryAnnual: 40000,
+        ssPrimaryStartAge: 62,
+        ssSpouseAnnual: 25000,
+        ssSpouseStartAge: 62,
+        survivorEnabled: true,
+        survivorWho: "primary" as const,
+        survivorDeathYear: 2028,
+      };
+      const spouseDeclared = basePlan({ ...survBase, ssSpouseNoBenefit: true });
+      const spouseZero = basePlan({ ...survBase, ssSpouseAnnual: 0 });
+      const primaryDeclared = basePlan({ ...survBase, ssPrimaryNoBenefit: true });
+      const primaryZero = basePlan({ ...survBase, ssPrimaryAnnual: 0 });
+      const survRes = simulateRothPlan(primaryDeclared, DO_NOTHING);
+      return {
+        spouseDeclaredDoNothingEqual: eq(
+          simulateRothPlan(spouseDeclared, DO_NOTHING),
+          simulateRothPlan(spouseZero, DO_NOTHING),
+        ),
+        spouseDeclaredFill12Equal: eq(
+          simulateRothPlan(spouseDeclared, FILL_12),
+          simulateRothPlan(spouseZero, FILL_12),
+        ),
+        primaryDeclaredDoNothingEqual: eq(
+          simulateRothPlan(primaryDeclared, DO_NOTHING),
+          simulateRothPlan(primaryZero, DO_NOTHING),
+        ),
+        survivorBenefitWhenPrimaryDeclared: survRes.years[3]?.ssBenefits ?? null,
+      };
+    },
+  },
+  {
+    id: "ss-no-benefit-saved-conversion-normalize-and-copy",
+    kind: "tax",
+    note: "Saved-shape conversion, save normalization, scenario persistence, and claiming-note copy for the declared \"No benefit\" state: (a) planInputsFromSaved zeroes a declared amount ($30,000 stored + flag → $0 engine annual, flag carried through), prices an entered $0 at $0 with no flag, and prices a blank (null amount, no flag key — a pre-existing record) at $0 with no flag, exactly as before; an entered amount with no flag prices at its amount. (b) normalizeSsDeclarations: declared clears the stored amount and keeps the flag; an amount with the flag unset stays and the flag reads false; blank + undeclared stores flag false. (c) A scenario blob carrying the flags round-trips through splitRothBlob/joinRothBlob byte-identically, flags included. (d) jointSearchNote copy: blank uses the neutral wording; declared uses the settled-fact wording (household-neutral), distinct for both-declared, one-declared-with-other-blank, and one-searched-with-other-declared (both people).",
+    expected: {
+      declaredSpouseEngineAnnual: 0,
+      declaredSpouseEngineFlag: 1,
+      zeroSpouseEngineAnnual: 0,
+      zeroSpouseEngineFlag: 0,
+      blankSpouseEngineAnnual: 0,
+      blankSpouseEngineFlag: 0,
+      amountSpouseEngineAnnual: 30000,
+      normDeclaredCents: null,
+      normDeclaredFlag: 1,
+      normAmountCents: 3000000,
+      normAmountFlag: 0,
+      normBlankCents: null,
+      normBlankFlag: 0,
+      blobRoundTripIdentical: 1,
+      noteBlankNeither: "No Social Security benefit is entered, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.",
+      noteBothDeclared: "Neither person has a Social Security benefit — both are marked as having no benefit — so there are no claiming ages to search. The strategies above were priced with no Social Security benefit for either person, with all six draw orders searched as part of the strategy set.",
+      noteSpouseDeclaredNeither: "The spouse has no Social Security benefit, and the primary person's benefit hasn't been entered yet, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.",
+      notePrimaryDeclaredNeither: "The primary person has no Social Security benefit, and the spouse's benefit hasn't been entered yet, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.",
+      noteSearchedPrimaryDeclaredSpouse: "Claiming ages were searched jointly with the conversion strategies: the primary person's claiming age over every age 62–70 (9 combinations screened, the best 5 priced against the full strategy set). The spouse has no Social Security benefit, so there is no second claiming age to search. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
+      noteSearchedSpouseDeclaredPrimary: "Claiming ages were searched jointly with the conversion strategies: the spouse's claiming age over every age 62–70 (9 combinations screened, the best 5 priced against the full strategy set). The primary person has no Social Security benefit, so there is no second claiming age to search. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
+      noteSearchedPrimaryBlankSpouse: "Claiming ages were searched jointly with the conversion strategies: your claiming age over every age 62–70 (9 combinations screened, the best 5 priced against the full strategy set). The spouse's Social Security isn't entered, so their claiming age wasn't searched. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
+    },
+    actual: () => {
+      const savedBase: RothSavedLike = {
+        birthYearPrimary: 1961,
+        birthYearSpouse: 1972,
+        filingStatus: "mfj",
+        pretaxCents: 120000000,
+        rothCents: 0,
+        taxableCents: 60000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 6000000,
+        retirementAge: 65,
+        endAge: 85,
+        expectedReturnPct: 3,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnualCents: 3000000,
+        ssSpouseStartAge: 67,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 65,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: "taxable-pretax-roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const declaredIn = planInputsFromSaved(
+        { ...savedBase, ssSpouseNoBenefit: true },
+        2026,
+      );
+      const zeroIn = planInputsFromSaved(
+        { ...savedBase, ssSpouseAnnualCents: 0, ssSpouseNoBenefit: false },
+        2026,
+      );
+      const blankIn = planInputsFromSaved(
+        { ...savedBase, ssSpouseAnnualCents: null },
+        2026,
+      );
+      const amountIn = planInputsFromSaved({ ...savedBase }, 2026);
+      const normDeclared = normalizeSsDeclarations({
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: 3000000,
+        ssSpouseNoBenefit: true,
+      });
+      const normAmount = normalizeSsDeclarations({
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryNoBenefit: null,
+        ssSpouseAnnualCents: 3000000,
+        ssSpouseNoBenefit: false,
+      });
+      const normBlank = normalizeSsDeclarations({
+        ssPrimaryAnnualCents: null,
+        ssPrimaryNoBenefit: null,
+        ssSpouseAnnualCents: null,
+        ssSpouseNoBenefit: null,
+      });
+      const inputsJson =
+        '{"birthYearPrimary":1961,"ssPrimaryAnnualCents":null,"ssPrimaryNoBenefit":true,"ssSpouseAnnualCents":3000000,"ssSpouseNoBenefit":false}';
+      const original = `{"inputs":${inputsJson},"scenarios":[{"name":"S1","ssPrimaryAnnualCents":null,"ssPrimaryNoBenefit":true}]}`;
+      const split = splitRothBlob(original);
+      const rejoined = split ? joinRothBlob(split.inputsRaw, split.scenariosRaw) : "";
+      const note = (over: Partial<Parameters<typeof jointSearchNote>[0]>) =>
+        jointSearchNote({
+          searchedPrimary: false,
+          searchedSpouse: false,
+          declaredPrimary: false,
+          declaredSpouse: false,
+          combosTested: 1,
+          screenStrategiesPerCombo: 9,
+          finalistCombos: 1,
+          drawOrderLabel: "Taxable → Pre-tax → Roth",
+          ...over,
+        });
+      return {
+        declaredSpouseEngineAnnual: declaredIn?.ssSpouseAnnual ?? null,
+        declaredSpouseEngineFlag: declaredIn?.ssSpouseNoBenefit ? 1 : 0,
+        zeroSpouseEngineAnnual: zeroIn?.ssSpouseAnnual ?? null,
+        zeroSpouseEngineFlag: zeroIn?.ssSpouseNoBenefit ? 1 : 0,
+        blankSpouseEngineAnnual: blankIn?.ssSpouseAnnual ?? null,
+        blankSpouseEngineFlag: blankIn?.ssSpouseNoBenefit ? 1 : 0,
+        amountSpouseEngineAnnual: amountIn?.ssSpouseAnnual ?? null,
+        normDeclaredCents: normDeclared.ssSpouseAnnualCents,
+        normDeclaredFlag: normDeclared.ssSpouseNoBenefit ? 1 : 0,
+        normAmountCents: normAmount.ssSpouseAnnualCents,
+        normAmountFlag: normAmount.ssSpouseNoBenefit ? 1 : 0,
+        normBlankCents: normBlank.ssSpouseAnnualCents,
+        normBlankFlag: normBlank.ssSpouseNoBenefit ? 1 : 0,
+        blobRoundTripIdentical: rejoined === original ? 1 : 0,
+        noteBlankNeither: note({}),
+        noteBothDeclared: note({ declaredPrimary: true, declaredSpouse: true }),
+        noteSpouseDeclaredNeither: note({ declaredSpouse: true }),
+        notePrimaryDeclaredNeither: note({ declaredPrimary: true }),
+        noteSearchedPrimaryDeclaredSpouse: note({
+          searchedPrimary: true,
+          declaredSpouse: true,
+          combosTested: 9,
+          finalistCombos: 5,
+        }),
+        noteSearchedSpouseDeclaredPrimary: note({
+          searchedSpouse: true,
+          declaredPrimary: true,
+          combosTested: 9,
+          finalistCombos: 5,
+        }),
+        noteSearchedPrimaryBlankSpouse: note({
+          searchedPrimary: true,
+          combosTested: 9,
+          finalistCombos: 5,
+        }),
+      };
+    },
+  },
+  {
+    id: "exec-funded-fill",
+    kind: "tax",
+    note: "Execution year, funded fill (hand-derived): MFJ 2026, age 57, Fill 12% (taxable-income cap $100,800; standard deduction $32,200), YTD other ordinary income $20,000 and YTD conversions $30,000 already made, pre-tax $1,000,000, no Social Security, no spending. Taxable income = $20,000 + total conversion − $32,200, so the total conversion that lands exactly on the cap is $113,000 and the REMAINING conversion is $113,000 − $30,000 = $83,000. Federal tax at the fill: 10% × $24,800 + 12% × $76,000 = $2,480 + $9,120 = $11,600; MAGI $133,000; the bracket cap's final actual is exactly its cap.",
+    expected: {
+      status: "ok",
+      remaining: 83000,
+      totalConversion: 113000,
+      taxableIncome: 100800,
+      capActual: 100800,
+      capCap: 100800,
+      magi: 133000,
+      federalTax: 11600,
+      boundLabel: "Top of the 12% bracket",
+    },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000 });
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 20000, taxExemptYtd: 0, alreadyConvertedYtd: 30000 },
+        2026,
+      );
+      const cap = res.year?.detail.fill.caps[0];
+      return {
+        status: res.status,
+        remaining: res.remaining,
+        totalConversion: res.totalConversion,
+        taxableIncome: res.year?.taxableIncome ?? null,
+        capActual: cap?.actual ?? null,
+        capCap: cap?.cap ?? null,
+        magi: res.year?.magi ?? null,
+        federalTax: res.year?.federalTax ?? null,
+        boundLabel: res.boundLabel,
+      };
+    },
+  },
+  {
+    id: "exec-matches-planner-first-year",
+    kind: "tax",
+    note: "Execution-year consistency: an execution run whose calendar year, ages, balances, and income equal a planner run's first window year (window starting this year at 57, no YTD amounts, Fill 12%, no other income) returns the SAME total conversion as the planner's year-1 conversion, to the cent — the known $133,000 fill ($100,800 taxable cap + $32,200 standard deduction, no other income).",
+    expected: { plannerYear1: 133000, execTotal: 133000, diff: 0, remaining: 133000 },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000 });
+      const plannerYear1 = simulateRothPlan(plan, FILL_12).years[0]?.conversion ?? null;
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 0, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return {
+        plannerYear1,
+        execTotal: res.totalConversion,
+        diff:
+          plannerYear1 != null
+            ? Math.round((res.totalConversion - plannerYear1) * 100) / 100
+            : null,
+        remaining: res.remaining,
+      };
+    },
+  },
+  {
+    id: "exec-over-ceiling-income",
+    kind: "tax",
+    note: "Execution year, over the ceiling on income alone: MFJ 2026, Fill 12% (cap $100,800 of taxable income), YTD other ordinary income $150,000, nothing converted yet. At $0 of conversion taxable income is already $150,000 − $32,200 = $117,800 — $17,000 past the cap — so the remaining conversion is $0, the status names income as the cause, and the overshoot is the priced cap actual minus its cap ($117,800 − $100,800).",
+    expected: { status: "over-ceiling-income", remaining: 0, overshoot: 17000, overshootLabel: "Top of the 12% bracket" },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000 });
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 150000, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return {
+        status: res.status,
+        remaining: res.remaining,
+        overshoot: res.overshoot,
+        overshootLabel: res.overshootLabel,
+      };
+    },
+  },
+  {
+    id: "exec-balance-capped",
+    kind: "tax",
+    note: "Execution year, balance-capped: MFJ 2026, Fill 12%, no YTD income or conversions, pre-tax only $50,000. The fill that reaches the cap is the known $133,000 (per the consistency case), but only $50,000 of pre-tax exists — so the remaining conversion is the whole $50,000 balance, flagged balance-capped, with the $133,000 fill target reported.",
+    expected: { status: "balance-capped", remaining: 50000, totalConversion: 50000, fillTarget: 133000 },
+    actual: () => {
+      const plan = basePlan({ pretaxStart: 50000, taxableStart: 1000000 });
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 0, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return {
+        status: res.status,
+        remaining: res.remaining,
+        totalConversion: res.totalConversion,
+        fillTarget: res.fillTarget,
+      };
+    },
+  },
+  {
+    id: "exec-ytd-conversions-past-room",
+    kind: "tax",
+    note: "Execution year, YTD conversions already past the room: MFJ 2026, Fill 12%, YTD other income $20,000 (so the total conversion that fills to the cap is the funded-fill case's $113,000) but $120,000 already converted. The priced year's taxable income is $20,000 + $120,000 − $32,200 = $107,800 — $7,000 past the cap — while income alone at $0 of conversion is nowhere near the cap, so the cause is the conversions: remaining $0, already-converted $120,000 against a $113,000 fill target.",
+    expected: {
+      status: "over-ceiling-conversions",
+      remaining: 0,
+      ytdConverted: 120000,
+      fillTarget: 113000,
+      overshoot: 7000,
+    },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000 });
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 20000, taxExemptYtd: 0, alreadyConvertedYtd: 120000 },
+        2026,
+      );
+      return {
+        status: res.status,
+        remaining: res.remaining,
+        ytdConverted: res.ytdConverted,
+        fillTarget: res.fillTarget,
+        overshoot: res.overshoot,
+      };
+    },
+  },
+  {
+    id: "exec-isolation-and-rollover",
+    kind: "tax",
+    note: "Execution isolation / rollover: (a) the planner's inputs and results on a saved record are IDENTICAL with execution fields present — filled for the current year or stale-stamped — because planInputsFromSaved never reads the execution keys (the stale record also carries a huge YTD income that would wreck the plan if it leaked). (b) consumeExecutionInputs returns a filled current-year shape as stored, a stale-stamped shape as blank with the rollover reported and the cleared year named, and a stamp-less record as blank with no rollover. (c) An execution run fed the stale-consumed (blank) shape prices exactly like one fed an explicitly blank shape.",
+    expected: {
+      plannerInputsSameWithFilled: 1,
+      plannerInputsSameWithStale: 1,
+      plannerResultsSameWithStale: 1,
+      consumedFilledOther: 2000000,
+      consumedFilledConverted: 3000000,
+      consumedStaleOther: null,
+      consumedStaleRolledOver: 1,
+      consumedStaleClearedYear: 2025,
+      consumedNoStampRolledOver: 0,
+      stalePricesLikeBlank: 1,
+    },
+    actual: () => {
+      const savedBase: RothSavedLike = {
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 100000000,
+        rothCents: 0,
+        taxableCents: 100000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 85,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: "taxable-pretax-roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const filledExec = {
+        executionYear: 2026,
+        executionPretaxCents: null,
+        executionPretaxSpouseCents: null,
+        executionRothCents: null,
+        executionTaxableCents: null,
+        executionHsaCents: null,
+        executionOtherOrdinaryCents: 2000000,
+        executionTaxExemptInterestCents: 0,
+        executionAlreadyConvertedCents: 3000000,
+      };
+      const staleExec = {
+        ...filledExec,
+        executionYear: 2025,
+        executionOtherOrdinaryCents: 9999999900,
+      };
+      const withFilled = { ...savedBase, ...filledExec } as RothSavedLike;
+      const withStale = { ...savedBase, ...staleExec } as RothSavedLike;
+      const plain = planInputsFromSaved(savedBase, 2026);
+      const fromFilled = planInputsFromSaved(withFilled, 2026);
+      const fromStale = planInputsFromSaved(withStale, 2026);
+      const eq = (a: unknown, b: unknown) =>
+        JSON.stringify(a) === JSON.stringify(b) ? 1 : 0;
+      const consumedFilled = consumeExecutionInputs(filledExec, 2026);
+      const consumedStale = consumeExecutionInputs(staleExec, 2026);
+      const consumedNoStamp = consumeExecutionInputs({ ...filledExec, executionYear: null }, 2026);
+      const plan = basePlan({ taxableStart: 1000000 });
+      const staleRun = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        executionDollarsFromCents(consumedStale.execution),
+        2026,
+      );
+      const blankRun = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 0, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return {
+        plannerInputsSameWithFilled: eq(plain, fromFilled),
+        plannerInputsSameWithStale: eq(plain, fromStale),
+        plannerResultsSameWithStale:
+          plain && fromStale
+            ? eq(simulateRothPlan(plain, FILL_12), simulateRothPlan(fromStale, FILL_12))
+            : 0,
+        consumedFilledOther: consumedFilled.execution.executionOtherOrdinaryCents,
+        consumedFilledConverted: consumedFilled.execution.executionAlreadyConvertedCents,
+        consumedStaleOther: consumedStale.execution.executionOtherOrdinaryCents,
+        consumedStaleRolledOver: consumedStale.rolledOver ? 1 : 0,
+        consumedStaleClearedYear: consumedStale.clearedYear,
+        consumedNoStampRolledOver: consumedNoStamp.rolledOver ? 1 : 0,
+        stalePricesLikeBlank: eq(staleRun, blankRun),
+      };
+    },
+  },
+  {
+    id: "exec-no-ceiling-and-not-priced",
+    kind: "tax",
+    note: "Execution edge statuses: with NO ceiling switched on (Do Nothing ceilings) the run reports no-ceiling — there is no fill target and no fill number, however much pre-tax there is. With Fill 12% switched on but a $0 pre-tax balance (entered $0, nothing followed), the run reports not-priced — no number is offered for a balance that prices $0.",
+    expected: { noCeilingStatus: "no-ceiling", notPricedStatus: "not-priced" },
+    actual: () => {
+      const funded = basePlan({ taxableStart: 1000000 });
+      const noCeiling = priceExecutionYear(
+        funded,
+        null,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 0, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      const empty = basePlan({ pretaxStart: 0, taxableStart: 1000000 });
+      const notPriced = priceExecutionYear(
+        empty,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 0, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return { noCeilingStatus: noCeiling.status, notPricedStatus: notPriced.status };
+    },
+  },
+  {
+    id: "mc-check-zero-vol-equals-deterministic",
+    kind: "tax",
+    note: "Market-uncertainty check at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path's pricing is the deterministic pricing, bit for bit. On the torpedo plan the optimizer's winner (Fill to the top of the 12% bracket, through the RMD years) genuinely beats Do Nothing deterministically — net cost $181,984.20 vs $380,487.57, an advantage of $198,503.37 — so the check at volatility 0, N = 8, seed 12345 must report a 100% win rate with the median advantage, both median net costs, and p10 = p90 all EQUAL to those deterministic figures to the cent (the deterministic figures are pinned alongside, from the optimizer run itself). (Winner figures RE-PINNED by the BASIS-DRIFT build from $183,813.90 / $199,501.11 — the torpedo plan's set-100% basis drifts at its 3% return, raising the winner's net $1,080.43; Do Nothing's $380,487.57 is unmoved, as in joint-maxifi-property.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo primary (born 1961) is 66 in 2027 and 67 in 2028, years whose §224 figures now deflate into today's dollars (2027: $5,853.66 per person over a $146,341.46 start; 2028: $5,710.89 over $142,772.16) instead of pricing the nominal $6,000 / $150,000, so the winner's net rises $119.00 to $181,984.20 and the advantage falls to $380,487.57 − $181,984.20 = $198,503.37; Do Nothing's $380,487.57 is unmoved, its deduction being fully phased out in those years under either figure set. See joint-maxifi-property for the full derivation.)",
+    expected: {
+      winRatePct: 100,
+      wins: 8,
+      medianAdvantage: 198503.37,
+      detAdvantage: 198503.37,
+      winnerMedianNetCost: 181984.2,
+      detWinnerNetCost: 181984.2,
+      doNothingMedianNetCost: 380487.57,
+      detDoNothingNetCost: 380487.57,
+      p10Advantage: 198503.37,
+      p90Advantage: 198503.37,
+    },
+    actual: () => {
+      const plan = optTorpedoPlan();
+      const opt = runOptimizer(plan);
+      const check = runRothMonteCarloCheck(
+        plan,
+        { spec: opt.winner.spec, claimAges: opt.winner.claimAges },
+        { spec: opt.doNothing.spec, claimAges: opt.doNothing.claimAges },
+        { volatilityPct: 0, pathCount: 8, seed: ROTH_MC_CHECK_SEED },
+      );
+      return {
+        winRatePct: check.winRatePct,
+        wins: check.wins,
+        medianAdvantage: check.medianAdvantage,
+        detAdvantage:
+          Math.round((opt.doNothing.cost.netCost - opt.winner.cost.netCost) * 100) / 100,
+        winnerMedianNetCost: check.winnerMedianNetCost,
+        detWinnerNetCost: opt.winner.cost.netCost,
+        doNothingMedianNetCost: check.doNothingMedianNetCost,
+        detDoNothingNetCost: opt.doNothing.cost.netCost,
+        p10Advantage: check.p10Advantage,
+        p90Advantage: check.p90Advantage,
+      };
+    },
+  },
+  {
+    id: "mc-check-seeded-small-n",
+    kind: "tax",
+    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §224 figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.)",
+    expected: {
+      pathsRun: 40,
+      wins: 34,
+      winRatePct: 85,
+      medianAdvantage: 130788.85,
+      p10Advantage: -22890.85,
+      p90Advantage: 377639.32,
+      winnerMedianNetCost: 161901.1,
+      doNothingMedianNetCost: 308688.28,
+    },
+    actual: () => {
+      const plan = optTorpedoPlan();
+      const opt = runOptimizer(plan);
+      const check = runRothMonteCarloCheck(
+        plan,
+        { spec: opt.winner.spec, claimAges: opt.winner.claimAges },
+        { spec: opt.doNothing.spec, claimAges: opt.doNothing.claimAges },
+        { volatilityPct: 15, pathCount: 40, seed: ROTH_MC_CHECK_SEED },
+      );
+      return {
+        pathsRun: check.pathsRun,
+        wins: check.wins,
+        winRatePct: check.winRatePct,
+        medianAdvantage: check.medianAdvantage,
+        p10Advantage: check.p10Advantage,
+        p90Advantage: check.p90Advantage,
+        winnerMedianNetCost: check.winnerMedianNetCost,
+        doNothingMedianNetCost: check.doNothingMedianNetCost,
+      };
+    },
+  },
+  {
+    id: "mc-check-paired-paths",
+    kind: "tax",
+    note: "Market-uncertainty check pairing: at N = 6, volatility 15, seed 12345, every path's {winnerCost, doNothingCost} from the check equals a DIRECT simulateRothPlan pricing of both candidates (claiming ages folded in, Do Nothing as the ceilings-null strategy, the winner as its re-solved strategy) using the exported series generator's series for that same path — proving both strategies see the identical series on each path. And Do Nothing priced with the NEXT path's series differs from its own-path price on all 6 paths — proving the series genuinely vary per path (a single shared series, or one series per candidate, would fail one side or the other).",
+    expected: { mismatches: 0, pathsChecked: 6, dnAltSeriesDiffers: 6 },
+    actual: () => {
+      const plan = optTorpedoPlan();
+      const opt = runOptimizer(plan);
+      const winner = { spec: opt.winner.spec, claimAges: opt.winner.claimAges };
+      const doNothing = { spec: opt.doNothing.spec, claimAges: opt.doNothing.claimAges };
+      const N = 6;
+      const check = runRothMonteCarloCheck(plan, winner, doNothing, {
+        volatilityPct: 15,
+        pathCount: N,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      // Regenerate the batch's series in order from a fresh stream.
+      const rng = rothMcStream(ROTH_MC_CHECK_SEED);
+      const seriesList: number[][] = [];
+      for (let i = 0; i < N; i++) seriesList.push(rothMcReturnSeries(plan, 15, rng));
+      const priceWith = (
+        cand: typeof winner,
+        series: readonly number[],
+      ): number => {
+        const comboInputs: RothPlanInputs = {
+          ...plan,
+          ssPrimaryAnnual: cand.claimAges.primaryAnnual,
+          ssPrimaryStartAge: cand.claimAges.primaryAge,
+          ssSpouseAnnual: cand.claimAges.spouseAnnual,
+          ssSpouseStartAge: cand.claimAges.spouseAge,
+        };
+        if (cand.spec.key === DO_NOTHING_SPEC.key) {
+          return netCostBreakdown(
+            simulateRothPlan(
+              comboInputs,
+              { id: "none", name: "Do Nothing", ceilings: null },
+              series,
+            ),
+            plan.heirRatePct,
+          ).netCost;
+        }
+        const candidateInputs =
+          cand.spec.windowStopAge === comboInputs.windowStopAge &&
+          drawOrderKey(cand.spec.drawOrder) === drawOrderKey(comboInputs.drawOrder)
+            ? comboInputs
+            : {
+                ...comboInputs,
+                windowStopAge: cand.spec.windowStopAge,
+                drawOrder: cand.spec.drawOrder,
+              };
+        return netCostBreakdown(
+          simulateRothPlan(candidateInputs, candidateStrategy(cand.spec), series),
+          plan.heirRatePct,
+        ).netCost;
+      };
+      let mismatches = 0;
+      let dnAltSeriesDiffers = 0;
+      for (let i = 0; i < N; i++) {
+        const series = seriesList[i]!;
+        const path = check.paths[i]!;
+        if (
+          priceWith(winner, series) !== path.winnerCost ||
+          priceWith(doNothing, series) !== path.doNothingCost
+        ) {
+          mismatches++;
+        }
+        const alt = seriesList[(i + 1) % N]!;
+        if (priceWith(doNothing, alt) !== path.doNothingCost) dnAltSeriesDiffers++;
+      }
+      return { mismatches, pathsChecked: check.pathsRun, dnAltSeriesDiffers };
+    },
+  },
+  {
+    id: "mc-stats-zero-vol-equals-compare",
+    kind: "tax",
+    note: "Monte Carlo stats at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path prices the deterministic plan bit for bit and every percentile (p10 = p50 = p90) of every scenario must equal its runRothCompare figure TO THE CENT — 27 exact comparisons across Do Nothing, Fill 12%, and an Overspend scenario on the small mcStatsBase plan (born 1961/1972, $720,000 across the buckets, $30,000 spending, 3% return, retire 65, plan to 85). The funded scenarios pin neverShortfallRatePct 100 with zero total shortfall; the Overspend scenario ($400,000/yr against the same balances) shorts deterministically, so at N = 8 its rate is 0, all 8 paths count as shortfall paths, and its per-path total shortfall is the one deterministic figure $7,294,458.10 at p50 and p90 alike. The deterministic compare figures are pinned alongside, from the same compare run the identity checks against.",
+    expected: {
+      mismatches: 0,
+      comparedFields: 27,
+      dnRate: 100,
+      fillRate: 100,
+      overRate: 0,
+      overWithShort: 8,
+      overSfP50: 729445810,
+      overSfP90: 729445810,
+      dnDetWealth: 97846373,
+      fillDetWealth: 101260237,
+      fillDetPretax: 2324,
+      fillDetCost: 3451047,
+      overDetWealth: 3720589,
+    },
+    actual: () => {
+      const base = mcStatsBase();
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "Do Nothing", overrides: {} },
+        {
+          name: "Fill 12%",
+          overrides: {
+            ceilings: {
+              bracketTopPct: 12,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: false,
+              acaCliffCapFamilyOnly: false,
+              magiCapCents: null,
+              acaCliffBufferCents: null,
+            },
+          },
+        },
+        { name: "Overspend", overrides: { annualSpendingCents: 40000000 } },
+      ];
+      const stats = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 0,
+        pathCount: 8,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const cmp = runRothCompare(base, scenarios, 2026);
+      let mismatches = 0;
+      let comparedFields = 0;
+      for (const s of stats.scenarios) {
+        const c = cmp.scenarios.find((x) => x.name === s.name)!;
+        const pairs: [number, number][] = [
+          [s.endingAfterTaxWealthP10Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP50Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP90Cents, c.endingAfterTaxWealthCents],
+          [s.endingPretaxP10Cents, c.endingPretaxCents],
+          [s.endingPretaxP50Cents, c.endingPretaxCents],
+          [s.endingPretaxP90Cents, c.endingPretaxCents],
+          [s.netCostP10Cents, c.netCostCents],
+          [s.netCostP50Cents, c.netCostCents],
+          [s.netCostP90Cents, c.netCostCents],
+        ];
+        for (const [a, b] of pairs) {
+          comparedFields++;
+          if (a !== b) mismatches++;
+        }
+      }
+      const byName = (n: string) => stats.scenarios.find((s) => s.name === n)!;
+      const det = (n: string) => cmp.scenarios.find((s) => s.name === n)!;
+      return {
+        mismatches,
+        comparedFields,
+        dnRate: byName("Do Nothing").neverShortfallRatePct,
+        fillRate: byName("Fill 12%").neverShortfallRatePct,
+        overRate: byName("Overspend").neverShortfallRatePct,
+        overWithShort: byName("Overspend").pathsWithShortfall,
+        overSfP50: byName("Overspend").totalShortfallP50Cents,
+        overSfP90: byName("Overspend").totalShortfallP90Cents,
+        dnDetWealth: det("Do Nothing").endingAfterTaxWealthCents,
+        fillDetWealth: det("Fill 12%").endingAfterTaxWealthCents,
+        fillDetPretax: det("Fill 12%").endingPretaxCents,
+        fillDetCost: det("Fill 12%").netCostCents,
+        overDetWealth: det("Overspend").endingAfterTaxWealthCents,
+      };
+    },
+  },
+  {
+    id: "mc-stats-seeded-pinned",
+    kind: "tax",
+    note: "Monte Carlo stats, seeded pinned run: the mcStatsBase plan at volatility 15, N = 40, seed 12345, Do Nothing and Fill 12%. The pinned figures are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run. The stream and the per-path pricing are cross-validated by the zero-volatility identity (mc-stats-zero-vol-equals-compare) and, for Do Nothing here, by an independent in-case re-derivation: the series are regenerated from rothMcStream and every path is re-priced directly through buildCompareScenario + simulateRothPlan + planNetCost, with the re-derived median net cost, p90 net cost, and shortfall-path count pinned to the same constants as the stats output. On this plan both strategies fund spending on all 40 paths (rate 100); Fill 12% drains the pre-tax pile (median ending pre-tax $2.03) and holds the median net cost to $33,936.22 against Do Nothing's $75,079.02, while Do Nothing's ending wealth spreads widest (p10 $201,756.29, p90 $1,516,474.80).",
+    expected: {
+      dnPaths: 40,
+      dnRate: 100,
+      dnWithShort: 0,
+      dnWealthP10: 20175629,
+      dnWealthP50: 75300949,
+      dnWealthP90: 151647480,
+      dnPretaxP10: 12697600,
+      dnPretaxP50: 33205993,
+      dnPretaxP90: 66932965,
+      dnCostP10: 2793472,
+      dnCostP50: 7507902,
+      dnCostP90: 15497983,
+      dnDirectCostP50: 7507902,
+      dnDirectCostP90: 15497983,
+      dnDirectWithShort: 0,
+      fillRate: 100,
+      fillWealthP10: 21202724,
+      fillWealthP50: 77989445,
+      fillWealthP90: 158345702,
+      fillPretaxP50: 203,
+      fillCostP10: 2681825,
+      fillCostP50: 3393622,
+      fillCostP90: 4238681,
+    },
+    actual: () => {
+      const base = mcStatsBase();
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "Do Nothing", overrides: {} },
+        {
+          name: "Fill 12%",
+          overrides: {
+            ceilings: {
+              bracketTopPct: 12,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: false,
+              acaCliffCapFamilyOnly: false,
+              magiCapCents: null,
+              acaCliffBufferCents: null,
+            },
+          },
+        },
+      ];
+      const stats = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 15,
+        pathCount: 40,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const dn = stats.scenarios[0]!;
+      const fill = stats.scenarios[1]!;
+      // Independent re-derivation of the Do Nothing row: the
+      // same fixed stream regenerated series by series, each
+      // path priced directly, percentiles by the documented
+      // convention (median = mean of the two middle values,
+      // p90 = sorted[floor(0.9 × n)]).
+      const baseInputs = planInputsFromSaved(base, 2026)!;
+      const builtDn = buildCompareScenario(base, "Do Nothing", {}, 2026)!;
+      const rng = rothMcStream(ROTH_MC_CHECK_SEED);
+      const directCosts: number[] = [];
+      let directShort = 0;
+      for (let i = 0; i < 40; i++) {
+        const series = rothMcReturnSeries(baseInputs, 15, rng);
+        const res = simulateRothPlan(builtDn.inputs, builtDn.strategy, series);
+        directCosts.push(
+          Math.round(planNetCost(res, builtDn.inputs).netCost * 100),
+        );
+        if (res.years.some((y) => y.spendShortfall > 0)) directShort++;
+      }
+      const sorted = [...directCosts].sort((a, b) => a - b);
+      const directP50 = Math.round(((sorted[19] ?? 0) + (sorted[20] ?? 0)) / 2);
+      const directP90 = sorted[Math.floor((90 / 100) * 40)] ?? 0;
+      return {
+        dnPaths: dn.pathsRun,
+        dnRate: dn.neverShortfallRatePct,
+        dnWithShort: dn.pathsWithShortfall,
+        dnWealthP10: dn.endingAfterTaxWealthP10Cents,
+        dnWealthP50: dn.endingAfterTaxWealthP50Cents,
+        dnWealthP90: dn.endingAfterTaxWealthP90Cents,
+        dnPretaxP10: dn.endingPretaxP10Cents,
+        dnPretaxP50: dn.endingPretaxP50Cents,
+        dnPretaxP90: dn.endingPretaxP90Cents,
+        dnCostP10: dn.netCostP10Cents,
+        dnCostP50: dn.netCostP50Cents,
+        dnCostP90: dn.netCostP90Cents,
+        dnDirectCostP50: directP50,
+        dnDirectCostP90: directP90,
+        dnDirectWithShort: directShort,
+        fillRate: fill.neverShortfallRatePct,
+        fillWealthP10: fill.endingAfterTaxWealthP10Cents,
+        fillWealthP50: fill.endingAfterTaxWealthP50Cents,
+        fillWealthP90: fill.endingAfterTaxWealthP90Cents,
+        fillPretaxP50: fill.endingPretaxP50Cents,
+        fillCostP10: fill.netCostP10Cents,
+        fillCostP50: fill.netCostP50Cents,
+        fillCostP90: fill.netCostP90Cents,
+      };
+    },
+  },
+  {
+    id: "mc-stats-shortfall-some-paths",
+    kind: "tax",
+    note: "Monte Carlo stats, genuine shortfall case: the mcStatsBase plan with spending raised by scenario patch to $55,000/yr. The steady path still funds every year (the zero-volatility control in this same case reports rate 100), but across the fixed 40-path stream at volatility 15, exactly 15 paths run an unfunded-spending year — neverShortfallRatePct 62.5, strictly between 0 and 100 — with total-shortfall p50 $0 (more than half the paths never run short) and p90 $246,682.75. The shortfall-path count is pinned twice: from the stats output and from an independent in-case re-derivation (series regenerated from rothMcStream, each path priced directly through buildCompareScenario + simulateRothPlan, shortfall years counted off the year rows).",
+    expected: {
+      pathsRun: 40,
+      withShort: 15,
+      rate: 62.5,
+      sfP50: 0,
+      sfP90: 24668275,
+      wealthP10: 1098500,
+      wealthP50: 18567066,
+      wealthP90: 57689672,
+      costP50: 1586024,
+      detRate: 100,
+      directWithShort: 15,
+    },
+    actual: () => {
+      const base = mcStatsBase();
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "High spending", overrides: { annualSpendingCents: 5500000 } },
+      ];
+      const stats = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 15,
+        pathCount: 40,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const det = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 0,
+        pathCount: 4,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const s = stats.scenarios[0]!;
+      const baseInputs = planInputsFromSaved(base, 2026)!;
+      const builtHs = buildCompareScenario(
+        base,
+        "High spending",
+        { annualSpendingCents: 5500000 },
+        2026,
+      )!;
+      const rng = rothMcStream(ROTH_MC_CHECK_SEED);
+      let directShort = 0;
+      for (let i = 0; i < 40; i++) {
+        const series = rothMcReturnSeries(baseInputs, 15, rng);
+        const res = simulateRothPlan(builtHs.inputs, builtHs.strategy, series);
+        if (res.years.some((y) => y.spendShortfall > 0)) directShort++;
+      }
+      return {
+        pathsRun: s.pathsRun,
+        withShort: s.pathsWithShortfall,
+        rate: s.neverShortfallRatePct,
+        sfP50: s.totalShortfallP50Cents,
+        sfP90: s.totalShortfallP90Cents,
+        wealthP10: s.endingAfterTaxWealthP10Cents,
+        wealthP50: s.endingAfterTaxWealthP50Cents,
+        wealthP90: s.endingAfterTaxWealthP90Cents,
+        costP50: s.netCostP50Cents,
+        detRate: det.scenarios[0]!.neverShortfallRatePct,
+        directWithShort: directShort,
+      };
+    },
+  },
+  {
+    id: "mc-stats-tiers-candidate",
+    kind: "tax",
+    note: "Monte Carlo stats with a basis-tiers candidate — the gap that motivated the action (the optimizer-spec market-uncertainty check cannot carry tiers at all). On the mcStatsBase plan plus an $80,000/yr pension (otherOrdinaryCents), a Fill 24% strategy prices under a flat 50% basis and under tiers [{25% at 100%}, {75% at 20%}]: the pension plus the 24% fill stacks ordinary income high enough that taxable gains price above the 0% band, so the tiered sale order (highest-basis tier first) genuinely moves the price — ending wealth $3,065,777.61 tiered vs $3,064,082.03 flat (+$1,695.58), net cost $237,667.34 vs $238,638.19 (−$970.85). At zero volatility every stats percentile of BOTH scenarios equals its runRothCompare figure to the cent (18 exact comparisons), proving the tiers flow through the stats pricing exactly as the compare prices them.",
+    expected: {
+      mismatches: 0,
+      comparedFields: 18,
+      tieredWealth: 306577761,
+      tieredPretax: 8142,
+      tieredCost: 23766734,
+      flatWealth: 306408203,
+      flatCost: 23863819,
+      tiersWealthDelta: 169558,
+      tiersCostDelta: -97085,
+    },
+    actual: () => {
+      const base = mcStatsBase({ otherOrdinaryCents: 8000000 });
+      const fill24 = {
+        bracketTopPct: 24,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        acaCliffCapFamilyOnly: false,
+        magiCapCents: null,
+        acaCliffBufferCents: null,
+      };
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "Fill 24% flat", overrides: { ceilings: fill24 } },
+        {
+          name: "Fill 24% tiered",
+          overrides: {
+            ceilings: fill24,
+            taxableTiers: [
+              { sharePct: 25, basisPct: 100 },
+              { sharePct: 75, basisPct: 20 },
+            ],
+          },
+        },
+      ];
+      const stats = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 0,
+        pathCount: 4,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const cmp = runRothCompare(base, scenarios, 2026);
+      let mismatches = 0;
+      let comparedFields = 0;
+      for (const s of stats.scenarios) {
+        const c = cmp.scenarios.find((x) => x.name === s.name)!;
+        const pairs: [number, number][] = [
+          [s.endingAfterTaxWealthP10Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP50Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP90Cents, c.endingAfterTaxWealthCents],
+          [s.endingPretaxP10Cents, c.endingPretaxCents],
+          [s.endingPretaxP50Cents, c.endingPretaxCents],
+          [s.endingPretaxP90Cents, c.endingPretaxCents],
+          [s.netCostP10Cents, c.netCostCents],
+          [s.netCostP50Cents, c.netCostCents],
+          [s.netCostP90Cents, c.netCostCents],
+        ];
+        for (const [a, b] of pairs) {
+          comparedFields++;
+          if (a !== b) mismatches++;
+        }
+      }
+      const tiered = stats.scenarios[1]!;
+      const flat = stats.scenarios[0]!;
+      return {
+        mismatches,
+        comparedFields,
+        tieredWealth: tiered.endingAfterTaxWealthP50Cents,
+        tieredPretax: tiered.endingPretaxP50Cents,
+        tieredCost: tiered.netCostP50Cents,
+        flatWealth: flat.endingAfterTaxWealthP50Cents,
+        flatCost: flat.netCostP50Cents,
+        tiersWealthDelta:
+          tiered.endingAfterTaxWealthP50Cents - flat.endingAfterTaxWealthP50Cents,
+        tiersCostDelta: tiered.netCostP50Cents - flat.netCostP50Cents,
+      };
+    },
+  },
+  {
+    id: "mc-stats-zero-vol-return-override-equals-compare",
+    kind: "tax",
+    note: "Monte Carlo stats at zero volatility with a return override (the F1 pin): on the mcStatsBase plan (3% expected return), one scenario overrides expectedReturnPct to 5 and one overrides nothing. At volatilityPct 0 each scenario's series is its OWN expected return repeated, so every percentile (wealth / pre-tax / net-cost p10/p50/p90 — 9 fields × 2 scenarios = 18 comparisons) of BOTH scenarios equals its runRothCompare figure to the cent, derived in-case by actually running the compare. The old base-centered construction priced the 5% scenario from the base's 3% series, so it failed this identity for the overriding scenario. The pin cannot pass vacuously: the 5% scenario's deterministic compare ending wealth ($1,492,513.62) exceeds the unchanged scenario's ($978,463.73) by $514,049.89.",
+    expected: {
+      mismatches: 0,
+      comparedFields: 18,
+      highDetWealth: 149251362,
+      baseDetWealth: 97846373,
+      wealthDelta: 51404989,
+      highExceedsBase: 1,
+    },
+    actual: () => {
+      const base = mcStatsBase();
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "Return 5%", overrides: { expectedReturnPct: 5 } },
+        { name: "Unchanged", overrides: {} },
+      ];
+      const stats = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 0,
+        pathCount: 8,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const cmp = runRothCompare(base, scenarios, 2026);
+      let mismatches = 0;
+      let comparedFields = 0;
+      for (const s of stats.scenarios) {
+        const c = cmp.scenarios.find((x) => x.name === s.name)!;
+        const pairs: [number, number][] = [
+          [s.endingAfterTaxWealthP10Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP50Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP90Cents, c.endingAfterTaxWealthCents],
+          [s.endingPretaxP10Cents, c.endingPretaxCents],
+          [s.endingPretaxP50Cents, c.endingPretaxCents],
+          [s.endingPretaxP90Cents, c.endingPretaxCents],
+          [s.netCostP10Cents, c.netCostCents],
+          [s.netCostP50Cents, c.netCostCents],
+          [s.netCostP90Cents, c.netCostCents],
+        ];
+        for (const [a, b] of pairs) {
+          comparedFields++;
+          if (a !== b) mismatches++;
+        }
+      }
+      const highDet = cmp.scenarios.find((s) => s.name === "Return 5%")!;
+      const baseDet = cmp.scenarios.find((s) => s.name === "Unchanged")!;
+      return {
+        mismatches,
+        comparedFields,
+        highDetWealth: highDet.endingAfterTaxWealthCents,
+        baseDetWealth: baseDet.endingAfterTaxWealthCents,
+        wealthDelta:
+          highDet.endingAfterTaxWealthCents - baseDet.endingAfterTaxWealthCents,
+        highExceedsBase:
+          highDet.endingAfterTaxWealthCents > baseDet.endingAfterTaxWealthCents
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "mc-stats-mixed-horizon-seeded",
+    kind: "tax",
+    note: "Monte Carlo stats with mixed horizons, seeded (the F5 pin): the mcStatsBase plan ends at age 85 (horizon 21 years); one scenario overrides nothing and one overrides endAge to 95 (horizon 31 years), priced at volatility 15, N = 40, seed 12345. Per path the shared standardized shocks are drawn once at the longest horizon (31) via rothMcShockSeries, and each scenario is priced from its own prefix centered on its own expected return — re-derived in-case from rothMcStream(12345) through buildCompareScenario + simulateRothPlan + planNetCost with the stats function's median/percentile conventions, and the re-derived figures (ending-wealth p10/p50/p90, shortfall-path count, shortfall p50/p90, net-cost p50 — 7 fields × 2 scenarios = 14 comparisons) equal the action's output to the cent. The long scenario's ending-wealth spread is non-degenerate (p90 − p10 = $1,944,452.70, more than one cent), and pricing the long scenario the OLD way — a series drawn at the base horizon of 21 via rothMcReturnSeries on the base inputs, with the tail deterministic inside simulateRothPlan — gives a median ending wealth $343,994.31 away from the action's, so the stochastic tail genuinely prices. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      mismatches: 0,
+      comparedFields: 14,
+      baseWealthP10: 14825954,
+      baseWealthP50: 49330170,
+      baseWealthP90: 158754893,
+      baseCostP50: 5239967,
+      longWealthP10: 13405522,
+      longWealthP50: 65327502,
+      longWealthP90: 207850792,
+      longCostP50: 2952617,
+      longWithShort: 1,
+      longSpread: 194445270,
+      spreadExceedsOneCent: 1,
+      tailDiffCents: 34399431,
+      tailDiffExceedsOneCent: 1,
+    },
+    actual: () => {
+      const base = mcStatsBase();
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "Base horizon", overrides: {} },
+        { name: "Long horizon", overrides: { endAge: 95 } },
+      ];
+      const stats = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 15,
+        pathCount: 40,
+        seed: 12345,
+      });
+      const toCents = (dollars: number): number => Math.round(dollars * 100);
+      const medianCents = (values: number[]): number => {
+        const s = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(s.length / 2);
+        return Math.round(
+          s.length % 2 === 1
+            ? (s[mid] ?? 0)
+            : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2,
+        );
+      };
+      const pctCents = (values: number[], p: number): number => {
+        const s = [...values].sort((a, b) => a - b);
+        const idx = Math.min(
+          s.length - 1,
+          Math.max(0, Math.floor((p / 100) * s.length)),
+        );
+        return s[idx] ?? 0;
+      };
+      type Row = {
+        netCostCents: number;
+        wealthCents: number;
+        shortfallCents: number;
+        hasShortfall: boolean;
+      };
+      const built = scenarios.map(
+        (s) => buildCompareScenario(base, s.name, s.overrides, 2026)!,
+      );
+      const perScenario: Row[][] = built.map(() => []);
+      const rng = rothMcStream(12345);
+      for (let i = 0; i < 40; i++) {
+        const z = rothMcShockSeries(31, rng);
+        for (let j = 0; j < built.length; j++) {
+          const b = built[j]!;
+          const years =
+            b.inputs.endAgePrimary -
+            (b.inputs.startYear - b.inputs.birthYearPrimary) +
+            1;
+          const series = z
+            .slice(0, years)
+            .map((zi) => b.inputs.expectedReturnPct + 15 * zi);
+          const res = simulateRothPlan(b.inputs, b.strategy, series);
+          let shortfallDollars = 0;
+          let hasShortfall = false;
+          for (const y of res.years) {
+            if (y.spendShortfall > 0) hasShortfall = true;
+            shortfallDollars += y.spendShortfall;
+          }
+          perScenario[j]!.push({
+            netCostCents: toCents(planNetCost(res, b.inputs).netCost),
+            wealthCents: toCents(res.endingAfterTaxWealth),
+            shortfallCents: toCents(shortfallDollars),
+            hasShortfall,
+          });
+        }
+      }
+      const agg = perScenario.map((rows) => ({
+        withShort: rows.filter((r) => r.hasShortfall).length,
+        sfP50: medianCents(rows.map((r) => r.shortfallCents)),
+        sfP90: pctCents(rows.map((r) => r.shortfallCents), 90),
+        wP10: pctCents(rows.map((r) => r.wealthCents), 10),
+        wP50: medianCents(rows.map((r) => r.wealthCents)),
+        wP90: pctCents(rows.map((r) => r.wealthCents), 90),
+        costP50: medianCents(rows.map((r) => r.netCostCents)),
+      }));
+      let mismatches = 0;
+      let comparedFields = 0;
+      for (let j = 0; j < stats.scenarios.length; j++) {
+        const s = stats.scenarios[j]!;
+        const a = agg[j]!;
+        const pairs: [number, number][] = [
+          [s.endingAfterTaxWealthP10Cents, a.wP10],
+          [s.endingAfterTaxWealthP50Cents, a.wP50],
+          [s.endingAfterTaxWealthP90Cents, a.wP90],
+          [s.pathsWithShortfall, a.withShort],
+          [s.totalShortfallP50Cents, a.sfP50],
+          [s.totalShortfallP90Cents, a.sfP90],
+          [s.netCostP50Cents, a.costP50],
+        ];
+        for (const [x, y] of pairs) {
+          comparedFields++;
+          if (x !== y) mismatches++;
+        }
+      }
+      // Deterministic-tail re-computation (the OLD construction):
+      // the long scenario priced from a series drawn at the base
+      // horizon of 21, its tail years deterministic inside
+      // simulateRothPlan.
+      const baseInputs = planInputsFromSaved(base, 2026)!;
+      const longBuilt = built[1]!;
+      const rngOld = rothMcStream(12345);
+      const oldWealths: number[] = [];
+      for (let i = 0; i < 40; i++) {
+        const seriesOld = rothMcReturnSeries(baseInputs, 15, rngOld);
+        const res = simulateRothPlan(longBuilt.inputs, longBuilt.strategy, seriesOld);
+        oldWealths.push(toCents(res.endingAfterTaxWealth));
+      }
+      const oldP50 = medianCents(oldWealths);
+      const longStats = stats.scenarios[1]!;
+      const baseStats = stats.scenarios[0]!;
+      const spread =
+        longStats.endingAfterTaxWealthP90Cents -
+        longStats.endingAfterTaxWealthP10Cents;
+      const tailDiff = Math.abs(oldP50 - longStats.endingAfterTaxWealthP50Cents);
+      return {
+        mismatches,
+        comparedFields,
+        baseWealthP10: baseStats.endingAfterTaxWealthP10Cents,
+        baseWealthP50: baseStats.endingAfterTaxWealthP50Cents,
+        baseWealthP90: baseStats.endingAfterTaxWealthP90Cents,
+        baseCostP50: baseStats.netCostP50Cents,
+        longWealthP10: longStats.endingAfterTaxWealthP10Cents,
+        longWealthP50: longStats.endingAfterTaxWealthP50Cents,
+        longWealthP90: longStats.endingAfterTaxWealthP90Cents,
+        longCostP50: longStats.netCostP50Cents,
+        longWithShort: longStats.pathsWithShortfall,
+        longSpread: spread,
+        spreadExceedsOneCent: spread > 1 ? 1 : 0,
+        tailDiffCents: tailDiff,
+        tailDiffExceedsOneCent: tailDiff > 1 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "mc-stats-effective-inputs-echo",
+    kind: "tax",
+    note: "Monte Carlo stats effective-inputs echo (R4-3, finding F9): a stats base payload with NULL balances resolved via resolvePlanBalances against a hand-built snapshot — pretax $500,000 with an explicit $100,000 spouse allocation (pretaxSpouseCents), Roth $120,000, Taxable $200,000 + Cash $300,000 folded less a $5,000 taxable exclusion, HSA $25,000 — resolves to pretax 40,000,000¢ (the snapshot Pre-tax subtotal MINUS the spouse carve-out), roth 12,000,000¢, taxable 49,500,000¢, hsa 2,500,000¢. The sleeve the echo carries is NON-trivial by construction: spendFromCashPct 25 with the snapshot Cash threaded the way resolveArgsBalances threads it (cash 30,000,000¢ less the $5,000 exclusion = 29,500,000¢ onto the resolved payload), and deriveSpendFromCashSleeveStartDollars on planInputsFromSaved(resolved) — the exact construction computeEffectiveInputs executes — yields 29,500,000¢ (single pool: min(threaded $295,000, pool $495,000)). The same payload resolved a second time through the identical resolvePlanBalances + planInputsFromSaved + derive construction runRothCompare's base echo uses yields the identical sleeve (sleeveMatchesCompare 1) and identical resolved balances (balancesMatchCompare 1). Honest scope: the action-level field-by-field equality of the two PUBLISHED echoes is verified by live probe in the review passes — the fixture harness cannot import the handlers in actions.ts; this fixture pins the shared construction both handlers execute.",
+    expected: {
+      pretaxCents: 40000000,
+      rothCents: 12000000,
+      taxableCents: 49500000,
+      hsaCents: 2500000,
+      sleeveCents: 29500000,
+      sleeveMatchesCompare: 1,
+      balancesMatchCompare: 1,
+    },
+    actual: () => {
+      const snap = {
+        pretaxCents: 50000000,
+        rothCents: 12000000,
+        taxableCents: 20000000,
+        cashCents: 30000000,
+        hsaCents: 2500000,
+      };
+      const payload = mcStatsBase({
+        pretaxCents: null,
+        pretaxSpouseCents: 10000000,
+        rothCents: null,
+        taxableCents: null,
+        hsaCents: null,
+        taxableExcludeCents: 500000,
+        spendFromCashPct: 25,
+        spendFromCashSleeveCents: null,
+      });
+      // The construction computeEffectiveInputs executes for a
+      // compute payload: resolvePlanBalances for the balances,
+      // then resolveArgsBalances' sleeve threading (snapshot
+      // Cash less the exclusion, when the sleeve field is null
+      // and the taxable balance followed the snapshot), then
+      // the derived sleeve off planInputsFromSaved.
+      const construct = (p: typeof payload) => {
+        const resolved = resolvePlanBalances(p, snap);
+        const threaded =
+          p.spendFromCashSleeveCents == null && p.taxableCents == null
+            ? Math.max(0, snap.cashCents - Math.max(0, p.taxableExcludeCents ?? 0))
+            : (p.spendFromCashSleeveCents ?? null);
+        const withSleeve = { ...resolved, spendFromCashSleeveCents: threaded };
+        const inputs = planInputsFromSaved(withSleeve, 2026);
+        return {
+          resolved: withSleeve,
+          sleeveCents:
+            inputs == null
+              ? null
+              : Math.round(deriveSpendFromCashSleeveStartDollars(inputs) * 100),
+        };
+      };
+      const statsSide = construct(payload);
+      const compareSide = construct(payload);
+      const r = statsSide.resolved;
+      const c = compareSide.resolved;
+      return {
+        pretaxCents: r.pretaxCents,
+        rothCents: r.rothCents,
+        taxableCents: r.taxableCents,
+        hsaCents: r.hsaCents,
+        sleeveCents: statsSide.sleeveCents,
+        sleeveMatchesCompare:
+          statsSide.sleeveCents === compareSide.sleeveCents ? 1 : 0,
+        balancesMatchCompare:
+          r.pretaxCents === c.pretaxCents &&
+          r.rothCents === c.rothCents &&
+          r.taxableCents === c.taxableCents &&
+          r.hsaCents === c.hsaCents
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "flex-rule-unit",
+    kind: "tax",
+    note: "Flexible spending, the pure rule (flexSpendingNeed, base $100,000, hand-derived from the rule's clauses): no prior year (null) never cuts, even armed at 25 → 100000; prior +3 → 100000; prior exactly 0 does NOT trigger (the trigger is strictly < 0) → 100000; prior −0.5 with cut 10 and floor null (reads as 80, so the effective cut is min(10, 20) = 10) → 90000; the floor binds: cut 50 / floor 80 → effective cut min(50, 20) = 20 → 80000; floor 0 / cut 50 → 50000; floor 100 / cut 50 → effective cut 0 → 100000 (armed, never cut); cut 0 after −5 → 100000; cut null after −5 → 100000 (off). Non-compounding stated as two calls: the helper takes the BASE both times (100000 → 90000, then 100000 → 90000 again), which is the whole mechanism by which consecutive down years cannot deepen the cut.",
+    expected: {
+      noPrior: 100000,
+      posPrior: 100000,
+      zeroPrior: 100000,
+      floorNullCut: 90000,
+      floorBinds: 80000,
+      floorZero: 50000,
+      floor100: 100000,
+      cutZero: 100000,
+      cutNull: 100000,
+      nonComp1: 90000,
+      nonComp2: 90000,
+    },
+    actual: () => ({
+      noPrior: flexSpendingNeed(100000, null, 25),
+      posPrior: flexSpendingNeed(100000, 3, 25),
+      zeroPrior: flexSpendingNeed(100000, 0, 25),
+      floorNullCut: flexSpendingNeed(100000, -0.5, 10, null),
+      floorBinds: flexSpendingNeed(100000, -5, 50, 80),
+      floorZero: flexSpendingNeed(100000, -5, 50, 0),
+      floor100: flexSpendingNeed(100000, -5, 50, 100),
+      cutZero: flexSpendingNeed(100000, -5, 0),
+      cutNull: flexSpendingNeed(100000, -5, null),
+      nonComp1: flexSpendingNeed(100000, -5, 10),
+      nonComp2: flexSpendingNeed(100000, -5, 10),
+    }),
+  },
+  {
+    id: "flex-series-trigger-restore",
+    kind: "tax",
+    note: "Flexible spending, trigger / restore in integration: simulateRothPlan (via buildCompareScenario, Do Nothing) on the mcStatsBase plan (base need B = $30,000, retire 65) with flex cut 20 / floor 50 (a triggered year spends 0.8B = $24,000) and the hand-built series [+5, −4, +3, −1, −2, +6, then +3 repeated]. Run A (startYear 2026, all 21 years are retirement years): spending is [B, B, 0.8B, B, 0.8B, 0.8B, B, then B] — full in year 1 (no prior year), full after the +5 year, cut after −4, restored after +3, cut after −1, cut at the SAME level after −2 (non-compounding in integration), restored after +6. Run B (startYear 2024, retirement years from 2026): the first retirement year's trigger reads the last pre-retirement series value (−4), so retirement spending is [0.8B, B, 0.8B, 0.8B, B, then B] over all 21 retirement years (2026–2046; the two series-less tail years fall back to the +3 expected return and stay at B). On both runs the flex-absent twin spends B every retirement year, and the flex-on run ends wealthier (the undrawn cuts stay invested): A $891,127.57 vs $861,606.60; B $953,078.73 vs $921,759.94.",
+    expected: {
+      seqA: "30000,30000,24000,30000,24000,24000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000",
+      seqB: "24000,30000,24000,24000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000,30000",
+      offAllFullA: 1,
+      offAllFullB: 1,
+      wealthOnA: 891127.57,
+      wealthOffA: 861606.6,
+      wealthOnB: 953078.73,
+      wealthOffB: 921759.94,
+      onBeatsOffA: 1,
+      onBeatsOffB: 1,
+    },
+    actual: () => {
+      const series = [5, -4, 3, -1, -2, 6, ...Array(15).fill(3)];
+      const run = (withFlex: boolean, startYear: number) => {
+        const base = mcStatsBase(
+          withFlex ? { flexCutPct: 20, flexFloorPct: 50 } : {},
+        );
+        const built = buildCompareScenario(base, "Do Nothing", {}, startYear)!;
+        return simulateRothPlan(built.inputs, built.strategy, series);
+      };
+      const retireSpend = (res: ReturnType<typeof simulateRothPlan>): string =>
+        res.years
+          .filter((y) => y.agePrimary >= 65)
+          .map((y) => y.funding.spending)
+          .join(",");
+      const retireAllFull = (res: ReturnType<typeof simulateRothPlan>): number =>
+        res.years
+          .filter((y) => y.agePrimary >= 65)
+          .every((y) => y.funding.spending === 30000)
+          ? 1
+          : 0;
+      const onA = run(true, 2026);
+      const offA = run(false, 2026);
+      const onB = run(true, 2024);
+      const offB = run(false, 2024);
+      return {
+        seqA: retireSpend(onA),
+        seqB: retireSpend(onB),
+        offAllFullA: retireAllFull(offA),
+        offAllFullB: retireAllFull(offB),
+        wealthOnA: onA.endingAfterTaxWealth,
+        wealthOffA: offA.endingAfterTaxWealth,
+        wealthOnB: onB.endingAfterTaxWealth,
+        wealthOffB: offB.endingAfterTaxWealth,
+        onBeatsOffA: onA.endingAfterTaxWealth > offA.endingAfterTaxWealth ? 1 : 0,
+        onBeatsOffB: onB.endingAfterTaxWealth > offB.endingAfterTaxWealth ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "flex-shortfall-on-cut-need",
+    kind: "tax",
+    note: "Flexible spending, shortfall measured on the CUT need: mcStatsBase with tiny balances (pre-tax $5,000, Taxable $2,000, Roth $1,000, HSA $0), startYear 2024, flex cut 20 / floor 50 on the base. The first retirement year (2026, age 65) follows a −5% year, so its need is cut to $24,000 (0.8 × $30,000); with $0 cash income that year (Social Security starts at 67, no RMD at 65) the settlement applies $7,828 of the $8,000 balances to spending, leaving spendShortfall $16,172 — the unfunded part of the CUT need ($24,000 − $7,828), pinned from the implementation's first correct run. The flex-off twin's same year needs the full $30,000 and shorts $22,172 — strictly larger, by exactly the $6,000 cut (both years apply the same $7,828 to spending; only the need differs). The funding identity (the eleven sources + spendShortfall = the year's needs) holds on the EFFECTIVE need for the cut row. Series note: the −5 is placed on 2025, the last pre-retirement year (series [+3, −5, then +3 repeated]) — the brief's literal [−5, +3, …] puts the −5 on 2024, whose trigger lands on 2025's $0 pre-retirement need, so no retirement year would ever be cut and the fixture could not pin what it exists to pin; every other briefed parameter (balances, dials, startYear) is unchanged.",
+    expected: {
+      cutSpending: 24000,
+      cutShortfall: 16172,
+      offSpending: 30000,
+      offShortfall: 22172,
+      cutLessThanOff: 1,
+      identityHolds: 1,
+    },
+    actual: () => {
+      const series = [3, -5, ...Array(21).fill(3)];
+      const tiny = {
+        pretaxCents: 500000,
+        taxableCents: 200000,
+        rothCents: 100000,
+        hsaCents: 0,
+      };
+      const builtOn = buildCompareScenario(
+        mcStatsBase({ ...tiny, flexCutPct: 20, flexFloorPct: 50 }),
+        "Do Nothing",
+        {},
+        2024,
+      )!;
+      const builtOff = buildCompareScenario(
+        mcStatsBase({ ...tiny }),
+        "Do Nothing",
+        {},
+        2024,
+      )!;
+      const resOn = simulateRothPlan(builtOn.inputs, builtOn.strategy, series);
+      const resOff = simulateRothPlan(builtOff.inputs, builtOff.strategy, series);
+      const rowOn = resOn.years.find((y) => y.year === 2026)!;
+      const rowOff = resOff.years.find((y) => y.year === 2026)!;
+      const f = rowOn.funding;
+      const sources =
+        f.ss + f.rmd + f.otherIncome + f.interestYield + f.dividendYield +
+        f.pretaxDraw + f.taxableSoldForSpending + f.taxableSoldForTax +
+        f.cashSpend + f.rothDraw + f.salarySurplus;
+      const needs = f.spending + f.federalTax + f.stateTax + f.irmaa;
+      return {
+        cutSpending: f.spending,
+        cutShortfall: f.spendShortfall,
+        offSpending: rowOff.funding.spending,
+        offShortfall: rowOff.funding.spendShortfall,
+        cutLessThanOff: f.spendShortfall < rowOff.funding.spendShortfall ? 1 : 0,
+        identityHolds: Math.abs(sources + f.spendShortfall - needs) < 0.005 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "flex-negative-expected-deterministic",
+    kind: "tax",
+    note: "Flexible spending, the scoped deterministic exception: no series, expectedReturnPct −2, flex cut 10 / floor 80 — the applied return is −2 every year, so year 1 spends the full $30,000 (never cut) and years 2+ spend 0.9 × $30,000 = $27,000 every year, constant (the trigger reads −2 every year; the cut never deepens). The flex-OFF twin at −2 pins the PRE-BUILD engine figures captured by the coordinator before any flex edit (endingAfterTaxWealth 305054.57, endingPretax 148345.86, endingRoth 65425.58, endingTaxable 110834.11, endingHsa 13085.12, dollars) — used verbatim, not re-derived. Capture-shape note: those figures price with spouseSoleBeneficiary FALSE (the spouse, 11 years younger, is not the sole beneficiary, so RMDs price on the Uniform Table; the mcStatsBase literal carries the field true, which prices the Joint Life Table instead and ends at different balances) — this fixture therefore runs on mcStatsBase with spouseSoleBeneficiary false throughout, and the post-build engine reproducing the pre-build capture to the cent on that shape IS the flex-off bit-identity proof. At expected +3 on the same shape, flex ON is bit-identical to flex OFF (ending balances and every year's spending, asserted in-case) — the non-negative-expected identity.",
+    expected: {
+      onYear1: 30000,
+      onYears: 21,
+      onRestAt27000: 20,
+      offWealth: 305054.57,
+      offPretax: 148345.86,
+      offRoth: 65425.58,
+      offTaxable: 110834.11,
+      offHsa: 13085.12,
+      offAllFull: 1,
+      plus3Identical: 1,
+    },
+    actual: () => {
+      const shape = (over: Partial<RothCompareBaseSaved>) =>
+        mcStatsBase({ spouseSoleBeneficiary: false, ...over });
+      const runSaved = (saved: RothCompareBaseSaved) => {
+        const built = buildCompareScenario(saved, "Do Nothing", {}, 2026)!;
+        return simulateRothPlan(built.inputs, built.strategy);
+      };
+      const on = runSaved(shape({ expectedReturnPct: -2, flexCutPct: 10, flexFloorPct: 80 }));
+      const off = runSaved(shape({ expectedReturnPct: -2 }));
+      const on3 = runSaved(shape({ expectedReturnPct: 3, flexCutPct: 10, flexFloorPct: 80 }));
+      const off3 = runSaved(shape({ expectedReturnPct: 3 }));
+      const plus3Identical =
+        on3.endingAfterTaxWealth === off3.endingAfterTaxWealth &&
+        on3.endingPretax === off3.endingPretax &&
+        on3.endingRoth === off3.endingRoth &&
+        on3.endingTaxable === off3.endingTaxable &&
+        on3.endingHsa === off3.endingHsa &&
+        on3.years.every((y, i) => y.funding.spending === off3.years[i]!.funding.spending)
+          ? 1
+          : 0;
+      return {
+        onYear1: on.years[0]!.funding.spending,
+        onYears: on.years.length,
+        onRestAt27000: on.years.slice(1).filter((y) => y.funding.spending === 27000).length,
+        offWealth: off.endingAfterTaxWealth,
+        offPretax: off.endingPretax,
+        offRoth: off.endingRoth,
+        offTaxable: off.endingTaxable,
+        offHsa: off.endingHsa,
+        offAllFull: off.years.every((y) => y.funding.spending === 30000) ? 1 : 0,
+        plus3Identical,
+      };
+    },
+  },
+  {
+    id: "flex-zero-vol-identity",
+    kind: "tax",
+    note: "Flexible spending at Monte Carlo volatility 0: flex ON (cut 25 / floor 60) on mcStatsBase (expected return +3 ≥ 0, so the guardrail can never trigger on the flat series), scenarios Do Nothing + Fill 12%. Every percentile of both scenarios equals its runRothCompare figure to the cent, derived in-case by actually running the compare ([P10/P50/P90] × [wealth/pretax/cost] per scenario = 18 comparisons, mismatches 0) — the vol-0 identity survives flex being switched on, scoped to a non-negative expected return as the rule requires. Both scenarios' neverShortfallRatePct and shortfall figures also equal the flex-off control run's (the same stats call with the flex fields absent: 4 fields × 2 scenarios = 8 comparisons, mismatches 0).",
+    expected: {
+      mismatches: 0,
+      comparedFields: 18,
+      controlMismatches: 0,
+      controlFields: 8,
+    },
+    actual: () => {
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "Do Nothing", overrides: {} },
+        {
+          name: "Fill 12%",
+          overrides: {
+            ceilings: {
+              bracketTopPct: 12,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: false,
+              acaCliffCapFamilyOnly: false,
+              magiCapCents: null,
+              acaCliffBufferCents: null,
+            },
+          },
+        },
+      ];
+      const baseOn = mcStatsBase({ flexCutPct: 25, flexFloorPct: 60 });
+      const baseOff = mcStatsBase();
+      const statsOn = runRothMonteCarloStats(baseOn, scenarios, 2026, {
+        volatilityPct: 0,
+        pathCount: 8,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const statsOff = runRothMonteCarloStats(baseOff, scenarios, 2026, {
+        volatilityPct: 0,
+        pathCount: 8,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const cmp = runRothCompare(baseOn, scenarios, 2026);
+      let mismatches = 0;
+      let comparedFields = 0;
+      for (const s of statsOn.scenarios) {
+        const c = cmp.scenarios.find((x) => x.name === s.name)!;
+        const pairs: [number, number][] = [
+          [s.endingAfterTaxWealthP10Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP50Cents, c.endingAfterTaxWealthCents],
+          [s.endingAfterTaxWealthP90Cents, c.endingAfterTaxWealthCents],
+          [s.endingPretaxP10Cents, c.endingPretaxCents],
+          [s.endingPretaxP50Cents, c.endingPretaxCents],
+          [s.endingPretaxP90Cents, c.endingPretaxCents],
+          [s.netCostP10Cents, c.netCostCents],
+          [s.netCostP50Cents, c.netCostCents],
+          [s.netCostP90Cents, c.netCostCents],
+        ];
+        for (const [a, b] of pairs) {
+          comparedFields++;
+          if (a !== b) mismatches++;
+        }
+      }
+      let controlMismatches = 0;
+      let controlFields = 0;
+      for (const s of statsOn.scenarios) {
+        const o = statsOff.scenarios.find((x) => x.name === s.name)!;
+        const pairs: [number, number][] = [
+          [s.neverShortfallRatePct, o.neverShortfallRatePct],
+          [s.pathsWithShortfall, o.pathsWithShortfall],
+          [s.totalShortfallP50Cents, o.totalShortfallP50Cents],
+          [s.totalShortfallP90Cents, o.totalShortfallP90Cents],
+        ];
+        for (const [a, b] of pairs) {
+          controlFields++;
+          if (a !== b) controlMismatches++;
+        }
+      }
+      return { mismatches, comparedFields, controlMismatches, controlFields };
+    },
+  },
+  {
+    id: "flex-seeded-mc-flex-on",
+    kind: "tax",
+    note: "Flexible spending, the seeded value measurement: the mc-stats-shortfall-some-paths shape (mcStatsBase with spending patched to $55,000/yr by scenario override) with flex ON (cut 20 / floor 50) set on the BASE so the scenario inherits it — vol 15, N = 40, seed 12345, priced through runRothMonteCarloStats. Pins from the implementation's first correct run: 9 of 40 paths run a shortfall year (neverShortfallRatePct 77.5), total-shortfall p50 $0 and p90 $118,843.20, ending-wealth p50 $270,584.44. Each figure is ALSO re-derived in-case replicating the post-R4-1 stats loop (rng = rothMcStream(12345); per path z = rothMcShockSeries(21, rng); series = the prefix mapped with the scenario's expectedReturnPct + 15z; buildCompareScenario + simulateRothPlan + planNetCost; median = mean of the two middle values, p90 = sorted[floor(0.9 × n)] — the mc-stats-mixed-horizon-seeded conventions), and the re-derived figures are pinned to the same constants. Direction check, stated as the brief requires: the flex-OFF control on this identical stream (mc-stats-shortfall-some-paths) reads 15 shortfall paths / 62.5% / p90 $246,682.75 — flex ON improves on all three (9 paths, 77.5%, $118,843.20), so the expected direction held on the first correct run; fewerThanOff pins that comparison as 1.",
+    expected: {
+      withShort: 9,
+      rate: 77.5,
+      sfP50: 0,
+      sfP90: 11884320,
+      wealthP50: 27058444,
+      reWithShort: 9,
+      reRate: 77.5,
+      reSfP50: 0,
+      reSfP90: 11884320,
+      reWealthP50: 27058444,
+      fewerThanOff: 1,
+    },
+    actual: () => {
+      const base = mcStatsBase({ flexCutPct: 20, flexFloorPct: 50 });
+      const scenarios: { name: string; overrides: RothCompareOverrides }[] = [
+        { name: "High spending", overrides: { annualSpendingCents: 5500000 } },
+      ];
+      const stats = runRothMonteCarloStats(base, scenarios, 2026, {
+        volatilityPct: 15,
+        pathCount: 40,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const s = stats.scenarios[0]!;
+      // Independent re-derivation, replicating the post-R4-1
+      // stats loop construction exactly (shocks drawn once at
+      // the scenario horizon of 21, centered per scenario).
+      const toCents = (dollars: number): number => Math.round(dollars * 100);
+      const medianCents = (values: number[]): number => {
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return Math.round(
+          sorted.length % 2 === 1
+            ? (sorted[mid] ?? 0)
+            : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2,
+        );
+      };
+      const pctCents = (values: number[], p: number): number => {
+        const sorted = [...values].sort((a, b) => a - b);
+        const idx = Math.min(
+          sorted.length - 1,
+          Math.max(0, Math.floor((p / 100) * sorted.length)),
+        );
+        return sorted[idx] ?? 0;
+      };
+      const built = buildCompareScenario(
+        base,
+        "High spending",
+        { annualSpendingCents: 5500000 },
+        2026,
+      )!;
+      const rng = rothMcStream(ROTH_MC_CHECK_SEED);
+      const wealths: number[] = [];
+      const shortfalls: number[] = [];
+      let reWithShort = 0;
+      for (let i = 0; i < 40; i++) {
+        const z = rothMcShockSeries(21, rng);
+        const series = z.map(
+          (zi) => built.inputs.expectedReturnPct + 15 * zi,
+        );
+        const res = simulateRothPlan(built.inputs, built.strategy, series);
+        // Priced through planNetCost exactly as the stats loop
+        // prices each path (the net cost itself is not pinned
+        // here — the shortfall and wealth figures are).
+        void planNetCost(res, built.inputs);
+        let sf = 0;
+        let has = false;
+        for (const y of res.years) {
+          if (y.spendShortfall > 0) has = true;
+          sf += y.spendShortfall;
+        }
+        if (has) reWithShort++;
+        wealths.push(toCents(res.endingAfterTaxWealth));
+        shortfalls.push(toCents(sf));
+      }
+      return {
+        withShort: s.pathsWithShortfall,
+        rate: s.neverShortfallRatePct,
+        sfP50: s.totalShortfallP50Cents,
+        sfP90: s.totalShortfallP90Cents,
+        wealthP50: s.endingAfterTaxWealthP50Cents,
+        reWithShort,
+        reRate: Math.round(((40 - reWithShort) / 40) * 1000) / 10,
+        reSfP50: medianCents(shortfalls),
+        reSfP90: pctCents(shortfalls, 90),
+        reWealthP50: medianCents(wealths),
+        fewerThanOff: s.pathsWithShortfall < 15 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "fafsa-college-gate",
+    kind: "tax",
+    note: "FAFSA college watch-out assets gate (hand-derived boundary): the plan converts under Fill 12% in 2026–2029 with the household college window set to falls 2028–2031, so every converting year feeds a FAFSA inside the window (tax year Y → academic year Y+2) — four converting years. The gate emits the watch-out only when reportable assets are unknown or 5.64% × reportable < $40,000. At $700,000: 0.0564 × 700,000 = $39,480 < $40,000 → present, with the generic text. Field absent and field null → present (unknown never suppresses). At $709,219: 0.0564 × 709,219 = $39,999.95 < $40,000 → present. At $709,220: 0.0564 × 709,220 = $40,000.01 ≥ $40,000 → absent. At $2,700,000 → absent. The just-below and just-above runs are identical apart from the years' warnings arrays, and their non-college warnings are identical.",
+    expected: {
+      presentAt700k: 4,
+      collegeText:
+        "College years: conversion income in this year counts as FAFSA income (prior-prior year) during a child's college years.",
+      presentWhenAbsent: 4,
+      presentWhenNull: 4,
+      presentAt709219: 4,
+      absentAt709220: 0,
+      absentAtSampleShape: 0,
+      identicalApartFromWarnings: 1,
+      otherWarningsIdentical: 1,
+    },
+    actual: () => {
+      const collegeCount = (res: ReturnType<typeof simulateRothPlan>): number =>
+        res.years.reduce(
+          (n, y) => n + y.warnings.filter((w) => w.kind === "college").length,
+          0,
+        );
+      const run = (fafsaReportableAssets?: number | null) =>
+        simulateRothPlan(
+          basePlan({
+            endAgePrimary: 60,
+            taxableStart: 1000000,
+            collegeFallFromYear: 2028,
+            collegeFallThroughYear: 2031,
+            ...(fafsaReportableAssets !== undefined
+              ? { fafsaReportableAssets }
+              : {}),
+          }),
+          FILL_12,
+        );
+      const at700k = run(700000);
+      const absent = run(undefined);
+      const atNull = run(null);
+      const below = run(709219);
+      const above = run(709220);
+      const sampleShape = run(2700000);
+      const stripWarnings = (res: ReturnType<typeof simulateRothPlan>) =>
+        JSON.stringify({
+          ...res,
+          years: res.years.map((y) => ({ ...y, warnings: [] })),
+        });
+      const otherWarnings = (res: ReturnType<typeof simulateRothPlan>) =>
+        JSON.stringify(
+          res.years.map((y) => y.warnings.filter((w) => w.kind !== "college")),
+        );
+      return {
+        presentAt700k: collegeCount(at700k),
+        collegeText:
+          at700k.years[0]?.warnings.find((w) => w.kind === "college")?.text ?? null,
+        presentWhenAbsent: collegeCount(absent),
+        presentWhenNull: collegeCount(atNull),
+        presentAt709219: collegeCount(below),
+        absentAt709220: collegeCount(above),
+        absentAtSampleShape: collegeCount(sampleShape),
+        identicalApartFromWarnings:
+          stripWarnings(below) === stripWarnings(above) ? 1 : 0,
+        otherWarningsIdentical:
+          otherWarnings(below) === otherWarnings(above) ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "fafsa-reportable-assembly",
+    kind: "tax",
+    note: "FAFSA reportable-assets assembly (hand-derived): following the snapshot, reportable = taxableStart + (529 subtotal + Non-Taxable subtotal) in dollars: $100,000 + ($300,000 + $5,000.00) = $405,000. Not following (typed balance) → the typed taxableStart alone, $100,000. Following with null subtotals → +$0, $100,000.",
+    expected: {
+      following: 405000,
+      notFollowing: 100000,
+      nullSubtotals: 100000,
+    },
+    actual: () => ({
+      following: fafsaReportableAssets(100000, true, 30000000, 500000),
+      notFollowing: fafsaReportableAssets(100000, false, 30000000, 500000),
+      nullSubtotals: fafsaReportableAssets(100000, true, null, null),
+    }),
+  },
+  {
+    id: "fafsa-saved-passthrough",
+    kind: "tax",
+    note: "FAFSA transient passthrough: planInputsFromSaved converts the transient fafsaReportableAssetsCents (integer cents, sent only with optimizer / Monte Carlo requests, never persisted) to the engine's dollars field — 284,947,781 cents → $2,700,000 — and leaves the engine field unset when the cents field is absent or null (unknown assets never suppress).",
+    expected: {
+      passedThrough: 2700000,
+      unsetWhenAbsent: null,
+      unsetWhenNull: null,
+    },
+    actual: () => {
+      const saved: RothSavedLike = {
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 100000000,
+        rothCents: 0,
+        taxableCents: 100000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 85,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: "taxable-pretax-roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      return {
+        passedThrough:
+          planInputsFromSaved(
+            { ...saved, fafsaReportableAssetsCents: 270000000 },
+            2026,
+          )?.fafsaReportableAssets ?? null,
+        unsetWhenAbsent:
+          planInputsFromSaved(saved, 2026)?.fafsaReportableAssets ?? null,
+        unsetWhenNull:
+          planInputsFromSaved(
+            { ...saved, fafsaReportableAssetsCents: null },
+            2026,
+          )?.fafsaReportableAssets ?? null,
+      };
+    },
+  },
+  {
+    id: "fafsa-college-trigger-window",
+    kind: "tax",
+    note: "FAFSA college watch-out trigger window (hand-derived from the prior-prior-year rule: a conversion in tax year Y feeds the FAFSA for academic year Y+2, so it fires exactly when from ≤ Y+2 ≤ through). (a) Window falls 2031–2034 on a plan converting 2026–2035 → fires only for Y in 2029–2032. (b) Blank fields → never fires, even with reportable assets $0. (c) Window falls 2040–2043, wholly outside the plan's FAFSA years → never fires. (d) Window falls 2031–2034 on a plan whose first conversion year is 2032 → fires only for 2032 (2032+2=2034 ≤ 2034; 2033+2=2035 > 2034). (e) Interplay: window set + reportable $800,000 (over the assets line) → absent; window blank + reportable $100,000 (under the line) → absent.",
+    expected: {
+      firedWindowA: "2029,2030,2031,2032",
+      blankNeverFires: 0,
+      outsideNeverFires: 0,
+      firedWindowD: "2032",
+      windowSetOverAssetsLine: 0,
+      windowBlankUnderAssetsLine: 0,
+    },
+    actual: () => {
+      const firedYears = (res: ReturnType<typeof simulateRothPlan>): string =>
+        res.years
+          .filter((y) => y.warnings.some((w) => w.kind === "college"))
+          .map((y) => y.year)
+          .join(",");
+      const collegeCount = (res: ReturnType<typeof simulateRothPlan>): number =>
+        res.years.reduce(
+          (n, y) => n + y.warnings.filter((w) => w.kind === "college").length,
+          0,
+        );
+      const wide = {
+        endAgePrimary: 66,
+        pretaxStart: 3000000,
+        taxableStart: 1000000,
+      };
+      const a = simulateRothPlan(
+        basePlan({ ...wide, collegeFallFromYear: 2031, collegeFallThroughYear: 2034 }),
+        FILL_12,
+      );
+      const b = simulateRothPlan(
+        basePlan({ endAgePrimary: 60, taxableStart: 1000000, fafsaReportableAssets: 0 }),
+        FILL_12,
+      );
+      const c = simulateRothPlan(
+        basePlan({
+          endAgePrimary: 60,
+          taxableStart: 1000000,
+          collegeFallFromYear: 2040,
+          collegeFallThroughYear: 2043,
+        }),
+        FILL_12,
+      );
+      const d = simulateRothPlan(
+        basePlan({
+          startYear: 2032,
+          birthYearPrimary: 1975,
+          endAgePrimary: 62,
+          pretaxStart: 3000000,
+          taxableStart: 1000000,
+          collegeFallFromYear: 2031,
+          collegeFallThroughYear: 2034,
+        }),
+        FILL_12,
+      );
+      const e1 = simulateRothPlan(
+        basePlan({
+          endAgePrimary: 60,
+          taxableStart: 1000000,
+          collegeFallFromYear: 2028,
+          collegeFallThroughYear: 2031,
+          fafsaReportableAssets: 800000,
+        }),
+        FILL_12,
+      );
+      const e2 = simulateRothPlan(
+        basePlan({
+          endAgePrimary: 60,
+          taxableStart: 1000000,
+          fafsaReportableAssets: 100000,
+        }),
+        FILL_12,
+      );
+      return {
+        firedWindowA: firedYears(a),
+        blankNeverFires: collegeCount(b),
+        outsideNeverFires: collegeCount(c),
+        firedWindowD: firedYears(d),
+        windowSetOverAssetsLine: collegeCount(e1),
+        windowBlankUnderAssetsLine: collegeCount(e2),
+      };
+    },
+  },
+  {
+    id: "fafsa-college-saved-shape",
+    kind: "tax",
+    note: "FAFSA college window saved shape: the two fall-year keys round-trip untouched through the saved-blob split/join passthrough (the scenario writers' raw path), planInputsFromSaved passes them through to the engine fields (2027 / 2030), and a record without the keys converts to blank (null) engine fields — no window, so the watch-out never fires for older records.",
+    expected: {
+      blobRoundTrip: 1,
+      engineFrom: 2027,
+      engineThrough: 2030,
+      absentFrom: null,
+      absentThrough: null,
+    },
+    actual: () => {
+      const saved: RothSavedLike = {
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 100000000,
+        rothCents: 0,
+        taxableCents: 100000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 85,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: "taxable-pretax-roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const blob = JSON.stringify({
+        inputs: { birthYearPrimary: 1990, collegeFallFromYear: 2027, collegeFallThroughYear: 2030 },
+        scenarios: [],
+      });
+      const split = splitRothBlob(blob);
+      let blobRoundTrip = 0;
+      if (split) {
+        const rejoined = JSON.parse(joinRothBlob(split.inputsRaw, split.scenariosRaw)) as {
+          inputs: Record<string, unknown>;
+        };
+        blobRoundTrip =
+          rejoined.inputs.collegeFallFromYear === 2027 &&
+          rejoined.inputs.collegeFallThroughYear === 2030
+            ? 1
+            : 0;
+      }
+      const withKeys = planInputsFromSaved(
+        { ...saved, collegeFallFromYear: 2027, collegeFallThroughYear: 2030 },
+        2026,
+      );
+      const withoutKeys = planInputsFromSaved(saved, 2026);
+      return {
+        blobRoundTrip,
+        engineFrom: withKeys?.collegeFallFromYear ?? null,
+        engineThrough: withKeys?.collegeFallThroughYear ?? null,
+        absentFrom: withoutKeys?.collegeFallFromYear ?? null,
+        absentThrough: withoutKeys?.collegeFallThroughYear ?? null,
+      };
+    },
+  },
+  {
+    id: "preserve-blank-equivalence",
+    kind: "tax",
+    note: "Preserve reserve, blank equivalence (the backward-compatibility pin): a saved record with the two reserve keys ABSENT (written before the reserve build), one with both keys explicitly NULL, and one with an explicit $0 floor all convert to engine inputs that price BIT-IDENTICALLY — same plan inputs, same full simulation result, same net-cost breakdown — and the plan-aware score equals the pre-reserve netCostBreakdown(result, heirRate) signature exactly. The saved blob carrying the keys also round-trips byte-identically through the scenario writers' raw split/join. Year 1 of the pinned plan is the known Fill 12% year ($133,000 conversion on $1,000,000, per the fill fixtures).",
+    expected: {
+      absentFloor: 0,
+      absentExitRate: 22,
+      inputsAbsentVsNull: 1,
+      resultsAbsentVsNull: 1,
+      resultsAbsentVsZeroFloor: 1,
+      planScoreEqualsOldSignature: 1,
+      blobRoundTripIdentical: 1,
+      year1Conversion: 133000,
+    },
+    actual: () => {
+      const savedBase: RothSavedLike = {
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 100000000,
+        rothCents: 0,
+        taxableCents: 100000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 85,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: "taxable-pretax-roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const absent = planInputsFromSaved(savedBase, 2026);
+      const explicitNull = planInputsFromSaved(
+        { ...savedBase, preservePretaxCents: null, preserveExitRatePct: null },
+        2026,
+      );
+      const zeroFloor = planInputsFromSaved(
+        { ...savedBase, preservePretaxCents: 0, preserveExitRatePct: null },
+        2026,
+      );
+      const eq = (a: unknown, b: unknown) =>
+        JSON.stringify(a) === JSON.stringify(b) ? 1 : 0;
+      const resAbsent = absent ? simulateRothPlan(absent, FILL_12) : null;
+      const resNull = explicitNull ? simulateRothPlan(explicitNull, FILL_12) : null;
+      const resZero = zeroFloor ? simulateRothPlan(zeroFloor, FILL_12) : null;
+      const inputsJson =
+        '{"birthYearPrimary":1969,"preservePretaxCents":50000000,"preserveExitRatePct":0}';
+      const original = `{"inputs":${inputsJson},"scenarios":[]}`;
+      const split = splitRothBlob(original);
+      const rejoined = split ? joinRothBlob(split.inputsRaw, split.scenariosRaw) : "";
+      return {
+        absentFloor: absent?.preservePretax ?? null,
+        absentExitRate: absent?.preserveExitRatePct ?? null,
+        inputsAbsentVsNull: eq(absent, explicitNull),
+        resultsAbsentVsNull: eq(resAbsent, resNull),
+        resultsAbsentVsZeroFloor: eq(resAbsent, resZero),
+        planScoreEqualsOldSignature:
+          resAbsent && absent
+            ? eq(planNetCost(resAbsent, absent), netCostBreakdown(resAbsent, 22))
+            : 0,
+        blobRoundTripIdentical: rejoined === original ? 1 : 0,
+        year1Conversion: resAbsent?.years[0]?.conversion ?? null,
+      };
+    },
+  },
+  {
+    id: "preserve-factory-default-saved-shape",
+    kind: "tax",
+    note: "Preserve reserve, factory-default saved shape (direct conversion pin): the factory default seeds a saved record with preservePretaxCents = 25000000 and preserveExitRatePct = null. planInputsFromSaved must map the cents directly to a $250,000 engine floor (preservePretax = 25000000 / 100 = 250000) and resolve the null exit rate to the SAVED heir rate — not a hard-coded constant. Pinned at the seeded heir rate (24%) and at a distinct saved heir rate (32%) so the fallback is proven to track the saved value: both records produce preservePretax $250,000, and each exit rate equals its own saved heir rate. Asserted directly on the converted plan inputs, not via a serialization round-trip.",
+    expected: {
+      floor: 250000,
+      exitRate: 24,
+      heirRate: 24,
+      customFloor: 250000,
+      customExitRate: 32,
+      customHeirRate: 32,
+    },
+    actual: () => {
+      const savedBase: RothSavedLike = {
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 100000000,
+        rothCents: 0,
+        taxableCents: 100000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 85,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        preservePretaxCents: 25000000,
+        preserveExitRatePct: null,
+        drawOrder: "taxable-pretax-roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 24,
+      };
+      const factoryDefault = planInputsFromSaved(savedBase, 2026);
+      const customHeir = planInputsFromSaved(
+        { ...savedBase, heirRatePct: 32 },
+        2026,
+      );
+      return {
+        floor: factoryDefault?.preservePretax ?? null,
+        exitRate: factoryDefault?.preserveExitRatePct ?? null,
+        heirRate: factoryDefault?.heirRatePct ?? null,
+        customFloor: customHeir?.preservePretax ?? null,
+        customExitRate: customHeir?.preserveExitRatePct ?? null,
+        customHeirRate: customHeir?.heirRatePct ?? null,
+      };
+    },
+  },
+  {
+    id: "preserve-floor-binds",
+    kind: "tax",
+    note: "Preserve reserve, floor binds (hand-computed): MFJ 2026, age 57, pre-tax $1,000,000, Taxable $1,000,000, 0% return, no spending, Fill 12% (uncapped fill $133,000, per the fill fixtures). Floor $950,000 → the year's room is $1,000,000 − $950,000 = $50,000, so the conversion caps at exactly $50,000 and pre-tax ends AT the floor. Tax on the $50,000 conversion: taxable income $50,000 − $32,200 = $17,800, all in the 10% bracket → $1,780, paid from Taxable ($998,220 left); Roth ends at $50,000. The year's reserve cap record shows cap $950,000 / actual $950,000 / room $0 / bound, and the bound label names the reserve. Year 2 (age 58) starts at the floor: room $0, conversion $0, outcome reserve-floor, balance unchanged. With 10% growth instead, year 1 still caps at $50,000 and the balance grows to $1,045,000; year 2's room is the growth above the floor ($95,000), so it converts $95,000 and again lands on the floor (ending $950,000 × 1.1 = $1,045,000) — growth above the floor stays convertible.",
+    expected: {
+      conversion: 50000,
+      federalTax: 1780,
+      pretaxEnd: 950000,
+      rothEnd: 50000,
+      taxableEnd: 998220,
+      capCap: 950000,
+      capActual: 950000,
+      capRoom: 0,
+      capBound: 1,
+      boundLabel: "Pre-tax reserve floor",
+      y2Conversion: 0,
+      y2Outcome: "reserve-floor",
+      y2PretaxEnd: 950000,
+      growthY1Conversion: 50000,
+      growthY1PretaxEnd: 1045000,
+      growthY2Conversion: 95000,
+      growthY2PretaxEnd: 1045000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        taxableStart: 1000000,
+        endAgePrimary: 58,
+        preservePretax: 950000,
+        preserveExitRatePct: 0,
+      });
+      const res = simulateRothPlan(plan, FILL_12);
+      const y1 = res.years[0];
+      const y2 = res.years[1];
+      const cap = y1?.detail.fill.caps.find((c) => c.kind === "preserve");
+      const growth = simulateRothPlan(
+        basePlan({
+          taxableStart: 1000000,
+          endAgePrimary: 58,
+          expectedReturnPct: 10,
+          preservePretax: 950000,
+          preserveExitRatePct: 0,
+        }),
+        FILL_12,
+      );
+      return {
+        conversion: y1?.conversion ?? null,
+        federalTax: y1?.federalTax ?? null,
+        pretaxEnd: y1?.pretaxEnd ?? null,
+        rothEnd: y1?.rothEnd ?? null,
+        taxableEnd: y1?.taxableEnd ?? null,
+        capCap: cap?.cap ?? null,
+        capActual: cap?.actual ?? null,
+        capRoom: cap?.room ?? null,
+        capBound: cap?.bound ? 1 : 0,
+        boundLabel: y1?.detail.fill.boundLabel ?? null,
+        y2Conversion: y2?.conversion ?? null,
+        y2Outcome: y2?.detail.fill.outcome ?? null,
+        y2PretaxEnd: y2?.pretaxEnd ?? null,
+        growthY1Conversion: growth.years[0]?.conversion ?? null,
+        growthY1PretaxEnd: growth.years[0]?.pretaxEnd ?? null,
+        growthY2Conversion: growth.years[1]?.conversion ?? null,
+        growthY2PretaxEnd: growth.years[1]?.pretaxEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "preserve-split-terminal-scoring",
+    kind: "tax",
+    note: "Preserve reserve, split terminal scoring (hand-computed): Do Nothing plans (0% return, no draws) so the ending pre-tax is the starting balance. Ending $800,000 with a $500,000 floor at a 0% exit rate: preserved $500,000 taxed $0, excess $300,000 at the 22% heir rate = $66,000 terminal (and net cost — no other lifetime figures), and ending after-tax wealth $500,000 × 1.00 + $300,000 × 0.78 = $734,000. Ending $300,000 (below the floor): the whole pile is preserved, terminal $0. Exit rate unset (= heir rate): the split sums to the old single-rate figure, $800,000 × 22% = $176,000. Exit rate 10%: $500,000 × 10% + $300,000 × 22% = $50,000 + $66,000 = $116,000. No reserve at all: after-tax wealth is the old $800,000 × 0.78 = $624,000.",
+    expected: {
+      abovePreserved: 500000,
+      aboveTerminalPreserved: 0,
+      aboveExcess: 300000,
+      aboveTerminalExcess: 66000,
+      aboveTerminal: 66000,
+      aboveNetCost: 66000,
+      aboveWealth: 734000,
+      belowPreserved: 300000,
+      belowTerminal: 0,
+      belowNetCost: 0,
+      heirExitTerminal: 176000,
+      tenExitTerminal: 116000,
+      noReserveWealth: 624000,
+    },
+    actual: () => {
+      const abovePlan = basePlan({
+        pretaxStart: 800000,
+        preservePretax: 500000,
+        preserveExitRatePct: 0,
+      });
+      const aboveRes = simulateRothPlan(abovePlan, DO_NOTHING);
+      const above = planNetCost(aboveRes, abovePlan);
+      const belowPlan = basePlan({
+        pretaxStart: 300000,
+        preservePretax: 500000,
+        preserveExitRatePct: 0,
+      });
+      const belowRes = simulateRothPlan(belowPlan, DO_NOTHING);
+      const below = planNetCost(belowRes, belowPlan);
+      const heirExitPlan = basePlan({
+        pretaxStart: 800000,
+        preservePretax: 500000,
+        preserveExitRatePct: 22,
+      });
+      const heirExit = planNetCost(
+        simulateRothPlan(heirExitPlan, DO_NOTHING),
+        heirExitPlan,
+      );
+      const tenExitPlan = basePlan({
+        pretaxStart: 800000,
+        preservePretax: 500000,
+        preserveExitRatePct: 10,
+      });
+      const tenExit = planNetCost(
+        simulateRothPlan(tenExitPlan, DO_NOTHING),
+        tenExitPlan,
+      );
+      const noReserve = simulateRothPlan(basePlan({ pretaxStart: 800000 }), DO_NOTHING);
+      return {
+        abovePreserved: above.preservedPretax,
+        aboveTerminalPreserved: above.terminalPreserved,
+        aboveExcess: above.excessPretax,
+        aboveTerminalExcess: above.terminalExcess,
+        aboveTerminal: above.terminal,
+        aboveNetCost: above.netCost,
+        aboveWealth: aboveRes.endingAfterTaxWealth,
+        belowPreserved: below.preservedPretax,
+        belowTerminal: below.terminal,
+        belowNetCost: below.netCost,
+        heirExitTerminal: heirExit.terminal,
+        tenExitTerminal: tenExit.terminal,
+        noReserveWealth: noReserve.endingAfterTaxWealth,
+      };
+    },
+  },
+  {
+    id: "preserve-optimizer-respects-floor",
+    kind: "tax",
+    note: "Preserve reserve, optimizer respects the floor: ages 57–74 (no RMDs yet for a 1969 birth — RMD age 75), pre-tax $1,000,000, Taxable $1,000,000, 0% return, no spending or Social Security, floor $500,000 at a 0% exit rate. EVERY scored candidate (winner, runners-up, Do Nothing) ends at or above the floor, and the best-converting ones end exactly AT it: the minimum ending pre-tax across the whole scored set is $500,000. The winner ends at $500,000 with terminal tax $0 (the whole ending pile is preserved at 0%). Do Nothing ends at $1,000,000 and is split-priced too: $500,000 preserved at 0% + $500,000 excess at 22% = $110,000 terminal. The no-reserve twin plan's winner drains the pile completely (ending $0) and its Do Nothing terminal is the old flat $1,000,000 × 22% = $220,000 — the floor, not the scoring, is what changes the outcome.",
+    expected: {
+      minScoredEnding: 500000,
+      winnerEnding: 500000,
+      winnerTerminal: 0,
+      winnerPreserved: 500000,
+      doNothingEnding: 1000000,
+      doNothingTerminal: 110000,
+      twinWinnerEnding: 0,
+      twinDoNothingTerminal: 220000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        endAgePrimary: 74,
+        pretaxStart: 1000000,
+        taxableStart: 1000000,
+        preservePretax: 500000,
+        preserveExitRatePct: 0,
+      });
+      const scored = scoreAllCandidates(plan);
+      const res = runOptimizer(plan);
+      const twin = runOptimizer(
+        basePlan({
+          endAgePrimary: 74,
+          pretaxStart: 1000000,
+          taxableStart: 1000000,
+        }),
+      );
+      return {
+        minScoredEnding: Math.min(...scored.map((s) => s.result.endingPretax)),
+        winnerEnding: res.winner.result.endingPretax,
+        winnerTerminal: res.winner.cost.terminal,
+        winnerPreserved: res.winner.cost.preservedPretax,
+        doNothingEnding: res.doNothing.result.endingPretax,
+        doNothingTerminal: res.doNothing.cost.terminal,
+        twinWinnerEnding: twin.winner.result.endingPretax,
+        twinDoNothingTerminal: twin.doNothing.cost.terminal,
+      };
+    },
+  },
+  {
+    id: "preserve-exec-room-reduced",
+    kind: "tax",
+    note: "Preserve reserve, execution-year room (hand-computed): MFJ 2026, age 57, Fill 12%, no YTD income or conversions, pre-tax $1,000,000, Taxable $1,000,000. Without a reserve the remaining conversion is the known $133,000 fill (per the execution fixtures). With a $950,000 floor the year's room is $1,000,000 − $950,000 = $50,000: remaining and total conversion are both $50,000, the fill target is the capped $50,000 (not the $133,000 ceiling fill), and both labels name the reserve. With the balance already AT the floor ($950,000), the remaining room is $0 with status no-room and the engine's fill outcome reserve-floor.",
+    expected: {
+      status: "ok",
+      remaining: 50000,
+      totalConversion: 50000,
+      fillTarget: 50000,
+      fillTargetLabel: "Pre-tax reserve — $950,000 never converted",
+      boundLabel: "Pre-tax reserve floor",
+      blankRemaining: 133000,
+      atFloorStatus: "no-room",
+      atFloorRemaining: 0,
+      atFloorOutcome: "reserve-floor",
+    },
+    actual: () => {
+      const blankExec = {
+        pretax: null,
+        pretaxSpouse: null,
+        roth: null,
+        taxable: null,
+        hsa: null,
+        otherOrdinaryYtd: 0,
+        taxExemptYtd: 0,
+        alreadyConvertedYtd: 0,
+      };
+      const plan = basePlan({
+        taxableStart: 1000000,
+        preservePretax: 950000,
+        preserveExitRatePct: 0,
+      });
+      const res = priceExecutionYear(plan, FILL_12.ceilings, blankExec, 2026);
+      const blank = priceExecutionYear(
+        basePlan({ taxableStart: 1000000 }),
+        FILL_12.ceilings,
+        blankExec,
+        2026,
+      );
+      const atFloor = priceExecutionYear(
+        basePlan({
+          pretaxStart: 950000,
+          taxableStart: 1000000,
+          preservePretax: 950000,
+          preserveExitRatePct: 0,
+        }),
+        FILL_12.ceilings,
+        blankExec,
+        2026,
+      );
+      return {
+        status: res.status,
+        remaining: res.remaining,
+        totalConversion: res.totalConversion,
+        fillTarget: res.fillTarget,
+        fillTargetLabel: res.fillTargetLabel,
+        boundLabel: res.boundLabel,
+        blankRemaining: blank.remaining,
+        atFloorStatus: atFloor.status,
+        atFloorRemaining: atFloor.remaining,
+        atFloorOutcome: atFloor.fillOutcome,
+      };
+    },
+  },
+  {
+    id: "ss-collected-lifetime-sum",
+    kind: "tax",
+    note: "Lifetime Social Security collected (display only, hand-derived from the benefit stream): primary born 1960 claims $40,000/yr from 67, spouse born 1961 claims $25,000/yr from 62, plan runs 2026–2030 (primary ages 66–70, five years). Primary is paid in 2027–2030 only: 4 × $40,000 = $160,000. Spouse is already 65 in 2026 and is paid all five years: 5 × $25,000 = $125,000. Lifetime collected = $160,000 + $125,000 = $285,000. Year rows: 2026 = $25,000 (spouse only), 2027 = $65,000 (both). The result's lifetime total, the sum of the year rows' ssBenefits, and the net-cost breakdown's ssCollected must all equal that hand total — none of them feeds the net-cost score.",
+    expected: {
+      lifetime: 285000,
+      streamSum: 285000,
+      breakdownSs: 285000,
+      ss2026: 25000,
+      ss2027: 65000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1960,
+          birthYearSpouse: 1961,
+          endAgePrimary: 70,
+          retirementAge: 66,
+          pretaxStart: 0,
+          ssPrimaryAnnual: 40000,
+          ssPrimaryStartAge: 67,
+          ssSpouseAnnual: 25000,
+          ssSpouseStartAge: 62,
+        }),
+        DO_NOTHING,
+      );
+      return {
+        lifetime: res.lifetimeSsCollected,
+        streamSum:
+          Math.round(res.years.reduce((a, y) => a + y.ssBenefits, 0) * 100) / 100,
+        breakdownSs: netCostBreakdown(res, 22).ssCollected,
+        ss2026: res.years[0]?.ssBenefits ?? null,
+        ss2027: res.years[1]?.ssBenefits ?? null,
+      };
+    },
+  },
+  {
+    id: "ss-collected-survivor-larger-only",
+    kind: "tax",
+    note: "Lifetime Social Security collected under a survivor scenario (display only, hand-derived): primary born 1964 claims $40,000/yr from 62, spouse born 1965 claims $25,000/yr from 62, primary dies in 2028, plan runs 2026–2029 (primary ages 62–65). Benefits actually paid: 2026 = $40,000 (spouse is 61, not yet claiming), 2027 = $65,000, 2028 (death year) = $65,000, 2029 (survivor year) = only the LARGER benefit continues, $40,000 — not the $65,000 sum and not the spouse's own $25,000. Lifetime collected = $40,000 + $65,000 + $65,000 + $40,000 = $210,000. A total that kept summing both benefits after the death year would read $235,000 and fail; so would one that dropped the spouse before the death year.",
+    expected: {
+      lifetime: 210000,
+      streamSum: 210000,
+      breakdownSs: 210000,
+      ssAfter: 40000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1964,
+          birthYearSpouse: 1965,
+          endAgePrimary: 65,
+          retirementAge: 62,
+          pretaxStart: 0,
+          ssPrimaryAnnual: 40000,
+          ssPrimaryStartAge: 62,
+          ssSpouseAnnual: 25000,
+          ssSpouseStartAge: 62,
+          survivorEnabled: true,
+          survivorWho: "primary",
+          survivorDeathYear: 2028,
+        }),
+        DO_NOTHING,
+      );
+      return {
+        lifetime: res.lifetimeSsCollected,
+        streamSum:
+          Math.round(res.years.reduce((a, y) => a + y.ssBenefits, 0) * 100) / 100,
+        breakdownSs: netCostBreakdown(res, 22).ssCollected,
+        ssAfter: res.years[3]?.ssBenefits ?? null,
+      };
+    },
+  },
+  {
+    id: "opt-ss-collected-carried-by-scores",
+    kind: "tax",
+    note: "Lifetime Social Security collected carried by every optimizer score (display only): on the torpedo plan (primary born 1961, $48,000/yr entered at 65, no spouse benefit, plan 2026–2046 = ages 65–85, 21 years) every candidate at the entered claiming ages collects 21 × $48,000 = $1,008,000, whatever its conversion strategy or draw order — conversions never change the benefit paid. The winner's, Do Nothing's, and the first runner-up's breakdowns must all carry exactly that figure, the winner's own simulation total must match it, and the winner's net cost must still be the pinned $181,984.20 — the new figure changes no score and no ranking. (Net RE-PINNED by the BASIS-DRIFT build from $183,813.90 — the torpedo plan's set-100% basis drifts at its 3% return; the collected-benefit figures are benefit arithmetic and are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Net re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo plan's 2027/2028 years now price the deflated §224 figures ($5,853.66 / $146,341.46 in 2027; $5,710.89 / $142,772.16 in 2028) instead of the nominal $6,000 / $150,000, raising the winner's net $119.00 from $185,169.85; the collected-benefit figures are benefit arithmetic and are unmoved. Derivation at joint-maxifi-property.)",
+    expected: {
+      winnerSsCollected: 1008000,
+      doNothingSsCollected: 1008000,
+      runnerUpSsCollected: 1008000,
+      winnerResultLifetime: 1008000,
+      winnerNetCost: 181984.2,
+    },
+    actual: () => {
+      const res = runOptimizer(optTorpedoPlan());
+      return {
+        winnerSsCollected: res.winner.cost.ssCollected,
+        doNothingSsCollected: res.doNothing.cost.ssCollected,
+        runnerUpSsCollected: res.runnersUp[0]?.cost.ssCollected ?? null,
+        winnerResultLifetime: res.winner.result.lifetimeSsCollected,
+        winnerNetCost: res.winner.cost.netCost,
+      };
+    },
+  },
+  {
+    id: "claim-table-per-age-best",
+    kind: "tax",
+    note: "Per-claiming-age table (torpedo plan: primary $48,000 entered at 65, born 1961, spouse blank): the joint result carries one row per primary age 62–70, and each row's best is that age's TRUE best fully-priced candidate — cross-checked against an independent fixed-claim-age run at that age (scoreAllCandidates on the age's own combination, plan draw order): the best net cost, strategy name, and window stop must match the row's exactly at all nine ages. The table's winning row is the joint winner itself (claim 62, $165,393.40, per the MaxiFi pin — RE-PINNED by the BASIS-DRIFT build from claim 70 / $156,545.03, the torpedo plan's set-100% basis drift; see joint-maxifi-property; the dollar figure re-pinned under FIX 4's §224 senior-deduction deflation from $168,927.75 — derivation at joint-maxifi-property) and exactly one row is marked as the winner. Yearly benefits are the statutory derivations from the entered anchor: PIA = $48,000 ÷ (13/15) = $58,292.31, so claim 62 (60 months early, factor 0.70) pays $38,769.23 and claim 70 (factor 1.24) pays $68,676.92; with no spouse benefit, the survivor-keeps figure equals the row's own benefit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      rowCount: 9,
+      agesAscending62to70: 1,
+      maxNetCostDiffVsFixedAge: 0,
+      namesAndWindowsMatchFixedAge: 1,
+      winnerRowAge: 62,
+      winnerRowNetCost: 165393.4,
+      winnerRowsMarked: 1,
+      annual62: 38769.23,
+      annual70: 68676.92,
+      survivor62: 38769.23,
+    },
+    actual: () => {
+      const plan = optTorpedoPlan();
+      const joint = runJointOptimizer(plan);
+      const combos = claimAgeCombos(plan);
+      let maxDiff = 0;
+      let namesMatch = 1;
+      for (const row of joint.claimAgeTable) {
+        const combo = combos.find(
+          (c) => c.claimAges.primaryAge === row.primaryAge,
+        );
+        const fixed = combo
+          ? scoreAllCandidates(combo.inputs, combo.claimAges, {
+              searchOrders: false,
+            })[0]
+          : undefined;
+        if (!fixed) {
+          namesMatch = 0;
+          continue;
+        }
+        maxDiff = Math.max(
+          maxDiff,
+          Math.abs(fixed.cost.netCost - row.best.cost.netCost),
+        );
+        if (
+          fixed.spec.name !== row.best.spec.name ||
+          fixed.spec.windowStopAge !== row.best.spec.windowStopAge
+        ) {
+          namesMatch = 0;
+        }
+      }
+      const winnerRow = joint.claimAgeTable.find((r) => r.isWinner);
+      const row62 = joint.claimAgeTable.find((r) => r.primaryAge === 62);
+      const row70 = joint.claimAgeTable.find((r) => r.primaryAge === 70);
+      const ages = joint.claimAgeTable.map((r) => r.primaryAge);
+      return {
+        rowCount: joint.claimAgeTable.length,
+        agesAscending62to70:
+          ages.length === 9 && ages.every((a, i) => a === 62 + i) ? 1 : 0,
+        maxNetCostDiffVsFixedAge: Math.round(maxDiff * 100) / 100,
+        namesAndWindowsMatchFixedAge: namesMatch,
+        winnerRowAge: winnerRow?.primaryAge ?? null,
+        winnerRowNetCost: winnerRow?.best.cost.netCost ?? null,
+        winnerRowsMarked: joint.claimAgeTable.filter((r) => r.isWinner).length,
+        annual62: row62?.primaryAnnual ?? null,
+        annual70: row70?.primaryAnnual ?? null,
+        survivor62: row62?.survivorAnnual ?? null,
+      };
+    },
+  },
+  {
+    id: "claim-floor-crowning",
+    kind: "tax",
+    note: "Claim floor crowning (claim-floor plan: primary $48,000 entered at 65, born 1961, pre-tax $300,000, plan to 80 — its per-age bests rise monotonically from 67 to 70, so the floor genuinely bites): with no floor the winner claims at 63 (under FIX 4's §224 deflation the age-62 row repriced past it — see claim-floor-edges-and-blank; pre-FIX 4 it claimed at 62). With floor 67 the crowned winner is the best claim-67 candidate, $4,873.24 — cross-checked against an independent fixed-claim-age run at 67 (scoreAllCandidates on the age-67 combination) — and it is the table's own age-67 row best. (RE-PINNED by the BASIS-DRIFT build from $4,974.99: the claim-floor plan's basis % is an explicitly set 100% at a 3% return, so its candidates price drifted gains on later taxable draws; the crowning mechanics — floor, cross-check, table-row identity, Do Nothing unchanged at $81,117.30 — are the pin's subject and are unmoved.) The age-62 row best appears in the table at $149.54, unmarked as winner (re-pinned under FIX 4 from $42.30: this plan's primary is 66 in 2027 and 67 in 2028, and those years' §224 deductions now deflate — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000; the floor-67 winner likewise rises $23.49, from $4,860.27 to $4,873.24, while Do Nothing's $81,117.30 is unmoved); rows 62–66 are marked below the floor (5 rows), rows 67–70 are not; and the floor moves nothing else — the joint Do Nothing is identical to the no-floor run's, to the cent ($81,117.30).",
+    expected: {
+      winnerAge: 67,
+      winnerNetCost: 4873.24,
+      winnerNetCostDiffVsFixedAge67: 0,
+      winnerIsTableRow67: 1,
+      row62NetCost: 149.54,
+      row62IsWinner: 0,
+      belowFloorRows: 5,
+      doNothingDiffVsNoFloor: 0,
+      doNothingNetCost: 81117.3,
+    },
+    actual: () => {
+      const plan = claimFloorPlan();
+      const floored = runJointOptimizer({ ...plan, claimAgeFloor: 67 });
+      const unfloored = runJointOptimizer(plan);
+      const combo67 = claimAgeCombos(plan).find(
+        (c) => c.claimAges.primaryAge === 67,
+      );
+      const fixed67 = combo67
+        ? scoreAllCandidates(combo67.inputs, combo67.claimAges, {
+            searchOrders: false,
+          })[0]
+        : undefined;
+      const row67 = floored.claimAgeTable.find((r) => r.primaryAge === 67);
+      const row62 = floored.claimAgeTable.find((r) => r.primaryAge === 62);
+      const d = (a: number, b: number) => Math.round((a - b) * 100) / 100;
+      return {
+        winnerAge: floored.winner.claimAges.primaryAge,
+        winnerNetCost: floored.winner.cost.netCost,
+        winnerNetCostDiffVsFixedAge67: fixed67
+          ? d(floored.winner.cost.netCost, fixed67.cost.netCost)
+          : null,
+        winnerIsTableRow67:
+          row67 && floored.winner === row67.best ? 1 : 0,
+        row62NetCost: row62?.best.cost.netCost ?? null,
+        row62IsWinner: row62?.isWinner ? 1 : 0,
+        belowFloorRows: floored.claimAgeTable.filter((r) => r.belowFloor).length,
+        doNothingDiffVsNoFloor: d(
+          floored.doNothing.cost.netCost,
+          unfloored.doNothing.cost.netCost,
+        ),
+        doNothingNetCost: floored.doNothing.cost.netCost,
+      };
+    },
+  },
+  {
+    id: "claim-floor-edges-and-blank",
+    kind: "tax",
+    note: "Claim floor edges: blank reproduces the pre-build winner — on the torpedo plan a floor key ABSENT crowns the pinned winner (claim 62, $165,393.40); on the claim-floor plan a floor explicitly NULL and a floor of 62 (which excludes no searched age) crown exactly the absent-floor winner, with no row marked below the floor at 62. On the claim-floor plan a floor of 70 leaves only age 70 eligible: the winner is age 70's own best ($11,186.99), all eight younger rows are marked below the floor, and every runner-up is also a claim-70 candidate — no below-floor candidate leaks into the crowned set however cheap it is (the age-62 best is $149.54). (The two winner figures were RE-PINNED by the BASIS-DRIFT build from $156,545.03 (claim 70) and $12,390.94 — both plans carry an explicitly set 100% basis at a 3% return, so their candidates price drifted gains; the edge mechanics are the pin's subject and are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: both plans' primaries (born 1961) are 66 in 2027 and 67 in 2028, and those years now price the deflated §224 figures ($5,853.66 / $146,341.46 in 2027; $5,710.89 / $142,772.16 in 2028) instead of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property). The torpedo absent-floor winner falls $16.99 to $165,393.40 (still claim 62); on the claim-floor plan the near-tie between the age-62 and age-63 rows flips, so the absent/null-floor crown moves from claim 62 to claim 63 — the NULL and floor-62 runs still crown exactly that same winner (nullEqualsAbsent and floor62EqualsAbsent unmoved) — the age-62 row best rises to $64.77, and the floor-70 winner rises $7.35 to $11,186.99.)",
+    expected: {
+      absentWinner: 165393.4,
+      nullWinnerAge: 64,
+      nullEqualsAbsent: 1,
+      floor62EqualsAbsent: 1,
+      floor62BelowRows: 0,
+      floor70WinnerAge: 70,
+      floor70WinnerNetCost: 11186.99,
+      floor70WinnerIsRow70Best: 1,
+      floor70BelowRows: 8,
+      floor70RunnersUpAllAge70: 1,
+    },
+    actual: () => {
+      const absent = runJointOptimizer(optTorpedoPlan());
+      const small = claimFloorPlan();
+      const smallAbsent = runJointOptimizer(small);
+      const explicitNull = runJointOptimizer({
+        ...small,
+        claimAgeFloor: null,
+      });
+      const floor62 = runJointOptimizer({ ...small, claimAgeFloor: 62 });
+      const floor70 = runJointOptimizer({
+        ...claimFloorPlan(),
+        claimAgeFloor: 70,
+      });
+      const sameWinner = (
+        a: typeof absent.winner,
+        b: typeof absent.winner,
+      ): number =>
+        a.cost.netCost === b.cost.netCost &&
+        a.spec.key === b.spec.key &&
+        a.claimAges.primaryAge === b.claimAges.primaryAge
+          ? 1
+          : 0;
+      const row70 = floor70.claimAgeTable.find((r) => r.primaryAge === 70);
+      return {
+        absentWinner: absent.winner.cost.netCost,
+        nullWinnerAge: explicitNull.winner.claimAges.primaryAge,
+        nullEqualsAbsent: sameWinner(explicitNull.winner, smallAbsent.winner),
+        floor62EqualsAbsent: sameWinner(floor62.winner, smallAbsent.winner),
+        floor62BelowRows: floor62.claimAgeTable.filter((r) => r.belowFloor)
+          .length,
+        floor70WinnerAge: floor70.winner.claimAges.primaryAge,
+        floor70WinnerNetCost: floor70.winner.cost.netCost,
+        floor70WinnerIsRow70Best:
+          row70 && floor70.winner === row70.best ? 1 : 0,
+        floor70BelowRows: floor70.claimAgeTable.filter((r) => r.belowFloor)
+          .length,
+        floor70RunnersUpAllAge70:
+          floor70.runnersUp.length > 0 &&
+          floor70.runnersUp.every((s) => s.claimAges.primaryAge === 70)
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "claim-floor-saved-roundtrip",
+    kind: "tax",
+    note: "Claim floor saved shape: the key round-trips untouched through the saved-blob split/join passthrough (the scenario writers' raw path, byte-identical), planInputsFromSaved passes 67 through to the optimizer-layer field, and a record without the key — or with it explicitly null — converts to a null floor (no floor). The engine never reads the field: a full simulation on floor-67 inputs is identical to the same inputs with no floor. End to end, a saved record carrying floor 67 (on the claim-floor plan's shape) crowns the claim-67 winner through runJointOptimizer.",
+    expected: {
+      blobRoundTripIdentical: 1,
+      engineFloor: 67,
+      absentFloor: null,
+      nullFloor: null,
+      engineIgnoresFloor: 1,
+      crownedAgeFromSaved: 67,
+    },
+    actual: () => {
+      const savedBase: RothSavedLike = {
+        birthYearPrimary: 1961,
+        birthYearSpouse: 1972,
+        filingStatus: "mfj",
+        pretaxCents: 30000000,
+        rothCents: 0,
+        taxableCents: 60000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 4000000,
+        retirementAge: 65,
+        endAge: 80,
+        expectedReturnPct: 3,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 65,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 65,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: "taxable-pretax-roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const inputsJson = '{"birthYearPrimary":1961,"claimAgeFloor":67}';
+      const original = `{"inputs":${inputsJson},"scenarios":[]}`;
+      const split = splitRothBlob(original);
+      const rejoined = split ? joinRothBlob(split.inputsRaw, split.scenariosRaw) : "";
+      const withFloor = planInputsFromSaved(
+        { ...savedBase, claimAgeFloor: 67 },
+        2026,
+      );
+      const absent = planInputsFromSaved(savedBase, 2026);
+      const explicitNull = planInputsFromSaved(
+        { ...savedBase, claimAgeFloor: null },
+        2026,
+      );
+      const simWith = withFloor ? simulateRothPlan(withFloor, FILL_12) : null;
+      const simWithout = absent ? simulateRothPlan(absent, FILL_12) : null;
+      const joint = withFloor ? runJointOptimizer(withFloor) : null;
+      return {
+        blobRoundTripIdentical: rejoined === original ? 1 : 0,
+        engineFloor: withFloor?.claimAgeFloor ?? null,
+        absentFloor: absent?.claimAgeFloor ?? null,
+        nullFloor: explicitNull?.claimAgeFloor ?? null,
+        engineIgnoresFloor:
+          JSON.stringify(simWith) === JSON.stringify(simWithout) ? 1 : 0,
+        crownedAgeFromSaved: joint?.winner.claimAges.primaryAge ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-fill-12-exact",
+    kind: "tax",
+    note: "Playground anchor 1 (hand-derived; the exec-funded-fill figures): 2026 law, MFJ, both under 65, no Social Security, no sale. Ordinary income $20,000 (interest $5,000 + other $15,000) plus a typed conversion of $113,000 → MAGI $133,000; taxable income $133,000 − $32,200 standard deduction = $100,800, exactly the top of the 12% bracket; federal tax 10% × $24,800 + 12% × $76,000 = $2,480 + $9,120 = $11,600. The landing is the 12% bracket, exactly filled with $0 of room, and the conversion's own price is the whole $11,600 (at $0 of conversion the year's tax is $0 — the $20,000 of other income sits under the deduction).",
+    expected: {
+      otherOrdinaryTotal: 20000,
+      magi: 133000,
+      taxableIncome: 100800,
+      federalTax: 11600,
+      ordinaryTax: 11600,
+      landingBracketPct: 12,
+      landingRoomLeft: 0,
+      landingExactlyFilled: 1,
+      conversionFederalCost: 11600,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 15000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 113000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        otherOrdinaryTotal: r.otherOrdinaryTotal,
+        magi: r.magi,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        ordinaryTax: r.ordinaryTax,
+        landingBracketPct: r.landingBracketPct,
+        landingRoomLeft: r.landingRoomLeft,
+        landingExactlyFilled: r.landingExactlyFilled ? 1 : 0,
+        conversionFederalCost: r.conversionFederalCost,
+      };
+    },
+  },
+  {
+    id: "playground-gain-and-aca-cliff",
+    kind: "tax",
+    note: "Playground anchor 2 (hand-derived): anchor 1 plus a stock sale of $150,000 with a $50,000 basis — a $100,000 long-term gain. Ordinary taxable income ($100,800) is already past the 0% gains ceiling ($98,900 MFJ), so the whole gain prices at 15%: gains tax $15,000, total federal tax $11,600 + $15,000 = $26,600, MAGI $233,000. ACA for household size 5 (2026 coverage uses the 2025 guidelines: $15,650 + 4 × $5,500 = $37,650 FPL; the cliff is 4 × $37,650 = $150,600): MAGI is over the cliff by $82,400, and the credit is $0 even with a $30,000 benchmark entered; with no benchmark entered the credit is not priced (null).",
+    expected: {
+      stockGain: 100000,
+      ltcgPriced: 100000,
+      gainsAt0: 0,
+      gainsAt15: 100000,
+      gainsAt20: 0,
+      ltcgTax: 15000,
+      federalTax: 26600,
+      magi: 233000,
+      cliff: 150600,
+      positionDollars: -82400,
+      overCliff: 1,
+      creditNoBenchmark: null,
+      creditWithBenchmark: 0,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 15000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 113000,
+        stockSold: 150000,
+        stockBasis: 50000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        stateRatePct: 0,
+      };
+      const r = pricePlaygroundYear({ ...base, acaBenchmarkAnnual: null });
+      const rb = pricePlaygroundYear({ ...base, acaBenchmarkAnnual: 30000 });
+      return {
+        stockGain: r.stockGain,
+        ltcgPriced: r.ltcgPriced,
+        gainsAt0: r.gainsAt0,
+        gainsAt15: r.gainsAt15,
+        gainsAt20: r.gainsAt20,
+        ltcgTax: r.ltcgTax,
+        federalTax: r.federalTax,
+        magi: r.magi,
+        cliff: r.aca.cliff,
+        positionDollars: r.aca.positionDollars,
+        overCliff: r.aca.overCliff ? 1 : 0,
+        creditNoBenchmark: r.aca.credit,
+        creditWithBenchmark: rb.aca.credit,
+      };
+    },
+  },
+  {
+    id: "playground-ss-86",
+    kind: "tax",
+    note: "Playground anchor 3 (hand-derived, IRC §86): 2026, MFJ, Social Security $48,000 with interest $5,000 and a $128,000 conversion. Provisional income $133,000 + $24,000 = $158,260 is far past the $44,000 second threshold, so taxable benefits are the 85% cap: 0.85 × $48,000 = $40,800. Ordinary income $133,000 + $40,800 = $173,800 (the AGI and MAGI — no tax-exempt interest); taxable income $173,800 − $32,200 = $141,600; federal tax $2,480 + $9,120 + 22% × ($141,600 − $100,800) = $11,600 + $9,447.24 = $20,576.00.",
+    expected: {
+      ssTaxable: 40800,
+      ssPctTaxed: 85,
+      agi: 173800,
+      magi: 173800,
+      taxableIncome: 141600,
+      federalTax: 20576,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 48000,
+        ssSpouse: 0,
+        conversion: 128000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        ssTaxable: r.ssTaxable,
+        ssPctTaxed: r.ssPctTaxed,
+        agi: r.agi,
+        magi: r.magi,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "playground-irmaa-matches-engine",
+    kind: "tax",
+    note: "Playground anchor 4 (cross-check, no second table): the playground's IRMAA tier for a MAGI must equal the engine's own classifier (irmaaTierFor, the one the plan's year table reports) at the same MAGI and filing status. MFJ MAGI $220,000 → Tier 1 (2026 MFJ lines: $218,000 / $274,000); MFJ MAGI $340,000 → Tier 2 (line $342,000); Single MAGI $150,000 → Tier 2 (single lines $137,000 / $171,000). Tier 1 surcharge per person (2026 CMS): Part B total $284.10 − standard $202.90 = $81.20, plus Part D $14.50 → $95.70/mo, $1,148.40/yr, $2,296.80/yr for two people on Medicare; the next tier line above $220,000 is $274,000, leaving $54,000 of room; the tier set by 2026 MAGI is paid in 2028.",
+    expected: {
+      tierA: 1,
+      engineTierA: 1,
+      tierB: 2,
+      engineTierB: 2,
+      tierC: 2,
+      engineTierC: 2,
+      monthlyA: 95.7,
+      annualHouseholdA: 2296.8,
+      nextLineA: 274000,
+      roomA: 54000,
+      premiumYearA: 2028,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        ordinaryDividends: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const a = pricePlaygroundYear({
+        ...base,
+        filingStatus: "mfj",
+        agePrimary: 66,
+        ageSpouse: 55,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        otherOrdinary: 20000,
+        conversion: 200000,
+      });
+      const b = pricePlaygroundYear({
+        ...base,
+        filingStatus: "mfj",
+        agePrimary: 66,
+        ageSpouse: 55,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        otherOrdinary: 20000,
+        conversion: 320000,
+      });
+      const c = pricePlaygroundYear({
+        ...base,
+        filingStatus: "single",
+        agePrimary: 66,
+        ageSpouse: null,
+        onMedicarePrimary: true,
+        onMedicareSpouse: false,
+        interest: 0,
+        otherOrdinary: 0,
+        conversion: 150000,
+      });
+      return {
+        tierA: a.irmaa.tier,
+        engineTierA: irmaaTierFor(a.magi, "mfj", TAX_LAW_2026, 2026, 2.5),
+        tierB: b.irmaa.tier,
+        engineTierB: irmaaTierFor(b.magi, "mfj", TAX_LAW_2026, 2026, 2.5),
+        tierC: c.irmaa.tier,
+        engineTierC: irmaaTierFor(c.magi, "single", TAX_LAW_2026, 2026, 2.5),
+        monthlyA: a.irmaa.monthlyPerPerson,
+        annualHouseholdA: a.irmaa.annualHousehold,
+        nextLineA: a.irmaa.nextTierLine,
+        roomA: a.irmaa.roomToNextTier,
+        premiumYearA: a.irmaa.premiumYear,
+      };
+    },
+  },
+  {
+    id: "playground-matches-planner-first-year",
+    kind: "tax",
+    note: "Playground anchor 5 (equivalence, the exec-matches-planner method): a plan whose first window year is 2026 (MFJ, primary 57 / spouse 46, other ordinary income $20,000, Social Security $48,000 from age 57, no spending, Fill 12%) fills that year to a $72,200 conversion — hand-derived: with benefits 85% taxed ($40,800) once provisional income passes $87,461 of conversion-plus-other-income, taxable income is conversion + $30,742, so the largest $100 step at or under the $100,800 cap is $72,200, landing at taxable income $100,800, MAGI $133,000, federal tax $2,480 + 12% × $75,942 = $11,600.00. A playground year fed those same components and the $72,200 typed conversion must price IDENTICALLY: same MAGI, taxable income, Social Security taxable amount, and federal tax.",
+    expected: {
+      plannerConversion: 72200,
+      plannerMagi: 133000,
+      plannerTaxable: 100800,
+      plannerTax: 11600,
+      pgMagi: 133000,
+      pgTaxable: 100800,
+      pgTax: 11600,
+      pgSsTaxable: 40800,
+      magiDiff: 0,
+      taxDiff: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 1000000,
+        taxableStart: 0,
+        annualSpending: 0,
+        otherOrdinaryAnnual: 20000,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 57,
+        endAgePrimary: 57,
+        acaHouseholdSize: 3,
+      });
+      const y = simulateRothPlan(plan, FILL_12).years[0];
+      const pg = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 57,
+        ageSpouse: 46,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 20000,
+        taxExemptInterest: 0,
+        ssPrimary: 48000,
+        ssSpouse: 0,
+        conversion: y?.conversion ?? 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        plannerConversion: y?.conversion ?? null,
+        plannerMagi: y?.magi ?? null,
+        plannerTaxable: y?.taxableIncome ?? null,
+        plannerTax: y?.federalTax ?? null,
+        pgMagi: pg.magi,
+        pgTaxable: pg.taxableIncome,
+        pgTax: pg.federalTax,
+        pgSsTaxable: pg.ssTaxable,
+        magiDiff: y ? Math.round((pg.magi - y.magi) * 100) / 100 : null,
+        taxDiff: y ? Math.round((pg.federalTax - y.federalTax) * 100) / 100 : null,
+      };
+    },
+  },
+  {
+    id: "playground-rmd-and-watch-outs",
+    kind: "tax",
+    note: "Playground RMD + watch-outs (hand-derived): (a) a $1,000,000 prior-Dec-31 balance at primary 75 / spouse 64, spouse sole beneficiary, prices the plan's own Joint Life RMD — divisor 25.3 (Pub. 590-B), RMD $39,525.69 — through rmdForYear, the same rule the plan uses. (b) At 57 (RMD age 75 for a 1969 birth year) no RMD is priced, and a typed $60,000 conversion against a $50,000 balance is flagged as exceeding the balance. (c) A sale of $40,000 against a $90,000 basis with $10,000 of qualified dividends nets a $40,000 long-term loss: the gains stack prices $0 of gains (the loss offsets the dividends first) and the unpriced loss is reported, not hidden.",
+    expected: {
+      rmd: 39525.69,
+      rmdDivisor: 25.3,
+      rmdTable: "joint",
+      youngRmd: 0,
+      exceeds: 1,
+      stockGain: -50000,
+      ltcgNet: -40000,
+      ltcgPriced: 0,
+      capitalLoss: 40000,
+      lossFederalTax: 0,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const a = pricePlaygroundYear({
+        ...base,
+        agePrimary: 75,
+        ageSpouse: 64,
+        onMedicarePrimary: true,
+        onMedicareSpouse: false,
+        interest: 0,
+        conversion: 0,
+        pretaxBalance: 1000000,
+      });
+      const b = pricePlaygroundYear({
+        ...base,
+        agePrimary: 57,
+        ageSpouse: 46,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        conversion: 60000,
+        pretaxBalance: 50000,
+      });
+      const c = pricePlaygroundYear({
+        ...base,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        conversion: 0,
+        pretaxBalance: null,
+        stockSold: 40000,
+        stockBasis: 90000,
+        qualifiedDividends: 10000,
+      });
+      return {
+        rmd: a.rmd,
+        rmdDivisor: a.rmdDivisor,
+        rmdTable: a.rmdTable,
+        youngRmd: b.rmd,
+        exceeds: b.conversionExceedsBalance ? 1 : 0,
+        stockGain: c.stockGain,
+        ltcgNet: c.ltcgNet,
+        ltcgPriced: c.ltcgPriced,
+        capitalLoss: c.capitalLoss,
+        lossFederalTax: c.federalTax,
+      };
+    },
+  },
+  {
+    id: "playground-niit-interest-only-zero",
+    kind: "tax",
+    note: "Playground NIIT base (hand-derived; the F1 disclosure acceptance case): 2026 MFJ, ages 60/49, ONLY interest $300,000 typed — MAGI $300,000, past the $250,000 MFJ NIIT threshold, but the engine's NIIT base is the gains stack only (long-term gains + qualified dividends), so with no sale and no qualified dividends the NIIT is $0 even at that MAGI. Taxable income $300,000 − $32,200 = $267,800; ordinary tax $2,480 + $9,120 + $24,332 + 24% × $56,400 = $49,468, which is also the total federal tax. The Playground readout now states this base next to the NIIT figure.",
+    expected: {
+      interest: 300000,
+      magi: 300000,
+      ltcgPriced: 0,
+      niit: 0,
+      ordinaryTax: 49468,
+      federalTax: 49468,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 300000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        interest: r.interest,
+        magi: r.magi,
+        ltcgPriced: r.ltcgPriced,
+        niit: r.niit,
+        ordinaryTax: r.ordinaryTax,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "playground-chip-fill-12-interest",
+    kind: "tax",
+    note: "Playground chip fill, the acceptance case (hand-derived): 2026 MFJ, ages 55/44, ONLY interest $5,000 typed. The 12% chip must solve NET of that income: the bracket top is $100,800 of taxable income, the standard deduction is $32,200, so ordinary income at the fill is $133,000 and the conversion is $133,000 − $5,000 = $128,000 — NOT $133,000. Federal tax at the landing is the anchor-1 figure $11,600 (10% × $24,800 + 12% × $76,000), the landing is the 12% bracket filled exactly, and the conversion's own cost is the whole $11,600 (at $0 of conversion the $5,000 sits under the deduction). Solved by solvePlaygroundBracketFill through pricePlaygroundYear — the same function the chip calls.",
+    expected: {
+      fill: 128000,
+      magi: 133000,
+      taxableIncome: 100800,
+      ordinaryTaxableIncome: 100800,
+      federalTax: 11600,
+      landingBracketPct: 12,
+      landingRoomLeft: 0,
+      landingExactlyFilled: 1,
+      conversionFederalCost: 11600,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const fill = solvePlaygroundBracketFill(inp, 12);
+      const r = pricePlaygroundYear({ ...inp, conversion: fill });
+      return {
+        fill,
+        magi: r.magi,
+        taxableIncome: r.taxableIncome,
+        ordinaryTaxableIncome: r.ordinaryTaxableIncome,
+        federalTax: r.federalTax,
+        landingBracketPct: r.landingBracketPct,
+        landingRoomLeft: r.landingRoomLeft,
+        landingExactlyFilled: r.landingExactlyFilled ? 1 : 0,
+        conversionFederalCost: r.conversionFederalCost,
+      };
+    },
+  },
+  {
+    id: "playground-chip-fill-ss-86-feedback",
+    kind: "tax",
+    note: "Playground chip fill with Social Security (hand-derived, IRC §86 feedback): 2026 MFJ, ages 55/44, Social Security $30,000 typed, nothing else; the 10% chip (top $24,800). The fill must count benefits at their TAXABLE portion, which grows as the conversion rises: at the answer, provisional income is $40,891.89 + $15,000 = $55,891.89, past the $44,000 second threshold, so taxable benefits are $6,000 + 85% × ($55,891.89 − $44,000) = $6,000 + $10,108.11 = $16,108.11 (53.7% of benefits — the phase-in zone, not the cap). AGI is then $40,891.89 + $16,108.11 = $57,000 exactly, taxable income $57,000 − $32,200 = $24,800, the 10% top, filled exactly; federal tax 10% × $24,800 = $2,480. Both naive answers are wrong: ignoring Social Security gives $57,000, and assuming 85% taxed from the first dollar gives $31,500.",
+    expected: {
+      fill: 40891.89,
+      ssTaxable: 16108.11,
+      ssPctTaxed: 53.69,
+      magi: 57000,
+      taxableIncome: 24800,
+      federalTax: 2480,
+      landingBracketPct: 10,
+      landingRoomLeft: 0,
+      landingExactlyFilled: 1,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 30000,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const fill = solvePlaygroundBracketFill(inp, 10);
+      const r = pricePlaygroundYear({ ...inp, conversion: fill });
+      return {
+        fill,
+        ssTaxable: r.ssTaxable,
+        ssPctTaxed: r.ssPctTaxed,
+        magi: r.magi,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        landingBracketPct: r.landingBracketPct,
+        landingRoomLeft: r.landingRoomLeft,
+        landingExactlyFilled: r.landingExactlyFilled ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "playground-chip-fill-rmd-shrinks",
+    kind: "tax",
+    note: "Playground chip fill with an RMD stacking first (hand-derived): 2026 MFJ, primary 75 / spouse 64, spouse sole beneficiary, prior-Dec-31 pre-tax balance $1,000,000, nothing else typed; the 12% chip. The RMD prices through rmdForYear at the Joint Life divisor 25.3: $39,525.69 of ordinary income BEFORE any conversion. Deductions: standard $32,200 + one 65+ add-on $1,650 = $33,850, plus the 2025–2028 senior deduction $6,000 (one person 65+, AGI $140,650 is under the $150,000 joint phase-out start) = $39,850. Ordinary income at the $100,800 top is $140,650, so the fill is $140,650 − $39,525.69 = $101,124.31 — exactly the RMD smaller than the $140,650 no-balance fill. Federal tax at the landing is again $11,600.",
+    expected: {
+      fill: 101124.31,
+      rmd: 39525.69,
+      deductions: 39850,
+      magi: 140650,
+      taxableIncome: 100800,
+      federalTax: 11600,
+      landingBracketPct: 12,
+      landingRoomLeft: 0,
+      landingExactlyFilled: 1,
+      exceedsBalance: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 75,
+        ageSpouse: 64,
+        onMedicarePrimary: true,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 1000000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const fill = solvePlaygroundBracketFill(inp, 12);
+      const r = pricePlaygroundYear({ ...inp, conversion: fill });
+      return {
+        fill,
+        rmd: r.rmd,
+        deductions: r.deductions,
+        magi: r.magi,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        landingBracketPct: r.landingBracketPct,
+        landingRoomLeft: r.landingRoomLeft,
+        landingExactlyFilled: r.landingExactlyFilled ? 1 : 0,
+        exceedsBalance: r.conversionExceedsBalance ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "playground-chip-fill-already-past-top",
+    kind: "tax",
+    note: "Playground chip fill, no room left (hand-derived): 2026 MFJ, ages 55/44, interest $5,000 + other ordinary income $150,000 = $155,000 of ordinary income typed. At $0 of conversion, ordinary taxable income is already $155,000 − $32,200 = $122,800 — past the 12% top of $100,800 — so the 12% chip honestly sets $0 rather than a negative or partial fill.",
+    expected: {
+      fill: 0,
+      ordinaryAtZero: 122800,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 150000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      return {
+        fill: solvePlaygroundBracketFill(inp, 12),
+        ordinaryAtZero: pricePlaygroundYear(inp).ordinaryTaxableIncome,
+      };
+    },
+  },
+  {
+    id: "playground-chip-fill-gains-dont-shrink",
+    kind: "tax",
+    note: "Playground chip fill, gains stack on top (hand-derived): 2026 MFJ, ages 55/44, interest $5,000 plus qualified dividends $50,000; the 12% chip. Qualified dividends ride the gains staircase — they do NOT consume ordinary bracket room — so the fill is $128,000, IDENTICAL to the interest-only chip case, even though MAGI is $50,000 higher ($183,000) and total taxable income is $150,800 (ordinary $100,800 + gains $50,000). The gains price on top: ordinary taxable income $100,800 is past the $98,900 0% gains ceiling, so the whole $50,000 prices at 15% = $7,500, and federal tax is $11,600 + $7,500 = $19,100.",
+    expected: {
+      fill: 128000,
+      magi: 183000,
+      taxableIncome: 150800,
+      ordinaryTaxableIncome: 100800,
+      ltcgTax: 7500,
+      federalTax: 19100,
+      landingBracketPct: 12,
+      landingExactlyFilled: 1,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 50000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const fill = solvePlaygroundBracketFill(inp, 12);
+      const r = pricePlaygroundYear({ ...inp, conversion: fill });
+      return {
+        fill,
+        magi: r.magi,
+        taxableIncome: r.taxableIncome,
+        ordinaryTaxableIncome: r.ordinaryTaxableIncome,
+        ltcgTax: r.ltcgTax,
+        federalTax: r.federalTax,
+        landingBracketPct: r.landingBracketPct,
+        landingExactlyFilled: r.landingExactlyFilled ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "playground-chip-fill-balance-cap",
+    kind: "tax",
+    note: "Playground chip fill capped by the balance (hand-derived): 2026 MFJ, ages 57/46, interest $5,000, prior-Dec-31 pre-tax balance $50,000 (no RMD at 57 — RMD age is 75 for a 1969 birth year); the 12% chip. The exact fill would be $128,000 (the interest-only case), but only $50,000 can come out of the balance, so the chip sets that maximum instead of an amount the tab would flag as over the balance: at $50,000 the landing is the 10% bracket with $24,800 − $22,800 = $2,000 of room left in it, and the over-balance watch-out stays off.",
+    expected: {
+      fill: 50000,
+      ordinaryTaxableIncome: 22800,
+      landingBracketPct: 10,
+      landingRoomLeft: 2000,
+      exceedsBalance: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 57,
+        ageSpouse: 46,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 50000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const fill = solvePlaygroundBracketFill(inp, 12);
+      const r = pricePlaygroundYear({ ...inp, conversion: fill });
+      return {
+        fill,
+        ordinaryTaxableIncome: r.ordinaryTaxableIncome,
+        landingBracketPct: r.landingBracketPct,
+        landingRoomLeft: r.landingRoomLeft,
+        exceedsBalance: r.conversionExceedsBalance ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "playground-gains-flag-aca-flip",
+    kind: "tax",
+    note: "Playground gains flag, ACA cliff flip (a hand-derived reference case): 2026 MFJ, ages 55/44, neither on Medicare, interest $5,000 + ordinary dividends $2,000 + conversion $126,000 = $133,000, plus a sale of $30,000 with a $10,000 basis — a $20,000 gain — for MAGI $153,000. Household of 5 cliff is $150,600 (2025 guidelines), so the year is over by $2,400. Priced without the gains stack, MAGI is $133,000 — under by $17,600 — and at 353% of FPL the applicable percentage is the flat 9.96%, so the counterfactual credit at the $20,000 benchmark is $20,000 − 9.96% × $133,000 = $22,000 − $13,246.80 = $8,753.20. The flag must fire with exactly those counterfactual figures; with no benchmark entered the same flag fires with NO credit figure (null in both runs). Nobody is on Medicare, so no IRMAA flag.",
+    expected: {
+      magi: 153000,
+      positionDollars: -2400,
+      gainsStack: 20000,
+      withoutMagi: 133000,
+      withoutAcaMagi: 133000,
+      withoutPositionDollars: 17600,
+      withoutCredit: 6753.2,
+      acaFlagKind: "flipped-over",
+      acaFlagText:
+        "Over the cliff by $2,400 — the $20,000 gain is what put you over; without it you'd be under by $17,600 and the credit would be $6,753.",
+      noBenchmarkWithoutCredit: null,
+      noBenchmarkTypedCredit: null,
+      noBenchmarkFlagText:
+        "Over the cliff by $2,400 — the $20,000 gain is what put you over; without it you'd be under by $17,600.",
+      irmaaFlag: null,
+      helperFlagText:
+        "Over the cliff by $2,400 — the $20,000 gain is what put you over; without it you'd be under by $17,600 and the credit would be $6,753.",
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        stateRatePct: 0,
+      };
+      const r = pricePlaygroundYear({ ...base, acaBenchmarkAnnual: 20000 });
+      const rn = pricePlaygroundYear({ ...base, acaBenchmarkAnnual: null });
+      const f = r.gainsFlags.acaFlag;
+      return {
+        magi: r.magi,
+        positionDollars: r.aca.positionDollars,
+        gainsStack: r.gainsFlags.gainsStack,
+        withoutMagi: r.gainsFlags.withoutMagi,
+        withoutAcaMagi: r.gainsFlags.withoutAcaMagi,
+        withoutPositionDollars: f?.withoutPositionDollars ?? null,
+        withoutCredit: f?.withoutCredit ?? null,
+        acaFlagKind: f?.kind ?? null,
+        acaFlagText: f?.text ?? null,
+        noBenchmarkWithoutCredit: rn.gainsFlags.acaFlag?.withoutCredit ?? null,
+        noBenchmarkTypedCredit: rn.gainsFlags.acaFlag?.typedCredit ?? null,
+        noBenchmarkFlagText: rn.gainsFlags.acaFlag?.text ?? null,
+        irmaaFlag: r.gainsFlags.irmaaFlag?.kind ?? null,
+        helperFlagText:
+          playgroundGainsComparison({ ...base, acaBenchmarkAnnual: 20000 })
+            .acaFlag?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-gains-flag-irmaa-flip",
+    kind: "tax",
+    note: "Playground gains flag, IRMAA tier flip (hand-derived): 2026 MFJ, both on Medicare (ages 67/66), other ordinary income $210,000 plus a $20,000 sale gain ($30,000 sold, $10,000 basis) — MAGI $230,000 with the gain, $210,000 without it. The 2026 MFJ Tier 0 ceiling is $218,000, so the gain alone crosses the line: Tier 1 with it, Tier 0 (no surcharge) without, the tier paid in 2028. Everyone is on Medicare, so no ACA flag.",
+    expected: {
+      magi: 230000,
+      tier: 1,
+      withoutMagi: 210000,
+      withoutTier: 0,
+      irmaaFlagKind: "tier-up",
+      line: 218000,
+      premiumYear: 2028,
+      irmaaFlagText:
+        "Tier 1 for 2028 — the $20,000 gain pushed you past the $218,000 line; without it, no surcharge (Tier 0).",
+      acaFlag: null,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 67,
+        ageSpouse: 66,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 210000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      const f = r.gainsFlags.irmaaFlag;
+      return {
+        magi: r.magi,
+        tier: r.irmaa.tier,
+        withoutMagi: r.gainsFlags.withoutMagi,
+        withoutTier: r.gainsFlags.withoutTier,
+        irmaaFlagKind: f?.kind ?? null,
+        line: f?.line ?? null,
+        premiumYear: f?.premiumYear ?? null,
+        irmaaFlagText: f?.text ?? null,
+        acaFlag: r.gainsFlags.acaFlag?.kind ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-gains-flag-silent-controls",
+    kind: "tax",
+    note: "Playground gains flag, silence controls (hand-derived): (a) a $20,000 gain moving MAGI from $30,000 to $50,000 in a non-Medicare household of 5 with NO benchmark entered — both runs far under the $150,600 cliff and no credit priced in either, so NO flag even though gains were typed; (b) the same $20,000 gain moving MAGI from $230,000 to $250,000 for a Medicare couple — Tier 1 in both runs ($218,000–$274,000), so NO IRMAA flag; (c) no gains typed at all in the reference case's shape (conversion $126,000, benchmark $20,000) — NO flag of either kind.",
+    expected: {
+      controlMagi: 50000,
+      controlWithoutMagi: 30000,
+      controlAcaFlag: null,
+      controlIrmaaFlag: null,
+      sameTierMagi: 250000,
+      sameTierWithoutMagi: 230000,
+      sameTier: 1,
+      sameTierWithout: 1,
+      sameTierIrmaaFlag: null,
+      noGainsHasTyped: 0,
+      noGainsAcaFlag: null,
+      noGainsIrmaaFlag: null,
+    },
+    actual: () => {
+      const a = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 25000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      const b = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 67,
+        ageSpouse: 66,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 230000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      const c = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 20000,
+        stateRatePct: 0,
+      });
+      return {
+        controlMagi: a.magi,
+        controlWithoutMagi: a.gainsFlags.withoutMagi,
+        controlAcaFlag: a.gainsFlags.acaFlag?.kind ?? null,
+        controlIrmaaFlag: a.gainsFlags.irmaaFlag?.kind ?? null,
+        sameTierMagi: b.magi,
+        sameTierWithoutMagi: b.gainsFlags.withoutMagi,
+        sameTier: b.irmaa.tier,
+        sameTierWithout: b.gainsFlags.withoutTier,
+        sameTierIrmaaFlag: b.gainsFlags.irmaaFlag?.kind ?? null,
+        noGainsHasTyped: c.gainsFlags.hasGainsTyped ? 1 : 0,
+        noGainsAcaFlag: c.gainsFlags.acaFlag?.kind ?? null,
+        noGainsIrmaaFlag: c.gainsFlags.irmaaFlag?.kind ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-gains-flag-credit-shrink",
+    kind: "tax",
+    note: "Playground gains flag, credit shrinks with no cliff flip (hand-derived): 2026 MFJ, ages 55/44, interest $5,000 + ordinary dividends $2,000 + conversion $113,000 = $120,000, plus a $20,000 sale gain — MAGI $140,000 with the gain, $120,000 without. Both are under the household-of-5 cliff ($150,600) and both sit in the 300–400% FPL band where the applicable percentage is the flat 9.96%, so the credits at the $20,000 benchmark are $20,000 − 9.96% × $140,000 = $8,056 with the gain and $20,000 − 9.96% × $120,000 = $10,048 without it. No flip, but the credit changed, so the flag fires naming both figures.",
+    expected: {
+      magi: 140000,
+      withoutMagi: 120000,
+      typedCredit: 6056,
+      withoutCredit: 8048,
+      typedOverCliff: 0,
+      withoutOverCliff: 0,
+      acaFlagKind: "credit-changed",
+      acaFlagText:
+        "The $20,000 gain shrank the credit — $6,056 with it, $8,048 without it.",
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 113000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 20000,
+        stateRatePct: 0,
+      });
+      const f = r.gainsFlags.acaFlag;
+      return {
+        magi: r.magi,
+        withoutMagi: r.gainsFlags.withoutMagi,
+        typedCredit: r.aca.credit,
+        withoutCredit: f?.withoutCredit ?? null,
+        typedOverCliff: r.aca.overCliff ? 1 : 0,
+        withoutOverCliff: f?.withoutOverCliff ? 1 : 0,
+        acaFlagKind: f?.kind ?? null,
+        acaFlagText: f?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-sale-after-tax-anchor",
+    kind: "tax",
+    note: "Playground sale-after-tax line, anchor (the user's verified case, hand-derived): 2026 MFJ, ages 55/44, interest $5,000 + ordinary dividends $2,000 + conversion $126,000 = $133,000 ordinary, plus a $30,000 sale with a $10,000 basis — a $20,000 gain — for AGI $153,000. Taxable income $153,000 − $32,200 standard deduction = $120,800; ordinary tax 10% × $24,800 + 12% × $76,000 = $11,600; the gain rides at 15% (ordinary income already past the $98,900 0% top) = $3,000; total federal tax $14,600, no state tax. The line nets that total against the sale's cash: $30,000 − $14,600 = $15,400 left. The helper accessor must return the identical line.",
+    expected: {
+      federalTax: 14600,
+      proceeds: 30000,
+      totalTax: 14600,
+      leftover: 15400,
+      text: "Sale brought in $30,000. After this year's total tax of $14,600, $15,400 of it is left.",
+      helperText:
+        "Sale brought in $30,000. After this year's total tax of $14,600, $15,400 of it is left.",
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const r = pricePlaygroundYear(inp);
+      const s = r.saleAfterTax;
+      return {
+        federalTax: r.federalTax,
+        proceeds: s?.proceeds ?? null,
+        totalTax: s?.totalTax ?? null,
+        leftover: s?.leftover ?? null,
+        text: s?.text ?? null,
+        helperText: playgroundSaleAfterTax(inp)?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-sale-after-tax-state",
+    kind: "tax",
+    note: "Playground sale-after-tax line, state tax included (hand-derived): the anchor case plus a typed 5% state rate. State tax is the plan's flat model — 5% × taxable income $120,800 = $6,040 — so the year's TOTAL tax is $14,600 + $6,040 = $20,640 and the line must net that full figure (never calling it federal): $30,000 − $20,640 = $9,360 left.",
+    expected: {
+      taxableIncome: 120800,
+      stateTax: 6040,
+      proceeds: 30000,
+      totalTax: 20640,
+      leftover: 9360,
+      text: "Sale brought in $30,000. After this year's total tax of $20,640, $9,360 of it is left.",
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 5,
+      });
+      const s = r.saleAfterTax;
+      return {
+        taxableIncome: r.taxableIncome,
+        stateTax: r.stateTax,
+        proceeds: s?.proceeds ?? null,
+        totalTax: s?.totalTax ?? null,
+        leftover: s?.leftover ?? null,
+        text: s?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-sale-after-tax-negative",
+    kind: "tax",
+    note: "Playground sale-after-tax line, tax exceeds the proceeds (hand-derived): the anchor's ordinary stack (interest $5,000 + ordinary dividends $2,000 + conversion $126,000) beside a break-even $10,000 sale ($10,000 basis — no gain, so no gains tax). Ordinary tax on taxable income $100,800 is 10% × $24,800 + 12% × $76,000 = $11,600, which is $1,600 MORE than the sale brought in. The sentence must say so plainly instead of printing a negative amount 'left'.",
+    expected: {
+      stockGain: 0,
+      federalTax: 11600,
+      proceeds: 10000,
+      totalTax: 11600,
+      leftover: -1600,
+      text: "Sale brought in $10,000. This year's total tax is $11,600 — $1,600 more than the sale brought in.",
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 10000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      const s = r.saleAfterTax;
+      return {
+        stockGain: r.stockGain,
+        federalTax: r.federalTax,
+        proceeds: s?.proceeds ?? null,
+        totalTax: s?.totalTax ?? null,
+        leftover: s?.leftover ?? null,
+        text: s?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-sale-after-tax-loss",
+    kind: "tax",
+    note: "Playground sale-after-tax line, loss sale (hand-derived): the anchor's ordinary stack beside a $30,000 sale with a $40,000 basis — a $10,000 long-term loss. The loss prices as $0 of gains (it offsets nothing here; no qualified dividends), so the year's tax is the ordinary $11,600 on taxable income $100,800, but the proceeds are still the full $30,000 of cash the sale brought in: $30,000 − $11,600 = $18,400 left.",
+    expected: {
+      stockGain: -10000,
+      capitalLoss: 10000,
+      federalTax: 11600,
+      proceeds: 30000,
+      totalTax: 11600,
+      leftover: 18400,
+      text: "Sale brought in $30,000. After this year's total tax of $11,600, $18,400 of it is left.",
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 30000,
+        stockBasis: 40000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      const s = r.saleAfterTax;
+      return {
+        stockGain: r.stockGain,
+        capitalLoss: r.capitalLoss,
+        federalTax: r.federalTax,
+        proceeds: s?.proceeds ?? null,
+        totalTax: s?.totalTax ?? null,
+        leftover: s?.leftover ?? null,
+        text: s?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-sale-after-tax-zero-tax",
+    kind: "tax",
+    note: "Playground sale-after-tax line, zero tax (hand-derived): a $30,000 sale with a $10,000 basis and nothing else typed — the $20,000 gain fits inside the $32,200 MFJ standard deduction, so the year's total tax is $0 and the whole $30,000 is left.",
+    expected: {
+      federalTax: 0,
+      proceeds: 30000,
+      totalTax: 0,
+      leftover: 30000,
+      text: "Sale brought in $30,000. After this year's total tax of $0, $30,000 of it is left.",
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      const s = r.saleAfterTax;
+      return {
+        federalTax: r.federalTax,
+        proceeds: s?.proceeds ?? null,
+        totalTax: s?.totalTax ?? null,
+        leftover: s?.leftover ?? null,
+        text: s?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-sale-after-tax-cents-state-displayed-sum",
+    kind: "tax",
+    note: "Playground sale-after-tax line, cents + state — the total must be the SUM OF THE DISPLAYED COMPONENTS, not the rounding of the raw sum (the pass-1 counterexamples, hand-derived): 2026 MFJ, ages 55/44, no dividends, a $30,000 sale with a $10,000 basis (a $20,000 gain), 5% state rate. Case A — interest $5,111.39 + conversion $120,275.31: taxable income $113,186.70, federal tax $12,829.41 (displays $12,829), state tax $5,659.34 (displays $5,659); rounding the raw sum would give $18,489, but the line must print the displayed sum $12,829 + $5,659 = $18,488, leaving $30,000 − $18,488 = $11,512. Case B — interest $5,222.78 + conversion $120,550.62: taxable income $113,573.40, federal tax $12,933.82 (displays $12,934), state tax $5,678.67 (displays $5,679); the line must print $12,934 + $5,679 = $18,613, leaving $30,000 − $18,613 = $11,387.",
+    expected: {
+      aFederalTax: 12829.41,
+      aStateTax: 5659.34,
+      aFederalDisplayed: 12829,
+      aStateDisplayed: 5659,
+      aProceeds: 30000,
+      aTotalTax: 18488,
+      aLeftover: 11512,
+      aText: "Sale brought in $30,000. After this year's total tax of $18,488, $11,512 of it is left.",
+      bFederalTax: 12933.82,
+      bStateTax: 5678.67,
+      bFederalDisplayed: 12934,
+      bStateDisplayed: 5679,
+      bProceeds: 30000,
+      bTotalTax: 18613,
+      bLeftover: 11387,
+      bText: "Sale brought in $30,000. After this year's total tax of $18,613, $11,387 of it is left.",
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 5,
+      };
+      const a = pricePlaygroundYear({
+        ...base,
+        interest: 5111.39,
+        conversion: 120275.31,
+      });
+      const b = pricePlaygroundYear({
+        ...base,
+        interest: 5222.78,
+        conversion: 120550.62,
+      });
+      return {
+        aFederalTax: a.federalTax,
+        aStateTax: a.stateTax,
+        aFederalDisplayed: Math.round(a.federalTax),
+        aStateDisplayed: Math.round(a.stateTax),
+        aProceeds: a.saleAfterTax?.proceeds ?? null,
+        aTotalTax: a.saleAfterTax?.totalTax ?? null,
+        aLeftover: a.saleAfterTax?.leftover ?? null,
+        aText: a.saleAfterTax?.text ?? null,
+        bFederalTax: b.federalTax,
+        bStateTax: b.stateTax,
+        bFederalDisplayed: Math.round(b.federalTax),
+        bStateDisplayed: Math.round(b.stateTax),
+        bProceeds: b.saleAfterTax?.proceeds ?? null,
+        bTotalTax: b.saleAfterTax?.totalTax ?? null,
+        bLeftover: b.saleAfterTax?.leftover ?? null,
+        bText: b.saleAfterTax?.text ?? null,
+      };
+    },
+  },
+  {
+    id: "playground-sale-after-tax-no-sale",
+    kind: "tax",
+    note: "Playground sale-after-tax line, no-sale controls: (a) $20,000 of qualified dividends typed with NO stock sale — dividends alone never trigger the line, it is about sale cash; (b) the anchor's ordinary stack with no sale and no dividends at all. Both runs must carry NO line (null), so the Tax block renders exactly as before.",
+    expected: {
+      qdOnlyText: null,
+      qdOnlyProceeds: null,
+      plainText: null,
+      helperText: null,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 0,
+        stockBasis: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const qdOnly = pricePlaygroundYear({ ...base, qualifiedDividends: 20000 });
+      const plain = pricePlaygroundYear({ ...base, qualifiedDividends: 0 });
+      return {
+        qdOnlyText: qdOnly.saleAfterTax?.text ?? null,
+        qdOnlyProceeds: qdOnly.saleAfterTax?.proceeds ?? null,
+        plainText: plain.saleAfterTax?.text ?? null,
+        helperText:
+          playgroundSaleAfterTax({ ...base, qualifiedDividends: 20000 })?.text ??
+          null,
+      };
+    },
+  },
+  {
+    id: "workyears-stack-56-59",
+    kind: "tax",
+    note: "Work-year stack at 56–59 (hand-derived from the 2026 law row): MFJ, salary $425,000, employer $0/$0. Deferral = min($24,500 elective limit, salary) pre-tax; catch-up $8,000 (50+) is ROTH because salary $425,000 > the $150,000 Roth catch-up wage threshold; mega backdoor = $72,000 §415(c) − $24,500 − $8,000 − $0 = $39,500 Roth; HSA = family $8,750 + 55+ catch-up $1,000 = $9,750, all the employee's own through payroll. Total sheltered $81,750. Taxable wages = $425,000 − $24,500 − $9,750 = $390,750; federal tax via priceYear (taxable income $358,550: $2,480 + $9,120 + $24,332 + 24% × $147,150 = $35,316) = $71,248. FICA wages = $425,000 − $9,750 = $415,250 → 6.2% × $184,500 wage base $11,439 + 1.45% × $415,250 $6,021.13 + 0.9% × ($415,250 − $250,000) $1,487.25 = $18,947.38. Surplus = $425,000 − $71,248 − $18,947.38 − $150,000 spending − $81,750 own contributions = $95,622.54. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $8,000 catch-up is excluded from §415(c) annual additions, so it no longer nets against the mega-backdoor room in the derivation above — mega = $72,000 − $24,500 = $47,500, total sheltered $89,750, and surplus falls by the extra $8,000 sheltered, to $95,054.62.)",
+    expected: {
+      deferral: 24500,
+      catchUp: 8000,
+      catchUpIsRoth: 1,
+      mega: 47500,
+      ownHsa: 9750,
+      hsaBucket: 9750,
+      sheltered: 89750,
+      taxableWages: 390750,
+      federal: 71248,
+      ficaWages: 415250,
+      fica: 18947.38,
+      surplus: 95054.62,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 425000, employer401k: 0, employerHsa: 0 },
+        56,
+      );
+      const s = line.stack;
+      return {
+        deferral: s.deferral,
+        catchUp: s.catchUp,
+        catchUpIsRoth: s.catchUpIsRoth ? 1 : 0,
+        mega: s.mega,
+        ownHsa: s.ownHsa,
+        hsaBucket: s.hsaBucket,
+        sheltered: s.deferral + s.catchUp + s.mega + s.hsaBucket,
+        taxableWages: line.taxableWages,
+        federal: line.federalTax,
+        ficaWages: line.ficaWages,
+        fica: line.fica,
+        surplus: line.surplus,
+      };
+    },
+  },
+  {
+    id: "workyears-super-catchup-60-61",
+    kind: "tax",
+    note: "Super catch-up at 60–61 (SECURE 2.0 §414(v)): the 60–63 catch-up limit is $11,250 (Roth at this salary, as in the 56–59 case), so the mega backdoor shrinks to $72,000 − $24,500 − $11,250 = $36,250 and the total sheltered stays $81,750. Taxable wages / federal / FICA / surplus are unchanged from the 56–59 case (the catch-up is Roth either way, so it never touched taxable wages). Pinned at both 60 and 61 (calendar 2030/2031 price under the latest law row, 2030). (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $11,250 super catch-up is excluded from §415(c) annual additions, so the shrinkage described above no longer happens — the mega backdoor stays $47,500 at 60 and 61, total sheltered rises to $93,000, and surplus falls by the extra $11,250 sheltered, to $91,804.62.)",
+    expected: {
+      catchUp60: 11250,
+      mega60: 47500,
+      sheltered60: 93000,
+      surplus60: 91804.62,
+      catchUp61: 11250,
+      mega61: 47500,
+      sheltered61: 93000,
+      surplus61: 91804.62,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const job: WorkYearJob = { salary: 425000, employer401k: 0, employerHsa: 0 };
+      const l60 = priceOneWorkYear(plan, job, 60);
+      const l61 = priceOneWorkYear(plan, job, 61);
+      const sheltered = (l: typeof l60) =>
+        l.stack.deferral + l.stack.catchUp + l.stack.mega + l.stack.hsaBucket;
+      return {
+        catchUp60: l60.stack.catchUp,
+        mega60: l60.stack.mega,
+        sheltered60: sheltered(l60),
+        surplus60: l60.surplus,
+        catchUp61: l61.stack.catchUp,
+        mega61: l61.stack.mega,
+        sheltered61: sheltered(l61),
+        surplus61: l61.surplus,
+      };
+    },
+  },
+  {
+    id: "workyears-employer-displacement",
+    kind: "tax",
+    note: "Employer displacement (the user's example figures): employer 401(k) $16,250 (match $12,250 + catch-up match $4,000) and employer HSA $1,500 at salary $425,000. The caps were already full, so employer money REPLACES the employee's: mega backdoor = $72,000 − $24,500 − $8,000 − $16,250 = $23,250 at 56–59 and $72,000 − $24,500 − $11,250 − $16,250 = $20,000 at 60–61; own HSA = $9,750 − $1,500 = $8,250, HSA bucket still $9,750. Taxable wages rise to $425,000 − $24,500 − $8,250 = $392,250 → federal $71,248 + 24% × $1,500 = $71,608. FICA wages $416,750 → $11,439 + $6,042.88 + $1,500.75 = $18,982.63. Surplus = $425,000 − $71,608 − $18,982.63 − $150,000 − $64,000 own contributions = $112,977.29; total inflow (all contributions $81,750 + surplus) = $202,159.37. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): with the catch-up excluded from §415(c) annual additions, the mega backdoor is $72,000 − $24,500 − $16,250 employer = $31,250 at BOTH 56–59 and 60–61 (not $23,250 / $20,000); own contributions rise $8,000, so surplus falls to $112,409.37 while total inflow is unchanged at $202,159.37.)",
+    expected: {
+      mega56: 31250,
+      mega60: 31250,
+      ownHsa: 8250,
+      hsaBucket: 9750,
+      taxableWages: 392250,
+      federal: 71608,
+      fica: 18982.63,
+      surplus: 112409.37,
+      totalInflow: 202159.37,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const job: WorkYearJob = { salary: 425000, employer401k: 16250, employerHsa: 1500 };
+      const l56 = priceOneWorkYear(plan, job, 56);
+      const l60 = priceOneWorkYear(plan, job, 60);
+      const contributions =
+        l56.stack.deferral +
+        l56.stack.catchUp +
+        l56.stack.mega +
+        l56.stack.employer401k +
+        l56.stack.hsaBucket;
+      return {
+        mega56: l56.stack.mega,
+        mega60: l60.stack.mega,
+        ownHsa: l56.stack.ownHsa,
+        hsaBucket: l56.stack.hsaBucket,
+        taxableWages: l56.taxableWages,
+        federal: l56.federalTax,
+        fica: l56.fica,
+        surplus: l56.surplus,
+        totalInflow: Math.round((contributions + l56.surplus) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "workyears-fica-edges",
+    kind: "tax",
+    note: "FICA edges (hand-derived): (a) MFJ salary $100,000 — own HSA $9,750, FICA wages $90,250 are UNDER the $184,500 wage base, so the cap never bites: 6.2% × $90,250 = $5,595.50 + 1.45% × $90,250 = $1,308.63 → $6,904.13, and no Additional Medicare Tax (under the $250,000 MFJ threshold). (b) Single salary $300,000 — self-only HSA $5,400 ($4,400 + $1,000), FICA wages $294,600: Social Security caps at 6.2% × $184,500 = $11,439, Medicare 1.45% × $294,600 = $4,271.70, Additional Medicare uses the SINGLE $200,000 threshold: 0.9% × $94,600 = $851.40 → $16,562.10.",
+    expected: {
+      mfjWages: 90250,
+      mfjFica: 6904.13,
+      singleHsaLimit: 5400,
+      singleWages: 294600,
+      singleFica: 16562.1,
+    },
+    actual: () => {
+      const mfj = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1970,
+          birthYearSpouse: 1981,
+          annualSpending: 150000,
+          retirementAge: 56,
+          windowStartAge: 56,
+        }),
+        { salary: 100000, employer401k: 0, employerHsa: 0 },
+        56,
+      );
+      const single = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1970,
+          birthYearSpouse: null,
+          filingStatus: "single",
+          annualSpending: 150000,
+          retirementAge: 56,
+          windowStartAge: 56,
+        }),
+        { salary: 300000, employer401k: 0, employerHsa: 0 },
+        56,
+      );
+      return {
+        mfjWages: mfj.ficaWages,
+        mfjFica: mfj.fica,
+        singleHsaLimit: single.stack.hsaLimit,
+        singleWages: single.ficaWages,
+        singleFica: single.fica,
+      };
+    },
+  },
+  {
+    id: "workyears-catchup-pretax",
+    kind: "tax",
+    note: "Catch-up priced PRE-TAX under the wage threshold: salary $100,000 ≤ $150,000, so the $8,000 catch-up is pre-tax and reduces taxable wages. MFJ: taxable wages = $100,000 − $24,500 − $8,000 − $9,750 = $57,750 → taxable income $25,550 → federal $2,480 + 12% × $750 = $2,570; FICA $6,904.13 (per the FICA-edges case). Single: HSA limit is the SELF limit $5,400, taxable wages = $100,000 − $24,500 − $8,000 − $5,400 = $62,100 → single taxable income $46,000 → federal $1,240 + 12% × $33,600 = $5,272.",
+    expected: {
+      mfjCatchUpIsRoth: 0,
+      mfjTaxableWages: 57750,
+      mfjFederal: 2570,
+      mfjFica: 6904.13,
+      singleTaxableWages: 62100,
+      singleFederal: 5272,
+    },
+    actual: () => {
+      const job: WorkYearJob = { salary: 100000, employer401k: 0, employerHsa: 0 };
+      const mfj = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1970,
+          birthYearSpouse: 1981,
+          annualSpending: 150000,
+          retirementAge: 56,
+          windowStartAge: 56,
+        }),
+        job,
+        56,
+      );
+      const single = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1970,
+          birthYearSpouse: null,
+          filingStatus: "single",
+          annualSpending: 150000,
+          retirementAge: 56,
+          windowStartAge: 56,
+        }),
+        job,
+        56,
+      );
+      return {
+        mfjCatchUpIsRoth: mfj.stack.catchUpIsRoth ? 1 : 0,
+        mfjTaxableWages: mfj.taxableWages,
+        mfjFederal: mfj.federalTax,
+        mfjFica: mfj.fica,
+        singleTaxableWages: single.taxableWages,
+        singleFederal: single.federalTax,
+      };
+    },
+  },
+  {
+    id: "workyears-golden-quit-56",
+    kind: "tax",
+    note: "GOLDEN end-to-end, quit at the window-start age 56 = ZERO work years, so the row must reproduce the plain joint optimizer run on the analysis plan shape exactly (MFJ 1975/1985, spending $150,000, preserve $500,000 @ 10%, heir 22%, return 5.75%, SS $48,000 @67, spouse declared no benefit, protect $50,000, ACA household 5 with $20,000 / $15,000 benchmarks, balances pre-tax $1,800,000 / Roth $550,000 / Taxable $2,400,000 / HSA $110,000): winner “Fill to the top of the 24% bracket”, claim 62, net cost $156,321.51, after-tax ending wealth $25,626,403.68, all-in tax = net (no work years). These are the one-off analysis's own figures, now regression anchors. (Net re-pinned 2026-10-14 from $199,063.41 for the newest-row FPL fallback, hand-reconciled: the winner is the same candidate with identical tax, conversions, terminal tax, and ending wealth — only its kept ACA credits moved, +$140.13/yr in coverage 2033–2046 (14 years = +$1,961.82), so the net fell by exactly that. The joint run's Do Nothing benchmark — best Do Nothing over claiming ages — moved from $2,493,613.74 at claim 63 to $2,533,166.17 at claim 64: at claim 63 its household MAGI (Social Security claimed at 63, ≈$37,890) sits between the 2025-row household-of-5 FPL ($37,650, 100.6% — credits priced) and the 2026-row FPL ($38,680, 97.9% — below 100% FPL, credits $0), so that claiming age lost its $202,451.72 of credits and the benchmark's best age moved to 64, whose figures are unmoved. The claim-67 best on this shape moved $302,860.32 → $301,388.37, again exactly its credit delta (+$163.55/yr in 2038–2046 = +$1,471.95) with tax and terminal identical.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      workYears: 0,
+      winnerName: "Fill to the top of the 24% bracket",
+      claimAge: 62,
+      net: 156321.51,
+      afterTax: 25626403.68,
+      allIn: 156321.51,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { workYears: null, winnerName: null, claimAge: null, net: null, afterTax: null, allIn: null };
+      const row = runWorkYearsCompare(
+        plan,
+        { salary: 425000, employer401k: 0, employerHsa: 0 },
+        [56],
+      )[0];
+      return {
+        workYears: row?.workYears ?? null,
+        winnerName: row?.optimizer.winner.spec.name ?? null,
+        claimAge: row?.optimizer.winner.claimAges.primaryAge ?? null,
+        net: row?.optimizer.winner.cost.netCost ?? null,
+        afterTax: row?.endingAfterTax ?? null,
+        allIn: row?.allInTax ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-golden-work-60-no-employer",
+    kind: "tax",
+    note: "GOLDEN, work to 60 with employer $0 (4 work years, ages 56–59): balances at 60 — pre-tax $2,357,877.13, Roth $906,719.82, HSA $180,061.52 (the analysis's figures, reproduced exactly by grow-then-year-end-contributions); Taxable $3,589,252.71 — the analysis printed $3,589,252.73, a 2¢ seam from its carrying the unrounded half-cent FICA ($18,947.375) into the surplus while printing $18,947.38; the engine rounds each year's FICA to the cent like every other year figure in the app, and this case pins the engine's consistent construction. Winner net $386,045.08, after-tax ending $34,086,735.45 (analysis: $35,009,641.22 — the same 2¢ seam grown for 35 years), all-in = $386,045.08 + federal $284,992 + FICA $75,789.52 = $746,826.60 (analysis: ≈$804,200 from FICA $75,789.50 unrounded, at the analysis's $443,418.49 net). (Net and all-in re-pinned 2026-10-14 from $443,418.49 / $804,200.01 for the newest-row FPL fallback, hand-reconciled: same winner “Fill to the top of the 32% bracket” at claim 65 with identical tax, IRMAA, terminal, conversions, and ending wealth — only kept ACA credits moved, +$172.18 in 2035 and +$179.36/yr in 2036–2046 = +$2,145.14.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $47,500 rather than $39,500 — the $8,000 catch-up no longer nets against the §415(c) room — so $8,000/yr more lands in Roth and $8,000/yr less banks to Taxable: Roth at 60 is $929,726.92 and Taxable at 60 is $3,415,748.78 (a $34,867.32 shift, the $8,000/yr grown at 5.75%); winner, net, and after-tax ending are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      pretaxAt60: 2357877.13,
+      rothAt60: 929726.92,
+      taxableAt60: 3415748.78,
+      hsaAt60: 180061.52,
+      federalTotal: 284992,
+      ficaTotal: 75789.52,
+      net: 386045.08,
+      afterTax: 34086735.45,
+      allIn: 746826.6,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { pretaxAt60: null, rothAt60: null, taxableAt60: null, hsaAt60: null, federalTotal: null, ficaTotal: null, net: null, afterTax: null, allIn: null };
+      const job: WorkYearJob = { salary: 425000, employer401k: 0, employerHsa: 0 };
+      const roll = rollWorkYears(plan, job, 60);
+      const row = runWorkYearsCompare(plan, job, [60])[0];
+      return {
+        pretaxAt60: roll.balances.pretax,
+        rothAt60: roll.balances.roth,
+        taxableAt60: roll.balances.taxable,
+        hsaAt60: roll.balances.hsa,
+        federalTotal: roll.totals.federal,
+        ficaTotal: roll.totals.fica,
+        net: row?.optimizer.winner.cost.netCost ?? null,
+        afterTax: row?.endingAfterTax ?? null,
+        allIn: row?.allInTax ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-golden-work-62-no-employer",
+    kind: "tax",
+    note: "GOLDEN, work to 62 with employer $0 (6 work years): winner “Fill to the top of the 24% bracket”, claim 69, net $544,573.72, after-tax ending $38,629,259.08 (analysis: $39,663,955.44 — the same half-cent FICA rounding seam as the work-to-60 case, grown), all-in $1,085,746.00 (analysis: ≈$1,158,215, stated rounded to the dollar, at the analysis's $617,042.28 net). (Net and all-in re-pinned 2026-10-14 from $617,042.28 / $1,158,214.56 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      winnerName: "Fill to the top of the 24% bracket",
+      claimAge: 69,
+      net: 544573.72,
+      afterTax: 38629259.08,
+      allIn: 1085746,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { winnerName: null, claimAge: null, net: null, afterTax: null, allIn: null };
+      const row = runWorkYearsCompare(
+        plan,
+        { salary: 425000, employer401k: 0, employerHsa: 0 },
+        [62],
+      )[0];
+      return {
+        winnerName: row?.optimizer.winner.spec.name ?? null,
+        claimAge: row?.optimizer.winner.claimAges.primaryAge ?? null,
+        net: row?.optimizer.winner.cost.netCost ?? null,
+        afterTax: row?.endingAfterTax ?? null,
+        allIn: row?.allInTax ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-golden-work-60-employer",
+    kind: "tax",
+    note: "GOLDEN, work to 60 WITH the example employer figures ($16,250 401(k) / $1,500 HSA): balances at 60 — pre-tax $2,428,701.38, Roth $835,895.57, Taxable $3,664,891.92, HSA $180,061.52 (the analysis's figures, all exact). Winner “Fill to the top of the 24% bracket”, claim 66, net $410,260.22, after-tax ending $35,489,154.78 (exact); all-in $772,622.74 (analysis: $829,544.09 at its $467,181.59 net — the 2¢ half-cent FICA seam: $18,982.625/yr carried unrounded there, rounded to the cent here). (Net and all-in re-pinned 2026-10-14 from $467,181.59 / $829,544.11 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,793.99 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $31,250 rather than $23,250 — the catch-up no longer nets against the §415(c) room — so Roth at 60 is $858,902.67 and Taxable at 60 is $3,491,387.98. The after-tax ending value of $34,516,787.14 (up $0.07) is an engine-produced downstream re-price of the shifted age-60 balances, not hand-derived; the winner, claim age, and net are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      pretaxAt60: 2428701.38,
+      rothAt60: 858902.67,
+      taxableAt60: 3491387.98,
+      hsaAt60: 180061.52,
+      winnerName: "Fill to the top of the 24% bracket",
+      claimAge: 66,
+      net: 410260.22,
+      afterTax: 34516787.14,
+      allIn: 772622.74,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { pretaxAt60: null, rothAt60: null, taxableAt60: null, hsaAt60: null, winnerName: null, claimAge: null, net: null, afterTax: null, allIn: null };
+      const job: WorkYearJob = { salary: 425000, employer401k: 16250, employerHsa: 1500 };
+      const roll = rollWorkYears(plan, job, 60);
+      const row = runWorkYearsCompare(plan, job, [60])[0];
+      return {
+        pretaxAt60: roll.balances.pretax,
+        rothAt60: roll.balances.roth,
+        taxableAt60: roll.balances.taxable,
+        hsaAt60: roll.balances.hsa,
+        winnerName: row?.optimizer.winner.spec.name ?? null,
+        claimAge: row?.optimizer.winner.claimAges.primaryAge ?? null,
+        net: row?.optimizer.winner.cost.netCost ?? null,
+        afterTax: row?.endingAfterTax ?? null,
+        allIn: row?.allInTax ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-golden-work-62-employer",
+    kind: "tax",
+    note: "GOLDEN, work to 62 WITH employer figures: winner “Fill to the top of the 24% bracket”, claim 70, net $582,483.94, after-tax ending $39,241,837.23 (exact); all-in $1,126,027.72 (analysis: $1,199,809.30 at its $656,265.55 net — the 3¢ half-cent FICA seam over 6 years). (Net and all-in re-pinned 2026-10-14 from $656,265.55 / $1,199,809.33 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      winnerName: "Fill to the top of the 24% bracket",
+      claimAge: 70,
+      net: 582483.94,
+      afterTax: 39241837.23,
+      allIn: 1126027.72,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { winnerName: null, claimAge: null, net: null, afterTax: null, allIn: null };
+      const row = runWorkYearsCompare(
+        plan,
+        { salary: 425000, employer401k: 16250, employerHsa: 1500 },
+        [62],
+      )[0];
+      return {
+        winnerName: row?.optimizer.winner.spec.name ?? null,
+        claimAge: row?.optimizer.winner.claimAges.primaryAge ?? null,
+        net: row?.optimizer.winner.cost.netCost ?? null,
+        afterTax: row?.endingAfterTax ?? null,
+        allIn: row?.allInTax ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-zero-salary",
+    kind: "tax",
+    note: "Zero-salary case: with no salary entered there is no stack and no FICA at ANY quit age — every quit-age row is the no-work run itself. On the golden plan shape, quit 56 and quit 60 with salary $0 both price 0 work years, a $0 ledger, and the quit-56 golden winner / net / all-in ($156,321.51, re-pinned 2026-10-14 with the quit-56 golden row for the newest-row FPL fallback) bit for bit. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      years56: 0,
+      years60: 0,
+      federal60: 0,
+      fica60: 0,
+      banked60: 0,
+      net56: 156321.51,
+      net60: 156321.51,
+      allIn60: 156321.51,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { years56: null, years60: null, federal60: null, fica60: null, banked60: null, net56: null, net60: null, allIn60: null };
+      const rows = runWorkYearsCompare(
+        plan,
+        { salary: 0, employer401k: 0, employerHsa: 0 },
+        [56, 60],
+      );
+      const r56 = rows[0];
+      const r60 = rows[1];
+      return {
+        years56: r56?.workYears ?? null,
+        years60: r60?.workYears ?? null,
+        federal60: r60?.roll.totals.federal ?? null,
+        fica60: r60?.roll.totals.fica ?? null,
+        banked60: r60?.roll.totals.banked ?? null,
+        net56: r56?.optimizer.winner.cost.netCost ?? null,
+        net60: r60?.optimizer.winner.cost.netCost ?? null,
+        allIn60: r60?.allInTax ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-comp-cap-60k",
+    kind: "tax",
+    note: "Compensation cap at salary $60,000 (MFJ, age 56, no employer money): employee contributions cannot exceed the paycheck. Deferral = min($24,500, $60,000) = $24,500; catch-up = min($8,000, $60,000 − $24,500) = $8,000; own HSA = min($9,750 − $0, $60,000 − $24,500 − $8,000) = $9,750; mega = min($72,000 − $24,500 − $0 = $47,500 §415(c) room (catch-ups are excluded from §415(c) annual additions, so the $8,000 catch-up does not net against the room), $60,000 − $24,500 − $8,000 − $9,750 = $17,750 remaining pay) = $17,750 — remaining pay binds. Own contributions total exactly $60,000.",
+    expected: {
+      deferral: 24500,
+      catchUp: 8000,
+      ownHsa: 9750,
+      mega: 17750,
+      ownTotal: 60000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 60000, employer401k: 0, employerHsa: 0 },
+        56,
+      );
+      const s = line.stack;
+      return {
+        deferral: s.deferral,
+        catchUp: s.catchUp,
+        ownHsa: s.ownHsa,
+        mega: s.mega,
+        ownTotal: s.deferral + s.catchUp + s.ownHsa + s.mega,
+      };
+    },
+  },
+  {
+    id: "workyears-comp-cap-5k",
+    kind: "tax",
+    note: "Compensation cap at salary $5,000 (MFJ, age 56, no employer money): deferral = min($24,500, $5,000) = $5,000 takes the whole paycheck, so catch-up = min($8,000, $0) = $0, own HSA = min($9,750, $0) = $0, and mega = min(§415(c) room, $0) = $0.",
+    expected: {
+      deferral: 5000,
+      catchUp: 0,
+      ownHsa: 0,
+      mega: 0,
+      ownTotal: 5000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 5000, employer401k: 0, employerHsa: 0 },
+        56,
+      );
+      const s = line.stack;
+      return {
+        deferral: s.deferral,
+        catchUp: s.catchUp,
+        ownHsa: s.ownHsa,
+        mega: s.mega,
+        ownTotal: s.deferral + s.catchUp + s.ownHsa + s.mega,
+      };
+    },
+  },
+  {
+    id: "workyears-roth-catchup-threshold-2025",
+    kind: "tax",
+    note: "Roth catch-up wage threshold AND mandate start year for a 2025 first work year (E1 build, 2026-10-19): the 2025 threshold is $145,000 (SECURE 2.0 §603 statutory base; IRS Notice 2025-67 — $150,000 first applies to contribution year 2026), and salary $147,000 at age 55 (calendar 2025) is over it — but the catch-up is NOT Roth in 2025: the §414(v)(7) Roth mandate applies only to taxable years after 2025, and IRS Notice 2023-62's administrative transition period made pre-tax catch-up contributions permissible through 2025 even for over-threshold earners. catchUpIsRoth therefore pins 0 for a 2025 first work year (the pre-E1 engine applied the mandate from 2025 and pinned 1 — one year early). The threshold value still discriminates independently: under the previously-shipped $150,000 figure for 2025 the same salary would have priced pre-tax on the threshold test alone.",
+    expected: {
+      calendarYear: 2025,
+      catchUpIsRoth: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 5.75,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 147000, employer401k: 0, employerHsa: 0 },
+        55,
+      );
+      return {
+        calendarYear: line.calendarYear,
+        catchUpIsRoth: line.stack.catchUpIsRoth ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "workyears-employer-415c-cap",
+    kind: "tax",
+    note: "Typed employer 401(k) capped at the §415(c) room: salary $425,000, age 56, typed employer 401(k) $100,000. Deferral $24,500 + catch-up $8,000 leave $72,000 − $32,500 = $39,500 of room, so only $39,500 of employer money lands, mega floors at $0, and total additions (deferral + catch-up + landed employer + mega) are exactly the $72,000 cap — not $124,500. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the room is $72,000 − $24,500 deferral = $47,500 — the $8,000 catch-up is excluded from §415(c) annual additions and consumes no room — so $47,500 of employer money lands, mega stays $0, and the §415(c) additions proper (deferral + landed employer + mega) are exactly the $72,000 cap; this case's additions field sums the catch-up in as well, so it now reads $80,000.)",
+    expected: {
+      deferral: 24500,
+      catchUp: 8000,
+      employer401k: 47500,
+      mega: 0,
+      additions: 80000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 425000, employer401k: 100000, employerHsa: 0 },
+        56,
+      );
+      const s = line.stack;
+      return {
+        deferral: s.deferral,
+        catchUp: s.catchUp,
+        employer401k: s.employer401k,
+        mega: s.mega,
+        additions: s.deferral + s.catchUp + s.employer401k + s.mega,
+      };
+    },
+  },
+  {
+    id: "workyears-employer-hsa-over-limit",
+    kind: "tax",
+    note: "Employer HSA over the limit (ledger footing): one work year, salary $425,000, age 56, employer HSA $12,000 typed against the $9,750 family limit (incl. 55+ catch-up). Own HSA is $0 and the HSA bucket is $9,750, so employerContributions counts only the $9,750 that lands — and employee ($24,500 + $8,000 Roth catch-up + $39,500 mega + $0 own HSA = $72,000) + employer ($9,750) = totalContributions $81,750, with no seam. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the mega backdoor is $47,500 — the $8,000 catch-up no longer nets against the §415(c) room — so the employee total is $24,500 + $8,000 + $47,500 + $0 own HSA = $80,000, and totalContributions and sumBySource are $89,750.)",
+    expected: {
+      employerContributions: 9750,
+      employeeContributions: 80000,
+      totalContributions: 89750,
+      sumBySource: 89750,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 425000, employer401k: 0, employerHsa: 12000 },
+        57,
+      );
+      const t = roll.totals;
+      return {
+        employerContributions: t.employerContributions,
+        employeeContributions: t.employeeContributions,
+        totalContributions: t.totalContributions,
+        sumBySource: Math.round((t.employeeContributions + t.employerContributions) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "workyears-state-tax-line-roll",
+    kind: "tax",
+    note: "Salary-year STATE tax at a 5% rate on the golden employer shape (salary $425,000, employer 401(k) $16,250, employer HSA $1,500; the golden plan with stateRatePct 5). Age-56 line: the stack is unchanged from the employer-displacement case, so taxable wages = $425,000 − $24,500 − $8,250 = $392,250 and federal = $71,608; taxable income = $392,250 − $32,200 MFJ standard deduction = $360,050, so state tax = 5% × $360,050 = $18,002.50; FICA = $18,982.63 (as in the displacement case); surplus = $425,000 − $71,608 − $18,002.50 − $18,982.63 − $150,000 spending − $64,000 own contributions = $94,974.79. Quit-60 roll (four identical years, ages 56–59): state total = 4 × $18,002.50 = $72,010.00, federal total $286,432, FICA total $75,930.52, surplus banked = 4 × $94,974.79 = $379,899.16, banked = $327,000 contributions (unchanged) + $379,899.16 = $736,627.48 (the 0% golden banked $778,909.16 − $72,010). Balances at 60: Pre-tax / Roth / HSA are unchanged from the 0% golden employer case ($2,428,701.38 / $835,895.57 / $180,061.52 — contributions do not depend on the state rate); Taxable is re-derived from the reduced surplus stream grown at 5.75%: each year's surplus is $18,002.50 lower and the four reductions compound by (1.0575³ + 1.0575² + 1.0575 + 1) = 4.35841511, a $78,462.37 reduction, so Taxable = $3,664,891.92 − $78,462.37 = $3,586,429.55. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the stack is the corrected displacement stack — mega $31,250, own contributions $72,000 — so the age-56 surplus is $94,406.87 and the four-year surplus total is $377,627.48; banked is unchanged at $736,627.48 (contributions $359,000 + surplus $377,627.48). Balances at 60 follow the corrected golden employer case (Roth $858,902.67), and Taxable = $3,630,024.60 − $78,462.37 = $3,412,925.61 — the state-tax reduction itself is unchanged.)",
+    expected: {
+      taxableWages: 392250,
+      federal: 71608,
+      state: 18002.5,
+      fica: 18982.63,
+      surplus: 94406.87,
+      stateTotal: 72010,
+      federalTotal: 286432,
+      ficaTotal: 75930.52,
+      surplusTotal: 377627.48,
+      banked: 736627.48,
+      pretaxAt60: 2428701.38,
+      rothAt60: 858902.67,
+      taxableAt60: 3412925.61,
+      hsaAt60: 180061.52,
+    },
+    actual: () => {
+      const base = goldenWorkPlan();
+      if (!base) return { taxableWages: null, federal: null, state: null, fica: null, surplus: null, stateTotal: null, federalTotal: null, ficaTotal: null, surplusTotal: null, banked: null, pretaxAt60: null, rothAt60: null, taxableAt60: null, hsaAt60: null };
+      const plan = { ...base, stateRatePct: 5 };
+      const job: WorkYearJob = { salary: 425000, employer401k: 16250, employerHsa: 1500 };
+      const line = priceOneWorkYear(plan, job, 56);
+      const roll = rollWorkYears(plan, job, 60);
+      return {
+        taxableWages: line.taxableWages,
+        federal: line.federalTax,
+        state: line.stateTax,
+        fica: line.fica,
+        surplus: line.surplus,
+        stateTotal: roll.totals.state,
+        federalTotal: roll.totals.federal,
+        ficaTotal: roll.totals.fica,
+        surplusTotal: roll.totals.surplusBanked,
+        banked: roll.totals.banked,
+        pretaxAt60: roll.balances.pretax,
+        rothAt60: roll.balances.roth,
+        taxableAt60: roll.balances.taxable,
+        hsaAt60: roll.balances.hsa,
+      };
+    },
+  },
+  {
+    id: "workyears-state-tax-quit-60",
+    kind: "tax",
+    note: "Salary-year state tax, full quit-60 compare at a 5% state rate on the golden employer shape. Work tax = federal $286,432 + state $72,010 + FICA $75,930.52 = $434,372.52. The winner is “Fill to the top of the 35% bracket”, claim 66, and the optimizer net is NOT the 0% golden net: the same 5% rate also prices state tax in the conversion years, so the net rises to $532,596.79 — $148,425.16 above the current 0% golden net of $468,432.05 (the difference of the two current engine pins; the build-time decomposition verified that a 0% run on these same rolled balances reproduced the then-golden net to the cent, i.e. the increase is conversion-year state pricing, but that reproduction was verified under the pre-E2 table and is not re-asserted here). All-in tax = $532,596.79 + $434,372.52 = $966,969.31; after-tax ending wealth $33,149,625.38. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the winner was “Fill to a $500,000 MAGI cap” at claim 64 with net $608,840.55, all-in $1,043,213.07 and after-tax ending $34,068,453 — pricing the plans' late-life RMD years on the true Table II cells flipped this close winner and repriced the row; earlier re-pin history: 2026-10-14 for the newest-row FPL fallback, and under Fix 2 (§415(c) catch-up exclusion) for the corrected rolled balances.)",
+    expected: {
+      winnerName: "Fill to the top of the 35% bracket",
+      claimAge: 66,
+      net: 532596.79,
+      workTax: 434372.52,
+      allIn: 966969.31,
+      afterTax: 33149625.38,
+    },
+    actual: () => {
+      const base = goldenWorkPlan();
+      if (!base) return { winnerName: null, claimAge: null, net: null, workTax: null, allIn: null, afterTax: null };
+      const plan = { ...base, stateRatePct: 5 };
+      const row = runWorkYearsCompare(
+        plan,
+        { salary: 425000, employer401k: 16250, employerHsa: 1500 },
+        [60],
+      )[0];
+      return {
+        winnerName: row?.optimizer.winner.spec.name ?? null,
+        claimAge: row?.optimizer.winner.claimAges.primaryAge ?? null,
+        net: row?.optimizer.winner.cost.netCost ?? null,
+        workTax: row?.workTax ?? null,
+        allIn: row?.allInTax ?? null,
+        afterTax: row?.endingAfterTax ?? null,
+      };
+    },
+  },
+  {
+    id: "gift-law-constants",
+    kind: "tax",
+    note: "Gift / kiddie law constants (IRS Rev. Proc. 2024-40 and Rev. Proc. 2025-32): the gift-tax annual exclusion is $19,000 per donor per recipient in both 2025 and 2026, and the kiddie-tax threshold is $2,700 in both years (twice the $1,350 amount in effect under §63(c)(5)(A)). A later year (2031) falls back to the latest row, like every other constant.",
+    expected: {
+      excl2025: 1900000,
+      excl2026: 1900000,
+      kiddie2025: 270000,
+      kiddie2026: 270000,
+      excl2031: 1900000,
+      kiddie2031: 270000,
+    },
+    actual: () => ({
+      excl2025: lawForYear(2025).giftAnnualExclusionCents,
+      excl2026: lawForYear(2026).giftAnnualExclusionCents,
+      kiddie2025: lawForYear(2025).kiddieTaxThresholdCents,
+      kiddie2026: lawForYear(2026).kiddieTaxThresholdCents,
+      excl2031: lawForYear(2031).giftAnnualExclusionCents,
+      kiddie2031: lawForYear(2031).kiddieTaxThresholdCents,
+    }),
+  },
+  {
+    id: "gift-outflow-mid-window",
+    kind: "tax",
+    note: "Mid-window gift outflow pins growth foregone: Taxable $100,000 at a 10% return, no spending, no income, Do Nothing, ages 57–60. Untouched, Taxable ends at $110,000 / $121,000 / $133,100 / $146,410. A $10,000 gift at age 59 (mid-window) leaves ages 57–58 untouched ($121,000 at 58), removes $10,000 at the start of the gift year ($121,000 − $10,000 = $111,000 → $122,100 at 59), and ends at $134,310 — exactly $12,100 less than untouched, the $10,000 plus the two years of growth it would have earned (× 1.1²). Reducing the STARTING balance by $10,000 instead would end at $131,769, so the seam is pinned, not the shortcut.",
+    expected: {
+      plainEnd: 146410,
+      giftAt58: 121000,
+      giftAt59: 122100,
+      giftEnd: 134310,
+      growthForegone: 12100,
+    },
+    actual: () => {
+      const plan = basePlan({
+        endAgePrimary: 60,
+        pretaxStart: 0,
+        taxableStart: 100000,
+        expectedReturnPct: 10,
+      });
+      const plain = simulateRothPlan(plan, DO_NOTHING);
+      const gifted = simulateRothPlan(
+        { ...plan, giftOutflowAge: 59, giftOutflowAmount: 10000 },
+        DO_NOTHING,
+      );
+      return {
+        plainEnd: plain.endingTaxable,
+        giftAt58: gifted.years[1]?.taxableEnd ?? null,
+        giftAt59: gifted.years[2]?.taxableEnd ?? null,
+        giftEnd: gifted.endingTaxable,
+        growthForegone: Math.round((plain.endingTaxable - gifted.endingTaxable) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "gift-sale-gain-occupies-ceilings",
+    kind: "tax",
+    note: "Counterfactual sale gain occupies the fill ceilings: Fill 12% (2026 MFJ, top $100,800 of taxable income), no other income, Taxable at 100% basis. Without a sale the fill is the known $133,000. With a $50,000 long-term gain injected in the year, taxable income = conversion + $50,000 − $32,200 standard deduction, so the fill drops dollar-for-dollar to $83,000 and MAGI is unchanged at $133,000. The gain stacks on $50,800 of ordinary taxable income: $48,100 fits the $98,900 0% space, $1,900 is taxed at 15% ($285); ordinary tax on $50,800 is $2,480 + 12% × $26,000 = $5,600; federal tax $5,885, no NIIT (MAGI $133,000 < $250,000).",
+    expected: {
+      plainConv: 133000,
+      conv: 83000,
+      federalTax: 5885,
+      magi: 133000,
+      pricedGain: 50000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 1000000,
+        taxableStart: 1000000,
+      });
+      const plain = simulateRothPlan(plan, FILL_12);
+      const sold = simulateRothPlan(
+        { ...plan, saleGainAge: 57, saleGainAmount: 50000 },
+        FILL_12,
+      );
+      const y = sold.years[0];
+      return {
+        plainConv: plain.years[0]?.conversion ?? null,
+        conv: y?.conversion ?? null,
+        federalTax: y?.federalTax ?? null,
+        magi: y?.magi ?? null,
+        pricedGain: y?.detail.ltcg ?? null,
+      };
+    },
+  },
+  {
+    id: "gift-golden-kiddie",
+    kind: "tax",
+    note: "Golden kiddie case on a saved-plan shape (born 1975, plan from age 56 in 2027, other income $400,000/yr = spending, pre-tax $50,000, Taxable $500,000, 0% return): gift $100,000 at 56, basis $20,000, sale at 60 (2031), child born 2008 and a full-time student. The child's age at sale is 23 — under 24 and a student, so the kiddie gate fires. At a 0% return the shares are worth $100,000 at sale; the gain is $80,000. The parents' baseline sale-year stack sits between $447,800 and $497,800 of taxable income for every candidate (other income $400,000 − $32,200 deduction + the $80,000 gain, plus at most the $50,000 pre-tax balance in conversions) — past the $98,900 0% top, under the $613,700 20% floor — so their marginal capital-gains rate is 15%. Child's tax: the first $2,700 of gain prices on the child's own single return (2026 law: $16,100 standard deduction → $0 tax), the remaining $77,300 at the parents' 15% = $11,595; net to child $88,405. Gift tax: 2027 falls back to the 2026 row — $19,000 × 2 donors (joint, gift-splitting) = $38,000 of exclusion, so $62,000 is over. College falls 2033–2036 are set and the sale year 2031 is the prior-prior year for fall 2033, so the FAFSA watch-out applies.",
+    expected: {
+      giftYear: 2031,
+      saleYear: 2035,
+      salePriced: 1,
+      kidAge: 23,
+      kiddieGate: 1,
+      threshold: 2700,
+      parentsRate: 15,
+      value: 100000,
+      gain: 80000,
+      childTax: 11595,
+      netToChild: 88405,
+      exclPerDonor: 19000,
+      donors: 2,
+      avail: 38000,
+      excess: 62000,
+      within: 0,
+      fafsa: 1,
+    },
+    actual: () => {
+      const cmp = computeGiftComparison(
+        giftFixturePlan({ collegeFallFromYear: 2037, collegeFallThroughYear: 2040 }),
+        {
+          giftAge: 56,
+          amount: 100000,
+          basis: 20000,
+          kidBirthYear: 2012,
+          kidStudent: true,
+          kidOtherIncome: 0,
+          saleAge: 60,
+        },
+      );
+      return {
+        giftYear: cmp.giftYear,
+        saleYear: cmp.saleYear,
+        salePriced: cmp.salePriced ? 1 : 0,
+        kidAge: cmp.child.kidAge,
+        kiddieGate: cmp.child.kiddieGate ? 1 : 0,
+        threshold: cmp.child.kiddieThreshold,
+        parentsRate: cmp.child.parentsMarginalCgRate,
+        value: cmp.child.valueAtSale,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+        exclPerDonor: cmp.giftTax.exclusionPerDonor,
+        donors: cmp.giftTax.donors,
+        avail: cmp.giftTax.exclusionAvailable,
+        excess: cmp.giftTax.excess,
+        within: cmp.giftTax.withinExclusion ? 1 : 0,
+        fafsa: cmp.fafsaApplies ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "gift-golden-non-kiddie",
+    kind: "tax",
+    note: "Golden non-kiddie case: the same gift on the same plan shape, but the child was born in 2000 — age 31 at the 2031 sale, past the kiddie gate, so the gain prices on the child's own standalone single return (2026 law): taxable income $80,000 − $16,100 standard deduction = $63,900, all gains; $49,450 fits the single filer's 0% space, the remaining $14,450 is taxed at 15% = $2,167.50; no NIIT (MAGI $80,000 < $200,000). Net to child $97,832.50. No college-years fields are set on this plan, so the FAFSA watch-out does not apply.",
+    expected: {
+      kidAge: 31,
+      kiddieGate: 0,
+      parentsRate: 15,
+      gain: 80000,
+      childTax: 2167.5,
+      netToChild: 97832.5,
+      fafsa: 0,
+    },
+    actual: () => {
+      const cmp = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 100000,
+        basis: 20000,
+        kidBirthYear: 2004,
+        kidStudent: true,
+        kidOtherIncome: 0,
+        saleAge: 60,
+      });
+      return {
+        kidAge: cmp.child.kidAge,
+        kiddieGate: cmp.child.kiddieGate ? 1 : 0,
+        parentsRate: cmp.child.parentsMarginalCgRate,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+        fafsa: cmp.fafsaApplies ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "gift-no-sale-age",
+    kind: "tax",
+    note: "No sale age set: no gain is injected on either side, so the baseline side reproduces the plain joint optimizer run on the same plan bit for bit (net-cost difference $0), and the child's sale is priced as of the gift year (2027): child born 2002 is 25 (no gate), the gain is the gift-year gain of $80,000 at a 0% return, and the child's tax is the same standalone single-filer price as the non-kiddie golden — $2,167.50 (2027 prices under the 2026 law row).",
+    expected: {
+      salePriced: 0,
+      saleYear: 2031,
+      kidAge: 25,
+      kiddieGate: 0,
+      gain: 80000,
+      childTax: 2167.5,
+      baselineDiff: 0,
+    },
+    actual: () => {
+      const plan = giftFixturePlan();
+      const cmp = computeGiftComparison(plan, {
+        giftAge: 56,
+        amount: 100000,
+        basis: 20000,
+        kidBirthYear: 2006,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: null,
+      });
+      const plain = runJointOptimizer(plan);
+      return {
+        salePriced: cmp.salePriced ? 1 : 0,
+        saleYear: cmp.saleYear,
+        kidAge: cmp.child.kidAge,
+        kiddieGate: cmp.child.kiddieGate ? 1 : 0,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        baselineDiff:
+          Math.round((cmp.baseline.netCost - plain.winner.cost.netCost) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "gift-identity-blank",
+    kind: "tax",
+    note: "Identity: a blank / $0 gift reproduces the baseline exactly — the gift side IS the baseline run (same winner, same lifetime net cost, same ending after-tax wealth, all differences $0), so a plan with no gift described can never move.",
+    expected: { hasGift: 0, netDiff: 0, wealthDiff: 0, sameWinner: 1 },
+    actual: () => {
+      const cmp = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 0,
+        basis: 20000,
+        kidBirthYear: 2008,
+        kidStudent: true,
+        kidOtherIncome: 0,
+        saleAge: null,
+      });
+      return {
+        hasGift: cmp.hasGift ? 1 : 0,
+        netDiff: Math.round((cmp.withGift.netCost - cmp.baseline.netCost) * 100) / 100,
+        wealthDiff:
+          Math.round((cmp.withGift.endingAfterTax - cmp.baseline.endingAfterTax) * 100) / 100,
+        sameWinner: cmp.withGift.winnerName === cmp.baseline.winnerName ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "gift-tax-ledgers",
+    kind: "tax",
+    note: "Gift-tax ledgers: a $30,000 gift filing jointly fits the $38,000 of exclusion (2 × $19,000, gift year 2027 on the 2026 row) — $0 over, within the exclusion. The same $30,000 gift filing single has one donor's $19,000 — $11,000 over the exclusion, counted against the lifetime exemption with a Form 709 due (no gift tax priced).",
+    expected: {
+      mfjAvail: 38000,
+      mfjExcess: 0,
+      mfjWithin: 1,
+      singleDonors: 1,
+      singleAvail: 19000,
+      singleExcess: 11000,
+      singleWithin: 0,
+    },
+    actual: () => {
+      const gift = {
+        giftAge: 56,
+        amount: 30000,
+        basis: 5000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: 60,
+      };
+      const mfj = computeGiftComparison(giftFixturePlan(), gift);
+      const single = computeGiftComparison(
+        giftFixturePlan({ filingStatus: "single", birthYearSpouse: null }),
+        gift,
+      );
+      return {
+        mfjAvail: mfj.giftTax.exclusionAvailable,
+        mfjExcess: mfj.giftTax.excess,
+        mfjWithin: mfj.giftTax.withinExclusion ? 1 : 0,
+        singleDonors: single.giftTax.donors,
+        singleAvail: single.giftTax.exclusionAvailable,
+        singleExcess: single.giftTax.excess,
+        singleWithin: single.giftTax.withinExclusion ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "gift-saved-shape-round-trip",
+    kind: "tax",
+    note: "Saved-shape round-trip for the seven gift fields: the stored shape {giftAge 61, giftAmountCents 12345678, giftBasisCents 2345678, giftKidBirthYear 2009, giftKidStudent true, giftKidOtherIncomeCents 765432, giftSaleAge 66} parses back with all seven values exactly (student encoded 1 = true / 0 = false / −1 = null), and split/join of the blob carrying it is byte-identical. The all-null shape parses to seven nulls (count 7) — in particular giftKidStudent stays null, never coerced to false — and an explicit student:false shape parses back as false (0), distinct from null.",
+    expected: {
+      giftAge: 61,
+      amount: 12345678,
+      basis: 2345678,
+      kidBirthYear: 2009,
+      student: 1,
+      kidOther: 765432,
+      saleAge: 66,
+      byteIdentical: 1,
+      allNullCount: 7,
+      falseStudent: 0,
+    },
+    actual: () => {
+      const stored = {
+        giftAge: 61,
+        giftAmountCents: 12345678,
+        giftBasisCents: 2345678,
+        giftKidBirthYear: 2009,
+        giftKidStudent: true,
+        giftKidOtherIncomeCents: 765432,
+        giftSaleAge: 66,
+      };
+      const plain = JSON.stringify({ inputs: stored, scenarios: [] });
+      const split = splitRothBlob(plain);
+      const parsed = parseRothGift(split?.inputsRaw);
+      const joined = split
+        ? joinRothBlob(split.inputsRaw, split.scenariosRaw)
+        : "";
+      const allNull = parseRothGift({
+        giftAge: null,
+        giftAmountCents: null,
+        giftBasisCents: null,
+        giftKidBirthYear: null,
+        giftKidStudent: null,
+        giftKidOtherIncomeCents: null,
+        giftSaleAge: null,
+      });
+      const falseShape = parseRothGift({ ...stored, giftKidStudent: false });
+      const studentCode = (b: boolean | null): number =>
+        b === true ? 1 : b === false ? 0 : -1;
+      return {
+        giftAge: parsed.giftAge,
+        amount: parsed.giftAmountCents,
+        basis: parsed.giftBasisCents,
+        kidBirthYear: parsed.giftKidBirthYear,
+        student: studentCode(parsed.giftKidStudent),
+        kidOther: parsed.giftKidOtherIncomeCents,
+        saleAge: parsed.giftSaleAge,
+        byteIdentical: joined === plain ? 1 : 0,
+        allNullCount: Object.values(allNull).filter((v) => v === null).length,
+        falseStudent: studentCode(falseShape.giftKidStudent),
+      };
+    },
+  },
+  {
+    id: "gift-child-tax-on-the-sale-other-income",
+    kind: "tax",
+    note: "Child's tax ON THE SALE (not on their whole return): the non-kiddie golden gift ($100,000 at 56, $20,000 basis, sale at 60 in 2031, child born 2000, 0% return, gain $80,000) with $20,000 of the child's own other income. Whole-return price (2026 single law): ordinary taxable $20,000 − $16,100 = $3,900 at 10% = $390; the $3,900 of ordinary taxable income occupies 0% gains space, so $49,450 − $3,900 = $45,550 of gain at 0% and $34,450 at 15% = $5,167.50; whole return $5,557.50. The tax on the sale subtracts the return with the gain zeroed — the $390 on the other income alone — leaving $5,167.50. Net to child $100,000 − $5,167.50 = $94,832.50. (Under the old whole-return semantics this case read $5,557.50.)",
+    expected: { gain: 80000, childTax: 5167.5, netToChild: 94832.5 },
+    actual: () => {
+      const cmp = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 100000,
+        basis: 20000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 20000,
+        saleAge: 60,
+      });
+      return {
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+      };
+    },
+  },
+  {
+    id: "gift-child-tax-zero-gain-anchor",
+    kind: "tax",
+    note: "On-the-sale sanity anchor: a $0 gain (gift $50,000, basis $50,000, 0% return) with $50,000 of the child's other income prices $0 of tax on the sale and nets the child the full $50,000 sale value — the tax on their other income is theirs either way and is not the sale's tax. (Under whole-return semantics this case charged the child thousands for a sale that caused no tax.)",
+    expected: { gain: 0, childTax: 0, netToChild: 50000 },
+    actual: () => {
+      const cmp = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 50000,
+        basis: 50000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 50000,
+        saleAge: 60,
+      });
+      return {
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+      };
+    },
+  },
+  {
+    id: "gift-age-guards",
+    kind: "tax",
+    note: "Age guards at the model layer (the action returns the same messages with no priced ledgers, and the client imports the same guard function): on the gift fixture plan (plan years are ages 56–62, sale year 2031 for a sale at 60) — a gift age before the plan's first year or after its end age, a sale age earlier than the gift age, and a child birth year after the sale year each refuse to price, with the exact plain-language message pinned here.",
+    expected: {
+      giftBefore: "The gift age is outside the plan's years — enter an age from 56 to 62, the years this plan covers.",
+      giftAfter: "The gift age is outside the plan's years — enter an age from 56 to 62, the years this plan covers.",
+      saleBeforeGift: "The sale age can't be earlier than the gift age — the shares are sold after they're given.",
+      kidBornAfterSale: "The child's birth year is after the sale year — enter a birth year no later than 2035.",
+    },
+    actual: () => {
+      const attempt = (gift: {
+        giftAge: number | null;
+        saleAge: number | null;
+        kidBirthYear: number | null;
+      }): string => {
+        try {
+          computeGiftComparison(giftFixturePlan(), {
+            giftAge: gift.giftAge,
+            amount: 10000,
+            basis: 2000,
+            kidBirthYear: gift.kidBirthYear,
+            kidStudent: false,
+            kidOtherIncome: 0,
+            saleAge: gift.saleAge,
+          });
+          return "";
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      };
+      return {
+        giftBefore: attempt({ giftAge: 50, saleAge: 60, kidBirthYear: 2000 }),
+        giftAfter: attempt({ giftAge: 70, saleAge: null, kidBirthYear: 2000 }),
+        saleBeforeGift: attempt({ giftAge: 56, saleAge: 55, kidBirthYear: 2000 }),
+        kidBornAfterSale: attempt({ giftAge: 56, saleAge: 60, kidBirthYear: 2036 }),
+      };
+    },
+  },
+  {
+    id: "gift-capped-at-taxable-bucket",
+    kind: "tax",
+    note: "One amount, modeled consistently: $100,000 typed on a plan whose Taxable bucket holds $50,000 at the gift year (gift at 56, the plan's first year, so the bucket is the $50,000 starting balance). The effective gift is $50,000 and every ledger uses it: the child's shares are worth $50,000 at the sale (0% return), the modeled basis scales in proportion ($20,000 × ½ = $10,000, so the gain is $40,000 — at 0% space on the child's own return, tax $0, net $50,000), and the gift-tax excess is $50,000 − $38,000 of joint exclusion = $12,000 (not the $62,000 the typed amount would give).",
+    expected: {
+      typed: 100000,
+      effective: 50000,
+      capped: 1,
+      taxableAtGift: 50000,
+      effBasis: 10000,
+      value: 50000,
+      gain: 40000,
+      childTax: 0,
+      netToChild: 50000,
+      excess: 12000,
+    },
+    actual: () => {
+      const cmp = computeGiftComparison(
+        giftFixturePlan({ taxableStart: 50000 }),
+        {
+          giftAge: 56,
+          amount: 100000,
+          basis: 20000,
+          kidBirthYear: 2000,
+          kidStudent: false,
+          kidOtherIncome: 0,
+          saleAge: 60,
+        },
+      );
+      return {
+        typed: cmp.typedAmount,
+        effective: cmp.effectiveAmount,
+        capped: cmp.capped ? 1 : 0,
+        taxableAtGift: cmp.taxableAtGiftYear,
+        effBasis: cmp.effectiveBasis,
+        value: cmp.child.valueAtSale,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+        excess: cmp.giftTax.excess,
+      };
+    },
+  },
+  {
+    id: "gift-loss-position",
+    kind: "tax",
+    note: "Loss position: gift $50,000 with an $80,000 basis, sold at $50,000 (0% return) — the gain is −$30,000, a loss, so the child's tax on the sale is $0 and the net to the child is the full $50,000. (The display suppresses the step-up sentence for a loss: there is no gain for a step-up to wipe out.)",
+    expected: { value: 50000, gain: -30000, childTax: 0, netToChild: 50000 },
+    actual: () => {
+      const cmp = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 50000,
+        basis: 80000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: 60,
+      });
+      return {
+        value: cmp.child.valueAtSale,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+      };
+    },
+  },
+  {
+    id: "gift-zero-gain-break-even",
+    kind: "tax",
+    note: "Zero-gain break-even: gift $50,000 with a $50,000 basis, sold in the gift year (sale age = gift age 56, 0% return) — the shares are worth exactly the basis at sale, so the gain is exactly $0, the child's tax on the sale is $0, and the net to the child is the full $50,000. Pins the break-even state the child ledger's copy branch renders: gain == 0 is neither a gain nor a loss.",
+    expected: { value: 50000, gain: 0, childTax: 0, netToChild: 50000 },
+    actual: () => {
+      const cmp = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 50000,
+        basis: 50000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: 56,
+      });
+      return {
+        value: cmp.child.valueAtSale,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+      };
+    },
+  },
+  {
+    id: "ea-playground-worked-example",
+    kind: "tax",
+    note: "Engine access, Playground worked example (hand-derived): 2026, MFJ, ages 60/49, nobody on Medicare, interest $5,000, ordinary dividends $2,000, conversion $126,000, stock sale $30,000 with a $10,000 basis (a $20,000 gain), household size 5, benchmark $20,000, no Social Security, no state rate. Ordinary income $133,000 → ordinary taxable income $133,000 − $32,200 = $100,800, exactly the 12% top, so ordinary tax is the anchor-1 $11,600; total taxable income including the gain is $120,800. The $20,000 gain stacks past the $98,900 0% ceiling, so it prices entirely at 15% = $3,000; total federal tax $14,600. MAGI $133,000 + $20,000 = $153,000; ACA MAGI is the same $153,000, over the household-of-5 cliff (4 × $37,650 = $150,600, 2026 coverage on the 2025 guidelines) by $2,400, so the credit is $0 even with the benchmark entered. This is the exact dial set the runPlaygroundYear action prices (it calls pricePlaygroundYear, shared with the tab).",
+    expected: {
+      magi: 153000,
+      acaMagi: 153000,
+      taxableIncome: 120800,
+      ordinaryTaxableIncome: 100800,
+      ordinaryTax: 11600,
+      ltcgTax: 3000,
+      federalTax: 14600,
+      totalTax: 14600,
+      niit: 0,
+      cliff: 150600,
+      positionDollars: -2400,
+      overCliff: 1,
+      credit: 0,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 20000,
+        stateRatePct: 0,
+      });
+      return {
+        magi: r.magi,
+        acaMagi: r.acaMagi,
+        taxableIncome: r.taxableIncome,
+        ordinaryTaxableIncome: r.ordinaryTaxableIncome,
+        ordinaryTax: r.ordinaryTax,
+        ltcgTax: r.ltcgTax,
+        federalTax: r.federalTax,
+        totalTax: r.totalTax,
+        niit: r.niit,
+        cliff: r.aca.cliff,
+        positionDollars: r.aca.positionDollars,
+        overCliff: r.aca.overCliff ? 1 : 0,
+        credit: r.aca.credit,
+      };
+    },
+  },
+  {
+    id: "ea-playground-paste-roundtrip",
+    kind: "tax",
+    note: "Engine access, Playground paste payload: the canonical payload built from the worked-example dial set (playgroundPastePayload) survives a JSON round-trip and validates whole through parsePlaygroundPaste — the same validator the Playground's paste loader applies — and the validated inputs re-price to the worked example's MAGI $153,000 / total tax $14,600. Three malformed pastes are refused whole (no partial load): an unknown extra field, a missing field, and a negative amount. Validation is all-or-nothing by construction: parsePlaygroundPaste returns inputs only when every check passes.",
+    expected: {
+      roundtripMagi: 153000,
+      roundtripTotalTax: 14600,
+      unknownFieldOk: 0,
+      missingFieldOk: 0,
+      negativeAmountOk: 0,
+      wrongKindOk: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 20000,
+        stateRatePct: 0,
+      };
+      const payload = playgroundPastePayload(inp);
+      const parsed = parsePlaygroundPaste(JSON.parse(JSON.stringify(payload)));
+      const repriced = parsed.ok ? pricePlaygroundYear(parsed.inputs) : null;
+      const unknown = parsePlaygroundPaste({ ...payload, bogusField: 1 });
+      const missingRaw: Record<string, unknown> = { ...payload };
+      delete missingRaw.conversion;
+      const missing = parsePlaygroundPaste(missingRaw);
+      const negative = parsePlaygroundPaste({ ...payload, interest: -5 });
+      const wrongKind = parsePlaygroundPaste({ ...payload, kind: "something-else" });
+      return {
+        roundtripMagi: repriced?.magi ?? null,
+        roundtripTotalTax: repriced?.totalTax ?? null,
+        unknownFieldOk: unknown.ok ? 1 : 0,
+        missingFieldOk: missing.ok ? 1 : 0,
+        negativeAmountOk: negative.ok ? 1 : 0,
+        wrongKindOk: wrongKind.ok ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "ea-plan-year-detail-2040",
+    kind: "tax",
+    note: "Engine access, plan-year detail on the golden plan shape (planInputsFromSaved on the golden saved shape, Fill 12% strategy, entered claim age 67): year 2036 (primary 65, spouse 54) converts $134,600 — the 12% fill: deductions $33,850 ($32,200 + one 65+ add-on $1,650), taxable income $134,600 − $33,850 = $100,750, federal tax $2,480 + 12% × $75,950 = $11,594. Only the spouse is on the marketplace that year (benchmark single $15,000; household size 5, FPL $38,680 on the newest-row fallback, MAGI at 347.98% of FPL → applicable 9.96% → expected contribution $13,406.16 → credit $1,593.84). The with/without two-pricing (pricePlanYearDetail, the second run forcing 2036's conversion to $0): without the conversion the year has NO income at all — federal tax $0 and, household income being under 100% of FPL, an ACA credit of $0 (the credit prices only from 100% of FPL, so this conversion CREATES the year's credit rather than shrinking it). Deltas: Δfederal +$11,594, Δstate $0, ΔIRMAA-paid $0 (the year's surcharge was set by 2034 MAGI, identical in both runs; 2036 MAGI sets Tier 0 either way), ΔACA credit +$1,593.84; total conversion cost $11,594 − $1,593.84 = $10,000.16, an effective (average) rate of 6.09% on the $134,600. The year's separate next-$100 MARGINAL rate is 17.0% (the fill lands $50 under the 12% top, so the next $100 straddles: $50 at 12% + $50 at 22%) — a different figure from the average rate, pinned separately so the two are never conflated.",
+    expected: {
+      conversion: 134600,
+      deductions: 33850,
+      taxableIncome: 100750,
+      federalTax: 11594,
+      stateTax: 0,
+      acaCredit: 1593.84,
+      magi: 134600,
+      endingPretax: 1495412.45,
+      endingRoth: 2851210.8,
+      endingTaxable: 2212889.91,
+      endingHsa: 203458.96,
+      withoutConversion: 0,
+      withoutFederal: 0,
+      withoutAcaCredit: 0,
+      deltaFederal: 11594,
+      deltaState: 0,
+      deltaIrmaa: 0,
+      deltaAcaCredit: 1593.84,
+      conversionCost: 10000.16,
+      effectiveRatePct: 7.43,
+      marginalRatePct: 17,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return {
+          conversion: null, deductions: null, taxableIncome: null, federalTax: null,
+          stateTax: null, acaCredit: null, magi: null, endingPretax: null,
+          endingRoth: null, endingTaxable: null, endingHsa: null,
+          withoutConversion: null, withoutFederal: null, withoutAcaCredit: null,
+          deltaFederal: null, deltaState: null, deltaIrmaa: null, deltaAcaCredit: null,
+          conversionCost: null, effectiveRatePct: null, marginalRatePct: null,
+        };
+      }
+      const d = pricePlanYearDetail(plan, FILL_12, 2040);
+      if (!d) {
+        return {
+          conversion: null, deductions: null, taxableIncome: null, federalTax: null,
+          stateTax: null, acaCredit: null, magi: null, endingPretax: null,
+          endingRoth: null, endingTaxable: null, endingHsa: null,
+          withoutConversion: null, withoutFederal: null, withoutAcaCredit: null,
+          deltaFederal: null, deltaState: null, deltaIrmaa: null, deltaAcaCredit: null,
+          conversionCost: null, effectiveRatePct: null, marginalRatePct: null,
+        };
+      }
+      return {
+        conversion: d.with.conversion,
+        deductions: d.with.detail.deductions,
+        taxableIncome: d.with.taxableIncome,
+        federalTax: d.with.federalTax,
+        stateTax: d.with.stateTax,
+        acaCredit: d.with.acaCreditKept,
+        magi: d.with.magi,
+        endingPretax: d.with.pretaxEnd,
+        endingRoth: d.with.rothEnd,
+        endingTaxable: d.with.taxableEnd,
+        endingHsa: d.with.hsaEnd,
+        withoutConversion: d.without.conversion,
+        withoutFederal: d.without.federalTax,
+        withoutAcaCredit: d.without.acaCreditKept,
+        deltaFederal: d.deltaFederal,
+        deltaState: d.deltaState,
+        deltaIrmaa: d.deltaIrmaa,
+        deltaAcaCredit: d.deltaAcaCredit,
+        conversionCost: d.conversionCost,
+        effectiveRatePct: d.effectiveRatePct,
+        marginalRatePct: d.with.effectiveMarginalPct,
+      };
+    },
+  },
+  {
+    id: "ea-balance-resolution-null-balances",
+    kind: "tax",
+    note: "Engine access, server-side balance resolution (the saved-record shape): a payload with ALL balances null, resolved by resolvePlanBalances against the latest snapshot's bucket subtotals (Pre-tax $1,800,000, Roth $550,000, Taxable $2,200,000, Cash $200,000, HSA $110,000 — Taxable resolving to $2,400,000 with Cash folded in), builds a plan BIT-IDENTICAL to the explicitly-resolved golden plan (the plan inputs compare equal field for field), and the joint optimizer on it reproduces the settled anchors: winner net cost $156,321.51 at claim 62, Do Nothing $2,448,733.88. Before this build, passing the record's null balances priced a degenerate $0 plan. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      resolvedPretaxCents: 180000000,
+      resolvedRothCents: 55000000,
+      resolvedTaxableCents: 240000000,
+      resolvedHsaCents: 11000000,
+      planIdentical: 1,
+      winnerNet: 156321.51,
+      winnerClaimAge: 62,
+      doNothingNet: 2448733.88,
+    },
+    actual: () => {
+      const savedShape: RothSavedLike = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj",
+        pretaxCents: null,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: null,
+        taxableCents: null,
+        hsaCents: null,
+        taxableBasisPct: null,
+        annualSpendingCents: 15000000,
+        retirementAge: 56,
+        endAge: 95,
+        expectedReturnPct: 5.75,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 67,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 56,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 5000000,
+        preservePretaxCents: 25000000,
+        preserveExitRatePct: 10,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: 2000000,
+        acaBenchmarkSingleCents: 1500000,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const resolvedBalances = resolvePlanBalances(
+        { pretaxCents: null, pretaxSpouseCents: null, rothCents: null, taxableCents: null, hsaCents: null },
+        {
+          pretaxCents: 180000000,
+          rothCents: 55000000,
+          taxableCents: 220000000,
+          cashCents: 20000000,
+          hsaCents: 11000000,
+        },
+      );
+      const resolved: RothSavedLike = { ...savedShape, ...resolvedBalances };
+      const planResolved = planInputsFromSaved(resolved, 2030);
+      const planExplicit = goldenWorkPlan();
+      const joint = planResolved ? runJointOptimizer(planResolved) : null;
+      return {
+        resolvedPretaxCents: resolvedBalances.pretaxCents,
+        resolvedRothCents: resolvedBalances.rothCents,
+        resolvedTaxableCents: resolvedBalances.taxableCents,
+        resolvedHsaCents: resolvedBalances.hsaCents,
+        planIdentical:
+          planResolved != null && planExplicit != null &&
+          JSON.stringify(planResolved) === JSON.stringify(planExplicit)
+            ? 1
+            : 0,
+        winnerNet: joint?.winner.cost.netCost ?? null,
+        winnerClaimAge: joint?.winner.claimAges.primaryAge ?? null,
+        doNothingNet: joint?.doNothing.cost.netCost ?? null,
+      };
+    },
+  },
+  {
+    id: "ea-balance-resolution-explicit-unaffected",
+    kind: "tax",
+    note: "Engine access, balance resolution leaves explicit balances untouched: a payload whose four balances are all entered explicitly comes through resolvePlanBalances unchanged — every balance field (including the spouse's pre-tax split) identical — even when the snapshot subtotals offered are completely different figures. A partially-null payload resolves ONLY its null fields: the entered Roth balance stays, the null HSA takes the snapshot's, and a null Pre-tax takes the snapshot bucket less the spouse's saved split (the client's following rule).",
+    expected: {
+      pretax: 111,
+      pretaxSpouse: 222,
+      roth: 333,
+      taxable: 444,
+      hsa: 555,
+      partialRoth: 777,
+      partialHsa: 999,
+      partialPretax: 900,
+    },
+    actual: () => {
+      const explicit = resolvePlanBalances(
+        { pretaxCents: 111, pretaxSpouseCents: 222, rothCents: 333, taxableCents: 444, hsaCents: 555 },
+        { pretaxCents: 900001, rothCents: 900002, taxableCents: 900003, cashCents: 900004, hsaCents: 900005 },
+      );
+      const partial = resolvePlanBalances(
+        { pretaxCents: null, pretaxSpouseCents: 100, rothCents: 777, taxableCents: 888, hsaCents: null },
+        { pretaxCents: 1000, rothCents: 2000, taxableCents: 3000, cashCents: 4000, hsaCents: 999 },
+      );
+      return {
+        pretax: explicit.pretaxCents,
+        pretaxSpouse: explicit.pretaxSpouseCents,
+        roth: explicit.rothCents,
+        taxable: explicit.taxableCents,
+        hsa: explicit.hsaCents,
+        partialRoth: partial.rothCents,
+        partialHsa: partial.hsaCents,
+        partialPretax: partial.pretaxCents,
+      };
+    },
+  },
+  {
+    id: "ea-plan-year-detail-2042-ss-year",
+    kind: "tax",
+    note: "Engine access, plan-year detail on the SAME golden anchor shape as ea-plan-year-detail-2036, targeted at 2038 — the first Social Security year (primary 67, spouse 56; benefits $48,000 start at the entered claim age 67). With the Fill 12% conversion of $93,800, provisional income is far past the §86 second tier, so benefits are taxed at the 85% cap: taxable SS $40,800 (the settled §86 pin), AGI $134,600, deductions $33,850, taxable income $100,750, federal tax $2,480 + 12% × $75,992 = $11,594.00. ACA MAGI adds back the untaxed benefits: $134,600 + $7,578 = $142,220, and the spouse's marketplace credit (single benchmark $15,000) is $876.72. The without-conversion two-pricing is the NEGATIVE-ΔACA case: with no conversion, provisional income is just half of benefits ($24,000), which lands in the first §86 tier once the fixed $32,000 threshold is deflated to 2038, taxing only $1,222.00 of benefits (1.45%); federal tax is $0, but ACA MAGI counts the FULL $48,000 of benefits, which sits in the credit band, so the without year KEEPS a $13,992.00 credit — and the conversion SHRINKS it: ΔACA credit −$13,104.19. Total conversion cost $11,594.00 + $13,104.19 = $24,709.28, an average (effective) rate of 26.94% on the $93,800 — a DIFFERENT figure from the row's next-$100 marginal rate of 21.2% (the §86 phase-in plus the shrinking credit), pinned separately so the two are never conflated.",
+    expected: {
+      conversion: 93800,
+      deductions: 33850,
+      taxableIncome: 100750,
+      federalTax: 11594,
+      stateTax: 0,
+      acaCredit: 876.72,
+      magi: 134600,
+      ssBenefits: 48000,
+      ssPctTaxed: 85,
+      endingPretax: 1422611.57,
+      endingRoth: 3438244.38,
+      endingTaxable: 2173851.38,
+      endingHsa: 227529.43,
+      withoutConversion: 0,
+      withoutSsPctTaxed: 2.55,
+      withoutAgi: 1222,
+      withoutAcaMagi: 48000,
+      withoutFederal: 0,
+      withoutAcaCredit: 13992,
+      deltaFederal: 11594,
+      deltaState: 0,
+      deltaIrmaa: 0,
+      deltaAcaCredit: -13115.28,
+      conversionCost: 24709.28,
+      effectiveRatePct: 26.34,
+      marginalRatePct: 17,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return {
+          conversion: null, deductions: null, taxableIncome: null, federalTax: null,
+          stateTax: null, acaCredit: null, magi: null, ssBenefits: null,
+          ssPctTaxed: null, endingPretax: null, endingRoth: null,
+          endingTaxable: null, endingHsa: null, withoutConversion: null,
+          withoutSsPctTaxed: null, withoutAgi: null, withoutAcaMagi: null,
+          withoutFederal: null, withoutAcaCredit: null, deltaFederal: null,
+          deltaState: null, deltaIrmaa: null, deltaAcaCredit: null,
+          conversionCost: null, effectiveRatePct: null, marginalRatePct: null,
+        };
+      }
+      const d = pricePlanYearDetail(plan, FILL_12, 2042);
+      if (!d) {
+        return {
+          conversion: null, deductions: null, taxableIncome: null, federalTax: null,
+          stateTax: null, acaCredit: null, magi: null, ssBenefits: null,
+          ssPctTaxed: null, endingPretax: null, endingRoth: null,
+          endingTaxable: null, endingHsa: null, withoutConversion: null,
+          withoutSsPctTaxed: null, withoutAgi: null, withoutAcaMagi: null,
+          withoutFederal: null, withoutAcaCredit: null, deltaFederal: null,
+          deltaState: null, deltaIrmaa: null, deltaAcaCredit: null,
+          conversionCost: null, effectiveRatePct: null, marginalRatePct: null,
+        };
+      }
+      return {
+        conversion: d.with.conversion,
+        deductions: d.with.detail.deductions,
+        taxableIncome: d.with.taxableIncome,
+        federalTax: d.with.federalTax,
+        stateTax: d.with.stateTax,
+        acaCredit: d.with.acaCreditKept,
+        magi: d.with.magi,
+        ssBenefits: d.with.ssBenefits,
+        ssPctTaxed: d.with.ssPctTaxed,
+        endingPretax: d.with.pretaxEnd,
+        endingRoth: d.with.rothEnd,
+        endingTaxable: d.with.taxableEnd,
+        endingHsa: d.with.hsaEnd,
+        withoutConversion: d.without.conversion,
+        withoutSsPctTaxed: d.without.ssPctTaxed,
+        withoutAgi: d.without.agi,
+        withoutAcaMagi: d.without.acaMagi,
+        withoutFederal: d.without.federalTax,
+        withoutAcaCredit: d.without.acaCreditKept,
+        deltaFederal: d.deltaFederal,
+        deltaState: d.deltaState,
+        deltaIrmaa: d.deltaIrmaa,
+        deltaAcaCredit: d.deltaAcaCredit,
+        conversionCost: d.conversionCost,
+        effectiveRatePct: d.effectiveRatePct,
+        marginalRatePct: d.with.effectiveMarginalPct,
+      };
+    },
+  },
+  {
+    id: "ea-plan-year-detail-2050-rmd",
+    kind: "tax",
+    note: "Engine access, plan-year detail on the SAME golden anchor shape, targeted at 2046 — the first RMD year (primary 75, spouse 64). The RMD is the settled pin: the prior Dec-31 pre-tax balance divided by the 25.3 Joint Life divisor (spouse sole beneficiary, more than 10 years younger) = $51,939.97. The conversion window has closed by then (window stop age 74), so the year's conversion is $0 and the with/without two-pricing is degenerate by construction: the without run forces a conversion that is already $0, both rows are identical, and every delta is $0 with a null average rate (no conversion to price). The row itself: benefits $48,000 taxed at the 85% cap ($40,800), AGI $51,939.97 + $40,800 = $92,739.97, deductions $33,850, taxable income $57,239.97, federal tax $6,372.80, and the spouse (64, still on the marketplace) keeps a $0.00 credit.",
+    expected: {
+      rmd: 51939.97,
+      conversion: 0,
+      deductions: 35500,
+      taxableIncome: 57239.97,
+      federalTax: 6372.8,
+      stateTax: 0,
+      acaCredit: 0,
+      magi: 92739.97,
+      ssBenefits: 48000,
+      ssPctTaxed: 85,
+      endingPretax: 1296265.81,
+      endingRoth: 6251295.95,
+      endingTaxable: 2282077.41,
+      endingHsa: 355861.15,
+      withoutRmd: 51939.97,
+      withoutFederal: 6372.8,
+      withoutAcaCredit: 0,
+      deltaFederal: 0,
+      deltaState: 0,
+      deltaIrmaa: 0,
+      deltaAcaCredit: 0,
+      conversionCost: 0,
+      effectiveRatePct: null,
+      marginalRatePct: null,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return {
+          rmd: null, conversion: null, deductions: null, taxableIncome: null,
+          federalTax: null, stateTax: null, acaCredit: null, magi: null,
+          ssBenefits: null, ssPctTaxed: null, endingPretax: null,
+          endingRoth: null, endingTaxable: null, endingHsa: null,
+          withoutRmd: null, withoutFederal: null, withoutAcaCredit: null,
+          deltaFederal: null, deltaState: null, deltaIrmaa: null,
+          deltaAcaCredit: null, conversionCost: null, effectiveRatePct: null,
+          marginalRatePct: null,
+        };
+      }
+      const d = pricePlanYearDetail(plan, FILL_12, 2050);
+      if (!d) {
+        return {
+          rmd: null, conversion: null, deductions: null, taxableIncome: null,
+          federalTax: null, stateTax: null, acaCredit: null, magi: null,
+          ssBenefits: null, ssPctTaxed: null, endingPretax: null,
+          endingRoth: null, endingTaxable: null, endingHsa: null,
+          withoutRmd: null, withoutFederal: null, withoutAcaCredit: null,
+          deltaFederal: null, deltaState: null, deltaIrmaa: null,
+          deltaAcaCredit: null, conversionCost: null, effectiveRatePct: null,
+          marginalRatePct: null,
+        };
+      }
+      return {
+        rmd: d.with.rmd,
+        conversion: d.with.conversion,
+        deductions: d.with.detail.deductions,
+        taxableIncome: d.with.taxableIncome,
+        federalTax: d.with.federalTax,
+        stateTax: d.with.stateTax,
+        acaCredit: d.with.acaCreditKept,
+        magi: d.with.magi,
+        ssBenefits: d.with.ssBenefits,
+        ssPctTaxed: d.with.ssPctTaxed,
+        endingPretax: d.with.pretaxEnd,
+        endingRoth: d.with.rothEnd,
+        endingTaxable: d.with.taxableEnd,
+        endingHsa: d.with.hsaEnd,
+        withoutRmd: d.without.rmd,
+        withoutFederal: d.without.federalTax,
+        withoutAcaCredit: d.without.acaCreditKept,
+        deltaFederal: d.deltaFederal,
+        deltaState: d.deltaState,
+        deltaIrmaa: d.deltaIrmaa,
+        deltaAcaCredit: d.deltaAcaCredit,
+        conversionCost: d.conversionCost,
+        effectiveRatePct: d.effectiveRatePct,
+        marginalRatePct: d.with.effectiveMarginalPct,
+      };
+    },
+  },
+  {
+    id: "ea-balance-resolution-mixed",
+    kind: "tax",
+    note: "Engine access, MIXED balance resolution: an optimizer payload with ONE balance explicit at a NON-snapshot value (Pre-tax $1,000,000 = 100000000¢, deliberately not the snapshot's $1,800,000) and the other three null. resolvePlanBalances keeps the explicit Pre-tax as given and resolves only the nulls from the snapshot (Roth 55000000¢, Taxable 240000000¢ — Taxable plus Cash folded in — HSA 11000000¢), so the mixed plan is BIT-IDENTICAL to the same call with all four balances entered explicitly, and the joint optimizer on it returns the identical winner: the Fill-to-12% through-RMD candidate (spec key pinned) at claim age 62, lifetime net cost −$88,424.11 (negative — on this smaller pre-tax balance the lifetime ACA credits kept exceed the tax and terminal costs), Do Nothing $1,081,917.27 — winner identity and net cost pinned exactly for BOTH payloads. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      resolvedPretaxCents: 100000000,
+      resolvedRothCents: 55000000,
+      resolvedTaxableCents: 240000000,
+      resolvedHsaCents: 11000000,
+      planIdentical: 1,
+      mixedWinnerKey: "22|-|-|a|-:95:-:-:taxable-pretax-roth",
+      explicitWinnerKey: "22|-|-|a|-:95:-:-:taxable-pretax-roth",
+      mixedWinnerClaimAge: 63,
+      explicitWinnerClaimAge: 63,
+      mixedWinnerNet: -88323.23,
+      explicitWinnerNet: -88323.23,
+      mixedDoNothingNet: 1081917.27,
+      explicitDoNothingNet: 1081917.27,
+    },
+    actual: () => {
+      const savedShape: RothSavedLike = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj",
+        pretaxCents: null,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: null,
+        taxableCents: null,
+        hsaCents: null,
+        taxableBasisPct: null,
+        annualSpendingCents: 15000000,
+        retirementAge: 56,
+        endAge: 95,
+        expectedReturnPct: 5.75,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 67,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 56,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 5000000,
+        preservePretaxCents: 25000000,
+        preserveExitRatePct: 10,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: 2000000,
+        acaBenchmarkSingleCents: 1500000,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const resolvedBalances = resolvePlanBalances(
+        { pretaxCents: 100000000, pretaxSpouseCents: null, rothCents: null, taxableCents: null, hsaCents: null },
+        {
+          pretaxCents: 180000000,
+          rothCents: 55000000,
+          taxableCents: 220000000,
+          cashCents: 20000000,
+          hsaCents: 11000000,
+        },
+      );
+      const mixed: RothSavedLike = { ...savedShape, ...resolvedBalances };
+      const explicit: RothSavedLike = {
+        ...savedShape,
+        pretaxCents: 100000000,
+        rothCents: 55000000,
+        taxableCents: 240000000,
+        hsaCents: 11000000,
+      };
+      const planMixed = planInputsFromSaved(mixed, 2030);
+      const planExplicit = planInputsFromSaved(explicit, 2030);
+      const jointMixed = planMixed ? runJointOptimizer(planMixed) : null;
+      const jointExplicit = planExplicit ? runJointOptimizer(planExplicit) : null;
+      return {
+        resolvedPretaxCents: resolvedBalances.pretaxCents,
+        resolvedRothCents: resolvedBalances.rothCents,
+        resolvedTaxableCents: resolvedBalances.taxableCents,
+        resolvedHsaCents: resolvedBalances.hsaCents,
+        planIdentical:
+          planMixed != null && planExplicit != null &&
+          JSON.stringify(planMixed) === JSON.stringify(planExplicit)
+            ? 1
+            : 0,
+        mixedWinnerKey: jointMixed?.winner.spec.key ?? null,
+        explicitWinnerKey: jointExplicit?.winner.spec.key ?? null,
+        mixedWinnerClaimAge: jointMixed?.winner.claimAges.primaryAge ?? null,
+        explicitWinnerClaimAge: jointExplicit?.winner.claimAges.primaryAge ?? null,
+        mixedWinnerNet: jointMixed?.winner.cost.netCost ?? null,
+        explicitWinnerNet: jointExplicit?.winner.cost.netCost ?? null,
+        mixedDoNothingNet: jointMixed?.doNothing.cost.netCost ?? null,
+        explicitDoNothingNet: jointExplicit?.doNothing.cost.netCost ?? null,
+      };
+    },
+  },
+  {
+    id: "ea-playground-paste-roundtrip-full",
+    kind: "tax",
+    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with qualified dividends. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version.",
+    expected: {
+      inputsIdentical: 1,
+      magi: 123500,
+      acaMagi: 128000,
+      federalTax: 11257.2,
+      stateTax: 4578,
+      totalTax: 15835.2,
+      credit: null,
+      irmaaTier: 1,
+      magiDiff: 0,
+      federalDiff: 0,
+      stateDiff: 0,
+      totalDiff: 0,
+      tierDiff: 0,
+      unknownFieldOk: 0,
+      wrongVersionOk: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2027,
+        filingStatus: "hoh" as const,
+        agePrimary: 67,
+        ageSpouse: null,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 4000,
+        ordinaryDividends: 3000,
+        otherOrdinary: 12000,
+        taxExemptInterest: 2500,
+        ssPrimary: 30000,
+        ssSpouse: 0,
+        conversion: 50000,
+        stockSold: 40000,
+        stockBasis: 15000,
+        qualifiedDividends: 1500,
+        pretaxBalance: 800000,
+        spouseSoleBeneficiary: false,
+        acaHouseholdSize: 3,
+        acaBenchmarkAnnual: 18000,
+        stateRatePct: 5,
+      };
+      const direct = pricePlaygroundYear(inp);
+      const payload = playgroundPastePayload(inp);
+      const parsed = parsePlaygroundPaste(JSON.parse(JSON.stringify(payload)));
+      const rt = parsed.ok ? pricePlaygroundYear(parsed.inputs) : null;
+      const unknown = parsePlaygroundPaste({ ...payload, bogusField: 1 });
+      const wrongVersion = parsePlaygroundPaste({ ...payload, version: 2 });
+      const diff = (a: number | null | undefined, b: number | null | undefined) =>
+        a == null || b == null ? null : Math.round((a - b) * 100) / 100;
+      return {
+        inputsIdentical:
+          parsed.ok && JSON.stringify(parsed.inputs) === JSON.stringify(inp) ? 1 : 0,
+        magi: rt?.magi ?? null,
+        acaMagi: rt?.acaMagi ?? null,
+        federalTax: rt?.federalTax ?? null,
+        stateTax: rt?.stateTax ?? null,
+        totalTax: rt?.totalTax ?? null,
+        credit: rt ? rt.aca.credit : null,
+        irmaaTier: rt?.irmaa.tier ?? null,
+        magiDiff: diff(rt?.magi, direct.magi),
+        federalDiff: diff(rt?.federalTax, direct.federalTax),
+        stateDiff: diff(rt?.stateTax, direct.stateTax),
+        totalDiff: diff(rt?.totalTax, direct.totalTax),
+        tierDiff: diff(rt?.irmaa.tier, direct.irmaa.tier),
+        unknownFieldOk: unknown.ok ? 1 : 0,
+        wrongVersionOk: wrongVersion.ok ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "ea-playground-year-irmaa-anchor",
+    kind: "tax",
+    note: "Engine access, the Playground's IRMAA anchor priced through pricePlaygroundYear — the exact function the runPlaygroundYear ACTION calls (the action adds only input normalization, identity on this dial set) — not merely the client-side readout: 2026, MFJ, both spouses on Medicare, $20,000 of other ordinary income plus a $200,000 conversion lands MAGI at exactly $220,000, inside Tier 1 (2026 MFJ lines $218,000 / $274,000). The 2026 law row the engine prices from carries the standard Part B premium at $202.90/mo and the Tier 1 Part B total at $284.10/mo with a $14.50 Part D surcharge, so the Tier 1 surcharge is ($284.10 − $202.90) + $14.50 = $95.70/mo per person — $1,148.40/yr per person, $2,296.80/yr for the two people on Medicare — and the tier this 2026 MAGI sets is paid in 2028.",
+    expected: {
+      magi: 220000,
+      tier: 1,
+      partBStandard: 202.9,
+      partBTotalTier1: 284.1,
+      partDTier1: 14.5,
+      monthlySurcharge: 95.7,
+      annualPerPerson: 1148.4,
+      annualHousehold: 2296.8,
+      premiumYear: 2028,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 66,
+        ageSpouse: 55,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 20000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 200000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      const tier1 = TAX_LAW_2026.irmaaTiers[1];
+      return {
+        magi: r.magi,
+        tier: r.irmaa.tier,
+        partBStandard: TAX_LAW_2026.partBStandardMonthly,
+        partBTotalTier1: tier1?.partBTotalMonthly ?? null,
+        partDTier1: tier1?.partDSurchargeMonthly ?? null,
+        monthlySurcharge: r.irmaa.monthlyPerPerson,
+        annualPerPerson: r.irmaa.annualPerPerson,
+        annualHousehold: r.irmaa.annualHousehold,
+        premiumYear: r.irmaa.premiumYear,
+      };
+    },
+  },
+  {
+    id: "ea-playground-year-rmd-anchor",
+    kind: "tax",
+    note: "Engine access, the Playground's RMD anchor priced through pricePlaygroundYear — the exact function the runPlaygroundYear ACTION calls: a $1,000,000 prior-Dec-31 pre-tax balance at primary 75 / spouse 64 with the spouse as sole beneficiary prices the plan's own Joint Life RMD (rmdForYear, Pub. 590-B Table II): divisor 25.3, RMD $1,000,000 ÷ 25.3 = $39,525.69. The balance being entered is what switches the RMD on (rmdPriced) — with no balance entered no RMD is priced.",
+    expected: {
+      rmd: 39525.69,
+      rmdDivisor: 25.3,
+      rmdTable: "joint",
+      rmdPriced: 1,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 75,
+        ageSpouse: 64,
+        onMedicarePrimary: true,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 1000000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        rmd: r.rmd,
+        rmdDivisor: r.rmdDivisor,
+        rmdTable: r.rmdTable,
+        rmdPriced: r.rmdPriced ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "opt-golden-joint-anchors",
+    kind: "tax",
+    note: "Optimizer golden anchors on the anchor shape (the goldenWorkPlan saved shape: MFJ 1975/1985, balances pre-tax $1,800,000 / Roth $550,000 / Taxable $2,400,000 / HSA $110,000, spending $150,000, retire 56, window 56–74, end 95, return 5.75%, SS $48,000 @67, spouse declared no benefit, preserve $500,000 @10%, protect $50,000, benchmarks $20,000 / $15,000, Fill 12% entered): the joint search tests 2,277 candidates (9 claiming ages × 253) and crowns “Fill to the top of the 24% bracket” at claim 62, net $156,321.51; the claim-67 row's best is $229,205.58; the best Do Nothing (its own best claiming age, 64) is $2,448,733.88. Engine-derived 2026-10-15; identical to the settled post-FPL-fallback figures (the workyears-golden-quit-56 row pins the same winner through the work-years path). (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      candidates: 2277,
+      winnerName: "Fill to the top of the 24% bracket",
+      winnerClaim: 62,
+      winnerNet: 156321.51,
+      claim67Name: "Fill up to the IRMAA Tier 0 ceiling",
+      claim67Net: 229205.58,
+      dnNet: 2448733.88,
+      dnClaim: 65,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { candidates: null, winnerName: null, winnerClaim: null, winnerNet: null, claim67Name: null, claim67Net: null, dnNet: null, dnClaim: null };
+      }
+      const joint = runJointOptimizer(plan);
+      const row67 = joint.claimAgeTable.find((r) => r.primaryAge === 67);
+      return {
+        candidates: joint.candidatesTested,
+        winnerName: joint.winner.spec.name,
+        winnerClaim: joint.winner.claimAges.primaryAge,
+        winnerNet: joint.winner.cost.netCost,
+        claim67Name: row67?.best.spec.name ?? null,
+        claim67Net: row67?.best.cost.netCost ?? null,
+        dnNet: joint.doNothing.cost.netCost,
+        dnClaim: joint.doNothing.claimAges.primaryAge,
+      };
+    },
+  },
+  {
+    id: "opt-golden-claim-floors",
+    kind: "tax",
+    note: "Claim floors on the anchor shape (engine-derived 2026-10-15): floor 67 is priced by a real floored joint run and crowns the claim-67 best itself — “Fill up to the IRMAA Tier 0 ceiling”, $229,205.58 — and Do Nothing is unmoved by the floor ($2,448,733.88). Floor 70 crowns “Fill up to the IRMAA Tier 0 ceiling” at claim 70, $280,115.51; its winner is read off the no-floor run's scored set by the search's own crowning rule (the best candidate whose claiming age is at or above the floor — the identical object the per-age table reports as the claim-70 best), cross-checked against a full floored run during derivation. Floor 62 excludes no searched age and crowns exactly the no-floor winner. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      floor67Name: "Fill up to the IRMAA Tier 0 ceiling",
+      floor67Claim: 67,
+      floor67Net: 229205.58,
+      floor67IsRowBest: 1,
+      floor67DnNet: 2448733.88,
+      floor70Name: "Fill up to the IRMAA Tier 0 ceiling",
+      floor70Claim: 70,
+      floor70Net: 280115.51,
+      floor62Name: "Fill to the top of the 24% bracket",
+      floor62Claim: 62,
+      floor62Net: 156321.51,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { floor67Name: null, floor67Claim: null, floor67Net: null, floor67IsRowBest: null, floor67DnNet: null, floor70Name: null, floor70Claim: null, floor70Net: null, floor62Name: null, floor62Claim: null, floor62Net: null };
+      }
+      const f67 = runJointOptimizer({ ...plan, claimAgeFloor: 67 });
+      const row67 = f67.claimAgeTable.find((r) => r.primaryAge === 67);
+      // Floors 70 / 62 are crowned off the no-floor run's scored
+      // set by the search's own crowning rule (best candidate at
+      // an eligible claiming age, in the scored set's own order)
+      // — the values a full floored run returns, without pricing
+      // the same search twice more.
+      const joint = runJointOptimizer(plan);
+      const winner70 = joint.scored.find(
+        (s) => s.claimAges.primaryAge == null || s.claimAges.primaryAge >= 70,
+      );
+      const row70 = joint.claimAgeTable.find((r) => r.primaryAge === 70);
+      return {
+        floor67Name: f67.winner.spec.name,
+        floor67Claim: f67.winner.claimAges.primaryAge,
+        floor67Net: f67.winner.cost.netCost,
+        floor67IsRowBest: row67 && f67.winner === row67.best ? 1 : 0,
+        floor67DnNet: f67.doNothing.cost.netCost,
+        floor70Name: winner70?.spec.name ?? null,
+        floor70Claim: winner70?.claimAges.primaryAge ?? null,
+        floor70Net:
+          winner70 && row70 && winner70 === row70.best ? winner70.cost.netCost : null,
+        floor62Name: joint.winner.spec.name,
+        floor62Claim: joint.winner.claimAges.primaryAge,
+        floor62Net: joint.winner.cost.netCost,
+      };
+    },
+  },
+  {
+    id: "opt-golden-blank-reserve",
+    kind: "tax",
+    note: "Blank reserve on the anchor shape (preserve floor $0 = no reserve; engine-derived 2026-10-15, matching the figures settled by review): the joint winner is “Fill to the top of the 24% bracket” at claim 65, net $211,132.62, with the joint Do Nothing at $2,478,733.88 (claim 65). The fixed-claiming-age search (entered claim 67, all six draw orders, 1,513 candidates) crowns “Fill to a $400,000 MAGI cap”, net $216,031.85, against a fixed Do Nothing of $2,545,904.28 — the blank-reserve terminal prices the whole ending pre-tax at the heir rate, unlike the $250,000 @10% split on the preserved shape. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      jointCandidates: 2277,
+      jointName: "Fill up to the IRMAA Tier 1 ceiling",
+      jointClaim: 65,
+      jointNet: 211132.62,
+      jointDnNet: 2478733.88,
+      fixedCandidates: 1513,
+      fixedName: "Fill to a $400,000 MAGI cap",
+      fixedNet: 216031.85,
+      fixedDnNet: 2545904.28,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { jointCandidates: null, jointName: null, jointClaim: null, jointNet: null, jointDnNet: null, fixedCandidates: null, fixedName: null, fixedNet: null, fixedDnNet: null };
+      }
+      const blank = { ...plan, preservePretax: 0 };
+      const joint = runJointOptimizer(blank);
+      const fixed = runOptimizer(blank);
+      return {
+        jointCandidates: joint.candidatesTested,
+        jointName: joint.winner.spec.name,
+        jointClaim: joint.winner.claimAges.primaryAge,
+        jointNet: joint.winner.cost.netCost,
+        jointDnNet: joint.doNothing.cost.netCost,
+        fixedCandidates: fixed.candidatesTested,
+        fixedName: fixed.winner.spec.name,
+        fixedNet: fixed.winner.cost.netCost,
+        fixedDnNet: fixed.doNothing.cost.netCost,
+      };
+    },
+  },
+  {
+    id: "opt-golden-survivor",
+    kind: "tax",
+    note: "Survivor variant of the anchor shape (primary dies in 2060, Single filing from 2061; engine-derived 2026-10-15): the joint winner stays “Fill to the top of the 24% bracket” at claim 62, net $174,755.58 (pre-FPL-fallback $226,397.31; −$1,961.82 of kept-credit change). Do Nothing (best at claim 65) is $2,680,829.34 (pre-fallback $2,756,783.33; the +$38,443.84 move is the same fallback credit effect that moved the non-survivor anchor Do Nothing by +$39,552.43 when its best claiming age's credits repriced under the 2026 guidelines).",
+    expected: {
+      candidates: 2277,
+      winnerName: "Fill to the top of the 24% bracket",
+      winnerClaim: 62,
+      winnerNet: 174755.58,
+      dnNet: 2680829.34,
+      dnClaim: 65,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { candidates: null, winnerName: null, winnerClaim: null, winnerNet: null, dnNet: null, dnClaim: null };
+      }
+      const joint = runJointOptimizer({
+        ...plan,
+        survivorEnabled: true,
+        survivorWho: "primary",
+        survivorDeathYear: 2060,
+      });
+      return {
+        candidates: joint.candidatesTested,
+        winnerName: joint.winner.spec.name,
+        winnerClaim: joint.winner.claimAges.primaryAge,
+        winnerNet: joint.winner.cost.netCost,
+        dnNet: joint.doNothing.cost.netCost,
+        dnClaim: joint.doNothing.claimAges.primaryAge,
+      };
+    },
+  },
+  {
+    id: "opt-memoization-integrity",
+    kind: "tax",
+    note: "Joint-optimizer memoization integrity (anchor shape): repeated identical calls return bit-identical results, an interleaved different-shape call (the torpedo plan) does not contaminate the cached result, and mutating a handed-out result cannot poison the cache — the stored copy is never handed out (each return is a deep clone), so after the caller overwrites its own copy's winner net with −$999,999 the next call still returns the true $156,321.51. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      firstNet: 156321.51,
+      afterInterleaveNet: 156321.51,
+      afterMutationNet: 156321.51,
+      deepEqualAfterInterleave: 1,
+      candidatesStable: 2277,
+      dnStable: 2448733.88,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { firstNet: null, afterInterleaveNet: null, afterMutationNet: null, deepEqualAfterInterleave: null, candidatesStable: null, dnStable: null };
+      }
+      const r1 = runJointOptimizer(plan);
+      const firstNet = r1.winner.cost.netCost;
+      r1.winner.cost.netCost = -999999;
+      runJointOptimizer(optTorpedoPlan());
+      const r2 = runJointOptimizer(plan);
+      const r3 = runJointOptimizer(plan);
+      return {
+        firstNet,
+        afterInterleaveNet: r2.winner.cost.netCost,
+        afterMutationNet: r3.winner.cost.netCost,
+        deepEqualAfterInterleave: JSON.stringify(r2) === JSON.stringify(r3) ? 1 : 0,
+        candidatesStable: r2.candidatesTested,
+        dnStable: r2.doNothing.cost.netCost,
+      };
+    },
+  },
+  {
+    id: "opt-tie-break-plan-order",
+    kind: "tax",
+    note: "Tie-break order among converting candidates (blank-reserve anchor shape, fixed-claiming-age search): eight candidates tie exactly at the winning net $216,031.85 — the $250,000 MAGI cap at window stops 74 and 95 under the four draw orders that price identically here. The deterministic comparator (net cost, then Do Nothing rank, then the plan's own draw order, then candidate key) crowns the plan-order (Taxable → Pre-tax → Roth), stop-74 key — a different order or window must price strictly lower to be recommended. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      winnerName: "Fill to a $400,000 MAGI cap",
+      winnerKey: "-|-|-|-|400000:65:-:bu:pretax-roth-taxable",
+      winnerNet: 216031.85,
+      tiedCount: 6,
+      winnerIsPlanOrder: 0,
+      winnerWindowStop: 65,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { winnerName: null, winnerKey: null, winnerNet: null, tiedCount: null, winnerIsPlanOrder: null, winnerWindowStop: null };
+      }
+      const fixed = runOptimizer({ ...plan, preservePretax: 0 });
+      const topNet = fixed.winner.cost.netCost;
+      return {
+        winnerName: fixed.winner.spec.name,
+        winnerKey: fixed.winner.spec.key,
+        winnerNet: topNet,
+        tiedCount: fixed.scored.filter((s) => s.cost.netCost === topNet).length,
+        winnerIsPlanOrder:
+          drawOrderKey(fixed.winner.spec.drawOrder) === drawOrderKey(plan.drawOrder) ? 1 : 0,
+        winnerWindowStop: fixed.winner.spec.windowStopAge,
+      };
+    },
+  },
+  {
+    id: "opt-candidate-count-window-dedup",
+    kind: "tax",
+    note: "Candidate counts and window de-duplication (counting only — buildOptimizerCandidates on the anchor shape): the anchor window (start 56) yields 252 strategy specs per draw order across its three distinct window stops (65 / 74 / 95), so the joint search totals 9 × (252 + Do Nothing) = 2,277. Moving the window start to 70 drops the stop-at-65 window (it starts before the window), leaving two stops and 168 specs per order — 9 × 169 = 1,521 joint candidates. Duplicate window stops are de-duplicated, never double-priced.",
+    expected: {
+      anchorPerOrder: 252,
+      window70PerOrder: 168,
+      anchorCombos: 9,
+      anchorJointTotal: 2277,
+      window70JointTotal: 1521,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { anchorPerOrder: null, window70PerOrder: null, anchorCombos: null, anchorJointTotal: null, window70JointTotal: null };
+      }
+      const perOrder = buildOptimizerCandidates(plan, [plan.drawOrder]).length;
+      const w70 = { ...plan, windowStartAge: 70 };
+      const perOrder70 = buildOptimizerCandidates(w70, [w70.drawOrder]).length;
+      const combos = claimAgeCombos(plan).length;
+      return {
+        anchorPerOrder: perOrder,
+        window70PerOrder: perOrder70,
+        anchorCombos: combos,
+        anchorJointTotal: combos * (perOrder + 1),
+        window70JointTotal: combos * (perOrder70 + 1),
+      };
+    },
+  },
+  {
+    id: "opt-reserve-1.8m-cap-year",
+    kind: "tax",
+    note: "Reserve cap year on the anchor shape with a $0,800,000 floor (engine-derived 2026-10-15): pricing the entered Fill 12% strategy, the 2030 conversion is capped by the reserve at $018,472.32 and the year's post-conversion pre-tax balance (the preserve cap record) lands exactly on the $0,800,000.00 floor, bound — the year-end pre-tax is then $0,903,500.00 after the year's 5.75% growth. Without the floor the same year's fill would convert to the 12% bracket top instead.",
+    expected: {
+      conversion2034: 0,
+      capActual: 1800000,
+      capBound: 0,
+      pretaxEnd2034: 1903500,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { conversion2034: null, capActual: null, capBound: null, pretaxEnd2034: null };
+      }
+      const res = simulateRothPlan({ ...plan, preservePretax: 1800000 }, FILL_12);
+      const y = res.years.find((yr) => yr.year === 2030);
+      const cap = y?.detail.fill.caps.find((c) => c.kind === "preserve");
+      return {
+        conversion2034: y?.conversion ?? null,
+        capActual: cap?.actual ?? null,
+        capBound: cap ? (cap.bound ? 1 : 0) : null,
+        pretaxEnd2034: y?.pretaxEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "opt-paytaxfrom-conversion-penalty",
+    kind: "tax",
+    note: "Withholding-penalty price of paying tax from the conversion (anchor shape, entered Fill 12% strategy priced directly; engine-derived 2026-10-15): with payTaxFrom = taxable the lifetime penalty is $0 and the net cost is $551,122.42; with payTaxFrom = conversion the pre-59½ years' withheld tax is itself an early distribution, pricing a lifetime penalty of $5,155.56 and a net cost of exactly $5,155.56 more — $556,277.98. (Pre-FPL-fallback figures were $635,324.75 / $640,480.31; both moved by the same −$274.12 of kept-credit change, so the penalty identity is unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      penaltyTaxable: 0,
+      netTaxable: 551122.42,
+      penaltyConversion: 5155.56,
+      netConversion: 556277.98,
+      netDiff: 5155.56,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { penaltyTaxable: null, netTaxable: null, penaltyConversion: null, netConversion: null, netDiff: null };
+      }
+      const fromTaxable = planNetCost(
+        simulateRothPlan({ ...plan, payTaxFrom: "taxable" }, FILL_12),
+        { ...plan, payTaxFrom: "taxable" },
+      );
+      const fromConversion = planNetCost(
+        simulateRothPlan({ ...plan, payTaxFrom: "conversion" }, FILL_12),
+        { ...plan, payTaxFrom: "conversion" },
+      );
+      return {
+        penaltyTaxable: fromTaxable.penalty,
+        netTaxable: fromTaxable.netCost,
+        penaltyConversion: fromConversion.penalty,
+        netConversion: fromConversion.netCost,
+        netDiff: Math.round((fromConversion.netCost - fromTaxable.netCost) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "opt-ceiling-violations-all-scored",
+    kind: "tax",
+    note: "Ceiling respect across the whole search (anchor shape): summing countCeilingViolations over every one of the 2,277 scored joint candidates — each candidate's own settled schedule checked against its switched-on ceilings (bracket top / 0%-gains space on taxable income, IRMAA tier cap / MAGI cap on MAGI, ACA cliff on ACA MAGI) — finds zero violations. The fill-to-convergence behavior holds for the entire candidate set, not just the winner.",
+    expected: { candidates: 2277, totalViolations: 0 },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { candidates: null, totalViolations: null };
+      const joint = runJointOptimizer(plan);
+      let total = 0;
+      for (const s of joint.scored) total += countCeilingViolations(plan, s.spec, s.result);
+      return { candidates: joint.candidatesTested, totalViolations: total };
+    },
+  },
+  {
+    id: "opt-lean-full-identity-matrix",
+    kind: "tax",
+    note: "Lean pricing ≡ full pricing, bit-identical (engine-derived 2026-10-15): the optimizer's leanDetail pricing (no warning texts, no fill-cap assembly) must produce the identical net cost as the full pricing on every shape, since a surfaced winner is re-priced through the full path for display. Matrix: the anchor shape, a single-filer shape, a head-of-household shape, a survivor shape (torpedo plan, primary dies 2038), and the anchor at a 5% state rate — each under Do Nothing and Fill 12%. Every full-vs-lean net-cost difference is exactly $0.",
+    expected: { anchorDiff: 0, singleDiff: 0, hohDiff: 0, survivorDiff: 0, stateDiff: 0 },
+    actual: () => {
+      const anchor = goldenWorkPlan();
+      const shapes: Record<string, RothPlanInputs | null> = {
+        anchorDiff: anchor,
+        singleDiff: basePlan({
+          filingStatus: "single",
+          birthYearSpouse: null,
+          pretaxStart: 800000,
+          taxableStart: 500000,
+          annualSpending: 60000,
+          endAgePrimary: 85,
+          ssPrimaryAnnual: 30000,
+          ssPrimaryStartAge: 67,
+          acaHouseholdSize: 1,
+          acaHouseholdSizeAfter: 1,
+          acaBenchmarkCouple: 12000,
+          acaBenchmarkSingle: 12000,
+        }),
+        hohDiff: basePlan({
+          filingStatus: "hoh",
+          pretaxStart: 800000,
+          taxableStart: 500000,
+          annualSpending: 60000,
+          endAgePrimary: 85,
+          acaHouseholdSize: 2,
+          acaHouseholdSizeAfter: 2,
+          acaBenchmarkCouple: 12000,
+          acaBenchmarkSingle: 12000,
+        }),
+        survivorDiff: basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1972,
+          endAgePrimary: 85,
+          retirementAge: 65,
+          pretaxStart: 1200000,
+          taxableStart: 600000,
+          annualSpending: 60000,
+          expectedReturnPct: 3,
+          ssPrimaryAnnual: 48000,
+          ssPrimaryStartAge: 65,
+          windowStartAge: 65,
+          survivorEnabled: true,
+          survivorWho: "primary",
+          survivorDeathYear: 2038,
+        }),
+        stateDiff: anchor ? { ...anchor, stateRatePct: 5 } : null,
+      };
+      const out: Record<string, number | string | null> = {};
+      for (const [field, p] of Object.entries(shapes)) {
+        if (!p) {
+          out[field] = null;
+          continue;
+        }
+        let maxDiff = 0;
+        for (const strat of [DO_NOTHING, FILL_12]) {
+          const full = planNetCost(simulateRothPlan(p, strat), p).netCost;
+          const lean = planNetCost(
+            simulateRothPlan(p, strat, undefined, { leanDetail: true }),
+            p,
+          ).netCost;
+          maxDiff = Math.max(maxDiff, Math.abs(full - lean));
+        }
+        out[field] = Math.round(maxDiff * 100) / 100;
+      }
+      return {
+        anchorDiff: out.anchorDiff ?? null,
+        singleDiff: out.singleDiff ?? null,
+        hohDiff: out.hohDiff ?? null,
+        survivorDiff: out.survivorDiff ?? null,
+        stateDiff: out.stateDiff ?? null,
+      };
+    },
+  },
+  {
+    id: "opt-ltcg-candidate-absence",
+    kind: "tax",
+    note: "DELIBERATE PIN of the current candidate set (a decision, not an oversight — recorded 2026-10-15; may be overruled later): no scored candidate in either search carries an ltcgZeroCap (0%-capital-gains-space) ceiling. The ceiling sets are built from bracket tops, IRMAA tier lines, bracket × IRMAA combinations, the ACA cliff, and MAGI caps only, so 0 of the 252 specs per draw order (0 of 1,512 across all six orders) switch the gains cap on, even though the engine prices such a ceiling when a strategy names one. If a future build adds ltcgZeroCap candidates, this fixture SHOULD fail and force the decision to be revisited.",
+    expected: { specsPerOrder: 252, ltcgPerOrder: 0, specsAllOrders: 1512, ltcgAllOrders: 0 },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { specsPerOrder: null, ltcgPerOrder: null, specsAllOrders: null, ltcgAllOrders: null };
+      }
+      const perOrder = buildOptimizerCandidates(plan, [plan.drawOrder]);
+      const allOrders = buildOptimizerCandidates(plan);
+      return {
+        specsPerOrder: perOrder.length,
+        ltcgPerOrder: perOrder.filter((s) => s.ceilings.ltcgZeroCap).length,
+        specsAllOrders: allOrders.length,
+        ltcgAllOrders: allOrders.filter((s) => s.ceilings.ltcgZeroCap).length,
+      };
+    },
+  },
+  {
+    id: "opt-endage-before-window",
+    kind: "tax",
+    note: "End age before the window closes (anchor shape with endAge 60 — the plan ends in 2035, before Social Security can start and before the conversion window's 74 stop; engine-derived 2026-10-15): the joint search still tests 2,277 candidates and crowns “Fill to the top of the 24% bracket” at claim 62, net $358,821.64 (pre-FPL-fallback $357,772.53; −$267.01 of kept-credit change), against Do Nothing at $523,831.23 (claim 62; unmoved by the fallback). Claiming ages beyond the plan's end are still searched and priced as combinations; they simply pay no benefit inside the plan's years.",
+    expected: {
+      candidates: 2277,
+      winnerName: "Fill to the top of the 24% bracket",
+      winnerClaim: 62,
+      winnerNet: 358821.64,
+      dnNet: 523831.23,
+      dnClaim: 62,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { candidates: null, winnerName: null, winnerClaim: null, winnerNet: null, dnNet: null, dnClaim: null };
+      }
+      const joint = runJointOptimizer({ ...plan, endAgePrimary: 60 });
+      return {
+        candidates: joint.candidatesTested,
+        winnerName: joint.winner.spec.name,
+        winnerClaim: joint.winner.claimAges.primaryAge,
+        winnerNet: joint.winner.cost.netCost,
+        dnNet: joint.doNothing.cost.netCost,
+        dnClaim: joint.doNothing.claimAges.primaryAge,
+      };
+    },
+  },
+  {
+    id: "opt-two-benefit-joint",
+    kind: "tax",
+    note: "Two-benefit joint search size (counting pin, engine-derived 2026-10-15): on a two-benefit reconstruction (the torpedo plan plus a $300,000 spouse pre-tax balance and a $30,000 spouse benefit entered at 67) both claiming ages are searched, giving 9 × 9 = 81 claiming-age combinations; each combination prices 253 candidates at the plan's draw order (252 specs + Do Nothing), so the joint search tests 81 × 253 = 20,493 candidates — cross-checked against a full runJointOptimizer on the anchor-family two-benefit shape, which reports candidatesTested 20,493. This fixture pins the search SIZE only: the review shape's exact spouse benefit was not recoverable, and reconstructions' winner / Do Nothing nets diverged from the review's stale figures by far more than any ACA-credit mechanism can explain, so no net is pinned rather than guessing one.",
+    expected: { combos: 81, perComboCandidates: 253, jointTotal: 20493 },
+    actual: () => {
+      const plan: RothPlanInputs = {
+        ...optTorpedoPlan(),
+        pretaxSpouseStart: 300000,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+      };
+      const combos = claimAgeCombos(plan);
+      const first = combos[0];
+      const perCombo = first
+        ? scoreAllCandidates(first.inputs, first.claimAges, { searchOrders: false }).length
+        : 0;
+      return {
+        combos: combos.length,
+        perComboCandidates: perCombo,
+        jointTotal: combos.length * perCombo,
+      };
+    },
+  },
+  /* DELIBERATELY SKIPPED PINS — three test-add (4a) fixtures considered and
+     intentionally not shipped (decisions, not oversights — recorded
+     2026-10-15), in the same spirit as the opt-ltcg-candidate-absence
+     deliberate pin and the opt-two-benefit-joint count-only note above:
+       · opt-aca-lapse-mid-window — SKIPPED as unrecoverable: the original
+         optimizer-review probe payload for this shape was never persisted
+         (only its outcome figures survive in review summaries);
+         reconstruction attempts diverged from those review figures with no
+         credits mechanism to explain the gap, so no pin was shipped rather
+         than pinning one on a guessed shape.
+       · opt-hoh-joint — SKIPPED as unrecoverable: the original
+         optimizer-review probe payload for this shape was never persisted
+         (only its outcome figures survive in review summaries);
+         reconstruction attempts diverged from those review figures with no
+         credits mechanism to explain the gap, so no pin was shipped rather
+         than pinning one on a guessed shape.
+       · opt-single-filer-joint — SKIPPED as unrecoverable: the original
+         optimizer-review probe payload for this shape was never persisted
+         (only its outcome figures survive in review summaries);
+         reconstruction attempts diverged from those review figures with no
+         credits mechanism to explain the gap, so no pin was shipped rather
+         than pinning one on a guessed shape.
+     If the original probe payloads are ever recovered, each skip should be
+     revisited and replaced with a real pin derived from that payload. */
+  {
+    id: "tax-hoh-priceyear",
+    kind: "tax",
+    note: "Head-of-household pricing by law year (priceYear selects the law row by calendar year): HoH 2026 with $225,900 of ordinary income → taxable income $201,750 (after the $24,150 HoH standard deduction) and federal tax $39,207 (10% × $17,700 + 12% × $49,750 + 22% × $38,250 + 24% × $96,050). The same construction under 2025 law ($220,925 of income, $23,625 deduction) → taxable income $197,300 and federal tax $38,460 (10% × $17,000 + 12% × $47,850 + 22% × $38,500 + 24% × $93,950).",
+    expected: { ti2026: 201750, fed2026: 39207, ti2025: 197300, fed2025: 38460 },
+    actual: () => {
+      const p26 = priceYear(
+        basePrice({ calendarYear: 2026, filingStatus: "hoh", ageSpouse: null, otherOrdinary: 225900 }),
+      );
+      const p25 = priceYear(
+        basePrice({ calendarYear: 2025, filingStatus: "hoh", ageSpouse: null, otherOrdinary: 220925 }),
+      );
+      return {
+        ti2026: p26.taxableIncome,
+        fed2026: p26.federalTax,
+        ti2025: p25.taxableIncome,
+        fed2025: p25.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-joint-divisor-cells",
+    kind: "tax",
+    note: "Joint Life and Last Survivor Table cells (Table II, IRS Publication 590-B (2025), Appendix B) beyond the worked example: owner 80 / spouse 70 = 20.2 and owner 85 / spouse 75 = 16.0, read directly from jointDivisor. (Note refreshed 2026-10-19, E2: both values are unchanged — they were inside the old partial grid too — but the embedded table is now the complete published Table II, owner ages 70–120 × spouse ages 20–120, so these are ordinary interior cells, no longer the edges of a spouse-70–75 sub-grid.)",
+    expected: { d80_70: 20.2, d85_75: 16 },
+    actual: () => ({
+      d80_70: jointDivisor(80, 70),
+      d85_75: jointDivisor(85, 75),
+    }),
+  },
+  {
+    id: "tax-law-fallback-guard",
+    kind: "tax",
+    note: "Law-table fallback guard: a year with no published row prices under the newest row — lawForYear(2030) resolves to the 2026 law (year field 2026), and acaTableFor(2030) resolves to the 2026 ACA table (6 bands, identical to acaTableFor(2026) band for band, top band's final applicable percentage 9.96). Future years never price under a stale older row by accident.",
+    expected: { lawYear2030: 2026, acaBands2030: 6, acaLastFinal2030: 9.96, acaEquals2026: 1 },
+    actual: () => {
+      const t30 = acaTableFor(2030);
+      return {
+        lawYear2030: lawForYear(2030).year,
+        acaBands2030: t30.length,
+        acaLastFinal2030: t30[t30.length - 1]?.finalPct ?? null,
+        acaEquals2026: JSON.stringify(t30) === JSON.stringify(acaTableFor(2026)) ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-current-law-is-newest-row",
+    kind: "tax",
+    note: "Provenance derivation guard (API follow-on 2, finding F7): CURRENT_LAW is DERIVED from the law table — it is the last element of TAX_LAW_YEARS (the same object, not a hand-pointed copy), so adding a future law row moves the pointer, lawForYear's fallback, and apiProvenance's reported lawYear together. Today the newest row is 2026, and lawForYear(2200) — a year with no published row — falls back to that same row.",
+    expected: { currentLawYear: 2026, isLastRow: 1, fallback2200: 2026 },
+    actual: () => ({
+      currentLawYear: CURRENT_LAW.year,
+      isLastRow:
+        TAX_LAW_YEARS[TAX_LAW_YEARS.length - 1] === CURRENT_LAW ? 1 : 0,
+      fallback2200: lawForYear(2200).year,
+    }),
+  },
+  {
+    id: "tax-senior-deduction-sunset",
+    kind: "tax",
+    note: "OBBBA senior-deduction sunset (§224, available 2025–2028 only): MFJ ages 66/65 with $100,000 of ordinary income and 0% inflation — in 2028 the senior deduction is the full $12,000 (AGI $100,000 is under the $150,000 phase-out start; deductions $35,500 + $12,000 = $47,500, taxable $52,500, federal tax $2,480 + 12% × $27,700 = $5,804); in 2029 the deduction is $0 (sunset — deductions $35,500, taxable $64,500, federal tax $2,480 + 12% × $39,700 = $7,244), priced under the fallback 2026 law row in both years.",
+    expected: { senior2028: 12000, fed2028: 5804, senior2029: 0, fed2029: 7244 },
+    actual: () => {
+      const p28 = priceYear(
+        basePrice({ calendarYear: 2028, agePrimary: 66, ageSpouse: 65, otherOrdinary: 100000, inflationPct: 0 }),
+      );
+      const p29 = priceYear(
+        basePrice({ calendarYear: 2029, agePrimary: 66, ageSpouse: 65, otherOrdinary: 100000, inflationPct: 0 }),
+      );
+      return {
+        senior2028: p28.seniorDeduction,
+        fed2028: p28.federalTax,
+        senior2029: p29.seniorDeduction,
+        fed2029: p29.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-survivor-state",
+    kind: "tax",
+    note: "Survivor shape at a 5% state rate (the survivor-tax-penalty shape — $100,000/yr of other ordinary income = spending, primary born 1961 dies in 2027 — with stateRatePct 5 added; engine-derived 2026-10-15): state tax is 5% of the year's taxable income, so the death year (2027, still MFJ, taxable $60,296.34) prices $3,014.82 of state tax and the first survivor year (2028, Single, taxable $83,900) prices $4,195.00 — the widow's penalty applies to the state line in the same proportion as the federal line. (Death-year taxable income re-derived under FIX 4: the 2027 senior deduction deflates to $6,000/1.025 = $5,853.66, so taxable is $100,000 − $33,850 − $5,853.66 = $60,296.34 and 5% of it is $3,014.82; pre-FIX 4 the nominal $6,000 gave $60,150 / $3,007.50. See survivor-tax-penalty for the full derivation.)",
+    expected: { deathState: 3014.82, survState: 4195, deathTi: 60296.34, survTi: 83900 },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1972,
+          endAgePrimary: 67,
+          retirementAge: 65,
+          pretaxStart: 0,
+          otherOrdinaryAnnual: 100000,
+          annualSpending: 100000,
+          stateRatePct: 5,
+          survivorEnabled: true,
+          survivorWho: "primary",
+          survivorDeathYear: 2027,
+        }),
+        DO_NOTHING,
+      );
+      const yd = res.years[1];
+      const yn = res.years[2];
+      return {
+        deathState: yd?.stateTax ?? null,
+        survState: yn?.stateTax ?? null,
+        deathTi: yd?.taxableIncome ?? null,
+        survTi: yn?.taxableIncome ?? null,
+      };
+    },
+  },
+  {
+    id: "gift-golden-kiddie-grown",
+    kind: "tax",
+    note: "Golden kiddie case GROWN at the plan's return (the gift fixture plan — $400,000/yr of other ordinary income, which holds the parents' marginal gains rate at 15% for every candidate — with its return set to the anchor plan's 5.75% and college falls 2026–2034; engine-derived 2026-10-15, matching the settled review figures on every field): gift $000,000 at 56 (2027), basis $20,000, child born 2008 and a full-time student, sale at 60 (2031). At 5.75% the shares are worth $000,000 × 1.0575⁴ = $025,060.89 at sale; the gain is $005,060.89. The child is 23 at sale — under 24 and a student, so the kiddie gate fires: the first $2,700 prices on the child's own return ($0 under the single standard deduction) and the remaining $002,360.89 at the parents' 15% marginal gains rate = $05,354.13 of child tax; net to child $009,706.76. Gift tax: $000,000 − $38,000 of joint exclusion = $62,000 over. The sale year 2031 is the prior-prior year for fall 2033, inside the 2026–2034 college span, so the FAFSA watch-out applies.",
+    expected: {
+      giftYear: 2031,
+      saleYear: 2035,
+      kidAge: 23,
+      gate: 1,
+      parentsRate: 15,
+      value: 125060.89,
+      gain: 105060.89,
+      childTax: 15354.13,
+      netToChild: 109706.76,
+      excess: 62000,
+      fafsa: 0,
+    },
+    actual: () => {
+      const cmp = computeGiftComparison(
+        giftFixturePlan({
+          expectedReturnPct: 5.75,
+          collegeFallFromYear: 2030,
+          collegeFallThroughYear: 2034,
+        }),
+        {
+          giftAge: 56,
+          amount: 100000,
+          basis: 20000,
+          kidBirthYear: 2012,
+          kidStudent: true,
+          kidOtherIncome: 0,
+          saleAge: 60,
+        },
+      );
+      return {
+        giftYear: cmp.giftYear,
+        saleYear: cmp.saleYear,
+        kidAge: cmp.child.kidAge,
+        gate: cmp.child.kiddieGate ? 1 : 0,
+        parentsRate: cmp.child.parentsMarginalCgRate,
+        value: cmp.child.valueAtSale,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+        excess: cmp.giftTax.excess,
+        fafsa: cmp.fafsaApplies ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "gift-kiddie-form-8615-stack-boundary",
+    kind: "tax",
+    note: "Kiddie tax priced the Form 8615 way — the E3 boundary case (2026-10-19): the golden kiddie gift ($100,000 at 56 in 2027, basis $20,000, child born 2008, full-time student, sale at 60 in 2031, gain $80,000, 0% return) on a plan whose parents have $127,200/yr of other ordinary income and NO pre-tax (so no sale-year conversion): in the with-gift run's sale year the parents' own stack is $127,200 − $32,200 (2026 MFJ standard deduction) = $95,000 of ordinary taxable income and no gains, leaving $98,900 − $95,000 = $3,900 of 0% capital-gains space under the 2026 MFJ 0% top. Form 8615 (Tax for Certain Children Who Have Unearned Income, implementing IRC §1(g)) prices the child's net unearned income ON the parents' return: of the $80,000 − $2,700 = $77,300 excess over the §1(g) threshold, the first $3,900 fills that 0% space at 0% and the remaining $73,400 prices at 15% = $11,010 of child tax; the first $2,700 prices on the child's own return at $0 (single standard deduction), and net to child is $100,000 − $11,010 = $88,990. The pre-E3 flat construction charged the whole excess at the parents' top marginal rate — $77,300 × 15% = $11,595 (the golden figure, correct there only because those parents sit wholly inside the 15% band) — overstating this case by exactly $585. Hand-derived here from the 2026 law row; the engine reproduces it to the cent.",
+    expected: {
+      giftYear: 2031,
+      saleYear: 2035,
+      kidAge: 23,
+      gate: 1,
+      parentsRate: 15,
+      value: 100000,
+      gain: 80000,
+      childTax: 11010,
+      netToChild: 88990,
+      excess: 62000,
+    },
+    actual: () => {
+      const cmp = computeGiftComparison(
+        giftFixturePlan({
+          otherOrdinaryAnnual: 127200,
+          annualSpending: 127200,
+          pretaxStart: 0,
+        }),
+        {
+          giftAge: 56,
+          amount: 100000,
+          basis: 20000,
+          kidBirthYear: 2012,
+          kidStudent: true,
+          kidOtherIncome: 0,
+          saleAge: 60,
+        },
+      );
+      return {
+        giftYear: cmp.giftYear,
+        saleYear: cmp.saleYear,
+        kidAge: cmp.child.kidAge,
+        gate: cmp.child.kiddieGate ? 1 : 0,
+        parentsRate: cmp.child.parentsMarginalCgRate,
+        value: cmp.child.valueAtSale,
+        gain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+        excess: cmp.giftTax.excess,
+      };
+    },
+  },
+  {
+    id: "gift-main-run-identity",
+    kind: "tax",
+    note: "Gift fields never reach the main runs (model level): a saved record with all seven gift fields sentinel-set and the same record with all seven null convert through planInputsFromSaved to BIT-IDENTICAL plan inputs — the conversion never reads the gift fields (they are read only by the gift comparison) — so the joint optimizer's winner net cost differs by exactly $0. The parse layer proves the fields were really present in one record (sentinel amount $99,999,999 in cents) and really absent in the other (null).",
+    expected: { plansIdentical: 1, winnerNetDiff: 0, sentinelParsed: 99999999, blankParsed: null },
+    actual: () => {
+      const savedShape: RothSavedLike = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj",
+        pretaxCents: 180000000,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 55000000,
+        taxableCents: 240000000,
+        hsaCents: 11000000,
+        taxableBasisPct: null,
+        annualSpendingCents: 15000000,
+        retirementAge: 56,
+        endAge: 95,
+        expectedReturnPct: 5.75,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 67,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 56,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 5000000,
+        preservePretaxCents: 25000000,
+        preserveExitRatePct: 10,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: 2000000,
+        acaBenchmarkSingleCents: 1500000,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const sentinel = {
+        giftAge: 61,
+        giftAmountCents: 99999999,
+        giftBasisCents: 8888888,
+        giftKidBirthYear: 2010,
+        giftKidStudent: true,
+        giftKidOtherIncomeCents: 777777,
+        giftSaleAge: 65,
+      };
+      const blankGift = {
+        giftAge: null,
+        giftAmountCents: null,
+        giftBasisCents: null,
+        giftKidBirthYear: null,
+        giftKidStudent: null,
+        giftKidOtherIncomeCents: null,
+        giftSaleAge: null,
+      };
+      const withGift = planInputsFromSaved({ ...savedShape, ...sentinel }, 2026);
+      const withoutGift = planInputsFromSaved({ ...savedShape, ...blankGift }, 2026);
+      const netWith = withGift ? runJointOptimizer(withGift).winner.cost.netCost : null;
+      const netWithout = withoutGift ? runJointOptimizer(withoutGift).winner.cost.netCost : null;
+      return {
+        plansIdentical:
+          withGift != null && withoutGift != null &&
+          JSON.stringify(withGift) === JSON.stringify(withoutGift)
+            ? 1
+            : 0,
+        winnerNetDiff:
+          netWith != null && netWithout != null
+            ? Math.round((netWith - netWithout) * 100) / 100
+            : null,
+        sentinelParsed: parseRothGift(sentinel).giftAmountCents,
+        blankParsed: parseRothGift(blankGift).giftAmountCents,
+      };
+    },
+  },
+  {
+    id: "gift-blank-after-run",
+    kind: "tax",
+    note: "Clearing the gift amount after a priced run returns the no-gift state (model level, gift fixture plan): the priced description ($100,000 at 56, sale at 60, child born 2008) has hasGift true; the same stored shape with giftAmountCents cleared to null parses to a null amount and prices hasGift false with NO stale ledgers — the gift side IS the baseline run (net costs identical), the child's tax on the sale is $0, the net to the child is $0, and the gift-tax excess is $0, even though the basis and sale age remain set.",
+    expected: {
+      pricedHasGift: 1,
+      clearedParsed: null,
+      clearedHasGift: 0,
+      clearedChildTax: 0,
+      clearedNetToChild: 0,
+      clearedExcess: 0,
+      clearedNetDiff: 0,
+    },
+    actual: () => {
+      const stored = {
+        giftAge: 56,
+        giftAmountCents: 10000000,
+        giftBasisCents: 2000000,
+        giftKidBirthYear: 2008,
+        giftKidStudent: true as boolean | null,
+        giftKidOtherIncomeCents: 0,
+        giftSaleAge: 60,
+      };
+      const params = (g: ReturnType<typeof parseRothGift>) => ({
+        giftAge: g.giftAge,
+        amount: (g.giftAmountCents ?? 0) / 100,
+        basis: (g.giftBasisCents ?? 0) / 100,
+        kidBirthYear: g.giftKidBirthYear,
+        kidStudent: g.giftKidStudent === true,
+        kidOtherIncome: (g.giftKidOtherIncomeCents ?? 0) / 100,
+        saleAge: g.giftSaleAge,
+      });
+      const priced = computeGiftComparison(giftFixturePlan(), params(parseRothGift(stored)));
+      const clearedParsed = parseRothGift({ ...stored, giftAmountCents: null });
+      const cleared = computeGiftComparison(giftFixturePlan(), params(clearedParsed));
+      return {
+        pricedHasGift: priced.hasGift ? 1 : 0,
+        clearedParsed: clearedParsed.giftAmountCents,
+        clearedHasGift: cleared.hasGift ? 1 : 0,
+        clearedChildTax: cleared.child.childTax,
+        clearedNetToChild: cleared.child.netToChild,
+        clearedExcess: cleared.giftTax.excess,
+        clearedNetDiff:
+          Math.round((cleared.withGift.netCost - cleared.baseline.netCost) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "gift-kid-other-income",
+    kind: "tax",
+    note: "Child's other income, on-the-sale pricing (gift fixture plan: $100,000 at 56, $20,000 basis, sale at 60, 0% return, gain $80,000, child's own other income $20,000): non-kiddie (child born 2000) — the sale's tax is the with-gain minus without-gain difference on the child's standalone return, $5,167.50, net to child $94,832.50 (the $390 of tax on the other income itself is not the sale's tax). Kiddie (child born 2008, student, gate fires) — the gain up to the $2,700 threshold prices on the child's own return (a $0 difference) and the excess at the parents' 15% = $11,595 on the sale, net to child $88,405. The other income moves neither figure's on-the-sale difference beyond the threshold mechanics.",
+    expected: {
+      gain: 80000,
+      nkGate: 0,
+      nkTax: 5167.5,
+      nkNet: 94832.5,
+      kGate: 1,
+      kTax: 11595,
+      kNet: 88405,
+    },
+    actual: () => {
+      const nk = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 100000,
+        basis: 20000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 20000,
+        saleAge: 60,
+      });
+      const kd = computeGiftComparison(giftFixturePlan(), {
+        giftAge: 56,
+        amount: 100000,
+        basis: 20000,
+        kidBirthYear: 2012,
+        kidStudent: true,
+        kidOtherIncome: 20000,
+        saleAge: 60,
+      });
+      return {
+        gain: nk.child.gain,
+        nkGate: nk.child.kiddieGate ? 1 : 0,
+        nkTax: nk.child.childTax,
+        nkNet: nk.child.netToChild,
+        kGate: kd.child.kiddieGate ? 1 : 0,
+        kTax: kd.child.childTax,
+        kNet: kd.child.netToChild,
+      };
+    },
+  },
+  {
+    id: "reserve-floor-conversions-only",
+    kind: "tax",
+    note: "Characterization — the reserve floor caps CONVERSIONS only, never draws or RMDs (settled design; pinned on the anchor shape variant with a $950,000 floor and end age 74, engine-derived 2026-10-15): under Do Nothing with a pre-tax-first draw order, lifetime spending draws pull the ending pre-tax to $782,645.20 — BELOW the $950,000 floor — while the same plan at its own (Taxable-first) order ends at $5,785,530. Under the entered Fill 12% strategy, every converting year's post-conversion balance stays at or above the floor (the minimum over the window is $1,208,248.93): the conversion side respects the floor exactly, the draw side is never checked against it.",
+    expected: {
+      dnPretaxFirstEnding: 782645.2,
+      dnBelowFloor: 1,
+      dnPlanOrderEnding: 5506555.57,
+      minPostConversion: 1208248.93,
+      conversionsRespectFloor: 1,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { dnPretaxFirstEnding: null, dnBelowFloor: null, dnPlanOrderEnding: null, minPostConversion: null, conversionsRespectFloor: null };
+      }
+      const shape = { ...plan, preservePretax: 950000, endAgePrimary: 74 };
+      const dnFirst = simulateRothPlan(
+        { ...shape, drawOrder: drawOrderFromKey("pretax-taxable-roth") },
+        DO_NOTHING,
+      );
+      const dnPlanOrder = simulateRothPlan(shape, DO_NOTHING);
+      const fill = simulateRothPlan(shape, FILL_12);
+      let minPost: number | null = null;
+      for (const y of fill.years) {
+        if (y.conversion <= 0) continue;
+        const cap = y.detail.fill.caps.find((c) => c.kind === "preserve");
+        if (cap) minPost = minPost == null ? cap.actual : Math.min(minPost, cap.actual);
+      }
+      return {
+        dnPretaxFirstEnding: dnFirst.endingPretax,
+        dnBelowFloor: dnFirst.endingPretax < 950000 ? 1 : 0,
+        dnPlanOrderEnding: dnPlanOrder.endingPretax,
+        minPostConversion: minPost,
+        conversionsRespectFloor: minPost != null && minPost >= 950000 ? 1 : 0,
+      };
+    },
+  },
+  /* ================================================================
+     TEST-ADD 4b (2026-10-15) — presentation pins + the GOLDEN-
+     QUESTION BATTERY (answer-verification safeguard 2: the
+     questions in the golden battery; a chat answer must match the
+     pin it cites). Every expected value below was derived by
+     RUNNING the shipped engine on the stated shape during this
+     build — never copied from a review note. Where a brief
+     figure was stale (pre-FPL-fallback), the pin carries the
+     DERIVED value and the note records the delta.
+
+     BATTERY INDEX — all 25 questions, in question form, each
+     mapped to the fixture id(s) that pin its answer:
+     Q1  What is the best conversion plan? → opt-golden-joint-anchors
+     Q2  What if we claim Social Security at 67? → opt-golden-joint-anchors (claim-67 row), opt-golden-claim-floors
+     Q3  What does Do Nothing cost? → opt-golden-joint-anchors
+     Q4  How much Social Security is collected claiming at 62 vs 67? → gq-ss-by-claim-age
+     Q5  What does the 2036 conversion really cost? → ea-plan-year-detail-2036
+     Q6  And the 2038 conversion? → ea-plan-year-detail-2038-ss-year
+     Q7  When is the first RMD and how big? → ea-plan-year-detail-2046-rmd
+     Q8  Fill 12% in the Playground with $5,000 of interest? → playground-chip-fill-12-interest
+     Q9  Add a $100,000 stock gain? → playground-gain-and-aca-cliff
+     Q10 How much conversion room is left this year? → gq-this-year-anchor (base anchor); mt-ty3-protectmin-sourcing (protect-min variant)
+     Q11 What if I work to 60? → workyears-golden-work-60-no-employer, workyears-golden-work-60-employer
+     Q12 What if I work to 62? → workyears-golden-work-62-no-employer, workyears-golden-work-62-employer
+     Q13 What if I gift $100K of stock to a kid? → gift-golden-kiddie-grown (G-2), gift-golden-kiddie
+     Q14 What wins if claiming is floored at 67? → opt-golden-claim-floors
+     Q15 What does the $500K reserve do to the winner? → gq-reserve-effect (pair; singles in opt-golden-blank-reserve + opt-golden-joint-anchors)
+     Q16 What is the entered plan's net cost? → mt-p6-takeaway-footing-entered
+     Q17 How much 12% bracket room is left in 2036 after the fill? → gq-2036-room
+     Q18 What IRMAA tier is MAGI $220,000? → ea-playground-year-irmaa-anchor
+     Q19 What is the RMD on $1M at 75 (spouse 64)? → ea-playground-year-rmd-anchor
+     Q20 What wins in the survivor scenario? → opt-golden-survivor
+     Q21 How often does the winner win the Monte Carlo check? → mt-o2-monte-carlo-production
+     Q22 Where are the ACA cliffs? → gq-cliff-values (fallback guard: tax-fpl-newest-row-fallback; HH5 worked example: ea-playground-worked-example)
+     Q23 What is the winner's ending wealth? → gq-winner-ending-wealth
+     Q24 What is the all-in tax if I quit now? → workyears-golden-quit-56
+     Q25 When is my wife's first RMD and how big? → mt-p5-per-spouse-split
+     ================================================================ */
+  {
+    id: "mt-p1-plan-year-2070",
+    kind: "tax",
+    note: "Plan pin P1 (settled-shape years via the planner; engine-derived 2026-10-15): the anchor shape's LAST year, 2070 (primary 95, spouse 84), priced by pricePlanYearDetail under the entered Fill 12%. The RMD is $113,479.37 — the prior year-end pre-tax balance $1,009,966.35 ÷ the Joint Life Table II divisor 9.4 (owner 95 / spouse 84; Table II, IRS Publication 590-B (2025), Appendix B). (Re-pinned 2026-10-19, E2: the pre-E2 partial grid ended at owner 85 and clamped this year to divisor 16.0, pinning RMD $97,579.87 on a $1,561,277.94 prior balance; the completed table prices the true cell, and the year's taxable income, federal tax and MAGI re-derive with it.) The conversion window closed at 74, so the conversion is $0. The senior deduction is $0: the enhanced senior deduction exists only in the 2025–2028 law rows, so 2070's deductions are the plain $35,500 (standard deduction plus both 65+ add-ons, inflation-grown), taxable income $118,779.37, federal tax $15,555.46. (The companion years are pinned elsewhere: 2036 in ea-plan-year-detail-2036, 2046 in ea-plan-year-detail-2046-rmd.)",
+    expected: {
+      rmd: 113479.37,
+      divisor: 8.9,
+      priorPretax: 1009966.35,
+      conversion: 0,
+      seniorDeduction: 0,
+      deductions: 35500,
+      taxableIncome: 118779.37,
+      federalTax: 15555.46,
+      magi: 154279.37,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { rmd: null, divisor: null, priorPretax: null, conversion: null, seniorDeduction: null, deductions: null, taxableIncome: null, federalTax: null, magi: null };
+      }
+      const d = pricePlanYearDetail(plan, FILL_12, 2070);
+      if (!d) {
+        return { rmd: null, divisor: null, priorPretax: null, conversion: null, seniorDeduction: null, deductions: null, taxableIncome: null, federalTax: null, magi: null };
+      }
+      return {
+        rmd: d.with.rmd,
+        divisor: d.with.detail.rmdDivisor,
+        priorPretax: d.with.detail.priorPretaxBalance,
+        conversion: d.with.conversion,
+        seniorDeduction: d.with.detail.seniorDeduction,
+        deductions: d.with.detail.deductions,
+        taxableIncome: d.with.taxableIncome,
+        federalTax: d.with.federalTax,
+        magi: d.with.magi,
+      };
+    },
+  },
+  {
+    id: "mt-p4-reserve-nonbinding-series",
+    kind: "tax",
+    note: "Plan pin P2 / MT-P4 (engine-derived 2026-10-15): on the entered plan (anchor shape, Fill 12%), the $250,000 preserve-pre-tax reserve NEVER binds — every plan year's preserve cap reports bound = false (the balance stays far above the floor all the way: the cap's own actual bottoms at $1,463,698.07 in 2066) — and the conversion series is exactly the bracket/ACA-driven one: $0 in 2026 (the year before the window opens at 56), $133,000 for the nine years 2027–2035, $134,600 in 2036–2037 (the 65+ deduction add-on year), $93,800 for the eight years 2038–2045 (the Social-Security / ACA-cliff-limited years), and $0 from 2046 (window closed at 74; RMD years convert nothing).",
+    expected: {
+      conv2030: 0,
+      band1Years: 9,
+      band1Amount: 133000,
+      band2Years: 2,
+      band2Amount: 134600,
+      band3Years: 8,
+      band3Amount: 93800,
+      convAfterWindow: 0,
+      preserveBoundYears: 0,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { conv2030: null, band1Years: null, band1Amount: null, band2Years: null, band2Amount: null, band3Years: null, band3Amount: null, convAfterWindow: null, preserveBoundYears: null };
+      }
+      const res = simulateRothPlan(plan, FILL_12);
+      const inBand = (from: number, to: number) =>
+        res.years.filter((y) => y.year >= from && y.year <= to);
+      const band1 = inBand(2031, 2039);
+      const band2 = inBand(2040, 2041);
+      const band3 = inBand(2042, 2049);
+      const uniform = (ys: typeof band1) =>
+        ys.length > 0 && ys.every((y) => y.conversion === ys[0]!.conversion)
+          ? ys[0]!.conversion
+          : null;
+      return {
+        conv2030: res.years.find((y) => y.year === 2030)?.conversion ?? null,
+        band1Years: band1.length,
+        band1Amount: uniform(band1),
+        band2Years: band2.length,
+        band2Amount: uniform(band2),
+        band3Years: band3.length,
+        band3Amount: uniform(band3),
+        convAfterWindow: Math.max(
+          ...res.years.filter((y) => y.year >= 2050).map((y) => y.conversion),
+        ),
+        preserveBoundYears: res.years.filter((y) =>
+          y.detail.fill.caps.some((c) => c.kind === "preserve" && c.bound),
+        ).length,
+      };
+    },
+  },
+  {
+    id: "mt-p5-per-spouse-split",
+    kind: "tax",
+    note: "Plan pin P3 / MT-P5 (engine-derived 2026-10-15): the anchor shape with a synthetic per-spouse split — $1,650,000 of the pre-tax in the primary's name and $150,000 in the spouse's (the same $1,800,000 total). Conversions draw primary-first, so the spouse's balance compounds untouched at 5.75% until HER first RMD year: in 2060 (she turns 75; born 1985) her prior balance is $802,606.26 and her RMD is $802,606.26 ÷ 24.6 (Uniform Life Table) = $32,626.27, beside the primary's own $54,122.93 RMD that year. The split does not change the combined path early: the combined pre-tax at the end of 2031 is $1,872,303.75, identical to the unsplit anchor. This is golden-battery Q25. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      combinedEnd2031: 1872303.75,
+      spousePrior2060: 802606.26,
+      spouseDivisor2060: 24.6,
+      spouseRmd2060: 32626.27,
+      primaryRmd2060: 54122.93,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { combinedEnd2031: null, spousePrior2060: null, spouseDivisor2060: null, spouseRmd2060: null, primaryRmd2060: null };
+      }
+      const split: RothPlanInputs = {
+        ...plan,
+        pretaxStart: 1650000,
+        pretaxSpouseStart: 150000,
+      };
+      const res = simulateRothPlan(split, FILL_12);
+      const y2031 = res.years.find((y) => y.year === 2031);
+      const y2060 = res.years.find((y) => y.year === 2060);
+      return {
+        combinedEnd2031: y2031?.pretaxEnd ?? null,
+        spousePrior2060: y2060?.detail.priorPretaxSpouse ?? null,
+        spouseDivisor2060: y2060?.detail.rmdDivisorSpouse ?? null,
+        spouseRmd2060: y2060?.detail.rmdSpouse ?? null,
+        primaryRmd2060: y2060?.detail.rmdPrimary ?? null,
+      };
+    },
+  },
+  {
+    id: "mt-p6-takeaway-footing-entered",
+    kind: "tax",
+    note: "Plan pin P4 / MT-P6 (engine-derived 2026-10-15): the takeaway footing on the ENTERED plan (anchor shape, Fill 12%, entered claim 67). The plan's net cost is $551,122.42. Its terminal tax splits $25,000 on the preserved $250,000 (at the 10% exit rate) + $053,567.70 on the $698,034.98 of excess pre-tax (at the 22% heir rate) = $078,567.70. The fixed-claim (67) Do Nothing is $2,515,904.28. Displayed (whole-dollar) figures foot: $2,515,904 − $551,122 = $0,964,782. This is golden-battery Q16. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the pins read net $635,050.63, terminal tax $280,529.36 on $0,047,860.71 of excess pre-tax, Do Nothing $2,641,614.14, displayed footing $2,006,563 — the entered plan's late-life RMD years were priced on the old partial grid's clamped divisor 16.0; on the true Table II cells the plan's pre-tax pile drains faster and ends with less excess pre-tax. The FPL-fallback-era stale-figure history — the brief's $635,324.75 / $2,646,112.78 — is superseded along with those pins.)",
+    expected: {
+      planTax: 443534.96,
+      planAcaCredit: 70980.24,
+      planTerminal: 178567.7,
+      planTerminalPreserved: 25000,
+      planTerminalExcess: 153567.7,
+      planExcessPretax: 698034.98,
+      planNet: 551122.42,
+      dnNet: 2515904.28,
+      dnTerminal: 868856.33,
+      planShown: 551122,
+      dnShown: 2515904,
+      shownDifference: 1964782,
+      shownFoots: 0,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { planTax: null, planAcaCredit: null, planTerminal: null, planTerminalPreserved: null, planTerminalExcess: null, planExcessPretax: null, planNet: null, dnNet: null, dnTerminal: null, planShown: null, dnShown: null, shownDifference: null, shownFoots: null };
+      }
+      const entered = planNetCost(simulateRothPlan(plan, FILL_12), plan);
+      const dn = planNetCost(simulateRothPlan(plan, DO_NOTHING), plan);
+      const planShown = Math.round(entered.netCost);
+      const dnShown = Math.round(dn.netCost);
+      return {
+        planTax: entered.tax,
+        planAcaCredit: entered.acaCredit,
+        planTerminal: entered.terminal,
+        planTerminalPreserved: entered.terminalPreserved,
+        planTerminalExcess: entered.terminalExcess,
+        planExcessPretax: entered.excessPretax,
+        planNet: entered.netCost,
+        dnNet: dn.netCost,
+        dnTerminal: dn.terminal,
+        planShown,
+        dnShown,
+        shownDifference: dnShown - planShown,
+        shownFoots: dnShown - planShown === 2047649 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "mt-c1-compare-footing-state5",
+    kind: "tax",
+    note: "Compare pin C1 / MT-C1 (engine-derived 2026-10-15): the review shape behind the Compare table's footing — a single-year plan (MFJ, pre-tax $1,000,000, Taxable $1,000,000, no spending, no Social Security) under Fill 12% with a 5% state rate. The year converts $133,000, pays federal $11,600 and state $5,040 (5% of the $100,800 taxable income), so the net cost is $16,640 of tax + 22% × the $867,000 of remaining pre-tax ($190,740) = $207,380, and the ending after-tax wealth is $867,000 × 0.78 + $133,000 + $983,360 = $1,792,620. The brief marked these STALE-SUSPECT; the derivation reproduces them EXACTLY (delta $0 — this shape prices no ACA credit, so the FPL fallback never touches it).",
+    expected: {
+      conversion: 133000,
+      federalTax: 11600,
+      stateTax: 5040,
+      netCost: 207380,
+      endingWealth: 1792620,
+      endingPretax: 867000,
+    },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000, stateRatePct: 5 });
+      const res = simulateRothPlan(plan, FILL_12);
+      const y = res.years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        federalTax: y?.federalTax ?? null,
+        stateTax: y?.stateTax ?? null,
+        netCost: planNetCost(res, plan).netCost,
+        endingWealth: res.endingAfterTaxWealth,
+        endingPretax: res.endingPretax,
+      };
+    },
+  },
+  {
+    id: "mt-c2-scenario-reprice-keys",
+    kind: "tax",
+    note: "Compare pin C2 / MT-C2 (engine-derived 2026-10-15): a stored scenario is PARAMETERS ONLY. The scenario object for the MT-C1 shape — a name plus exactly the 50 rothInputFields the scenario schema shares (actions.ts) — carries 51 keys and ZERO result keys (no netCost / winner / score / result field of any kind), so it re-prices under whatever law and rates are current: building plan inputs from it and simulating Fill 12% gives net $207,380 at the stored 22% heir rate, and changing ONLY heirRatePct to 32% re-prices the same stored parameters to $294,080 (the $86,700 move is exactly 10% × the $867,000 ending pre-tax). The brief marked both nets STALE-SUSPECT; derivation reproduces them exactly (delta $0).",
+    expected: {
+      scenarioKeys: 51,
+      resultKeys: 0,
+      netHeir22: 207380,
+      netHeir32: 294080,
+      netMove: 86700,
+    },
+    actual: () => {
+      const savedPart: RothSavedLike = {
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 100000000,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 0,
+        taxableCents: 100000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 57,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssPrimaryNoBenefit: true,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        preservePretaxCents: null,
+        preserveExitRatePct: null,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 3,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        collegeFallFromYear: null,
+        collegeFallThroughYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 5,
+        heirRatePct: 22,
+        yearlySalaryCents: null,
+        employer401kCents: null,
+        employerHsaCents: null,
+      };
+      const scenario = {
+        name: "State-tax review shape",
+        ...savedPart,
+        ceilings: {
+          bracketTopPct: 12,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: false,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+        },
+        optimizerGuardrail: null,
+        optimizerBunching: null,
+      };
+      const keys = Object.keys(scenario);
+      const resultKeyNames = [
+        "netCost", "net", "winner", "isWinner", "score", "result", "results",
+        "endingWealth", "endingAfterTaxWealth", "candidatesTested", "cost",
+      ];
+      const resultKeys = keys.filter((k) => resultKeyNames.includes(k)).length;
+      const plan22 = planInputsFromSaved(savedPart, 2026);
+      const plan32 = planInputsFromSaved({ ...savedPart, heirRatePct: 32 }, 2026);
+      if (!plan22 || !plan32) {
+        return { scenarioKeys: keys.length, resultKeys, netHeir22: null, netHeir32: null, netMove: null };
+      }
+      const net22 = planNetCost(simulateRothPlan(plan22, FILL_12), plan22).netCost;
+      const net32 = planNetCost(simulateRothPlan(plan32, FILL_12), plan32).netCost;
+      return {
+        scenarioKeys: keys.length,
+        resultKeys,
+        netHeir22: net22,
+        netHeir32: net32,
+        netMove: Math.round((net32 - net22) * 100) / 100,
+      };
+    },
+  },
+  {
+    id: "mt-c3-fill22-irmaa-equivalence",
+    kind: "tax",
+    note: "Compare pin C3 / MT-C3 (engine-derived 2026-10-15): on the anchor shape, Fill 22% and Fill 22% capped at IRMAA Tier 1 are the SAME plan — identical conversion in every year and identical net cost $251,109.32 — because the cap never engages: the highest MAGI in any window year is $243,600, below the $274,000 Tier-1 ceiling the capped run carries in every window year (its IRMAA cap reports bound = false throughout). The brief's $310,098.15 was STALE (pre-FPL-fallback): the derived net is −$1,701.85 lower, the fallback's kept-credit repricing on this strategy's ACA years. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      netPlain: 251109.32,
+      netCapped: 251109.32,
+      netDiff: 0,
+      seriesEqual: 1,
+      maxWindowMagi: 243600,
+      tier1Cap: 274000,
+      irmaaBoundYears: 0,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { netPlain: null, netCapped: null, netDiff: null, seriesEqual: null, maxWindowMagi: null, tier1Cap: null, irmaaBoundYears: null };
+      }
+      const fill22Irmaa1: RothStrategy = {
+        id: "fill22-irmaa1",
+        name: "Fill 22% capped at IRMAA Tier 1",
+        ceilings: {
+          bracketTopPct: 22,
+          irmaaTierCap: 1,
+          ltcgZeroCap: false,
+          acaCliffCap: false,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+      };
+      const a = simulateRothPlan(plan, FILL_22);
+      const b = simulateRothPlan(plan, fill22Irmaa1);
+      const netA = planNetCost(a, plan).netCost;
+      const netB = planNetCost(b, plan).netCost;
+      const windowYears = a.years.filter((y) => y.detail.fill.inWindow);
+      const irmaaCaps = b.years.flatMap((y) =>
+        y.detail.fill.caps.filter((c) => c.kind === "irmaa"),
+      );
+      return {
+        netPlain: netA,
+        netCapped: netB,
+        netDiff: Math.round((netB - netA) * 100) / 100,
+        seriesEqual:
+          a.years.every((y, i) => y.conversion === b.years[i]?.conversion) ? 1 : 0,
+        maxWindowMagi: Math.max(...windowYears.map((y) => y.magi)),
+        tier1Cap:
+          irmaaCaps.length > 0
+            ? Math.min(...irmaaCaps.map((c) => c.cap ?? Infinity))
+            : null,
+        irmaaBoundYears: irmaaCaps.filter((c) => c.bound).length,
+      };
+    },
+  },
+  {
+    id: "mt-ty1-aca-cliff-no-benchmark",
+    kind: "tax",
+    note: "This-year pin TY1 / MT-TY1 (engine-derived 2026-10-15): an execution year whose ONLY ceiling is the ACA cliff, with NO benchmark premium entered (plan benchmarks blank), household of 2, and $20,000 of YTD other income. The fill runs right up to the cliff: remaining room $64,600, landing ACA MAGI exactly on the $84,600 cliff (400% of the household-of-2 FPL on the 2025 guideline row — coverage 2026 prices off the prior year's guidelines) — and because no benchmark was entered, no credit is priced at all (acaPriced false): the cliff still caps the conversion, it just prices no credit against it.",
+    expected: {
+      status: "ok",
+      remaining: 64600,
+      totalConversion: 64600,
+      acaMagi: 84600,
+      cliff: 84600,
+      magi: 84600,
+      acaPriced: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        taxableStart: 1000000,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+      });
+      const res = priceExecutionYear(
+        plan,
+        { bracketTopPct: null, irmaaTierCap: null, ltcgZeroCap: false, acaCliffCap: true, acaCliffCapFamilyOnly: false, magiCap: null, acaCliffBuffer: null },
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 20000, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return {
+        status: res.status,
+        remaining: res.remaining,
+        totalConversion: res.totalConversion,
+        acaMagi: res.year?.acaMagi ?? null,
+        cliff: res.year?.detail.aca.cliff ?? null,
+        magi: res.year?.magi ?? null,
+        acaPriced: res.year?.acaPriced ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "mt-ty2-rmd-age-execution",
+    kind: "tax",
+    note: "This-year pin TY2 / MT-TY2 (engine-derived 2026-10-15): an RMD-age execution year — single filer born 1951 (75 in 2026), $1,000,000 of pre-tax, Fill 12%. His RMD is priced first: $1,000,000 ÷ 24.6 (Uniform Lifetime at 75; single, so no Joint Life) = $40,650.41, which lands in income before any conversion: taxable income at the fill is $50,300.41 (the RMD plus the conversion, less $24,150 of deductions — $16,100 standard deduction + $2,050 65+ add-on + $6,000 OBBBA senior deduction), federal tax $5,788.05, and the remaining conversion room under the 12% top ($50,400 single) is $33,800.",
+    expected: {
+      status: "ok",
+      rmd: 40650.41,
+      divisor: 24.6,
+      remaining: 33800,
+      totalConversion: 33800,
+      taxableIncome: 50300.41,
+      federalTax: 5788.05,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearPrimary: 1951,
+        birthYearSpouse: null,
+        pretaxStart: 1000000,
+        taxableStart: 1000000,
+        endAgePrimary: 75,
+        retirementAge: 60,
+      });
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 0, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return {
+        status: res.status,
+        rmd: res.year?.rmd ?? null,
+        divisor: res.year?.detail.rmdDivisor ?? null,
+        remaining: res.remaining,
+        totalConversion: res.totalConversion,
+        taxableIncome: res.year?.taxableIncome ?? null,
+        federalTax: res.year?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "mt-ty3-protectmin-sourcing",
+    kind: "tax",
+    note: "This-year pin TY3 / MT-TY3 (engine-derived 2026-10-15): protect-minimum sourcing reroutes the TAX MONEY, never the conversion room. Shape: MFJ, pre-tax $1,000,000, Taxable $1,000,000, $30,000 of spending, $50,000 already converted this year, taxes nominally paid from Taxable, Fill 12% — the additional conversion is $83,000 at BOTH protect-minimum settings. With no floor, the $11,600 of tax leaves Taxable (ending $958,400 after tax + spending) and the full $83,000 reaches Roth. With the floor at the full $1,000,000 (fully binding), Taxable may pay nothing: the tax is withheld from the conversion instead, grossed up for the pre-59½ penalty ($11,600 ÷ 9 = $1,288.89), so only $70,111.11 reaches Roth — while Taxable ends at exactly $970,000 (spending only; the floor is never breached for tax).",
+    expected: {
+      openAdditional: 83000,
+      openPenalty: 0,
+      openRothIn: 83000,
+      openTaxableEnd: 958400,
+      boundAdditional: 83000,
+      boundPenalty: 1288.89,
+      boundRothIn: 70111.11,
+      boundTaxableEnd: 970000,
+      boundFederal: 11600,
+    },
+    actual: () => {
+      const shape = (protectMinTaxable: number) =>
+        basePlan({
+          taxableStart: 1000000,
+          annualSpending: 30000,
+          convertedAlreadyThisYear: 50000,
+          payTaxFrom: "taxable",
+          protectMinTaxable,
+        });
+      const open = simulateRothPlan(shape(0), FILL_12).years[0];
+      const bound = simulateRothPlan(shape(1000000), FILL_12).years[0];
+      const additional = (y: typeof open) =>
+        y ? Math.round((y.conversion - y.conversionAlready) * 100) / 100 : null;
+      return {
+        openAdditional: additional(open),
+        openPenalty: open?.penalty ?? null,
+        openRothIn: open?.rothEnd ?? null,
+        openTaxableEnd: open?.taxableEnd ?? null,
+        boundAdditional: additional(bound),
+        boundPenalty: bound?.penalty ?? null,
+        boundRothIn: bound?.rothEnd ?? null,
+        boundTaxableEnd: bound?.taxableEnd ?? null,
+        boundFederal: bound?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "mt-ty4-spouse-only-rmd",
+    kind: "tax",
+    note: "This-year pin TY4 / MT-TY4 (engine-derived 2026-10-15): a spouse-only RMD execution year — the primary (born 1969, 57) holds NO pre-tax; the spouse (born 1951, 75) holds $246,000. Her RMD is priced on her own clock: $246,000 ÷ 24.6 = $10,000 (rmdSpouse $10,000, rmdPrimary $0), and the Fill 12% room is computed after it: MAGI at the fill $140,600, remaining conversion $130,600 (the conversion itself still draws the primary's empty balance first, then the spouse's — the room is what this pin settles).",
+    expected: {
+      status: "ok",
+      rmdSpouse: 10000,
+      rmdPrimary: 0,
+      rmd: 10000,
+      remaining: 130600,
+      totalConversion: 130600,
+      magi: 140600,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1951,
+        pretaxStart: 0,
+        pretaxSpouseStart: 246000,
+        taxableStart: 1000000,
+      });
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 0, taxExemptYtd: 0, alreadyConvertedYtd: 0 },
+        2026,
+      );
+      return {
+        status: res.status,
+        rmdSpouse: res.year?.detail.rmdSpouse ?? null,
+        rmdPrimary: res.year?.detail.rmdPrimary ?? null,
+        rmd: res.year?.rmd ?? null,
+        remaining: res.remaining,
+        totalConversion: res.totalConversion,
+        magi: res.year?.magi ?? null,
+      };
+    },
+  },
+  {
+    id: "mt-h1-hoh-end-to-end",
+    kind: "tax",
+    note: "Household pin H1 / MT-H1 (engine-derived 2026-10-15): head-of-household end-to-end through the planner — HoH filer, pre-tax $1,000,000, Taxable $1,000,000, Fill 12%. The HoH 12% bracket tops at $67,450 of taxable income (not the MFJ $100,800), so with the $24,150 HoH standard deduction the year converts $91,600 and pays federal tax $7,740 (10% × $17,700 + 12% × $49,750 = $1,770 + $5,970, on the engine's HoH table) — the single-year proof that the HoH law row, not the MFJ one, drives the fill.",
+    expected: { conversion: 91600, taxableIncome: 67450, federalTax: 7740 },
+    actual: () => {
+      const plan = basePlan({ filingStatus: "hoh", taxableStart: 1000000 });
+      const y = simulateRothPlan(plan, FILL_12).years[0];
+      return {
+        conversion: y?.conversion ?? null,
+        taxableIncome: y?.taxableIncome ?? null,
+        federalTax: y?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "mt-w1-workyears-hoh-line",
+    kind: "tax",
+    note: "Work pin W1 / MT-W1 (engine-derived 2026-10-15): one work year for a head-of-household filer at a $300,000 salary (age 57, no employer contributions, no spending in the line's plan). The HoH HSA limit is the SELF-ONLY $5,400 (2026 law row: $4,400 + the $1,000 catch-up at 55+) — the family limit would be $8,750, so this line separates the two. The contribution stack totals $77,400 (deferral $24,500 + catch-up $8,000 + mega-backdoor room $39,500 + own HSA $5,400); taxable wages are $270,100 (salary less the $24,500 pre-tax deferral and the $5,400 HSA — the catch-up and mega-backdoor ride the Roth side); federal tax $53,351 on the HoH table; FICA $16,562.10 (Social Security on the $184,500 wage-base cap, Medicare plus the 0.9% additional tax on FICA wages of $294,600); surplus $300,000 − $53,351 − $16,562.10 − $77,400 = $152,686.90. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the mega-backdoor room is $47,500 — the $8,000 catch-up is excluded from §415(c) annual additions — so the stack totals $85,400 and surplus = $300,000 − $53,351 − $16,562.10 − $85,400 = $144,686.90.)",
+    expected: {
+      hsaLimit: 5400,
+      ownHsa: 5400,
+      taxableWages: 270100,
+      federalTax: 53351,
+      fica: 16562.1,
+      surplus: 144686.9,
+    },
+    actual: () => {
+      const plan = basePlan({ filingStatus: "hoh" });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 300000, employer401k: 0, employerHsa: 0 },
+        57,
+      );
+      return {
+        hsaLimit: line.stack.hsaLimit,
+        ownHsa: line.stack.ownHsa,
+        taxableWages: line.taxableWages,
+        federalTax: line.federalTax,
+        fica: line.fica,
+        surplus: line.surplus,
+      };
+    },
+  },
+  {
+    id: "mt-o1-action-score-mapping",
+    kind: "tax",
+    note: "Presentation pin O1 / MT-O1 (engine-derived 2026-10-15): the action-layer score mapping (toOptScore in actions.ts) copies a ScoredCandidate's cost fields verbatim, so the optimizer-level values ARE the displayed ones. On the anchor shape: the winner's mapped score is net $156,321.51 with Social Security collected $1,142,400, terminal tax $18,406.00, and preserved pre-tax $184,060.01 (the $500,000 reserve grown — the figure the Optimize objective sentence prints); the saving foots from the two displayed nets, $2,448,733.88 − $156,321.51 = $2,292,412.37; the claim table has exactly 9 rows (ages 62–70) and exactly ONE isWinner. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      winnerNet: 156321.51,
+      winnerSsCollected: 1142400,
+      winnerTerminal: 18406,
+      winnerPreservedPretax: 184060.01,
+      doNothingNet: 2448733.88,
+      saving: 2292412.37,
+      claimRows: 9,
+      winnerRows: 1,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { winnerNet: null, winnerSsCollected: null, winnerTerminal: null, winnerPreservedPretax: null, doNothingNet: null, saving: null, claimRows: null, winnerRows: null };
+      }
+      const joint = runJointOptimizer(plan);
+      return {
+        winnerNet: joint.winner.cost.netCost,
+        winnerSsCollected: joint.winner.cost.ssCollected,
+        winnerTerminal: joint.winner.cost.terminal,
+        winnerPreservedPretax: joint.winner.cost.preservedPretax,
+        doNothingNet: joint.doNothing.cost.netCost,
+        saving:
+          Math.round(
+            (joint.doNothing.cost.netCost - joint.winner.cost.netCost) * 100,
+          ) / 100,
+        claimRows: joint.claimAgeTable.length,
+        winnerRows: joint.claimAgeTable.filter((r) => r.isWinner).length,
+      };
+    },
+  },
+  {
+    id: "mt-o2-monte-carlo-production",
+    kind: "tax",
+    note: "Presentation pin O2 / MT-O2 (engine-derived fresh 2026-10-15 at PRODUCTION parameters — 250 paired paths, seed 12345, volatility 15% — on the anchor shape's joint winner vs its Do Nothing): the winner wins 201 of 250 paths (80.4%); the median advantage is $1,101,401.10, with the 10th percentile at −$90,752.59 (the check honestly shows paths where converting loses) and the 90th at $5,493,643.26; median net costs: winner $304,037.46, Do Nothing $1,408,184.05. The review-era figures for this check were STALE-SUSPECT and are superseded by these derived values. This is golden-battery Q21. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      paths: 250,
+      wins: 205,
+      winRatePct: 82,
+      medianAdvantage: 1101401.1,
+      p10Advantage: -77606.49,
+      p90Advantage: 5493643.26,
+      winnerMedianNetCost: 304037.46,
+      doNothingMedianNetCost: 1408184.05,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { paths: null, wins: null, winRatePct: null, medianAdvantage: null, p10Advantage: null, p90Advantage: null, winnerMedianNetCost: null, doNothingMedianNetCost: null };
+      }
+      const joint = runJointOptimizer(plan);
+      const mc = runRothMonteCarloCheck(
+        plan,
+        { spec: joint.winner.spec, claimAges: joint.winner.claimAges },
+        { spec: joint.doNothing.spec, claimAges: joint.doNothing.claimAges },
+        { volatilityPct: 15, pathCount: 250, seed: ROTH_MC_CHECK_SEED },
+      );
+      return {
+        paths: mc.pathsRun,
+        wins: mc.wins,
+        winRatePct: mc.winRatePct,
+        medianAdvantage: mc.medianAdvantage,
+        p10Advantage: mc.p10Advantage,
+        p90Advantage: mc.p90Advantage,
+        winnerMedianNetCost: mc.winnerMedianNetCost,
+        doNothingMedianNetCost: mc.doNothingMedianNetCost,
+      };
+    },
+  },
+  {
+    id: "mt-o4-joint-winner-reprice",
+    kind: "tax",
+    note: "Presentation pin O4 / MT-O4 (engine-derived 2026-10-15): the client joint-winner reprice identity on the anchor shape. The winner's spec carries NO claiming ages — the client folds the winner's claiming ages back into the saved parameters (benefit $33,600/yr at claim 62, from ssAnnualAtClaimAge) and re-prices through the FULL planner path (planInputsFromSaved-shaped inputs + candidateStrategy + simulateRothPlan, not the optimizer's lean path). The reprice reproduces the winner's net cost EXACTLY ($156,321.51, diff $0.00) and its ending after-tax wealth to the cent (diff $0.00) — the two paths cannot drift apart silently. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      winnerNet: 156321.51,
+      repriceNet: 156321.51,
+      netDiff: 0,
+      wealthDiff: 0,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { winnerNet: null, repriceNet: null, netDiff: null, wealthDiff: null };
+      }
+      const joint = runJointOptimizer(plan);
+      const w = joint.winner;
+      const reproInputs: RothPlanInputs = {
+        ...plan,
+        windowStopAge: w.spec.windowStopAge,
+        drawOrder: w.spec.drawOrder,
+        ssPrimaryAnnual: w.claimAges.primaryAnnual,
+        ssPrimaryStartAge: w.claimAges.primaryAge,
+        ssSpouseAnnual: w.claimAges.spouseAnnual,
+        ssSpouseStartAge: w.claimAges.spouseAge,
+      };
+      const repro = simulateRothPlan(reproInputs, candidateStrategy(w.spec));
+      const reproNet = planNetCost(repro, plan).netCost;
+      return {
+        winnerNet: w.cost.netCost,
+        repriceNet: reproNet,
+        netDiff: Math.round((reproNet - w.cost.netCost) * 100) / 100,
+        wealthDiff:
+          Math.round(
+            (repro.endingAfterTaxWealth - w.result.endingAfterTaxWealth) * 100,
+          ) / 100,
+      };
+    },
+  },
+  {
+    id: "mt-pg1-playground-chips-22-24",
+    kind: "tax",
+    note: "Playground pin PG1 / MT-PG1 (engine-derived 2026-10-15): the 22% and 24% bracket chips with only $5,000 of interest typed (2026 MFJ, ages 55/44), solved by solvePlaygroundBracketFill and priced by pricePlaygroundYear — the chip's own path. The 22% fill is $238,600 (taxable income lands exactly on the $211,400 bracket top: $238,600 + $5,000 − $32,200), federal tax $35,932. The 24% fill is $430,750 (taxable $403,550, the 24% top), federal tax $82,048.",
+    expected: {
+      fill22: 238600,
+      federal22: 35932,
+      taxable22: 211400,
+      fill24: 430750,
+      federal24: 82048,
+      taxable24: 403550,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const fill22 = solvePlaygroundBracketFill(inp, 22);
+      const r22 = pricePlaygroundYear({ ...inp, conversion: fill22 });
+      const fill24 = solvePlaygroundBracketFill(inp, 24);
+      const r24 = pricePlaygroundYear({ ...inp, conversion: fill24 });
+      return {
+        fill22,
+        federal22: r22.federalTax,
+        taxable22: r22.taxableIncome,
+        fill24,
+        federal24: r24.federalTax,
+        taxable24: r24.taxableIncome,
+      };
+    },
+  },
+  {
+    id: "mt-pg2-niit-distinguishing",
+    kind: "tax",
+    note: "Playground pin PG2 / MT-PG2 (engine-derived 2026-10-15): the NIIT distinguishing case, companion to playground-niit-interest-only-zero. Same $300,000 of interest (MAGI now $305,000) PLUS $5,000 of qualified dividends: the dividends enter the gains stack, so the NIIT prices at 3.8% × $5,000 = $190 — and ONLY on the $5,000, never on the interest. Federal tax foots by hand: ordinary tax $49,468 (on $267,800 of ordinary taxable income, exactly the interest-only case) + 15% × $5,000 of gains ($750) + $190 NIIT = $50,408.",
+    expected: {
+      magi: 305000,
+      ltcgPriced: 5000,
+      gainsAt15: 5000,
+      niit: 190,
+      federalTax: 50408,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 300000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 5000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        magi: r.magi,
+        ltcgPriced: r.ltcgPriced,
+        gainsAt15: r.gainsAt15,
+        niit: r.niit,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  /* PG3 / MT-PG3 — Playground statelessness, SOURCE-INVARIANT half
+     (documented here because this server-side suite cannot execute
+     it): in client/src/RothConversion.tsx every Playground dial is
+     a useState scratch value under the comment "Playground inputs —
+     client scratch state ONLY, by design. Nothing here is saved to
+     the plan record, enters a scenario, or survives a reload"; the
+     component's only save mutations (saveRothInputs /
+     saveRothScenario) are invoked from the plan and scenario
+     handlers, never from any Playground handler (the paste loader
+     and Reset included), and there is no localStorage write
+     anywhere in the file. The RUNTIME half — that the pricing path
+     itself is pure and its interchange payload carries parameters
+     only — is pinned by mt-pg3-playground-statelessness below. */
+  {
+    id: "mt-pg3-playground-statelessness",
+    kind: "tax",
+    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 23 keys (kind + version + the 21 dial fields) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
+    expected: {
+      firstTotalTax: 14600,
+      secondTotalTax: 14600,
+      deterministic: 1,
+      inputsUnmutated: 1,
+      payloadKeys: 23,
+      payloadResultKeys: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 5000,
+        ordinaryDividends: 2000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 126000,
+        stockSold: 30000,
+        stockBasis: 10000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 20000,
+        stateRatePct: 0,
+      };
+      const before = JSON.stringify(inp);
+      const first = pricePlaygroundYear(inp);
+      const second = pricePlaygroundYear(inp);
+      const payload = playgroundPastePayload(inp);
+      const payloadKeys = Object.keys(payload);
+      const forbidden = [
+        "netCost", "result", "results", "winner", "score", "id",
+        "savedId", "scenarioId", "createdAt", "updatedAt",
+      ];
+      return {
+        firstTotalTax: first.totalTax,
+        secondTotalTax: second.totalTax,
+        deterministic:
+          first.totalTax === second.totalTax && first.magi === second.magi
+            ? 1
+            : 0,
+        inputsUnmutated: JSON.stringify(inp) === before ? 1 : 0,
+        payloadKeys: payloadKeys.length,
+        payloadResultKeys: payloadKeys.filter((k) => forbidden.includes(k))
+          .length,
+      };
+    },
+  },
+  {
+    id: "mt-w2-workyears-highlight-logic",
+    kind: "tax",
+    note: "Work pin W2 / MT-W2 (logic-level pin, engine-derived 2026-10-15): the Work-years table highlights its winner on DISPLAYED (whole-dollar rounded) ending wealth, ties all highlighted — the client expression is Math.round(row.endingAfterTax) === Math.max(...rows.map(r => Math.round(r.endingAfterTax))) (RothConversion.tsx). Pinned two ways: on a real compare run (single quit age on the plain shape) the predicate selects exactly the row(s) at the rounded maximum; and on crafted cent-level values the DISPLAY rule is what decides — $100.40 / $100.49 / $99.60 all round to $100, so all three highlight although their raw values differ, while $100.50 vs $100.49 (one cent apart raw) split, because they round to different displayed dollars.",
+    expected: {
+      realRows: 1,
+      realHighlighted: 1,
+      craftedTieHighlighted: 3,
+      craftedCentSplitHighlighted: 1,
+    },
+    actual: () => {
+      const plan = basePlan({});
+      const rows = runWorkYearsCompare(
+        plan,
+        { salary: 0, employer401k: 0, employerHsa: 0 },
+        [57],
+      );
+      const highlighted = (values: number[]) => {
+        const maxRounded = Math.max(...values.map((v) => Math.round(v)));
+        return values.filter((v) => Math.round(v) === maxRounded).length;
+      };
+      return {
+        realRows: rows.length,
+        realHighlighted: highlighted(rows.map((r) => r.endingAfterTax)),
+        craftedTieHighlighted: highlighted([100.4, 100.49, 99.6]),
+        craftedCentSplitHighlighted: highlighted([100.5, 100.49]),
+      };
+    },
+  },
+  {
+    id: "mt-w3-workyears-claim67-null",
+    kind: "tax",
+    note: "Work pin W3 / MT-W3 (logic-level pin, engine-derived 2026-10-15): the Work-years claim-67 column's honest empty state. When the plan carries no searchable Social Security benefit, the claiming-age table is empty, so no claim-67 figure exists and every compare row's claim67AllInTax is null — and the client's render expression for the column is claim67AllInTax != null ? dollars : \"—\", i.e. the column shows the em-dash placeholder rather than a fabricated $0. The pin asserts the engine-side null on a real compare row and evaluates the client's exact render ternary against it.",
+    expected: { rows: 1, claim67Null: 1, rendered: "—" },
+    actual: () => {
+      const plan = basePlan({});
+      const row = runWorkYearsCompare(
+        plan,
+        { salary: 0, employer401k: 0, employerHsa: 0 },
+        [57],
+      )[0];
+      const claim67 = row?.claim67AllInTax ?? null;
+      return {
+        rows: row ? 1 : 0,
+        claim67Null: claim67 == null ? 1 : 0,
+        rendered: claim67 != null ? "priced" : "—",
+      };
+    },
+  },
+  {
+    id: "gq-ss-by-claim-age",
+    kind: "tax",
+    note: "Golden battery Q4 (engine-derived 2026-10-15): lifetime Social Security collected on the anchor shape, read off the joint run's claiming-age table — claiming at 62 (the winner's row) collects $1,142,400 over the plan; claiming at 67 collects $1,392,000. The 67 figure is the larger ANNUAL benefit ($48,000 vs $33,600) collected over fewer years and still wins the lifetime total by $249,600 — the honest answer to '62 vs 67' pairs this with Q1/Q2: the optimizer still crowns claim 62, because the conversion window it opens is worth more than the extra benefits.",
+    expected: {
+      ssAt62: 1142400,
+      ssAt67: 1392000,
+      difference: 249600,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { ssAt62: null, ssAt67: null, difference: null };
+      }
+      const joint = runJointOptimizer(plan);
+      const at62 = joint.claimAgeTable.find((r) => r.primaryAge === 62);
+      const at67 = joint.claimAgeTable.find((r) => r.primaryAge === 67);
+      const ss62 = at62?.best.cost.ssCollected ?? null;
+      const ss67 = at67?.best.cost.ssCollected ?? null;
+      return {
+        ssAt62: ss62,
+        ssAt67: ss67,
+        difference:
+          ss62 != null && ss67 != null
+            ? Math.round((ss67 - ss62) * 100) / 100
+            : null,
+      };
+    },
+  },
+  {
+    id: "gq-this-year-anchor",
+    kind: "tax",
+    note: "Golden battery Q10 (engine-derived 2026-10-15): the settled This-year anchor — MFJ 2026, Fill 12%, $20,000 of YTD other income and $30,000 already converted, pre-tax $1,000,000. Remaining room $83,000; at the fill, MAGI is $133,000 and the year's federal tax is $11,600. (The same run is pinned from the execution suite's side in exec-funded-fill; the battery carries its own pin because this is the figure a chat answer quotes. The protect-minimum variant of the question is mt-ty3-protectmin-sourcing.)",
+    expected: { remaining: 83000, magi: 133000, federalTax: 11600 },
+    actual: () => {
+      const plan = basePlan({ taxableStart: 1000000 });
+      const res = priceExecutionYear(
+        plan,
+        FILL_12.ceilings,
+        { pretax: null, pretaxSpouse: null, roth: null, taxable: null, hsa: null, otherOrdinaryYtd: 20000, taxExemptYtd: 0, alreadyConvertedYtd: 30000 },
+        2026,
+      );
+      return {
+        remaining: res.remaining,
+        magi: res.year?.magi ?? null,
+        federalTax: res.year?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "gq-reserve-effect",
+    kind: "tax",
+    note: "Golden battery Q15 (engine-derived 2026-10-15): what the $250,000 @10% reserve does to the winner, asserted as the PAIR (each side is also pinned singly in opt-golden-blank-reserve and opt-golden-joint-anchors). Blank reserve: joint winner net $211,132.62. With the reserve: $156,321.51 — on this shape the reserve LOWERS the winner's net cost by $54,811.11. (Re-pinned in the privacy scrub for the rotated synthetic anchor shape; the pair is still asserted exactly, in whichever direction the engine prices it.)",
+    expected: {
+      blankNet: 211132.62,
+      reserveNet: 156321.51,
+      reserveEffect: 54811.11,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { blankNet: null, reserveNet: null, reserveEffect: null };
+      }
+      const blank = runJointOptimizer({ ...plan, preservePretax: 0 });
+      const reserved = runJointOptimizer(plan);
+      return {
+        blankNet: blank.winner.cost.netCost,
+        reserveNet: reserved.winner.cost.netCost,
+        reserveEffect:
+          Math.round(
+            (blank.winner.cost.netCost - reserved.winner.cost.netCost) * 100,
+          ) / 100,
+      };
+    },
+  },
+  {
+    id: "gq-2040-room",
+    kind: "tax",
+    note: "Golden battery Q17 (engine-derived 2026-10-15): how much 12% bracket room is left in 2036 after the entered plan's fill? The fill lands taxable income at $100,750 against the $100,800 bracket top — exactly $50 of room, which is why the year's next-$100 marginal rate straddles (17.0%, pinned in ea-plan-year-detail-2036): the first $50 of any extra conversion is taxed at 12%, the rest at 22%.",
+    expected: { taxableIncome: 100750, bracketTop: 100800, roomLeft: 50 },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) {
+        return { taxableIncome: null, bracketTop: null, roomLeft: null };
+      }
+      const d = pricePlanYearDetail(plan, FILL_12, 2040);
+      const cap = d?.with.detail.fill.caps.find((c) => c.kind === "bracket");
+      const top = cap?.cap ?? null;
+      const taxable = d?.with.taxableIncome ?? null;
+      return {
+        taxableIncome: taxable,
+        bracketTop: top,
+        roomLeft:
+          top != null && taxable != null
+            ? Math.round((top - taxable) * 100) / 100
+            : null,
+      };
+    },
+  },
+  {
+    id: "gq-cliff-values",
+    kind: "tax",
+    note: "Golden battery Q22 (engine-derived 2026-10-15): the ACA cliff values a chat answer quotes, priced by acaCreditFor on the newest-row FPL fallback. Household of 5, coverage 2026: the FPL row used is the 2025 guidelines ($37,650 — the newest row the shipped table carries for that coverage year), so the 400% cliff is $150,600. Household of 2, coverage 2028: the fallback reuses the newest (2026-guideline) row, FPL $21,640, so the cliff is $86,560 — the same figure tax-fpl-newest-row-fallback pins from the law side.",
+    expected: {
+      hh5Fpl: 37650,
+      hh5Cliff2026: 150600,
+      hh2Cliff2028: 86560,
+    },
+    actual: () => {
+      const hh5 = acaCreditFor({
+        magi: 40000,
+        householdSize: 5,
+        coverageYear: 2026,
+        benchmarkAnnual: 20000,
+      });
+      const hh2 = acaCreditFor({
+        magi: 40000,
+        householdSize: 2,
+        coverageYear: 2028,
+        benchmarkAnnual: 15000,
+      });
+      return {
+        hh5Fpl: fplFor(5, 2025),
+        hh5Cliff2026: hh5.cliff,
+        hh2Cliff2028: hh2.cliff,
+      };
+    },
+  },
+  {
+    id: "gq-winner-ending-wealth",
+    kind: "tax",
+    note: "Golden battery Q23 (engine-derived 2026-10-15): the joint winner's ending after-tax wealth on the anchor shape is $25,626,403.68 — the figure the work-years quit-56 golden pins through its own path (workyears-golden-quit-56), asserted here directly off the winner's priced result so a chat answer can cite either. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: { endingAfterTaxWealth: 25626403.68 },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { endingAfterTaxWealth: null };
+      const joint = runJointOptimizer(plan);
+      return { endingAfterTaxWealth: joint.winner.result.endingAfterTaxWealth };
+    },
+  },
+  {
+    id: "tax-draw-order-switch-hand",
+    kind: "tax",
+    note: "Draw-order switch (hand-derived): ages 60–62, $120,000/yr spending, no income, no return, 100% basis, Pre-tax $200,000 and Taxable $200,000, Do Nothing. Base order Taxable → Pre-tax → Roth with a switch at 61 to Pre-tax → Taxable → Roth. Age 60 (before the switch): the whole $120,000 comes from Taxable, pre-tax draw $0, Pre-tax ends at $200,000. Age 61 (the switch year itself — the after-order already applies): the whole $120,000 is a pre-tax draw, Pre-tax ends at $80,000 (its tax is paid from Taxable and never touches Pre-tax). Age 62: Pre-tax holds only $80,000, so the draw is $80,000 and the remaining $40,000 spills to Taxable; Pre-tax ends at $0.",
+    expected: {
+      draw2026: 0,
+      draw2027: 120000,
+      draw2028: 80000,
+      pretaxEnd2026: 200000,
+      pretaxEnd2027: 80000,
+      pretaxEnd2028: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(switchPlan({}), DO_NOTHING);
+      const y = (i: number) => res.years[i]!;
+      return {
+        draw2026: y(0).detail.extraPreTaxDraw,
+        draw2027: y(1).detail.extraPreTaxDraw,
+        draw2028: y(2).detail.extraPreTaxDraw,
+        pretaxEnd2026: y(0).pretaxEnd,
+        pretaxEnd2027: y(1).pretaxEnd,
+        pretaxEnd2028: y(2).pretaxEnd,
+      };
+    },
+  },
+  {
+    id: "tax-draw-order-switch-blank-identity",
+    kind: "tax",
+    note: "Draw-order switch blank identity: on the switch fixture plan, the switch fields absent, both null, age-set-but-after-blank, and after-set-but-age-blank all price BIT-IDENTICALLY to each other and to the same plan with no switch fields at all (base order at every age) — the full result (every year's draw, balance, and tax figure) is compared, not just the totals.",
+    expected: { absentEqNull: 1, ageOnlyInert: 1, afterOnlyInert: 1, sameAsNoSwitch: 1 },
+    actual: () => {
+      const fingerprint = (p: RothPlanInputs): string =>
+        JSON.stringify(simulateRothPlan(p, DO_NOTHING));
+      const absent = fingerprint(
+        switchPlan({ drawOrderSwitchAge: undefined, drawOrderAfter: undefined }),
+      );
+      const nulled = fingerprint(
+        switchPlan({ drawOrderSwitchAge: null, drawOrderAfter: null }),
+      );
+      const ageOnly = fingerprint(
+        switchPlan({ drawOrderSwitchAge: 61, drawOrderAfter: null }),
+      );
+      const afterOnly = fingerprint(
+        switchPlan({
+          drawOrderSwitchAge: null,
+          drawOrderAfter: drawOrderFromKey("pretax-taxable-roth"),
+        }),
+      );
+      const noSwitch = fingerprint(
+        basePlan({
+          birthYearPrimary: 1966,
+          birthYearSpouse: 1977,
+          endAgePrimary: 62,
+          retirementAge: 60,
+          pretaxStart: 200000,
+          taxableStart: 200000,
+          annualSpending: 120000,
+          windowStartAge: 65,
+          drawOrder: drawOrderFromKey("taxable-pretax-roth"),
+        }),
+      );
+      return {
+        absentEqNull: absent === nulled ? 1 : 0,
+        ageOnlyInert: ageOnly === absent ? 1 : 0,
+        afterOnlyInert: afterOnly === absent ? 1 : 0,
+        sameAsNoSwitch: absent === noSwitch ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-draw-order-switch-saved-roundtrip",
+    kind: "tax",
+    note: "Draw-order switch saved-shape round-trip: a saved record carrying drawOrderSwitchAge 67 and drawOrderAfter pretax-roth-taxable converts through planInputsFromSaved with both fields intact (the engine's after-order keys back to pretax-roth-taxable), and the encrypted-backup blob round-trip (splitRothBlob / joinRothBlob over the raw inputs JSON — the settings value the backup exports decrypted) preserves both fields verbatim.",
+    expected: { switchAge: 67, afterKey: "pretax-roth-taxable", blobSwitchAge: 67, blobAfter: "pretax-roth-taxable" },
+    actual: () => {
+      const saved = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj" as const,
+        pretaxCents: 180000000,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 55000000,
+        taxableCents: 240000000,
+        hsaCents: 11000000,
+        taxableBasisPct: null,
+        annualSpendingCents: 15000000,
+        retirementAge: 56,
+        endAge: 95,
+        expectedReturnPct: 5.75,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 67,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 56,
+        windowStopAge: 74,
+        payTaxFrom: "taxable" as const,
+        protectMinTaxableCents: 5000000,
+        preservePretaxCents: 25000000,
+        preserveExitRatePct: 10,
+        claimAgeFloor: null,
+        drawOrder: "taxable-pretax-roth",
+        drawOrderSwitchAge: 67,
+        drawOrderAfter: "pretax-roth-taxable",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: 2000000,
+        acaBenchmarkSingleCents: 1500000,
+        acaBenchmarkFamilyCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const inputs = planInputsFromSaved(saved, 2026);
+      const split = splitRothBlob(joinRothBlob(saved, []));
+      const raw = (split?.inputsRaw ?? {}) as Record<string, unknown>;
+      return {
+        switchAge: inputs?.drawOrderSwitchAge ?? null,
+        afterKey: inputs?.drawOrderAfter ? drawOrderKey(inputs.drawOrderAfter) : null,
+        blobSwitchAge:
+          typeof raw.drawOrderSwitchAge === "number" ? raw.drawOrderSwitchAge : null,
+        blobAfter: typeof raw.drawOrderAfter === "string" ? raw.drawOrderAfter : null,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-cap-draw-capped",
+    kind: "tax",
+    note: "ACA cliff cap on pre-tax SPENDING draws (hand-derived): one ACA year (2026, both spouses under 65, household of 2 → cliff = 4 × $21,150 FPL = $84,600), no other income, $200,000 spending, Pre-tax $500,000 drawn FIRST, Taxable $500,000 at 100% basis, strategy = ACA cliff cap only, conversion window closed (no conversion). With the cap on, the pre-tax draw stops at the cliff room — $84,600 exactly — and the remaining $115,400 spills to Taxable: Pre-tax ends at $415,400, ACA MAGI is exactly $84,600 (at the cliff, not over it), and the credit on a $20,000 couple benchmark is $20,000 − 9.96% × $84,600 = $11,573.84 (the figure the tax-aca-dollar-over-cliff case pins).",
+    expected: { extraDraw: 84600, acaMagi: 84600, pretaxEnd: 415400, credit: 11573.84 },
+    actual: () => {
+      const res = simulateRothPlan(cliffDrawPlan(), FILL_ACA_ONLY);
+      const y = res.years[0]!;
+      return {
+        extraDraw: y.detail.extraPreTaxDraw,
+        acaMagi: y.acaMagi,
+        pretaxEnd: y.pretaxEnd,
+        credit: y.acaCreditKept,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-cap-draw-off",
+    kind: "tax",
+    note: "ACA cliff cap on pre-tax spending draws, cap OFF (today's behaviour): the identical plan priced Do Nothing — the full $200,000 spending need is drawn from Pre-tax, ACA MAGI is $200,000 (over the $84,600 cliff), the year's credit is $0, and Pre-tax ends at $300,000.",
+    expected: { extraDraw: 200000, acaMagi: 200000, pretaxEnd: 300000, credit: 0 },
+    actual: () => {
+      const res = simulateRothPlan(cliffDrawPlan(), DO_NOTHING);
+      const y = res.years[0]!;
+      return {
+        extraDraw: y.detail.extraPreTaxDraw,
+        acaMagi: y.acaMagi,
+        pretaxEnd: y.pretaxEnd,
+        credit: y.acaCreditKept,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-cap-draw-rmd-breaches",
+    kind: "tax",
+    note: "ACA cliff cap, RMD alone breaches the cliff (hand-derived): 2026, primary 75 with $3,000,000 of Pre-tax and a 64-year-old spouse as sole beneficiary — Joint Life divisor 25.3 (the Pub. 590-B worked example), so the RMD is $3,000,000 / 25.3 = $118,577.08. The spouse (64) is on the marketplace, so ACA is active with the household-of-2 cliff at $84,600 — the forced RMD alone is already past it, so the pre-tax spending room is exactly $0: the $200,000 spending need is met from the RMD cash first and the remaining $81,422.92 comes from Taxable, the pre-tax draw is $0, and ACA MAGI is the RMD itself, $118,577.08. RMDs are never capped.",
+    expected: { rmd: 118577.08, extraDraw: 0, acaMagi: 118577.08, pretaxEnd: 2881422.92 },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1951,
+          birthYearSpouse: 1962,
+          endAgePrimary: 75,
+          retirementAge: 60,
+          pretaxStart: 3000000,
+          taxableStart: 500000,
+          annualSpending: 200000,
+          windowStartAge: 65,
+          drawOrder: drawOrderFromKey("pretax-taxable-roth"),
+          acaHouseholdSize: 2,
+          acaHouseholdSizeAfter: 2,
+          acaBenchmarkSingle: 20000,
+        }),
+        FILL_ACA_ONLY,
+      );
+      const y = res.years[0]!;
+      return {
+        rmd: y.rmd,
+        extraDraw: y.detail.extraPreTaxDraw,
+        acaMagi: y.acaMagi,
+        pretaxEnd: y.pretaxEnd,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-cap-draw-precedence",
+    kind: "tax",
+    note: "ACA cliff cap precedence (hand-derived): within a year, non-draw income and RMDs take the cliff room first, the pre-tax SPENDING draw takes the room next, and the conversion keeps only what is left. One ACA year (household of 2, cliff $84,600), $50,000 spending drawn Pre-tax first, ACA-cliff-cap strategy INSIDE its conversion window, Pre-tax $500,000: the draw takes its full $50,000 (under the room), and the conversion — initially filled to the whole $84,600 cliff — is re-solved against the settled draw to $84,600 − $50,000 = $34,600, landing ACA MAGI exactly on the cliff at $84,600.",
+    expected: { extraDraw: 50000, conversion: 34600, acaMagi: 84600 },
+    actual: () => {
+      const res = simulateRothPlan(
+        cliffDrawPlan({ windowStartAge: 60, windowStopAge: 60, annualSpending: 50000 }),
+        FILL_ACA_ONLY,
+      );
+      const y = res.years[0]!;
+      return {
+        extraDraw: y.detail.extraPreTaxDraw,
+        conversion: y.conversion,
+        acaMagi: y.acaMagi,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-buffer-lands-below-cliff",
+    kind: "tax",
+    note: "ACA CLIFF SAFETY BUFFER on the draw (CLIFF SAFETY BUFFER build; hand-derived): the cliffDrawPlan construction moved to the 2028 household-of-5 shape — cliff = 4 × $38,680 FPL = $154,720, family benchmark $32,000, $200,000 spending drawn Pre-tax first, Taxable at 100% basis, conversion window closed — with a $2,500 buffer in the ceilings. The capped draw now stops at the buffered target $154,720 − $2,500 = $152,220 (not the cliff), ACA MAGI lands at $152,220, Pre-tax ends at $500,000 − $152,220 = $347,780, and the credit is priced by law on the ACTUAL MAGI against the TRUE cliff: $32,000 − 9.96% × $152,220 = $16,838.89 — MORE than the $18,920.45 the same year keeps landing exactly on the cliff, because the required contribution is 9.96% of a smaller MAGI.",
+    expected: { extraDraw: 152220, acaMagi: 152220, pretaxEnd: 347780, credit: 16838.89 },
+    actual: () => {
+      const res = simulateRothPlan(
+        cliffDrawPlan({
+          startYear: 2032,
+          birthYearPrimary: 1975,
+          birthYearSpouse: 1985,
+          endAgePrimary: 57,
+          retirementAge: 57,
+          acaHouseholdSize: 5,
+          acaBenchmarkFamily: 32000,
+        }),
+        acaBufferStrategy(2500),
+      );
+      const y = res.years[0]!;
+      return {
+        extraDraw: y.detail.extraPreTaxDraw,
+        acaMagi: y.acaMagi,
+        pretaxEnd: y.pretaxEnd,
+        credit: y.acaCreditKept,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-buffer-conversion-fill",
+    kind: "tax",
+    note: "ACA CLIFF SAFETY BUFFER on the conversion fill (hand-derived): the tax-cliff-cap-draw-precedence construction (household of 2, cliff $84,600, $50,000 spending drawn Pre-tax first, cliff-cap strategy INSIDE its window) with a $2,500 buffer. The draw takes its full $50,000 (inside the buffered room), and the conversion — initially filled to the buffered target — is re-solved against the settled draw to $84,600 − $2,500 − $50,000 = $32,100 (the unbuffered precedent lands $34,600), landing ACA MAGI on the buffered target $82,100 with credit $20,000 − 9.96% × $82,100 = $11,822.84.",
+    expected: { extraDraw: 50000, conversion: 32100, acaMagi: 82100, credit: 11822.84 },
+    actual: () => {
+      const res = simulateRothPlan(
+        cliffDrawPlan({ windowStartAge: 60, windowStopAge: 60, annualSpending: 50000 }),
+        acaBufferStrategy(2500),
+      );
+      const y = res.years[0]!;
+      return {
+        extraDraw: y.detail.extraPreTaxDraw,
+        conversion: y.conversion,
+        acaMagi: y.acaMagi,
+        credit: y.acaCreditKept,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-buffer-era-family-only",
+    kind: "tax",
+    note: "ACA CLIFF SAFETY BUFFER × ERA (hand-derived): a family-only cliff cap with a $2,500 buffer, household 5 → 2 at the 2036 step-down, $200,000/yr spending drawn Pre-tax first at 100% basis, conversion window closed. 2035 (family era, cliff $154,720): the buffer applies — the draw stops at the buffered target $152,220 and the year keeps the lower-MAGI credit $32,000 − 9.96% × $152,220 = $19,169.45. 2036 (stepped down): the era rule switches the cap off, so the buffer has nothing to attach to — the draw is the full $200,000 of spending, ACA MAGI is $200,000 (past the household-of-2 cliff), and the credit is $0. The buffer neither leaks past the step-down nor defends the year on its own.",
+    expected: {
+      draw2039: 152220,
+      magi2039: 152220,
+      credit2039: 16838.89,
+      draw2040: 200000,
+      magi2040: 200000,
+      credit2040: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          startYear: 2039,
+          birthYearPrimary: 1975,
+          birthYearSpouse: 1985,
+          endAgePrimary: 65,
+          retirementAge: 64,
+          pretaxStart: 1000000,
+          taxableStart: 500000,
+          annualSpending: 200000,
+          windowStartAge: 70,
+          drawOrder: drawOrderFromKey("pretax-taxable-roth"),
+          acaHouseholdSize: 5,
+          acaHouseholdSizeAfter: 2,
+          acaStepDownYear: 2040,
+          acaBenchmarkFamily: 32000,
+          acaBenchmarkSingle: 15000,
+        }),
+        acaBufferStrategy(2500, true),
+      );
+      const y35 = res.years[0]!;
+      const y36 = res.years[1]!;
+      return {
+        draw2039: y35.detail.extraPreTaxDraw,
+        magi2039: y35.acaMagi,
+        credit2039: y35.acaCreditKept,
+        draw2040: y36.detail.extraPreTaxDraw,
+        magi2040: y36.acaMagi,
+        credit2040: y36.acaCreditKept,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-buffer-oversized-floors-at-zero",
+    kind: "tax",
+    note: "ACA CLIFF SAFETY BUFFER larger than the cliff (hand-derived): the cliffDrawPlan construction (household of 2, cliff $84,600) with a $200,000 buffer — the effective target floors at max(0, $84,600 − $200,000) = $0. The year still settles sanely: no pre-tax draw and no conversion use any room, the whole $200,000 spending need spills to Taxable at 100% basis (no gains, no tax), ACA MAGI is $0, Pre-tax is untouched at $500,000, and Taxable ends at $300,000. Nothing goes negative and nothing is capped below zero.",
+    expected: { extraDraw: 0, conversion: 0, acaMagi: 0, pretaxEnd: 500000, taxableEnd: 300000 },
+    actual: () => {
+      const res = simulateRothPlan(cliffDrawPlan(), acaBufferStrategy(200000));
+      const y = res.years[0]!;
+      return {
+        extraDraw: y.detail.extraPreTaxDraw,
+        conversion: y.conversion,
+        acaMagi: y.acaMagi,
+        pretaxEnd: y.pretaxEnd,
+        taxableEnd: y.taxableEnd,
+      };
+    },
+  },
+  {
+    id: "tax-cliff-buffer-with-yields-lands",
+    kind: "tax",
+    note: "ACA CLIFF SAFETY BUFFER with taxable yields (hand-derived): the tax-yield-cliff-cap-draw-shrinks-lands construction (household of 2, cliff $84,600, $200,000 spending drawn Pre-tax first, Taxable $500,000 at 100% basis, window closed, 2% dividend + 1% interest yields = $10,000 + $5,000 of mandatory income) with a $2,500 buffer. The yields take the first $15,000 of the buffered room, so the draw shrinks to $84,600 − $2,500 − $15,000 = $67,100 and ACA MAGI lands on the buffered target $82,100, keeping credit $20,000 − 9.96% × $82,100 = $11,822.84. Tax: AGI $82,100, taxable income $49,900, the ordinary $39,900 taxed $2,480 + 12% × $15,100 = $4,292 with the $10,000 of dividends inside the 0% space — so Taxable ends at $500,000 − $132,900 spill − $4,292 tax = $362,808, basis clamped to the same, and Pre-tax ends at $432,900.",
+    expected: {
+      dividendIncome: 10000,
+      interestIncome: 5000,
+      extraDraw: 67100,
+      acaMagi: 82100,
+      credit: 11822.84,
+      federalTax: 4292,
+      pretaxEnd: 432900,
+      taxableEnd: 362808,
+      basisEnd: 362808,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        cliffDrawPlan({
+          taxableDividendYieldPct: 2,
+          taxableInterestYieldPct: 1,
+        }),
+        acaBufferStrategy(2500),
+      );
+      const y = res.years[0]!;
+      return {
+        dividendIncome: y.detail.dividendIncome,
+        interestIncome: y.detail.interestIncome,
+        extraDraw: y.detail.extraPreTaxDraw,
+        acaMagi: y.acaMagi,
+        credit: y.acaCreditKept,
+        federalTax: y.federalTax,
+        pretaxEnd: y.pretaxEnd,
+        taxableEnd: y.taxableEnd,
+        basisEnd: y.detail.taxableBasisDollars,
+      };
+    },
+  },
+  {
+    id: "tax-compare-cross-path-identity",
+    kind: "tax",
+    note: "Compare action cross-path identity + delta correctness (engine-derived): on the golden anchor plan, the joint optimizer's winner and Do Nothing are re-expressed as ordinary compare scenarios (the winner's ceilings, window stop, and variant flags as a patch — the joint search keeps the plan's draw order for every combination — plus each side's claiming ages as a patch, the amounts re-derived from the base anchor by the compare's own claim derivation, exactly as the joint search derives a combination's; Do Nothing as ceilings cleared at its own best claiming ages) and priced through runRothCompare — both reproduce the optimizer's own net cost TO THE CENT, proving the compare prices scenarios through the same path the optimizer prices candidates. With Do Nothing as the named baseline, the winner's deltaNetCostCents equals the optimizer's own difference (winner − Do Nothing, in cents) with the documented sign — negative, because the winner costs less — the baseline's own deltas are exactly 0, and the ACA-credit delta equals the two scenarios' own engine-priced credit difference.",
+    expected: { winnerMatches: 1, doNothingMatches: 1, deltaMatches: 1, signNegative: 1, baselineDeltasZero: 1, acaDeltaMatches: 1 },
+    actual: () => {
+      const base = goldenCompareBase();
+      const plan = planInputsFromSaved(base, 2026);
+      if (!plan)
+        return { winnerMatches: 0, doNothingMatches: 0, deltaMatches: 0, signNegative: 0, baselineDeltasZero: 0, acaDeltaMatches: 0 };
+      const opt = runJointOptimizer(plan);
+      const w = opt.winner;
+      const winnerPatch = {
+        ceilings: {
+          bracketTopPct: w.spec.ceilings.bracketTopPct,
+          irmaaTierCap: w.spec.ceilings.irmaaTierCap,
+          ltcgZeroCap: w.spec.ceilings.ltcgZeroCap,
+          acaCliffCap: w.spec.ceilings.acaCliffCap,
+          magiCapCents:
+            w.spec.ceilings.magiCap == null
+              ? null
+              : Math.round(w.spec.ceilings.magiCap * 100),
+        },
+        windowStopAge: w.spec.windowStopAge,
+        optimizerGuardrail: w.spec.guardrail,
+        optimizerBunching: w.spec.bunching,
+        ...(w.claimAges.primaryAge != null
+          ? { ssPrimaryStartAge: w.claimAges.primaryAge }
+          : {}),
+        ...(w.claimAges.spouseAge != null
+          ? { ssSpouseStartAge: w.claimAges.spouseAge }
+          : {}),
+      };
+      const dnPatch = {
+        ceilings: null,
+        ...(opt.doNothing.claimAges.primaryAge != null
+          ? { ssPrimaryStartAge: opt.doNothing.claimAges.primaryAge }
+          : {}),
+        ...(opt.doNothing.claimAges.spouseAge != null
+          ? { ssSpouseStartAge: opt.doNothing.claimAges.spouseAge }
+          : {}),
+      };
+      const cmp = runRothCompare(
+        base,
+        [
+          { name: "Do Nothing", overrides: dnPatch },
+          { name: "Winner", overrides: winnerPatch },
+        ],
+        2026,
+        "Do Nothing",
+      );
+      const dn = cmp.scenarios.find((s) => s.name === "Do Nothing");
+      const win = cmp.scenarios.find((s) => s.name === "Winner");
+      const expectedDelta =
+        Math.round(w.cost.netCost * 100) - Math.round(opt.doNothing.cost.netCost * 100);
+      return {
+        winnerMatches:
+          win != null && win.netCostCents === Math.round(w.cost.netCost * 100) ? 1 : 0,
+        doNothingMatches:
+          dn != null &&
+          dn.netCostCents === Math.round(opt.doNothing.cost.netCost * 100)
+            ? 1
+            : 0,
+        // Delta correctness on the same known pair: with Do
+        // Nothing as the named baseline, the winner's
+        // deltaNetCostCents equals the optimizer's own
+        // difference (winner − Do Nothing, in cents) with the
+        // documented sign — negative, because the winner costs
+        // less — the baseline's own deltas are exactly 0, and
+        // the ACA-credit delta equals the two scenarios' own
+        // engine-priced credit difference.
+        deltaMatches: win != null && win.deltaNetCostCents === expectedDelta ? 1 : 0,
+        signNegative: win != null && win.deltaNetCostCents < 0 ? 1 : 0,
+        baselineDeltasZero:
+          dn != null && dn.deltaNetCostCents === 0 && dn.deltaAcaCreditCents === 0
+            ? 1
+            : 0,
+        acaDeltaMatches:
+          win != null &&
+          dn != null &&
+          win.deltaAcaCreditCents === win.acaCreditCents - dn.acaCreditCents
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "tax-compare-survivor-twin",
+    kind: "tax",
+    note: "Compare survivor scenario: two scenarios on one base plan differing ONLY in the survivor patch (enabled, primary dies in 2040) price differently — the survivor twin's net cost differs from its non-survivor twin's, and its reported delta against the twin baseline equals the two scenarios' own net-cost difference in cents. The survivor scenario is an ordinary patch: no special casing in the compare path.",
+    expected: { pricesDiffer: 1, deltaConsistent: 1 },
+    actual: () => {
+      const base = goldenCompareBase();
+      const cmp = runRothCompare(
+        base,
+        [
+          { name: "Both live", overrides: { ceilings: null } },
+          {
+            name: "Survivor",
+            overrides: {
+              ceilings: null,
+              survivorEnabled: true,
+              survivorWho: "primary",
+              survivorDeathYear: 2040,
+            },
+          },
+        ],
+        2026,
+      );
+      const a = cmp.scenarios[0]!;
+      const b = cmp.scenarios[1]!;
+      return {
+        pricesDiffer: a.netCostCents !== b.netCostCents ? 1 : 0,
+        deltaConsistent:
+          b.deltaNetCostCents === b.netCostCents - a.netCostCents ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-compare-switch-cap-equivalence",
+    kind: "tax",
+    note: "Compare switch + cliff-cap equivalence (engine-derived): a compare scenario whose base plan carries the draw-order switch (at 61, to Pre-tax first) and the ACA cliff cap prices IDENTICALLY — net cost and ACA credit to the cent — to the equivalent direct planner run (planInputsFromSaved over the same shape, priced with the same fixed strategy through simulateRothPlan and scored with planNetCost). The compare adds no pricing of its own.",
+    expected: { netCostMatches: 1, acaMatches: 1 },
+    actual: () => {
+      const base = {
+        ...goldenCompareBase(),
+        drawOrder: "taxable-pretax-roth",
+        drawOrderSwitchAge: 61,
+        drawOrderAfter: "pretax-taxable-roth",
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+      };
+      const cmp = runRothCompare(base, [{ name: "Switch + cap", overrides: {} }], 2026);
+      const plan = planInputsFromSaved(base, 2026);
+      if (!plan || cmp.scenarios.length === 0)
+        return { netCostMatches: 0, acaMatches: 0 };
+      const direct = planNetCost(
+        simulateRothPlan(plan, FILL_ACA_ONLY),
+        plan,
+      );
+      const s = cmp.scenarios[0]!;
+      return {
+        netCostMatches: s.netCostCents === Math.round(direct.netCost * 100) ? 1 : 0,
+        acaMatches: s.acaCreditCents === Math.round(direct.acaCredit * 100) ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-harvest-fills-zero-space",
+    kind: "tax",
+    note: "Gain harvesting fills the leftover 0% space exactly (hand-derived, 2026 MFJ: standard deduction $32,200, 0% LTCG top $98,900 of taxable income). Taxable $500,000 at 50% basis, $50,000 of spending drawn from Taxable, no other income, Do Nothing + harvesting: the draw realizes $25,000 of gains, leaving the balance at $450,000 and the basis ledger at $250,000 − $25,000 (the draw's basis share) = $225,000, so $225,000 of unrealized gain is available. Total gains can reach $98,900 + $32,200 = $131,100 of AGI before any dollar is taxed above 0%, so the harvest is $131,100 − $25,000 = $106,100, landing taxable income exactly on the 0% top ($98,900) with $0 federal tax, and the basis ledger steps up to $225,000 + $106,100 = $331,100.",
+    expected: {
+      gainsHarvested: 106100,
+      taxableIncome: 98900,
+      magi: 131100,
+      federalTax: 0,
+      basisEnd: 331100,
+      taxableEnd: 450000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 500000,
+          taxableBasisPct: 50,
+          annualSpending: 50000,
+        }),
+        { ...DO_NOTHING, gainsHarvest: true },
+      );
+      const y = res.years[0]!;
+      return {
+        gainsHarvested: y.gainsHarvested,
+        taxableIncome: y.taxableIncome,
+        magi: y.magi,
+        federalTax: y.federalTax,
+        basisEnd: y.detail.taxableBasisDollars,
+        taxableEnd: y.taxableEnd,
+      };
+    },
+  },
+  {
+    id: "tax-harvest-stops-at-aca-cliff",
+    kind: "tax",
+    note: "Gain harvesting stops at the ACA cliff when the cliff cap is on (hand-derived): household of 2, 2026 cliff $84,600 (4 × the 2025 FPL of $21,150). Taxable $500,000 at 50% basis, $40,000 drawn for spending → $20,000 of gains → ACA MAGI $20,000, leaving $64,600 of cliff room; the 0% space would allow $111,100 more and $230,000 of gain is available, so the cliff binds: the harvest is exactly $64,600, ACA MAGI lands exactly on the cliff at $84,600, and the premium credit survives — at exactly 400% FPL the applicable percentage is 9.96%, so the credit on a $20,000 benchmark is $20,000 − 9.96% × $84,600 = $11,573.84, not $0. Federal tax stays $0 (taxable income $52,400, all gains at 0%).",
+    expected: {
+      gainsHarvested: 64600,
+      acaMagi: 84600,
+      acaCreditKept: 11573.84,
+      federalTax: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 500000,
+          taxableBasisPct: 50,
+          annualSpending: 40000,
+          acaHouseholdSize: 2,
+          acaHouseholdSizeAfter: 2,
+          acaBenchmarkCouple: 20000,
+        }),
+        { ...FILL_ACA_ONLY, gainsHarvest: true },
+      );
+      const y = res.years[0]!;
+      return {
+        gainsHarvested: y.gainsHarvested,
+        acaMagi: y.acaMagi,
+        acaCreditKept: y.acaCreditKept,
+        federalTax: y.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-harvest-stops-at-magi-cap",
+    kind: "tax",
+    note: "Gain harvesting stops at a custom MAGI cap (hand-derived): Taxable $500,000 at 50% basis, $40,000 drawn for spending → $20,000 of gains → MAGI $20,000. With a $50,000 MAGI cap the harvest is exactly the $30,000 of MAGI room (the 0% space would allow $111,100 and $230,000 of gain is available), landing MAGI exactly on the cap at $50,000. No pre-tax balance, so the cap strategy itself converts $0 — the room the harvest fills is genuinely leftover.",
+    expected: { gainsHarvested: 30000, magi: 50000 },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 500000,
+          taxableBasisPct: 50,
+          annualSpending: 40000,
+        }),
+        { ...MAGI_CAP_50K, gainsHarvest: true },
+      );
+      const y = res.years[0]!;
+      return { gainsHarvested: y.gainsHarvested, magi: y.magi };
+    },
+  },
+  {
+    id: "tax-harvest-zero-when-no-zero-space",
+    kind: "tax",
+    note: "Gain harvesting is $0 in a year with no 0% space left (self-limiting): $300,000 of other ordinary income puts taxable income at $267,800 — far past the $98,900 0% top — so even with $250,000+ of unrealized gain available (Taxable $500,000 at 50% basis, plus the year's surplus saved into it), the harvest is $0 and the harvested run's federal tax and MAGI are the harvest-off run's, to the cent.",
+    expected: { gainsHarvested: 0, federalTaxMatchesOff: 1, magiMatchesOff: 1 },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 500000,
+        taxableBasisPct: 50,
+        annualSpending: 0,
+        otherOrdinaryAnnual: 300000,
+      });
+      const on = simulateRothPlan(plan, { ...DO_NOTHING, gainsHarvest: true });
+      const off = simulateRothPlan(plan, DO_NOTHING);
+      const a = on.years[0]!;
+      const b = off.years[0]!;
+      return {
+        gainsHarvested: a.gainsHarvested,
+        federalTaxMatchesOff: a.federalTax === b.federalTax ? 1 : 0,
+        magiMatchesOff: a.magi === b.magi ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-harvest-basis-step-up",
+    kind: "tax",
+    note: "Harvesting composes on the drift ledger — a harvest's step-up measurably reduces a later draw's realized gain (hand-derived; RE-PINNED by the BASIS-DRIFT build — pre-drift this case pinned year 2 at $10,000 of draw gains and a $90,000 basis, because ordinary draws priced at the flat 50% whatever the ledger said; under drift the ledger IS the pricing). Taxable $120,000 at 50% basis (basis $60,000), $20,000/yr spending drawn from Taxable, 0% return. Year 1 is identical with the toggle on or off until the harvest: the draw realizes $10,000 of gains at the starting 50% ratio, the balance falls to $100,000 and the basis to $50,000, leaving exactly $50,000 of unrealized gain; the 0% space would allow $121,100, so with harvesting ON the harvest is the full $50,000 and the basis steps up to $100,000 — the whole balance is basis. Year 2 ON: the ratio is 100%, so the draw realizes $0 of gains (basis carries out dollar-for-dollar), the basis falls by the full $20,000 to $80,000, and with no unrealized gain left the harvest is $0. Year 2 OFF (same trajectory, no step-up): the ratio is still 50%, the draw realizes $10,000, and the basis ends at $40,000. The on/off pair is the composition proof: the step-up alone accounts for the later draw's $10,000 → $0 gain difference.",
+    expected: {
+      y1Harvest: 50000,
+      y1Basis: 100000,
+      y2Harvest: 0,
+      y2Basis: 80000,
+      y2DrawGains: 0,
+      offY2DrawGains: 10000,
+      offY2Basis: 40000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 120000,
+        taxableBasisPct: 50,
+        annualSpending: 20000,
+        endAgePrimary: 58,
+      });
+      const res = simulateRothPlan(plan, { ...DO_NOTHING, gainsHarvest: true });
+      const off = simulateRothPlan(plan, DO_NOTHING);
+      const y1 = res.years[0]!;
+      const y2 = res.years[1]!;
+      const offY2 = off.years[1]!;
+      return {
+        y1Harvest: y1.gainsHarvested,
+        y1Basis: y1.detail.taxableBasisDollars,
+        y2Harvest: y2.gainsHarvested,
+        y2Basis: y2.detail.taxableBasisDollars,
+        y2DrawGains: y2.detail.drawGains,
+        offY2DrawGains: offY2.detail.drawGains,
+        offY2Basis: offY2.detail.taxableBasisDollars,
+      };
+    },
+  },
+  {
+    id: "tax-harvest-off-bit-identical",
+    kind: "tax",
+    note: "Harvesting ships safe: on a plan with conversions, Social Security phasing in, spending draws at 50% basis, and growth, the full lifetime result with the toggle ABSENT is byte-identical (JSON) to the toggle explicitly FALSE — and a BLANK basis (taxableBasisBlank, the state a saved record with no basis % prices in) makes the toggle inert: on + blank is byte-identical to off + blank, because there is no basis to step up and none is invented. (RE-PINNED by the BASIS-DRIFT build: the inertness comparison is blank-vs-blank. An entered basis % now prices on the drift path while a blank basis stays on the legacy flat path, so the pre-drift form of this pin — blank-on against the entered-basis run — would compare two different pricing paths by design; what the pin protects is unchanged: on a blank basis the toggle changes nothing at all.)",
+    expected: { absentVsFalse: 1, blankBasisInert: 1 },
+    actual: () => {
+      const plan = basePlan({
+        taxableStart: 800000,
+        taxableBasisPct: 50,
+        annualSpending: 90000,
+        expectedReturnPct: 3,
+        endAgePrimary: 62,
+        ssPrimaryAnnual: 40000,
+        ssPrimaryStartAge: 57,
+      });
+      const absent = simulateRothPlan(plan, FILL_12);
+      const explicitOff = simulateRothPlan(plan, { ...FILL_12, gainsHarvest: false });
+      const blankOff = simulateRothPlan(
+        { ...plan, taxableBasisBlank: true },
+        FILL_12,
+      );
+      const blankOn = simulateRothPlan(
+        { ...plan, taxableBasisBlank: true },
+        { ...FILL_12, gainsHarvest: true },
+      );
+      return {
+        absentVsFalse:
+          JSON.stringify(absent) === JSON.stringify(explicitOff) ? 1 : 0,
+        blankBasisInert:
+          JSON.stringify(blankOff) === JSON.stringify(blankOn) ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-harvest-compare-and-year-detail",
+    kind: "tax",
+    note: "Option 8 is expressible through the compare API surface and visible in the plan-year detail (engine-derived from the fills-zero-space case's shape): a compare scenario built from an ordinary patch {gainsHarvest: true} over a Do Nothing base carries the toggle on its priced strategy (and names it in the strategy description), its first year harvests the same hand-derived $106,100 (Taxable $500,000 at 50% basis, $50,000 drawn), and pricePlanYearDetail — the runPlanYearDetail action's engine — exposes that same $106,100 on its priced row.",
+    expected: {
+      strategyFlag: 1,
+      descriptionMentions: 1,
+      harvested: 106100,
+      detailHarvested: 106100,
+    },
+    actual: () => {
+      const base = {
+        ...goldenCompareBase(),
+        pretaxCents: 0,
+        rothCents: 0,
+        taxableCents: 50000000,
+        hsaCents: 0,
+        taxableBasisPct: 50,
+        annualSpendingCents: 5000000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssPrimaryNoBenefit: false,
+        ssSpouseNoBenefit: false,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        preservePretaxCents: null,
+        preserveExitRatePct: null,
+      };
+      const built = buildCompareScenario(base, "Option 8", { gainsHarvest: true }, 2030);
+      if (!built)
+        return { strategyFlag: 0, descriptionMentions: 0, harvested: null, detailHarvested: null };
+      const res = simulateRothPlan(built.inputs, built.strategy);
+      const detail = pricePlanYearDetail(built.inputs, built.strategy, 2030);
+      return {
+        strategyFlag: built.strategy.gainsHarvest === true ? 1 : 0,
+        descriptionMentions: built.strategyDescription.includes("gain harvesting") ? 1 : 0,
+        harvested: res.years[0]?.gainsHarvested ?? null,
+        detailHarvested: detail?.with.gainsHarvested ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-lab-scenario-limit-50",
+    kind: "tax",
+    note: "Strategy Lab library boundary (Strategy Lab build): the saved-strategy limit the scenario writer enforces and the scenario reader truncates at is 50 (ROTH_SCENARIO_LIMIT, raised from 5), and a compare run prices a full 50-row library in one pass — 50 named scenarios over the golden base each come back priced. The boundary is pinned here on the constant both server paths read, plus the run size the Lab's pricing needs.",
+    expected: { limit: 50, pricedRows: 50, runOk: 1 },
+    actual: () => {
+      const scenarios = Array.from({ length: 50 }, (_, i) => ({
+        name: `Library ${i + 1}`,
+        overrides: { ceilings: null },
+      }));
+      const cmp = runRothCompare(goldenCompareBase(), scenarios, 2026, "Library 1");
+      return {
+        limit: ROTH_SCENARIO_LIMIT,
+        pricedRows: cmp.scenarios.length,
+        runOk: cmp.ok ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-lab-basis-dial-reprice",
+    kind: "tax",
+    note: "Strategy Lab debate-dial repricing (engine-derived, Strategy Lab build): the Lab prices a saved strategy as a full-record patch over the plan base, and its taxable-basis dial is that same patch with ONLY taxableBasisPct moved. On the golden base at 50% basis, the pre-tax-first cliff-capped strategy (the Option 1 shape: ACA cliff cap, draw order Pre-tax → Taxable → Roth) nets 92306344 cents; with the basis dial at 20 the identical patch nets 155451552 cents. The dial moves the price through the compare machinery itself, never a Lab-side calculation, and the two pins are the figures a dial-moved Lab run must reproduce. (RE-PINNED by the BASIS-DRIFT build from 49078265 / 55837768: an entered basis % is now the starting share of a basis-dollars ledger — the share drifts down as the account compounds, so later draws price more gain than the flat % did; the drift anchors are pinned in tax-drift-sample-shape-anchors-basis-50. RE-PINNED AGAIN by the M-1 FIX from 54160335 / 59667748: the capped pre-tax draw now converges against settled gains, so the strategy's capped years land on the ACA cliff and keep the credit the leak forfeited. Under the leak the kept credit was $0 on any base, so this golden-base figure equalled the owner's record figure; it no longer does — the golden base carries the $20,000 couple benchmark with the family field blank (lifetime kept credit $73,207.91) while his record carries the $32,000 family benchmark (kept credit $184,182.95, pinned on his shape in tax-m1-cliff-cap-draw-lands-on-cliff-basis-50), and the two nets differ by exactly that credit difference.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: { netBasis50: 56468789, netBasis20: 181907125, dialMovesPrice: 1 },
+    actual: () => {
+      const base = { ...goldenCompareBase(), taxableBasisPct: 50 };
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const at50 = runRothCompare(base, [{ name: "Option 1", overrides: option1 }], 2030);
+      const at20 = runRothCompare(
+        base,
+        [{ name: "Option 1", overrides: { ...option1, taxableBasisPct: 20 } }],
+        2026,
+      );
+      const net50 = at50.scenarios[0]?.netCostCents ?? null;
+      const net20 = at20.scenarios[0]?.netCostCents ?? null;
+      return {
+        netBasis50: net50,
+        netBasis20: net20,
+        dialMovesPrice: net50 != null && net20 != null && net50 !== net20 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-lab-null-fields-ride-patch",
+    kind: "tax",
+    note: "Strategy Lab patch construction, null fields (Review Pass 1 Finding 1 regression pin): the Lab builds each row's compare patch from the saved record by omitting a null ONLY for the four snapshot-followed balances (pretaxCents, rothCents, taxableCents, hsaCents — null there means follow the snapshot, so the patch inherits the base's resolved balance); every other recorded null rides as an explicit null, exactly as ceilings: null does, because the compare merge treats a present null as an override and an absent key as inherit-the-base. This case mirrors that construction (the client's buildLabRequest loop, replicated field for field) for the Option 1 saved shape — cliff cap, Pre-tax → Taxable → Roth, balances null, draw-order switch / ACA step-down / gain harvesting all null — against a constructed base plan carrying non-null values for all three strategy fields (switch at 75 to Taxable → Pre-tax → Roth, step-down year 2040, harvesting on) on the golden shape at 50% basis. The Lab patch prices the SAVED shape's figure, 92306344 cents (the golden-base Option 1 figure at basis 50, per the basis-dial pin above — RE-PINNED by the BASIS-DRIFT build from 49078265, the flat-% figure, and RE-PINNED AGAIN by the M-1 FIX from 54160335: the capped draw now converges against settled gains and keeps the ACA credit, priced here on the golden base's benchmarks; the base here carries basis 50, an entered %, so the drift ledger prices it); the pre-fix construction (omit every null except ceilings) and each single-field omission (switch pair only, step-down only, harvest only) each price a DIFFERENT figure on this same base, so the pin discriminates the over-broad omission field by field and fails if any of the three nulls stops riding the patch. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      netLabPatch: 139145441,
+      balancesOmitted: 1,
+      nullsRide: 1,
+      oldRuleDiverges: 1,
+      omitSwitchDiverges: 0,
+      omitStepDownDiverges: 1,
+      omitHarvestDiverges: 1,
+    },
+    actual: () => {
+      // The saved Option 1 record: the golden plan shape at
+      // 50% basis with the strategy fields frozen — balances
+      // null (following the snapshot) and the switch,
+      // step-down, and harvest fields recorded null.
+      const savedRecord = {
+        ...goldenCompareBase(),
+        taxableBasisPct: 50,
+        pretaxCents: null,
+        rothCents: null,
+        taxableCents: null,
+        hsaCents: null,
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+        drawOrderSwitchAge: null,
+        drawOrderAfter: null,
+        acaStepDownYear: null,
+        gainsHarvest: null,
+      };
+      // The constructed base plan: the same golden shape at
+      // 50% basis, carrying non-null values for all three
+      // strategy fields the saved record froze as null.
+      const base = {
+        ...goldenCompareBase(),
+        taxableBasisPct: 50,
+        drawOrderSwitchAge: 75,
+        drawOrderAfter: "taxable-pretax-roth" as const,
+        acaStepDownYear: 2040,
+        gainsHarvest: true,
+      };
+      const BALANCE_KEYS = ["pretaxCents", "rothCents", "taxableCents", "hsaCents"];
+      // The Lab's patch construction, as fixed: omit a null
+      // only for the four snapshot-followed balances.
+      const labPatch: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(savedRecord)) {
+        if (v === null && BALANCE_KEYS.includes(k)) continue;
+        labPatch[k] = v;
+      }
+      // The pre-fix construction: omit every null except
+      // ceilings — the base's strategy values leak in.
+      const oldPatch: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(savedRecord)) {
+        if (v === null && k !== "ceilings") continue;
+        oldPatch[k] = v;
+      }
+      const netOf = (patch: Record<string, unknown>): number | null =>
+        runRothCompare(
+          base,
+          [{ name: "Option 1", overrides: patch as RothCompareOverrides }],
+          2026,
+        ).scenarios[0]?.netCostCents ?? null;
+      const drop = (patch: Record<string, unknown>, keys: string[]) => {
+        const p = { ...patch };
+        for (const k of keys) delete p[k];
+        return p;
+      };
+      const netLab = netOf(labPatch);
+      const diverges = (net: number | null): number =>
+        net != null && netLab != null && net !== netLab ? 1 : 0;
+      return {
+        netLabPatch: netLab,
+        balancesOmitted: BALANCE_KEYS.every((k) => !(k in labPatch)) ? 1 : 0,
+        nullsRide:
+          ["drawOrderSwitchAge", "drawOrderAfter", "acaStepDownYear", "gainsHarvest"].every(
+            (k) => k in labPatch && labPatch[k] === null,
+          ) &&
+          "ceilings" in labPatch &&
+          labPatch.ceilings != null
+            ? 1
+            : 0,
+        oldRuleDiverges: diverges(netOf(oldPatch)),
+        omitSwitchDiverges: diverges(
+          netOf(drop(labPatch, ["drawOrderSwitchAge", "drawOrderAfter"])),
+        ),
+        omitStepDownDiverges: diverges(netOf(drop(labPatch, ["acaStepDownYear"]))),
+        omitHarvestDiverges: diverges(netOf(drop(labPatch, ["gainsHarvest"]))),
+      };
+    },
+  },
+  {
+    id: "tax-aca-spouse-end-age-null-identity",
+    kind: "tax",
+    note: "Spouse ACA end age, null identity (KNOBS build, Part C.1): on the sample shape (the golden compare base carrying the entered benchmarks — couple $24,000, family $32,000 — at a 50% taxable basis, claim 67), a record with the acaSpouseEndAge key ABSENT, one with it explicitly NULL, and one with it set to 65 all price BIT-IDENTICALLY: Option 1 (the cliff-capped pre-tax-first shape) nets 81208840 cents and Do Nothing nets 253046013 cents in all three forms, and the plan-year detail for 2047 (spouse 65) still prices no ACA credit (acaPriced false) — the pre-build behaviour, pinned so the new field cannot move an untouched record. (The two net figures were RE-PINNED by the BASIS-DRIFT build from 49078265 / 243105153 — this shape's basis is an entered 50%, so the drift ledger prices it; the Option 1 figure was RE-PINNED AGAIN by the M-1 FIX from 54160335 — the capped pre-tax draw now converges against settled gains and keeps the ACA credit — while Do Nothing's figure is unmoved; the identity across the three key forms is the pin's subject and is unchanged.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      option1Absent: 45668789,
+      doNothingAbsent: 238593411,
+      option1Null: 45668789,
+      doNothingNull: 238593411,
+      option1At65: 45668789,
+      doNothingAt65: 238593411,
+      priced2050: 0,
+    },
+    actual: () => {
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const rows = [
+        { name: "Option 1", overrides: option1 },
+        { name: "Do Nothing", overrides: { ceilings: null } },
+      ];
+      const nets = (base: RothCompareBaseSaved) => {
+        const cmp = runRothCompare(base, rows, 2030);
+        return {
+          option1: cmp.scenarios[0]?.netCostCents ?? null,
+          doNothing: cmp.scenarios[1]?.netCostCents ?? null,
+        };
+      };
+      const absent = nets(sampleShapeBase50());
+      const explicitNull = nets({ ...sampleShapeBase50(), acaSpouseEndAge: null });
+      const at65 = nets({ ...sampleShapeBase50(), acaSpouseEndAge: 65 });
+      const plan = planInputsFromSaved(sampleShapeBase50(), 2030);
+      const d47 = plan ? pricePlanYearDetail(plan, DO_NOTHING, 2050) : null;
+      return {
+        option1Absent: absent.option1,
+        doNothingAbsent: absent.doNothing,
+        option1Null: explicitNull.option1,
+        doNothingNull: explicitNull.doNothing,
+        option1At65: at65.option1,
+        doNothingAt65: at65.doNothing,
+        priced2050: d47 ? (d47.with.acaPriced ? 1 : 0) : null,
+      };
+    },
+  },
+  {
+    id: "tax-aca-spouse-end-age-70",
+    kind: "tax",
+    note: "Spouse ACA end age 70 discriminates (KNOBS build, Part C.2; engine-derived on the sample shape at basis 50): with the end age at 70 the spouse's marketplace years extend past 65 — the Do Nothing plan-year detail prices 2048 (spouse 66) with acaPriced true and stops at 2052 (spouse 70, acaPriced false), and she is NOT counted on Medicare in the extended years (personsOnMedicare 1 in 2051 — the primary alone — returning to 2 in 2052 when she reaches the end age). Strategy totals move in the directions the extended coverage dictates: Option 1's cliff cap binds five more years (2047–2051), and its net RISES from 82674357 to 83132014 cents; Do Nothing keeps the same ACA credit (it is over the cliff in the extended years either way) but pays no IRMAA for her until 70, so its net FALLS from 250238871 to 252065733 cents — the fall is exactly its lifetime IRMAA dropping from 17555760 to 17269560 cents. (The four net figures were RE-PINNED by the BASIS-DRIFT build from 49078265 / 49617159 / 243105153 / 242124873 — this shape's basis is an entered 50%, so the drift ledger prices it; the IRMAA figures and the directions are unchanged. The Option 1 figures were RE-PINNED AGAIN by the M-1 FIX from 54160335 / 56676284 — the capped draw now converges against settled gains and keeps the ACA credit in both the base and the extended shapes; Do Nothing's figures are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      priced2048: 1,
+      priced2055: 0,
+      persons2051: 1,
+      persons2055: 2,
+      option1Net70: 52482203,
+      doNothingNet70: 237901611,
+      doNothingIrmaa70: 17211000,
+      option1MovesUp: 1,
+      doNothingMovesDown: 1,
+    },
+    actual: () => {
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const base70 = { ...sampleShapeBase50(), acaSpouseEndAge: 70 };
+      const plan70 = planInputsFromSaved(base70, 2030);
+      const d48 = plan70 ? pricePlanYearDetail(plan70, DO_NOTHING, 2048) : null;
+      const d51 = plan70 ? pricePlanYearDetail(plan70, DO_NOTHING, 2051) : null;
+      const d52 = plan70 ? pricePlanYearDetail(plan70, DO_NOTHING, 2055) : null;
+      const cmp70 = runRothCompare(base70, [
+        { name: "Option 1", overrides: option1 },
+        { name: "Do Nothing", overrides: { ceilings: null } },
+      ], 2030);
+      const cmpNull = runRothCompare(sampleShapeBase50(), [
+        { name: "Option 1", overrides: option1 },
+        { name: "Do Nothing", overrides: { ceilings: null } },
+      ], 2030);
+      const o1_70 = cmp70.scenarios[0]?.netCostCents ?? null;
+      const o1_null = cmpNull.scenarios[0]?.netCostCents ?? null;
+      const dn70 = cmp70.scenarios[1] ?? null;
+      const dnNull = cmpNull.scenarios[1] ?? null;
+      return {
+        priced2048: d48 ? (d48.with.acaPriced ? 1 : 0) : null,
+        priced2055: d52 ? (d52.with.acaPriced ? 1 : 0) : null,
+        persons2051: d51?.with.detail.irmaa.personsOnMedicare ?? null,
+        persons2055: d52?.with.detail.irmaa.personsOnMedicare ?? null,
+        option1Net70: o1_70,
+        doNothingNet70: dn70?.netCostCents ?? null,
+        doNothingIrmaa70: dn70?.irmaaCents ?? null,
+        option1MovesUp: o1_70 != null && o1_null != null && o1_70 > o1_null ? 1 : 0,
+        doNothingMovesDown:
+          dn70 != null && dnNull != null && dn70.netCostCents < dnNull.netCostCents ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-aca-spouse-end-age-62",
+    kind: "tax",
+    note: "Spouse ACA end age 62 stops pricing early (KNOBS build, Part C.3; engine-derived on the sample shape at basis 50): the boundary is symmetric — with the end age at 62, the Do Nothing plan-year detail prices 2043 (spouse 61) but not 2044 (spouse 62) or 2045 (spouse 63), while the same shape with the end age unset prices 2045 (its kept credit that year is $7,429.84). An end age below 65 therefore removes exactly the 62–64 marketplace years and no others.",
+    expected: {
+      priced2043At62: 1,
+      priced2047At62: 0,
+      priced2048At62: 0,
+      priced2045AtNull: 1,
+    },
+    actual: () => {
+      const plan62 = planInputsFromSaved(
+        { ...sampleShapeBase50(), acaSpouseEndAge: 62 },
+        2026,
+      );
+      const planNull = planInputsFromSaved(sampleShapeBase50(), 2030);
+      const priced = (
+        plan: ReturnType<typeof planInputsFromSaved>,
+        year: number,
+      ): number | null => {
+        if (!plan) return null;
+        const d = pricePlanYearDetail(plan, DO_NOTHING, year);
+        return d ? (d.with.acaPriced ? 1 : 0) : null;
+      };
+      return {
+        priced2043At62: priced(plan62, 2043),
+        priced2047At62: priced(plan62, 2047),
+        priced2048At62: priced(plan62, 2048),
+        priced2045AtNull: priced(planNull, 2048),
+      };
+    },
+  },
+  {
+    id: "tax-lab-knobs-dials-reprice",
+    kind: "tax",
+    note: "Strategy Lab KNOBS dials reprice through the compare machinery (KNOBS build, Part C.4; engine-derived on the sample shape at basis 50): a dial is a compare override on the row's patch, so a dial-set row must price EXACTLY as the same field set directly on the plan. (a) End-age dial 70 on the Option 1 row: 83132014 cents, the figure the end-age-70 case pins for that shape, identical to the base carrying acaSpouseEndAge 70 directly. (b) Starting pre-tax dial $1,500,000 on the Option 1 row: 28813449 cents, identical to the base carrying pretaxCents 150000000 directly. (c) One-spouse benchmark dial $20,000 on the Do Nothing row (the row whose kept credit the benchmark actually moves): 249846013 cents, identical to the base carrying acaBenchmarkSingleCents 2000000 directly — and different from the undialed 250238871, so the dial genuinely repriced the row. (All figures RE-PINNED by the BASIS-DRIFT build from 49617159 / 26471700 / 239905153 / 243105153 — this shape's basis is an entered 50%, so the drift ledger prices it; the dial-equals-direct identities are the pin's subject and are unchanged. The two Option 1 figures were RE-PINNED AGAIN by the M-1 FIX from 56676284 / 31885598 — the capped draw now converges against settled gains and keeps the ACA credit; the Do Nothing benchmark figures are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      endAgeDialNet: 52482203,
+      endAgeDirectNet: 52482203,
+      endAgeDialMatches: 1,
+      balanceDialNet: 21945371,
+      balanceDirectNet: 21945371,
+      balanceDialMatches: 1,
+      benchDialNet: 233593411,
+      benchDirectNet: 233593411,
+      benchDialMatches: 1,
+      benchDialMoves: 1,
+    },
+    actual: () => {
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const netOf = (
+        base: RothCompareBaseSaved,
+        name: string,
+        overrides: RothCompareOverrides,
+      ): number | null =>
+        runRothCompare(base, [{ name, overrides }], 2030)
+          .scenarios[0]?.netCostCents ?? null;
+      const endAgeDial = netOf(sampleShapeBase50(), "Option 1", {
+        ...option1,
+        acaSpouseEndAge: 70,
+      });
+      const endAgeDirect = netOf(
+        { ...sampleShapeBase50(), acaSpouseEndAge: 70 },
+        "Option 1",
+        option1,
+      );
+      const balanceDial = netOf(sampleShapeBase50(), "Option 1", {
+        ...option1,
+        pretaxCents: 150000000,
+      });
+      const balanceDirect = netOf(
+        { ...sampleShapeBase50(), pretaxCents: 150000000 },
+        "Option 1",
+        option1,
+      );
+      const benchDial = netOf(sampleShapeBase50(), "Do Nothing", {
+        ceilings: null,
+        acaBenchmarkSingleCents: 2000000,
+      });
+      const benchDirect = netOf(
+        { ...sampleShapeBase50(), acaBenchmarkSingleCents: 2000000 },
+        "Do Nothing",
+        { ceilings: null },
+      );
+      return {
+        endAgeDialNet: endAgeDial,
+        endAgeDirectNet: endAgeDirect,
+        endAgeDialMatches: endAgeDial != null && endAgeDial === endAgeDirect ? 1 : 0,
+        balanceDialNet: balanceDial,
+        balanceDirectNet: balanceDirect,
+        balanceDialMatches: balanceDial != null && balanceDial === balanceDirect ? 1 : 0,
+        benchDialNet: benchDial,
+        benchDirectNet: benchDirect,
+        benchDialMatches: benchDial != null && benchDial === benchDirect ? 1 : 0,
+        benchDialMoves: benchDial != null && benchDial !== 250238871 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-aca-spouse-end-age-saved-roundtrip",
+    kind: "tax",
+    note: "Spouse ACA end age saved shape (KNOBS build, Part C.5): the key rides the saved record exactly like the other household fields — a blob whose inputs carry acaSpouseEndAge 70 (and a scenario carrying it too) round-trips byte-identically through splitRothBlob / joinRothBlob, the raw passthrough the scenario writers (saveRothScenario / updateRothScenario) and the plan writer's merge use; planInputsFromSaved passes 70 through to the engine field; and a record without the key — or with it explicitly null — converts to a null engine field (the 65 default), so older records and backups parse unchanged.",
+    expected: {
+      blobRoundTripIdentical: 1,
+      engineEndAge: 70,
+      absentEndAge: null,
+      nullEndAge: null,
+    },
+    actual: () => {
+      const inputsJson = '{"birthYearPrimary":1975,"acaSpouseEndAge":70}';
+      const scenariosJson = '[{"name":"Extended ACA","acaSpouseEndAge":70}]';
+      const original = `{"inputs":${inputsJson},"scenarios":${scenariosJson}}`;
+      const split = splitRothBlob(original);
+      const rejoined = split ? joinRothBlob(split.inputsRaw, split.scenariosRaw) : "";
+      const withAge = planInputsFromSaved(
+        { ...sampleShapeBase50(), acaSpouseEndAge: 70 },
+        2026,
+      );
+      const absent = planInputsFromSaved(sampleShapeBase50(), 2026);
+      const explicitNull = planInputsFromSaved(
+        { ...sampleShapeBase50(), acaSpouseEndAge: null },
+        2026,
+      );
+      return {
+        blobRoundTripIdentical: rejoined === original ? 1 : 0,
+        engineEndAge: withAge?.acaSpouseEndAge ?? null,
+        absentEndAge: absent?.acaSpouseEndAge ?? null,
+        nullEndAge: explicitNull?.acaSpouseEndAge ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-drift-null-basis-identity",
+    kind: "tax",
+    note: "BASIS-DRIFT null identity (BASIS-DRIFT build, fixture 1): a BLANK basis % keeps the pre-drift pricing bit-identically — the record layer maps blank to 100 with the blank flag set, the engine stays on its legacy path, and no basis ledger is invented. On the sample shape with the basis null (the entered benchmarks — couple $24,000, family $32,000 — claim 67), the blank-basis compare figures of record stand exactly: Do Nothing nets 266968556 cents and the Option 1 shape (ACA cliff cap, draw order Pre-tax → Taxable → Roth) nets 27430979 cents. Any drift leak into the blank path moves these. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: { doNothingBlank: 251590428, option1Blank: 23686237 },
+    actual: () => {
+      const blankBase = {
+        ...goldenCompareBase(),
+        acaBenchmarkCoupleCents: 2100000,
+        acaBenchmarkFamilyCents: 3200000,
+      };
+      const cmp = runRothCompare(blankBase, [
+        {
+          name: "Option 1",
+          overrides: {
+            ceilings: {
+              bracketTopPct: null,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: true,
+              magiCapCents: null,
+            },
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        { name: "Do Nothing", overrides: { ceilings: null } },
+      ], 2030);
+      return {
+        doNothingBlank: cmp.scenarios[1]?.netCostCents ?? null,
+        option1Blank: cmp.scenarios[0]?.netCostCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-drift-hand-derived-three-years",
+    kind: "tax",
+    note: "BASIS-DRIFT hand-derived case (BASIS-DRIFT build, fixture 2): Taxable $100,000 at 50% basis (basis dollars $50,000), $20,000/yr of spending drawn from Taxable, 25% return, no other income — the realized gains sit under the standard deduction, so federal tax is $0 every year and nothing but the draw and the growth moves the account. Each year the $20,000 draw leaves and the balance then grows 25% back to exactly $100,000, while the basis dollars never grow. Year 1: ratio $50,000/$100,000 = 50%, gain = $20,000 × 50% = $10,000, basis falls by the draw's basis share ($10,000) to $40,000. Year 2: ratio $40,000/$100,000 = 40%, gain = $20,000 × 60% = $12,000, basis falls $8,000 to $32,000. Year 3: ratio 32%, gain = $20,000 × 68% = $13,600, basis falls $6,400 to $25,600. Under the pre-drift flat-% model every year's gain would have read $10,000 — the rising gains are the drift itself. Pinned on the plan-year-detail surface (pricePlanYearDetail, the runPlanYearDetail action's engine): each year's ending basis dollars and draw gains. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata, while other taxable outflows — unpaid-tax debits, settlement deltas, and gifts — reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set.",
+    expected: {
+      y1DrawGains: 10000,
+      y1BasisEnd: 40000,
+      y1TaxableEnd: 100000,
+      y2DrawGains: 12000,
+      y2BasisEnd: 32000,
+      y2TaxableEnd: 100000,
+      y3DrawGains: 13600,
+      y3BasisEnd: 25600,
+      y3TaxableEnd: 100000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 50,
+        annualSpending: 20000,
+        expectedReturnPct: 25,
+        endAgePrimary: 59,
+      });
+      const row = (year: number) => pricePlanYearDetail(plan, DO_NOTHING, year)?.with ?? null;
+      const y1 = row(2026);
+      const y2 = row(2027);
+      const y3 = row(2028);
+      return {
+        y1DrawGains: y1?.detail.drawGains ?? null,
+        y1BasisEnd: y1?.detail.taxableBasisDollars ?? null,
+        y1TaxableEnd: y1?.taxableEnd ?? null,
+        y2DrawGains: y2?.detail.drawGains ?? null,
+        y2BasisEnd: y2?.detail.taxableBasisDollars ?? null,
+        y2TaxableEnd: y2?.taxableEnd ?? null,
+        y3DrawGains: y3?.detail.drawGains ?? null,
+        y3BasisEnd: y3?.detail.taxableBasisDollars ?? null,
+        y3TaxableEnd: y3?.taxableEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-drift-basis-100-growth-share-only",
+    kind: "tax",
+    note: "BASIS-DRIFT at 100% basis (BASIS-DRIFT build, fixture 3): same construction as the hand-derived case (Taxable $100,000, $20,000/yr drawn, 25% return) but the basis starts at 100% — basis dollars $100,000. Year 1's draw is all basis: gain $0, basis falls to $80,000, and growth restores the balance to $100,000 without adding a basis dollar. Year 2 therefore prices at an 80% ratio: the draw realizes gain only on the 20% growth share, $20,000 × 20% = $4,000, and the basis falls $16,000 to $64,000. Year 3's ratio is 64%, so the gain is $20,000 × 36% = $7,200 and the basis ends at $51,200. Under the pre-drift flat-% model a 100% basis priced $0 of gains forever — the later years' gains are exactly the growth the flat model ignored.",
+    expected: {
+      y1DrawGains: 0,
+      y1BasisEnd: 80000,
+      y2DrawGains: 4000,
+      y2BasisEnd: 64000,
+      y3DrawGains: 7200,
+      y3BasisEnd: 51200,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 100,
+        annualSpending: 20000,
+        expectedReturnPct: 25,
+        endAgePrimary: 59,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const [y1, y2, y3] = res.years;
+      return {
+        y1DrawGains: y1?.detail.drawGains ?? null,
+        y1BasisEnd: y1?.detail.taxableBasisDollars ?? null,
+        y2DrawGains: y2?.detail.drawGains ?? null,
+        y2BasisEnd: y2?.detail.taxableBasisDollars ?? null,
+        y3DrawGains: y3?.detail.drawGains ?? null,
+        y3BasisEnd: y3?.detail.taxableBasisDollars ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-drift-basis-0-inflow-year",
+    kind: "tax",
+    note: "BASIS-DRIFT at 0% basis with an inflow year (BASIS-DRIFT build fixture 4, REWORKED by the BASIS-DRIFT FIXTURE FIX — finding F-A; derived by hand from the drift rules): the original construction (Taxable $100,000 at 0% basis, $20,000/yr drawn, no income) priced IDENTICALLY under the pre-drift flat-% model — at a flat 0% every draw is fully gain and the ledger reads $0 forever, drift or no drift — so it could not catch a drift regression. This construction adds the missing ingredient, money flowing INTO Taxable: Taxable $100,000 at 0% basis (basis dollars $0), $30,000/yr of other ordinary income, $50,000/yr of spending from retirement at 58, 25% return. 2026 (age 57, pre-retirement, no spending draw): the $30,000 of income sits under the $32,200 standard deduction (tax $0) and the whole surplus is saved into Taxable — after-tax money in raises the basis dollars dollar-for-dollar to $30,000 while the balance grows to ($100,000 + $30,000) × 1.25 = $162,500. 2027: the $20,000 spending deficit ($50,000 − $30,000 of income) draws from Taxable at the entering ratio $30,000/$162,500 = 12/65, so the draw's gain is $20,000 × 53/65 = $16,307.69 and the basis falls by the draw's basis share ($3,692.31) to $26,307.69; the balance ends at ($162,500 − $20,000) × 1.25 = $178,125 (federal tax stays $0 — the gains sit inside the 0% LTCG space while ordinary taxable income is $0). 2028: the entering ratio is $26,307.69/$178,125, so the gain is $17,046.15, the basis falls $2,953.85 to $23,353.85, and the balance ends at $197,656.25. Under flat pricing the basis pins read $0 and both draw years read $20,000 of gains — five of the six basis/gain pins fail (verified at build time against a flat-forced scratch engine, which reproduced the old construction's figures exactly on both models).",
+    expected: {
+      y1DrawGains: 0,
+      y1BasisEnd: 30000,
+      y1TaxableEnd: 162500,
+      y2DrawGains: 16307.69,
+      y2BasisEnd: 26307.69,
+      y2TaxableEnd: 178125,
+      y3DrawGains: 17046.15,
+      y3BasisEnd: 23353.85,
+      y3TaxableEnd: 197656.25,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 0,
+        annualSpending: 50000,
+        otherOrdinaryAnnual: 30000,
+        retirementAge: 58,
+        expectedReturnPct: 25,
+        endAgePrimary: 59,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const [y1, y2, y3] = res.years;
+      return {
+        y1DrawGains: y1?.detail.drawGains ?? null,
+        y1BasisEnd: y1?.detail.taxableBasisDollars ?? null,
+        y1TaxableEnd: y1?.taxableEnd ?? null,
+        y2DrawGains: y2?.detail.drawGains ?? null,
+        y2BasisEnd: y2?.detail.taxableBasisDollars ?? null,
+        y2TaxableEnd: y2?.taxableEnd ?? null,
+        y3DrawGains: y3?.detail.drawGains ?? null,
+        y3BasisEnd: y3?.detail.taxableBasisDollars ?? null,
+        y3TaxableEnd: y3?.taxableEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-drift-sample-shape-anchors-basis-50",
+    kind: "tax",
+    note: "BASIS-DRIFT re-pinned sample-shape anchors at basis 50 (BASIS-DRIFT build, fixture 6; engine-derived under drift, claim 67, the sample shape — the golden compare base with the entered benchmarks, couple $24,000 / family $32,000): Option 1 (cliff cap, Pre-tax → Taxable → Roth) 81208840 cents, Option 3 (Fill 22% + cliff cap, Taxable first) 210980910 cents, Option 4 (Fill 22% uncapped, Taxable first) 135969651 cents, Do Nothing 253046013 cents, and Option 1 + gain harvesting (the interim Option 8) 75213747 cents. These SUPERSEDE the flat-% figures of record (49078265 / 152893186 / 83784864 / 243105153 / 50056946): under drift the basis dollars stay fixed while the taxable balance compounds at 5.75%, so the basis share falls year by year and later draws realize more gain than the flat 50% priced — every strategy's lifetime tax rises, harvesting's step-ups claw part of Option 1's rise back (75213747 < 81208840), and the ordering of the five is unchanged. (RE-PINNED by the M-1 FIX from 54160335 / 53420794 — Option 1 and Option 8 only: the cliff-capped pre-tax draw now converges against settled tax-payment and spill gains, so their capped years land on the cliff and keep the lifetime ACA credit the leak forfeited, pinned year by year in tax-m1-cliff-cap-draw-lands-on-cliff-basis-50. Options 3, 4, and Do Nothing do not price the capped-draw settlement the fix changes and are unmoved. RE-PINNED AGAIN by the settlement iteration, FIX 1 — all five: every year's tax-channel sales now price their gains, so capped draws trim further, trajectories diverge, and the lifetime credit is $184,182.95 with 2046 settling over on mandatory income.) (DRIFT QUANTITIES pinned by the BASIS-DRIFT FIXTURE FIX — finding F-B: net costs alone cannot catch a basis-path regression — right totals, wrong ledger — so this fixture now also pins ending taxable basis dollars and realized draw gains at the sensitive years, each derived from the drift rules, not transcribed. Option 1, 2027 (first capped year): the M-1 fixture's hand-derived settlement as iterated by FIX 1 — draw $134,975.21, spill $22,456.87, and every Taxable sale realizing gains at the entering ratio $1,268,378.18/$2,682,619.84 (gain rate 0.52718676): gains = ($22,456.87 spill + $14,996.26 tax sale) × 0.52718676 = $19,744.79, the tax priced from the 2026 MFJ law row (ordinary tax on $102,775.21 = $12,034.55, plus the $19,744.79 of gains at 15% = $2,961.72 because ordinary taxable income alone passes the $98,900 0% top); every outflow is pro-rata on the ledger, so the basis ends at $1,268,378.18 − ($22,456.87 + $14,996.26) × 0.47281324 = $1,250,669.84. Option 1, 2036 (first one-spouse year): basis $1,099,969.26, gains $38,469.89. Option 1, 2046 (first RMD year — the RMD's forced income shrinks the capped draw to $0 and the settlement's Taxable draws jump): basis $979,607.28, gains $31,876.73. Option 1's trajectory endpoint (2066): basis $995,351.73. A from-rules ledger replay of all 41 years (pro-rata outflows at the entering ratio, draw gains = Taxable draws × (1 − ratio), settlement deltas as pro-rata outflows or dollar-for-dollar credits, no surplus on this shape) reproduces every year's ending basis to under a cent, so the chain of pins is load-bearing year to year. Option 8, 2026: the harvest steps the basis up in the inert first year by exactly the 0% space at zero other income — $32,200 standard deduction + $98,900 0% top = $131,100 — from $1,268,378.18 to $1,399,478.18; its 2046 pair is basis $1,101,466.40 / gains $34,609.86 and its 2066 endpoint basis is $1,111,957.48 (two decades of step-ups leave it $56,365.92 above Option 1's endpoint). Do Nothing, 2046: the basis RISES, $456,739.20 → $536,243.62 — the first RMD ($228,677.08) plus Social Security ($48,000) exceeds spending plus the $42,260.58 tax by exactly the $79,504.42 rise, saved into Taxable dollar-for-dollar, with $0 of Taxable draws and $0 of draw gains that year.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      option1: 45668789,
+      option3: 191077074,
+      option4: 117030088,
+      doNothing: 238593411,
+      option8: 43120771,
+      opt1Y2031Basis: 1189185.66,
+      opt1Y2031Gains: 12057.99,
+      opt1Y2040Basis: 1096180.95,
+      opt1Y2040Gains: 24185.72,
+      opt1Y2050Basis: 1025324.26,
+      opt1Y2050Gains: 12934.63,
+      opt1FinalBasis: 995351.73,
+      opt8Y2030Harvested: 131100,
+      opt8Y2030Basis: 1331100,
+      opt8Y2050Basis: 1151808.02,
+      opt8Y2050Gains: 12608.31,
+      opt8FinalBasis: 1111957.48,
+      dnY2050Basis: 508391.68,
+      dnY2050Gains: 0,
+    },
+    actual: () => {
+      const ceilings = (over: Record<string, unknown>) => ({
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        magiCapCents: null,
+        ...over,
+      });
+      const cmp = runRothCompare(sampleShapeBase50(), [
+        {
+          name: "Option 1",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        {
+          name: "Option 3",
+          overrides: {
+            ceilings: ceilings({ bracketTopPct: 22, acaCliffCap: true }),
+            drawOrder: "taxable-pretax-roth" as const,
+          },
+        },
+        {
+          name: "Option 4",
+          overrides: {
+            ceilings: ceilings({ bracketTopPct: 22 }),
+            drawOrder: "taxable-pretax-roth" as const,
+          },
+        },
+        { name: "Do Nothing", overrides: { ceilings: null } },
+        {
+          name: "Option 8",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+            gainsHarvest: true,
+          },
+        },
+      ], 2030);
+      const net = (i: number) => cmp.scenarios[i]?.netCostCents ?? null;
+      // Drift quantities (BASIS-DRIFT FIXTURE FIX, F-B): the same
+      // shapes simulated directly, pinning the basis ledger's path
+      // at the sensitive years — not just the lifetime totals.
+      const sim = (name: string, overrides: Record<string, unknown>) => {
+        const built = buildCompareScenario(
+          sampleShapeBase50(),
+          name,
+          overrides,
+          2030,
+        );
+        return built ? simulateRothPlan(built.inputs, built.strategy) : null;
+      };
+      const yr = (
+        res: ReturnType<typeof simulateRothPlan> | null,
+        year: number,
+      ) => res?.years.find((y) => y.year === year) ?? null;
+      const lastYr = (res: ReturnType<typeof simulateRothPlan> | null) =>
+        res?.years[res.years.length - 1] ?? null;
+      const opt1Sim = sim("Option 1", {
+        ceilings: ceilings({ acaCliffCap: true }),
+        drawOrder: "pretax-taxable-roth" as const,
+      });
+      const opt8Sim = sim("Option 8", {
+        ceilings: ceilings({ acaCliffCap: true }),
+        drawOrder: "pretax-taxable-roth" as const,
+        gainsHarvest: true,
+      });
+      const dnSim = sim("Do Nothing", { ceilings: null });
+      return {
+        option1: net(0),
+        option3: net(1),
+        option4: net(2),
+        doNothing: net(3),
+        option8: net(4),
+        opt1Y2031Basis: yr(opt1Sim, 2031)?.detail.taxableBasisDollars ?? null,
+        opt1Y2031Gains: yr(opt1Sim, 2031)?.detail.drawGains ?? null,
+        opt1Y2040Basis: yr(opt1Sim, 2040)?.detail.taxableBasisDollars ?? null,
+        opt1Y2040Gains: yr(opt1Sim, 2040)?.detail.drawGains ?? null,
+        opt1Y2050Basis: yr(opt1Sim, 2050)?.detail.taxableBasisDollars ?? null,
+        opt1Y2050Gains: yr(opt1Sim, 2050)?.detail.drawGains ?? null,
+        opt1FinalBasis: lastYr(opt1Sim)?.detail.taxableBasisDollars ?? null,
+        opt8Y2030Harvested: yr(opt8Sim, 2030)?.detail.gainsHarvested ?? null,
+        opt8Y2030Basis: yr(opt8Sim, 2030)?.detail.taxableBasisDollars ?? null,
+        opt8Y2050Basis: yr(opt8Sim, 2050)?.detail.taxableBasisDollars ?? null,
+        opt8Y2050Gains: yr(opt8Sim, 2050)?.detail.drawGains ?? null,
+        opt8FinalBasis: lastYr(opt8Sim)?.detail.taxableBasisDollars ?? null,
+        dnY2050Basis: yr(dnSim, 2050)?.detail.taxableBasisDollars ?? null,
+        dnY2050Gains: yr(dnSim, 2050)?.detail.drawGains ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-tiers-single-tier-identity-sample-shape",
+    kind: "tax",
+    note: "BASIS TIERS one-tier identity (BASIS TIERS build, fixture a): a single tier at 100% share carrying the record's own 50% basis must reproduce the single pool TO THE CENT on the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67). With one tier, the tier's ratio is the pool's ratio at every step, so highest-first sales ARE the pool's pro-rata sales. The cliff-capped pre-tax-first strategy nets 101471817 cents with the tier and without it, and the taxable-first Fill 22% strategy nets 152082589 cents both ways — the record's own live prices for those two shapes, reproduced on this fixture base. Any leak of tier machinery into the one-tier path, or of the flat path into the tier path, moves one side of a pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      cliffPool: 69851052,
+      cliffTier: 69851052,
+      fill22Pool: 132200101,
+      fill22Tier: 132200101,
+    },
+    actual: () => {
+      const base57 = {
+        ...sampleShapeBase50(),
+        retirementAge: 57,
+        windowStartAge: 57,
+      };
+      const ceilings = (over: Record<string, unknown>) => ({
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        magiCapCents: null,
+        ...over,
+      });
+      const oneTier = [{ sharePct: 100, basisPct: 50 }];
+      const cmp = runRothCompare(base57, [
+        {
+          name: "Cliff pool",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        {
+          name: "Cliff tier",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+            taxableTiers: oneTier,
+          },
+        },
+        {
+          name: "Fill 22 pool",
+          overrides: {
+            ceilings: ceilings({ bracketTopPct: 22 }),
+            drawOrder: "taxable-pretax-roth" as const,
+          },
+        },
+        {
+          name: "Fill 22 tier",
+          overrides: {
+            ceilings: ceilings({ bracketTopPct: 22 }),
+            drawOrder: "taxable-pretax-roth" as const,
+            taxableTiers: oneTier,
+          },
+        },
+      ], 2030);
+      const net = (i: number) => cmp.scenarios[i]?.netCostCents ?? null;
+      return {
+        cliffPool: net(0),
+        cliffTier: net(1),
+        fill22Pool: net(2),
+        fill22Tier: net(3),
+      };
+    },
+  },
+  {
+    id: "tax-tiers-hand-derived-two-tiers",
+    kind: "tax",
+    note: "BASIS TIERS hand-derived two-tier case (BASIS TIERS build, fixture b; derived from the sale-order rules before the engine ran): Taxable $100,000 in two tiers — 30% of the pool at 100% basis ($30,000 balance / $30,000 basis) and 70% at 0% ($70,000 / $0) — $20,000/yr of spending drawn from Taxable, 25% return, no other income (the gains sit under the standard deduction, so federal tax is $0 every year and only the draw and the growth move the account). Sales consume the highest basis ratio first, pro-rata within a tier. Year 1: the 100%-basis tier funds the whole $20,000 draw — gain $0 — leaving it at $10,000 / $10,000; growth restores the pool to $100,000 with the high tier at $12,500 / $10,000 (an 80% ratio) and the low tier at $87,500 / $0; the pool's basis ends at $10,000. Year 2: the draw takes the high tier's remaining $12,500 first (gain $12,500 × 20% = $2,500 — the tier is EXHAUSTED mid-sale) and the other $7,500 from the 0% tier (gain $7,500): total gain $10,000, pool basis $0, and growth leaves the whole $100,000 in the 0% tier. Year 3: the $20,000 draw is all gain. The balance ends at exactly $100,000 every year (($100,000 − $20,000) × 1.25). Under the single pool at the blended 30% basis the same years price $14,000 / $15,200 / $16,160 of gains (pinned in tax-tiers-tiered-shape-fails-single-pool) — the tier path is the lot selection itself.",
+    expected: {
+      y1DrawGains: 0,
+      y1BasisEnd: 10000,
+      y1TaxableEnd: 100000,
+      y2DrawGains: 10000,
+      y2BasisEnd: 0,
+      y2TaxableEnd: 100000,
+      y3DrawGains: 20000,
+      y3BasisEnd: 0,
+      y3TaxableEnd: 100000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 30,
+        taxableTiers: [
+          { sharePct: 30, basisPct: 100 },
+          { sharePct: 70, basisPct: 0 },
+        ],
+        annualSpending: 20000,
+        expectedReturnPct: 25,
+        endAgePrimary: 59,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const [y1, y2, y3] = res.years;
+      return {
+        y1DrawGains: y1?.detail.drawGains ?? null,
+        y1BasisEnd: y1?.detail.taxableBasisDollars ?? null,
+        y1TaxableEnd: y1?.taxableEnd ?? null,
+        y2DrawGains: y2?.detail.drawGains ?? null,
+        y2BasisEnd: y2?.detail.taxableBasisDollars ?? null,
+        y2TaxableEnd: y2?.taxableEnd ?? null,
+        y3DrawGains: y3?.detail.drawGains ?? null,
+        y3BasisEnd: y3?.detail.taxableBasisDollars ?? null,
+        y3TaxableEnd: y3?.taxableEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-tiers-inflow-lands-at-100-sold-first",
+    kind: "tax",
+    note: "BASIS TIERS inflow at 100% basis, sold first (BASIS TIERS build, fixture c; hand-derived): the tax-drift-basis-0-inflow-year construction with the pool expressed as ONE tier at 0% basis — Taxable $100,000 at 0% basis, $30,000/yr of other ordinary income, $50,000/yr of spending from retirement at 58, 25% return. 2026 (age 57, pre-retirement): the $30,000 sits under the $32,200 standard deduction (tax $0) and the whole surplus is saved into Taxable — after-tax money lands at 100% basis in its own inflow tier ($30,000 / $30,000) beside the 0% tier, and the pool ends at ($100,000 + $30,000) × 1.25 = $162,500 against $30,000 of basis, exactly the single pool's year (that fixture pins the same three figures). 2027: the $20,000 deficit draw sells the HIGHEST ratio first — the inflow tier, grown to $37,500 / $30,000 (80%) — so the gain is $20,000 × 20% = $4,000 and the basis falls by the draw's basis share ($16,000) to $14,000; the balance ends at ($162,500 − $20,000) × 1.25 = $178,125 (tax stays $0 — the gains sit inside the 0% LTCG space while ordinary taxable income is $0). 2028: the inflow tier ($21,875 / $14,000, a 64% ratio) is still the highest, so the draw's gain is $20,000 × 36% = $7,200, the basis falls $12,800 to $1,200, and the balance ends at $197,656.25. Under the single pool the 2027 / 2028 gains price $16,307.69 / $17,046.15 (tax-drift-basis-0-inflow-year) — the gap is the inflow lot being sold first instead of pro-rata.",
+    expected: {
+      y1DrawGains: 0,
+      y1BasisEnd: 30000,
+      y1TaxableEnd: 162500,
+      y2DrawGains: 4000,
+      y2BasisEnd: 14000,
+      y2TaxableEnd: 178125,
+      y3DrawGains: 7200,
+      y3BasisEnd: 1200,
+      y3TaxableEnd: 197656.25,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 0,
+        taxableTiers: [{ sharePct: 100, basisPct: 0 }],
+        annualSpending: 50000,
+        otherOrdinaryAnnual: 30000,
+        retirementAge: 58,
+        expectedReturnPct: 25,
+        endAgePrimary: 59,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const [y1, y2, y3] = res.years;
+      return {
+        y1DrawGains: y1?.detail.drawGains ?? null,
+        y1BasisEnd: y1?.detail.taxableBasisDollars ?? null,
+        y1TaxableEnd: y1?.taxableEnd ?? null,
+        y2DrawGains: y2?.detail.drawGains ?? null,
+        y2BasisEnd: y2?.detail.taxableBasisDollars ?? null,
+        y2TaxableEnd: y2?.taxableEnd ?? null,
+        y3DrawGains: y3?.detail.drawGains ?? null,
+        y3BasisEnd: y3?.detail.taxableBasisDollars ?? null,
+        y3TaxableEnd: y3?.taxableEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-tiers-harvest-lowest-tier-steps-up",
+    kind: "tax",
+    note: "BASIS TIERS harvest sells the lowest tier and steps it up (BASIS TIERS build, fixture d; hand-derived): Taxable $400,000 in two tiers — half at 40% basis ($200,000 / $80,000) and half at 0% ($200,000 / $0) — no return, no income, gain harvesting on, retirement at 58 with $100,000/yr of spending. 2026 (pre-retirement, no draws): the harvest realizes into the year's whole 0% space — $32,200 standard deduction + $98,900 0% top = $131,100 (the zero-income derivation pinned in tax-drift-sample-shape-anchors-basis-50) — under the $320,000 of available gain, so $131,100 is harvested. The sale comes out of the LOWEST-ratio tier and the rebuy steps THAT tier up: the 0% tier's basis rises $0 → $131,100, the 40% tier is untouched, and the pool's basis ends at $211,100. 2027: the $100,000 spending draw sells highest-ratio first — the stepped-up tier, now $131,100 / $200,000 = 65.55% — realizing $100,000 × 34.45% = $34,450 of gains and leaving that tier at $100,000 / $65,550; the year's own harvest fills the remaining 0% space above the draw's gains (the draw's taxable income is $34,450 − $32,200 = $2,250, so $98,900 − $2,250 = $96,650 more fits at 0%) and steps up the now-lowest tier — the 40% tier after the draw — taking its basis $80,000 → $176,650. The pool ends at $300,000 against $242,200 of basis. Had the 2026 step-up landed on the higher tier instead, the 2027 draw would price $0 of gains; pro-rata, $27,225 — the $34,450 pin separates the placements.",
+    expected: {
+      y1Harvested: 131100,
+      y1BasisEnd: 211100,
+      y1TaxableEnd: 400000,
+      y2DrawGains: 34450,
+      y2Harvested: 96650,
+      y2BasisEnd: 242200,
+      y2TaxableEnd: 300000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        taxableStart: 400000,
+        taxableBasisPct: 20,
+        taxableTiers: [
+          { sharePct: 50, basisPct: 40 },
+          { sharePct: 50, basisPct: 0 },
+        ],
+        annualSpending: 100000,
+        retirementAge: 58,
+        expectedReturnPct: 0,
+        endAgePrimary: 58,
+      });
+      const res = simulateRothPlan(plan, {
+        id: "harvest",
+        name: "Harvest",
+        ceilings: null,
+        gainsHarvest: true,
+      });
+      const [y1, y2] = res.years;
+      return {
+        y1Harvested: y1?.detail.gainsHarvested ?? null,
+        y1BasisEnd: y1?.detail.taxableBasisDollars ?? null,
+        y1TaxableEnd: y1?.taxableEnd ?? null,
+        y2DrawGains: y2?.detail.drawGains ?? null,
+        y2Harvested: y2?.detail.gainsHarvested ?? null,
+        y2BasisEnd: y2?.detail.taxableBasisDollars ?? null,
+        y2TaxableEnd: y2?.taxableEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-tiers-tiered-shape-fails-single-pool",
+    kind: "tax",
+    note: "BASIS TIERS discrimination (BASIS TIERS build, fixture e): the hand-derived two-tier construction of tax-tiers-hand-derived-two-tiers priced BOTH ways on the identical pool — with the tiers (the sale order applies) and with the tiers stripped, leaving the same $100,000 pool at its blended 30% basis on the single-pool drift path. Single pool, derived from the drift rules: year 1 at a 30% ratio prices gain $20,000 × 70% = $14,000 and the basis falls $6,000 to $24,000; year 2 at 24% prices $20,000 × 76% = $15,200, basis to $19,200; year 3 at 19.2% prices $20,000 × 80.8% = $16,160, basis to $15,360 (the balance returns to $100,000 each year at the 25% return). Tiered, the same years price $0 / $10,000 / $20,000 and end the basis at $10,000 / $0 / $0. A tier implementation that silently fell back to the pool fails the tier side; a pool that picked up tier behaviour fails the pool side.",
+    expected: {
+      tierY1Gains: 0,
+      tierY2Gains: 10000,
+      tierY3Gains: 20000,
+      tierFinalBasis: 0,
+      poolY1Gains: 14000,
+      poolY1Basis: 24000,
+      poolY2Gains: 15200,
+      poolY2Basis: 19200,
+      poolY3Gains: 16160,
+      poolY3Basis: 15360,
+    },
+    actual: () => {
+      const shape = {
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 30,
+        annualSpending: 20000,
+        expectedReturnPct: 25,
+        endAgePrimary: 59,
+      };
+      const tiered = simulateRothPlan(
+        basePlan({
+          ...shape,
+          taxableTiers: [
+            { sharePct: 30, basisPct: 100 },
+            { sharePct: 70, basisPct: 0 },
+          ],
+        }),
+        DO_NOTHING,
+      );
+      const pooled = simulateRothPlan(basePlan(shape), DO_NOTHING);
+      const g = (
+        res: ReturnType<typeof simulateRothPlan>,
+        i: number,
+        field: "drawGains" | "taxableBasisDollars",
+      ) => res.years[i]?.detail[field] ?? null;
+      return {
+        tierY1Gains: g(tiered, 0, "drawGains"),
+        tierY2Gains: g(tiered, 1, "drawGains"),
+        tierY3Gains: g(tiered, 2, "drawGains"),
+        tierFinalBasis: g(tiered, 2, "taxableBasisDollars"),
+        poolY1Gains: g(pooled, 0, "drawGains"),
+        poolY1Basis: g(pooled, 0, "taxableBasisDollars"),
+        poolY2Gains: g(pooled, 1, "drawGains"),
+        poolY2Basis: g(pooled, 1, "taxableBasisDollars"),
+        poolY3Gains: g(pooled, 2, "drawGains"),
+        poolY3Basis: g(pooled, 2, "taxableBasisDollars"),
+      };
+    },
+  },
+  {
+    id: "tax-m1-cliff-cap-draw-lands-on-cliff-basis-50",
+    kind: "tax",
+    note: "M-1 FIX, capped pre-tax draw converges (M-1 fix build, fixture 1; year figures derived independently of the engine): on the sample shape at a 50% basis (retire 56, claim 67, the entered benchmarks), the Option 1 shape (ACA cliff cap, Pre-tax → Taxable → Roth) spends from pre-tax first, so each capped year's draw was sized pre-settlement and the spill into Taxable realized gains the cap never saw — before the fix every capped year settled over the cliff (2027: MAGI $054,750.69, $30.69 over) and the lifetime ACA credit was $0. 2027 derived by hand: 2026 is inert (age 55, pre-retirement, out of the window), so Taxable enters 2027 at $2,400,000 × 1.0575 = $2,682,619.84 against $0,268,378.18 of basis dollars — a gain rate of 0.52718676; with no RMD, Social Security, or other income and the conversion solved to $0 against the draw, MAGI = draw + gains, where the gains are realized by EVERY Taxable sale at that rate — the spending spill (spending − draw) and, under the settlement iteration (FIX 1), the sale that pays the year's tax. The tax itself is $04,996.26 (ordinary tax on $002,775.21 = $02,034.55 plus 15% × $09,744.79 of gains = $2,961.72), so gains = ($22,456.87 spill + $04,996.26 tax sale) × 0.52718676 = $09,744.79 and the largest cent draw keeping MAGI ≤ $054,720 (400% of the 2026-guideline FPL for a household of 5, $38,680) is $034,975.21, landing MAGI exactly on $054,720.00. (The M-1-era pin — draw $051,696.04, gains $3,023.96 — priced only the spill; the tax sale's $7,906.26 of gains was the Finding B gap.) The credit at the line is the family benchmark less the 300–400% band's 9.96% applicable percentage (Rev. Proc. 2025-25): $32,000 − 0.0996 × $054,720 = $08,920.45. In 2036 only the spouse is on the marketplace (the primary is 65), so the one-spouse benchmark prices the same landing: $05,000 − 0.0996 × $054,720 = $0,389.89. Every capped year 2027–2045 lands on the cliff; 2046 cannot land under any draw cap — the RMD ($83,465.83) plus Social Security ($48,000) leave $20,734.17 of room, the pre-tax draw is already $0, and the spending deficit's forced Taxable spill plus the tax sale realize $31,876.73 of gains, settling ACA MAGI at $065,862.56 with the credit lost (the mandatory-income outcome). The lifetime credit is 9 family years (2027–2035) at $08,920.45 plus 10 one-spouse years (2036–2045) at $0,389.89 = $084,182.95 (18418295 cents). The lifetime net (81208840 cents) is engine-derived: tax on the iterated settlements less that credit. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      y2031Magi: 154720,
+      y2031Credit: 16589.89,
+      y2031Draw: 142662.01,
+      y2031Gains: 12057.99,
+      y2040Magi: 154720,
+      y2040Credit: 0,
+      yearsOverCliff: 0,
+      lifetimeCreditCents: 14930901,
+      lifetimeNetCents: 128345441,
+    },
+    actual: () => {
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const built = buildCompareScenario(sampleShapeBase50(), "Option 1", option1, 2030);
+      const res = built ? simulateRothPlan(built.inputs, built.strategy) : null;
+      const row = (yr: number) => res?.years.find((y) => y.year === yr) ?? null;
+      const y27 = row(2031);
+      const y36 = row(2040);
+      const cmp = runRothCompare(
+        sampleShapeBase50(),
+        [{ name: "Option 1", overrides: option1 }],
+        2026,
+      );
+      return {
+        y2031Magi: y27?.acaMagi ?? null,
+        y2031Credit: y27?.acaCreditKept ?? null,
+        y2031Draw: y27?.detail.extraPreTaxDraw ?? null,
+        y2031Gains: y27?.detail.drawGains ?? null,
+        y2040Magi: y36?.acaMagi ?? null,
+        y2040Credit: y36?.acaCreditKept ?? null,
+        yearsOverCliff:
+          res?.years.filter(
+            (y) =>
+              y.acaActive &&
+              y.detail.aca.cliff != null &&
+              y.acaMagi > y.detail.aca.cliff + 0.005,
+          ).length ?? null,
+        lifetimeCreditCents: cmp.scenarios[0]?.acaCreditCents ?? null,
+        lifetimeNetCents: cmp.scenarios[0]?.netCostCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-m1-cliff-cap-draw-lands-on-cliff-basis-20-80",
+    kind: "tax",
+    note: "M-1 FIX at second basis levels (M-1 fix build, fixture 2; derived as in fixture 1): the 2031 landing is basis-independent — only the draw/gain split moves, and under the settlement iteration (FIX 1) the gains are realized by every Taxable sale (the spending spill plus the tax sale) at the pool's gain rate. At a 20% basis the basis dollars are $507,351.27 against the same $2,682,619.84 entering balance (gain rate 0.81087470), so the draw must stop at $117,834.20 with $36,885.79 of gains (draw + gains = $154,719.99, the largest cent landing); at an 80% basis ($2,029,405.08 of basis dollars, gain rate 0.24349882) the draw reaches $150,000.00 with $3,876.87 of gains. Both land MAGI on $153,876.87 (the 20% case one cent under) and keep the $16,589.89 credit (the fixture-1 derivation at the family benchmark). (The M-1-era pins — $143,091.98 / $11,628.02 and $153,847.05 / $872.95 — priced only the spill's gains.) Before the fix, capped draws at a set basis settled over the cliff and kept $0 of lifetime credit.",
+    expected: {
+      draw20: 117834.2,
+      gains20: 36885.79,
+      magi20: 154719.99,
+      credit20: 16589.89,
+      draw80: 150000,
+      gains80: 3876.87,
+      magi80: 153876.87,
+      credit80: 16673.86,
+    },
+    actual: () => {
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const row2031 = (basisPct: number) => {
+        const built = buildCompareScenario(
+          { ...sampleShapeBase50(), taxableBasisPct: basisPct },
+          "Option 1",
+          option1,
+          2030,
+        );
+        const res = built ? simulateRothPlan(built.inputs, built.strategy) : null;
+        return res?.years.find((y) => y.year === 2031) ?? null;
+      };
+      const y20 = row2031(20);
+      const y80 = row2031(80);
+      return {
+        draw20: y20?.detail.extraPreTaxDraw ?? null,
+        gains20: y20?.detail.drawGains ?? null,
+        magi20: y20?.acaMagi ?? null,
+        credit20: y20?.acaCreditKept ?? null,
+        draw80: y80?.detail.extraPreTaxDraw ?? null,
+        gains80: y80?.detail.drawGains ?? null,
+        magi80: y80?.acaMagi ?? null,
+        credit80: y80?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-m1-cliff-cap-mandatory-income-unmoved",
+    kind: "tax",
+    note: "M-1 FIX, mandatory income unmoved (M-1 fix build, fixture 3): a capped year whose mandatory income alone breaches the cliff cannot be landed by any draw cap, and the cap machinery leaves it exactly as it settled before. Construction: the sample shape moved to a 1951/1972 couple (spouse sole beneficiary, 21 years younger) with $8,000,000 of pre-tax and $400,000 of spending, retire 57, Option 1 ceilings and draw order. In 2026 the primary is 75: the RMD is $8,000,000 ÷ 33.2 = $240,963.86 (Joint Life and Last Survivor Table — Table II, IRS Publication 590-B (2025), Appendix B: owner 75, beneficiary 54), itself far over the household-of-5 cliff ($150,600 for coverage 2026, at the 2025 guideline), so the capped draw's room is $0 (draw2026 0), the year settles over on the RMD plus the spill's gains and — under the settlement iteration (FIX 1) — the gains on the sale that pays the year's tax (ACA MAGI $374,908.38 — engine-derived under the corrected table), and the credit is $0, in 2027 as well. RE-PINNED 2026-10-19 (E2 build, the deliberate Table II re-pin): this fixture previously pinned divisor 28.3, RMD $282,685.51 and MAGI $400,543.87 (the MAGI itself repriced from the M-1-era $394,214.06 when the tax-sale gains were first priced). 28.3 is Table II's value for a beneficiary aged 60, not 54 — the pre-E2 partial grid covered spouse ages 60–75 only and clamped the 54-year-old beneficiary to 60, reading the wrong cell. The IRS value for owner 75 / beneficiary 54 is 33.2; the pins now read divisor 33.2, RMD $240,963.86, MAGI $374,908.38. The qualitative pins are unmoved: draw $0, credit $0, over the cliff in 2026 and 2027. The RMD is never reduced to chase the line — the draw cap binds only the spending draw. (Whole-trajectory bit-identity between the pre-fix and fixed engines on this construction was verified at build time.)",
+    expected: {
+      rmd2026: 240963.86,
+      divisor2026: 33.2,
+      draw2026: 0,
+      credit2026: 0,
+      magi2026: 374908.38,
+      over2026: 1,
+      credit2027: 0,
+      over2027: 1,
+    },
+    actual: () => {
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const base = {
+        ...sampleShapeBase50(),
+        birthYearPrimary: 1951,
+        birthYearSpouse: 1972,
+        pretaxCents: 800000000,
+        annualSpendingCents: 40000000,
+        retirementAge: 57,
+        windowStartAge: 57,
+        windowStopAge: 74,
+      };
+      const built = buildCompareScenario(base, "Mandatory", option1, 2026);
+      const res = built ? simulateRothPlan(built.inputs, built.strategy) : null;
+      const row = (yr: number) => res?.years.find((y) => y.year === yr) ?? null;
+      const y26 = row(2026);
+      const y27 = row(2027);
+      const over = (y: typeof y26) =>
+        y != null && y.detail.aca.cliff != null && y.acaMagi > y.detail.aca.cliff
+          ? 1
+          : 0;
+      return {
+        rmd2026: y26?.rmd ?? null,
+        divisor2026: y26?.detail.rmdDivisor ?? null,
+        draw2026: y26?.detail.extraPreTaxDraw ?? null,
+        credit2026: y26?.acaCreditKept ?? null,
+        magi2026: y26?.acaMagi ?? null,
+        over2026: over(y26),
+        credit2027: y27?.acaCreditKept ?? null,
+        over2027: over(y27),
+      };
+    },
+  },
+  {
+    id: "tax-m1-cliff-cap-draw-paytaxfrom-conversion",
+    kind: "tax",
+    note: "M-1 FIX, tax paid from the conversion (M-1 fix build, fixture 4): the sample shape at basis 50 with payTaxFrom 'conversion'. On this path the year's tax is withheld from the conversion rather than paid by a Taxable sale, and any overflow the conversion cannot absorb is debited down the accounts. Under the settlement iteration (FIX 1) those debits price their income exactly as the taxable path's sales do — the Taxable leg's gains and the pre-tax legs' amounts feed back into the year's pricing — so on this shape, which converts $0 in every capped year, the two paths' settlements coincide: with no conversion to withhold from, the whole tax overflows to the same Taxable-first debit chain the taxable path pays directly. 2027 is identical to the taxable path's (fixture 1): the draw lands at $034,975.21 with $09,744.79 of gains, MAGI on $054,720.00, credit $08,920.45. Every capped year 2027–2045 lands and 2046 settles over on mandatory income (fixture 1's account), so the lifetime credit is fixture 1's $084,182.95 decomposition and the lifetime net (81208840 cents, engine-derived) equals the taxable path's to the cent. (Pre-FIX-1 the paths differed — net 35033355 vs 36568391 — because the debited tax realized no priced gains on this path.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      y2031Magi: 154720,
+      y2031Credit: 16589.89,
+      y2031Draw: 142662.01,
+      y2031Gains: 12057.99,
+      yearsOverCliff: 0,
+      lifetimeCreditCents: 14930901,
+      lifetimeNetCents: 45668789,
+    },
+    actual: () => {
+      const option1 = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const base = { ...sampleShapeBase50(), payTaxFrom: "conversion" as const };
+      const built = buildCompareScenario(base, "Option 1", option1, 2030);
+      const res = built ? simulateRothPlan(built.inputs, built.strategy) : null;
+      const y27 = res?.years.find((y) => y.year === 2031) ?? null;
+      const cmp = runRothCompare(base, [{ name: "Option 1", overrides: option1 }], 2030);
+      return {
+        y2031Magi: y27?.acaMagi ?? null,
+        y2031Credit: y27?.acaCreditKept ?? null,
+        y2031Draw: y27?.detail.extraPreTaxDraw ?? null,
+        y2031Gains: y27?.detail.drawGains ?? null,
+        yearsOverCliff:
+          res?.years.filter(
+            (y) =>
+              y.acaActive &&
+              y.detail.aca.cliff != null &&
+              y.acaMagi > y.detail.aca.cliff + 0.005,
+          ).length ?? null,
+        lifetimeCreditCents: cmp.scenarios[0]?.acaCreditCents ?? null,
+        lifetimeNetCents: cmp.scenarios[0]?.netCostCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-yield-blank-zero-identity-sample-shape",
+    kind: "tax",
+    note: "TAXABLE YIELDS blank / zero identity (TAXABLE YIELDS build, fixture a): on the sample shape at retire 57 (50% basis, the entered benchmarks — couple $24,000, family $32,000 — claim 67), the cliff-capped pre-tax-first strategy and the taxable-first Fill 22% strategy price TO THE CENT with the yield fields absent (blank), and again with both yields set to an explicit 0 in the scenario patch — 101471817 and 152082589 cents, the record's own live prices for those shapes (the same anchors the BASIS TIERS one-tier identity pins). Any leak of yield machinery into the blank path moves one side of a pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      cliffBlank: 69851052,
+      cliffZero: 69851052,
+      fill22Blank: 132200101,
+      fill22Zero: 132200101,
+    },
+    actual: () => {
+      const base57 = {
+        ...sampleShapeBase50(),
+        retirementAge: 57,
+        windowStartAge: 57,
+      };
+      const ceilings = (over: Record<string, unknown>) => ({
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        magiCapCents: null,
+        ...over,
+      });
+      const zeroYields = {
+        taxableDividendYieldPct: 0,
+        taxableInterestYieldPct: 0,
+      };
+      const cmp = runRothCompare(base57, [
+        {
+          name: "Cliff blank",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        {
+          name: "Cliff zero",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+            ...zeroYields,
+          },
+        },
+        {
+          name: "Fill 22 blank",
+          overrides: {
+            ceilings: ceilings({ bracketTopPct: 22 }),
+            drawOrder: "taxable-pretax-roth" as const,
+          },
+        },
+        {
+          name: "Fill 22 zero",
+          overrides: {
+            ceilings: ceilings({ bracketTopPct: 22 }),
+            drawOrder: "taxable-pretax-roth" as const,
+            ...zeroYields,
+          },
+        },
+      ], 2030);
+      const net = (i: number) => cmp.scenarios[i]?.netCostCents ?? null;
+      return {
+        cliffBlank: net(0),
+        cliffZero: net(1),
+        fill22Blank: net(2),
+        fill22Zero: net(3),
+      };
+    },
+  },
+  {
+    id: "tax-era-cliff-absent-false-identity-sample-shape",
+    kind: "tax",
+    note: "ERA-AWARE ACA CLIFF CAP absent / false identity (ERA-AWARE ACA CLIFF CAP build, fixture a): on the sample shape at retire 57 (50% basis, the entered benchmarks — couple $24,000, family $32,000 — claim 67, no step-down year set), the cliff-capped pre-tax-first strategy prices TO THE CENT with the ceilings key acaCliffCapFamilyOnly absent from the scenario patch (a pre-build record's shape) and again with it explicitly false — 101471817 cents both ways, the record's own live price (the same anchor the BASIS TIERS and TAXABLE YIELDS identities pin). Any leak of era machinery into the flag-off path moves one side of the pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      cliffAbsent: 69851052,
+      cliffFalse: 69851052,
+    },
+    actual: () => {
+      const base57 = {
+        ...sampleShapeBase50(),
+        retirementAge: 57,
+        windowStartAge: 57,
+      };
+      const ceilings = (over: Record<string, unknown>) => ({
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        magiCapCents: null,
+        ...over,
+      });
+      const cmp = runRothCompare(base57, [
+        {
+          name: "Cliff key absent",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        {
+          name: "Cliff flag false",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true, acaCliffCapFamilyOnly: false }),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+      ], 2030);
+      const net = (i: number) => cmp.scenarios[i]?.netCostCents ?? null;
+      return {
+        cliffAbsent: net(0),
+        cliffFalse: net(1),
+      };
+    },
+  },
+  {
+    id: "tax-era-cliff-family-only-stepdown-2040-sample-shape",
+    kind: "tax",
+    note: "ERA-AWARE ACA CLIFF CAP family-only pricing (ERA-AWARE ACA CLIFF CAP build, fixtures b + c): the sample shape at retire 57 with acaStepDownYear 2040 (household 5 → 2). Defended in every year (flag off), the settlement chases the stepped-down $86,560 line — in 2040 the capped pre-tax spending draw is shrunk to $0 and the year still settles over the line on spill gains, credit $0 — and the plan nets 145620190 cents, leaving millions of pre-tax undrained. With acaCliffCapFamilyOnly on, the family years defend exactly as before — 2028 lands ACA MAGI at exactly $154,720.00 (the household-of-5 cliff) and keeps its $18,920.45 credit — while from 2040 the cap is off: 2040 prices undefended with ACA MAGI $170,718.51 (the year's spending, drawn in full — extraPreTaxDraw $150,000 — plus $13,286.43 of tax-sale gains the settlement iteration prices), the credit computed on the household-of-2 math (line $86,560) and honestly $0 at that MAGI; the plan nets 75714363 cents and keeps $151,363.60 of lifetime credit. Fixture c rides along: flag on with acaStepDownYear null (no step-down) prices 101471817 — identical to flag off, the cap applying in all years. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      defendedNet: 122775178,
+      eraNet: 55483328,
+      eraCreditCents: 13271912,
+      eraNoStepdownNet: 69851052,
+      y2032AcaMagi: 154720,
+      y2032Credit: 16589.89,
+      y2040AcaMagi: 161978.71,
+      y2040Draw: 150000,
+      y2040Credit: 0,
+      y2040Cliff: 86560,
+      y2040Outcome: "era-cliff-off",
+      defendedY2040Draw: 0,
+    },
+    actual: () => {
+      const base57 = {
+        ...sampleShapeBase50(),
+        retirementAge: 57,
+        windowStartAge: 57,
+      };
+      const ceilings = (over: Record<string, unknown>) => ({
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        magiCapCents: null,
+        ...over,
+      });
+      const cliffOff = ceilings({ acaCliffCap: true });
+      const cliffEra = ceilings({ acaCliffCap: true, acaCliffCapFamilyOnly: true });
+      const baseStep = { ...base57, acaStepDownYear: 2040 };
+      const cmp = runRothCompare(baseStep, [
+        {
+          name: "Defended",
+          overrides: {
+            ceilings: cliffOff,
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        {
+          name: "Era",
+          overrides: {
+            ceilings: cliffEra,
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+      ], 2030);
+      const cmpNoStep = runRothCompare(base57, [
+        {
+          name: "Era no step-down",
+          overrides: {
+            ceilings: cliffEra,
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+      ], 2030);
+      const eraBuilt = buildCompareScenario(baseStep, "Era sim", {
+        ceilings: cliffEra,
+        drawOrder: "pretax-taxable-roth" as const,
+      }, 2030);
+      const eraSim = eraBuilt
+        ? simulateRothPlan(eraBuilt.inputs, eraBuilt.strategy)
+        : null;
+      const defBuilt = buildCompareScenario(baseStep, "Defended sim", {
+        ceilings: cliffOff,
+        drawOrder: "pretax-taxable-roth" as const,
+      }, 2030);
+      const defSim = defBuilt
+        ? simulateRothPlan(defBuilt.inputs, defBuilt.strategy)
+        : null;
+      const yr = (
+        res: ReturnType<typeof simulateRothPlan> | null,
+        year: number,
+      ) => res?.years.find((y) => y.year === year) ?? null;
+      const y2032 = yr(eraSim, 2032);
+      const y2040 = yr(eraSim, 2040);
+      return {
+        defendedNet: cmp.scenarios[0]?.netCostCents ?? null,
+        eraNet: cmp.scenarios[1]?.netCostCents ?? null,
+        eraCreditCents: cmp.scenarios[1]?.acaCreditCents ?? null,
+        eraNoStepdownNet: cmpNoStep.scenarios[0]?.netCostCents ?? null,
+        y2032AcaMagi: y2032?.acaMagi ?? null,
+        y2032Credit: y2032?.acaCreditKept ?? null,
+        y2040AcaMagi: y2040?.acaMagi ?? null,
+        y2040Draw: y2040?.detail.extraPreTaxDraw ?? null,
+        y2040Credit: y2040?.acaCreditKept ?? null,
+        y2040Cliff: y2040?.detail.aca.cliff ?? null,
+        y2040Outcome: y2040?.detail.fill.outcome ?? null,
+        defendedY2040Draw: yr(defSim, 2040)?.detail.extraPreTaxDraw ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-era-cliff-family-only-yields-sample-shape",
+    kind: "tax",
+    note: "ERA-AWARE ACA CLIFF CAP with the working yield calibration (ERA-AWARE ACA CLIFF CAP build, fixture d): the sample shape at retire 57 with acaStepDownYear 2036 and the record's working yields (interest 0.6307267152401136% / dividends 0.0788408394050142% of the taxable balance). Defended in every year the cliff plan nets 233844665 cents; with acaCliffCapFamilyOnly on — family years defended around the yield income, stepped-down years undefended — it nets 168419989 cents. The flag-off side is the yields build's defended-stepdown shape; any era leak into it, or yield leak into the era path, moves a side. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      defendedNet: 206977017,
+      eraNet: 146933261,
+    },
+    actual: () => {
+      const baseStepYields = {
+        ...sampleShapeBase50(),
+        retirementAge: 57,
+        windowStartAge: 57,
+        acaStepDownYear: 2040,
+        taxableInterestYieldPct: 0.6307267152401136,
+        taxableDividendYieldPct: 0.0788408394050142,
+      };
+      const ceilings = (over: Record<string, unknown>) => ({
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        magiCapCents: null,
+        ...over,
+      });
+      const cmp = runRothCompare(baseStepYields, [
+        {
+          name: "Defended",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        {
+          name: "Era",
+          overrides: {
+            ceilings: ceilings({ acaCliffCap: true, acaCliffCapFamilyOnly: true }),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+      ], 2030);
+      const net = (i: number) => cmp.scenarios[i]?.netCostCents ?? null;
+      return {
+        defendedNet: net(0),
+        eraNet: net(1),
+      };
+    },
+  },
+  {
+    id: "tax-yield-dividend-only-year",
+    kind: "tax",
+    note: "TAXABLE YIELDS dividend-only year (TAXABLE YIELDS build, fixture b; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, dividend yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's dividends are 5% × $1,000,000 = $50,000, priced on the gains stack: AGI $50,000, taxable income $50,000 − $32,200 standard deduction = $17,800, all of it gains sitting under ordinary taxable income of $0, so the whole $17,800 prices at the 0% gains rate — federal tax $0 — and MAGI is $50,000. The balance grows at the full 5% return to $1,050,000 (the yield is a component of the return, not growth on top); the reinvested $50,000 of basis is clamped to the pre-growth balance, so the basis ledger ends at $1,000,000. The 0%-zone interaction, priced directly: $90,000 of other ordinary income plus $50,000 of qualified dividends gives AGI $140,000, taxable income $107,800 — ordinary taxable income $57,800 (tax $2,480 + 12% × $33,000 = $6,440), gains filling the rest: the 0% space above ordinary income is $98,900 − $57,800 = $41,100 at 0% and the remaining $8,900 at 15% = $1,335, for $7,775 of federal tax. Dividends priced on the ordinary stack instead would tax the full $50,000 at bracket rates and fail every figure.",
+    expected: {
+      dividendIncome: 50000,
+      interestIncome: 0,
+      agi: 50000,
+      magi: 50000,
+      federalTax: 0,
+      gainsAt0: 17800,
+      taxableEnd: 1050000,
+      basisEnd: 1000000,
+      stackAgi: 140000,
+      stackOrdinaryTax: 6440,
+      stackGainsAt0: 41100,
+      stackGainsAt15: 8900,
+      stackLtcgTax: 1335,
+      stackFederalTax: 7775,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 1000000,
+          taxableBasisPct: 100,
+          taxableDividendYieldPct: 5,
+          expectedReturnPct: 5,
+          endAgePrimary: 57,
+        }),
+        DO_NOTHING,
+      );
+      const y = res.years[0]!;
+      const stack = priceYear(basePrice({
+        otherOrdinary: 90000,
+        qualifiedDividends: 50000,
+      }));
+      return {
+        dividendIncome: y.detail.dividendIncome,
+        interestIncome: y.detail.interestIncome,
+        agi: y.agi,
+        magi: y.magi,
+        federalTax: y.federalTax,
+        gainsAt0: y.detail.gainsAt0,
+        taxableEnd: y.taxableEnd,
+        basisEnd: y.detail.taxableBasisDollars,
+        stackAgi: stack.agi,
+        stackOrdinaryTax: stack.ordinaryTax,
+        stackGainsAt0: stack.gainsAt0,
+        stackGainsAt15: stack.gainsAt15,
+        stackLtcgTax: stack.ltcgTax,
+        stackFederalTax: stack.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-yield-interest-only-year",
+    kind: "tax",
+    note: "TAXABLE YIELDS interest-only year (TAXABLE YIELDS build, fixture c; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, interest yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's interest is 5% × $1,000,000 = $50,000, priced on the ORDINARY stack: AGI $50,000, taxable income $17,800 — all of it ordinary taxable income (gains in taxable income $0) — taxed at the 10% bracket rate for $1,780 of federal tax. The tax is paid from Taxable (100% basis, no gain), leaving $998,220, which grows at the full 5% to $1,048,131; the basis ledger ends at $998,220 (the $50,000 of reinvested interest basis clamps to the settled balance). Interest priced on the gains stack instead would sit in the 0% zone and tax $0. NIIT, priced directly: $300,000 of interest alone (AGI $300,000, over the $250,000 MFJ threshold) prices NIIT $0 — the NIIT base is the gains stack only and interest is NOT in it — while $300,000 of qualified dividends prices NIIT 3.8% × min($300,000, $300,000 − $250,000) = $1,900, with $98,900 of the dividends at 0% and $168,900 at 15% ($25,335), for $27,235 of federal tax.",
+    expected: {
+      interestIncome: 50000,
+      dividendIncome: 0,
+      agi: 50000,
+      federalTax: 1780,
+      ordinaryTi: 17800,
+      gainsInTi: 0,
+      taxableEnd: 1048131,
+      basisEnd: 998220,
+      niitInterestOnly: 0,
+      niitDividends: 1900,
+      divGainsAt15: 168900,
+      divFederalTax: 27235,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 1000000,
+          taxableBasisPct: 100,
+          taxableInterestYieldPct: 5,
+          expectedReturnPct: 5,
+          endAgePrimary: 57,
+        }),
+        DO_NOTHING,
+      );
+      const y = res.years[0]!;
+      const intOnly = priceYear(basePrice({ interestIncome: 300000 }));
+      const divOnly = priceYear(basePrice({ qualifiedDividends: 300000 }));
+      return {
+        interestIncome: y.detail.interestIncome,
+        dividendIncome: y.detail.dividendIncome,
+        agi: y.agi,
+        federalTax: y.federalTax,
+        ordinaryTi: y.detail.ordinaryTaxableIncome,
+        gainsInTi: y.detail.gainsInTaxableIncome,
+        taxableEnd: y.taxableEnd,
+        basisEnd: y.detail.taxableBasisDollars,
+        niitInterestOnly: intOnly.niit,
+        niitDividends: divOnly.niit,
+        divGainsAt15: divOnly.gainsAt15,
+        divFederalTax: divOnly.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-yield-cliff-cap-draw-shrinks-lands",
+    kind: "tax",
+    note: "TAXABLE YIELDS in a cliff-capped year (TAXABLE YIELDS build, fixture d; hand-derived): the tax-cliff-cap-draw-capped construction (one ACA year, household of 2, cliff $84,600, $200,000 spending drawn Pre-tax first, Taxable $500,000 at 100% basis, conversion window closed) plus a 2% dividend yield and a 1% interest yield on the $500,000 taxable balance — $10,000 of dividends and $5,000 of interest, mandatory income that takes the first $15,000 of cliff room. The capped pre-tax draw shrinks by exactly that room, from the no-yield $84,600 to $69,600, and ACA MAGI still lands exactly on the cliff at $84,600, keeping the same credit: $20,000 − 9.96% × $84,600 = $11,573.84. The year's tax: AGI $84,600, taxable income $52,400 — ordinary taxable income $42,400 (the $5,000 interest plus the $69,600 draw, less the deduction stack) taxed $2,480 + 12% × $17,600 = $4,592, and the $10,000 of dividends inside the 0% gains space at $0. Without the yields the same year taxes $5,792 (the whole $84,600 draw ordinary: $2,480 + 12% × $27,600). Pre-tax ends at $430,400; Taxable ends at $365,008 ($500,000 − $130,400 of spill spending − $4,592 of tax, all at 100% basis; the $15,000 of reinvested yield basis clamps to that balance).",
+    expected: {
+      dividendIncome: 10000,
+      interestIncome: 5000,
+      extraDraw: 69600,
+      acaMagi: 84600,
+      credit: 11573.84,
+      federalTax: 4592,
+      pretaxEnd: 430400,
+      taxableEnd: 365008,
+      basisEnd: 365008,
+      twinDraw: 84600,
+      twinFederalTax: 5792,
+    },
+    actual: () => {
+      const withYield = simulateRothPlan(
+        cliffDrawPlan({
+          taxableDividendYieldPct: 2,
+          taxableInterestYieldPct: 1,
+        }),
+        FILL_ACA_ONLY,
+      );
+      const y = withYield.years[0]!;
+      const twin = simulateRothPlan(cliffDrawPlan(), FILL_ACA_ONLY);
+      const t = twin.years[0]!;
+      return {
+        dividendIncome: y.detail.dividendIncome,
+        interestIncome: y.detail.interestIncome,
+        extraDraw: y.detail.extraPreTaxDraw,
+        acaMagi: y.acaMagi,
+        credit: y.acaCreditKept,
+        federalTax: y.federalTax,
+        pretaxEnd: y.pretaxEnd,
+        taxableEnd: y.taxableEnd,
+        basisEnd: y.detail.taxableBasisDollars,
+        twinDraw: t.detail.extraPreTaxDraw,
+        twinFederalTax: t.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-yield-alone-breaches-cliff",
+    kind: "tax",
+    note: "TAXABLE YIELDS alone breach the cliff (TAXABLE YIELDS build, fixture e; hand-derived): the same capped construction with a 20% dividend yield — $100,000 of dividends on the $500,000 balance, itself past the $84,600 cliff before any draw is considered. The yield is mandatory income and is never shrunk to chase the line: the pre-tax spending room is $0, the whole $200,000 need spills to Taxable at 100% basis (no gains), ACA MAGI is the $100,000 of dividends, the year is honestly over the cliff, and the credit is $0 — the 2046 mandatory-RMD precedent (tax-m1-cliff-cap-mandatory-income-unmoved) applied to yield income. The dividends themselves price at $0 of federal tax (taxable income $67,800, all inside the 0% gains space). Taxable ends at $300,000 with its basis clamped to the same $300,000; Pre-tax is untouched at $500,000.",
+    expected: {
+      dividendIncome: 100000,
+      extraDraw: 0,
+      acaMagi: 100000,
+      overCliff: 1,
+      credit: 0,
+      federalTax: 0,
+      taxableEnd: 300000,
+      basisEnd: 300000,
+      pretaxEnd: 500000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        cliffDrawPlan({ taxableDividendYieldPct: 20 }),
+        FILL_ACA_ONLY,
+      );
+      const y = res.years[0]!;
+      return {
+        dividendIncome: y.detail.dividendIncome,
+        extraDraw: y.detail.extraPreTaxDraw,
+        acaMagi: y.acaMagi,
+        overCliff: y.detail.aca.overCliff ? 1 : 0,
+        credit: y.acaCreditKept,
+        federalTax: y.federalTax,
+        taxableEnd: y.taxableEnd,
+        basisEnd: y.detail.taxableBasisDollars,
+        pretaxEnd: y.pretaxEnd,
+      };
+    },
+  },
+  {
+    id: "tax-yield-reinvested-lands-in-inflow-tier",
+    kind: "tax",
+    note: "TAXABLE YIELDS with basis tiers — the reinvested yield lands at 100% basis (TAXABLE YIELDS build, fixture f; hand-derived): Taxable $200,000 in two tiers (half at 0% basis, half at 100%), a 10% dividend yield, no return, retirement at 58 with $50,000/yr of spending drawn from Taxable, Do Nothing. 2026 (pre-retirement, no draws): the $20,000 of dividends (10% × $200,000) is income under the standard deduction (tax $0) and the reinvested yield lands in the ledger's inflow tier at 100% basis, so the pool's basis ends at $0 + $100,000 + $20,000 = $120,000. 2027: the $50,000 draw sells the highest basis ratio first — the two 100%-basis tiers — realizing $0 of gains, and the year's second $20,000 of reinvested dividends takes the basis to $90,000 on a $150,000 balance. The single pool at the blended 50% basis prices the same two years differently: the 2027 draw realizes $50,000 × (1 − $120,000/$200,000) = $20,000 of gains and the basis ends at $110,000 — the gap is the yield lot being sold first instead of pro-rata.",
+    expected: {
+      y1Dividend: 20000,
+      y1Basis: 120000,
+      y1TaxableEnd: 200000,
+      y2DrawGains: 0,
+      y2Basis: 90000,
+      y2TaxableEnd: 150000,
+      poolY2DrawGains: 20000,
+      poolY2Basis: 110000,
+    },
+    actual: () => {
+      const shape = {
+        pretaxStart: 0,
+        taxableStart: 200000,
+        taxableBasisPct: 50,
+        taxableDividendYieldPct: 10,
+        annualSpending: 50000,
+        retirementAge: 58,
+        expectedReturnPct: 0,
+        endAgePrimary: 58,
+      };
+      const tiered = simulateRothPlan(
+        basePlan({
+          ...shape,
+          taxableTiers: [
+            { sharePct: 50, basisPct: 0 },
+            { sharePct: 50, basisPct: 100 },
+          ],
+        }),
+        DO_NOTHING,
+      );
+      const pooled = simulateRothPlan(basePlan(shape), DO_NOTHING);
+      const [t1, t2] = tiered.years;
+      const p2 = pooled.years[1]!;
+      return {
+        y1Dividend: t1?.detail.dividendIncome ?? null,
+        y1Basis: t1?.detail.taxableBasisDollars ?? null,
+        y1TaxableEnd: t1?.taxableEnd ?? null,
+        y2DrawGains: t2?.detail.drawGains ?? null,
+        y2Basis: t2?.detail.taxableBasisDollars ?? null,
+        y2TaxableEnd: t2?.taxableEnd ?? null,
+        poolY2DrawGains: p2.detail.drawGains,
+        poolY2Basis: p2.detail.taxableBasisDollars,
+      };
+    },
+  },
+  {
+    id: "tax-yield-harvest-room-after-yield",
+    kind: "tax",
+    note: "TAXABLE YIELDS with gain harvesting — the yield occupies the 0% gains room first (TAXABLE YIELDS build, fixture g; hand-derived): Taxable $400,000 at 0% basis, a 10% dividend yield, no return, no income, no spending, harvesting on. The year's $40,000 of dividends (10% × $400,000) leaves taxable income of $40,000 − $32,200 = $7,800 in the 0% gains space, so the harvest fills only what is left — $98,900 − $7,800 = $91,100 of the $360,000 of available gain (balance less the $40,000 of reinvested-yield basis) — stepping the basis up to $40,000 + $91,100 = $131,100, with AGI / MAGI at $131,100 and federal tax still $0. Without the yield the same pool harvests the full $131,100 (the zero-income derivation in tax-tiers-harvest-lowest-tier-steps-up): the $40,000 difference is the yield occupying the room first, exactly like a draw or a conversion would.",
+    expected: {
+      dividendIncome: 40000,
+      harvested: 91100,
+      basisEnd: 131100,
+      federalTax: 0,
+      agi: 131100,
+      magi: 131100,
+      taxableEnd: 400000,
+      harvestedNoYield: 131100,
+    },
+    actual: () => {
+      const harvest: RothStrategy = {
+        id: "harvest",
+        name: "Harvest",
+        ceilings: null,
+        gainsHarvest: true,
+      };
+      const shape = {
+        pretaxStart: 0,
+        taxableStart: 400000,
+        taxableBasisPct: 0,
+        retirementAge: 58,
+        expectedReturnPct: 0,
+        endAgePrimary: 57,
+      };
+      const withYield = simulateRothPlan(
+        basePlan({ ...shape, taxableDividendYieldPct: 10 }),
+        harvest,
+      );
+      const y = withYield.years[0]!;
+      const noYield = simulateRothPlan(basePlan(shape), harvest);
+      return {
+        dividendIncome: y.detail.dividendIncome,
+        harvested: y.detail.gainsHarvested,
+        basisEnd: y.detail.taxableBasisDollars,
+        federalTax: y.federalTax,
+        agi: y.agi,
+        magi: y.magi,
+        taxableEnd: y.taxableEnd,
+        harvestedNoYield: noYield.years[0]!.detail.gainsHarvested,
+      };
+    },
+  },
+  {
+    id: "tax-yield-exceeds-return-clamp-at-balance",
+    kind: "tax",
+    note: "TAXABLE YIELDS exceeding the total return — the CLAMP-AT-BALANCE treatment (TAXABLE YIELDS build, fixture h; hand-derived): Taxable $100,000 at 50% basis, a 20% dividend yield plus a 10% interest yield (30% of yield) against a 5% expected return, no spending, Do Nothing, three years. The yields price in full as income every year (2026: $20,000 + $10,000 on $100,000; 2027: $21,000 + $10,500 on $105,000; 2028: $22,050 + $11,025 on $110,250 — under the $32,200 standard deduction in 2026–2027 and inside the 0% gains space in 2028, so federal tax is $0 throughout), and the balance grows at the 5% total return ONLY ($105,000 / $110,250 / $115,762.50) — implied price appreciation is negative and that is fine, because the balance's growth was never decomposed. The reinvested yield basis is added dollar-for-dollar ($50,000 → $80,000 in 2026) until it would pass the balance: in 2027 the ledger would reach $80,000 + $31,500 = $111,500 against a $105,000 settled balance, so it CLAMPS AT THE BALANCE ($105,000; $110,250 in 2028) — the ledger's standing 0 ≤ basis ≤ balance invariant — rather than carrying a basis above the balance that would price modeled capital losses on later draws. The excess yield's basis is capped, never negative-gain.",
+    expected: {
+      y1Div: 20000,
+      y1Int: 10000,
+      y1Basis: 80000,
+      y1TaxableEnd: 105000,
+      y2Div: 21000,
+      y2Int: 10500,
+      y2Basis: 105000,
+      y2TaxableEnd: 110250,
+      y3Div: 22050,
+      y3Int: 11025,
+      y3Basis: 110250,
+      y3TaxableEnd: 115762.5,
+      lifetimeFederalTax: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 100000,
+          taxableBasisPct: 50,
+          taxableDividendYieldPct: 20,
+          taxableInterestYieldPct: 10,
+          expectedReturnPct: 5,
+          endAgePrimary: 59,
+        }),
+        DO_NOTHING,
+      );
+      const [y1, y2, y3] = res.years;
+      return {
+        y1Div: y1?.detail.dividendIncome ?? null,
+        y1Int: y1?.detail.interestIncome ?? null,
+        y1Basis: y1?.detail.taxableBasisDollars ?? null,
+        y1TaxableEnd: y1?.taxableEnd ?? null,
+        y2Div: y2?.detail.dividendIncome ?? null,
+        y2Int: y2?.detail.interestIncome ?? null,
+        y2Basis: y2?.detail.taxableBasisDollars ?? null,
+        y2TaxableEnd: y2?.taxableEnd ?? null,
+        y3Div: y3?.detail.dividendIncome ?? null,
+        y3Int: y3?.detail.interestIncome ?? null,
+        y3Basis: y3?.detail.taxableBasisDollars ?? null,
+        y3TaxableEnd: y3?.taxableEnd ?? null,
+        lifetimeFederalTax: res.lifetimeFederalTax,
+      };
+    },
+  },
+  {
+    id: "tax-yield-optimizer-passthrough",
+    kind: "tax",
+    note: "TAXABLE YIELDS passthrough (TAXABLE YIELDS build): a small saved shape (1961/1972, pre-tax $300,000, Taxable $600,000 at a 50% basis, spending $40,000, claim 65) carrying a 1.5% dividend yield and a 0.5% interest yield. planInputsFromSaved carries both yields onto the engine inputs exactly (1.5 / 0.5). The joint optimizer's winner, re-expressed as an ordinary compare scenario on the same yield-carrying base (its ceilings, window stop, variant flags, and claiming age as the patch — the tax-compare-cross-path-identity construction), reproduces the optimizer's own net cost TO THE CENT: the optimizer priced the yields, not a yield-less shadow of the plan. The Monte Carlo check at 0% volatility prices its first path's winner and Do Nothing at those same two net costs (the zero-volatility identity), the work-years roll carries both yields onto its rolled inputs untouched, and the gift comparison's baseline (no sale year priced) is the same joint run's winner net cost to the cent — every compute path passes the fields through exactly.",
+    expected: {
+      divPct: 1.5,
+      intPct: 0.5,
+      winnerMatches: 1,
+      mcWinnerMatches: 1,
+      mcDoNothingMatches: 1,
+      rolledDivPct: 1.5,
+      rolledIntPct: 0.5,
+      giftBaselineMatches: 1,
+    },
+    actual: () => {
+      const saved = {
+        birthYearPrimary: 1961,
+        birthYearSpouse: 1972,
+        filingStatus: "mfj" as const,
+        pretaxCents: 30000000,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 0,
+        taxableCents: 60000000,
+        hsaCents: 0,
+        taxableBasisPct: 50,
+        taxableDividendYieldPct: 1.5,
+        taxableInterestYieldPct: 0.5,
+        annualSpendingCents: 4000000,
+        retirementAge: 65,
+        endAge: 80,
+        expectedReturnPct: 3,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 65,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: false,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 65,
+        windowStopAge: 74,
+        payTaxFrom: "taxable" as const,
+        protectMinTaxableCents: null,
+        preservePretaxCents: null,
+        preserveExitRatePct: null,
+        claimAgeFloor: null,
+        drawOrder: null,
+        drawOrderSwitchAge: null,
+        drawOrderAfter: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        acaBenchmarkFamilyCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+        ceilings: null,
+        optimizerGuardrail: null,
+        optimizerBunching: null,
+        gainsHarvest: null,
+      };
+      const inputs = planInputsFromSaved(saved, 2026);
+      if (!inputs) {
+        return {
+          divPct: null,
+          intPct: null,
+          winnerMatches: 0,
+          mcWinnerMatches: 0,
+          mcDoNothingMatches: 0,
+          rolledDivPct: null,
+          rolledIntPct: null,
+          giftBaselineMatches: 0,
+        };
+      }
+      const joint = runJointOptimizer(inputs);
+      const w = joint.winner;
+      const winnerNetCents = Math.round(w.cost.netCost * 100);
+      const doNothingNetCents = Math.round(joint.doNothing.cost.netCost * 100);
+      const winnerPatch = {
+        ceilings: {
+          bracketTopPct: w.spec.ceilings.bracketTopPct,
+          irmaaTierCap: w.spec.ceilings.irmaaTierCap,
+          ltcgZeroCap: w.spec.ceilings.ltcgZeroCap,
+          acaCliffCap: w.spec.ceilings.acaCliffCap,
+          magiCapCents:
+            w.spec.ceilings.magiCap == null
+              ? null
+              : Math.round(w.spec.ceilings.magiCap * 100),
+        },
+        windowStopAge: w.spec.windowStopAge,
+        optimizerGuardrail: w.spec.guardrail,
+        optimizerBunching: w.spec.bunching,
+        ...(w.claimAges.primaryAge != null
+          ? { ssPrimaryStartAge: w.claimAges.primaryAge }
+          : {}),
+        ...(w.claimAges.spouseAge != null
+          ? { ssSpouseStartAge: w.claimAges.spouseAge }
+          : {}),
+      };
+      const cmp = runRothCompare(
+        saved,
+        [{ name: "Winner", overrides: winnerPatch }],
+        2026,
+      );
+      const mc = runRothMonteCarloCheck(inputs, joint.winner, joint.doNothing, {
+        volatilityPct: 0,
+        pathCount: 3,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const roll = rollWorkYears(
+        inputs,
+        { salary: 0, employer401k: 0, employerHsa: 0 },
+        65,
+      );
+      const gift = computeGiftComparison(inputs, {
+        giftAge: 65,
+        amount: 50000,
+        basis: 25000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: null,
+      });
+      return {
+        divPct: inputs.taxableDividendYieldPct ?? null,
+        intPct: inputs.taxableInterestYieldPct ?? null,
+        winnerMatches:
+          cmp.scenarios[0]?.netCostCents === winnerNetCents ? 1 : 0,
+        mcWinnerMatches:
+          mc.paths[0] != null &&
+          Math.round(mc.paths[0].winnerCost * 100) === winnerNetCents
+            ? 1
+            : 0,
+        mcDoNothingMatches:
+          mc.paths[0] != null &&
+          Math.round(mc.paths[0].doNothingCost * 100) === doNothingNetCents
+            ? 1
+            : 0,
+        rolledDivPct: roll.rolledInputs.taxableDividendYieldPct ?? null,
+        rolledIntPct: roll.rolledInputs.taxableInterestYieldPct ?? null,
+        giftBaselineMatches:
+          gift.baseline != null &&
+          Math.round(gift.baseline.netCost * 100) === winnerNetCents
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "tax-yield-blank-basis-legacy-basis-clamp",
+    kind: "tax",
+    note: "TAXABLE YIELDS on a BLANK basis — the legacy display counter clamps at the balance (YIELD FIX build; the Review Pass 3 corner): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) with the basis % left BLANK (taxableBasisPct null, so the record layer maps it to 100 and the engine takes the legacy path) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return. On the legacy path the basis ledger is a display-only counter (draws price at the flat gain %, which is 0 here), and before the fix it added each year's reinvested yield with no balance clamp: in 2029 it printed an endingTaxableBasis of $2,997,898.41 against an endingTaxable balance of $2,732,872.01 — a basis above the balance it describes. The counter now clamps to the year's settled taxable balance exactly as the drift path's settled basis does, so 2029's basis ends at $2,584,276.14, inside the balance in every one of the run's 41 years. The priced figures for the shape DID NOT MOVE — 2029 federal tax is still $22,412.22, the ending taxable balance still $2,732,872.01, and the year's dividend and interest income still $110,564.82 each; the basis figure pinned here is a NEW pin for a previously unpinned display counter, not a re-pin of any priced figure.",
+    expected: {
+      basisBlank: 1,
+      y2033FederalTax: 19961.86,
+      y2033TaxableEnd: 2589081.18,
+      y2033Dividend: 104730.62,
+      y2033Interest: 104730.62,
+      y2033Basis: 2448303.72,
+      allYearsBasisWithinBalance: 1,
+    },
+    actual: () => {
+      const saved = {
+        ...goldenCompareBase(),
+        taxableBasisPct: null,
+        acaBenchmarkCoupleCents: 2100000,
+        acaBenchmarkFamilyCents: 3200000,
+        retirementAge: 57,
+        windowStartAge: 57,
+        drawOrder: "pretax-taxable-roth" as const,
+        taxableDividendYieldPct: 4,
+        taxableInterestYieldPct: 4,
+      };
+      const inputs = planInputsFromSaved(saved, 2030);
+      if (!inputs) {
+        return {
+          basisBlank: 0,
+          y2033FederalTax: null,
+          y2033TaxableEnd: null,
+          y2033Dividend: null,
+          y2033Interest: null,
+          y2033Basis: null,
+          allYearsBasisWithinBalance: 0,
+        };
+      }
+      const res = simulateRothPlan(inputs, FILL_ACA_ONLY);
+      const y = res.years.find((r) => r.year === 2033) ?? null;
+      return {
+        basisBlank: inputs.taxableBasisBlank === true ? 1 : 0,
+        y2033FederalTax: y?.federalTax ?? null,
+        y2033TaxableEnd: y?.taxableEnd ?? null,
+        y2033Dividend: y?.detail.dividendIncome ?? null,
+        y2033Interest: y?.detail.interestIncome ?? null,
+        y2033Basis: y?.detail.taxableBasisDollars ?? null,
+        allYearsBasisWithinBalance: res.years.every(
+          (r) => r.detail.taxableBasisDollars <= r.taxableEnd + 0.005,
+        )
+          ? 1
+          : 0,
+      };
+    },
+  },
+  {
+    id: "tax-yield-tiers-exceeds-return-basis-within-balance",
+    kind: "tax",
+    note: "TAXABLE YIELDS exceeding the return on the BASIS TIERS path — the committed tier ledger keeps 0 ≤ basis ≤ balance in every year (TIERS YIELD FIX build; the yield build's restarted Review Pass 2 MEDIUM finding): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return, sustained. Before the fix the settlement routed the reinvested yield through the after-tax inflow helper, which raised the inflow tier's BALANCE with the basis even though the settlement's taxable balance does not rise (the yield is already inside the total return): the committed tier ledger drifted above the settled balance by roughly each year's yield, the growth step re-derived the basis scalar as the tier sum (overwriting the commit's scalar clamp), and by 2046 the year detail printed an endingTaxableBasis of $3,032,552.82 against an endingTaxable of $2,410,114.02 — basis at 125.8% of the balance it describes, overstating the ledger and shrinking harvest room (balance − basis) by bookkeeping. The fix lands the reinvested yield's basis WITHOUT phantom balance — filling the tiers' unrealized gain up to each tier's own balance, the single-pool clamp-at-balance treatment of tax-yield-exceeds-return-clamp-at-balance — and clamps the committed tier ledger to the settled balance at commit and after growth: 2046 now ends at a $2,284,197.50 basis inside a $2,415,538.86 balance, inside the balance in every year of the run. PRICED MOVEMENT ON THIS BROKEN SHAPE, reported per the fix brief: the phantom lot's balance had distorted which tier later sales drew from (sales the phantom priced at the lot's 100% basis ratio now price at the real tiers' ratios once the genuine 100%-basis tier is consumed), so taxes paid from Taxable across the intervening years moved and the balance trajectory followed — pre-fix → post-fix for 2046: endingTaxable $2,410,114.02 → $2,421,821.54, federal tax $80,593.01 → $80,785.85, dividend and interest income $89,561.76 → $90,012.31 each (priced in full on the year's opening balance, as always — the balance path is what moved), ending pre-tax $5,876,371.96 and ending Roth $1,809,986.05 unchanged. (The settlement iteration, FIX 1, then moved the 2046 endpoints again — endingTaxable $2,415,538.86, basis $2,284,197.50, federal tax $80,682.37, dividend and interest $89,770.53 each — the figures now pinned; ending pre-tax and ending Roth did not move.) No shape outside the broken region moves: the full fixture census carries zero priced re-pins. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      y2050TaxableEnd: 2166789.98,
+      y2050Basis: 2048973.98,
+      y2050FederalTax: 26858.26,
+      y2050Dividend: 87159.23,
+      y2050Interest: 87159.23,
+      y2050PretaxEnd: 4656277.96,
+      y2050RothEnd: 1422751.6,
+      allYearsBasisWithinBalance: 1,
+    },
+    actual: () => {
+      const saved = {
+        ...sampleShapeBase50(),
+        retirementAge: 57,
+        windowStartAge: 57,
+        claimAgeFloor: 67,
+        drawOrder: "pretax-taxable-roth" as const,
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          magiCapCents: null,
+        },
+        taxableTiers: [
+          { sharePct: 8.333333333333334, basisPct: 100 },
+          { sharePct: 91.66666666666667, basisPct: 45.45454545454545 },
+        ],
+        taxableDividendYieldPct: 4,
+        taxableInterestYieldPct: 4,
+      };
+      const inputs = planInputsFromSaved(saved, 2030);
+      if (!inputs) {
+        return {
+          y2050TaxableEnd: null,
+          y2050Basis: null,
+          y2050FederalTax: null,
+          y2050Dividend: null,
+          y2050Interest: null,
+          y2050PretaxEnd: null,
+          y2050RothEnd: null,
+          allYearsBasisWithinBalance: 0,
+        };
+      }
+      const res = simulateRothPlan(inputs, FILL_ACA_ONLY);
+      const y = res.years.find((r) => r.year === 2046) ?? null;
+      return {
+        y2050TaxableEnd: y?.taxableEnd ?? null,
+        y2050Basis: y?.detail.taxableBasisDollars ?? null,
+        y2050FederalTax: y?.federalTax ?? null,
+        y2050Dividend: y?.detail.dividendIncome ?? null,
+        y2050Interest: y?.detail.interestIncome ?? null,
+        y2050PretaxEnd: y?.pretaxEnd ?? null,
+        y2050RothEnd: y?.rothEnd ?? null,
+        allYearsBasisWithinBalance: res.years.every(
+          (r) => r.detail.taxableBasisDollars <= r.taxableEnd + 0.005,
+        )
+          ? 1
+          : 0,
+      };
+    },
+  },
+  {
+    id: "tax-funding-identity-cliff-blank-yields",
+    kind: "tax",
+    note: "YEAR FUNDING cash identity, cliff shape blank yields (YEAR FUNDING build, fixture a): the sample shape at retire 57 (50% basis, the entered benchmarks — couple $24,000, family $32,000 — claim 67), pre-tax first capped at the ACA cliff, no yields modeled. For EVERY priced year the ten funding sources sum to the year's total need (spending + federal tax + state tax + IRMAA) to the cent — maxDiffCents 0 across all 41 years. 2028 (the first fully capped year) pins the settlement's own split: needs $172,290.31 = spending $150,000 + federal tax $14,858.23; funded by a pre-tax draw of $132,992.33, Taxable sold for spending $24,439.75, and Taxable sold for the tax bill $14,858.23 — the capped draw the M-1 fixture derives, landing MAGI exactly on the $154,720 cliff and keeping the $18,920.45 credit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      years: 45,
+      maxDiffCents: 0,
+      y2032Need: 0,
+      y2032Spending: 0,
+      y2032Federal: 0,
+      y2032PretaxDraw: 0,
+      y2032TaxableSpending: 0,
+      y2032TaxableTax: 0,
+      y2032Magi: 0,
+      y2032Credit: 0,
+    },
+    actual: () => {
+      const built = buildCompareScenario(
+        { ...sampleShapeBase50(), retirementAge: 57, windowStartAge: 57 },
+        "funding-blank",
+        {
+          ceilings: { bracketTopPct: null, irmaaTierCap: null, ltcgZeroCap: false, acaCliffCap: true, magiCapCents: null },
+          drawOrder: "pretax-taxable-roth" as const,
+        },
+        2026,
+      );
+      if (!built) return { years: null, maxDiffCents: null, y2032Need: null, y2032Spending: null, y2032Federal: null, y2032PretaxDraw: null, y2032TaxableSpending: null, y2032TaxableTax: null, y2032Magi: null, y2032Credit: null };
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const src = (r: (typeof rows)[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+      const y = rows.find((r) => r.year === 2028) ?? null;
+      return {
+        years: rows.length,
+        maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
+        y2032Need: y?.totalNeedCents ?? null,
+        y2032Spending: y?.spendingCents ?? null,
+        y2032Federal: y?.federalTaxCents ?? null,
+        y2032PretaxDraw: y?.pretaxDrawCents ?? null,
+        y2032TaxableSpending: y?.taxableSoldForSpendingCents ?? null,
+        y2032TaxableTax: y?.taxableSoldForTaxCents ?? null,
+        y2032Magi: y?.magiCents ?? null,
+        y2032Credit: y?.acaCreditCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-funding-identity-cliff-working-yields-2032",
+    kind: "tax",
+    note: "YEAR FUNDING cash identity, cliff shape with the working yield calibration (YEAR FUNDING build, fixture b): the same shape carrying interest 0.6307267152401136% / dividends 0.0788408394050142% of the opening Taxable balance. The identity foots to the cent in every year (maxDiffCents 0), and 2028 reproduces the brief's reference year exactly: needs $169,937.03 total; interest $17,892.90 + dividends $2,236.61 applied as sources; pre-tax draw $93,123.38 (the engine's capped draw); realized draw gains $41,467.11; MAGI exactly $154,720.00; credit $18,920.45. The reinvested yield cash offsets the year's taxable sales spending-first, so Taxable sold for spending is the gross $64,308.70 spill sale less the $20,129.51 of yield applied = $44,179.19, while Taxable sold for the tax bill stays the settlement's $12,504.95. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    expected: {
+      maxDiffCents: 0,
+      y2032Need: 16356872,
+      y2032Interest: 1692830,
+      y2032Dividend: 211604,
+      y2032PretaxDraw: 10295268,
+      y2032TaxableSpending: 2800298,
+      y2032TaxableTax: 1356872,
+      y2032DrawGains: 3272298,
+      y2032Magi: 15472000,
+      y2032Credit: 1658989,
+    },
+    actual: () => {
+      const built = buildCompareScenario(
+        {
+          ...sampleShapeBase50(),
+          retirementAge: 57,
+          windowStartAge: 57,
+          taxableInterestYieldPct: 0.6307267152401136,
+          taxableDividendYieldPct: 0.0788408394050142,
+        },
+        "funding-yields",
+        {
+          ceilings: { bracketTopPct: null, irmaaTierCap: null, ltcgZeroCap: false, acaCliffCap: true, magiCapCents: null },
+          drawOrder: "pretax-taxable-roth" as const,
+        },
+        2030,
+      );
+      if (!built) return { maxDiffCents: null, y2032Need: null, y2032Interest: null, y2032Dividend: null, y2032PretaxDraw: null, y2032TaxableSpending: null, y2032TaxableTax: null, y2032DrawGains: null, y2032Magi: null, y2032Credit: null };
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const src = (r: (typeof rows)[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+      const y = rows.find((r) => r.year === 2032) ?? null;
+      return {
+        maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
+        y2032Need: y?.totalNeedCents ?? null,
+        y2032Interest: y?.interestYieldCents ?? null,
+        y2032Dividend: y?.dividendYieldCents ?? null,
+        y2032PretaxDraw: y?.pretaxDrawCents ?? null,
+        y2032TaxableSpending: y?.taxableSoldForSpendingCents ?? null,
+        y2032TaxableTax: y?.taxableSoldForTaxCents ?? null,
+        y2032DrawGains: y?.drawGainsCents ?? null,
+        y2032Magi: y?.magiCents ?? null,
+        y2032Credit: y?.acaCreditCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-funding-identity-tiers-shape",
+    kind: "tax",
+    note: "YEAR FUNDING cash identity, basis-tiers shape (YEAR FUNDING build, fixture c): the sample shape at retire 57 carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%), pre-tax first capped at the cliff. Tier sales price each dollar at its own tier's ratio (highest-basis first), and the funding capture follows those same sales — the identity foots to the cent in every year (maxDiffCents 0).",
+    expected: { maxDiffCents: 0 },
+    actual: () => {
+      const built = buildCompareScenario(
+        {
+          ...sampleShapeBase50(),
+          retirementAge: 57,
+          windowStartAge: 57,
+          taxableTiers: [
+            { sharePct: 8.333333333333334, basisPct: 100 },
+            { sharePct: 91.66666666666667, basisPct: 45.45454545454545 },
+          ],
+        },
+        "funding-tiers",
+        {
+          ceilings: { bracketTopPct: null, irmaaTierCap: null, ltcgZeroCap: false, acaCliffCap: true, magiCapCents: null },
+          drawOrder: "pretax-taxable-roth" as const,
+        },
+        2026,
+      );
+      if (!built) return { maxDiffCents: null };
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const src = (r: (typeof rows)[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+      return {
+        maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
+      };
+    },
+  },
+  {
+    id: "tax-funding-identity-survivor-shape",
+    kind: "tax",
+    note: "YEAR FUNDING cash identity, survivor shape (YEAR FUNDING build, fixture d): the sample shape at retire 57 (50% basis, the benchmarks) with the survivor scenario on — the primary dies in 2045, so 2045 still files jointly and takes both RMDs, and from 2046 the survivor prices alone as a single filer on the combined pre-tax balance. The identity foots to the cent in every year, death year and survivor years included (maxDiffCents 0).",
+    expected: { maxDiffCents: 0 },
+    actual: () => {
+      const built = buildCompareScenario(
+        {
+          ...sampleShapeBase50(),
+          retirementAge: 57,
+          windowStartAge: 57,
+          survivorEnabled: true,
+          survivorWho: "primary" as const,
+          survivorDeathYear: 2045,
+        },
+        "funding-survivor",
+        {
+          ceilings: { bracketTopPct: null, irmaaTierCap: null, ltcgZeroCap: false, acaCliffCap: true, magiCapCents: null },
+          drawOrder: "pretax-taxable-roth" as const,
+        },
+        2026,
+      );
+      if (!built) return { maxDiffCents: null };
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const src = (r: (typeof rows)[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+      return {
+        maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
+      };
+    },
+  },
+  {
+    id: "tax-funding-identity-conversion-channel-and-harvest",
+    kind: "tax",
+    note: "YEAR FUNDING cash identity, conversion tax channel + gain harvesting (YEAR FUNDING build, fixture e): the sample shape at 50% basis, Fill 22% taxable-first, taxes paid FROM the conversion (payTaxFrom conversion — the withholding, grossed up for the pre-59½ penalty in the age-56/57 window years, lands inside pretaxDrawCents, and the penalty itself inside federalTaxCents), gain harvesting on (harvestSoldCents > 0 in the early low-income years — 2026, a pre-window year with no other income, realizes exactly the 0% space at zero income: $32,200 standard deduction + $98,900 0% top = $131,100.00). The identity foots to the cent in every year (maxDiffCents 0), which pins the withholding/penalty accounting: a withheld dollar counted as both conversion and source, or a penalty left out of the needs, breaks it.",
+    expected: { maxDiffCents: 0, anyHarvestYears: 1, y2026Harvest: 13110000 },
+    actual: () => {
+      const built = buildCompareScenario(
+        { ...sampleShapeBase50() },
+        "funding-conversion-channel",
+        {
+          ceilings: { bracketTopPct: 22, irmaaTierCap: null, ltcgZeroCap: false, acaCliffCap: false, magiCapCents: null },
+          drawOrder: "taxable-pretax-roth" as const,
+          payTaxFrom: "conversion" as const,
+          gainsHarvest: true,
+        },
+        2026,
+      );
+      if (!built) return { maxDiffCents: null, anyHarvestYears: null, y2026Harvest: null };
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const src = (r: (typeof rows)[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+      const y2026 = rows.find((r) => r.year === 2026) ?? null;
+      return {
+        maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
+        anyHarvestYears: rows.some((r) => r.harvestSoldCents > 0) ? 1 : 0,
+        y2026Harvest: y2026?.harvestSoldCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-blank-identity",
+    kind: "tax",
+    note: "SPEND-FROM-CASH blank identity (SPEND-FROM-CASH build, fixture 1): The sample era shape (retire 57, step-down 2036, family-only cliff cap, 50% basis) with the snapshot cash sleeve threaded onto the base exactly as the server threads it (spendFromCashSleeveCents 20000000 — the snapshot Cash bucket of the folded $2,400,000 pool) but spendFromCashPct ABSENT from the scenario (a pre-build record's shape) and again explicitly null: both price the era anchor 75714363 cents, and the defended-cliff shape (the patch removes the step-down year and turns the family-only flag off) at pct null prices the defended anchor 101471817. A supplied sleeve with the percentage blank is inert — the sleeve alone never turns the feature on. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      eraAbsent: 55483328,
+      eraNull: 55483328,
+      defendedNull: 69851052,
+    },
+    actual: () => {
+      const ceilings = (familyOnly: boolean) => ({
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: true,
+        acaCliffCapFamilyOnly: familyOnly,
+        magiCapCents: null,
+      });
+      const cmp = runRothCompare(spendCashEraBase(), [
+        {
+          name: "Era pct absent",
+          overrides: {
+            ceilings: ceilings(true),
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+        {
+          name: "Era pct null",
+          overrides: {
+            ceilings: ceilings(true),
+            drawOrder: "pretax-taxable-roth" as const,
+            spendFromCashPct: null,
+          },
+        },
+        {
+          name: "Defended pct null",
+          overrides: {
+            ceilings: ceilings(false),
+            drawOrder: "pretax-taxable-roth" as const,
+            acaStepDownYear: null,
+            spendFromCashPct: null,
+          },
+        },
+      ], 2030);
+      const net = (i: number) => cmp.scenarios[i]?.netCostCents ?? null;
+      return {
+        eraAbsent: net(0),
+        eraNull: net(1),
+        defendedNull: net(2),
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-zero-identity",
+    kind: "tax",
+    note: "SPEND-FROM-CASH X=0 identity (SPEND-FROM-CASH build, fixture 2): spendFromCashPct 0 on the era shape (sleeve threaded) prices EXACTLY the blank plan — net cost 75714363 cents and the full $151,363.60 lifetime ACA credit — because a 0% share takes $0 of cash in every settlement, so every kept settlement is the blank settlement. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      zeroNet: 55483328,
+      zeroCreditCents: 13271912,
+    },
+    actual: () => {
+      const cmp = runRothCompare(spendCashEraBase(), [
+        {
+          name: "Era X0",
+          overrides: {
+            ceilings: {
+              bracketTopPct: null,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: true,
+              acaCliffCapFamilyOnly: true,
+              magiCapCents: null,
+            },
+            drawOrder: "pretax-taxable-roth" as const,
+            spendFromCashPct: 0,
+          },
+        },
+      ], 2030);
+      return {
+        zeroNet: cmp.scenarios[0]?.netCostCents ?? null,
+        zeroCreditCents: cmp.scenarios[0]?.acaCreditCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-x50-funding-rows",
+    kind: "tax",
+    note: "SPEND-FROM-CASH X=50 funding rows (SPEND-FROM-CASH build, fixture 3): the era shape at spendFromCashPct 50 with the $200,000 sleeve. Spending is $150,000/yr, so the cash share is 50% × 15000000 = 7871604 cents in 2028 and again in 2029; the sleeve then holds 20000000 − 2 × 7871604 = 6659440 cents, which is 2030's partial share, and 2031 is $0 (the sleeve never refills). The amounts are hand-derived from the sleeve and the spending need; the tax channel does not touch them because single-pool debits are attributed to the pool's non-cash portion first (THE SLEEVE INVARIANT). cashSpendCents stands as the ELEVENTH funding source and the eleven sources foot each year's totalNeedCents exactly (maxDiffCents 0 across all 41 years). The plan nets 72545094 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      cash2032: null,
+      cash2033: null,
+      cash2034: null,
+      cash2035: null,
+      maxDiffCents: 0,
+      net: 38685357,
+    },
+    actual: () => {
+      const saved = { ...spendCashEraBase(), spendFromCashPct: 50 };
+      const built = buildCompareScenario(saved, "spend-cash-x50", {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      }, 2034);
+      if (!built) {
+        return {
+          cash2032: null,
+          cash2033: null,
+          cash2034: null,
+          cash2035: null,
+          maxDiffCents: null,
+          net: null,
+        };
+      }
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const cash = (year: number) =>
+        rows.find((r) => r.year === year)?.cashSpendCents ?? null;
+      const src = (r: (typeof rows)[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents + r.salarySurplusCents;
+      const cmp = runRothCompare(saved, [
+        {
+          name: "Era X50",
+          overrides: {
+            ceilings: {
+              bracketTopPct: null,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: true,
+              acaCliffCapFamilyOnly: true,
+              magiCapCents: null,
+            },
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+      ], 2034);
+      return {
+        cash2032: cash(2028),
+        cash2033: cash(2029),
+        cash2034: cash(2030),
+        cash2035: cash(2031),
+        maxDiffCents: rows.reduce(
+          (m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)),
+          0,
+        ),
+        net: cmp.scenarios[0]?.netCostCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-sleeve-exhaustion-boundary",
+    kind: "tax",
+    note: "SPEND-FROM-CASH sleeve exhaustion boundary (SPEND-FROM-CASH build, fixture 4): the year-detail view of the X=50 era plan. The sleeve ledger (dollars) ends 2029 at exactly $66,594.40 — the hand-derived remainder 200000 − 2 × 78716.04 — pays out that full remainder as 2030's partial cash share, ends 2030 at $0, and 2031 pays $0 with the sleeve still $0: once empty it stays empty. (The tiers path's 2030 partial is larger — $71,137.12, fixture 6 — because there the sleeve is the cash tier itself, which also receives the tiers model's growth and sweep allocations.)",
+    expected: {
+      sleeveEnd2033: 50000,
+      cash2034: 50000,
+      sleeveEnd2034: 0,
+      cash2035: 0,
+      sleeveEnd2035: 0,
+    },
+    actual: () => {
+      const built = buildCompareScenario(
+        { ...spendCashEraBase(), spendFromCashPct: 50 },
+        "spend-cash-exhaustion",
+        {
+          ceilings: {
+            bracketTopPct: null,
+            irmaaTierCap: null,
+            ltcgZeroCap: false,
+            acaCliffCap: true,
+            acaCliffCapFamilyOnly: true,
+            magiCapCents: null,
+          },
+          drawOrder: "pretax-taxable-roth" as const,
+        },
+        2026,
+      );
+      const sim = built
+        ? simulateRothPlan(built.inputs, built.strategy)
+        : null;
+      const yr = (year: number) =>
+        sim?.years.find((y) => y.year === year) ?? null;
+      return {
+        sleeveEnd2033: yr(2033)?.detail.cashSleeveEnd ?? null,
+        cash2034: yr(2034)?.detail.cashSpend ?? null,
+        sleeveEnd2034: yr(2034)?.detail.cashSleeveEnd ?? null,
+        cash2035: yr(2035)?.detail.cashSpend ?? null,
+        sleeveEnd2035: yr(2035)?.detail.cashSleeveEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-x100-drain",
+    kind: "tax",
+    note: "SPEND-FROM-CASH X=100 (SPEND-FROM-CASH build, fixture 5): at 100% the whole spending need comes from cash while the sleeve lasts — 2028 pays the full 15000000 cents, leaving 20000000 − 15000000 = 6659440 cents, which is 2029's partial share; 2030 pays $0. Hand-derived from the sleeve and the need. The plan nets 74945603 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      cash2032: null,
+      cash2033: null,
+      cash2034: null,
+      net: 39068325,
+    },
+    actual: () => {
+      const saved = { ...spendCashEraBase(), spendFromCashPct: 100 };
+      const built = buildCompareScenario(saved, "spend-cash-x100", {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      }, 2034);
+      if (!built) {
+        return { cash2032: null, cash2033: null, cash2034: null, net: null };
+      }
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const cash = (year: number) =>
+        rows.find((r) => r.year === year)?.cashSpendCents ?? null;
+      const cmp = runRothCompare(saved, [
+        {
+          name: "Era X100",
+          overrides: {
+            ceilings: {
+              bracketTopPct: null,
+              irmaaTierCap: null,
+              ltcgZeroCap: false,
+              acaCliffCap: true,
+              acaCliffCapFamilyOnly: true,
+              magiCapCents: null,
+            },
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+        },
+      ], 2034);
+      return {
+        cash2032: cash(2028),
+        cash2033: cash(2029),
+        cash2034: cash(2030),
+        net: cmp.scenarios[0]?.netCostCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-tiers-agreement",
+    kind: "tax",
+    note: "SPEND-FROM-CASH with basis tiers (SPEND-FROM-CASH build, fixture 6): The sample shape's tiers — the cash tier at sharePct 8.333333333333334 / basisPct 100 (exactly the $200,000 snapshot cash) over a 45.45454545454545%-basis tier — at X=50 on the era shape. The sleeve IS the cash tier's balance: the 2028 cash-paid share is the same hand-derived 7871604 cents, the sleeve ends 2028 at $164,543.56 (the cash tier's own balance after the year's cash debit AND the highest-basis-first tax sales, which drain the cash tier first — the tiers signature, absent in the single pool), the tier empties during 2030 (partial share $71,137.12, end $0), and the plan nets 70859796 cents. Any disagreement between the sleeve ledger and the tier ledger moves the 2028 sleeve-end pin. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      cash2032Cents: null,
+      sleeveEnd2032: null,
+      cash2034: 75000,
+      sleeveEnd2034: 114867.34,
+      net: 37848070,
+    },
+    actual: () => {
+      const saved = {
+        ...spendCashEraBase(),
+        spendFromCashPct: 50,
+        taxableTiers: [
+          { sharePct: 8.333333333333334, basisPct: 100 },
+          { sharePct: 91.66666666666667, basisPct: 45.45454545454545 },
+        ],
+      };
+      const patch = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const built = buildCompareScenario(saved, "spend-cash-tiers", patch, 2034);
+      if (!built) {
+        return {
+          cash2032Cents: null,
+          sleeveEnd2032: null,
+          cash2034: null,
+          sleeveEnd2034: null,
+          net: null,
+        };
+      }
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const sim = simulateRothPlan(built.inputs, built.strategy);
+      const yr = (year: number) =>
+        sim.years.find((y) => y.year === year) ?? null;
+      const cmp = runRothCompare(saved, [{ name: "Era X50 tiers", overrides: patch }], 2034);
+      return {
+        cash2032Cents:
+          rows.find((r) => r.year === 2028)?.cashSpendCents ?? null,
+        sleeveEnd2032: yr(2032)?.detail.cashSleeveEnd ?? null,
+        cash2034: yr(2034)?.detail.cashSpend ?? null,
+        sleeveEnd2034: yr(2034)?.detail.cashSleeveEnd ?? null,
+        net: cmp.scenarios[0]?.netCostCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-cliff-cap-landing",
+    kind: "tax",
+    note: "SPEND-FROM-CASH × ACA cliff cap (SPEND-FROM-CASH build, fixture 7): the X=50 era plan's capped years still land ACA MAGI EXACTLY on the $154,720.00 household-of-5 cliff with the $18,920.45 credit intact — the same figures the blank plan posts — in 2028 (cash share $78,716.04 paid, the conversion grown back into the room the cash-paid share freed) and in the partial-sleeve year 2030 alike. A settlement that ignored the cash-paid share would land under the cliff and strand conversion room; one that double-counted it would breach and forfeit the credit.",
+    expected: {
+      magi2032: 154720,
+      credit2032: 16589.89,
+      cash2032: 75000,
+      magi2034: 154720,
+      credit2034: 16589.89,
+    },
+    actual: () => {
+      const built = buildCompareScenario(
+        { ...spendCashEraBase(), spendFromCashPct: 50 },
+        "spend-cash-cliff",
+        {
+          ceilings: {
+            bracketTopPct: null,
+            irmaaTierCap: null,
+            ltcgZeroCap: false,
+            acaCliffCap: true,
+            acaCliffCapFamilyOnly: true,
+            magiCapCents: null,
+          },
+          drawOrder: "pretax-taxable-roth" as const,
+        },
+        2026,
+      );
+      const sim = built
+        ? simulateRothPlan(built.inputs, built.strategy)
+        : null;
+      const yr = (year: number) =>
+        sim?.years.find((y) => y.year === year) ?? null;
+      return {
+        magi2032: yr(2032)?.acaMagi ?? null,
+        credit2032: yr(2032)?.acaCreditKept ?? null,
+        cash2032: yr(2032)?.detail.cashSpend ?? null,
+        magi2034: yr(2034)?.acaMagi ?? null,
+        credit2034: yr(2034)?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-yields",
+    kind: "tax",
+    note: "SPEND-FROM-CASH X=50 with the working yields (SPEND-FROM-CASH build, fixture 8): the era shape carrying the record's working yield calibration (interest 0.6307267152401136% / dividends 0.0788408394050142% of the folded pool). Yields are still charged on the year's starting taxable balance exactly as without the feature — 2028 prices $17,892.90 of interest and $2,236.61 of dividends — the cash share is still the hand-derived $78,716.04 (the yield cash is reinvested, never counted as sleeve), the sleeve ends 2028 at the pure remainder $145,310.44 (= 200000 − 78716.04), the capped year still lands on the cliff, and the plan nets 156426066 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      net: 88985327,
+      cash2032: null,
+      sleeveEnd2032: null,
+      interest2032: null,
+      dividend2028: null,
+      magi2032: null,
+    },
+    actual: () => {
+      const saved = {
+        ...spendCashEraBase(),
+        spendFromCashPct: 50,
+        taxableInterestYieldPct: 0.6307267152401136,
+        taxableDividendYieldPct: 0.0788408394050142,
+      };
+      const patch = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const built = buildCompareScenario(saved, "spend-cash-yields", patch, 2034);
+      const sim = built
+        ? simulateRothPlan(built.inputs, built.strategy)
+        : null;
+      const y2028 = sim?.years.find((y) => y.year === 2028) ?? null;
+      const cmp = runRothCompare(saved, [{ name: "Era X50 yields", overrides: patch }], 2034);
+      return {
+        net: cmp.scenarios[0]?.netCostCents ?? null,
+        cash2032: y2028?.detail.cashSpend ?? null,
+        sleeveEnd2032: y2028?.detail.cashSleeveEnd ?? null,
+        interest2032: y2028?.detail.interestIncome ?? null,
+        dividend2028: y2028?.detail.dividendIncome ?? null,
+        magi2032: y2028?.acaMagi ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-zero-sleeve",
+    kind: "tax",
+    note: "SPEND-FROM-CASH with $0 cash in the pool (SPEND-FROM-CASH build, fixture 9): X=50 with the sleeve explicitly 0 cents, and again with the sleeve key absent from the base entirely (the shape a compute base with explicit balances and no snapshot context presents), both price EXACTLY the blank era anchor 75714363 — no phantom cash is invented. The threaded-sleeve contrast on the same shape prices 75311039 (fixture 3), so the pair pins the sleeve's provenance: it comes only from the snapshot threading / the supplied sleeve input, never from the percentage alone. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      zeroSleeveNet: 55483328,
+      absentSleeveNet: 55728074,
+    },
+    actual: () => {
+      const patch = {
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: true,
+          magiCapCents: null,
+        },
+        drawOrder: "pretax-taxable-roth" as const,
+        spendFromCashPct: 50,
+      };
+      const zeroBase = { ...spendCashEraBase(), spendFromCashSleeveCents: 0 };
+      const absentBase = spendCashEraBaseNoSleeve();
+      const cmpZero = runRothCompare(zeroBase, [{ name: "X50 zero sleeve", overrides: patch }], 2030);
+      const cmpAbsent = runRothCompare(absentBase, [{ name: "X50 absent sleeve", overrides: patch }], 2030);
+      return {
+        zeroSleeveNet: cmpZero.scenarios[0]?.netCostCents ?? null,
+        absentSleeveNet: cmpAbsent.scenarios[0]?.netCostCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-carried-shapes",
+    kind: "tax",
+    note: "SPEND-FROM-CASH carried by the survivor and draw-order-switch shapes (SPEND-FROM-CASH build, fixture 10): the era shape at X=50 with the survivor lens on (primary dies 2041) nets 115723784 cents, and with the draw order switching at 75 to Roth → Taxable → Pre-tax nets 75941042 cents — both priced WITH the field active (the built inputs still carry spendFromCashPct 50, pinned directly), so neither shape silently drops it. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    expected: {
+      survivorNet: 97440992,
+      switchNet: 62864727,
+      carriedPct: 50,
+    },
+    actual: () => {
+      const ceilings = {
+        bracketTopPct: null,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: true,
+        acaCliffCapFamilyOnly: true,
+        magiCapCents: null,
+      };
+      const cmp = runRothCompare(spendCashEraBase(), [
+        {
+          name: "Era X50 survivor",
+          overrides: {
+            ceilings,
+            drawOrder: "pretax-taxable-roth" as const,
+            spendFromCashPct: 50,
+            survivorEnabled: true,
+            survivorWho: "primary" as const,
+            survivorDeathYear: 2041,
+          },
+        },
+        {
+          name: "Era X50 switch 75",
+          overrides: {
+            ceilings,
+            drawOrder: "pretax-taxable-roth" as const,
+            spendFromCashPct: 50,
+            drawOrderSwitchAge: 75,
+            drawOrderAfter: "roth-taxable-pretax" as const,
+          },
+        },
+      ], 2030);
+      const built = buildCompareScenario(
+        { ...spendCashEraBase(), spendFromCashPct: 50 },
+        "spend-cash-carried",
+        { ceilings, drawOrder: "pretax-taxable-roth" as const },
+        2026,
+      );
+      return {
+        survivorNet: cmp.scenarios[0]?.netCostCents ?? null,
+        switchNet: cmp.scenarios[1]?.netCostCents ?? null,
+        carriedPct: built?.inputs.spendFromCashPct ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-optimizer-passthrough",
+    kind: "tax",
+    note: "SPEND-FROM-CASH passthrough (SPEND-FROM-CASH build, fixture 10b): a small saved shape (1961/1972, pre-tax $300,000, Taxable $600,000 at a 50% basis, spending $40,000, claim 65) carrying spendFromCashPct 50 and a $200,000 sleeve (spendFromCashSleeveCents 20000000). planInputsFromSaved carries both onto the engine inputs exactly (50 / $200,000). The joint optimizer's winner, re-expressed as an ordinary compare scenario on the same cash-carrying base, reproduces the optimizer's net cost TO THE CENT; the Monte Carlo check at 0% volatility prices its first path's winner and Do Nothing at those same two net costs; the work-years roll carries both fields onto its rolled inputs untouched; and the gift comparison's baseline is the same joint winner's net cost — no compute path silently drops or alters the field, and no optimizer candidate may either (the candidates all derive from these base inputs).",
+    expected: {
+      pct: 50,
+      sleeveStart: 200000,
+      winnerMatches: 1,
+      mcWinnerMatches: 1,
+      mcDoNothingMatches: 1,
+      rolledPct: 50,
+      rolledSleeve: 200000,
+      giftBaselineMatches: 1,
+    },
+    actual: () => {
+      const saved = {
+        birthYearPrimary: 1961,
+        birthYearSpouse: 1972,
+        filingStatus: "mfj" as const,
+        pretaxCents: 30000000,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 0,
+        taxableCents: 60000000,
+        hsaCents: 0,
+        taxableBasisPct: 50,
+        taxableDividendYieldPct: null,
+        taxableInterestYieldPct: null,
+        spendFromCashPct: 50,
+        spendFromCashSleeveCents: 20000000,
+        annualSpendingCents: 4000000,
+        retirementAge: 65,
+        endAge: 80,
+        expectedReturnPct: 3,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 65,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: false,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 65,
+        windowStopAge: 74,
+        payTaxFrom: "taxable" as const,
+        protectMinTaxableCents: null,
+        preservePretaxCents: null,
+        preserveExitRatePct: null,
+        claimAgeFloor: null,
+        drawOrder: null,
+        drawOrderSwitchAge: null,
+        drawOrderAfter: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        acaBenchmarkFamilyCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+        ceilings: null,
+        optimizerGuardrail: null,
+        optimizerBunching: null,
+        gainsHarvest: null,
+      };
+      const inputs = planInputsFromSaved(saved, 2026);
+      if (!inputs) {
+        return {
+          pct: null,
+          sleeveStart: null,
+          winnerMatches: 0,
+          mcWinnerMatches: 0,
+          mcDoNothingMatches: 0,
+          rolledPct: null,
+          rolledSleeve: null,
+          giftBaselineMatches: 0,
+        };
+      }
+      const joint = runJointOptimizer(inputs);
+      const w = joint.winner;
+      const winnerNetCents = Math.round(w.cost.netCost * 100);
+      const doNothingNetCents = Math.round(joint.doNothing.cost.netCost * 100);
+      const winnerPatch = {
+        ceilings: {
+          bracketTopPct: w.spec.ceilings.bracketTopPct,
+          irmaaTierCap: w.spec.ceilings.irmaaTierCap,
+          ltcgZeroCap: w.spec.ceilings.ltcgZeroCap,
+          acaCliffCap: w.spec.ceilings.acaCliffCap,
+          magiCapCents:
+            w.spec.ceilings.magiCap == null
+              ? null
+              : Math.round(w.spec.ceilings.magiCap * 100),
+        },
+        windowStopAge: w.spec.windowStopAge,
+        optimizerGuardrail: w.spec.guardrail,
+        optimizerBunching: w.spec.bunching,
+        ...(w.claimAges.primaryAge != null
+          ? { ssPrimaryStartAge: w.claimAges.primaryAge }
+          : {}),
+        ...(w.claimAges.spouseAge != null
+          ? { ssSpouseStartAge: w.claimAges.spouseAge }
+          : {}),
+      };
+      const cmp = runRothCompare(
+        saved,
+        [{ name: "Winner", overrides: winnerPatch }],
+        2026,
+      );
+      const mc = runRothMonteCarloCheck(inputs, joint.winner, joint.doNothing, {
+        volatilityPct: 0,
+        pathCount: 3,
+        seed: ROTH_MC_CHECK_SEED,
+      });
+      const roll = rollWorkYears(
+        inputs,
+        { salary: 0, employer401k: 0, employerHsa: 0 },
+        65,
+      );
+      const gift = computeGiftComparison(inputs, {
+        giftAge: 65,
+        amount: 50000,
+        basis: 25000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: null,
+      });
+      return {
+        pct: inputs.spendFromCashPct ?? null,
+        sleeveStart: inputs.spendFromCashSleeveStart ?? null,
+        winnerMatches:
+          cmp.scenarios[0]?.netCostCents === winnerNetCents ? 1 : 0,
+        mcWinnerMatches:
+          mc.paths[0] != null &&
+          Math.round(mc.paths[0].winnerCost * 100) === winnerNetCents
+            ? 1
+            : 0,
+        mcDoNothingMatches:
+          mc.paths[0] != null &&
+          Math.round(mc.paths[0].doNothingCost * 100) === doNothingNetCents
+            ? 1
+            : 0,
+        rolledPct: roll.rolledInputs.spendFromCashPct ?? null,
+        rolledSleeve: roll.rolledInputs.spendFromCashSleeveStart ?? null,
+        giftBaselineMatches:
+          gift.baseline != null &&
+          Math.round(gift.baseline.netCost * 100) === winnerNetCents
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "tax-settle-convergence-marker-converged",
+    kind: "tax",
+    note: "SETTLEMENT CONVERGENCE marker on known iterated settlements (LOW-1): the Finding A shape (pre-tax debit feedback — other income $100,000 = spending, pre-tax $100,000, Taxable $0, Do Nothing) and the Finding B shape (gains feedback — other income $200,000 = spending, pre-tax $0, Taxable $100,000 at 0% basis, Do Nothing) both settle at exact fixed points on the cent lattice (T = $7,640 / 0.88 = $8,681.82 and T = $26,340 / 0.85 = $30,988.24, pinned by tax-settle-iteration-pretax-debit-taxed / -delta-sale-gains), so each year's marker must report converged with a zero residual mismatch on BOTH components (gains and pre-tax, integer cents).",
+    expected: {
+      aConverged: 1,
+      aMismatchGainsCents: 0,
+      aMismatchPretaxCents: 0,
+      aFederalTax: 8681.82,
+      bConverged: 1,
+      bMismatchGainsCents: 0,
+      bMismatchPretaxCents: 0,
+      bFederalTax: 30988.24,
+    },
+    actual: () => {
+      const a = simulateRothPlan(
+        basePlan({
+          otherOrdinaryAnnual: 100000,
+          annualSpending: 100000,
+          pretaxStart: 100000,
+          taxableStart: 0,
+        }),
+        DO_NOTHING,
+      ).years[0];
+      const b = simulateRothPlan(
+        basePlan({
+          otherOrdinaryAnnual: 200000,
+          annualSpending: 200000,
+          pretaxStart: 0,
+          taxableStart: 100000,
+          taxableBasisPct: 0,
+        }),
+        DO_NOTHING,
+      ).years[0];
+      return {
+        aConverged: a?.settlementConverged ? 1 : 0,
+        aMismatchGainsCents: a?.settlementMismatchCents.gains ?? null,
+        aMismatchPretaxCents: a?.settlementMismatchCents.pretax ?? null,
+        aFederalTax: a?.federalTax ?? null,
+        bConverged: b?.settlementConverged ? 1 : 0,
+        bMismatchGainsCents: b?.settlementMismatchCents.gains ?? null,
+        bMismatchPretaxCents: b?.settlementMismatchCents.pretax ?? null,
+        bFederalTax: b?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-settle-convergence-marker-nonconverged",
+    kind: "tax",
+    note: "SETTLEMENT CONVERGENCE marker on a genuinely NON-converging settlement (LOW-1; kept round's figures hand-derived): Finding B's shape at $150,000 — MFJ 2026, other ordinary income $150,000 = spending, pre-tax $0, Taxable $100,000 at 0% basis, Do Nothing, tax paid from Taxable. Tax on the ordinary income alone is $15,340 (taxable income $117,800 = $150,000 − $32,200 standard deduction; $2,480 + $9,120 + 22% × $17,000). Every tax dollar is paid by a 0%-basis sale, so every tax dollar realizes a gain dollar, all at 15% (ordinary taxable income is already past the 0% top; MAGI $168,047.05 stays under the $250,000 NIIT threshold): the self-funding fixed point is T = $15,340 + 15% × T → T = $15,340 / 0.85 = $18,047.0588… — not a whole cent, and on the cent lattice the iteration has NO exact fixed point. Hand-tracing the rounds: with assumed feedback gains f, the round's first pricing taxes f at 15% (tax₁ = $15,340 + 15% × f), its sale realizes tax₁ of gains, the reprice taxes the realized total (tax₂ = $15,340 + 15% × (tax₁ + f)), and the reprice-delta sale creates tax₂ − tax₁ of new feedback gains. At f = $2,353.96: tax₁ = $15,693.09, tax₂ = $18,047.06, created = $2,353.97. At f = $2,353.97: tax₁ = $15,693.10 (15% × $2,353.97 = $353.0955 tips the cent up), tax₂ = $18,047.06, created = $2,353.96. The two states create each other — a 2-cycle — so the cycle break stops the iteration and the kept round is the FIRST smallest-mismatch round (f = $2,353.96; the later cycle round ties at 1 cent, it does not beat it): residual mismatch 1 cent on gains, 0 on pre-tax. Its best-effort priced figures: federal tax $18,047.06, realized gains $18,047.05 (sale₁ $15,693.09 + assumed feedback $2,353.96), MAGI $168,047.05, Taxable ends at $100,000 − $18,047.06 = $81,952.94. Before LOW-1 this year was indistinguishable from an exactly settled one; the marker now reports it as best-effort.",
+    expected: {
+      converged: 0,
+      mismatchGainsCents: 1,
+      mismatchPretaxCents: 0,
+      federalTax: 18047.06,
+      drawGains: 18047.05,
+      taxableEnd: 81952.94,
+      magi: 168047.05,
+    },
+    actual: () => {
+      const y = simulateRothPlan(
+        basePlan({
+          otherOrdinaryAnnual: 150000,
+          annualSpending: 150000,
+          pretaxStart: 0,
+          taxableStart: 100000,
+          taxableBasisPct: 0,
+        }),
+        DO_NOTHING,
+      ).years[0];
+      return {
+        converged: y?.settlementConverged ? 1 : 0,
+        mismatchGainsCents: y?.settlementMismatchCents.gains ?? null,
+        mismatchPretaxCents: y?.settlementMismatchCents.pretax ?? null,
+        federalTax: y?.federalTax ?? null,
+        drawGains: y?.detail.drawGains ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        magi: y?.magi ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-shortfall-insolvent-first-year",
+    kind: "tax",
+    note: "SPEND SHORTFALL, insolvent first year (FIX 3): basePlan shape — MFJ, start 2026 at age 57, retired at 57, 0% return, Taxable $10,000 at 100% basis, Pre-tax $0, Roth $0, spending $50,000, no Social Security, no other income, state 0%, Do Nothing, plan ends at 57 (one priced year). By hand: cash income is $0, so the spending deficit opens at the full $50,000; there is no tax (no income of any kind, and a 100%-basis draw realizes no gain), so the tax channels claim nothing from the balances; no spend-from-cash sleeve is set; the draw-order loop can draw only the $10,000 Taxable balance before every balance is empty. The residual deficit — spending the year's balances could not fund — is $50,000 − $10,000 = $40,000 exactly; Taxable ends at $0 and federal tax is $0. The funding row carries the same residual in cents: spendShortfallCents 4,000,000.",
+    expected: {
+      spendShortfall: 40000,
+      fundingSpendShortfall: 40000,
+      federalTax: 0,
+      taxableEnd: 0,
+      spendShortfallCents: 4000000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 10000,
+        annualSpending: 50000,
+        endAgePrimary: 57,
+      });
+      const y = simulateRothPlan(plan, DO_NOTHING).years[0];
+      const row = buildRothFunding(plan, DO_NOTHING)[0];
+      return {
+        spendShortfall: y?.spendShortfall ?? null,
+        fundingSpendShortfall: y?.funding.spendShortfall ?? null,
+        federalTax: y?.federalTax ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        spendShortfallCents: row?.spendShortfallCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-shortfall-fully-funded-zero",
+    kind: "tax",
+    note: "SPEND SHORTFALL, fully funded year (FIX 3): fixture (a)'s shape with Taxable $100,000 instead of $10,000. By hand: the $50,000 spending need is covered in full by the draw-order draw from Taxable (100% basis, so no gain and no tax), Taxable ends at $100,000 − $50,000 = $50,000, and the residual deficit is exactly $0 — a funded year reports no shortfall, on the year row, in the funding ledger, and in the funding row's cents alike.",
+    expected: {
+      spendShortfall: 0,
+      fundingSpendShortfall: 0,
+      taxableEnd: 50000,
+      spendShortfallCents: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 100000,
+        annualSpending: 50000,
+        endAgePrimary: 57,
+      });
+      const y = simulateRothPlan(plan, DO_NOTHING).years[0];
+      const row = buildRothFunding(plan, DO_NOTHING)[0];
+      return {
+        spendShortfall: y?.spendShortfall ?? null,
+        fundingSpendShortfall: y?.funding.spendShortfall ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        spendShortfallCents: row?.spendShortfallCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-shortfall-late-insolvency",
+    kind: "tax",
+    note: "SPEND SHORTFALL, late insolvency (FIX 3): basePlan shape — Taxable $100,000 at 100% basis, Pre-tax $0, Roth $0, spending $40,000 a year, 0% return, no income, plan to age 59 (2026–2028). By hand: 2026 draws $40,000 and Taxable ends at $60,000 (shortfall $0); 2027 draws $40,000 and ends at $20,000 (shortfall $0); 2028 needs $40,000 with only $20,000 left, so the draw empties Taxable and the residual deficit is $40,000 − $20,000 = exactly $20,000. No income and a 100% basis throughout, so no tax ever touches the balances — the shortfall appears only in the year the money runs out.",
+    expected: {
+      y2026Shortfall: 0,
+      y2027Shortfall: 0,
+      y2028Shortfall: 20000,
+      y2028TaxableEnd: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 100000,
+          annualSpending: 40000,
+          endAgePrimary: 59,
+        }),
+        DO_NOTHING,
+      );
+      return {
+        y2026Shortfall: res.years[0]?.spendShortfall ?? null,
+        y2027Shortfall: res.years[1]?.spendShortfall ?? null,
+        y2028Shortfall: res.years[2]?.spendShortfall ?? null,
+        y2028TaxableEnd: res.years[2]?.taxableEnd ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-spend-shortfall-funding-identity",
+    kind: "tax",
+    note: "SPEND SHORTFALL funding identity (FIX 3): fixture (a)'s shape through buildRothFunding. By hand: the eleven source fields carry only what was actually applied — the $10,000 Taxable sale for spending = 1,000,000¢ — and spendShortfallCents carries the unfunded $40,000 = 4,000,000¢ as itself, never reconciled into a source field; sources + shortfall = 5,000,000¢ = totalNeedCents = spendingCents (the year's only need). Fixture (c)'s 2028 funding row pins the same figure for the late-insolvency year: spendShortfallCents 2,000,000¢ (the $20,000 residual).",
+    expected: {
+      aSourcesCents: 1000000,
+      aSpendShortfallCents: 4000000,
+      aTotalNeedCents: 5000000,
+      aSpendingCents: 5000000,
+      aIdentityGapCents: 0,
+      c2028SpendShortfallCents: 2000000,
+    },
+    actual: () => {
+      const src = (r: ReturnType<typeof buildRothFunding>[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents +
+        r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents +
+        r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents +
+        r.salarySurplusCents;
+      const aRows = buildRothFunding(
+        basePlan({
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 10000,
+          annualSpending: 50000,
+          endAgePrimary: 57,
+        }),
+        DO_NOTHING,
+      );
+      const a = aRows[0];
+      const cRows = buildRothFunding(
+        basePlan({
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 100000,
+          annualSpending: 40000,
+          endAgePrimary: 59,
+        }),
+        DO_NOTHING,
+      );
+      const c2028 = cRows.find((r) => r.year === 2028) ?? null;
+      return {
+        aSourcesCents: a ? src(a) : null,
+        aSpendShortfallCents: a?.spendShortfallCents ?? null,
+        aTotalNeedCents: a?.totalNeedCents ?? null,
+        aSpendingCents: a?.spendingCents ?? null,
+        aIdentityGapCents: a
+          ? src(a) + a.spendShortfallCents - a.totalNeedCents
+          : null,
+        c2028SpendShortfallCents: c2028?.spendShortfallCents ?? null,
+      };
+    },
+  },
+  {
+    id: "exclude-taxable-control-null-and-absent",
+    kind: "tax",
+    note: "EXCLUDE-FROM-PLAN (a) control: a saved record with taxableExcludeCents explicitly null, and the same record with the key ABSENT (a pre-build record), both resolve against a synthetic snapshot (Taxable $1,000,000 + Cash $250,000) to the full $1,250,000 pool, convert to bit-identical plan inputs, and price bit-identical Fill 12% results — a record the build never touched prices exactly as before it.",
+    expected: {
+      resolvedNullPoolCents: 125000000,
+      resolvedAbsentPoolCents: 125000000,
+      plansIdentical: 1,
+      resultsIdentical: 1,
+    },
+    actual: () => {
+      const snap = excludeSnap();
+      const withNull = excludeSavedBase({ taxableExcludeCents: null });
+      const absent = excludeSavedBase({});
+      delete absent.taxableExcludeCents;
+      const resNull = resolvePlanBalances(excludeBalanceFields(withNull), snap);
+      const resAbsent = resolvePlanBalances(excludeBalanceFields(absent), snap);
+      const planNull = planInputsFromSaved({ ...withNull, ...resNull }, 2026);
+      const planAbsent = planInputsFromSaved({ ...absent, ...resAbsent }, 2026);
+      const simNull = planNull ? simulateRothPlan(planNull, FILL_12) : null;
+      const simAbsent = planAbsent ? simulateRothPlan(planAbsent, FILL_12) : null;
+      return {
+        resolvedNullPoolCents: resNull.taxableCents,
+        resolvedAbsentPoolCents: resAbsent.taxableCents,
+        plansIdentical:
+          planNull != null && planAbsent != null &&
+          JSON.stringify(planNull) === JSON.stringify(planAbsent)
+            ? 1
+            : 0,
+        resultsIdentical:
+          simNull != null && simAbsent != null &&
+          JSON.stringify(simNull) === JSON.stringify(simAbsent)
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "exclude-taxable-equivalence-cash-bucket",
+    kind: "tax",
+    note: "EXCLUDE-FROM-PLAN (b) equivalence: an exclusion of exactly the snapshot Cash bucket ($250,000) on the snapshot-followed record — with dividend / interest yields of 2% / 1% set, so the yield base is priced too — resolves the pool to the Taxable bucket alone ($1,000,000) and prices bit-identically (plan inputs, every year row, net cost, ending taxable) to the independent path of an explicit taxableCents override of $1,000,000 with no exclusion. Two engine paths agree to the cent.",
+    expected: {
+      resolvedPoolCents: 100000000,
+      plansIdentical: 1,
+      resultsIdentical: 1,
+      netCostDiffCents: 0,
+      endingTaxableDiffCents: 0,
+    },
+    actual: () => {
+      const snap = excludeSnap();
+      const excl = excludeSavedBase({
+        taxableExcludeCents: 25000000,
+        taxableDividendYieldPct: 2,
+        taxableInterestYieldPct: 1,
+      });
+      const explicit = excludeSavedBase({
+        taxableCents: 100000000,
+        taxableExcludeCents: null,
+        taxableDividendYieldPct: 2,
+        taxableInterestYieldPct: 1,
+      });
+      const resExcl = resolvePlanBalances(excludeBalanceFields(excl), snap);
+      const resExplicit = resolvePlanBalances(excludeBalanceFields(explicit), snap);
+      const planExcl = planInputsFromSaved({ ...excl, ...resExcl }, 2026);
+      const planExplicit = planInputsFromSaved({ ...explicit, ...resExplicit }, 2026);
+      const simExcl = planExcl ? simulateRothPlan(planExcl, FILL_12) : null;
+      const simExplicit = planExplicit ? simulateRothPlan(planExplicit, FILL_12) : null;
+      const costExcl =
+        simExcl && planExcl ? planNetCost(simExcl, planExcl).netCost : null;
+      const costExplicit =
+        simExplicit && planExplicit ? planNetCost(simExplicit, planExplicit).netCost : null;
+      return {
+        resolvedPoolCents: resExcl.taxableCents,
+        plansIdentical:
+          planExcl != null && planExplicit != null &&
+          JSON.stringify(planExcl) === JSON.stringify(planExplicit)
+            ? 1
+            : 0,
+        resultsIdentical:
+          simExcl != null && simExplicit != null &&
+          JSON.stringify(simExcl) === JSON.stringify(simExplicit)
+            ? 1
+            : 0,
+        netCostDiffCents:
+          costExcl != null && costExplicit != null
+            ? Math.round((costExcl - costExplicit) * 100)
+            : null,
+        endingTaxableDiffCents:
+          simExcl != null && simExplicit != null
+            ? Math.round((simExcl.endingTaxable - simExplicit.endingTaxable) * 100)
+            : null,
+      };
+    },
+  },
+  {
+    id: "exclude-taxable-floor-over-pool",
+    kind: "tax",
+    note: "EXCLUDE-FROM-PLAN (c) floor: an exclusion of $2,000,000 — larger than the whole $1,250,000 snapshot pool — floors the resolved pool at $0 (never negative). The plan still prices every year (11 years, ages 65–75), the first year ends with a $0 taxable balance, and no year row ever shows a negative taxable balance.",
+    expected: {
+      resolvedPoolCents: 0,
+      taxableStartDollars: 0,
+      yearsPriced: 11,
+      firstYearTaxableEndCents: 0,
+      noNegativeTaxable: 1,
+    },
+    actual: () => {
+      const snap = excludeSnap();
+      const excl = excludeSavedBase({ taxableExcludeCents: 200000000 });
+      const res = resolvePlanBalances(excludeBalanceFields(excl), snap);
+      const plan = planInputsFromSaved({ ...excl, ...res }, 2026);
+      const sim = plan ? simulateRothPlan(plan, DO_NOTHING) : null;
+      return {
+        resolvedPoolCents: res.taxableCents,
+        taxableStartDollars: plan?.taxableStart ?? null,
+        yearsPriced: sim?.years.length ?? null,
+        firstYearTaxableEndCents:
+          sim?.years[0] != null ? Math.round(sim.years[0].taxableEnd * 100) : null,
+        noNegativeTaxable:
+          sim != null && sim.years.every((y) => y.taxableEnd >= 0) ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "exclude-taxable-wealth-exclusion",
+    kind: "tax",
+    note: "EXCLUDE-FROM-PLAN (d) wealth exclusion: with a $250,000 exclusion the excluded money never enters the priced plan — the excluded run's taxable balance path (every year's taxableEnd), its taxable sales for spending and for tax (the funding ledger), its ending taxable balance, and its ending after-tax wealth are each identical to the independent explicit-override run on the reduced $1,000,000 pool. The excluded $250,000 appears in no year row and is not counted in ending wealth.",
+    expected: {
+      taxablePathIdentical: 1,
+      salesIdentical: 1,
+      endingTaxableDiffCents: 0,
+      endingWealthDiffCents: 0,
+    },
+    actual: () => {
+      const snap = excludeSnap();
+      const excl = excludeSavedBase({ taxableExcludeCents: 25000000 });
+      const explicit = excludeSavedBase({
+        taxableCents: 100000000,
+        taxableExcludeCents: null,
+      });
+      const resExcl = resolvePlanBalances(excludeBalanceFields(excl), snap);
+      const resExplicit = resolvePlanBalances(excludeBalanceFields(explicit), snap);
+      const planExcl = planInputsFromSaved({ ...excl, ...resExcl }, 2026);
+      const planExplicit = planInputsFromSaved({ ...explicit, ...resExplicit }, 2026);
+      const simExcl = planExcl ? simulateRothPlan(planExcl, FILL_12) : null;
+      const simExplicit = planExplicit ? simulateRothPlan(planExplicit, FILL_12) : null;
+      const fundExcl = planExcl ? buildRothFunding(planExcl, FILL_12) : null;
+      const fundExplicit = planExplicit ? buildRothFunding(planExplicit, FILL_12) : null;
+      const salesOf = (
+        rows: ReturnType<typeof buildRothFunding> | null,
+      ): string =>
+        rows == null
+          ? "null"
+          : JSON.stringify(
+              rows.map((r) => [
+                r.taxableSoldForSpendingCents,
+                r.taxableSoldForTaxCents,
+              ]),
+            );
+      return {
+        taxablePathIdentical:
+          simExcl != null && simExplicit != null &&
+          JSON.stringify(simExcl.years.map((y) => y.taxableEnd)) ===
+            JSON.stringify(simExplicit.years.map((y) => y.taxableEnd))
+            ? 1
+            : 0,
+        salesIdentical: salesOf(fundExcl) === salesOf(fundExplicit) ? 1 : 0,
+        endingTaxableDiffCents:
+          simExcl != null && simExplicit != null
+            ? Math.round((simExcl.endingTaxable - simExplicit.endingTaxable) * 100)
+            : null,
+        endingWealthDiffCents:
+          simExcl != null && simExplicit != null
+            ? Math.round(
+                (simExcl.endingAfterTaxWealth - simExplicit.endingAfterTaxWealth) * 100,
+              )
+            : null,
+      };
+    },
+  },
+  {
+    id: "exclude-taxable-inert-with-override",
+    kind: "tax",
+    note: "EXCLUDE-FROM-PLAN (e) inertness: a $250,000 exclusion set WHILE an explicit taxableCents override ($800,000) is in force changes nothing — the override resolves exactly as entered and the plan prices bit-identically to the same override with the exclusion blank. The exclusion applies only to the snapshot-followed pool.",
+    expected: {
+      resolvedWithExclusionCents: 80000000,
+      plansIdentical: 1,
+      resultsIdentical: 1,
+    },
+    actual: () => {
+      const snap = excludeSnap();
+      const withExcl = excludeSavedBase({
+        taxableCents: 80000000,
+        taxableExcludeCents: 25000000,
+      });
+      const without = excludeSavedBase({
+        taxableCents: 80000000,
+        taxableExcludeCents: null,
+      });
+      const resWith = resolvePlanBalances(excludeBalanceFields(withExcl), snap);
+      const resWithout = resolvePlanBalances(excludeBalanceFields(without), snap);
+      const planWith = planInputsFromSaved({ ...withExcl, ...resWith }, 2026);
+      const planWithout = planInputsFromSaved({ ...without, ...resWithout }, 2026);
+      const simWith = planWith ? simulateRothPlan(planWith, FILL_12) : null;
+      const simWithout = planWithout ? simulateRothPlan(planWithout, FILL_12) : null;
+      return {
+        resolvedWithExclusionCents: resWith.taxableCents,
+        plansIdentical:
+          planWith != null && planWithout != null &&
+          JSON.stringify(planWith) === JSON.stringify(planWithout)
+            ? 1
+            : 0,
+        resultsIdentical:
+          simWith != null && simWithout != null &&
+          JSON.stringify(simWith) === JSON.stringify(simWithout)
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "exclude-taxable-tiers-pool-first",
+    kind: "tax",
+    note: "EXCLUDE-FROM-PLAN (f) tier interaction — the documented choice (a): the exclusion is subtracted from the snapshot pool BEFORE basis-tier shares are computed. With tiers of 50% at 0% basis and 50% at 100% basis, a $250,000 exclusion on the followed record resolves the pool to $1,000,000 and the plan converts to a $1,000,000 taxable start carrying the tiers unchanged — bit-identical (inputs and priced results) to an explicit $1,000,000 override carrying the same tiers. Each tier therefore shrinks in proportion to its share; no tier's basis % moves.",
+    expected: {
+      resolvedPoolCents: 100000000,
+      taxableStartDollars: 1000000,
+      plansIdentical: 1,
+      resultsIdentical: 1,
+    },
+    actual: () => {
+      const snap = excludeSnap();
+      const tiers = [
+        { sharePct: 50, basisPct: 0 },
+        { sharePct: 50, basisPct: 100 },
+      ];
+      const excl = excludeSavedBase({
+        taxableExcludeCents: 25000000,
+        taxableTiers: tiers,
+      });
+      const explicit = excludeSavedBase({
+        taxableCents: 100000000,
+        taxableExcludeCents: null,
+        taxableTiers: tiers,
+      });
+      const resExcl = resolvePlanBalances(excludeBalanceFields(excl), snap);
+      const resExplicit = resolvePlanBalances(excludeBalanceFields(explicit), snap);
+      const planExcl = planInputsFromSaved({ ...excl, ...resExcl }, 2026);
+      const planExplicit = planInputsFromSaved({ ...explicit, ...resExplicit }, 2026);
+      const simExcl = planExcl ? simulateRothPlan(planExcl, FILL_12) : null;
+      const simExplicit = planExplicit ? simulateRothPlan(planExplicit, FILL_12) : null;
+      return {
+        resolvedPoolCents: resExcl.taxableCents,
+        taxableStartDollars: planExcl?.taxableStart ?? null,
+        plansIdentical:
+          planExcl != null && planExplicit != null &&
+          JSON.stringify(planExcl) === JSON.stringify(planExplicit)
+            ? 1
+            : 0,
+        resultsIdentical:
+          simExcl != null && simExplicit != null &&
+          JSON.stringify(simExcl) === JSON.stringify(simExplicit)
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "compare-override-null-is-zero-not-blank",
+    kind: "tax",
+    note: "Balance semantics at the override layer (API follow-on 2, finding F9 — the rule describeApi's balanceSemantics now publishes): on the small mcStatsBase plan, a scenario override carrying pretaxCents EXPLICITLY NULL prices exactly as the same override carrying pretaxCents 0 — an override null is an affirmative $0 what-if, never a snapshot blank — while an override that OMITS the key prices exactly as one that names the base's own $400,000, and genuinely differs from the $0 pricing, so the pin discriminates. (The base layer's opposite rule — null follows the snapshot, omission rejected — is pinned in the extended suite against the shipped field schemas.)",
+    expected: { nullMinusZero: 0, omitMinusExplicitBase: 0, zeroDiffersFromBase: 1 },
+    actual: () => {
+      const base = mcStatsBase();
+      const cmp = runRothCompare(
+        base,
+        [
+          { name: "Null pretax", overrides: { pretaxCents: null } },
+          { name: "Zero pretax", overrides: { pretaxCents: 0 } },
+          { name: "Omitted pretax", overrides: {} },
+          { name: "Explicit base pretax", overrides: { pretaxCents: 40000000 } },
+        ],
+        2026,
+      );
+      const byName = (n: string) =>
+        cmp.scenarios.find((s) => s.name === n)?.netCostCents ?? null;
+      const nullNet = byName("Null pretax");
+      const zeroNet = byName("Zero pretax");
+      const omitNet = byName("Omitted pretax");
+      const explicitNet = byName("Explicit base pretax");
+      return {
+        nullMinusZero:
+          nullNet != null && zeroNet != null ? nullNet - zeroNet : null,
+        omitMinusExplicitBase:
+          omitNet != null && explicitNet != null ? omitNet - explicitNet : null,
+        zeroDiffersFromBase:
+          zeroNet != null && omitNet != null && zeroNet !== omitNet ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "playground-2027-schema-and-fallback-pricing",
+    kind: "tax",
+    note: "Playground contract truth (API follow-on 2, finding F20), pinned through the ACTION's own schema + handler construction (playgroundYearIn and playgroundInputsFromArgs from apiContractCore — the exact objects runPlaygroundYear publishes and uses): the 2027 paste-loader worked example (interest $16,000, qualified dividends $2,000, conversion $136,720, household 5, benchmark $32,000, everything else $0 / blank) validates and prices MAGI $154,720 (= 16,000 + 2,000 + 136,720), ACA credit $16,589.89, federal tax $16,238.40 — under the 2026 law row via the lawForYear fallback, so lawYearUsed is 2026. The tightened schema REJECTS a negative interest dial, a 150% state rate, and taxYear 1999, while otherOrdinary −$500 is accepted by design (a loss keeps its sign) and prices MAGI exactly $500 lower, $154,220.",
+    expected: {
+      schemaAccepted: 1,
+      magi: 154720,
+      federalTax: 16238.4,
+      acaCredit: 16589.89,
+      lawYearUsed: 2026,
+      negativeInterestRejected: 1,
+      state150Rejected: 1,
+      taxYear1999Rejected: 1,
+      otherOrdinaryAccepted: 1,
+      otherOrdinaryMagi: 154220,
+    },
+    actual: () => {
+      const dials = {
+        taxYear: 2027,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 16000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 136720,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 2000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 32000,
+        stateRatePct: 0,
+      };
+      const parsed = playgroundYearIn.safeParse(dials);
+      const result = parsed.success
+        ? pricePlaygroundYear(playgroundInputsFromArgs(parsed.data))
+        : null;
+      const negOther = playgroundYearIn.safeParse({
+        ...dials,
+        otherOrdinary: -500,
+      });
+      const negOtherResult = negOther.success
+        ? pricePlaygroundYear(playgroundInputsFromArgs(negOther.data))
+        : null;
+      return {
+        schemaAccepted: parsed.success ? 1 : 0,
+        magi: result?.magi ?? null,
+        federalTax: result?.federalTax ?? null,
+        acaCredit: result?.aca.credit ?? null,
+        lawYearUsed: lawForYear(2027).year,
+        negativeInterestRejected: playgroundYearIn.safeParse({
+          ...dials,
+          interest: -1,
+        }).success
+          ? 0
+          : 1,
+        state150Rejected: playgroundYearIn.safeParse({
+          ...dials,
+          stateRatePct: 150,
+        }).success
+          ? 0
+          : 1,
+        taxYear1999Rejected: playgroundYearIn.safeParse({
+          ...dials,
+          taxYear: 1999,
+        }).success
+          ? 0
+          : 1,
+        otherOrdinaryAccepted: negOther.success ? 1 : 0,
+        otherOrdinaryMagi: negOtherResult?.magi ?? null,
+      };
+    },
+  },
+];
+
+const DO_NOTHING: RothStrategy = { id: "none", name: "Do Nothing", ceilings: null };
+const FILL_12: RothStrategy = {
+  id: "fill12",
+  name: "Fill 12%",
+  ceilings: {
+    bracketTopPct: 12,
+    irmaaTierCap: null,
+    ltcgZeroCap: false,
+    acaCliffCap: false,
+    acaCliffCapFamilyOnly: false,
+    magiCap: null,
+    acaCliffBuffer: null,
+  },
+};
+const FILL_ACA_ONLY: RothStrategy = {
+  id: "fill-aca",
+  name: "Fill capped at ACA cliff",
+  ceilings: {
+    bracketTopPct: null,
+    irmaaTierCap: null,
+    ltcgZeroCap: false,
+    acaCliffCap: true,
+    acaCliffCapFamilyOnly: false,
+    magiCap: null,
+    acaCliffBuffer: null,
+  },
+};
+const FILL_IRMAA1_ONLY: RothStrategy = {
+  id: "fill-irmaa1",
+  name: "Fill capped at IRMAA Tier 1",
+  ceilings: {
+    bracketTopPct: null,
+    irmaaTierCap: 1,
+    ltcgZeroCap: false,
+    acaCliffCap: false,
+    acaCliffCapFamilyOnly: false,
+    magiCap: null,
+    acaCliffBuffer: null,
+  },
+};
+const FILL_IRMAA4_ONLY: RothStrategy = {
+  id: "fill-irmaa4",
+  name: "Fill capped at IRMAA Tier 4",
+  ceilings: {
+    bracketTopPct: null,
+    irmaaTierCap: 4,
+    ltcgZeroCap: false,
+    acaCliffCap: false,
+    acaCliffCapFamilyOnly: false,
+    magiCap: null,
+    acaCliffBuffer: null,
+  },
+};
+const FILL_22: RothStrategy = {
+  id: "fill22",
+  name: "Fill 22%",
+  ceilings: {
+    bracketTopPct: 22,
+    irmaaTierCap: null,
+    ltcgZeroCap: false,
+    acaCliffCap: false,
+    acaCliffCapFamilyOnly: false,
+    magiCap: null,
+    acaCliffBuffer: null,
+  },
+};
+const MAGI_CAP_50K: RothStrategy = {
+  id: "fill-magi-50k",
+  name: "Fill capped at $50,000 MAGI",
+  ceilings: {
+    bracketTopPct: null,
+    irmaaTierCap: null,
+    ltcgZeroCap: false,
+    acaCliffCap: false,
+    acaCliffCapFamilyOnly: false,
+    magiCap: 50000,
+    acaCliffBuffer: null,
+  },
+};
+const MAGI_CAP_48K: RothStrategy = {
+  id: "fill-magi-48k",
+  name: "Fill capped at $48,000 MAGI",
+  ceilings: {
+    bracketTopPct: null,
+    irmaaTierCap: null,
+    ltcgZeroCap: false,
+    acaCliffCap: false,
+    acaCliffCapFamilyOnly: false,
+    magiCap: 48000,
+    acaCliffBuffer: null,
+  },
+};
+
+const basePlan = (over: Partial<RothPlanInputs>): RothPlanInputs => ({
+  startYear: 2026,
+  birthYearPrimary: 1969,
+  birthYearSpouse: 1980,
+  filingStatus: "mfj",
+  endAgePrimary: 57,
+  pretaxStart: 1000000,
+  rothStart: 0,
+  taxableStart: 0,
+  hsaStart: 0,
+  taxableBasisPct: 100,
+  annualSpending: 0,
+  retirementAge: 57,
+  expectedReturnPct: 0,
+  ssPrimaryAnnual: 0,
+  ssPrimaryStartAge: null,
+  ssSpouseAnnual: 0,
+  ssSpouseStartAge: null,
+  otherOrdinaryAnnual: 0,
+  taxExemptInterestAnnual: 0,
+  convertedAlreadyThisYear: 0,
+  windowStartAge: 57,
+  windowStopAge: 74,
+  payTaxFrom: "taxable",
+  protectMinTaxable: 0,
+  drawOrder: DEFAULT_DRAW_ORDER,
+  spouseSoleBeneficiary: true,
+  acaHouseholdSize: 3,
+  acaHouseholdSizeAfter: 2,
+  acaStepDownYear: null,
+  acaBenchmarkCouple: null,
+  acaBenchmarkSingle: null,
+  acaBenchmarkFamily: null,
+  inflationPct: 2.5,
+  stateRatePct: 0,
+  heirRatePct: 22,
+  ...over,
+});
+
+/* Optimizer fixture plans (shared by the opt-* cases above). */
+// Social Security torpedo plan: benefits flowing from the first
+// window year, a long phase-in, and enough pre-tax money that the
+// fill choice matters for decades.
+const optTorpedoPlan = (): RothPlanInputs =>
+  basePlan({
+    birthYearPrimary: 1961,
+    birthYearSpouse: 1972,
+    endAgePrimary: 85,
+    retirementAge: 65,
+    pretaxStart: 1200000,
+    taxableStart: 600000,
+    annualSpending: 60000,
+    expectedReturnPct: 3,
+    ssPrimaryAnnual: 48000,
+    ssPrimaryStartAge: 65,
+    windowStartAge: 65,
+  });
+// Claim-floor plan: the torpedo shape shrunk (pre-tax $300,000,
+// plan to 80) so its per-claiming-age bests rise monotonically
+// from 67 to 70 while the unrestricted winner claims at 62 — a
+// floor at 67 genuinely moves the crown to the claim-67 best.
+const claimFloorPlan = (): RothPlanInputs =>
+  basePlan({
+    birthYearPrimary: 1961,
+    birthYearSpouse: 1972,
+    endAgePrimary: 80,
+    retirementAge: 65,
+    pretaxStart: 300000,
+    taxableStart: 600000,
+    annualSpending: 40000,
+    expectedReturnPct: 3,
+    ssPrimaryAnnual: 48000,
+    ssPrimaryStartAge: 65,
+    windowStartAge: 65,
+    acaHouseholdSize: 2,
+  });
+// Terminal-term plan: high other income makes converting costly
+// today, so only the terminal tax on leftover pre-tax justifies
+// converting more.
+const optTerminalPlan = (heirRatePct: number): RothPlanInputs =>
+  basePlan({
+    endAgePrimary: 85,
+    pretaxStart: 1500000,
+    taxableStart: 500000,
+    otherOrdinaryAnnual: 120000,
+    annualSpending: 120000,
+    expectedReturnPct: 4,
+    heirRatePct,
+  });
+// ACA bunching plan: both spouses on the marketplace from 57, a
+// modest benchmark premium (where bunching can win), some other
+// income so a $0-conversion year still lands in the credit band.
+const optAcaPlan = (): RothPlanInputs =>
+  basePlan({
+    endAgePrimary: 75,
+    pretaxStart: 900000,
+    taxableStart: 400000,
+    otherOrdinaryAnnual: 35000,
+    acaHouseholdSize: 2,
+    acaHouseholdSizeAfter: 2,
+    acaBenchmarkCouple: 12000,
+    acaBenchmarkSingle: 12000,
+  });
+// Draw-order plan: two years of heavy spending against Taxable
+// at 100% basis and Pre-tax, nothing else — the plan the
+// draw-order fixtures are hand-computed on. The conversion
+// window starts at 65, after the plan ends at 61, so optimizer
+// candidates cannot convert and only their draw order separates
+// them.
+const drawOrderPlan = (): RothPlanInputs =>
+  basePlan({
+    birthYearPrimary: 1966,
+    birthYearSpouse: 1977,
+    endAgePrimary: 61,
+    retirementAge: 60,
+    pretaxStart: 200000,
+    taxableStart: 200000,
+    annualSpending: 120000,
+    windowStartAge: 65,
+  });
+
+/* Gift fixture plan: a saved-plan shape built so the parents'
+   marginal capital-gains rate in the sale year is 15% for
+   EVERY optimizer candidate — $400,000/yr of other ordinary
+   income (= spending, so no draws) puts the year's stack
+   between $447,800 and $497,800 of taxable income once the
+   $80,000 sale gain is injected, whatever the winner converts
+   from the $50,000 pre-tax balance — which is what makes the
+   child's kiddie-tax price hand-derivable. 0% return keeps
+   the shares' value at the gift amount in the sale year. */
+const giftFixturePlan = (over: Partial<RothPlanInputs> = {}): RothPlanInputs =>
+  basePlan({
+    startYear: 2031,
+    birthYearPrimary: 1975,
+    birthYearSpouse: 1985,
+    endAgePrimary: 62,
+    retirementAge: 56,
+    windowStartAge: 56,
+    pretaxStart: 50000,
+    taxableStart: 500000,
+    otherOrdinaryAnnual: 400000,
+    annualSpending: 400000,
+    expectedReturnPct: 0,
+    acaHouseholdSize: 2,
+    acaHouseholdSizeAfter: 2,
+    ...over,
+  });
+
+/* Draw-order switch plan: three years of heavy spending
+   against Taxable and Pre-tax, nothing else — the switch
+   fixtures are hand-computed on it. Base order Taxable first,
+   switching at 61 to Pre-tax first. */
+const switchPlan = (over: Partial<RothPlanInputs> = {}): RothPlanInputs =>
+  basePlan({
+    birthYearPrimary: 1966,
+    birthYearSpouse: 1977,
+    endAgePrimary: 62,
+    retirementAge: 60,
+    pretaxStart: 200000,
+    taxableStart: 200000,
+    annualSpending: 120000,
+    windowStartAge: 65,
+    drawOrder: drawOrderFromKey("taxable-pretax-roth"),
+    drawOrderSwitchAge: 61,
+    drawOrderAfter: drawOrderFromKey("pretax-taxable-roth"),
+    ...over,
+  });
+
+/* Cliff-cap draw plan: one ACA year (2026, both spouses under
+   65, household of 2 — cliff $84,600), $200,000 of spending
+   drawn Pre-tax first, no other income — the cliff-cap draw
+   fixtures are hand-computed on it. The conversion window
+   starts at 65, after the plan's only year, so no conversion
+   interferes unless a case overrides the window. */
+/* ACA cliff cap with a safety buffer (CLIFF SAFETY BUFFER
+   build): the cliff TARGET drops to cliff − buffer wherever the
+   engine aims at the cliff; the credit still prices on actual
+   MAGI against the true cliff. */
+const acaBufferStrategy = (buffer: number, familyOnly = false): RothStrategy => ({
+  id: `fill-aca-buffer-${buffer}${familyOnly ? "-family" : ""}`,
+  name: "Fill capped at ACA cliff (safety buffer)",
+  ceilings: {
+    bracketTopPct: null,
+    irmaaTierCap: null,
+    ltcgZeroCap: false,
+    acaCliffCap: true,
+    acaCliffCapFamilyOnly: familyOnly,
+    magiCap: null,
+    acaCliffBuffer: buffer,
+  },
+});
+
+const cliffDrawPlan = (over: Partial<RothPlanInputs> = {}): RothPlanInputs =>
+  basePlan({
+    birthYearPrimary: 1966,
+    birthYearSpouse: 1980,
+    endAgePrimary: 60,
+    retirementAge: 60,
+    pretaxStart: 500000,
+    taxableStart: 500000,
+    annualSpending: 200000,
+    windowStartAge: 65,
+    drawOrder: drawOrderFromKey("pretax-taxable-roth"),
+    acaHouseholdSize: 2,
+    acaHouseholdSizeAfter: 2,
+    acaBenchmarkCouple: 20000,
+    ...over,
+  });
+
+/* Monte Carlo stats fixtures' shared base: a small synthetic
+   saved shape (born 1961/1972, $400,000 pre-tax / $200,000
+   taxable at a 50% basis / $100,000 Roth / $20,000 HSA,
+   $30,000 spending, 3% return, retire 65, plan to 85, Social
+   Security $24,000 from 67, spouse declared no-benefit) —
+   small enough that a 40-path stats run prices in
+   milliseconds, rich enough that fills, spending shortfalls
+   and basis tiers all move its figures. All figures are
+   synthetic: no production number is read or written. */
+const mcStatsBase = (over: Partial<RothCompareBaseSaved> = {}) => ({
+  birthYearPrimary: 1961,
+  birthYearSpouse: 1972,
+  filingStatus: "mfj" as const,
+  pretaxCents: 40000000,
+  pretaxSpouseCents: null,
+  survivorEnabled: false,
+  survivorWho: null,
+  survivorDeathYear: null,
+  rothCents: 10000000,
+  taxableCents: 20000000,
+  hsaCents: 2000000,
+  taxableBasisPct: 50,
+  annualSpendingCents: 3000000,
+  retirementAge: 65,
+  endAge: 85,
+  expectedReturnPct: 3,
+  ssPrimaryAnnualCents: 2400000,
+  ssPrimaryStartAge: 67,
+  ssPrimaryNoBenefit: false,
+  ssSpouseAnnualCents: null,
+  ssSpouseStartAge: null,
+  ssSpouseNoBenefit: true,
+  otherOrdinaryCents: null,
+  taxExemptInterestCents: null,
+  convertedAlreadyCents: null,
+  windowStartAge: 65,
+  windowStopAge: 74,
+  payTaxFrom: "taxable" as const,
+  protectMinTaxableCents: null,
+  preservePretaxCents: null,
+  preserveExitRatePct: null,
+  claimAgeFloor: null,
+  drawOrder: null,
+  drawOrderSwitchAge: null,
+  drawOrderAfter: null,
+  spouseSoleBeneficiary: true,
+  acaHouseholdSize: 2,
+  acaHouseholdSizeAfter: 2,
+  acaStepDownYear: null,
+  acaBenchmarkCoupleCents: null,
+  acaBenchmarkSingleCents: null,
+  acaBenchmarkFamilyCents: null,
+  inflationPct: 2.5,
+  stateRatePct: 0,
+  heirRatePct: 22,
+  ceilings: null,
+  optimizerGuardrail: null,
+  optimizerBunching: null,
+  ...over,
+});
+
+/* Golden compare base: the golden work-years saved shape (the
+   exact literal goldenWorkPlan prices), plus the working
+   strategy fields a compare base carries — shared by
+   goldenWorkPlan and the compare fixtures so both price the
+   identical plan. */
+const goldenCompareBase = () => ({
+  birthYearPrimary: 1975,
+  birthYearSpouse: 1985,
+  filingStatus: "mfj" as const,
+  pretaxCents: 180000000,
+  pretaxSpouseCents: null,
+  survivorEnabled: false,
+  survivorWho: null,
+  survivorDeathYear: null,
+  rothCents: 55000000,
+  taxableCents: 240000000,
+  hsaCents: 11000000,
+  taxableBasisPct: null,
+  annualSpendingCents: 15000000,
+  retirementAge: 56,
+  endAge: 95,
+  expectedReturnPct: 5.75,
+  ssPrimaryAnnualCents: 4800000,
+  ssPrimaryStartAge: 67,
+  ssPrimaryNoBenefit: false,
+  ssSpouseAnnualCents: null,
+  ssSpouseStartAge: null,
+  ssSpouseNoBenefit: true,
+  otherOrdinaryCents: null,
+  taxExemptInterestCents: null,
+  convertedAlreadyCents: null,
+  windowStartAge: 56,
+  windowStopAge: 74,
+  payTaxFrom: "taxable" as const,
+  protectMinTaxableCents: 5000000,
+  preservePretaxCents: 25000000,
+  preserveExitRatePct: 10,
+  claimAgeFloor: null,
+  drawOrder: null,
+  drawOrderSwitchAge: null,
+  drawOrderAfter: null,
+  spouseSoleBeneficiary: true,
+  acaHouseholdSize: 5,
+  acaHouseholdSizeAfter: 2,
+  acaStepDownYear: null,
+  acaBenchmarkCoupleCents: 2000000,
+  acaBenchmarkSingleCents: 1500000,
+  acaBenchmarkFamilyCents: null,
+  inflationPct: 2.5,
+  stateRatePct: 0,
+  heirRatePct: 22,
+  ceilings: null,
+  optimizerGuardrail: null,
+  optimizerBunching: null,
+});
+
+/* the sample shape for the KNOBS fixtures: the golden compare
+   base carrying the sample record's entered benchmarks (couple
+   $24,000, family $32,000) at a 50% taxable basis — the
+   shape the KNOBS identity figures price on (Option 1
+   82674357 cents, Do Nothing 250238871 cents, claim 67 —
+   the Option 1 figure was the BASIS-DRIFT figure 54160335,
+   re-pinned by the M-1 FIX to 36568391 (the capped pre-tax
+   draw converges and keeps the ACA credit) and again by
+   the settlement iteration (FIX 1) to 82674357 (every
+   tax-channel sale's gains are now priced in the year
+   they occur); the flat-% figures were 49078265 /
+   243105153). */
+const sampleShapeBase50 = () => ({
+  ...goldenCompareBase(),
+  taxableBasisPct: 50,
+  acaBenchmarkCoupleCents: 2100000,
+  acaBenchmarkFamilyCents: 3200000,
+});
+
+/* The sample era shape for the SPEND-FROM-CASH fixtures: the
+   sampleShapeBase50 shape at retire 57 with the 2036 household
+   step-down, the sample record's work-year fields and claim floor,
+   and the snapshot cash sleeve threaded onto the base
+   exactly as the server threads it when the saved balances
+   follow the snapshot (spendFromCashSleeveCents 20000000 —
+   the Oct 2026 snapshot's Cash bucket, folded into the
+   $2,400,000 taxable pool). spendFromCashPct itself is
+   NOT set here; each case sets it (or omits it) itself. */
+const spendCashEraBase = () => ({
+  ...sampleShapeBase50(),
+  retirementAge: 57,
+  windowStartAge: 57,
+  acaStepDownYear: 2040,
+  claimAgeFloor: 67,
+  yearlySalaryCents: 30000000,
+  employer401kCents: 1000000,
+  employerHsaCents: 100000,
+  spendFromCashSleeveCents: 20000000,
+});
+
+/* The same era shape with NO sleeve key at all — the shape
+   a compute base with explicit balances and no snapshot
+   context presents (the sleeve reads $0). */
+const spendCashEraBaseNoSleeve = () => ({
+  ...sampleShapeBase50(),
+  retirementAge: 57,
+  windowStartAge: 57,
+  acaStepDownYear: 2036,
+  claimAgeFloor: 67,
+  yearlySalaryCents: 30000000,
+  employer401kCents: 1000000,
+  employerHsaCents: 100000,
+});
+
+/* EXCLUDE-FROM-PLAN fixtures' shared shape: a small saved
+   record (1961 / 1972, pre-tax $300,000 entered, every other
+   balance following the snapshot, taxable at a 50% basis,
+   spending $40,000, claim 67) against a synthetic snapshot —
+   Taxable $1,000,000 + Cash $250,000 = a $1,250,000 followed
+   pool, Pre-tax $500,000, Roth $100,000, HSA $50,000. All
+   figures are synthetic: no production number is read or
+   written by these cases. */
+const excludeSnap = () => ({
+  pretaxCents: 50000000,
+  rothCents: 10000000,
+  taxableCents: 100000000,
+  cashCents: 25000000,
+  hsaCents: 5000000,
+});
+const excludeSavedBase = (
+  over: Partial<RothSavedLike>,
+): RothSavedLike => ({
+  birthYearPrimary: 1961,
+  birthYearSpouse: 1972,
+  filingStatus: "mfj",
+  pretaxCents: 30000000,
+  pretaxSpouseCents: null,
+  survivorEnabled: false,
+  survivorWho: null,
+  survivorDeathYear: null,
+  rothCents: null,
+  taxableCents: null,
+  taxableExcludeCents: null,
+  hsaCents: null,
+  taxableBasisPct: 50,
+  annualSpendingCents: 4000000,
+  retirementAge: 65,
+  endAge: 75,
+  expectedReturnPct: 3,
+  ssPrimaryAnnualCents: 4800000,
+  ssPrimaryStartAge: 67,
+  ssPrimaryNoBenefit: false,
+  ssSpouseAnnualCents: null,
+  ssSpouseStartAge: null,
+  ssSpouseNoBenefit: false,
+  otherOrdinaryCents: null,
+  taxExemptInterestCents: null,
+  convertedAlreadyCents: null,
+  windowStartAge: 65,
+  windowStopAge: 74,
+  payTaxFrom: "taxable",
+  protectMinTaxableCents: null,
+  preservePretaxCents: null,
+  preserveExitRatePct: null,
+  claimAgeFloor: null,
+  drawOrder: null,
+  drawOrderSwitchAge: null,
+  drawOrderAfter: null,
+  spouseSoleBeneficiary: true,
+  acaHouseholdSize: 2,
+  acaHouseholdSizeAfter: 2,
+  acaStepDownYear: null,
+  acaBenchmarkCoupleCents: null,
+  acaBenchmarkSingleCents: null,
+  acaBenchmarkFamilyCents: null,
+  inflationPct: 2.5,
+  stateRatePct: 0,
+  heirRatePct: 22,
+  ...over,
+});
+const excludeBalanceFields = (saved: RothSavedLike) => ({
+  pretaxCents: saved.pretaxCents,
+  pretaxSpouseCents: saved.pretaxSpouseCents ?? null,
+  rothCents: saved.rothCents,
+  taxableCents: saved.taxableCents,
+  taxableExcludeCents: saved.taxableExcludeCents ?? null,
+  hsaCents: saved.hsaCents,
+});
+
+/* Golden work-years plan: the saved-plan shape the quit-vs-work
+   analysis priced (see the workyears-golden-* cases), built
+   through planInputsFromSaved exactly as the optimizer action
+   builds it, at start year 2026. */
+const goldenWorkPlan = (): RothPlanInputs | null =>
+  planInputsFromSaved(goldenCompareBase(), 2030);
+
+export type TaxFixtureResult = {
+  id: string;
+  kind: string;
+  pass: boolean;
+  failures: string[];
+};
+
+export function runTaxFixtures(
+  cases: TaxFixtureCase[] = TAX_FIXTURES,
+): { total: number; passed: number; results: TaxFixtureResult[] } {
+  const results = cases.map((c) => {
+    const failures: string[] = [];
+    let actual: Record<string, number | string | null>;
+    try {
+      actual = c.actual();
+    } catch (err) {
+      return { id: c.id, kind: c.kind, pass: false, failures: [`threw: ${String(err)}`] };
+    }
+    for (const [field, exp] of Object.entries(c.expected)) {
+      const got = actual[field] ?? null;
+      if (got !== exp) failures.push(`${field}: expected ${exp}, got ${got}`);
+    }
+    return { id: c.id, kind: c.kind, pass: failures.length === 0, failures };
+  });
+  return {
+    total: results.length,
+    passed: results.filter((r) => r.pass).length,
+    results,
+  };
+}
+
+// Teeth check: corrupt ONE expected value in ONE case and confirm
+// exactly that case — and no other — fails. The optimizer (opt-*)
+// cases get the same treatment one at a time: each corrupted
+// opt-* case, run on its own, must fail. The check runs in two
+// parts so the maintenance action can invoke each part inside
+// the worker time cap: "core" (the corrupted full-suite run)
+// and "opt" (the per-opt-case corruptions, which only compute
+// the opt-* cases). "all" (the default) runs both, sharing one
+// set of computed actuals.
+export function runTaxTeethCheck(
+  part: "all" | "core" | "opt" = "all",
+): {
+  corruptedCaseId: string;
+  failedCount: number;
+  pass: boolean;
+} {
+  const corruptedCaseId = "tax-fill-12-no-other-income";
+  if (part === "opt") {
+    let failedCount = 0;
+    let optCount = 0;
+    let pass = true;
+    for (const c of TAX_FIXTURES) {
+      if (!c.id.startsWith("opt-")) continue;
+      optCount++;
+      const field = Object.keys(c.expected).find(
+        (k) => typeof c.expected[k] === "number",
+      );
+      if (!field) {
+        pass = false;
+        continue;
+      }
+      const bad = {
+        ...c,
+        expected: {
+          ...c.expected,
+          [field]: Number(c.expected[field]) + 100000,
+        },
+      };
+      const single = runTaxFixtures([bad]);
+      if (single.passed === 0 && single.results[0]?.id === c.id) {
+        failedCount++;
+      } else {
+        pass = false;
+      }
+    }
+    if (optCount === 0) pass = false;
+    return { corruptedCaseId: "opt-*", failedCount, pass };
+  }
+  // Compute every case's actual ONCE and evaluate corrupted
+  // expectations against those cached actuals. The fixture
+  // actuals are deterministic pure functions, so evaluating a
+  // corrupted expectation against the cached actual gives
+  // exactly the pass/fail the previous implementation got by
+  // re-running each case — without paying for a second full
+  // optimizer search per opt-* case, which pushed this check
+  // past the space-worker time cap on its own.
+  type Cached =
+    | { ok: true; actual: Record<string, number | string | null> }
+    | { ok: false; error: string };
+  const cache = new Map<string, Cached>();
+  for (const c of TAX_FIXTURES) {
+    try {
+      cache.set(c.id, { ok: true, actual: c.actual() });
+    } catch (err) {
+      cache.set(c.id, { ok: false, error: String(err) });
+    }
+  }
+  const evaluate = (
+    c: TaxFixtureCase,
+    expected: Record<string, number | string | null>,
+  ): TaxFixtureResult => {
+    const hit = cache.get(c.id);
+    if (!hit || !hit.ok) {
+      return {
+        id: c.id,
+        kind: c.kind,
+        pass: false,
+        failures: [`threw: ${hit && !hit.ok ? hit.error : "not run"}`],
+      };
+    }
+    const failures: string[] = [];
+    for (const [field, exp] of Object.entries(expected)) {
+      const got = hit.actual[field] ?? null;
+      if (got !== exp) failures.push(`${field}: expected ${exp}, got ${got}`);
+    }
+    return { id: c.id, kind: c.kind, pass: failures.length === 0, failures };
+  };
+  const results = TAX_FIXTURES.map((c) =>
+    c.id === corruptedCaseId
+      ? evaluate(c, {
+          ...c.expected,
+          fill: Number(c.expected.fill ?? 0) + 100,
+        })
+      : evaluate(c, c.expected),
+  );
+  const failed = results.filter((x) => !x.pass);
+  let pass = failed.length === 1 && failed[0]?.id === corruptedCaseId;
+  if (pass && part === "all") {
+    for (const c of TAX_FIXTURES) {
+      if (!c.id.startsWith("opt-")) continue;
+      const field = Object.keys(c.expected).find(
+        (k) => typeof c.expected[k] === "number",
+      );
+      if (!field) {
+        pass = false;
+        break;
+      }
+      const single = evaluate(c, {
+        ...c.expected,
+        [field]: Number(c.expected[field]) + 100000,
+      });
+      if (single.pass || single.id !== c.id) {
+        pass = false;
+        break;
+      }
+    }
+  }
+  return {
+    corruptedCaseId,
+    failedCount: failed.length,
+    pass,
+  };
+}

@@ -1,0 +1,70 @@
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --text-5xl: 48px;
+  --text-5xl--line-height: 52px;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #f7f3ea;
+  --surface: #fffdf7;
+  --surface-alt: #efe9da;
+  --text: #1c2420;
+  --dim: #6b7a70;
+  --border: #ddd5c2;
+  --accent: #14594c;
+  --accent-soft: #dcebe4;
+  --warn: #b45309;
+  --warn-soft: #f7e8d2;
+  --bad: #b3352b;
+  --bad-soft: #f9e0dc;
+  --radius: 10px;
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface-alt);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141713;
+    --surface: #1d211c;
+    --surface-alt: #262b24;
+    --text: #ece7d9;
+    --dim: #9aa695;
+    --border: #3a4034;
+    --accent: #4fc2a8;
+    --accent-soft: #22392f;
+    --warn: #e8a04c;
+    --warn-soft: #3d2f1a;
+    --bad: #e07a6d;
+    --bad-soft: #472622;
+  }
+}
+
+.display {
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
