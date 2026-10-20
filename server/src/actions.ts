@@ -1084,28 +1084,73 @@ async function loadNetWorthDecrypted(ctx: Ctx, db: any, key: CryptoKey) {
 
 /* ---------------- Net Worth seed ----------------
    SAMPLE DATA — invented for demonstration on a fresh install.
-   These figures are synthetic round numbers with a plausible
-   growth arc; they are not any household's real balances.
-   Values are USD dollars per account in NW_SEED_ACCOUNTS
-   order; they are stored as integer cents. Seeding is
-   idempotent: seedNetWorth does nothing when any NW account
-   already exists. */
-const NW_SEED_ACCOUNTS = ["Brokerage", "Bank", "Retirement 401k", "Retirement IRA", "Investment", "HSA"];
-const NW_SEED: { date: string; values: number[] }[] = [
-  { date: "2025-12-03", values: [360000, 90000, 1800000, 200000, 150000, 10000] },
-  { date: "2025-12-06", values: [365000, 90500, 1815000, 201500, 151000, 10200] },
-  { date: "2025-12-24", values: [368000, 91000, 1830000, 203000, 152500, 10400] },
-  { date: "2026-01-06", values: [375000, 92000, 1845000, 204500, 153000, 10600] },
-  { date: "2026-01-24", values: [370000, 92500, 1835000, 205000, 152000, 10800] },
-  { date: "2026-01-31", values: [378000, 93000, 1850000, 206000, 154000, 11000] },
-  { date: "2026-04-26", values: [390000, 94000, 1900000, 210000, 158000, 11500] },
-  { date: "2026-05-09", values: [400000, 95000, 1950000, 214000, 162000, 12000] },
-  { date: "2026-05-31", values: [410000, 96000, 1980000, 217000, 165000, 12500] },
-  { date: "2026-08-13", values: [420000, 97000, 2020000, 220000, 168000, 13000] },
-  { date: "2026-09-04", values: [430000, 98000, 2050000, 223000, 170000, 13500] },
-  { date: "2026-09-22", values: [438000, 99000, 2080000, 226000, 172000, 14000] },
-  { date: "2026-10-05", values: [445000, 100000, 2100000, 228000, 175000, 14500] },
+   A complete sample household: twelve monthly snapshots ending
+   in the current month, so a fresh install shows a full year of
+   history, a growth chart with a real dip and recovery, tax-
+   bucket splits, a house and mortgage behind the property
+   toggle, and a custodial account that is recorded but never
+   counted. These figures are synthetic; they are not any
+   household's real balances.
+   Values are USD dollars per account in NW_SEED_ACCOUNTS order;
+   they are stored as integer cents. Snapshot totals (property
+   and custodial excluded, as the view defaults) run from
+   $2,610,000 to $3,062,500 — the packaged harness and probe pin
+   those two totals. Seeding is idempotent: seedNetWorth does
+   nothing when any NW account already exists. */
+type NwSeedAccount = {
+  name: string;
+  propertyKind: "none" | "asset" | "liability";
+  custodial: boolean;
+  // Tax-bucket split for this account's balances, as shares of
+  // the balance (the parts always sum to the balance: every part
+  // but the last is the share rounded to the nearest $10, and the
+  // last part takes the remainder). Empty = no split: the whole
+  // balance counts as Unbucketed. Property and custodial accounts
+  // never carry a split.
+  splitShares: { bucket: NwSplitBucket; share: number }[];
+};
+const NW_SEED_ACCOUNTS: NwSeedAccount[] = [
+  { name: "Joint Brokerage", propertyKind: "none", custodial: false, splitShares: [{ bucket: "Taxable", share: 0.92 }, { bucket: "Cash", share: 0.08 }] },
+  { name: "Cash & Savings", propertyKind: "none", custodial: false, splitShares: [{ bucket: "Cash", share: 1 }] },
+  { name: "401(k)", propertyKind: "none", custodial: false, splitShares: [{ bucket: "Pre-tax", share: 1 }] },
+  { name: "Roth IRA", propertyKind: "none", custodial: false, splitShares: [{ bucket: "Roth", share: 1 }] },
+  { name: "Traditional IRA", propertyKind: "none", custodial: false, splitShares: [{ bucket: "Pre-tax", share: 1 }] },
+  { name: "HSA", propertyKind: "none", custodial: false, splitShares: [{ bucket: "HSA", share: 1 }] },
+  { name: "College 529", propertyKind: "none", custodial: false, splitShares: [{ bucket: "529", share: 1 }] },
+  { name: "House", propertyKind: "asset", custodial: false, splitShares: [] },
+  { name: "Mortgage", propertyKind: "liability", custodial: false, splitShares: [] },
+  { name: "UTMA — Child", propertyKind: "none", custodial: true, splitShares: [] },
 ];
+// One row per snapshot month, oldest first: the twelve months
+// ending in the current month, snapshotted on the 1st. The
+// invested accounts follow one market year together — steady
+// gains, a sharp dip in month 6, then recovery — on top of
+// regular contributions; the house appreciates slowly, the
+// mortgage pays down $1,250 a month, and cash moves with the
+// household's saving and spending.
+const NW_SEED_VALUES: number[][] = [
+  [612000, 118000, 1148000, 286000, 342000, 38500, 65500, 685000, 402000, 12400],
+  [625300, 119400, 1171650, 291600, 347200, 39450, 67400, 687500, 400750, 12550],
+  [635650, 121100, 1190100, 295800, 350850, 40250, 69050, 689000, 399500, 12400],
+  [631550, 120200, 1182750, 293250, 346850, 40700, 69850, 692000, 398250, 12800],
+  [652750, 122600, 1220400, 302450, 356050, 41850, 72250, 694500, 397000, 12150],
+  [621000, 121900, 1164000, 287100, 337800, 41500, 71150, 696000, 395750, 12900],
+  [653050, 123800, 1221050, 301300, 352550, 43000, 74350, 699000, 394500, 13150],
+  [670900, 125100, 1252750, 308950, 359900, 44100, 76600, 701500, 393250, 13300],
+  [683150, 124300, 1274450, 313950, 364350, 45000, 78450, 704000, 392000, 13700],
+  [704400, 126200, 1312100, 323150, 373350, 46150, 80950, 707500, 390750, 13600],
+  [701550, 127600, 1307100, 321200, 370150, 46650, 81750, 711000, 389500, 13950],
+  [726800, 132000, 1353800, 332500, 385400, 47500, 84500, 715000, 388250, 14250],
+];
+const NW_SEED_NOTES: (string | null)[] = [
+  "First full snapshot — starting point",
+  null, null, null, null,
+  "Market dip this month — no changes made",
+  null, null, null, null, null, null,
+];
+// The sample household's net worth target ($3,500,000), stored
+// exactly as setNwTarget stores it (plain integer-cents string).
+const NW_SEED_TARGET_CENTS = 350000000;
 
 const nwBalanceEntry = z.object({
   accountId: z.number().int().positive(),
@@ -6746,19 +6791,110 @@ export const Actions = {
           reason: "Example data only loads into an empty tracker.",
         };
       }
+      /* SAMPLE DATA — a complete sample household for a fresh
+         install (this is what the public demo loads). Twelve
+         months ending in the current month, recorded the way
+         the app is meant to be used: a roster of monthly bills,
+         smoothed yearly & periodic bills with their payments
+         recorded as transactions, and one entered cash-out
+         total per month. The three layers agree by construction:
+         each month's cash out is exactly its monthly bills +
+         the smoothed payments that left that month + a positive
+         "everything else" remainder, so the Quick view tiles,
+         the Keep the lights on floor, the category breakdown,
+         and the Coming up forecast all show real, consistent
+         figures. All figures are synthetic. */
       const now = new Date();
       const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-      const startMonth = shiftMonth(curMonth, -7);
+      const MONTH_COUNT = 12;
+      const startMonth = shiftMonth(curMonth, -(MONTH_COUNT - 1));
+      const monthAt = (offset: number) => shiftMonth(startMonth, offset);
+      // Two monthly bills step up partway through the year (a
+      // grocery budget increase and a utility rate change at
+      // offset 7), so the bill history shows a version change.
+      const BUMP_OFFSET = 7;
 
-      const yearlySeed = [
-        { name: "Home insurance", expectedCents: 180000, dueMonth: 3, paidByType: "card" as const, paidByName: "Visa" },
-        { name: "Property tax", expectedCents: 540000, dueMonth: 11, paidByType: "checking" as const, paidByName: "Checking" },
-        { name: "Car insurance", expectedCents: 156000, dueMonth: 6, paidByType: "card" as const, paidByName: "Visa" },
-        { name: "Vehicle registration", expectedCents: 28000, dueMonth: 8, paidByType: "checking" as const, paidByName: "Checking" },
-        { name: "Warehouse club membership", expectedCents: 6500, dueMonth: 9, paidByType: "card" as const, paidByName: "Visa" },
+      type MonthlySeed = {
+        name: string;
+        paidBy: string;
+        category: string;
+        keepLightsOn: boolean;
+        amountCents: number;
+        bumpedAmountCents?: number;
+      };
+      const monthlySeed: MonthlySeed[] = [
+        { name: "Mortgage", paidBy: "Checking", category: "Housing", keepLightsOn: true, amountCents: 185000 },
+        { name: "Groceries & household", paidBy: "Credit Card", category: "Food & household", keepLightsOn: false, amountCents: 65000, bumpedAmountCents: 68500 },
+        { name: "Dining out", paidBy: "Credit Card", category: "Food & household", keepLightsOn: false, amountCents: 24000 },
+        { name: "Electric & gas", paidBy: "Checking", category: "Utilities", keepLightsOn: true, amountCents: 15800, bumpedAmountCents: 17100 },
+        { name: "Water & sewer", paidBy: "Checking", category: "Utilities", keepLightsOn: true, amountCents: 8600 },
+        { name: "Internet", paidBy: "Checking", category: "Internet", keepLightsOn: true, amountCents: 7900 },
+        { name: "Phone", paidBy: "Checking", category: "Phone", keepLightsOn: true, amountCents: 11800 },
+        { name: "Fuel & transit", paidBy: "Credit Card", category: "Transportation", keepLightsOn: false, amountCents: 21000 },
+        { name: "Health insurance premium", paidBy: "Checking", category: "Health Insurance", keepLightsOn: true, amountCents: 34200 },
+        { name: "Gym", paidBy: "Credit Card", category: "Gym", keepLightsOn: false, amountCents: 5800 },
+        { name: "Streaming & apps", paidBy: "Credit Card", category: "Subscriptions", keepLightsOn: false, amountCents: 3600 },
+        { name: "Pet care", paidBy: "Credit Card", category: "Other", keepLightsOn: false, amountCents: 7400 },
       ];
-      const yearlyIds = new Map<string, number>();
-      for (const y of yearlySeed) {
+      const monthlyAmountAt = (b: MonthlySeed, offset: number): number =>
+        offset >= BUMP_OFFSET && b.bumpedAmountCents != null
+          ? b.bumpedAmountCents
+          : b.amountCents;
+      const monthlyTotalAt = (offset: number): number =>
+        monthlySeed.reduce((s, b) => s + monthlyAmountAt(b, offset), 0);
+      for (const b of monthlySeed) {
+        const latestCents = monthlyAmountAt(b, MONTH_COUNT - 1);
+        const [row] = await db
+          .insert(schema.monthlyBills)
+          .values({
+            name: await encryptStr(key, b.name),
+            amountCents: await encryptNum(key, latestCents),
+            paidBy: await encryptStr(key, b.paidBy),
+            notes: null,
+            category: await encryptStr(key, b.category),
+            keepLightsOn: b.keepLightsOn ? 1 : 0,
+          })
+          .returning({ id: schema.monthlyBills.id });
+        if (!row) continue;
+        await db.insert(schema.monthlyBillVersions).values({
+          billId: row.id,
+          amountCents: await encryptNum(key, b.amountCents),
+          effectiveFrom: startMonth,
+        });
+        if (b.bumpedAmountCents != null) {
+          await db.insert(schema.monthlyBillVersions).values({
+            billId: row.id,
+            amountCents: await encryptNum(key, b.bumpedAmountCents),
+            effectiveFrom: monthAt(BUMP_OFFSET),
+          });
+        }
+      }
+
+      type SmoothedSeed = {
+        name: string;
+        expectedCents: number;
+        frequency: "yearly" | "semiannual" | "quarterly";
+        dueMonth: number;
+        category: string;
+        keepLightsOn: boolean;
+        // One recorded payment that differed from the set-aside
+        // amount (a renewal that came in higher) — the app shows
+        // the difference on the bill's card.
+        actualDeltaCents?: number;
+      };
+      const smoothedSeed: SmoothedSeed[] = [
+        { name: "Property tax", expectedCents: 265000, frequency: "semiannual", dueMonth: 4, category: "Taxes", keepLightsOn: true },
+        { name: "Home insurance", expectedCents: 184200, frequency: "yearly", dueMonth: 3, category: "Insurance", keepLightsOn: true, actualDeltaCents: 3200 },
+        { name: "Auto insurance", expectedCents: 87600, frequency: "semiannual", dueMonth: 2, category: "Insurance", keepLightsOn: true },
+        { name: "Umbrella insurance", expectedCents: 38500, frequency: "yearly", dueMonth: 8, category: "Insurance", keepLightsOn: false },
+        { name: "Vehicle registration", expectedCents: 27600, frequency: "yearly", dueMonth: 9, category: "Transportation", keepLightsOn: false },
+        { name: "Trash & recycling", expectedCents: 11700, frequency: "quarterly", dueMonth: 1, category: "Utilities", keepLightsOn: true },
+        { name: "Pest control", expectedCents: 14500, frequency: "quarterly", dueMonth: 2, category: "Housing", keepLightsOn: false },
+        { name: "Warehouse club membership", expectedCents: 6500, frequency: "yearly", dueMonth: 9, category: "Subscriptions", keepLightsOn: false },
+        { name: "Cloud backup", expectedCents: 12000, frequency: "yearly", dueMonth: 12, category: "Subscriptions", keepLightsOn: false },
+      ];
+      const smoothedIds = new Map<string, number>();
+      for (const y of smoothedSeed) {
         const encExpected = await encryptNum(key, y.expectedCents);
         const [row] = await db
           .insert(schema.yearlyExpenses)
@@ -6766,79 +6902,138 @@ export const Actions = {
             name: await encryptStr(key, y.name),
             expectedCents: encExpected,
             dueMonth: y.dueMonth,
-            paidByType: y.paidByType,
-            paidByName: await encryptStr(key, y.paidByName),
-            category: await encryptStr(key, "Uncategorized"),
+            paidByType: "checking" as const,
+            paidByName: await encryptStr(key, "Checking"),
+            category: await encryptStr(key, y.category),
             backfillBeforeFirstVersion: 0,
+            frequency: y.frequency,
+            keepLightsOn: y.keepLightsOn ? 1 : 0,
           })
           .returning({ id: schema.yearlyExpenses.id });
         if (row) {
-          yearlyIds.set(y.name, row.id);
+          smoothedIds.set(y.name, row.id);
           await db.insert(schema.yearlyExpenseVersions).values({
             expenseId: row.id,
             expectedCents: encExpected,
-            frequency: "yearly",
+            frequency: y.frequency,
             effectiveFrom: startMonth,
           });
         }
       }
+      // The smoothed payments recorded in one month: every bill
+      // whose due pattern lands in that calendar month, at its
+      // expected amount (plus the one renewal difference).
+      const paymentsAt = (offset: number) => {
+        const calMonth = Number(monthAt(offset).slice(5, 7));
+        const out: { seed: SmoothedSeed; amountCents: number }[] = [];
+        for (const y of smoothedSeed) {
+          const dues = dueMonthsFor({ frequency: y.frequency, dueMonth: y.dueMonth });
+          if (!dues.includes(calMonth)) continue;
+          out.push({ seed: y, amountCents: y.expectedCents + (y.actualDeltaCents ?? 0) });
+        }
+        return out;
+      };
 
-      const groceries = [51200, 53800, 49700, 55100, 52400, 50900, 54300, 51800];
-      const dining = [16400, 18200, 14900, 19700, 17100, 15800, 18600, 16900];
-      const gas = [11800, 12400, 10900, 13100, 12200, 11500, 12800, 11900];
-      const fun = [8600, 9400, 7800, 10200, 8900, 8100, 9600, 8800];
+      // "Everything else" per month — the day-to-day spending
+      // beyond the bill roster and the smoothed payments. Always
+      // comfortably positive, so no month shows the negative
+      // remainder an unfinished month shows.
+      const everythingElse: number[] = [
+        112400, 98700, 124600, 108300, 131900, 95400,
+        118700, 142600, 106900, 129400, 115800, 138200,
+      ];
+      const cashOutAt = (offset: number): number =>
+        monthlyTotalAt(offset) +
+        paymentsAt(offset).reduce((s, p) => s + p.amountCents, 0) +
+        (everythingElse[offset] ?? 115000);
 
-      const rows: { date: string; description: string; amountCents: number; sourceType: "checking" | "card"; accountName: string; kind: "spending" | "card_payment" | "transfer"; category: string; yearlyExpenseId?: number | null }[] = [];
-      for (let i = 0; i < 8; i++) {
-        const m = shiftMonth(startMonth, i);
-        const d = (day: number) => `${m}-${String(day).padStart(2, "0")}`;
-        const g = groceries[i] ?? 52000;
-        const dn = dining[i] ?? 17000;
-        const gs = gas[i] ?? 12000;
-        const fn = fun[i] ?? 9000;
-        rows.push(
-          { date: d(1), description: "Example — Mortgage / rent", amountCents: 185000, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Housing" },
-          { date: d(3), description: "Example — Groceries", amountCents: g, sourceType: "card", accountName: "Visa", kind: "spending", category: "Groceries" },
-          { date: d(6), description: "Example — Electric & water", amountCents: 13900 + i * 150, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Utilities" },
-          { date: d(9), description: "Example — Restaurants", amountCents: dn, sourceType: "card", accountName: "Visa", kind: "spending", category: "Dining" },
-          { date: d(12), description: "Example — Gas", amountCents: gs, sourceType: "card", accountName: "Visa", kind: "spending", category: "Transport" },
-          { date: d(15), description: "Example — Internet", amountCents: 7900, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Utilities" },
-          { date: d(18), description: "Example — Streaming & apps", amountCents: 4200, sourceType: "card", accountName: "Visa", kind: "spending", category: "Subscriptions" },
-          { date: d(21), description: "Example — Weekend / misc", amountCents: fn, sourceType: "card", accountName: "Visa", kind: "spending", category: "Other" },
-          { date: d(24), description: "Example — Visa bill payment", amountCents: g + dn + gs + fn + 4200, sourceType: "checking", accountName: "Checking", kind: "card_payment", category: "Other" },
-          { date: d(26), description: "Example — Transfer to savings", amountCents: 30000, sourceType: "checking", accountName: "Checking", kind: "transfer", category: "Other" },
-        );
-        const monthNum = Number(m.slice(5, 7));
-        if (monthNum === 3) {
-          rows.push({ date: d(10), description: "Example — Home insurance (yearly)", amountCents: 171000, sourceType: "card", accountName: "Visa", kind: "spending", category: "Insurance", yearlyExpenseId: yearlyIds.get("Home insurance") ?? null });
-        }
-        if (monthNum === 6) {
-          rows.push({ date: d(10), description: "Example — Car insurance (yearly)", amountCents: 156000, sourceType: "card", accountName: "Visa", kind: "spending", category: "Insurance", yearlyExpenseId: yearlyIds.get("Car insurance") ?? null });
-        }
-        if (monthNum === 8) {
-          rows.push(
-            { date: d(10), description: "Example — Vehicle registration (yearly)", amountCents: 34000, sourceType: "checking", accountName: "Checking", kind: "spending", category: "Transport", yearlyExpenseId: yearlyIds.get("Vehicle registration") ?? null },
-            { date: d(14), description: "Example — Store refund", amountCents: -4500, sourceType: "card", accountName: "Visa", kind: "spending", category: "Other" },
-          );
-        }
-        if (monthNum === 9) {
-          rows.push({ date: d(10), description: "Example — Warehouse club membership (yearly)", amountCents: 6500, sourceType: "card", accountName: "Visa", kind: "spending", category: "Subscriptions", yearlyExpenseId: yearlyIds.get("Warehouse club membership") ?? null });
-        }
-      }
-      for (const r of rows) {
-        await db.insert(schema.transactions).values({
-          date: r.date,
-          description: await encryptStr(key, r.description),
-          amountCents: await encryptNum(key, r.amountCents),
-          sourceType: r.sourceType,
-          accountName: await encryptStr(key, r.accountName),
-          kind: r.kind,
-          category: await encryptStr(key, r.category),
-          yearlyExpenseId: r.yearlyExpenseId ?? null,
+      // Entered cash-out totals (the checking-account outflow
+      // for the month) — the month's spending base.
+      for (let i = 0; i < MONTH_COUNT; i++) {
+        await db.insert(schema.monthlySummaries).values({
+          month: monthAt(i),
+          cashOutCents: await encryptNum(key, cashOutAt(i)),
+          createdAt: now,
+          updatedAt: now,
         });
       }
+      // The recorded smoothed-bill payments themselves.
+      for (let i = 0; i < MONTH_COUNT; i++) {
+        const m = monthAt(i);
+        for (const p of paymentsAt(i)) {
+          await db.insert(schema.transactions).values({
+            date: `${m}-10`,
+            description: await encryptStr(key, `${p.seed.name} payment`),
+            amountCents: await encryptNum(key, p.amountCents),
+            sourceType: "checking",
+            accountName: await encryptStr(key, "Checking"),
+            kind: "spending",
+            category: await encryptStr(key, p.seed.category),
+            yearlyExpenseId: smoothedIds.get(p.seed.name) ?? null,
+          });
+        }
+      }
+      // Two one-offs, already counted in their months' cash out:
+      // they explain part of those months' Everything else.
+      const oneOffSeed = [
+        { offset: 5, description: "Water heater replacement", amountCents: 64800 },
+        { offset: 9, description: "Weekend trip", amountCents: 51200 },
+      ];
+      for (const o of oneOffSeed) {
+        await db.insert(schema.monthlyOneOffs).values({
+          month: monthAt(o.offset),
+          description: await encryptStr(key, o.description),
+          amountCents: await encryptNum(key, o.amountCents),
+          note: await encryptNullable(key, "One-off — already counted in that month's cash out."),
+        });
+      }
+      // The current month's cash out, itemized: the bill groups,
+      // that month's smoothed payments, and the remainder. The
+      // items sum to the entered total exactly, demonstrating
+      // the itemized month at a $0 difference.
+      {
+        const offset = MONTH_COUNT - 1;
+        const m = monthAt(offset);
+        const billAmount = (name: string): number => {
+          const b = monthlySeed.find((x) => x.name === name);
+          return b ? monthlyAmountAt(b, offset) : 0;
+        };
+        const groupAmount = (names: string[]): number =>
+          names.reduce((s, n) => s + billAmount(n), 0);
+        const items: { description: string; amountCents: number }[] = [
+          { description: "Mortgage", amountCents: billAmount("Mortgage") },
+          { description: "Groceries & household", amountCents: billAmount("Groceries & household") },
+          { description: "Dining, fuel, pet care, gym & streaming", amountCents: groupAmount(["Dining out", "Fuel & transit", "Pet care", "Gym", "Streaming & apps"]) },
+          { description: "Electric, water, internet & phone", amountCents: groupAmount(["Electric & gas", "Water & sewer", "Internet", "Phone"]) },
+          { description: "Health insurance premium", amountCents: billAmount("Health insurance premium") },
+          ...paymentsAt(offset).map((p) => ({
+            description: `${p.seed.name} payment`,
+            amountCents: p.amountCents,
+          })),
+          { description: "Everything else — day-to-day spending", amountCents: everythingElse[offset] ?? 115000 },
+        ];
+        for (const it of items) {
+          await db.insert(schema.monthlyCashOutItems).values({
+            month: m,
+            description: await encryptStr(key, it.description),
+            amountCents: await encryptNum(key, it.amountCents),
+            note: null,
+          });
+        }
+      }
+      // The smoothed-bill reserve opens with $2,500 already set
+      // aside, so the reserve and the Coming up forecast start
+      // from a realistic, positive position.
+      await db
+        .insert(schema.settings)
+        .values({ key: "opening_reserve_cents", value: await encryptStr(key, "250000") })
+        .onConflictDoNothing();
+      await db
+        .insert(schema.settings)
+        .values({ key: "reserve_start_month", value: startMonth })
+        .onConflictDoNothing();
       ctx.invalidateQueries();
-      return { ok: true, reason: "Example data loaded." };
+      return { ok: true, reason: "Sample household loaded — twelve months of bills, smoothed expenses, and cash-out totals." };
     },
   }),
 
@@ -6907,30 +7102,84 @@ export const Actions = {
       }
       const accountIds: number[] = [];
       for (let i = 0; i < NW_SEED_ACCOUNTS.length; i++) {
+        const acct = NW_SEED_ACCOUNTS[i];
+        if (!acct) continue;
         const [row] = await db
           .insert(schema.nwAccounts)
-          .values({ name: await encryptStr(key, NW_SEED_ACCOUNTS[i] ?? ""), sortOrder: i, archived: 0 })
+          .values({
+            name: await encryptStr(key, acct.name),
+            sortOrder: i,
+            archived: 0,
+            propertyKind: acct.propertyKind,
+            custodial: acct.custodial ? 1 : 0,
+          })
           .returning({ id: schema.nwAccounts.id });
         if (!row) throw new Error("seed account insert failed");
         accountIds.push(row.id);
       }
-      for (const snap of NW_SEED) {
+      // Twelve monthly snapshots ending in the current month, on
+      // the 1st — the same relative window seedExamples uses for
+      // the spending side, so the two sample datasets line up.
+      const now = new Date();
+      const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const startMonth = shiftMonth(curMonth, -(NW_SEED_VALUES.length - 1));
+      for (let s = 0; s < NW_SEED_VALUES.length; s++) {
+        const values = NW_SEED_VALUES[s];
+        if (!values) continue;
         const [srow] = await db
           .insert(schema.nwSnapshots)
-          .values({ date: snap.date, note: null })
+          .values({
+            date: `${shiftMonth(startMonth, s)}-01`,
+            note: await encryptNullable(key, NW_SEED_NOTES[s] ?? null),
+          })
           .returning({ id: schema.nwSnapshots.id });
         if (!srow) throw new Error("seed snapshot insert failed");
         for (let i = 0; i < accountIds.length; i++) {
-          const dollars = snap.values[i];
+          const dollars = values[i];
           const accountId = accountIds[i];
-          if (dollars == null || accountId == null) continue;
+          const acct = NW_SEED_ACCOUNTS[i];
+          if (dollars == null || accountId == null || !acct) continue;
+          const balanceCents = Math.round(dollars * 100);
+          // Split balances go through the same row writer as a
+          // hand-entered snapshot, so the stored balance is the
+          // sum of its parts by construction.
+          const noSplit =
+            acct.splitShares.length === 0 ||
+            acct.propertyKind !== "none" ||
+            acct.custodial;
+          let splits: { bucket: NwSplitBucket; amountCents: number }[] | null = null;
+          if (!noSplit) {
+            splits = [];
+            let assigned = 0;
+            for (let p = 0; p < acct.splitShares.length; p++) {
+              const part = acct.splitShares[p];
+              if (!part) continue;
+              const isLast = p === acct.splitShares.length - 1;
+              const amountCents = isLast
+                ? balanceCents - assigned
+                : Math.round((balanceCents * part.share) / 1000) * 1000;
+              assigned += amountCents;
+              splits.push({ bucket: part.bucket, amountCents });
+            }
+          }
+          const rowValues = await nwBalanceRowValues(
+            key,
+            { accountId, balanceCents, splits },
+            noSplit,
+          );
+          if (!rowValues) continue;
           await db.insert(schema.nwBalances).values({
             snapshotId: srow.id,
             accountId,
-            balanceCents: await encryptNum(key, Math.round(dollars * 100)),
+            ...rowValues,
           });
         }
       }
+      // The sample target, only when no target is stored yet.
+      await db
+        .insert(schema.settings)
+        .values({ key: NW_TARGET_KEY, value: String(NW_SEED_TARGET_CENTS) })
+        .onConflictDoNothing();
       ctx.invalidateQueries();
       return { ok: true, seeded: true, reason: "Net Worth history seeded from the sample dataset." };
     },
