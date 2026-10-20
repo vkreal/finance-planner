@@ -108,6 +108,7 @@ type RetirementScenarioTransform,
 type RothBlobRevisionState,
 } from "./rothRevisionCore";
 import {
+BACKUP_AUTHENTICITY_SEMANTICS,
 BALANCE_SEMANTICS,
 CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
@@ -248,6 +249,7 @@ RESTORE_ROTH_BLOB_KEY,
 backupNwAccount,
 backupPayload,
 backupSetting,
+isRealCalendarDate,
 normalizeBackupBalance,
 payloadKeyCheckValue,
 preflightRestoreBackup,
@@ -270,14 +272,9 @@ const dateRe = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 // day 31 is in range for the pattern but February has no 31st). The
 // stored month is all the math uses, so such a row computed fine but
 // displayed a date that never existed. dateString additionally
-// requires a real calendar date.
-function isRealCalendarDate(s: string): boolean {
-  const y = Number(s.slice(0, 4));
-  const m = Number(s.slice(5, 7));
-  const d = Number(s.slice(8, 10));
-  if (!Number.isFinite(y) || m < 1 || m > 12 || d < 1) return false;
-  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
-}
+// requires a real calendar date — isRealCalendarDate is the ONE
+// implementation, defined in restoreCore.ts and imported above, so
+// the writers and the backup restore enforce the same rule.
 const dateString = z
   .string()
   .regex(dateRe)
@@ -2317,7 +2314,7 @@ const rothGiftResponse = z.object({ ...rothGiftFields });
      lawYearsAvailable are derived at call time from taxLaw.ts
      (CURRENT_LAW / TAX_LAW_YEARS), so they can never drift from
      the tables the engine actually prices with. */
-const API_CONTRACT_VERSION = 11;
+const API_CONTRACT_VERSION = 12;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -4274,7 +4271,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
   deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
   exportbackup: "Export the complete dataset as one decrypted backup payload.",
-  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids.",
+  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. A plaintext backup payload is NOT authenticated: its encryption key check is a compatibility check only (same-key decryptability), not proof the file is unmodified — see the backupAuthenticitySemantics convention describeApi publishes. Before restoring a payload from a file you were handed, state that plainly and confirm with the user; restore only payloads from a trusted source.",
   listBackups: "List the encrypted backup files in the backups folder.",
   deleteBackup: "Delete one backup-*.mstbak file from the backups folder.",
   deleteAllBackups: "Delete every backup file in the backups folder.",
@@ -4295,6 +4292,7 @@ const describeApiResponse = z.object({
   flexSemantics: z.string(),
   protectMinSemantics: z.string(),
   unpaidTaxSemantics: z.string(),
+  backupAuthenticitySemantics: z.string(),
   scoreIdentities: z.string(),
   lawYearSemantics: z.string(),
   tierSemantics: z.string(),
@@ -4491,6 +4489,7 @@ export const Actions = {
         flexSemantics: FLEX_SEMANTICS,
         protectMinSemantics: PROTECT_MIN_SEMANTICS,
         unpaidTaxSemantics: UNPAID_TAX_SEMANTICS,
+        backupAuthenticitySemantics: BACKUP_AUTHENTICITY_SEMANTICS,
         scoreIdentities: SCORE_IDENTITIES,
         lawYearSemantics: LAW_YEAR_SEMANTICS,
         tierSemantics: TIER_SEMANTICS,
