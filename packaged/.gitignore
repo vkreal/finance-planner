@@ -1,0 +1,8 @@
+# The vendored SDK under vendor/space-sdk/ ships its runtime in a
+# dist/ folder. That copy is committed source for the packaged
+# build, not a build output — re-include it here so the root
+# .gitignore's bare `dist/` pattern does not silently drop it from
+# the commit (a fresh GitHub checkout must contain it, or the
+# Pages workflow build cannot resolve @hatch/space-sdk).
+!vendor/space-sdk/dist/
+!vendor/space-sdk/dist/**
