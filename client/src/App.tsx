@@ -2117,6 +2117,33 @@ export function App() {
     );
   }
 
+  /* GitHub repo link for the top bar: the official octocat mark as a
+     quiet icon button matching the view switcher's border, surface,
+     and height, so it reads as part of the bar rather than an ad.
+     Icon-only (the accessible name and tooltip carry the words),
+     opening the repo in a new tab. The URL is the project's repo,
+     the same one the README badges link to. */
+  const githubLink = (
+    <a
+      href="https://github.com/vkreal/finance-planner"
+      target="_blank"
+      rel="noreferrer"
+      aria-label="Finance Planner on GitHub (opens in a new tab)"
+      title="View the source on GitHub"
+      className="inline-flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)] focus-visible:border-[var(--accent)] focus-visible:text-[var(--accent)]"
+    >
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 16 16"
+        fill="currentColor"
+        aria-hidden="true"
+      >
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+      </svg>
+    </a>
+  );
+
   const topSwitch = (
     <div
       role="group"
@@ -2171,12 +2198,25 @@ export function App() {
     </div>
   );
 
+  /* The top bar shared by every view: the view switcher centered,
+     with the GitHub icon button at the right end of the same row.
+     The spacer on the left mirrors the icon's footprint so the
+     switcher stays optically centered on wide screens; on narrow
+     screens the row wraps and the icon sits beside the switcher. */
+  const topBar = (
+    <div className="flex flex-wrap items-center justify-center gap-2 pt-4">
+      <span aria-hidden="true" className="hidden w-[38px] shrink-0 sm:block" />
+      {topSwitch}
+      {githubLink}
+    </div>
+  );
+
   if (topView === "networth") {
     return (
       <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
-          <div className="flex justify-center pt-4">{topSwitch}</div>
+          {topBar}
           <NetWorthView />
         </main>
       </div>
@@ -2188,7 +2228,7 @@ export function App() {
       <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
-          <div className="flex justify-center pt-4">{topSwitch}</div>
+          {topBar}
           <RetirementCalc />
         </main>
       </div>
@@ -2200,7 +2240,7 @@ export function App() {
       <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
-          <div className="flex justify-center pt-4">{topSwitch}</div>
+          {topBar}
           <RothConversion />
         </main>
       </div>
@@ -2212,7 +2252,7 @@ export function App() {
       <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
-          <div className="flex justify-center pt-4">{topSwitch}</div>
+          {topBar}
           <Playground />
         </main>
       </div>
@@ -2223,7 +2263,7 @@ export function App() {
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
       <SafeAreaTopScrim backgroundColor="var(--bg)" />
       <main className="mx-auto w-full max-w-3xl px-4 pb-16">
-        <div className="flex justify-center pt-4">{topSwitch}</div>
+        {topBar}
         {/* month nav — in Year mode the month picker is replaced by
             the year flipper; the viewed month itself is untouched, so
             the rest of the dashboard keeps showing it. */}
