@@ -120,7 +120,9 @@ SAVE_FLATTENING_SENTENCE,
 SCORE_IDENTITIES,
 TIER_SEMANTICS,
 UNITS_SEMANTICS,
+UNPAID_TAX_SEMANTICS,
 WRITERS_READERS_RULE,
+expectedReturnPctField,
 mcScoreIn,
 nwPropertyKind,
 nwPropertyKindWithDefault,
@@ -1429,7 +1431,10 @@ const retirementInputFields = {
   stocksPct: z.number().min(0).max(100).nullable(),
   extraIncomeCents: z.number().int().nullable(),
   extraIncomeStartAge: z.number().int().min(0).max(120).nullable(),
-  expectedReturnPct: z.number().nullable(),
+  // RETURN FLOOR bound (round-5 fix 3): the shared
+  // expectedReturnPctField (apiContractCore) — below −100%
+  // refused at the save boundary; −100 prices a wipeout.
+  expectedReturnPct: expectedReturnPctField,
   volatilityPct: z.number().min(0).nullable(),
   strategy: retirementStrategy.nullable(),
   percentOfPortfolio: z.number().min(0).max(100).nullable(),
@@ -2048,7 +2053,12 @@ const rothInputFields = {
   annualSpendingCents: z.number().int().nullable(),
   retirementAge: z.number().int().min(0).max(120).nullable(),
   endAge: z.number().int().min(0).max(130).nullable(),
-  expectedReturnPct: z.number().nullable(),
+  // RETURN FLOOR bound (round-5 fix 3): the shared
+  // expectedReturnPctField (apiContractCore), as on the
+  // Retirement record — below −100% refused at the save
+  // boundary; the engine's growth factor is floored at 0
+  // besides, so no pricing path can grow a balance below zero.
+  expectedReturnPct: expectedReturnPctField,
   ssPrimaryAnnualCents: z.number().int().nullable(),
   ssPrimaryStartAge: z.number().int().min(0).max(120).nullable(),
   // Declared "No benefit" for either person's Social Security
@@ -2307,7 +2317,7 @@ const rothGiftResponse = z.object({ ...rothGiftFields });
      lawYearsAvailable are derived at call time from taxLaw.ts
      (CURRENT_LAW / TAX_LAW_YEARS), so they can never drift from
      the tables the engine actually prices with. */
-const API_CONTRACT_VERSION = 10;
+const API_CONTRACT_VERSION = 11;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3392,6 +3402,14 @@ const planYearRowOut = z.object({
   // final settlement. Spending only (unpaid tax is a
   // different quantity). $0 when the year funds in full.
   spendShortfall: z.number(),
+  // UNPAID TAX surfacing (round-5 fix 1): the year's priced
+  // tax the balances could not pay (dollars) — the part of
+  // the assessed federal/state tax, penalty, and IRMAA the
+  // debit chain (Taxable → Pre-tax → Roth) could not cover.
+  // The tax fields above carry the full assessed liability;
+  // this is the unpaid remainder. $0 when the year pays in
+  // full.
+  unpaidTax: z.number(),
   // SETTLEMENT CONVERGENCE surfacing (LOW-1): whether the
   // year's kept settlement was an exact fixed point of the
   // settlement iteration (assumed feedback pair == created
@@ -3431,6 +3449,7 @@ function toPlanYearRow(y: {
   taxableEnd: number;
   hsaEnd: number;
   spendShortfall: number;
+  unpaidTax: number;
   detail: {
     rmdPrimary: number;
     rmdSpouse: number;
@@ -3481,6 +3500,7 @@ function toPlanYearRow(y: {
     cashSpend: y.detail.cashSpend,
     cashSleeveEnd: y.detail.cashSleeveEnd,
     spendShortfall: y.spendShortfall,
+    unpaidTax: y.unpaidTax,
     settlementConverged: y.settlementConverged,
     settlementMismatchCents: y.settlementMismatchCents,
   };
@@ -3517,6 +3537,12 @@ const fundingRowOut = z.object({
   // spendShortfallCents foot to totalNeedCents. $0 in every
   // year the plan can fund.
   spendShortfallCents: z.number(),
+  // Unpaid tax (round-5 fix 1): the year's priced tax the
+  // balances could not pay, in integer cents — not a source
+  // either; the eleven sources plus spendShortfallCents plus
+  // unpaidTaxCents foot to totalNeedCents. $0 in every year
+  // whose balances cover the tax bill.
+  unpaidTaxCents: z.number(),
   conversionCents: z.number(),
   harvestSoldCents: z.number(),
   magiCents: z.number(),
@@ -4227,14 +4253,14 @@ const ACTION_PURPOSES: Record<string, string> = {
   deleteRothScenario: "Delete a saved Roth scenario by name.",
   renameRothScenario: "Rename a saved Roth scenario.",
   runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. Compute-only; saves nothing.",
-  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
+  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
   runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
   runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing.",
   runRothGiftCompare: "Price the plan as saved versus with a one-off gift of appreciated stock to a child, including the child's sale tax and the gift-tax exclusion check. Compute-only; saves nothing.",
   runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced.",
-  runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
-  runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the eleven source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income (interestYieldCents, then dividendYieldCents — each the yield on the year's opening Taxable balance, reinvested in the engine's mechanics, so its application offsets the year's taxable sales, spending sales first), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits; taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — net of the yield cash applied to them; rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the eleven sources plus spendShortfallCents foot to totalNeedCents, except in a year whose tax bill the balances could not pay: that year foots short by the unpaid tax, which is not part of spendShortfallCents; and the shortfall is never reconciled into a source field. A year whose balances cannot cover its needs foots short by the unfunded amount. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Compute-only; saves nothing.",
+  runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
+  runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the eleven source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income (interestYieldCents, then dividendYieldCents — each the yield on the year's opening Taxable balance, reinvested in the engine's mechanics, so its application offsets the year's taxable sales, spending sales first), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits; taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — net of the yield cash applied to them; rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the eleven sources plus spendShortfallCents plus unpaidTaxCents foot to totalNeedCents in every year. unpaidTaxCents is the year's unpaid tax: the part of the assessed tax bill (federal, state, penalty, IRMAA) still owed after every balance the debit chain could draw from was exhausted — reported, never treated as paid (see the unpaidTaxSemantics convention describeApi publishes); neither it nor the shortfall is ever reconciled into a source field. A year whose balances cannot cover its needs foots exactly, by the sum of its unfunded spending and its unpaid tax. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Compute-only; saves nothing.",
   getYearSummary: "Year summary for one year: spending figures and Net Worth movement on the same math as their own views. The Keep-the-lights-on floor is priced for the requested year: at the current month for the current year, otherwise at the last month included in that year's totals (or that year's December when it has none).",
   setNwAccountsCollapsed: "Persist the Net Worth Accounts section's collapsed state.",
   setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state.",
@@ -4268,6 +4294,7 @@ const describeApiResponse = z.object({
   balanceSemantics: z.string(),
   flexSemantics: z.string(),
   protectMinSemantics: z.string(),
+  unpaidTaxSemantics: z.string(),
   scoreIdentities: z.string(),
   lawYearSemantics: z.string(),
   tierSemantics: z.string(),
@@ -4463,6 +4490,7 @@ export const Actions = {
         balanceSemantics: BALANCE_SEMANTICS,
         flexSemantics: FLEX_SEMANTICS,
         protectMinSemantics: PROTECT_MIN_SEMANTICS,
+        unpaidTaxSemantics: UNPAID_TAX_SEMANTICS,
         scoreIdentities: SCORE_IDENTITIES,
         lawYearSemantics: LAW_YEAR_SEMANTICS,
         tierSemantics: TIER_SEMANTICS,
@@ -8654,6 +8682,10 @@ export const Actions = {
           acaCreditCents: z.number(),
           terminalCents: z.number(),
           ssCollectedCents: z.number(),
+          // Lifetime unpaid tax (round-5 fix 1): the part of
+          // the scenario's assessed tax its balances could not
+          // pay. 0 whenever the scenario always covers its bill.
+          unpaidTaxCents: z.number(),
           endingPretaxCents: z.number(),
           endingRothCents: z.number(),
           endingTaxableCents: z.number(),
@@ -8693,6 +8725,7 @@ export const Actions = {
           acaCreditCents: s.acaCreditCents,
           terminalCents: s.terminalCents,
           ssCollectedCents: s.ssCollectedCents,
+          unpaidTaxCents: s.unpaidTaxCents,
           endingPretaxCents: s.endingPretaxCents,
           endingRothCents: s.endingRothCents,
           endingTaxableCents: s.endingTaxableCents,

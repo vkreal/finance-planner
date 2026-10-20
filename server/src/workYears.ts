@@ -65,11 +65,20 @@ export type ContributionStack = {
   // §402(g) deferral — always pre-tax, capped at the salary.
   deferral: number;
   // §414(v) catch-up (50+, or the 60–63 super limit). Roth when
-  // the salary exceeds the law row's Roth catch-up wage
-  // threshold (the model uses the entered salary as the proxy
-  // for the law's prior-year wages) AND the year is 2026 or
-  // later — the §414(v)(7) mandate's first year, after IRS
-  // Notice 2023-62's transition period — pre-tax otherwise.
+  // the §414(v)(7) mandate applies: the year is 2026 or later
+  // (the mandate's first year, after IRS Notice 2023-62's
+  // transition period) AND the participant's PRIOR-calendar-
+  // year §3121(a) wages (W-2 Box 3: salary minus the payroll
+  // HSA contribution — pre-tax 401(k) deferrals do NOT reduce
+  // them) exceed the law row's Roth catch-up wage threshold.
+  // The caller passes the prior year's wages when it prices a
+  // sequence (rollWorkYears threads each year's own FICA
+  // wages into the next); for the FIRST year of a sequence —
+  // and for a standalone one-year price — there is no in-model
+  // prior year, so this year's own Box-3 wages stand in as
+  // the disclosed proxy (the continuing-job estimate: same
+  // job, same payroll deductions, last year as this year).
+  // Pre-tax otherwise.
   catchUp: number;
   catchUpIsRoth: boolean;
   // Mega backdoor: after-tax room left under the §415(c)
@@ -96,6 +105,12 @@ export function contributionStack(
   employerHsa: number,
   filingStatus: FilingStatus,
   law: YearLaw,
+  // The PRIOR calendar year's §3121(a) wages (W-2 Box 3) from
+  // the plan sponsor, when the caller prices a sequence of
+  // years; null / omitted for the first year of a sequence or
+  // a standalone price, where this year's own Box-3 wages are
+  // the disclosed proxy (see the ContributionStack note).
+  priorYearWages?: number | null,
 ): ContributionStack {
   const empty: ContributionStack = {
     deferral: 0,
@@ -117,18 +132,39 @@ export function contributionStack(
       (age >= 60 && age <= 63 ? law.catchUp60to63Limit : law.catchUp50Limit) / 100;
     catchUp = Math.max(0, Math.min(bandLimit, salary - deferral));
   }
+  // The year's own §3121(a) wages (W-2 Box 3): salary minus
+  // the employee's payroll HSA contribution (a §125 cafeteria
+  // deduction — it reduces Box 3; the pre-tax 401(k) deferral
+  // does NOT). Computed here because the catch-up test below
+  // reads wages; the HSA figures themselves are unchanged.
+  const hsaLimit =
+    (filingStatus === "mfj" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 +
+    (age >= 55 ? law.hsaCatchUp55 / 100 : 0);
+  const ownHsa = Math.max(
+    0,
+    Math.min(hsaLimit - employerHsa, salary - deferral - catchUp),
+  );
+  const box3ThisYear = salary - ownHsa;
   // §414(v)(7) Roth catch-up mandate (SECURE 2.0 §603): a
-  // participant whose prior-year wages exceed the threshold
-  // must make catch-ups as Roth — but only for tax years
-  // beginning after 2025. IRS Notice 2023-62's administrative
-  // transition period made pre-tax catch-ups permissible
-  // through 2025 regardless of wages, so the gate is the law
-  // row's year: a 2025-law year never forces Roth. (E1: the
-  // mandate previously applied in 2025 too, one year early —
-  // on a maxed 2025 catch-up that mischaracterized $1,650 of
-  // contributions as Roth.)
+  // participant whose PRIOR-calendar-year §3121(a) wages from
+  // the plan sponsor exceed the threshold must make catch-ups
+  // as Roth — but only for tax years beginning after 2025.
+  // IRS Notice 2023-62's administrative transition period made
+  // pre-tax catch-ups permissible through 2025 regardless of
+  // wages, so the gate is the law row's year: a 2025-law year
+  // never forces Roth. (E1: the mandate previously applied in
+  // 2025 too, one year early — on a maxed 2025 catch-up that
+  // mischaracterized $1,650 of contributions as Roth.)
+  // (Round-5 fix 2: the wage figure is the PRIOR year's Box 3
+  // — the caller threads it through a priced sequence; the
+  // first year of a sequence, and any standalone price, fall
+  // back to this year's own Box 3 as the disclosed proxy. The
+  // pre-fix code compared the CURRENT year's gross salary,
+  // which both overstated the wages (no HSA reduction) and
+  // read the wrong year.)
+  const wageBasis = priorYearWages != null ? priorYearWages : box3ThisYear;
   const catchUpIsRoth =
-    law.year >= 2026 && salary > law.rothCatchUpWageThreshold / 100;
+    law.year >= 2026 && wageBasis > law.rothCatchUpWageThreshold / 100;
   // The typed employer 401(k) lands only up to the §415(c) room
   // left after the deferral — a larger typed figure cannot push
   // the year's additions past the overall cap. Catch-up
@@ -143,13 +179,8 @@ export function contributionStack(
     0,
     law.overall415cLimit / 100 - deferral - employerLanded,
   );
-  const hsaLimit =
-    (filingStatus === "mfj" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 +
-    (age >= 55 ? law.hsaCatchUp55 / 100 : 0);
-  const ownHsa = Math.max(
-    0,
-    Math.min(hsaLimit - employerHsa, salary - deferral - catchUp),
-  );
+  // (hsaLimit and ownHsa are computed above — the catch-up
+  // wage test reads them.)
   const mega = Math.max(
     0,
     Math.min(megaRoom, salary - deferral - catchUp - ownHsa),
@@ -217,6 +248,12 @@ export function priceOneWorkYear(
   plan: RothPlanInputs,
   job: WorkYearJob,
   age: number,
+  // The prior calendar year's §3121(a) wages (W-2 Box 3) for
+  // the §414(v)(7) catch-up test — rollWorkYears passes the
+  // previous priced year's own FICA wages; omitted (a
+  // standalone price) the stack falls back to this year's own
+  // Box 3 as the disclosed proxy.
+  priorYearWages?: number | null,
 ): WorkYearLine {
   const calendarYear = plan.birthYearPrimary + age;
   const law = lawForYear(calendarYear);
@@ -227,6 +264,7 @@ export function priceOneWorkYear(
     job.employerHsa,
     plan.filingStatus,
     law,
+    priorYearWages,
   );
   const catchUpPreTax = stack.catchUpIsRoth ? 0 : stack.catchUp;
   const taxableWages = r2(
@@ -356,7 +394,10 @@ export function rollWorkYears(
       rolledInputs: plan,
     };
   }
-  const growth = 1 + plan.expectedReturnPct / 100;
+  // RETURN FLOOR (round-5 fix 3): the same Math.max(0, ·)
+  // floor the retirement engine applies — a return below
+  // −100% cannot shrink a rolled balance below zero.
+  const growth = Math.max(0, 1 + plan.expectedReturnPct / 100);
   let pretaxPrimary = plan.pretaxStart;
   let pretaxSpouse = plan.pretaxSpouseStart ?? 0;
   let roth = plan.rothStart;
@@ -378,9 +419,17 @@ export function rollWorkYears(
     surplusBanked: 0,
     banked: 0,
   };
+  // PRIOR-YEAR WAGES threading (round-5 fix 2): each year's
+  // §414(v)(7) test reads the PREVIOUS year's §3121(a) wages —
+  // the previous line's own FICA wages (salary − payroll HSA),
+  // which is exactly the Box-3 figure this model computes.
+  // The first priced year has no in-model predecessor and
+  // prices on the disclosed proxy (its own Box 3).
+  let priorYearWages: number | null = null;
   for (let i = 0; i < count; i++) {
     const age = startAge + i;
-    const line = priceOneWorkYear(plan, job, age);
+    const line = priceOneWorkYear(plan, job, age, priorYearWages);
+    priorYearWages = line.ficaWages;
     lines.push(line);
     const s = line.stack;
     const catchUpPreTax = s.catchUpIsRoth ? 0 : s.catchUp;
