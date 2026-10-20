@@ -2,6 +2,10 @@
 
 Core tracker data is user-entered via the app's own actions (no external source).
 
+## Sample household (build-time, synthetic)
+
+The fresh-install sample data seeded by `seedExamples` / `seedNetWorth` (and loaded automatically by the packaged GitHub Pages build) is a fully synthetic sample household, invented for demonstration — no real household's figures. Twelve months ending in the current month: a monthly-bill roster (with one mid-year amount change), smoothed yearly/periodic bills whose recorded payments, entered cash-out totals, and "everything else" remainders agree by construction, two one-offs, an itemized current month, and Net Worth snapshots with tax-bucket splits, a house/mortgage pair, a custodial account, and a $3.5M target. Net Worth totals (property/custodial excluded) run $2,610,000 → $3,062,500, the totals the packaged harness/probe pin.
+
 ## Retirement calculator — historical dataset (build-time, embedded)
 
 Embedded in `client/src/retirementData.ts` (annual, 1928–2025):
