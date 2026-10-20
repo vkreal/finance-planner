@@ -1404,7 +1404,11 @@ export type RothYearDetail = {
    stateTax, irmaa (premiums paid this year).
    SOURCES are APPLIED amounts under one stated attribution
    waterfall, so the sources sum to the needs (the cash
-   identity) by construction:
+   identity) by construction — with two explicit reconciling
+   lines when the year's balances run out: spendShortfall
+   (unfunded spending) and unpaidTax (the part of the tax
+   bill no balance could pay), so sources + spendShortfall +
+   unpaidTax = needs in every year:
      1. Cash income — Social Security, the RMD, other ordinary
         income, in that order — applied first (the engine's
         cashIn pool: income covers spending first, the surplus
@@ -1471,6 +1475,18 @@ export type RothYearFunding = {
   salarySurplus: number;
   conversion: number;
   harvestSold: number;
+  // UNPAID TAX (round-5 fix 1): the part of the year's priced
+  // tax bill (federal + state + penalty + IRMAA, as settled)
+  // that no balance could pay — the debit chain (Taxable →
+  // Pre-tax → Roth) ran out of money with a remainder still
+  // owed. It is NOT a source and NOT a need: the needs above
+  // carry the full assessed tax, the sources carry only what
+  // was actually applied, and this line reconciles them:
+  // sources + spendShortfall + unpaidTax = needs. $0 in every
+  // year whose balances cover the bill. Before this field
+  // existed the remainder was silently discarded and the
+  // year's funding appeared complete.
+  unpaidTax: number;
   // SPEND SHORTFALL (FIX 3): the year's unfunded spending —
   // the spending need left over after cash income, the tax
   // channels' prior claim on balances, the spend-from-cash
@@ -1566,6 +1582,18 @@ export type RothYear = {
   // included. $0 whenever the year's spending is fully
   // funded. Display only — no priced total is derived from it.
   spendShortfall: number;
+  // UNPAID TAX (round-5 fix 1): the year's priced tax the
+  // balances could not pay, in dollars — the remainder of the
+  // settlement's debit chain (and of the harvest's own tax
+  // delta chain) after Taxable, Pre-tax, and Roth were all
+  // exhausted (the same figure as funding.unpaidTax). The
+  // assessed tax fields above (federalTax / stateTax /
+  // penalty / irmaaPaid) carry the full liability whether or
+  // not it was paid; this line is the part that was NOT paid,
+  // so no funding or solvency surface has to claim it was.
+  // $0 in every year whose balances cover the bill. Display
+  // only — no priced total is derived from it.
+  unpaidTax: number;
   // SETTLEMENT CONVERGENCE surfacing (LOW-1): whether the
   // year's kept settlement was an exact fixed point of the
   // settlement iteration — the feedback pair it assumed
@@ -1587,6 +1615,13 @@ export type RothPlanResult = {
   lifetimePenalty: number;
   lifetimeIrmaa: number;
   lifetimeAcaKept: number;
+  // Lifetime UNPAID TAX (round-5 fix 1): the sum of the years'
+  // unpaidTax — priced tax no balance could pay. The lifetime
+  // tax totals above carry the full assessed liability; this
+  // is the part of it that was never actually paid out of the
+  // accounts. $0 for any plan whose balances always cover the
+  // bill. Display only — no score or ranking uses it.
+  lifetimeUnpaidTax: number;
   // Lifetime Social Security collected: the sum of the
   // benefits actually paid year by year (each year's
   // ssBenefits — primary + spouse while both are alive, only
@@ -1750,7 +1785,15 @@ export function simulateRothPlan(
   let taxable = inputs.taxableStart;
   let hsa = inputs.hsaStart;
   const magiByYear = new Map<number, number>();
-  const growth = 1 + inputs.expectedReturnPct / 100;
+  // RETURN FLOOR (round-5 fix 3): the deterministic factor is
+  // floored at 0 exactly like the return-series factor below
+  // (a −100% year wipes a balance; worse is impossible). Before
+  // this floor, an expectedReturnPct below −100 produced a
+  // NEGATIVE factor and the settlement grew balances below
+  // zero with no shortfall marker — the series path already
+  // floored, so the two paths disagreed on the same event.
+  // The floor is a no-op for every return above −100.
+  const growth = Math.max(0, 1 + inputs.expectedReturnPct / 100);
   const gainPct = Math.min(100, Math.max(0, 100 - inputs.taxableBasisPct)) / 100;
   // BASIS-DRIFT (entered basis % only): the taxable account
   // carries a basis-DOLLARS ledger alongside its balance, and
@@ -1849,6 +1892,7 @@ export function simulateRothPlan(
   let lifetimeIrmaa = 0;
   let lifetimeAcaKept = 0;
   let lifetimeSsCollected = 0;
+  let lifetimeUnpaidTax = 0;
   // Gift what-if outflow state (see the input fields): applied
   // exactly once, in the first simulated year at or past the
   // gift age. Never set on a main run, so no main figure moves.
@@ -2617,8 +2661,15 @@ export function simulateRothPlan(
       // the protect-minimum was "withheld" above; the part of it
       // the year's (additional) conversion cannot absorb is debited
       // from Taxable below the protect-minimum floor, then from
-      // Pre-tax, then Roth — never from nothing.
-      const debitUnpaid = (amount: number) => {
+      // Pre-tax, then Roth. UNPAID TAX (round-5 fix 1): when even
+      // the Roth leg runs out, a remainder is still owed — the
+      // debit returns it and the settlement accumulates it as
+      // unpaidTax, reported on the year (funding.unpaidTax /
+      // RothYear.unpaidTax) instead of being discarded. Before
+      // this fix the remainder vanished here and the year's tax
+      // read as fully paid.
+      let unpaidTaxAmt = 0;
+      const debitUnpaid = (amount: number): number => {
         let rest = amount;
         const fromT = Math.min(rest, Math.max(0, taxableBal));
         // The Taxable leg's sale gains and the pre-tax legs'
@@ -2641,10 +2692,12 @@ export function simulateRothPlan(
           const fromR = Math.min(rest, Math.max(0, rothBal));
           rothBal = Math.max(0, rothBal - rest);
           fundTaxRoth += fromR;
+          rest -= fromR;
         }
+        return Math.max(0, rest);
       };
       const unpayable = overflowTax;
-      if (unpayable > 0) debitUnpaid(unpayable);
+      if (unpayable > 0) unpaidTaxAmt += debitUnpaid(unpayable);
 
       // SPEND-FROM-CASH: the cash sleeve pays its share of the
       // year's spending need FIRST — before the draw order
@@ -2812,7 +2865,7 @@ export function simulateRothPlan(
           taxableBal -= pay;
           fundTaxTaxable += pay;
           const rest = delta - pay;
-          if (rest > 0) debitUnpaid(rest);
+          if (rest > 0) unpaidTaxAmt += debitUnpaid(rest);
         } else if (delta < 0) {
           // A settlement credit back into Taxable is after-tax
           // money in: the drift ledger's basis rises with it.
@@ -2911,6 +2964,11 @@ export function simulateRothPlan(
         // the part of the year's spending need the settlement
         // could not fund. $0 whenever the year funds in full.
         spendDeficit: r2(spendDeficit),
+        // UNPAID TAX (round-5 fix 1): this settlement's debit
+        // chains' unpayable remainder — priced tax no balance
+        // could cover. $0 whenever the year's tax was fully
+        // paid out of the accounts.
+        unpaidTax: r2(unpaidTaxAmt),
         taxFromCash,
         fundTaxTaxable,
         fundTaxPretax,
@@ -3241,6 +3299,11 @@ export function simulateRothPlan(
     let priced = settled.priced;
     let federalTax = settled.federalTax;
     let stateTax = settled.stateTax;
+    // UNPAID TAX (round-5 fix 1): the kept settlement's unpaid
+    // remainder; the harvest's own tax-delta chain below adds
+    // any remainder of its own. Reported on the year as
+    // unpaidTax (and inside funding) — never dropped.
+    let unpaidTaxYear = settled.unpaidTax;
     const penalty = settled.penalty;
     const realizedGains = settled.realizedGains;
     const extraDraw = settled.extraDraw;
@@ -3284,7 +3347,9 @@ export function simulateRothPlan(
     // feedback creates (a higher taxable-SS share, state tax
     // on the higher taxable income) is paid exactly like
     // settleYear's reprice delta: from Taxable, then down the
-    // debit chain — the harvest never leaves priced tax unpaid.
+    // debit chain — and any remainder the chain cannot cover
+    // is counted in the year's unpaid tax (round-5 fix 1),
+    // never silently dropped.
     let gainsHarvested = 0;
     // YEAR FUNDING capture for the harvest's own reprice delta
     // (display only): the kept settlement's tax channels plus
@@ -3488,8 +3553,14 @@ export function simulateRothPlan(
               rest -= fromS;
               fundHarvestTaxPretax += fromP + fromS;
               if (rest > 0) {
-                fundHarvestTaxRoth += Math.min(rest, Math.max(0, rothBal));
+                const fromR = Math.min(rest, Math.max(0, rothBal));
+                fundHarvestTaxRoth += fromR;
                 rothBal = Math.max(0, rothBal - rest);
+                // UNPAID TAX (round-5 fix 1): whatever even the
+                // Roth leg could not cover is still owed — it
+                // joins the year's unpaid tax rather than
+                // vanishing at the end of this chain.
+                unpaidTaxYear = r2(unpaidTaxYear + Math.max(0, rest - fromR));
               }
             } else if (delta < 0) {
               taxableBal += -delta;
@@ -3623,6 +3694,7 @@ export function simulateRothPlan(
         conversion: r2(conversion),
         harvestSold: r2(gainsHarvested),
         spendShortfall: r2(settled.spendDeficit),
+        unpaidTax: r2(unpaidTaxYear),
       };
     })();
 
@@ -3807,6 +3879,7 @@ export function simulateRothPlan(
     lifetimeIrmaa += irmaaPaid;
     lifetimeAcaKept += acaCreditKept;
     lifetimeSsCollected += ssBenefits;
+    lifetimeUnpaidTax += unpaidTaxYear;
 
     // "Show the math" detail for this row — assembled entirely
     // from this year's own engine variables and the settled
@@ -4084,6 +4157,7 @@ export function simulateRothPlan(
       detail,
       funding,
       spendShortfall: r2(settled.spendDeficit),
+      unpaidTax: r2(unpaidTaxYear),
       settlementConverged: settled.settlementConverged,
       settlementMismatchCents: settled.settlementMismatchCents,
     });
@@ -4114,6 +4188,7 @@ export function simulateRothPlan(
     lifetimeIrmaa: r2(lifetimeIrmaa),
     lifetimeAcaKept: r2(lifetimeAcaKept),
     lifetimeSsCollected: r2(lifetimeSsCollected),
+    lifetimeUnpaidTax: r2(lifetimeUnpaidTax),
     endingPretax: r2(endingPretaxTotal),
     endingRoth: r2(roth),
     endingTaxable: r2(taxable),

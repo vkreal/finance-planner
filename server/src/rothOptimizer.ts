@@ -3246,11 +3246,13 @@ export function pricePlanYearDetail(
    the rows come from ONE simulateRothPlan run of the plan
    exactly as given, with the given fixed strategy.
    CASH IDENTITY: for every row, the eleven source fields plus
-   spendShortfallCents sum to the four need fields
-   (totalNeedCents) — except in a year whose tax bill the
-   balances could not pay, where the row foots short by the
-   unpaid tax: totalNeedCents includes that tax, but
-   spendShortfallCents is spending-only and is not. spendShortfallCents is the year's
+   spendShortfallCents plus unpaidTaxCents sum to the four
+   need fields (totalNeedCents) — totalNeedCents includes the
+   full assessed tax, spendShortfallCents is spending-only,
+   and unpaidTaxCents (round-5 fix 1) is the part of the tax
+   bill the balances could not pay, so an insolvent-tax year
+   now foots exactly instead of footing short by an amount
+   no field carried. spendShortfallCents is the year's
    unfunded SPENDING (the engine's RothYearFunding
    .spendShortfall, in cents): $0 in every year the plan can
    fund, so for funded years the sources alone sum to the
@@ -3302,6 +3304,13 @@ export type RothFundingRow = {
   // every year the plan can fund. Spending only — unpaid tax
   // is a different quantity and is not included.
   spendShortfallCents: number;
+  // UNPAID TAX (round-5 fix 1): the year's priced tax the
+  // balances could not pay, in integer cents (the engine's
+  // RothYearFunding.unpaidTax). Not a source and not a need:
+  // sources + spendShortfallCents + unpaidTaxCents foot to
+  // totalNeedCents (see the CASH IDENTITY note above). $0 in
+  // every year whose balances cover the tax bill.
+  unpaidTaxCents: number;
   // Deep-view blocks (integer cents): the year's conversion
   // (a transfer, not a source) and the gain its harvest
   // realized by selling and immediately rebuying (proceeds
@@ -3359,6 +3368,7 @@ export function buildRothFunding(
       rothDrawCents: cents(f.rothDraw),
       salarySurplusCents: cents(f.salarySurplus),
       spendShortfallCents: cents(f.spendShortfall),
+      unpaidTaxCents: cents(f.unpaidTax),
       conversionCents: cents(f.conversion),
       harvestSoldCents: cents(f.harvestSold),
       magiCents: cents(y.magi),
@@ -3389,12 +3399,19 @@ export function buildRothFunding(
       "salarySurplusCents",
     ] as const;
     const sourcesTotal = sourceKeys.reduce((s, k) => s + row[k], 0);
-    // The shortfall is part of the identity, never part of
-    // the residue: an unfunded year foots as sources +
-    // spendShortfallCents = totalNeedCents, and only the
-    // cent-rounding remainder is reconciled onto a source.
+    // The shortfall and the unpaid tax are part of the
+    // identity, never part of the residue: an unfunded year
+    // foots as sources + spendShortfallCents + unpaidTaxCents
+    // = totalNeedCents, and only the cent-rounding remainder
+    // is reconciled onto a source. (Before round-5 fix 1 the
+    // unpaid tax WAS part of this residue: a small unpaid
+    // remainder — even a single cent — was absorbed onto the
+    // largest source field, presenting the tax as paid.)
     const residue =
-      row.totalNeedCents - sourcesTotal - row.spendShortfallCents;
+      row.totalNeedCents -
+      sourcesTotal -
+      row.spendShortfallCents -
+      row.unpaidTaxCents;
     if (residue !== 0 && Math.abs(residue) <= 10) {
       let largest: (typeof sourceKeys)[number] = sourceKeys[0];
       for (const k of sourceKeys) {
@@ -3775,6 +3792,13 @@ export type RothCompareScenarioResult = {
   acaCreditCents: number;
   terminalCents: number;
   ssCollectedCents: number;
+  // Lifetime UNPAID TAX (round-5 fix 1): the part of the
+  // scenario's lifetime assessed tax its balances could not
+  // pay (the engine's lifetimeUnpaidTax). totalTaxCents
+  // carries the full assessed liability; this is the portion
+  // never actually paid out of the accounts. 0 for any
+  // scenario whose balances always cover the bill.
+  unpaidTaxCents: number;
   endingPretaxCents: number;
   endingRothCents: number;
   endingTaxableCents: number;
@@ -3848,6 +3872,7 @@ export function runRothCompare(
       acaCreditCents: toCents(cost.acaCredit),
       terminalCents: toCents(cost.terminal),
       ssCollectedCents: toCents(cost.ssCollected),
+      unpaidTaxCents: toCents(result.lifetimeUnpaidTax),
       endingPretaxCents: toCents(result.endingPretax),
       endingRothCents: toCents(result.endingRoth),
       endingTaxableCents: toCents(result.endingTaxable),
@@ -3871,6 +3896,7 @@ export function runRothCompare(
       acaCreditCents: p.acaCreditCents,
       terminalCents: p.terminalCents,
       ssCollectedCents: p.ssCollectedCents,
+      unpaidTaxCents: p.unpaidTaxCents,
       endingPretaxCents: p.endingPretaxCents,
       endingRothCents: p.endingRothCents,
       endingTaxableCents: p.endingTaxableCents,

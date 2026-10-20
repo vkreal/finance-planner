@@ -110,7 +110,9 @@ SAVE_FLATTENING_SENTENCE,
 SCORE_IDENTITIES,
 TIER_SEMANTICS,
 UNITS_SEMANTICS,
+UNPAID_TAX_SEMANTICS,
 WRITERS_READERS_RULE,
+expectedReturnPctField,
 mcScoreIn,
 nwPropertyKind,
 nwPropertyKindWithDefault,
@@ -2827,6 +2829,26 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "api-unpaid-tax-semantics-content",
+    kind: "apicontract",
+    note: "Unpaid-tax semantics (round-5 fix 1): describeApi publishes UNPAID_TAX_SEMANTICS verbatim (the handler returns this exact constant), and it must state the shipped behaviour — the required phrases pin them: the remainder is 'never treated as paid', the assessed fields 'carry the full liability either way', the funding identity 'sources + spendShortfallCents + unpaidTaxCents = totalNeedCents', the distinction from unfunded spending ('distinct from spendShortfall'), the ordinary shape that produces it ('income it does not control'), and the funded case ('$0 in every year whose balances cover the bill'). The behaviour itself is pinned by the tax suite's unpaid-tax fixtures (one-cent, zero-balance, solvent control, spend-down); this fixture pins only that the published text cannot silently drift back into presenting an unpayable bill as paid.",
+    expected: { phrasesFound: 6 },
+    actual: () => {
+      const phrases = [
+        "never treated as paid",
+        "carry the full liability either way",
+        "sources + spendShortfallCents + unpaidTaxCents = totalNeedCents",
+        "distinct from spendShortfall",
+        "income it does not control",
+        "$0 in every year whose balances cover the bill",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => UNPAID_TAX_SEMANTICS.includes(p))
+          .length,
+      };
+    },
+  },
+  {
     id: "api-units-nonmoney-content",
     kind: "apicontract",
     note: "Units convention (hardening package, finding A-7): describeApi publishes UNITS_SEMANTICS verbatim (the pre-existing units text, moved into apiContractCore unchanged, plus the non-money appendix), and it must state that *Pct fields are 'percentage points (5.75 means 5.75%, not 0.0575)', ages are 'whole years of age', *Year fields are 'calendar years', and household sizes are 'person counts'. The pre-existing 'integer cents' anchor phrase is pinned too, so the move itself is proven lossless.",
@@ -2981,10 +3003,10 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-compare-example-executes",
     kind: "apicontract",
-    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 16 published fields of both scenarios (fieldsCompared 32, all matching: fieldsMatched 32), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both scenarios (netCostIdentityExact 2), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent 2) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2).",
+    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 17 published fields of both scenarios (fieldsCompared 34, all matching: fieldsMatched 34 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; the seeded plan is fully funded, so it publishes 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both scenarios (netCostIdentityExact 2), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent 2) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2).",
     expected: {
-      fieldsCompared: 32,
-      fieldsMatched: 32,
+      fieldsCompared: 34,
+      fieldsMatched: 34,
       netCostIdentityExact: 2,
       wealthIdentityWithinCent: 2,
       descriptionsCarryRetirePrefix: 2,
@@ -3011,6 +3033,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "acaCreditCents",
         "terminalCents",
         "ssCollectedCents",
+        "unpaidTaxCents",
         "endingPretaxCents",
         "endingRothCents",
         "endingTaxableCents",
@@ -3280,6 +3303,21 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         y2024Floor: core.keepLightsOnForMonth(y2024),
         differsFromCurrent: y2025Floor !== curFloor ? 1 : 0,
       };
+    },
+  },
+  {
+    id: "api-expected-return-floor-bound",
+    kind: "apicontract",
+    note: "Expected-return floor bound (round-5 fix 3), pinned through the EXACT field schema both saved records publish (expectedReturnPctField from apiContractCore — the shared definition retirementInputFields and rothInputFields reference, so scenario overrides inherit it too): the boundary value −100 is ACCEPTED (it prices a total wipeout — the engine floors the growth factor at 0), ordinary values and the blank (null) are accepted, and anything below −100 (−100.01, and the review's −150) is REJECTED at the save boundary rather than priced from a negative growth factor. The engine-side floor itself is pinned by the tax suite's return-floor fixtures.",
+    expected: { accepted: 5, rejected: 2 },
+    actual: () => {
+      const ok = [-100, -99.99, 0, 5.75, null].filter(
+        (v) => expectedReturnPctField.safeParse(v).success,
+      ).length;
+      const no = [-100.01, -150].filter(
+        (v) => !expectedReturnPctField.safeParse(v).success,
+      ).length;
+      return { accepted: ok, rejected: no };
     },
   },
   {

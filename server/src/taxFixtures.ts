@@ -83,6 +83,7 @@ import { CURRENT_LAW, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDiv
 import { playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
 import { computeGiftComparison, parseRothGift } from "./giftModel";
 import {
+contributionStack,
 priceOneWorkYear,
 rollWorkYears,
 runWorkYearsCompare,
@@ -7444,6 +7445,127 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "workyears-catchup-prior-year-wages",
+    kind: "tax",
+    note: "§414(v)(7) PRIOR-YEAR WAGES (round-5 fix 2; the external engine review's reproduction, re-proven through the roll): MFJ, born 1975 (age 50 in 2025), salary $150,001, employer 401(k) / HSA $0, rolled two years (2025–2026). §414(v)(7) keys the Roth catch-up mandate on the PRIOR calendar year's §3121(a) wages — salary minus the payroll HSA contribution (W-2 Box 3; pre-tax 401(k) deferrals do not reduce it). 2025: the mandate never applies (year gate), the catch-up is the 2025 $7,500 pre-tax, the employee HSA is the 2025 family limit $8,550, so 2025 Box-3 wages are $150,001 − $8,550 = $141,451. 2026: those prior-year wages are BELOW the 2026 threshold of $150,000, so the $8,000 catch-up is PRE-TAX and taxable wages are $150,001 − $24,500 − $8,000 − $8,750 = $108,751. The pre-fix code compared the CURRENT year's gross salary ($150,001 > $150,000) and forced the 2026 catch-up to Roth, pricing taxable wages at $116,751 — an $8,000 overstatement.",
+    expected: {
+      y2025CatchUp: 7500,
+      y2025IsRoth: 0,
+      y2025Box3: 141451,
+      y2026CatchUp: 8000,
+      y2026IsRoth: 0,
+      y2026TaxableWages: 108751,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1986,
+        retirementAge: 50,
+        windowStartAge: 50,
+        annualSpending: 150000,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 150001, employer401k: 0, employerHsa: 0 },
+        52,
+      );
+      const l25 = roll.lines[0];
+      const l26 = roll.lines[1];
+      return {
+        y2025CatchUp: l25?.stack.catchUp ?? null,
+        y2025IsRoth: l25?.stack.catchUpIsRoth ? 1 : 0,
+        y2025Box3: l25?.ficaWages ?? null,
+        y2026CatchUp: l26?.stack.catchUp ?? null,
+        y2026IsRoth: l26?.stack.catchUpIsRoth ? 1 : 0,
+        y2026TaxableWages: l26?.taxableWages ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-catchup-prior-year-above-threshold",
+    kind: "tax",
+    note: "§414(v)(7) prior-year wages ABOVE the threshold force Roth (round-5 fix 2): the reproduction's roll at salary $160,000. 2025 Box-3 wages are $160,000 − $8,550 = $151,450 — above the 2026 threshold of $150,000 — so the 2026 catch-up IS Roth even though nothing else changed, and taxable wages exclude it: $160,000 − $24,500 − $8,750 = $126,750. Together with workyears-catchup-prior-year-wages this pins the test discriminating on the prior-year Box-3 figure itself (a $9,999 salary difference flips the mandate through the HSA-reduced wage, not the gross).",
+    expected: {
+      y2025Box3: 151450,
+      y2026IsRoth: 1,
+      y2026TaxableWages: 126750,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1986,
+        retirementAge: 50,
+        windowStartAge: 50,
+        annualSpending: 150000,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 160000, employer401k: 0, employerHsa: 0 },
+        52,
+      );
+      const l25 = roll.lines[0];
+      const l26 = roll.lines[1];
+      return {
+        y2025Box3: l25?.ficaWages ?? null,
+        y2026IsRoth: l26?.stack.catchUpIsRoth ? 1 : 0,
+        y2026TaxableWages: l26?.taxableWages ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-catchup-wage-drop-unforces",
+    kind: "tax",
+    note: "§414(v)(7) wage drop, chained stacks (round-5 fix 2): contributionStack called for consecutive years the way the reviewer chained it. 2025 at salary $200,000 (MFJ, employer $0): own HSA $8,550, so Box-3 wages $191,450. 2026 at salary $140,000 — the pay dropped BELOW the threshold — with prior-year wages $191,450 passed in: the mandate reads the PRIOR year, so the 2026 catch-up is still forced Roth (the drop does not rescue the year right after it). 2026's own Box-3 wages are $140,000 − $8,750 = $131,250, so the NEXT year (2027, priced under the newest law row) is un-forced: catch-up pre-tax again. Pins both directions of the carry — prior-year wages govern, in the year of the drop and the year after.",
+    expected: {
+      wages2025: 191450,
+      roth2026: 1,
+      wages2026: 131250,
+      roth2027: 0,
+    },
+    actual: () => {
+      const s25 = contributionStack(50, 200000, 0, 0, "mfj", lawForYear(2025));
+      const wages2025 = 200000 - s25.ownHsa;
+      const s26 = contributionStack(51, 140000, 0, 0, "mfj", lawForYear(2026), wages2025);
+      const wages2026 = 140000 - s26.ownHsa;
+      const s27 = contributionStack(52, 140000, 0, 0, "mfj", lawForYear(2027), wages2026);
+      return {
+        wages2025,
+        roth2026: s26.catchUpIsRoth ? 1 : 0,
+        wages2026,
+        roth2027: s27.catchUpIsRoth ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "workyears-catchup-first-year-proxy",
+    kind: "tax",
+    note: "§414(v)(7) FIRST-YEAR PROXY, disclosed (round-5 fix 2): a standalone one-year price has no in-model prior year, so the stack prices the mandate from THIS year's own Box-3 wages (salary − payroll HSA) as the continuing-job proxy — stated here and in the ContributionStack contract so the behaviour is pinned, not implicit. MFJ, born 1976 (age 50 in 2026), salary $155,000, employer $0: own HSA is the 2026 family limit $8,750, the proxy wages are $155,000 − $8,750 = $146,250 — at or under the $150,000 threshold — so the $8,000 catch-up is PRE-TAX and taxable wages are $155,000 − $24,500 − $8,000 − $8,750 = $113,750. (The pre-fix gross-salary test read $155,000 > $150,000 and forced Roth.)",
+    expected: {
+      isRoth: 0,
+      ownHsa: 8750,
+      taxableWages: 113750,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1976,
+        birthYearSpouse: 1987,
+        retirementAge: 50,
+        windowStartAge: 50,
+        annualSpending: 150000,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 155000, employer401k: 0, employerHsa: 0 },
+        50,
+      );
+      return {
+        isRoth: line.stack.catchUpIsRoth ? 1 : 0,
+        ownHsa: line.stack.ownHsa,
+        taxableWages: line.taxableWages,
+      };
+    },
+  },
+  {
     id: "gift-law-constants",
     kind: "tax",
     note: "Gift / kiddie law constants (IRS Rev. Proc. 2024-40 and Rev. Proc. 2025-32): the gift-tax annual exclusion is $19,000 per donor per recipient in both 2025 and 2026, and the kiddie-tax threshold is $2,700 in both years (twice the $1,350 amount in effect under §63(c)(5)(A)). A later year (2031) falls back to the latest row, like every other constant.",
@@ -14418,6 +14540,239 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           ? src(a) + a.spendShortfallCents - a.totalNeedCents
           : null,
         c2028SpendShortfallCents: c2028?.spendShortfallCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-unpaid-tax-one-cent",
+    kind: "tax",
+    note: "UNPAID TAX, one-cent boundary (round-5 fix 1; the external adversarial review's reproduction): basePlan shape — MFJ, start 2026 at age 57 (spouse 46), retired at 57, 0% return, other ordinary income $100,000, spending $100,000, Taxable $7,639.99 at 100% basis, Pre-tax / Roth / HSA $0, state 0%, payTaxFrom taxable, Do Nothing, one priced year. By hand: federal tax on $100,000 MFJ = ($100,000 − $32,200 standard deduction) → $2,480 + 12% × $43,000 = $7,640.00. Cash income covers the $100,000 spending exactly, so no surplus cash pays tax; the Taxable channel pays $7,639.99 and the debit chain (Taxable → Pre-tax → Roth, all empty) leaves exactly $0.01 of the assessed tax UNPAID. Before the fix that cent was discarded inside the debit helper and the funding row absorbed it onto its largest source via the ≤10¢ residue reconciliation, presenting the tax as paid; the year now reports unpaidTax $0.01 (funding ledger and year row), lifetimeUnpaidTax $0.01, spendShortfall $0 (spending WAS fully funded), Taxable ends at $0, the settlement still converges, and the funding row foots exactly as sources + shortfall + unpaidTax = totalNeed with unpaidTaxCents 1.",
+    expected: {
+      federalTax: 7640,
+      unpaidTax: 0.01,
+      fundingUnpaidTax: 0.01,
+      lifetimeUnpaidTax: 0.01,
+      spendShortfall: 0,
+      taxableEnd: 0,
+      converged: 1,
+      unpaidTaxCents: 1,
+      identityGapCents: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 7639.99,
+        otherOrdinaryAnnual: 100000,
+        annualSpending: 100000,
+        endAgePrimary: 57,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      const row = buildRothFunding(plan, DO_NOTHING)[0];
+      const src = row
+        ? row.ssCents + row.rmdCents + row.otherIncomeCents + row.interestYieldCents +
+          row.dividendYieldCents + row.pretaxDrawCents + row.taxableSoldForSpendingCents +
+          row.taxableSoldForTaxCents + row.cashSpendCents + row.rothDrawCents +
+          row.salarySurplusCents
+        : 0;
+      return {
+        federalTax: y?.federalTax ?? null,
+        unpaidTax: y?.unpaidTax ?? null,
+        fundingUnpaidTax: y?.funding.unpaidTax ?? null,
+        lifetimeUnpaidTax: res.lifetimeUnpaidTax,
+        spendShortfall: y?.spendShortfall ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        converged: y?.settlementConverged ? 1 : 0,
+        unpaidTaxCents: row?.unpaidTaxCents ?? null,
+        identityGapCents: row
+          ? src + row.spendShortfallCents + row.unpaidTaxCents - row.totalNeedCents
+          : null,
+      };
+    },
+  },
+  {
+    id: "tax-unpaid-tax-zero-balance",
+    kind: "tax",
+    note: "UNPAID TAX, no balances at all (round-5 fix 1): the one-cent case with Taxable $0. The same $7,640.00 of federal tax is assessed on the $100,000 of other ordinary income (which still covers the $100,000 spending in full, so spendShortfall stays $0), but no account holds a cent: the entire bill is unpaid and reported — unpaidTax $7,640 on the year and lifetimeUnpaidTax $7,640 — instead of vanishing. Before the fix this shape reported tax $7,640, shortfall $0, and no unpaid figure anywhere: a plan that read as solvent while owing the full bill.",
+    expected: {
+      federalTax: 7640,
+      unpaidTax: 7640,
+      lifetimeUnpaidTax: 7640,
+      spendShortfall: 0,
+      unpaidTaxCents: 764000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 0,
+        otherOrdinaryAnnual: 100000,
+        annualSpending: 100000,
+        endAgePrimary: 57,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      const row = buildRothFunding(plan, DO_NOTHING)[0];
+      return {
+        federalTax: y?.federalTax ?? null,
+        unpaidTax: y?.unpaidTax ?? null,
+        lifetimeUnpaidTax: res.lifetimeUnpaidTax,
+        spendShortfall: y?.spendShortfall ?? null,
+        unpaidTaxCents: row?.unpaidTaxCents ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-unpaid-tax-solvent-control",
+    kind: "tax",
+    note: "UNPAID TAX, solvent control (round-5 fix 1): the one-cent case with Taxable $10,000 — the bill is fully payable, so the fix must change nothing: federal tax $7,640 paid out of Taxable, Taxable ends at $10,000 − $7,640 = $2,360, unpaidTax $0 on the year, funding ledger, funding row, and lifetime total, and the funding identity foots from the sources alone (gap 0 with the unpaid line at 0).",
+    expected: {
+      federalTax: 7640,
+      unpaidTax: 0,
+      lifetimeUnpaidTax: 0,
+      taxableEnd: 2360,
+      unpaidTaxCents: 0,
+      identityGapCents: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 10000,
+        otherOrdinaryAnnual: 100000,
+        annualSpending: 100000,
+        endAgePrimary: 57,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      const y = res.years[0];
+      const row = buildRothFunding(plan, DO_NOTHING)[0];
+      const src = row
+        ? row.ssCents + row.rmdCents + row.otherIncomeCents + row.interestYieldCents +
+          row.dividendYieldCents + row.pretaxDrawCents + row.taxableSoldForSpendingCents +
+          row.taxableSoldForTaxCents + row.cashSpendCents + row.rothDrawCents +
+          row.salarySurplusCents
+        : 0;
+      return {
+        federalTax: y?.federalTax ?? null,
+        unpaidTax: y?.unpaidTax ?? null,
+        lifetimeUnpaidTax: res.lifetimeUnpaidTax,
+        taxableEnd: y?.taxableEnd ?? null,
+        unpaidTaxCents: row?.unpaidTaxCents ?? null,
+        identityGapCents: row
+          ? src + row.spendShortfallCents + row.unpaidTaxCents - row.totalNeedCents
+          : null,
+      };
+    },
+  },
+  {
+    id: "tax-unpaid-tax-spend-down-years",
+    kind: "tax",
+    note: "UNPAID TAX, late-plan spend-down (round-5 fix 1): the one-cent case held open for three years (end age 59, ages 57–59). The $100,000 of other ordinary income keeps arriving and keeps covering the $100,000 spending (spendShortfall $0 every year), and each year assesses the same $7,640 of federal tax — but after the first year takes the last $7,639.99 of Taxable, years two and three have no balance to debit at all: unpaid tax runs $0.01, then $7,640, then $7,640, and the plan total accumulates lifetimeUnpaidTax $15,280.01. This is the ordinary shape the defect hid: a household whose accounts are spent while taxable income continues.",
+    expected: {
+      y1Unpaid: 0.01,
+      y2Unpaid: 7640,
+      y3Unpaid: 7640,
+      y3SpendShortfall: 0,
+      lifetimeUnpaidTax: 15280.01,
+    },
+    actual: () => {
+      const plan = basePlan({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 7639.99,
+        otherOrdinaryAnnual: 100000,
+        annualSpending: 100000,
+        endAgePrimary: 59,
+      });
+      const res = simulateRothPlan(plan, DO_NOTHING);
+      return {
+        y1Unpaid: res.years[0]?.unpaidTax ?? null,
+        y2Unpaid: res.years[1]?.unpaidTax ?? null,
+        y3Unpaid: res.years[2]?.unpaidTax ?? null,
+        y3SpendShortfall: res.years[2]?.spendShortfall ?? null,
+        lifetimeUnpaidTax: res.lifetimeUnpaidTax,
+      };
+    },
+  },
+  {
+    id: "tax-return-floor-below-minus-100",
+    kind: "tax",
+    note: "RETURN FLOOR, deterministic return below −100% (round-5 fix 3; the external adversarial review's reproduction): basePlan shape, one year, no income and no spending, starting balances Pre-tax $1,000 / Taxable $500 / Roth $250 / HSA $100 and expectedReturnPct −150. A balance cannot lose more than everything: the deterministic growth factor is floored at 0 — exactly the floor the return-series path has always applied (the same plan priced with a [-150] series ends all-zero too, and this case pins the two paths agreeing) — so every balance ends at $0 and ending wealth is $0. Before the fix the unfloored factor (−0.5) grew the balances to −$500 / −$250 / −$125 / −$50 with spendShortfall $0 and no marker anywhere. The floor is a no-op above −100, so every positive-return fixture in this suite is the bit-identical control.",
+    expected: {
+      pretaxEnd: 0,
+      taxableEnd: 0,
+      rothEnd: 0,
+      hsaEnd: 0,
+      spendShortfall: 0,
+      endingAfterTaxWealth: 0,
+      seriesAgrees: 1,
+    },
+    actual: () => {
+      const over = {
+        pretaxStart: 1000,
+        taxableStart: 500,
+        rothStart: 250,
+        hsaStart: 100,
+        endAgePrimary: 57,
+      };
+      const det = simulateRothPlan(
+        basePlan({ ...over, expectedReturnPct: -150 }),
+        DO_NOTHING,
+      );
+      const ser = simulateRothPlan(
+        basePlan({ ...over, expectedReturnPct: 0 }),
+        DO_NOTHING,
+        [-150],
+      );
+      const y = det.years[0];
+      const ys = ser.years[0];
+      return {
+        pretaxEnd: y?.pretaxEnd ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        rothEnd: y?.rothEnd ?? null,
+        hsaEnd: y?.hsaEnd ?? null,
+        spendShortfall: y?.spendShortfall ?? null,
+        endingAfterTaxWealth: det.endingAfterTaxWealth,
+        seriesAgrees:
+          y && ys &&
+          y.pretaxEnd === ys.pretaxEnd &&
+          y.taxableEnd === ys.taxableEnd &&
+          y.rothEnd === ys.rothEnd &&
+          y.hsaEnd === ys.hsaEnd
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "tax-return-floor-minus-100-boundary",
+    kind: "tax",
+    note: "RETURN FLOOR, the −100 boundary (round-5 fix 3): the below-minus-100 case at expectedReturnPct exactly −100 — a total wipeout year. The factor is exactly 0 (the floor does not engage; the unfloored expression is already 0), every balance ends at $0, and the saved-input validation bound admits −100 (it refuses only BELOW −100). Pins that the boundary prices as a wipeout, not as an error and not as a negative.",
+    expected: {
+      pretaxEnd: 0,
+      taxableEnd: 0,
+      rothEnd: 0,
+      hsaEnd: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          pretaxStart: 1000,
+          taxableStart: 500,
+          rothStart: 250,
+          hsaStart: 100,
+          expectedReturnPct: -100,
+          endAgePrimary: 57,
+        }),
+        DO_NOTHING,
+      );
+      const y = res.years[0];
+      return {
+        pretaxEnd: y?.pretaxEnd ?? null,
+        taxableEnd: y?.taxableEnd ?? null,
+        rothEnd: y?.rothEnd ?? null,
+        hsaEnd: y?.hsaEnd ?? null,
       };
     },
   },

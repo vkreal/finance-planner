@@ -178,6 +178,21 @@ export function playgroundInputsFromArgs(
   };
 }
 
+/* ---------------- Expected-return write field ----------------
+   Round-5 fix 3: the expectedReturnPct field of both saved
+   records (the Retirement record's retirementInputFields and
+   the Roth record's rothInputFields in actions.ts), defined
+   ONCE here so the fixtures pin the EXACT published schema.
+   The bound: a return below −100% is refused at the save
+   boundary — a balance cannot lose more than everything, and
+   the engine's growth factor is floored at 0 besides, so a
+   stored value under −100 could only ever price as a
+   wipeout while claiming otherwise. −100 itself is valid:
+   it prices a total wipeout, balances to $0. Null stays the
+   blank (the caller's default applies), as on both records
+   today. */
+export const expectedReturnPctField = z.number().min(-100).nullable();
+
 /* ---------------- Defaulted enum/kind write fields ----------------
    API follow-on 3, finding F17: the enum/kind fields on write
    inputs that carry a default. Each field schema is defined ONCE
@@ -288,6 +303,14 @@ export const SCORE_IDENTITIES =
    terms). */
 export const LAW_YEAR_SEMANTICS =
   "lawYear names the single published law table every year of a plan prices under (today's law, in today's dollars); the engine does not switch law tables mid-plan. lawYearsAvailable lists every table the engine holds.";
+
+/* Round-5 fix 1: unpaid tax. The behaviour this text
+   describes is the shipped behaviour (taxEngine's settleYear
+   debit chain and its two reprice-delta chains): every debit
+   is capped at the balance it draws from, and the remainder
+   after the last balance is reported, never discarded. */
+export const UNPAID_TAX_SEMANTICS =
+  "Unpaid tax: a year's priced tax bill is paid from surplus income cash first, then from the accounts in the engine's debit order (the payTaxFrom channel, conversion withholding, then debits from Taxable below the protect-minimum, Pre-tax, and Roth). Each debit takes at most the balance it draws from; if every balance is exhausted with part of the bill still owed, that remainder is the year's UNPAID TAX — reported per year as unpaidTax on the plan-year rows (runPlanYearDetail, dollars) and unpaidTaxCents on the funding rows (runRothFunding) and per scenario as the lifetime unpaidTaxCents (runRothCompare), never treated as paid: the assessed tax fields (federalTax / stateTax / penalty / irmaaPaid, and totalTaxCents in the compare) carry the full liability either way, the funding sources carry only amounts actually applied, and the funding identity foots as sources + spendShortfallCents + unpaidTaxCents = totalNeedCents. Unpaid tax is distinct from spendShortfall (unfunded SPENDING): a year can owe unpaid tax with its spending fully funded, whenever income it does not control (for example Social Security or pension income) is taxed after the accounts have run out. It is $0 in every year whose balances cover the bill.";
 
 /* A-14: the basis-tier rules as one statement (the schema's
    superRefine enforces the sum; the engine consumes tiers
@@ -420,6 +443,7 @@ export const ROTH_COMPARE_EXAMPLE = {
         acaCreditCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,
+        unpaidTaxCents: 0,
         endingPretaxCents: 330981245,
         endingRothCents: 1924336965,
         endingTaxableCents: 1601394776,
@@ -439,6 +463,7 @@ export const ROTH_COMPARE_EXAMPLE = {
         acaCreditCents: 0,
         terminalCents: 79435499,
         ssCollectedCents: 139200000,
+        unpaidTaxCents: 0,
         endingPretaxCents: 330981245,
         endingRothCents: 1924336965,
         endingTaxableCents: 1461014433,
