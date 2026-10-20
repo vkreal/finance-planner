@@ -2159,11 +2159,10 @@ export function Playground() {
                       ))}
                     </div>
                     {gainsTotal > 0 && (
-                      <div className="relative h-4" aria-hidden="true">
+                      <div className="relative h-4">
                         <span
-                          className="tnum absolute text-[11px] whitespace-nowrap"
+                          className="absolute inline-flex items-center whitespace-nowrap"
                           style={{
-                            color: "#65a30d",
                             left: `${taxX(zeroTop)}%`,
                             transform:
                               taxX(zeroTop) > 85
@@ -2173,10 +2172,22 @@ export function Playground() {
                                   : "translateX(-50%)",
                           }}
                         >
-                          0% gains end · {fmtDollars(zeroTop)}
+                          <span
+                            aria-hidden="true"
+                            className="tnum text-[11px]"
+                            style={{ color: "#65a30d" }}
+                          >
+                            0% gains end · {fmtDollars(zeroTop)}
+                          </span>
+                          <InfoNote
+                            text={`Only gains in the taxable account are taxed at 0%, and only while total taxable income stays under ${fmtDollars(zeroTop)}. Past this line they price at 15%.`}
+                            ariaLabel="About the 0% gains line"
+                            align={taxX(zeroTop) > 60 ? "right" : "left"}
+                          />
                         </span>
                         {show20 && (
                           <span
+                            aria-hidden="true"
                             className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
                             style={{
                               left: `${taxX(floor20)}%`,
@@ -2376,6 +2387,25 @@ export function Playground() {
                               : `passed by ${fmtDollars(-m.room)}`}
                         </span>
                       ))}
+                      {/* The 0% gains line's caption, in the same
+                          idiom as the bracket captions above: its
+                          room uses their comparator — the top
+                          minus the ORDINARY taxable income — so
+                          "passed by"/"left" says how the ordinary
+                          stack alone stands against the line,
+                          before the gains stack on top is priced
+                          (the Gains stack panel below carries the
+                          post-gains room). It also carries the
+                          plain-words scope note Kyle asked for. */}
+                      <span style={{ color: "#65a30d" }}>
+                        0% gains end {fmtDollars(zeroTop)} —{" "}
+                        {zeroTop - ordinaryTaxable > 0.5
+                          ? `${fmtDollars(zeroTop - ordinaryTaxable)} left`
+                          : zeroTop - ordinaryTaxable >= -0.5
+                            ? "filled exactly"
+                            : `passed by ${fmtDollars(ordinaryTaxable - zeroTop)}`}{" "}
+                        · only taxable-account gains get the 0% rate
+                      </span>
                     </p>
                     {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
                       <p className="mt-1 text-xs text-[var(--dim)]" role="note">
@@ -2724,6 +2754,64 @@ export function Playground() {
                   )}
                   </section>
 
+                  <section className={sectionCls} aria-label="Tax for the year">
+                  <h3 className="text-sm font-semibold">Tax for the year</h3>
+                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                    {stackRow("Federal tax on ordinary income", fmtDollars(pg.ordinaryTax))}
+                    {stackRow(
+                      "Federal tax on gains",
+                      fmtDollars(pg.ltcgTax + pg.niit),
+                      pg.niit > 0
+                        ? `${fmtDollars(pg.ltcgTax)} gains tax + ${fmtDollars(pg.niit)} NIIT`
+                        : undefined,
+                    )}
+                    {stackRow("Total federal tax", fmtDollars(pg.federalTax), undefined, true)}
+                    {pg.stateTax > 0 &&
+                      stackRow("State tax", fmtDollars(pg.stateTax))}
+                    {stackRow("MAGI", fmtDollars(pg.magi))}
+                    {pg.acaMagi !== pg.magi &&
+                      stackRow(
+                        "ACA household income",
+                        fmtDollars(pg.acaMagi),
+                        "MAGI plus the untaxed part of Social Security",
+                      )}
+                  </dl>
+                  {pg.saleAfterTax != null && (
+                    <p className="mt-2 text-sm" role="note">
+                      {(() => {
+                        // Sale-after-tax highlight: only the final
+                        // "{leftover} of it is left." segment is
+                        // emphasised — bold in the accent colour; the
+                        // rest of the sentence keeps its styling. The
+                        // split is taken from the engine's own composed
+                        // string at its final ", " (the one before the
+                        // leftover figure — grouped dollar figures
+                        // never contain ", "), so the displayed text
+                        // stays byte-identical. The variant where the
+                        // year's tax exceeds the proceeds phrases the
+                        // outcome differently (no "of it is left."
+                        // tail) and renders exactly as composed.
+                        const sat = pg.saleAfterTax;
+                        const cut =
+                          sat.leftover >= 0 &&
+                          sat.text.endsWith(" of it is left.")
+                            ? sat.text.lastIndexOf(", ") + 2
+                            : -1;
+                        if (cut < 2) return sat.text;
+                        return (
+                          <>
+                            {sat.text.slice(0, cut)}
+                            <span className="font-bold text-[var(--accent)]">
+                              {sat.text.slice(cut)}
+                            </span>
+                          </>
+                        );
+                      })()}
+                    </p>
+                  )}
+
+                  </section>
+
                   <section className={sectionCls} aria-label={`How ${pgYearNum} stacks up`}>
                     {stackBlock}
                   </section>
@@ -2796,64 +2884,6 @@ export function Playground() {
                       "Priced on gains and qualified dividends — interest and ordinary dividends are not counted in its base",
                     )}
                   </dl>
-
-                  </section>
-
-                  <section className={sectionCls} aria-label="Tax for the year">
-                  <h3 className="text-sm font-semibold">Tax for the year</h3>
-                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-                    {stackRow("Federal tax on ordinary income", fmtDollars(pg.ordinaryTax))}
-                    {stackRow(
-                      "Federal tax on gains",
-                      fmtDollars(pg.ltcgTax + pg.niit),
-                      pg.niit > 0
-                        ? `${fmtDollars(pg.ltcgTax)} gains tax + ${fmtDollars(pg.niit)} NIIT`
-                        : undefined,
-                    )}
-                    {stackRow("Total federal tax", fmtDollars(pg.federalTax), undefined, true)}
-                    {pg.stateTax > 0 &&
-                      stackRow("State tax", fmtDollars(pg.stateTax))}
-                    {stackRow("MAGI", fmtDollars(pg.magi))}
-                    {pg.acaMagi !== pg.magi &&
-                      stackRow(
-                        "ACA household income",
-                        fmtDollars(pg.acaMagi),
-                        "MAGI plus the untaxed part of Social Security",
-                      )}
-                  </dl>
-                  {pg.saleAfterTax != null && (
-                    <p className="mt-2 text-sm" role="note">
-                      {(() => {
-                        // Sale-after-tax highlight: only the final
-                        // "{leftover} of it is left." segment is
-                        // emphasised — bold in the accent colour; the
-                        // rest of the sentence keeps its styling. The
-                        // split is taken from the engine's own composed
-                        // string at its final ", " (the one before the
-                        // leftover figure — grouped dollar figures
-                        // never contain ", "), so the displayed text
-                        // stays byte-identical. The variant where the
-                        // year's tax exceeds the proceeds phrases the
-                        // outcome differently (no "of it is left."
-                        // tail) and renders exactly as composed.
-                        const sat = pg.saleAfterTax;
-                        const cut =
-                          sat.leftover >= 0 &&
-                          sat.text.endsWith(" of it is left.")
-                            ? sat.text.lastIndexOf(", ") + 2
-                            : -1;
-                        if (cut < 2) return sat.text;
-                        return (
-                          <>
-                            {sat.text.slice(0, cut)}
-                            <span className="font-bold text-[var(--accent)]">
-                              {sat.text.slice(cut)}
-                            </span>
-                          </>
-                        );
-                      })()}
-                    </p>
-                  )}
 
                   </section>
                 </div>
