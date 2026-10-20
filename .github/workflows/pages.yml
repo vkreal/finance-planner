@@ -61,6 +61,11 @@ jobs:
         run: bun run build
 
       - uses: actions/configure-pages@v5
+        with:
+          # Enable Pages with the GitHub Actions source automatically if it
+          # was never turned on in repo settings (avoids the one-time manual
+          # Settings -> Pages flip; harmless when already enabled).
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:

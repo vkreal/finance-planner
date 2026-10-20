@@ -99,6 +99,7 @@ simulateRothPlan,
 type RothPlanInputs,
 } from "./taxEngine";
 import {
+BACKUP_AUTHENTICITY_SEMANTICS,
 BALANCE_SEMANTICS,
 CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
@@ -2005,6 +2006,135 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "restore-invalid-transaction-date-rejected",
+    kind: "restore",
+    note: "Hardening S3 (round-5 security review): a backup whose transaction carries the impossible date 2026-02-31 — which the ordinary transaction writer refuses outright — is refused by restore preflight BEFORE any write: no commit, the prior state's fingerprint is byte-identical afterwards, and the refusal names the row and the offending value. Before this fix the payload restored and the row aggregated under a February that never had a 31st.",
+    expected: { rejected: 1, committed: 0, priorIntact: 1, namesValue: 1 },
+    actual: () => {
+      const prior = restorePriorState();
+      const raw = baseRestorePayload();
+      (raw.transactions as Record<string, unknown>[]).push({
+        id: 1, date: "2026-02-31", description: "Synthetic", amountCents: 100,
+        sourceType: "checking", accountName: "Checking", kind: "spending",
+        category: "Other", yearlyExpenseId: null, createdAt: 1700000000000,
+      });
+      const res = attemptRestore(prior, raw, restoreKeyCheckValidFor(raw));
+      return {
+        rejected: res.ok ? 0 : 1,
+        committed: res.committed ? 1 : 0,
+        priorIntact:
+          restoreStateFingerprint(res.state) === restoreStateFingerprint(prior) ? 1 : 0,
+        namesValue: res.reason.includes("2026-02-31") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "restore-nota-date-snapshot-rejected",
+    kind: "restore",
+    note: "Hardening S3: a backup whose Net Worth snapshot date is the literal string \"not-a-date\" is refused by restore preflight before any write — no commit, prior state byte-identical, refusal names the value. Before this fix it restored, and month-based views could not associate the snapshot with any real date.",
+    expected: { rejected: 1, committed: 0, priorIntact: 1, namesValue: 1 },
+    actual: () => {
+      const prior = restorePriorState();
+      const raw = baseRestorePayload();
+      (raw.nwSnapshots as Record<string, unknown>[])[0] = {
+        id: 1, date: "not-a-date", note: null, createdAt: 1700000000000,
+      };
+      const res = attemptRestore(prior, raw, restoreKeyCheckValidFor(raw));
+      return {
+        rejected: res.ok ? 0 : 1,
+        committed: res.committed ? 1 : 0,
+        priorIntact:
+          restoreStateFingerprint(res.state) === restoreStateFingerprint(prior) ? 1 : 0,
+        namesValue: res.reason.includes("not-a-date") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "restore-invalid-month-fields-rejected",
+    kind: "restore",
+    note: "Hardening S3: the month-carrying fields validate as real YYYY-MM months in preflight — a monthly summary month of \"2025-13\" and a monthly bill version effectiveFrom of \"2025-13\" each refuse the whole restore before any write (prior state byte-identical in both runs), each refusal naming the offending value.",
+    expected: {
+      summaryRejected: 1, summaryPriorIntact: 1, summaryNames: 1,
+      versionRejected: 1, versionPriorIntact: 1, versionNames: 1,
+    },
+    actual: () => {
+      const priorA = restorePriorState();
+      const rawA = baseRestorePayload();
+      (rawA.monthlySummaries as Record<string, unknown>[]).push({
+        month: "2025-13", cashOutCents: 100,
+        createdAt: 1700000000000, updatedAt: 1700000000000,
+      });
+      const resA = attemptRestore(priorA, rawA, restoreKeyCheckValidFor(rawA));
+      const priorB = restorePriorState();
+      const rawB = baseRestorePayload();
+      (rawB.monthlyBills as Record<string, unknown>[]).push({
+        id: 1, name: "Rent", amountCents: 100000, paidBy: "Checking",
+        notes: null, category: "Housing", keepLightsOn: 1, collapsed: 0,
+        createdAt: 1700000000000,
+      });
+      (rawB.monthlyBillVersions as Record<string, unknown>[]).push({
+        id: 1, billId: 1, amountCents: 100000, effectiveFrom: "2025-13",
+        createdAt: 1700000000000,
+      });
+      const resB = attemptRestore(priorB, rawB, restoreKeyCheckValidFor(rawB));
+      return {
+        summaryRejected: resA.ok ? 0 : 1,
+        summaryPriorIntact:
+          restoreStateFingerprint(resA.state) === restoreStateFingerprint(priorA) ? 1 : 0,
+        summaryNames: resA.reason.includes("2025-13") ? 1 : 0,
+        versionRejected: resB.ok ? 0 : 1,
+        versionPriorIntact:
+          restoreStateFingerprint(resB.state) === restoreStateFingerprint(priorB) ? 1 : 0,
+        versionNames: resB.reason.includes("2025-13") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "restore-valid-dates-control",
+    kind: "restore",
+    note: "Hardening S3 control: the same shapes with REAL dates and months — a transaction dated 2026-02-28 (February's actual last day), a summary for 2026-02, a bill version and a yearly-expense version effective 2026-02 / 2026-01 — restore and commit exactly as before the date checks existed, every added row landing in the restored state.",
+    expected: { restored: 1, txns: 1, summaries: 1, billVersions: 1, expenseVersions: 1 },
+    actual: () => {
+      const raw = baseRestorePayload();
+      (raw.transactions as Record<string, unknown>[]).push({
+        id: 1, date: "2026-02-28", description: "Synthetic", amountCents: 100,
+        sourceType: "checking", accountName: "Checking", kind: "spending",
+        category: "Other", yearlyExpenseId: null, createdAt: 1700000000000,
+      });
+      (raw.monthlySummaries as Record<string, unknown>[]).push({
+        month: "2026-02", cashOutCents: 100,
+        createdAt: 1700000000000, updatedAt: 1700000000000,
+      });
+      (raw.monthlyBills as Record<string, unknown>[]).push({
+        id: 1, name: "Rent", amountCents: 100000, paidBy: "Checking",
+        notes: null, category: "Housing", keepLightsOn: 1, collapsed: 0,
+        createdAt: 1700000000000,
+      });
+      (raw.monthlyBillVersions as Record<string, unknown>[]).push({
+        id: 1, billId: 1, amountCents: 100000, effectiveFrom: "2026-02",
+        createdAt: 1700000000000,
+      });
+      (raw.yearlyExpenses as Record<string, unknown>[]).push({
+        id: 1, name: "AnnualSub", frequency: "yearly", expectedCents: 120000,
+        dueMonth: 3, paidByType: "checking", paidByName: "Checking",
+        backfillBeforeFirstVersion: 0, category: "Subscriptions",
+        keepLightsOn: 0, createdAt: 1700000000000,
+      });
+      (raw.yearlyExpenseVersions as Record<string, unknown>[]).push({
+        id: 1, expenseId: 1, expectedCents: 120000, frequency: "yearly",
+        effectiveFrom: "2026-01", createdAt: 1700000000000,
+      });
+      const res = attemptRestore(restorePriorState(), raw, restoreKeyCheckValidFor(raw));
+      return {
+        restored: res.ok && res.committed ? 1 : 0,
+        txns: res.state.transactions.length,
+        summaries: res.state.monthlySummaries.length,
+        billVersions: res.state.monthlyBillVersions.length,
+        expenseVersions: res.state.yearlyExpenseVersions.length,
+      };
+    },
+  },
+  {
     id: "backup-isolation-list-own-plus-legacy",
     kind: "backup",
     note: "Cluster B case (a): two synthetic spaces under one workspace each create a backup (A on 2026-10-19, B on 2026-10-20) through the backupCore rules the privileged handlers run. A's list is exactly its own new backup plus the two legacy union files (3 entries, newest name first); it never shows B's backup. B's list mirrors that. The legacy folder's non-backup file (mst-crypt2.mjs) is never listed for either space.",
@@ -2739,6 +2869,28 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       ];
       return {
         phrasesFound: phrases.filter((p) => PROTECT_MIN_SEMANTICS.includes(p))
+          .length,
+      };
+    },
+  },
+  {
+    id: "api-backup-authenticity-semantics-content",
+    kind: "apicontract",
+    note: "Hardening S1 (round-5 security review; Kyle ruled option C, 2026-10-19): describeApi publishes BACKUP_AUTHENTICITY_SEMANTICS verbatim (the handler returns this exact constant), and it must draw the authenticity line in as many words: a plaintext backup payload is NOT authenticated; its key check is a COMPATIBILITY check only, not a signature or a MAC; a payload with no key check is likewise accepted; restore only from a trusted source and confirm first because restoring replaces everything. The .mstbak leg is pinned to its actual guarantee (integrity-protected by authenticated encryption, a modified file fails decryption) — no phrase here may upgrade either side: the three-state key-check behaviour itself is unchanged and stays pinned by the restore fixtures.",
+    expected: { phrasesFound: 8 },
+    actual: () => {
+      const phrases = [
+        "NOT authenticated",
+        "COMPATIBILITY check only",
+        "not a signature or a MAC",
+        "no key check at all is likewise accepted",
+        "Only restore a plaintext backup from a source you trust",
+        "confirm with the user",
+        "integrity-protected by their authenticated encryption",
+        "a modified .mstbak fails decryption",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => BACKUP_AUTHENTICITY_SEMANTICS.includes(p))
           .length,
       };
     },

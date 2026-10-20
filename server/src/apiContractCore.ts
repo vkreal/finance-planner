@@ -312,6 +312,19 @@ export const LAW_YEAR_SEMANTICS =
 export const UNPAID_TAX_SEMANTICS =
   "Unpaid tax: a year's priced tax bill is paid from surplus income cash first, then from the accounts in the engine's debit order (the payTaxFrom channel, conversion withholding, then debits from Taxable below the protect-minimum, Pre-tax, and Roth). Each debit takes at most the balance it draws from; if every balance is exhausted with part of the bill still owed, that remainder is the year's UNPAID TAX — reported per year as unpaidTax on the plan-year rows (runPlanYearDetail, dollars) and unpaidTaxCents on the funding rows (runRothFunding) and per scenario as the lifetime unpaidTaxCents (runRothCompare), never treated as paid: the assessed tax fields (federalTax / stateTax / penalty / irmaaPaid, and totalTaxCents in the compare) carry the full liability either way, the funding sources carry only amounts actually applied, and the funding identity foots as sources + spendShortfallCents + unpaidTaxCents = totalNeedCents. Unpaid tax is distinct from spendShortfall (unfunded SPENDING): a year can owe unpaid tax with its spending fully funded, whenever income it does not control (for example Social Security or pension income) is taxed after the accounts have run out. It is $0 in every year whose balances cover the bill.";
 
+/* Security-hardening S1 (round-5 security review; Kyle ruled
+   option C, 2026-10-19): the plaintext-backup authenticity
+   line. The behaviour this text describes is the shipped
+   behaviour (restoreCore's three-state key check + the
+   restorebackup handler): the check was only ever a
+   compatibility check, and the contract now says so in as
+   many words, so no caller can mistake it for proof a file is
+   genuine. The .mstbak statement is scoped to what its
+   authenticated encryption actually provides — tamper
+   evidence on decryption — not origin authentication. */
+export const BACKUP_AUTHENTICITY_SEMANTICS =
+  "Backup authenticity: exportbackup returns the complete dataset as a PLAINTEXT payload, and restorebackup replaces the entire dataset with a payload it is handed. A plaintext backup payload is NOT authenticated: nothing in it proves who made it or that its contents are unmodified since export. Its encryption key check is a COMPATIBILITY check only — it shows the payload was made under this app's encryption key, so the values it carries will decrypt here; it is not a signature or a MAC, it says nothing about the file's contents, and a payload carrying no key check at all is likewise accepted as compatible. Only restore a plaintext backup from a source you trust, and state plainly before restoring that the file is not authenticated and confirm with the user — restoring replaces everything. Encrypted backup files (backup-*.mstbak, created by createBackupNow) are integrity-protected by their authenticated encryption: a modified .mstbak fails decryption instead of restoring altered figures.";
+
 /* A-14: the basis-tier rules as one statement (the schema's
    superRefine enforces the sum; the engine consumes tiers
    highest-basis first and prices the pool from the tiers

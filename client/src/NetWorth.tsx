@@ -20,6 +20,7 @@ XAxis,
 YAxis,
 } from "recharts";
 import { api, type ApiResponse } from "./api";
+import { csvFormulaSafeText } from "./csvUtil";
 import { Explainer } from "./Explainer";
 import { TrendBlock } from "./YearBlocks";
 
@@ -1263,8 +1264,12 @@ const NW_EXPLORER_COLUMN_OPTIONS: {
 ];
 
 function nwCsvEscape(v: string): string {
-  if (/[",\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-  return v;
+  // Formula neutralization first (csvUtil, finding S2): a
+  // user-typed account name that starts with = + - @ must
+  // reach the spreadsheet as literal text, never a formula.
+  const safe = csvFormulaSafeText(v);
+  if (/[",\n]/.test(safe)) return `"${safe.replace(/"/g, '""')}"`;
+  return safe;
 }
 
 function nwCsvMoney(cents: number): string {

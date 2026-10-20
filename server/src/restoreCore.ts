@@ -204,6 +204,40 @@ export function normalizeBackupBalance(b: BackupNwBalance): BackupNwBalance {
   return sum == null ? b : { ...b, balanceCents: sum };
 }
 
+/* ---------------- Date validity (writer parity) ----------------
+   The payload schema carries dates and months as plain strings;
+   preflight validates them with the SAME rule the ordinary
+   writers enforce (actions.ts's dateString: the YYYY-MM-DD
+   shape plus a real calendar date — the transaction writer
+   refuses 2026-02-31, so the restore refuses it too; a restored
+   "not-a-date" used to persist and vanish from month views,
+   and a restored 2026-02-31 aggregated under a February that
+   never had one). The calendar helper is the ONE
+   implementation: it lives here and actions.ts imports it, so
+   the writer and the restore can never drift apart. Version
+   effectiveFrom values are months (YYYY-MM), the granularity
+   the bill/expense version writers store, so they validate as
+   months, not dates. */
+
+export function isRealCalendarDate(s: string): boolean {
+  const y = Number(s.slice(0, 4));
+  const m = Number(s.slice(5, 7));
+  const d = Number(s.slice(8, 10));
+  if (!Number.isFinite(y) || m < 1 || m > 12 || d < 1) return false;
+  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+const BACKUP_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const BACKUP_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+export function isBackupCalendarDate(s: string): boolean {
+  return BACKUP_DATE_RE.test(s) && isRealCalendarDate(s);
+}
+
+export function isBackupMonth(s: string): boolean {
+  return BACKUP_MONTH_RE.test(s);
+}
+
 /* --------------------------- Preflight ---------------------------
    Every check the restore runs BEFORE any write. The handler
    computes `payloadKeyCheckValid` from the payload's own key-check
@@ -300,6 +334,59 @@ export function preflightRestoreBackup(
     if (!TXN_KINDS.includes(t.kind)) {
       return refuse(
         `Backup rejected: transaction ${t.id} has an unrecognised kind "${t.kind}".`,
+      );
+    }
+  }
+
+  // Date validity — the same calendar rule the ordinary writers
+  // enforce (see the date-validity section above), checked here
+  // where the refusal can name the row and the offending value.
+  for (const t of payload.transactions) {
+    if (!isBackupCalendarDate(t.date)) {
+      return refuse(
+        `Backup rejected: transaction ${t.id} has an invalid date "${t.date}" — not a real calendar date (YYYY-MM-DD).`,
+      );
+    }
+  }
+  for (const s of payload.nwSnapshots) {
+    if (!isBackupCalendarDate(s.date)) {
+      return refuse(
+        `Backup rejected: Net Worth snapshot ${s.id} has an invalid date "${s.date}" — not a real calendar date (YYYY-MM-DD).`,
+      );
+    }
+  }
+  for (const v of payload.yearlyExpenseVersions) {
+    if (!isBackupMonth(v.effectiveFrom)) {
+      return refuse(
+        `Backup rejected: yearly expense version ${v.id} has an invalid effectiveFrom "${v.effectiveFrom}" — not a real month (YYYY-MM).`,
+      );
+    }
+  }
+  for (const v of payload.monthlyBillVersions) {
+    if (!isBackupMonth(v.effectiveFrom)) {
+      return refuse(
+        `Backup rejected: monthly bill version ${v.id} has an invalid effectiveFrom "${v.effectiveFrom}" — not a real month (YYYY-MM).`,
+      );
+    }
+  }
+  for (const s of payload.monthlySummaries) {
+    if (!isBackupMonth(s.month)) {
+      return refuse(
+        `Backup rejected: monthly summary has an invalid month "${s.month}" — not a real month (YYYY-MM).`,
+      );
+    }
+  }
+  for (const o of payload.monthlyOneOffs) {
+    if (!isBackupMonth(o.month)) {
+      return refuse(
+        `Backup rejected: monthly one-off ${o.id} has an invalid month "${o.month}" — not a real month (YYYY-MM).`,
+      );
+    }
+  }
+  for (const it of payload.monthlyCashOutItems) {
+    if (!isBackupMonth(it.month)) {
+      return refuse(
+        `Backup rejected: monthly cash-out item ${it.id} has an invalid month "${it.month}" — not a real month (YYYY-MM).`,
       );
     }
   }

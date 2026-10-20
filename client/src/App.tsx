@@ -20,6 +20,11 @@ XAxis,
 YAxis,
 } from "recharts";
 import { api, type ApiRequest, type ApiResponse } from "./api";
+import {
+  csvFormulaSafeText,
+  csvImportFileError,
+  parseCsvChecked,
+} from "./csvUtil";
 import { Explainer } from "./Explainer";
 import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
@@ -138,39 +143,11 @@ function currentMonth(): string {
   return todayStr().slice(0, 7);
 }
 
-/* ---------------- CSV parsing ---------------- */
-
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-  const src = text.replace(/\r\n/g, "\n");
-  for (let i = 0; i < src.length; i++) {
-    const ch = src[i] ?? "";
-    if (inQuotes) {
-      if (ch === '"') {
-        if (src[i + 1] === '"') {
-          cell += '"';
-          i++;
-        } else inQuotes = false;
-      } else cell += ch;
-    } else if (ch === '"') {
-      inQuotes = true;
-    } else if (ch === ",") {
-      row.push(cell);
-      cell = "";
-    } else if (ch === "\n") {
-      row.push(cell);
-      cell = "";
-      rows.push(row);
-      row = [];
-    } else cell += ch;
-  }
-  row.push(cell);
-  rows.push(row);
-  return rows.filter((r) => r.some((c) => c.trim() !== ""));
-}
+/* ---------------- CSV parsing ----------------
+   The parser lives in ./csvUtil (parseCsvChecked): the same
+   grammar this importer has always used, with the import
+   budget (size / row / field limits, unclosed-quote refusal)
+   enforced around it — finding S4. */
 
 function normalizeDate(raw: string): string | null {
   const s = raw.trim();
@@ -749,8 +726,12 @@ function shortMonthLabel(m: string): string {
 }
 
 function csvEscape(v: string): string {
-  if (/[",\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
-  return v;
+  // Formula neutralization first (csvUtil, finding S2): a
+  // user-typed label that starts with = + - @ must reach the
+  // spreadsheet as literal text, never as a formula.
+  const safe = csvFormulaSafeText(v);
+  if (/[",\n]/.test(safe)) return `"${safe.replace(/"/g, '""')}"`;
+  return safe;
 }
 
 function csvMoney(cents: number): string {
@@ -4569,7 +4550,12 @@ function ImportPanel({
 
   function buildRows(): TxnInput[] | null {
     setError("");
-    const raw = parseCsv(csvText);
+    const parsed = parseCsvChecked(csvText);
+    if ("error" in parsed) {
+      setError(parsed.error);
+      return null;
+    }
+    const raw = parsed.rows;
     if (raw.length === 0) {
       setError("Paste CSV text or choose a file first.");
       return null;
@@ -4673,6 +4659,7 @@ function ImportPanel({
         bank; the bank-out rule applies to amounts you record by their
         payment date. Currently viewing{" "}
         {monthLabel(month)} — imported rows land in their own months.
+        Import limits: a file up to 5 MB and 25,000 rows.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <div>
@@ -4717,6 +4704,16 @@ function ImportPanel({
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) {
+              // Size budget first (csvUtil, finding S4): an
+              // oversized file is refused by name before it is
+              // read into the page at all.
+              const sizeError = csvImportFileError(f.size);
+              if (sizeError) {
+                setError(sizeError);
+                setPreview(null);
+                e.target.value = "";
+                return;
+              }
               void f.text().then((t) => {
                 setCsvText(t);
                 setPreview(null);
