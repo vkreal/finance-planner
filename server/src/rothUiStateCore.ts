@@ -32,7 +32,7 @@ import { z } from "@hatch/space-sdk";
 export const ROTH_UI_STATE_KEY = "roth_ui_state_v1";
 export const ROTH_SECTION_IDS = ["household", "money", "income", "aca", "advanced"] as const;
 export type RothSectionId = (typeof ROTH_SECTION_IDS)[number];
-export const ROTH_RESULTS_MODES = ["plan", "optimize", "compare", "thisYear", "yearFunding", "playground", "workYears", "gift"] as const;
+export const ROTH_RESULTS_MODES = ["plan", "optimize", "compare", "thisYear", "yearFunding", "playground", "workYears", "gift", "proof"] as const;
 export type RothResultsMode = (typeof ROTH_RESULTS_MODES)[number];
 /* Strategy Lab "debate dials": plan-level overrides the Lab
    applies at pricing time to every library row at once. They

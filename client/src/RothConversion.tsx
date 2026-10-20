@@ -179,7 +179,8 @@ type RothSectionId = "household" | "money" | "income" | "aca" | "advanced";
 // optimizer, and the strategy comparison + saved scenarios.
 // Pure navigation — every workspace renders from the same
 // working inputs and results state.
-type RothResultsMode = "plan" | "optimize" | "compare" | "thisYear" | "yearFunding" | "workYears" | "gift";
+type RothResultsMode = "plan" | "optimize" | "compare" | "thisYear" | "yearFunding" | "workYears" | "gift" | "proof";
+const PROOF_END_AGE = 110;
 const ROTH_MODE_OPTIONS: { id: RothResultsMode; label: string }[] = [
   { id: "plan", label: "Plan" },
   { id: "optimize", label: "Optimize" },
@@ -188,6 +189,7 @@ const ROTH_MODE_OPTIONS: { id: RothResultsMode; label: string }[] = [
   { id: "yearFunding", label: "Year funding" },
   { id: "workYears", label: "Work years" },
   { id: "gift", label: "Gift stock" },
+  { id: "proof", label: "Pretax Spending" },
 ];
 // The segmented control renders only these workspaces. Optimize
 // and Gift stock stay in the type, in the options list above,
@@ -668,6 +670,21 @@ export function RothConversion() {
   // never saved).
   const [detailYear, setDetailYear] = useState<number | null>(null);
   const [resultsMode, setResultsMode] = useState<RothResultsMode>("plan");
+  /* Pretax Spending (proof) scratch overrides — this tab only.
+     Blank = the plan's own value; a typed value replaces that
+     one input in the proof run in memory. These states are
+     never read by buildSavePayload, any saver, or the Roth UI
+     state: they live only in this component, reset on reload,
+     and leaving the tab changes nothing that is saved. */
+  const [proofPretax, setProofPretax] = useState("");
+  const [proofPretaxSpouse, setProofPretaxSpouse] = useState("");
+  const [proofTaxable, setProofTaxable] = useState("");
+  const [proofRoth, setProofRoth] = useState("");
+  const [proofHsa, setProofHsa] = useState("");
+  const [proofSpending, setProofSpending] = useState("");
+  const [proofPayTaxFrom, setProofPayTaxFrom] = useState<
+    "" | "taxable" | "conversion"
+  >("");
   const [uiInit, setUiInit] = useState(false);
   /* Revision (CAS) tracking for this view's writes into the
      shared UI-state blob: the revision the blob was last read
@@ -3030,6 +3047,143 @@ export function RothConversion() {
     [planInputs],
   );
 
+  /* ---------------- proof view (non-saving) ----------------
+     The proof re-runs the plan to PROOF_END_AGE (110) in memory,
+     with the end age extended and — only when the reader types
+     them on this tab — the scratch overrides above applied:
+     starting balances (pre-tax You / wife, Taxable, Roth, HSA),
+     annual spending, and where the tax bill is paid from. A
+     blank override uses the plan's own value, so with nothing
+     typed the run is the plan exactly as it stands. It never
+     writes a plan field, never calls a save, and never touches
+     the saved record: planInputs keeps the saved end age and
+     values, buildSavePayload keeps saving those, and the
+     overrides live only in these memos. The Do Nothing twin
+     runs the same extended inputs with no ceilings, so the
+     proof can show what the plan's own caps buy in pre-tax
+     life. */
+  const proofInputs = useMemo(() => {
+    if (!planInputs) return null;
+    const over = (s: string, fallback: number): number => {
+      const v = parseDollars(s);
+      return v == null ? fallback : v;
+    };
+    return {
+      ...planInputs,
+      endAgePrimary: Math.max(PROOF_END_AGE, planInputs.endAgePrimary),
+      pretaxStart: over(proofPretax, planInputs.pretaxStart),
+      pretaxSpouseStart: over(
+        proofPretaxSpouse,
+        planInputs.pretaxSpouseStart ?? 0,
+      ),
+      taxableStart: over(proofTaxable, planInputs.taxableStart),
+      rothStart: over(proofRoth, planInputs.rothStart),
+      hsaStart: over(proofHsa, planInputs.hsaStart),
+      annualSpending: over(proofSpending, planInputs.annualSpending),
+      payTaxFrom:
+        proofPayTaxFrom === "" ? planInputs.payTaxFrom : proofPayTaxFrom,
+      // A typed Taxable starting balance is a typed balance,
+      // exactly like the plan's own: no snapshot cash sleeve
+      // rides with it.
+      spendFromCashSleeveStart:
+        parseDollars(proofTaxable) != null
+          ? 0
+          : planInputs.spendFromCashSleeveStart,
+    };
+  }, [
+    planInputs,
+    proofPretax,
+    proofPretaxSpouse,
+    proofTaxable,
+    proofRoth,
+    proofHsa,
+    proofSpending,
+    proofPayTaxFrom,
+  ]);
+  const proofOverridesActive =
+    proofPayTaxFrom !== "" ||
+    [
+      proofPretax,
+      proofPretaxSpouse,
+      proofTaxable,
+      proofRoth,
+      proofHsa,
+      proofSpending,
+    ].some((s) => parseDollars(s) != null);
+  const resetProofOverrides = () => {
+    setProofPretax("");
+    setProofPretaxSpouse("");
+    setProofTaxable("");
+    setProofRoth("");
+    setProofHsa("");
+    setProofSpending("");
+    setProofPayTaxFrom("");
+  };
+  const proofResult = useMemo(
+    () => (proofInputs ? simulateRothPlan(proofInputs, currentStrategy) : null),
+    [proofInputs, currentStrategy],
+  );
+  const proofDoNothingResult = useMemo(
+    () =>
+      proofInputs
+        ? simulateRothPlan(proofInputs, { id: "none", name: "Do Nothing", ceilings: null })
+        : null,
+    [proofInputs],
+  );
+  const proofStats = useMemo(() => {
+    if (!proofResult || !proofInputs) return null;
+    const years = proofResult.years;
+    const startingPretax = proofInputs.pretaxStart + (proofInputs.pretaxSpouseStart ?? 0);
+    const firstZeroIdx = years.findIndex((y) => y.pretaxEnd === 0 && startingPretax > 0);
+    const firstZero = firstZeroIdx >= 0 ? years[firstZeroIdx]! : null;
+    const beforeZero =
+      firstZeroIdx > 0 ? years[firstZeroIdx - 1]! : null;
+    const dnFirstZero =
+      proofDoNothingResult?.years.find((y) => y.pretaxEnd === 0 && startingPretax > 0) ?? null;
+    const sum = (pick: (y: (typeof years)[number]) => number): number =>
+      years.reduce((a, y) => a + pick(y), 0);
+    const shortfallYears = years.filter((y) => y.spendShortfall > 0);
+    const unpaidTaxTotal = sum((y) => y.unpaidTax);
+    const last = years[years.length - 1] ?? null;
+    return {
+      startingPretax,
+      firstZero,
+      beforeZero,
+      dnFirstZero,
+      yearsSooner:
+        firstZero && dnFirstZero ? firstZero.agePrimary - dnFirstZero.agePrimary : null,
+      last,
+      shortfallYears,
+      unpaidTaxTotal,
+      totals: {
+        spending: sum((y) => y.funding.spending),
+        ss: sum((y) => y.funding.ss),
+        rmd: sum((y) => y.funding.rmd),
+        otherIncome: sum((y) => y.funding.otherIncome),
+        yields: sum((y) => y.funding.interestYield + y.funding.dividendYield),
+        cashSpend: sum((y) => y.funding.cashSpend),
+        pretaxDraw: sum((y) => y.funding.pretaxDraw),
+        taxableForSpending: sum((y) => y.funding.taxableSoldForSpending),
+        taxableForTax: sum((y) => y.funding.taxableSoldForTax),
+        rothDraw: sum((y) => y.funding.rothDraw),
+        conversions: sum((y) => y.conversion),
+        acaKept: sum((y) => y.acaCreditKept),
+        dnAcaKept: proofDoNothingResult
+          ? proofDoNothingResult.years.reduce((a, y) => a + y.acaCreditKept, 0)
+          : 0,
+      },
+      taxableYearsUsed: years.filter(
+        (y) => y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax > 0,
+      ).length,
+      rothYearsUsed: years.filter((y) => y.funding.rothDraw > 0).length,
+      chart: years.map((y) => ({
+        year: y.year,
+        age: y.agePrimary,
+        "Pre-tax": Math.round(y.pretaxEnd),
+      })),
+    };
+  }, [proofResult, proofDoNothingResult, proofInputs]);
+
   // Execution-year result: the current calendar year priced
   // standalone through the shared engine (priceExecutionYear in
   // rothOptimizer.ts — the same code the accuracy fixtures pin),
@@ -3499,6 +3653,17 @@ export function RothConversion() {
           : `terminal tax ${fmtDollars(winner.terminal)} at the ${heir}% heir rate on the pre-tax left over`;
       }
       return `Best of ${optResult.candidatesTested} tested: ${winner.name} (${winner.windowLabel})${claimClause} — lifetime net cost ${fmtDollars(winner.netCost)}, lifetime Social Security collected ${fmtDollars(winner.ssCollected)}, ${savingClause(winner.netCost, dnNet)} → ${endingClause}.`;
+    }
+    if (resultsMode === "proof") {
+      if (!planInputs || !proofInputs || !proofStats) return null;
+      if (proofStats.startingPretax <= 0) return "Pretax Spending (not saved): no pre-tax balance is priced yet.";
+      const payFromClause =
+        proofInputs.payTaxFrom === "taxable"
+          ? "paying taxes from Taxable"
+          : "paying taxes from the conversion";
+      return proofStats.firstZero
+        ? `Pretax Spending (not saved — your plan still ends at age ${planInputs.endAgePrimary}): pre-tax empties during ${proofStats.firstZero.year}, age ${proofStats.firstZero.agePrimary}, starting from ${fmtDollars(proofStats.startingPretax)} at ${fmtDollars(proofInputs.annualSpending)}/yr of spending, ${payFromClause}.`
+        : `Pretax Spending (not saved — your plan still ends at age ${planInputs.endAgePrimary}): pre-tax still holds ${fmtDollars(proofStats.last?.pretaxEnd ?? 0)} at age ${PROOF_END_AGE}, starting from ${fmtDollars(proofStats.startingPretax)} at ${fmtDollars(proofInputs.annualSpending)}/yr of spending, ${payFromClause}.`;
     }
     if (resultsMode !== "plan") return null;
     if (!planInputs || !mainResult) return null;
@@ -5758,6 +5923,400 @@ export function RothConversion() {
             <p className="mt-3 text-sm" role="note">
               The plan prices no years yet — enter a birth year above.
             </p>
+          )}
+        </section>
+      )}
+
+      {resultsMode === "proof" && (
+        <section className={sectionCls} aria-label="Pretax Spending — pre-tax to age 110">
+          <h2 className="text-base font-semibold">Pretax Spending — how long the pre-tax money lasts</h2>
+          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+            Your plan, re-run to age {PROOF_END_AGE}. Start from your plan&rsquo;s
+            numbers, or change the starting balances, the yearly spending, or
+            where taxes are paid from in the try-it numbers below — everything
+            else (fill ceilings, draw order, return, Social Security) stays as
+            your plan has it. This is the year-by-year evidence behind the claim
+            that the pre-tax bucket lasts: every year&rsquo;s funding split and
+            every year&rsquo;s ending balances, from the same engine that prices
+            the Plan tab.
+          </p>
+          <p className="mt-3 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-3 py-2 text-sm" role="note">
+            <strong>Pretax Spending only — nothing is saved.</strong> The run to
+            age {PROOF_END_AGE} and any numbers you type below happen in memory
+            on this screen. Your saved plan still ends at age{" "}
+            {planInputs ? planInputs.endAgePrimary : "—"} and opening, reading,
+            changing numbers here, or leaving this view does not change it.
+          </p>
+
+          <div className="mt-4 border-t border-[var(--border)] pt-4">
+            <h3 className="text-base font-semibold">Try different numbers — this tab only</h3>
+            <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+              Type a different starting balance or spending amount, or switch
+              where the tax bill is paid from, and the verdict, tiles, chart,
+              and year table below re-run right away. A blank field uses your
+              plan&rsquo;s value — it is shown under each field.
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {moneyField("Starting pre-tax — You", proofPretax, setProofPretax, {
+                idLabel: "Pretax Spending starting pre-tax — You",
+                hint: planInputs
+                  ? `Blank = your plan's ${fmtDollars(planInputs.pretaxStart)}.`
+                  : "Blank = your plan's value.",
+              })}
+              {moneyField("Starting pre-tax — wife", proofPretaxSpouse, setProofPretaxSpouse, {
+                idLabel: "Pretax Spending starting pre-tax — wife",
+                hint: planInputs
+                  ? `Blank = your plan's ${fmtDollars(planInputs.pretaxSpouseStart ?? 0)}.`
+                  : "Blank = your plan's value.",
+              })}
+              {moneyField("Starting Taxable", proofTaxable, setProofTaxable, {
+                idLabel: "Pretax Spending starting Taxable",
+                hint: planInputs
+                  ? `Blank = your plan's ${fmtDollars(planInputs.taxableStart)}. This is the money taxes are paid from when “Pay taxes from” is Taxable.`
+                  : "Blank = your plan's value.",
+              })}
+              {moneyField("Starting Roth", proofRoth, setProofRoth, {
+                idLabel: "Pretax Spending starting Roth",
+                hint: planInputs
+                  ? `Blank = your plan's ${fmtDollars(planInputs.rothStart)}.`
+                  : "Blank = your plan's value.",
+              })}
+              {moneyField("Starting HSA", proofHsa, setProofHsa, {
+                idLabel: "Pretax Spending starting HSA",
+                hint: planInputs
+                  ? `Blank = your plan's ${fmtDollars(planInputs.hsaStart)}.`
+                  : "Blank = your plan's value.",
+              })}
+              {moneyField("Annual spending", proofSpending, setProofSpending, {
+                idLabel: "Pretax Spending annual spending",
+                hint: planInputs
+                  ? `Blank = your plan's ${fmtDollars(planInputs.annualSpending)}/yr.`
+                  : "Blank = your plan's value.",
+              })}
+              <div>
+                <label className={labelCls} htmlFor="roth-proof-payfrom">
+                  Pay taxes from
+                </label>
+                <select
+                  id="roth-proof-payfrom"
+                  aria-label="Pay taxes from — Pretax Spending"
+                  className={inputCls}
+                  value={proofPayTaxFrom}
+                  onChange={(e) =>
+                    setProofPayTaxFrom(
+                      e.target.value as "" | "taxable" | "conversion",
+                    )
+                  }
+                >
+                  <option value="">
+                    Your plan&rsquo;s setting
+                    {planInputs
+                      ? ` (${planInputs.payTaxFrom === "taxable" ? "Taxable account" : "Withheld from the conversion"})`
+                      : ""}
+                  </option>
+                  <option value="taxable">Taxable account</option>
+                  <option value="conversion">Withheld from the conversion</option>
+                </select>
+                <p className={hintCls}>
+                  Taxable pays the tax bill by selling taxable money (down to
+                  your plan&rsquo;s protect-minimum). Withheld takes it out of
+                  the conversion itself — before 59½ the plan prices the 10%
+                  early-distribution penalty on the amount withheld.
+                </p>
+              </div>
+            </div>
+            {proofOverridesActive && (
+              <p className="tnum mt-3 text-sm" role="note">
+                Trying different numbers: starting pre-tax{" "}
+                {fmtDollars(
+                  (proofInputs?.pretaxStart ?? 0) +
+                    (proofInputs?.pretaxSpouseStart ?? 0),
+                )}
+                , starting Taxable {fmtDollars(proofInputs?.taxableStart ?? 0)},
+                spending {fmtDollars(proofInputs?.annualSpending ?? 0)}/yr,
+                taxes paid from{" "}
+                {proofInputs?.payTaxFrom === "taxable"
+                  ? "Taxable"
+                  : "the conversion"}
+                .{" "}
+                <button
+                  type="button"
+                  aria-label="Reset Pretax Spending numbers to your plan"
+                  className="font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)]"
+                  onClick={resetProofOverrides}
+                >
+                  Reset to your plan&rsquo;s numbers
+                </button>
+              </p>
+            )}
+          </div>
+
+          {!planInputs && (
+            <p className="mt-4 text-sm text-[var(--bad)]">
+              Check the plan inputs above — this view prices the plan, which
+              needs a birth year, annual spending, a retirement age, an expected
+              return, and an end age after the current age.
+            </p>
+          )}
+
+          {planInputs && proofInputs && proofResult && proofStats && (
+            <>
+              <div className="mt-4 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-4 py-3">
+                <p className="text-sm text-[var(--dim)]">The verdict</p>
+                {proofStats.startingPretax <= 0 ? (
+                  <p className="tnum mt-0.5 text-2xl font-semibold">
+                    No pre-tax balance is priced yet
+                  </p>
+                ) : proofStats.firstZero ? (
+                  <p className="tnum mt-0.5 text-2xl font-semibold">
+                    Pre-tax empties during {proofStats.firstZero.year} — age{" "}
+                    {proofStats.firstZero.agePrimary}
+                  </p>
+                ) : (
+                  <p className="tnum mt-0.5 text-2xl font-semibold">
+                    Pre-tax does not empty by age {PROOF_END_AGE} —{" "}
+                    {fmtDollars(proofStats.last?.pretaxEnd ?? 0)} is still left
+                  </p>
+                )}
+                <p className="tnum mt-1 text-sm leading-relaxed">
+                  Starting from {fmtDollars(proofStats.startingPretax)} of pre-tax
+                  money, spending {fmtDollars(proofInputs.annualSpending)}/yr in
+                  today&rsquo;s dollars from age {proofInputs.retirementAge},
+                  with taxes paid from{" "}
+                  {proofInputs.payTaxFrom === "taxable"
+                    ? "the Taxable account"
+                    : "the conversion (withheld)"}
+                  {proofInputs.ssPrimaryAnnual > 0 && proofInputs.ssPrimaryStartAge != null
+                    ? `, with Social Security of ${fmtDollars(proofInputs.ssPrimaryAnnual)}/yr from age ${proofInputs.ssPrimaryStartAge}`
+                    : ""}
+                  {proofInputs.ssSpouseAnnual > 0 && proofInputs.ssSpouseStartAge != null
+                    ? ` and spouse Social Security of ${fmtDollars(proofInputs.ssSpouseAnnual)}/yr from age ${proofInputs.ssSpouseStartAge}`
+                    : ""}
+                  .
+                  {proofStats.firstZero && proofStats.beforeZero
+                    ? ` It ends age ${proofStats.beforeZero.agePrimary} with ${fmtDollars(proofStats.beforeZero.pretaxEnd)} left, and the next year's RMD and draw finish it.`
+                    : ""}
+                  {proofStats.firstZero
+                    ? " Emptying is not running out of money: it is only this one bucket finishing."
+                    : ""}
+                </p>
+                {proofStats.last && (
+                  <p className="tnum mt-1 text-sm text-[var(--dim)]">
+                    At age {proofStats.last.agePrimary} ({proofStats.last.year})
+                    the other buckets hold Taxable{" "}
+                    {fmtDollars(proofStats.last.taxableEnd)}, Roth{" "}
+                    {fmtDollars(proofStats.last.rothEnd)}, and HSA{" "}
+                    {fmtDollars(proofStats.last.hsaEnd)}.
+                  </p>
+                )}
+              </div>
+
+              <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-3">
+                <div>
+                  <dt className="text-[var(--dim)]">Spending fully funded</dt>
+                  <dd className="tnum font-medium">
+                    {proofStats.shortfallYears.length === 0
+                      ? `Yes — every year to age ${PROOF_END_AGE}`
+                      : `No — short in ${proofStats.shortfallYears.map((y) => y.year).join(", ")}`}
+                  </dd>
+                  <dd className="text-xs text-[var(--dim)]">
+                    {proofStats.shortfallYears.length === 0
+                      ? "No year has spending the balances could not cover."
+                      : `Unfunded spending totals ${fmtDollars(proofStats.shortfallYears.reduce((a, y) => a + y.spendShortfall, 0))}.`}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--dim)]">Roth drawn for spending or tax</dt>
+                  <dd className="tnum font-medium">
+                    {proofStats.totals.rothDraw === 0
+                      ? "$0 — never touched"
+                      : fmtDollars(proofStats.totals.rothDraw)}
+                  </dd>
+                  <dd className="text-xs text-[var(--dim)]">
+                    {proofStats.totals.rothDraw === 0
+                      ? "The Roth only receives conversions and grows."
+                      : `Drawn in ${proofStats.rothYearsUsed} year${proofStats.rothYearsUsed === 1 ? "" : "s"}.`}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--dim)]">HSA drawn</dt>
+                  <dd className="tnum font-medium">$0 — never touched</dd>
+                  <dd className="text-xs text-[var(--dim)]">
+                    The engine never draws the HSA; it grows from{" "}
+                    {fmtDollars(proofInputs.hsaStart)} to{" "}
+                    {fmtDollars(proofStats.last?.hsaEnd ?? 0)} by age{" "}
+                    {PROOF_END_AGE}.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--dim)]">Taxable sold on purpose</dt>
+                  <dd className="tnum font-medium">
+                    {fmtDollars(
+                      proofStats.totals.taxableForSpending + proofStats.totals.taxableForTax,
+                    )}
+                  </dd>
+                  <dd className="text-xs text-[var(--dim)]">
+                    In {proofStats.taxableYearsUsed} year
+                    {proofStats.taxableYearsUsed === 1 ? "" : "s"} —{" "}
+                    {fmtDollars(proofStats.totals.taxableForTax)} pays the tax
+                    bill and {fmtDollars(proofStats.totals.taxableForSpending)}{" "}
+                    tops up spending the capped pre-tax draw cannot cover.
+                    Taxable is used every year it is needed; it is not untouched.
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--dim)]">Pre-tax draw for spending &amp; tax</dt>
+                  <dd className="tnum font-medium">{fmtDollars(proofStats.totals.pretaxDraw)}</dd>
+                  <dd className="text-xs text-[var(--dim)]">
+                    On top of RMDs of {fmtDollars(proofStats.totals.rmd)} and
+                    conversions of {fmtDollars(proofStats.totals.conversions)}{" "}
+                    (conversions move money to Roth — they are not spending).
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--dim)]">Social Security collected</dt>
+                  <dd className="tnum font-medium">{fmtDollars(proofStats.totals.ss)}</dd>
+                  <dd className="text-xs text-[var(--dim)]">
+                    Benefits applied to each year&rsquo;s needs over the whole
+                    run to age {PROOF_END_AGE} — this is why the spending does
+                    not all come out of pre-tax.
+                  </dd>
+                </div>
+              </dl>
+
+              {proofStats.dnFirstZero && (
+                <p className="tnum mt-4 text-sm leading-relaxed" role="note">
+                  <strong>What the caps buy:</strong> the same plan with no
+                  ceilings at all (Do Nothing, also run to age {PROOF_END_AGE})
+                  empties its pre-tax during {proofStats.dnFirstZero.year} —
+                  age {proofStats.dnFirstZero.agePrimary}
+                  {proofStats.yearsSooner != null && proofStats.yearsSooner > 0
+                    ? `, ${proofStats.yearsSooner} year${proofStats.yearsSooner === 1 ? "" : "s"} sooner than your plan`
+                    : ""}
+                  , and keeps {fmtDollars(proofStats.totals.dnAcaKept)} of ACA
+                  premium credit against your plan&rsquo;s{" "}
+                  {fmtDollars(proofStats.totals.acaKept)}. Holding the early
+                  pre-tax draws down is what stretches the bucket.
+                </p>
+              )}
+
+              <h3 className="mt-5 text-base font-semibold">Pre-tax balance, year by year</h3>
+              <ul className="sr-only">
+                {proofResult.years.map((y) => (
+                  <li key={y.year}>
+                    {`${y.year}, age ${y.agePrimary}: pre-tax ends at ${fmtDollars(y.pretaxEnd)}`}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 h-64 w-full" aria-hidden="true">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={proofStats.chart} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="year" tick={{ fontSize: 12 }} stroke="var(--dim)" />
+                    <YAxis
+                      tickFormatter={(v: number) => fmtCompactDollars(v)}
+                      tick={{ fontSize: 12 }}
+                      stroke="var(--dim)"
+                      width={72}
+                    />
+                    <Tooltip
+                      formatter={(value) => fmtDollars(Number(value ?? 0))}
+                      contentStyle={{
+                        background: "var(--surface)",
+                        border: "1px solid var(--border)",
+                        color: "var(--text)",
+                      }}
+                    />
+                    <Legend />
+                    <Area type="monotone" dataKey="Pre-tax" stroke={BUCKET_COLORS["Pre-tax"]} fill={BUCKET_COLORS["Pre-tax"]} fillOpacity={0.55} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+
+              <h3 className="mt-5 text-base font-semibold">
+                Every year to age {PROOF_END_AGE} — funding split and ending balances
+              </h3>
+              <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+                One row per priced year. Spending is what the year needed for
+                living costs; the funding columns are what actually paid the
+                year&rsquo;s needs (spending plus its tax bill and Medicare
+                premiums), in the engine&rsquo;s own ledger — so a year with no
+                shortfall is funded in full by the columns shown.
+              </p>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full min-w-[1180px] text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-left">
+                      <th scope="col" className="px-2 py-2 font-medium">Year (age)</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Spending</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Social Security</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">RMD</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Pre-tax draw</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Taxable — spending</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Taxable — tax bill</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Roth draw</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Conversion</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Pre-tax end</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Taxable end</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Roth end</th>
+                      <th scope="col" className="px-2 py-2 text-right font-medium">HSA end</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proofResult.years.map((y) => {
+                      const cell = (v: number) => (v === 0 ? "—" : fmtDollars(v));
+                      const isZeroYear =
+                        proofStats.firstZero != null && y.year === proofStats.firstZero.year;
+                      return (
+                        <tr
+                          key={y.year}
+                          className={`border-b border-[var(--border)] last:border-0${isZeroYear ? " bg-[var(--accent-soft)] font-medium" : ""}`}
+                        >
+                          <td className="tnum px-2 py-1.5 whitespace-nowrap">
+                            {y.year} ({y.agePrimary}
+                            {y.ageSpouse != null ? `/${y.ageSpouse}` : ""})
+                            {isZeroYear && (
+                              <span className="block text-xs font-semibold">
+                                Pre-tax reaches $0 this year
+                              </span>
+                            )}
+                            {y.spendShortfall > 0 && (
+                              <span className="block text-xs font-semibold text-[var(--bad)]">
+                                Short {fmtDollars(y.spendShortfall)}
+                              </span>
+                            )}
+                          </td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.funding.spending)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.funding.ss)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.funding.rmd)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.funding.pretaxDraw)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.funding.taxableSoldForSpending)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.funding.taxableSoldForTax)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.funding.rothDraw)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{cell(y.conversion)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{fmtDollars(y.pretaxEnd)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{fmtDollars(y.taxableEnd)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{fmtDollars(y.rothEnd)}</td>
+                          <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{fmtDollars(y.hsaEnd)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-sm text-[var(--dim)]">
+                Reading it: before Social Security starts, spending is carried
+                by the capped pre-tax draw plus Taxable sales. From the first
+                benefit year, Social Security covers part of every year, which
+                is why the full spending never comes out of pre-tax alone.
+                Late in the run, RMDs move money out of pre-tax into Taxable
+                faster than spending takes it out, so Taxable grows while
+                pre-tax finishes its decline.
+                {proofStats.unpaidTaxTotal > 0
+                  ? ` Unpaid tax over the run: ${fmtDollars(proofStats.unpaidTaxTotal)} — tax no balance could pay in its year.`
+                  : ""}
+              </p>
+            </>
           )}
         </section>
       )}
