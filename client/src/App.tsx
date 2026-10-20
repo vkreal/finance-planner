@@ -21,9 +21,9 @@ YAxis,
 } from "recharts";
 import { api, type ApiRequest, type ApiResponse } from "./api";
 import {
-  csvFormulaSafeText,
-  csvImportFileError,
-  parseCsvChecked,
+csvFormulaSafeText,
+csvImportFileError,
+parseCsvChecked,
 } from "./csvUtil";
 import { Explainer } from "./Explainer";
 import { NetWorthView } from "./NetWorth";
@@ -2765,8 +2765,10 @@ export function App() {
                   property tax, memberships, a water bill every other
                   month, a garbage bill every 3 months…), then either enter one cash-out total per month
                   or add transactions as they happen — or import a CSV from
-                  your bank or card. You can also load example data to see
-                  the math work; its transactions are labeled “Example —”.
+                  your bank or card. You can also load the sample household
+                  to see the math work — a full year of monthly bills,
+                  smoothed bills, and cash-out totals you can explore,
+                  edit, or delete.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button

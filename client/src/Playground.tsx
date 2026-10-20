@@ -2180,7 +2180,7 @@ export function Playground() {
                             0% gains end · {fmtDollars(zeroTop)}
                           </span>
                           <InfoNote
-                            text={`Only gains in the taxable account are taxed at 0%, and only while total taxable income stays under ${fmtDollars(zeroTop)}. Past this line they price at 15%.`}
+                            text={`Long-term gains and qualified dividends in the taxable account are taxed at 0% while total taxable income stays under ${fmtDollars(zeroTop)}. Past that line they price at 15%, and at 20% once taxable income passes ${fmtDollars(floor20)}.`}
                             ariaLabel="About the 0% gains line"
                             align={taxX(zeroTop) > 60 ? "right" : "left"}
                           />
@@ -2404,7 +2404,7 @@ export function Playground() {
                           : zeroTop - ordinaryTaxable >= -0.5
                             ? "filled exactly"
                             : `passed by ${fmtDollars(ordinaryTaxable - zeroTop)}`}{" "}
-                        · only taxable-account gains get the 0% rate
+                        · only taxable-account gains and qualified dividends get the 0% rate
                       </span>
                     </p>
                     {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
