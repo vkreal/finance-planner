@@ -1,0 +1,70 @@
+# Deploy the packaged (static, localStorage) Finance Planner to
+# GitHub Pages.
+#
+# This workflow builds ONLY the packaged target under packaged/ — a
+# fully static site that runs entirely in a visitor's browser with all
+# data in localStorage and no backend. The live artifact (the owner's
+# server-backed app) is built and shipped separately through the
+# web-artifact builder and is not touched by this workflow.
+#
+# One-time setup (repo owner): Settings -> Pages -> Source:
+# "GitHub Actions".
+name: Deploy packaged Finance Planner to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+
+      # The root package.json pins @hatch/space-sdk to a local file:
+      # path that exists only on the artifact build machine. Point it
+      # at the identical vendored copy under packaged/vendor/ so the
+      # root install (needed for the client stylesheet's tailwind
+      # imports) can resolve. This edits only the runner's checkout;
+      # the committed tree is unchanged.
+      - name: Point the root SDK dependency at the vendored copy
+        run: |
+          sed -i 's#"@hatch/space-sdk": "file:/opt/hatch/.*"#"@hatch/space-sdk": "file:./packaged/vendor/space-sdk"#' package.json
+          grep '"@hatch/space-sdk"' package.json
+
+      - name: Install root dependencies (stylesheet resolution)
+        run: bun install
+
+      - name: Install packaged dependencies
+        working-directory: packaged
+        run: bun install
+
+      - name: Build the packaged site
+        working-directory: packaged
+        run: bun run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: packaged/dist
+
+      - uses: actions/deploy-pages@v4
+        id: deployment
