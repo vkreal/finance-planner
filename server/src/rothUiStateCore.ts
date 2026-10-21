@@ -145,6 +145,33 @@ export const playgroundFormState = z.object({
     })
     .nullable(),
   stateRate: z.string().max(12),
+  // State of residence (T3 build): which rules layer prices
+  // the Playground year's state tax. A blob written before
+  // this field existed parses as "other" (the flat rate).
+  residenceState: z.enum(["WA", "other"]),
+  // Itemized deductions (T5 build): the Playground year's
+  // four itemized components, as typed strings like every
+  // money dial here. A blob written before these fields
+  // existed parses them blank ("" = no amount = the
+  // standard deduction prices the year).
+  itemizedMortgageInterest: z.string().max(64),
+  itemizedSaltPaid: z.string().max(64),
+  itemizedCharitable: z.string().max(64),
+  itemizedOther: z.string().max(64),
+  // Education students (T6 build): the Playground year's
+  // entered students — each row's qualified expenses as a
+  // typed string like every money dial here, plus the
+  // household's AOTC-eligibility mark. A blob written
+  // before this field existed parses as no students
+  // (no credits price — the year prices exactly as before).
+  educationStudents: z
+    .array(
+      z.object({
+        expenses: z.string().max(64),
+        aotcEligible: z.boolean(),
+      }),
+    )
+    .max(12),
   soleBeneficiary: z.boolean(),
   holdOn: z.boolean(),
   heldTarget: z.union([z.number(), z.literal("aca")]).nullable(),
@@ -184,6 +211,12 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     acaBenchmark: "",
     benchmarkSource: null,
     stateRate: "0",
+    residenceState: "other",
+    itemizedMortgageInterest: "",
+    itemizedSaltPaid: "",
+    itemizedCharitable: "",
+    itemizedOther: "",
+    educationStudents: [],
     soleBeneficiary: true,
     holdOn: false,
     heldTarget: null,
@@ -396,6 +429,30 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         acaBenchmark: str(g.acaBenchmark, ""),
         benchmarkSource: parsePgBenchmarkSource(g.benchmarkSource),
         stateRate: str(g.stateRate, "0"),
+        residenceState: g.residenceState === "WA" ? "WA" : "other",
+        itemizedMortgageInterest: str(g.itemizedMortgageInterest, ""),
+        itemizedSaltPaid: str(g.itemizedSaltPaid, ""),
+        itemizedCharitable: str(g.itemizedCharitable, ""),
+        itemizedOther: str(g.itemizedOther, ""),
+        // Education students (T6), read leniently like every
+        // field here: keep the well-formed rows of a stored
+        // array (a string expense and a boolean mark);
+        // anything else reads as no students.
+        educationStudents: ((): { expenses: string; aotcEligible: boolean }[] => {
+          if (!Array.isArray(g.educationStudents)) return [];
+          const rows: { expenses: string; aotcEligible: boolean }[] = [];
+          for (const rawRow of g.educationStudents as unknown[]) {
+            if (rawRow == null || typeof rawRow !== "object") continue;
+            const row = rawRow as Record<string, unknown>;
+            if (typeof row.aotcEligible !== "boolean") continue;
+            rows.push({
+              expenses: str(row.expenses, ""),
+              aotcEligible: row.aotcEligible,
+            });
+            if (rows.length >= 12) break;
+          }
+          return rows;
+        })(),
         soleBeneficiary:
           typeof g.soleBeneficiary === "boolean" ? g.soleBeneficiary : true,
         holdOn: typeof g.holdOn === "boolean" ? g.holdOn : false,

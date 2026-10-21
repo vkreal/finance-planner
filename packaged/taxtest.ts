@@ -1,6 +1,6 @@
 // Chunked tax-fixture census for the packaged build.
 //
-// The full tax suite (329 fixtures) builds multiple GB of fixture
+// The full tax suite builds multiple GB of fixture
 // state when run in one process and is OOM-killed on this machine —
 // the pure source runner (server/src/taxFixtures.ts runTaxFixtures)
 // dies the same way with no adapter code involved, and the live app
@@ -49,6 +49,12 @@ console.log(
     passed: clean.passed,
     failedIds,
     teethOk,
+    // The suite's OWN fixture count, read from the same bundled
+    // fixture module the chunks slice — run-harness.mjs derives
+    // its expected census total from this instead of hard-coding
+    // a number that silently stales as fixtures are added
+    // (round-7 fix H-1).
+    suiteTotal: TAX_FIXTURES.length,
   }),
 );
 process.exit(clean.passed === clean.total && teethOk ? 0 : 1);

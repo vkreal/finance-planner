@@ -110,19 +110,27 @@ type RothBlobRevisionState,
 import {
 BACKUP_AUTHENTICITY_SEMANTICS,
 BALANCE_SEMANTICS,
+CEILING_BREACHED_SEMANTICS,
 CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
 DRAW_ORDER_KEYS,
+AMT_SEMANTICS,
+EDUCATION_CREDIT_SEMANTICS,
 FLEX_SEMANTICS,
+IRMAA_TIER_CAP_SEMANTICS,
+ITEMIZED_DEDUCTION_SEMANTICS,
 LAW_YEAR_SEMANTICS,
+LOSS_CARRYFORWARD_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_COMPARE_EXAMPLE,
 SAVE_FLATTENING_SENTENCE,
 SCORE_IDENTITIES,
+STATE_SEMANTICS,
 TIER_SEMANTICS,
 UNITS_SEMANTICS,
 UNPAID_TAX_SEMANTICS,
 WRITERS_READERS_RULE,
+bracketTopPctField,
 expectedReturnPctField,
 mcScoreIn,
 nwPropertyKind,
@@ -1959,7 +1967,10 @@ const ROTH_INPUTS_KEY = "roth_conversion_inputs_v1";
 // fixtures pin the exact definitions the actions publish.
 const rothPayTaxFrom = z.enum(["taxable", "conversion"]);
 const rothCeilings = z.object({
-  bracketTopPct: z.number().nullable(),
+  // Round-7 R7-3: only the seven supported federal bracket
+  // rates validate (bracketTopPctField, apiContractCore);
+  // null = no fill.
+  bracketTopPct: bracketTopPctField,
   irmaaTierCap: z.number().int().nullable(),
   ltcgZeroCap: z.boolean(),
   acaCliffCap: z.boolean(),
@@ -1992,7 +2003,7 @@ const rothCeilings = z.object({
    lenient there is the standing rule for SAVED records; the
    compute boundary is the reverse by explicit user approval. */
 const rothCeilingsStrict = z.strictObject({
-  bracketTopPct: z.number().nullable(),
+  bracketTopPct: bracketTopPctField,
   irmaaTierCap: z.number().int().nullable(),
   ltcgZeroCap: z.boolean(),
   acaCliffCap: z.boolean(),
@@ -2033,6 +2044,32 @@ const rothTaxableTiers = z
       });
     }
   });
+/* Education students (T6 build): the household's entered
+   qualified education expenses as a list of per-student,
+   per-calendar-year entries — one object per student per
+   year, never one household lump, because the American
+   Opportunity Tax Credit prices per student. Each entry is
+   STRICT (an unknown key fails loudly, like the basis tiers
+   above), the year is a calendar year, expenses are
+   non-negative integer cents, and aotcEligible is the
+   household's own declaration that the student is
+   AOTC-eligible (the engine prices credit math and
+   phase-outs from it; it does not judge enrollment
+   eligibility). Null (or an empty list, normalized to null
+   by the reader) = no expenses entered anywhere = no
+   education credit prices, so an untouched record prices
+   bit-identically to before. The list rides rothInputFields
+   into every writer and compute action, so a compare
+   scenario can override it like any other input. */
+const rothEducationStudent = z.strictObject({
+  year: z.number().int().min(1900).max(2200),
+  expensesCents: z.number().int().min(0),
+  aotcEligible: z.boolean(),
+});
+const rothEducationStudents = z
+  .array(rothEducationStudent)
+  .max(24)
+  .nullable();
 const rothInputFields = {
   birthYearPrimary: z.number().int().min(1900).max(2100).nullable(),
   birthYearSpouse: z.number().int().min(1900).max(2100).nullable(),
@@ -2189,6 +2226,59 @@ const rothInputFields = {
   acaSpouseEndAge: z.number().int().min(55).max(80).nullable(),
   inflationPct: z.number().nullable(),
   stateRatePct: z.number().min(0).max(100).nullable(),
+  // State of residence (T3 build): "WA" prices Washington's
+  // capital-gains excise (RCW 82.87) instead of the flat
+  // stateRatePct; "other" and null both price the flat rate.
+  // Null on records written before this build = no rules
+  // layer chosen = the flat rate, bit-identical to before.
+  residenceState: z.enum(["WA", "other"]).nullable(),
+  // Capital-loss carryforward entering the plan (T4 build):
+  // the household's banked capital losses from before the
+  // plan starts, short-term and long-term, in integer cents
+  // (losses stated as positive amounts). Null on records
+  // written before this build = blank = $0 = no banked loss,
+  // so an untouched record prices bit-identically to
+  // before; the engine's cross-year ledger consumes them
+  // from there (see the lossCarryforwardSemantics
+  // convention describeApi publishes). Negative amounts
+  // fail validation — a carryforward is a loss, never a
+  // gain. Adding these two fields grows the saved-inputs
+  // schema from 57 to 59 leaf fields.
+  capitalLossCarryInStCents: z.number().int().min(0).nullable(),
+  capitalLossCarryInLtCents: z.number().int().min(0).nullable(),
+  // Itemized deductions (T5 build): the household's annual
+  // itemized components in integer cents — mortgage
+  // interest, state and local taxes paid, charitable
+  // contributions, and other itemized deductions — kept
+  // separate (never one lump) because the SALT component is
+  // capped on its own at the priced year's §164(b)(6) cap
+  // and the charitable component is the one charitable
+  // input the Washington layer also reads. Null on records
+  // written before this build = blank = $0 on that
+  // component, so an untouched record prices
+  // bit-identically to before (the itemized total is $0
+  // and the standard deduction wins every year — see the
+  // itemizedDeductionSemantics convention describeApi
+  // publishes). Negative amounts fail validation — a
+  // deduction component is never negative. Adding these
+  // four fields grows the saved-inputs schema from 59 to
+  // 63 leaf fields.
+  itemizedMortgageInterestCents: z.number().int().min(0).nullable(),
+  itemizedSaltPaidCents: z.number().int().min(0).nullable(),
+  itemizedCharitableCents: z.number().int().min(0).nullable(),
+  itemizedOtherCents: z.number().int().min(0).nullable(),
+  // Education expenses (T6 build): the per-student,
+  // per-calendar-year qualified-expense entries (see
+  // rothEducationStudents above). Null on records written
+  // before this build = blank = no expenses entered
+  // anywhere, so no education credit prices and an
+  // untouched record prices bit-identically to before (see
+  // the educationCreditSemantics convention describeApi
+  // publishes). Expenses are entered, never inferred —
+  // nothing in this schema derives them from the 529 /
+  // college fields or any other input. Adding this field
+  // grows the saved-inputs schema from 63 to 64 leaf fields.
+  educationStudents: rothEducationStudents,
   heirRatePct: z.number().min(0).max(100).nullable(),
   ceilings: rothCeilings.nullable(),
   // Lifetime-Tax Optimizer variant flags carried by the working
@@ -2256,6 +2346,25 @@ const rothComputeFields = {
   ...rothInputFields,
   drawOrderSwitchAge: rothInputFields.drawOrderSwitchAge.optional(),
   drawOrderAfter: rothInputFields.drawOrderAfter.optional(),
+  // Compute path only (T3): a pricing payload may omit the
+  // residence — absent prices exactly as null (the flat rate).
+  residenceState: rothInputFields.residenceState.optional(),
+  // Compute path only (T4): a pricing payload may omit the
+  // entering loss carryforwards — absent prices exactly as
+  // null ($0 banked, the ledger never engages).
+  capitalLossCarryInStCents: rothInputFields.capitalLossCarryInStCents.optional(),
+  capitalLossCarryInLtCents: rothInputFields.capitalLossCarryInLtCents.optional(),
+  // Compute path only (T5): a pricing payload may omit the
+  // itemized components — absent prices exactly as null
+  // ($0 on that component; the standard deduction wins).
+  itemizedMortgageInterestCents: rothInputFields.itemizedMortgageInterestCents.optional(),
+  itemizedSaltPaidCents: rothInputFields.itemizedSaltPaidCents.optional(),
+  itemizedCharitableCents: rothInputFields.itemizedCharitableCents.optional(),
+  itemizedOtherCents: rothInputFields.itemizedOtherCents.optional(),
+  // Compute path only (T6): a pricing payload may omit the
+  // education students — absent prices exactly as null (no
+  // expenses entered, no credits).
+  educationStudents: rothInputFields.educationStudents.optional(),
   // Compute path only: the strict ceilings variant (unknown keys
   // rejected). rothInputFields itself — and therefore the writers
   // and the saved shape — keeps the lenient shared object.
@@ -2382,7 +2491,11 @@ const rothGiftResponse = z.object({ ...rothGiftFields });
      lawYearsAvailable are derived at call time from taxLaw.ts
      (CURRENT_LAW / TAX_LAW_YEARS), so they can never drift from
      the tables the engine actually prices with. */
-const API_CONTRACT_VERSION = 12;
+// Exported so the packaged verification harness derives its
+// expected contract version from this same constant instead of
+// hard-coding a number that silently stales on the next bump
+// (round-7 fix H-1).
+export const API_CONTRACT_VERSION = 20;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -2599,6 +2712,108 @@ function parseRothInputs(raw: unknown): RothInputs | null {
     acaSpouseEndAge: num(r.acaSpouseEndAge),
     inflationPct: num(r.inflationPct),
     stateRatePct: num(r.stateRatePct),
+    // Lenient read (T3): only the two known values survive;
+    // anything else (including absence on pre-build records)
+    // reads as null = the flat-rate fallback.
+    residenceState:
+      r.residenceState === "WA"
+        ? "WA"
+        : r.residenceState === "other"
+          ? "other"
+          : null,
+    // Loss carryforward entering the plan (T4), read
+    // leniently like every field here: absent on a pre-build
+    // record reads as null = blank = $0 banked. A stored
+    // negative is not a loss and reads as null too — the
+    // writers reject negatives at validation, so one can
+    // only arrive in a hand-edited blob, where blank is the
+    // honest read.
+    capitalLossCarryInStCents:
+      typeof r.capitalLossCarryInStCents === "number" &&
+      Number.isFinite(r.capitalLossCarryInStCents) &&
+      r.capitalLossCarryInStCents >= 0
+        ? Math.round(r.capitalLossCarryInStCents)
+        : null,
+    capitalLossCarryInLtCents:
+      typeof r.capitalLossCarryInLtCents === "number" &&
+      Number.isFinite(r.capitalLossCarryInLtCents) &&
+      r.capitalLossCarryInLtCents >= 0
+        ? Math.round(r.capitalLossCarryInLtCents)
+        : null,
+    // Itemized components (T5), read leniently like the
+    // carryforwards above: absent on a pre-build record
+    // reads as null = blank = $0 on that component. A stored
+    // negative is not a deduction component and reads as
+    // null too — the writers reject negatives at validation,
+    // so one can only arrive in a hand-edited blob, where
+    // blank is the honest read.
+    itemizedMortgageInterestCents:
+      typeof r.itemizedMortgageInterestCents === "number" &&
+      Number.isFinite(r.itemizedMortgageInterestCents) &&
+      r.itemizedMortgageInterestCents >= 0
+        ? Math.round(r.itemizedMortgageInterestCents)
+        : null,
+    itemizedSaltPaidCents:
+      typeof r.itemizedSaltPaidCents === "number" &&
+      Number.isFinite(r.itemizedSaltPaidCents) &&
+      r.itemizedSaltPaidCents >= 0
+        ? Math.round(r.itemizedSaltPaidCents)
+        : null,
+    itemizedCharitableCents:
+      typeof r.itemizedCharitableCents === "number" &&
+      Number.isFinite(r.itemizedCharitableCents) &&
+      r.itemizedCharitableCents >= 0
+        ? Math.round(r.itemizedCharitableCents)
+        : null,
+    itemizedOtherCents:
+      typeof r.itemizedOtherCents === "number" &&
+      Number.isFinite(r.itemizedOtherCents) &&
+      r.itemizedOtherCents >= 0
+        ? Math.round(r.itemizedOtherCents)
+        : null,
+    // Education students (T6), read leniently like the basis
+    // tiers above: keep the well-formed entries of a stored
+    // array — an entry needs an integer calendar year,
+    // non-negative integer expenses in cents, and a boolean
+    // AOTC-eligibility mark — capped at 24; anything else
+    // (absent, not an array, no well-formed entry) reads as
+    // null = no expenses entered anywhere, so an untouched
+    // record prices bit-identically to before.
+    educationStudents: ((): {
+      year: number;
+      expensesCents: number;
+      aotcEligible: boolean;
+    }[] | null => {
+      if (!Array.isArray(r.educationStudents)) return null;
+      const students: {
+        year: number;
+        expensesCents: number;
+        aotcEligible: boolean;
+      }[] = [];
+      for (const rawEntry of r.educationStudents as unknown[]) {
+        if (rawEntry == null || typeof rawEntry !== "object") continue;
+        const e = rawEntry as Record<string, unknown>;
+        const year = num(e.year);
+        const expensesCents = num(e.expensesCents);
+        if (
+          year == null ||
+          !Number.isInteger(year) ||
+          year < 1900 ||
+          year > 2200 ||
+          expensesCents == null ||
+          expensesCents < 0 ||
+          typeof e.aotcEligible !== "boolean"
+        )
+          continue;
+        students.push({
+          year,
+          expensesCents: Math.round(expensesCents),
+          aotcEligible: e.aotcEligible,
+        });
+        if (students.length >= 24) break;
+      }
+      return students.length > 0 ? students : null;
+    })(),
     heirRatePct: num(r.heirRatePct),
     ceilings,
     optimizerGuardrail: bool(r.optimizerGuardrail),
@@ -2992,6 +3207,16 @@ const optScoreOut = z.object({
   penalty: z.number(),
   irmaa: z.number(),
   acaCredit: z.number(),
+  // Lifetime refundable education credit (T6, dollars): the
+  // score component the net-cost identity subtracts beside
+  // acaCredit. $0 for any plan with no entered education
+  // expenses.
+  educationRefundable: z.number(),
+  // Lifetime AMT owed (T7, dollars): already inside `tax`
+  // above — this line names the AMT component of the
+  // lifetime tax. $0 for any plan whose tentative minimum
+  // tax never exceeds its regular tax.
+  amt: z.number(),
   terminal: z.number(),
   // Terminal split under a preserve reserve (dollars): the
   // preserved ending pre-tax and its tax at the reserve's exit
@@ -3050,6 +3275,8 @@ function toOptScore(
     penalty: s.cost.penalty,
     irmaa: s.cost.irmaa,
     acaCredit: s.cost.acaCredit,
+    educationRefundable: s.cost.educationRefundable,
+    amt: s.cost.amt,
     terminal: s.cost.terminal,
     terminalPreserved: s.cost.terminalPreserved,
     preservedPretax: s.cost.preservedPretax,
@@ -3291,6 +3518,31 @@ const playgroundYearOut = z.object({
   count65: z.number(),
   standardDeduction: z.number(),
   seniorDeduction: z.number(),
+  // Itemized deduction (T5; $0 unless itemized amounts are
+  // typed): the itemized total after the §164(b)(6) SALT
+  // cap, the SALT amount allowed after that cap, and which
+  // side of the greater-of comparison the year took.
+  itemizedDeduction: z.number(),
+  itemizedSaltAllowed: z.number(),
+  deductionTaken: z.enum(["standard", "itemized"]),
+  // Education credits (T6; $0 / "none" unless students are
+  // entered): the tentative AOTC and Lifetime Learning
+  // Credit after their phase-outs, the choice taken, the
+  // nonrefundable portion applied (inside federalTax), and
+  // the refundable AOTC portion (reported separately; NOT
+  // inside federalTax or totalTax).
+  educationAotc: z.number(),
+  educationLlc: z.number(),
+  educationChoice: z.enum(["aotc", "llc", "none"]),
+  educationNonrefundable: z.number(),
+  educationRefundable: z.number(),
+  // Alternative minimum tax (T7): AMTI, the §55(d)
+  // exemption after its phase-out, the tentative minimum
+  // tax, and the AMT owed (inside federalTax / totalTax).
+  amti: z.number(),
+  amtExemption: z.number(),
+  amtTentativeTax: z.number(),
+  amtOwed: z.number(),
   deductions: z.number(),
   taxableIncome: z.number(),
   ordinaryTaxableIncome: z.number(),
@@ -3305,6 +3557,11 @@ const playgroundYearOut = z.object({
   niit: z.number(),
   federalTax: z.number(),
   stateTax: z.number(),
+  // Washington excise breakdown (T3; $0 unless the year's
+  // residence is Washington).
+  waGains: z.number(),
+  waStandardDeduction: z.number(),
+  waTaxableGains: z.number(),
   totalTax: z.number(),
   landingBracketPct: z.number().nullable(),
   landingBracketTop: z.number().nullable(),
@@ -3421,6 +3678,58 @@ const planYearRowOut = z.object({
   deductions: z.number(),
   federalTax: z.number(),
   stateTax: z.number(),
+  // Washington excise surfacing (T3): the year's WA-allocated
+  // gains entering the excise base, its standard deduction,
+  // and the taxable Washington capital gains after
+  // deductions — so a $0 state-tax year shows why. All $0 on
+  // the flat-rate path.
+  waGains: z.number(),
+  waStandardDeduction: z.number(),
+  waTaxableGains: z.number(),
+  // Capital-loss carryforward ledger (T4): the loss carried
+  // into the year by character, the part this year's gains
+  // absorbed, the §1211(b) allowance priced against ordinary
+  // income, and the loss carried out into the next year by
+  // character (dollars, like every money figure in this
+  // row). All $0 in every year of a plan with no entering
+  // carryforward.
+  lossCarryInSt: z.number(),
+  lossCarryInLt: z.number(),
+  lossAbsorbed: z.number(),
+  lossAllowance: z.number(),
+  lossCarryOutSt: z.number(),
+  lossCarryOutLt: z.number(),
+  // Itemized-vs-standard (T5): the year's itemized total
+  // after the §164(b)(6) SALT cap (dollars, like every
+  // money figure in this row) and which side of the
+  // greater-of comparison the year's deduction took. $0 /
+  // "standard" in every year of a plan with no itemized
+  // inputs.
+  itemizedDeduction: z.number(),
+  deductionTaken: z.enum(["standard", "itemized"]),
+  // Education credits (T6): the year's §25A credits under
+  // the winning allocation (dollars, like every money
+  // figure in this row) — the tentative AOTC and Lifetime
+  // Learning Credit after their phase-outs, the choice
+  // taken, the nonrefundable portion applied (inside
+  // federalTax above), and the refundable AOTC portion
+  // (NOT inside federalTax; the plan score credits it).
+  // All $0 / "none" in every year with no entered
+  // expenses.
+  educationAotc: z.number(),
+  educationLlc: z.number(),
+  educationChoice: z.enum(["aotc", "llc", "none"]),
+  educationNonrefundable: z.number(),
+  educationRefundable: z.number(),
+  // Alternative minimum tax (T7): the year's AMTI, the
+  // §55(d) exemption after its phase-out, the tentative
+  // minimum tax, and the AMT owed (dollars; inside
+  // federalTax above). amtOwed is $0 in every year whose
+  // tentative tax does not exceed its regular tax.
+  amti: z.number(),
+  amtExemption: z.number(),
+  amtTentativeTax: z.number(),
+  amtOwed: z.number(),
   penalty: z.number(),
   acaCreditKept: z.number(),
   acaPriced: z.boolean(),
@@ -3489,6 +3798,10 @@ const planYearRowOut = z.object({
     gains: z.number(),
     pretax: z.number(),
   }),
+  // Ceiling breached (round-7 R7-4): the year's final priced
+  // figures still exceed a switched-on ceiling at conversion
+  // $0 (see the ceilingBreachedSemantics convention).
+  ceilingBreached: z.boolean(),
 });
 
 function toPlanYearRow(y: {
@@ -3502,6 +3815,7 @@ function toPlanYearRow(y: {
   federalTax: number;
   stateTax: number;
   penalty: number;
+  educationRefundable: number;
   acaCreditKept: number;
   acaPriced: boolean;
   irmaaPaid: number;
@@ -3522,6 +3836,25 @@ function toPlanYearRow(y: {
     rmdSpouse: number;
     ssTaxable: number;
     deductions: number;
+    waGains: number;
+    waStandardDeduction: number;
+    waTaxableGains: number;
+    lossCarryInSt: number;
+    lossCarryInLt: number;
+    lossAbsorbed: number;
+    lossAllowance: number;
+    lossCarryOutSt: number;
+    lossCarryOutLt: number;
+    itemizedDeduction: number;
+    deductionTaken: "standard" | "itemized";
+    educationAotc: number;
+    educationLlc: number;
+    educationChoice: "aotc" | "llc" | "none";
+    educationNonrefundable: number;
+    amti: number;
+    amtExemption: number;
+    amtTentativeTax: number;
+    amtOwed: number;
     taxableBasisDollars: number;
     drawGains: number;
     dividendIncome: number;
@@ -3531,6 +3864,7 @@ function toPlanYearRow(y: {
   };
   settlementConverged: boolean;
   settlementMismatchCents: { gains: number; pretax: number };
+  ceilingBreached: boolean;
 }): z.infer<typeof planYearRowOut> {
   return {
     year: y.year,
@@ -3546,6 +3880,26 @@ function toPlanYearRow(y: {
     deductions: y.detail.deductions,
     federalTax: y.federalTax,
     stateTax: y.stateTax,
+    waGains: y.detail.waGains,
+    waStandardDeduction: y.detail.waStandardDeduction,
+    waTaxableGains: y.detail.waTaxableGains,
+    lossCarryInSt: y.detail.lossCarryInSt,
+    lossCarryInLt: y.detail.lossCarryInLt,
+    lossAbsorbed: y.detail.lossAbsorbed,
+    lossAllowance: y.detail.lossAllowance,
+    lossCarryOutSt: y.detail.lossCarryOutSt,
+    lossCarryOutLt: y.detail.lossCarryOutLt,
+    itemizedDeduction: y.detail.itemizedDeduction,
+    deductionTaken: y.detail.deductionTaken,
+    educationAotc: y.detail.educationAotc,
+    educationLlc: y.detail.educationLlc,
+    educationChoice: y.detail.educationChoice,
+    educationNonrefundable: y.detail.educationNonrefundable,
+    educationRefundable: y.educationRefundable,
+    amti: y.detail.amti,
+    amtExemption: y.detail.amtExemption,
+    amtTentativeTax: y.detail.amtTentativeTax,
+    amtOwed: y.detail.amtOwed,
     penalty: y.penalty,
     acaCreditKept: y.acaCreditKept,
     acaPriced: y.acaPriced,
@@ -3570,6 +3924,7 @@ function toPlanYearRow(y: {
     unpaidTax: y.unpaidTax,
     settlementConverged: y.settlementConverged,
     settlementMismatchCents: y.settlementMismatchCents,
+    ceilingBreached: y.ceilingBreached,
   };
 }
 
@@ -3630,6 +3985,60 @@ const fundingRowOut = z.object({
     gains: z.number(),
     pretax: z.number(),
   }),
+  // Ceiling breached (round-7 R7-4): true when a switched-on
+  // ceiling is still breached by the year's final priced
+  // figures at conversion $0 — the draws alone breach (see
+  // the ceilingBreachedSemantics convention describeApi
+  // publishes). False when no ceiling is on or the year
+  // complies.
+  ceilingBreached: z.boolean(),
+  // Capital-loss carryforward ledger (T4): the loss carried
+  // into the year by character, the part this year's gains
+  // absorbed, the §1211(b) allowance priced, and the loss
+  // carried out into the next year by character (integer
+  // cents, like every money figure in this row). All 0 in
+  // every year of a plan with no entering carryforward.
+  lossCarryInStCents: z.number(),
+  lossCarryInLtCents: z.number(),
+  lossAbsorbedCents: z.number(),
+  lossAllowanceCents: z.number(),
+  lossCarryOutStCents: z.number(),
+  lossCarryOutLtCents: z.number(),
+  // Itemized-vs-standard (T5): the year's itemized total
+  // after the §164(b)(6) SALT cap (integer cents, like
+  // every money figure in this row) and which side of the
+  // greater-of comparison the year's deduction took. 0 /
+  // "standard" in every year of a plan with no itemized
+  // inputs.
+  itemizedDeductionCents: z.number(),
+  deductionTaken: z.enum(["standard", "itemized"]),
+  // Education credits (T6): the year's refundable AOTC
+  // portion, the tentative AOTC and Lifetime Learning
+  // Credit after their phase-outs, the nonrefundable
+  // portion applied (inside federalTaxCents — the year's
+  // federal need is net of it), and the choice taken
+  // (integer cents, like every money figure in this row).
+  // The refundable portion is a credit the score counts,
+  // not a funding source or need — it never enters the
+  // cash identity. All 0 / "none" in every year with no
+  // entered expenses.
+  educationRefundableCents: z.number(),
+  educationAotcCents: z.number(),
+  educationLlcCents: z.number(),
+  educationNonrefundableCents: z.number(),
+  educationChoice: z.enum(["aotc", "llc", "none"]),
+  // Alternative minimum tax (T7): the year's AMTI, the
+  // §55(d) exemption after its phase-out, the tentative
+  // minimum tax, and the AMT owed (integer cents, like
+  // every money figure in this row). The owed amount is
+  // inside federalTaxCents — the year's federal need
+  // includes it — so these lines name the component and
+  // never enter the cash identity a second time.
+  // amtOwedCents is 0 in every year with no AMT exposure.
+  amtiCents: z.number(),
+  amtExemptionCents: z.number(),
+  amtTentativeTaxCents: z.number(),
+  amtOwedCents: z.number(),
 });
 
 /* ---------------- Work-years compare shapes ----------------
@@ -3643,6 +4052,14 @@ const workYearsLedgerOut = z.object({
   federal: z.number(),
   state: z.number(),
   fica: z.number(),
+  // Payroll tax as its own named component (T2): the same
+  // figure as fica, plus its three priced parts (Social
+  // Security, Medicare, Additional Medicare) summed over the
+  // work years — each priced from its own year's law row.
+  payrollTax: z.number(),
+  payrollSocialSecurity: z.number(),
+  payrollMedicare: z.number(),
+  payrollAdditionalMedicare: z.number(),
   pretaxContributions: z.number(),
   rothContributions: z.number(),
   hsaContributions: z.number(),
@@ -3650,6 +4067,13 @@ const workYearsLedgerOut = z.object({
   employeeContributions: z.number(),
   employerContributions: z.number(),
   surplusBanked: z.number(),
+  // Unfunded work-year shortfall (round-7 fix 1.1): spending
+  // and taxes in the work years that the salary plus the
+  // Taxable balance could not cover — the Taxable balance
+  // floors at $0 instead of booking a negative asset, and the
+  // remainder is reported here. $0 whenever the work years
+  // funded themselves.
+  shortfall: z.number(),
   banked: z.number(),
 });
 const workYearsRowOut = z.object({
@@ -3671,11 +4095,21 @@ const workYearsRowOut = z.object({
   winnerPenalty: z.number(),
   winnerIrmaa: z.number(),
   winnerAcaCredit: z.number(),
+  // The winner's lifetime refundable education credit (T6):
+  // the score component winnerNetCost subtracts beside
+  // winnerAcaCredit. 0 when no education expenses are entered.
+  winnerEducationRefundable: z.number(),
   winnerTerminal: z.number(),
   doNothingNetCost: z.number(),
-  // Work years' own federal tax + state tax + FICA, and the
-  // all-in figures (optimizer net + work tax).
+  // Work years' own federal tax + state tax + payroll tax, and
+  // the all-in figures (optimizer net + work tax).
   workTax: z.number(),
+  // The work years' employee payroll tax as its own component
+  // (T2), and the plan's total tax with the work years folded
+  // in: winnerTax + workTax, payroll included (see the
+  // contract's score-identities text).
+  payrollTax: z.number(),
+  totalTax: z.number(),
   allInTax: z.number(),
   doNothingAllInTax: z.number(),
   claim67AllInTax: z.number().nullable(),
@@ -4348,15 +4782,15 @@ const ACTION_PURPOSES: Record<string, string> = {
   updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
   deleteRothScenario: "Delete a saved Roth scenario by name.",
   renameRothScenario: "Rename a saved Roth scenario.",
-  runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. Compute-only; saves nothing.",
+  runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). Compute-only; saves nothing.",
   runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
   runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
   runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing.",
   runRothGiftCompare: "Price the plan as saved versus with a one-off gift of appreciated stock to a child, including the child's sale tax and the gift-tax exclusion check. Compute-only; saves nothing.",
-  runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced.",
-  runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
-  runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the eleven source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income (interestYieldCents, then dividendYieldCents — each the yield on the year's opening Taxable balance, reinvested in the engine's mechanics, so its application offsets the year's taxable sales, spending sales first), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits; taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — net of the yield cash applied to them; rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the eleven sources plus spendShortfallCents plus unpaidTaxCents foot to totalNeedCents in every year. unpaidTaxCents is the year's unpaid tax: the part of the assessed tax bill (federal, state, penalty, IRMAA) still owed after every balance the debit chain could draw from was exhausted — reported, never treated as paid (see the unpaidTaxSemantics convention describeApi publishes); neither it nor the shortfall is ever reconciled into a source field. A year whose balances cannot cover its needs foots exactly, by the sum of its unfunded spending and its unpaid tax. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state). Compute-only; saves nothing.",
+  runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced. The optional residenceState prices the state tax under a state's rules layer instead of the flat stateRatePct when present ('WA' = Washington's capital-gains excise, RCW 82.87 — see the stateSemantics convention); absent prices the flat rate exactly as before.",
+  runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state); ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
+  runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the eleven source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income (interestYieldCents, then dividendYieldCents — each the yield on the year's opening Taxable balance, reinvested in the engine's mechanics, so its application offsets the year's taxable sales, spending sales first), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits; taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — net of the yield cash applied to them; rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the eleven sources plus spendShortfallCents plus unpaidTaxCents foot to totalNeedCents in every year. unpaidTaxCents is the year's unpaid tax: the part of the assessed tax bill (federal, state, penalty, IRMAA) still owed after every balance the debit chain could draw from was exhausted — reported, never treated as paid (see the unpaidTaxSemantics convention describeApi publishes); neither it nor the shortfall is ever reconciled into a source field. A year whose balances cannot cover its needs foots exactly, by the sum of its unfunded spending and its unpaid tax. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state) and ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Compute-only; saves nothing.",
   getYearSummary: "Year summary for one year: spending figures and Net Worth movement on the same math as their own views. The Keep-the-lights-on floor is priced for the requested year: at the current month for the current year, otherwise at the last month included in that year's totals (or that year's December when it has none).",
   setNwAccountsCollapsed: "Persist the Net Worth Accounts section's collapsed state.",
   setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state.",
@@ -4391,9 +4825,16 @@ const describeApiResponse = z.object({
   flexSemantics: z.string(),
   protectMinSemantics: z.string(),
   unpaidTaxSemantics: z.string(),
+  irmaaTierCapSemantics: z.string(),
+  ceilingBreachedSemantics: z.string(),
   backupAuthenticitySemantics: z.string(),
   scoreIdentities: z.string(),
   lawYearSemantics: z.string(),
+  stateSemantics: z.string(),
+  lossCarryforwardSemantics: z.string(),
+  itemizedDeductionSemantics: z.string(),
+  educationCreditSemantics: z.string(),
+  amtSemantics: z.string(),
   tierSemantics: z.string(),
   examples: z.array(
     z.object({
@@ -4588,9 +5029,16 @@ export const Actions = {
         flexSemantics: FLEX_SEMANTICS,
         protectMinSemantics: PROTECT_MIN_SEMANTICS,
         unpaidTaxSemantics: UNPAID_TAX_SEMANTICS,
+        irmaaTierCapSemantics: IRMAA_TIER_CAP_SEMANTICS,
+        ceilingBreachedSemantics: CEILING_BREACHED_SEMANTICS,
         backupAuthenticitySemantics: BACKUP_AUTHENTICITY_SEMANTICS,
         scoreIdentities: SCORE_IDENTITIES,
         lawYearSemantics: LAW_YEAR_SEMANTICS,
+        stateSemantics: STATE_SEMANTICS,
+        lossCarryforwardSemantics: LOSS_CARRYFORWARD_SEMANTICS,
+        itemizedDeductionSemantics: ITEMIZED_DEDUCTION_SEMANTICS,
+        educationCreditSemantics: EDUCATION_CREDIT_SEMANTICS,
+        amtSemantics: AMT_SEMANTICS,
         tierSemantics: TIER_SEMANTICS,
         examples: [ROTH_COMPARE_EXAMPLE],
         actions: visible.map(([name, def]) => ({
@@ -4711,6 +5159,7 @@ export const Actions = {
       trailingMonthsCovered: z.number(),
       trailingAvgCents: z.number(),
       avgSmoothedCents: z.number(),
+      avgCashOutCents: z.number(),
       divergenceCents: z.number(),
       divergencePct: z.number(),
       reserveCents: z.number(),
@@ -4857,11 +5306,13 @@ export const Actions = {
           : Math.max(0, monthsBetween(coveredStart, month) + 1);
       let trailingSum = 0;
       let smoothedSum = 0;
+      let cashOutSum = 0;
       for (let i = 0; i < trailingMonthsCovered; i++) {
         const m = shiftMonth(coveredStart, i);
         const e = eff(m);
         trailingSum += e.incurred;
         smoothedSum += e.smoothed;
+        cashOutSum += e.cashOut;
       }
       const trailingAvgCents =
         trailingMonthsCovered > 0
@@ -4870,6 +5321,14 @@ export const Actions = {
       const avgSmoothedCents =
         trailingMonthsCovered > 0
           ? Math.round(smoothedSum / trailingMonthsCovered)
+          : 0;
+      // Cash-out average over the SAME trailing window as the two
+      // averages above (same months, same rounding): the Quick view
+      // averages strip reads this beside avgSmoothedCents, so the
+      // strip can never disagree with the dashboard's own window.
+      const avgCashOutCents =
+        trailingMonthsCovered > 0
+          ? Math.round(cashOutSum / trailingMonthsCovered)
           : 0;
       const divergenceCents = avgSmoothedCents - trailingAvgCents;
       const divergencePct =
@@ -5203,6 +5662,7 @@ export const Actions = {
         trailingMonthsCovered,
         trailingAvgCents,
         avgSmoothedCents,
+        avgCashOutCents,
         divergenceCents,
         divergencePct,
         reserveCents,
@@ -9241,6 +9701,16 @@ export const Actions = {
           penaltyCents: z.number(),
           irmaaCents: z.number(),
           acaCreditCents: z.number(),
+          // Lifetime refundable education credit (T6): the
+          // component the net-cost identity subtracts beside
+          // acaCreditCents. 0 for any scenario with no
+          // entered education expenses.
+          educationRefundableCents: z.number(),
+          // Lifetime AMT owed (T7): already inside
+          // totalTaxCents — this line names the AMT
+          // component of the scenario's lifetime tax. 0
+          // for any scenario with no AMT exposure.
+          amtCents: z.number(),
           terminalCents: z.number(),
           ssCollectedCents: z.number(),
           // Lifetime unpaid tax (round-5 fix 1): the part of
@@ -9254,6 +9724,9 @@ export const Actions = {
           endingAfterTaxWealthCents: z.number(),
           deltaNetCostCents: z.number(),
           deltaAcaCreditCents: z.number(),
+          // Scenario − baseline refundable education credit
+          // (T6): positive means the scenario receives more.
+          deltaEducationRefundableCents: z.number(),
           effectiveInputs: rothEffectiveInputsOut,
         }),
       ),
@@ -9284,6 +9757,8 @@ export const Actions = {
           penaltyCents: s.penaltyCents,
           irmaaCents: s.irmaaCents,
           acaCreditCents: s.acaCreditCents,
+          educationRefundableCents: s.educationRefundableCents,
+          amtCents: s.amtCents,
           terminalCents: s.terminalCents,
           ssCollectedCents: s.ssCollectedCents,
           unpaidTaxCents: s.unpaidTaxCents,
@@ -9294,6 +9769,7 @@ export const Actions = {
           endingAfterTaxWealthCents: s.endingAfterTaxWealthCents,
           deltaNetCostCents: s.deltaNetCostCents,
           deltaAcaCreditCents: s.deltaAcaCreditCents,
+          deltaEducationRefundableCents: s.deltaEducationRefundableCents,
           // The echo carries the merged scenario's DERIVED
           // sleeve (the engine's effective starting sleeve for
           // that scenario, R4-3 F7), not the threaded
@@ -9523,10 +9999,15 @@ export const Actions = {
   // age the work years are rolled forward by the tested
   // work-year engine (server/src/workYears.ts: contribution
   // stack from the law tables, salary-year federal tax through
-  // the shared priceYear path, FICA in code), then the rolled
+  // the shared priceYear path, employee payroll tax priced
+  // entirely from each year's own law row — wage base, rates,
+  // and Additional Medicare threshold as dated table data),
+  // then the rolled
   // balances are priced with the existing joint optimizer.
   // The all-in lifetime tax is the optimizer's net cost plus
-  // the work years' own federal tax + state tax + FICA. A quit age equal
+  // the work years' own federal tax + state tax + payroll tax,
+  // and the row's totalTax folds the same work-year taxes into
+  // the winner's tax, payroll as its own component. A quit age equal
   // to the plan's window-start age prices zero work years and
   // reproduces the plain optimizer run exactly; a blank / $0
   // salary prices no work years at any age.
@@ -9605,6 +10086,10 @@ export const Actions = {
             federal: row.roll.totals.federal,
             state: row.roll.totals.state,
             fica: row.roll.totals.fica,
+            payrollTax: row.roll.totals.payrollTax,
+            payrollSocialSecurity: row.roll.totals.payrollSocialSecurity,
+            payrollMedicare: row.roll.totals.payrollMedicare,
+            payrollAdditionalMedicare: row.roll.totals.payrollAdditionalMedicare,
             pretaxContributions: row.roll.totals.pretaxContributions,
             rothContributions: row.roll.totals.rothContributions,
             hsaContributions: row.roll.totals.hsaContributions,
@@ -9612,6 +10097,7 @@ export const Actions = {
             employeeContributions: row.roll.totals.employeeContributions,
             employerContributions: row.roll.totals.employerContributions,
             surplusBanked: row.roll.totals.surplusBanked,
+            shortfall: row.roll.totals.shortfall,
             banked: row.roll.totals.banked,
           },
           winnerName: row.optimizer.winner.spec.name,
@@ -9622,9 +10108,12 @@ export const Actions = {
           winnerPenalty: row.optimizer.winner.cost.penalty,
           winnerIrmaa: row.optimizer.winner.cost.irmaa,
           winnerAcaCredit: row.optimizer.winner.cost.acaCredit,
+          winnerEducationRefundable: row.optimizer.winner.cost.educationRefundable,
           winnerTerminal: row.optimizer.winner.cost.terminal,
           doNothingNetCost: row.optimizer.doNothing.cost.netCost,
           workTax: row.workTax,
+          payrollTax: row.payrollTax,
+          totalTax: row.totalTax,
           allInTax: row.allInTax,
           doNothingAllInTax:
             Math.round((row.optimizer.doNothing.cost.netCost + row.workTax) * 100) / 100,

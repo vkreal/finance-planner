@@ -10,6 +10,7 @@ fmtMoneyInput,
 hintCls,
 InfoNote,
 inputCls,
+labelCls,
 moneyField,
 numField,
 parseDollars,
@@ -441,6 +442,25 @@ export function Playground() {
   const [pgBenchmarkLoaded, setPgBenchmarkLoaded] =
     useState<PgBenchmarkSource | null>(null);
   const [pgStateRate, setPgStateRate] = useState("0");
+  // State of residence for this Playground year (T3 build):
+  // "WA" prices Washington's capital-gains excise instead of
+  // the flat rate; "other" keeps the flat rate.
+  const [pgResidence, setPgResidence] = useState<"WA" | "other">("other");
+  // Itemized deductions (T5 build): the year's four itemized
+  // components as typed strings; blank = $0 on that component.
+  const [pgItemizedMortgage, setPgItemizedMortgage] = useState("");
+  const [pgItemizedSalt, setPgItemizedSalt] = useState("");
+  const [pgItemizedCharitable, setPgItemizedCharitable] = useState("");
+  const [pgItemizedOther, setPgItemizedOther] = useState("");
+  // Education students (T6 build): this year's entered
+  // students — each row's qualified expenses as a typed
+  // string plus the household's AOTC-eligibility mark. No
+  // rows = no students: no education credits price and the
+  // year prices exactly as before. Remembered with the
+  // rest of the form, like every other dial here.
+  const [pgEduStudents, setPgEduStudents] = useState<
+    { expenses: string; aotcEligible: boolean }[]
+  >([]);
   const [pgSoleBeneficiary, setPgSoleBeneficiary] = useState(true);
   /* Hold-the-fill state — remembered with the rest of the
      form, like every other playground dial, so a held target
@@ -554,6 +574,12 @@ export function Playground() {
     setPgBenchmark(s.acaBenchmark);
     setPgBenchmarkLoaded(s.benchmarkSource);
     setPgStateRate(s.stateRate);
+    setPgResidence(s.residenceState === "WA" ? "WA" : "other");
+    setPgItemizedMortgage(s.itemizedMortgageInterest);
+    setPgItemizedSalt(s.itemizedSaltPaid);
+    setPgItemizedCharitable(s.itemizedCharitable);
+    setPgItemizedOther(s.itemizedOther);
+    setPgEduStudents(s.educationStudents);
     setPgSoleBeneficiary(s.soleBeneficiary);
     setPgHoldOn(s.holdOn);
     setPgHeldTarget(s.heldTarget);
@@ -600,6 +626,12 @@ export function Playground() {
     acaBenchmark: pgBenchmark,
     benchmarkSource: pgBenchmarkLoaded,
     stateRate: pgStateRate,
+    residenceState: pgResidence,
+    itemizedMortgageInterest: pgItemizedMortgage,
+    itemizedSaltPaid: pgItemizedSalt,
+    itemizedCharitable: pgItemizedCharitable,
+    itemizedOther: pgItemizedOther,
+    educationStudents: pgEduStudents,
     soleBeneficiary: pgSoleBeneficiary,
     holdOn: pgHoldOn,
     heldTarget: pgHeldTarget,
@@ -907,6 +939,7 @@ export function Playground() {
     setPgBenchmark("");
     setPgBenchmarkLoaded(null);
     setPgStateRate("0");
+    setPgResidence("other");
     setPgSoleBeneficiary(true);
     // Reset releases the hold.
     setPgHoldOn(false);
@@ -938,6 +971,12 @@ export function Playground() {
       acaBenchmark: "",
       benchmarkSource: null,
       stateRate: "0",
+      residenceState: "other",
+      itemizedMortgageInterest: "",
+      itemizedSaltPaid: "",
+      itemizedCharitable: "",
+      itemizedOther: "",
+      educationStudents: [],
       soleBeneficiary: true,
       holdOn: false,
       heldTarget: null,
@@ -1000,6 +1039,21 @@ export function Playground() {
       acaHouseholdSize: acaSize != null && acaSize > 0 ? acaSize : null,
       acaBenchmarkAnnual: money0OrNull(pgBenchmark),
       stateRatePct: clamp0(parseNum(pgStateRate) ?? 0),
+      residenceState: pgResidence,
+      itemizedMortgageInterest: money0(pgItemizedMortgage),
+      itemizedSaltPaid: money0(pgItemizedSalt),
+      itemizedCharitable: money0(pgItemizedCharitable),
+      itemizedOther: money0(pgItemizedOther),
+      // Education students (T6): the typed rows in dollars —
+      // a blank expenses row prices $0 and is inert, exactly
+      // like a blank money dial; no rows = no credits.
+      educationStudents:
+        pgEduStudents.length === 0
+          ? null
+          : pgEduStudents.map((r) => ({
+              expenses: money0(r.expenses),
+              aotcEligible: r.aotcEligible,
+            })),
     };
   };
   const playgroundResult: PlaygroundYearResult | null = useMemo(() => {
@@ -1012,7 +1066,8 @@ export function Playground() {
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgConversion,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
-    pgBenchmark, pgStateRate,
+    pgBenchmark, pgStateRate, pgResidence,
+    pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
   ]);
 
   // Zero-conversion pricing of the same dials — the hold
@@ -1027,7 +1082,8 @@ export function Playground() {
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
-    pgBenchmark, pgStateRate,
+    pgBenchmark, pgStateRate, pgResidence,
+    pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
   ]);
 
   // Bracket-fill chips: set the conversion dial to the exact
@@ -1111,7 +1167,8 @@ export function Playground() {
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
-    pgBenchmark, pgStateRate,
+    pgBenchmark, pgStateRate, pgResidence,
+    pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
   ]);
 
   // "Start from my numbers": prefill the dials from the
@@ -1199,6 +1256,38 @@ export function Playground() {
     const pretaxTotal = pgPrefillSource.pretaxStart + (pgPrefillSource.pretaxSpouseStart ?? 0);
     setPgPretax(pretaxTotal > 0 ? fmtMoneyInput(pretaxTotal) : "");
     setPgStateRate(String(pgPrefillSource.stateRatePct));
+    setPgResidence(pgPrefillSource.residenceState === "WA" ? "WA" : "other");
+    setPgItemizedMortgage(
+      pgPrefillSource.itemizedMortgageInterest != null
+        ? fmtMoneyInput(pgPrefillSource.itemizedMortgageInterest)
+        : "",
+    );
+    setPgItemizedSalt(
+      pgPrefillSource.itemizedSaltPaid != null
+        ? fmtMoneyInput(pgPrefillSource.itemizedSaltPaid)
+        : "",
+    );
+    setPgItemizedCharitable(
+      pgPrefillSource.itemizedCharitable != null
+        ? fmtMoneyInput(pgPrefillSource.itemizedCharitable)
+        : "",
+    );
+    setPgItemizedOther(
+      pgPrefillSource.itemizedOther != null
+        ? fmtMoneyInput(pgPrefillSource.itemizedOther)
+        : "",
+    );
+    // Education students (T6): the plan's entered students
+    // for the chosen tax year become this year's rows — the
+    // plan's other years' entries are not this year's.
+    setPgEduStudents(
+      (pgPrefillSource.educationStudents ?? [])
+        .filter((e) => e.year === taxYear)
+        .map((e) => ({
+          expenses: fmtMoneyInput(e.expenses),
+          aotcEligible: e.aotcEligible,
+        })),
+    );
     setPgSoleBeneficiary(pgPrefillSource.spouseSoleBeneficiary);
   };
 
@@ -1988,10 +2077,115 @@ export function Playground() {
                 </p>
               )}
             </div>
+            <div>
+              <label
+                className="block text-sm font-medium text-[var(--text)]"
+                htmlFor="roth-pg-residence"
+              >
+                State of residence
+              </label>
+              <select
+                id="roth-pg-residence"
+                aria-label="State of residence"
+                className={inputCls}
+                value={pgResidence}
+                onChange={(e) =>
+                  setPgResidence(e.target.value === "WA" ? "WA" : "other")
+                }
+              >
+                <option value="WA">Washington — capital-gains excise</option>
+                <option value="other">Other / none — flat rate</option>
+              </select>
+              <p className={hintCls}>
+                Washington prices the state tax on this year&rsquo;s stock
+                gain under its capital-gains excise instead of the flat rate.
+              </p>
+            </div>
             {pctField("State tax rate for this year", pgStateRate, setPgStateRate, {
-              hint: "Flat rate on taxable income, the plan's state model. 0 = none.",
+              hint:
+                pgResidence === "WA"
+                  ? "Ignored for Washington — the excise prices the state tax instead."
+                  : "Flat rate on taxable income, the plan's state model. 0 = none.",
               info: "Your state's flat tax rate on taxable income, as a percent. Leave it at 0 to price federal tax only.",
             })}
+            {moneyField("Mortgage interest", pgItemizedMortgage, setPgItemizedMortgage, {
+              hint: "Itemized deductions for this year. The year takes the greater of the itemized total and the standard deduction. Blank = $0.",
+            })}
+            {moneyField("State and local taxes paid", pgItemizedSalt, setPgItemizedSalt, {
+              hint: "Itemized deductions: taxes PAID this year. Capped on its own at the year's SALT cap ($40,000 for 2025, $40,400 for 2026, reduced for very high incomes) before the comparison. Blank = $0.",
+            })}
+            {moneyField("Charitable contributions", pgItemizedCharitable, setPgItemizedCharitable, {
+              hint: "Itemized deductions: this same figure is the one charitable input the Washington excise's charitable deduction also reads. Blank = $0.",
+            })}
+            {moneyField("Other itemized deductions", pgItemizedOther, setPgItemizedOther, {
+              hint: "Itemized deductions: anything else. The four components stay separate so the SALT cap applies to that component alone. Blank = $0.",
+            })}
+            <div className="col-span-2 sm:col-span-3">
+              <span className={labelCls}>Education expenses — for education credits</span>
+              <p className={hintCls}>
+                Optional: one row per student in this year — that
+                student&rsquo;s qualified education expenses, and whether the
+                student is eligible for the American Opportunity Credit
+                (AOTC). The AOTC prices per student (up to $2,500 each, 40%
+                refundable); other students&rsquo; expenses price the
+                Lifetime Learning Credit (20% of up to $10,000), and the same
+                student&rsquo;s expenses never count toward both. Leave
+                empty for no credits.
+              </p>
+              {pgEduStudents.map((row, i) => (
+                <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
+                  <div className="min-w-40 flex-1">
+                    {moneyField(`Student ${i + 1} qualified expenses`, row.expenses, (v) =>
+                      setPgEduStudents((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, expenses: v } : r)),
+                      ),
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 pb-2">
+                    <input
+                      id={`pg-edu-aotc-${i}`}
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={row.aotcEligible}
+                      onChange={(e) =>
+                        setPgEduStudents((rows) =>
+                          rows.map((r, j) =>
+                            j === i ? { ...r, aotcEligible: e.target.checked } : r,
+                          ),
+                        )
+                      }
+                    />
+                    <label htmlFor={`pg-edu-aotc-${i}`} className="text-sm">
+                      AOTC-eligible
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove student ${i + 1}`}
+                    className="px-2 py-2 text-base text-[var(--dim)] hover:text-[var(--bad)]"
+                    onClick={() =>
+                      setPgEduStudents((rows) => rows.filter((_, j) => j !== i))
+                    }
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {pgEduStudents.length < 12 && (
+                <button
+                  type="button"
+                  className="mt-2 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+                  onClick={() =>
+                    setPgEduStudents((rows) => [
+                      ...rows,
+                      { expenses: "", aotcEligible: true },
+                    ])
+                  }
+                >
+                  Add a student
+                </button>
+              )}
+            </div>
           </div>
           ))}
 
@@ -2660,6 +2854,14 @@ export function Playground() {
                           ? `includes ${fmtDollars(pg.age65AddonTotal)} of 65+ add-ons (${pg.count65} ${pg.count65 === 1 ? "person" : "people"} 65+)`
                           : undefined,
                       )}
+                      {pg.itemizedDeduction > 0 &&
+                        stackRow(
+                          "Itemized deductions",
+                          fmtDollars(pg.itemizedDeduction),
+                          pg.deductionTaken === "itemized"
+                            ? `more than the standard deduction — used (state & local taxes allowed: ${fmtDollars(pg.itemizedSaltAllowed)})`
+                            : "less than the standard deduction — standard used",
+                        )}
                       {pg.seniorDeduction > 0 &&
                         stackRow("Senior deduction (65+)", fmtDollars(pg.seniorDeduction))}
                       {stackRow("Taxable income", fmtDollars(pg.taxableIncome))}
@@ -2695,20 +2897,14 @@ export function Playground() {
                       that balance — the tax below still prices the amount typed.
                     </p>
                   )}
-                  {pg.stockGain < 0 && pg.capitalLoss === 0 && (
-                    <p className="mt-2 text-sm" role="note">
-                      The sale itself is a {fmtDollars(-pg.stockGain)} long-term
-                      loss; in the gains stack it offsets the qualified dividends
-                      entered.
-                    </p>
-                  )}
                   {pg.capitalLoss > 0 && (
                     <p className="mt-2 text-sm" role="note">
-                      <strong>Net long-term loss of {fmtDollars(pg.capitalLoss)}:</strong>{" "}
-                      priced as $0 of gains — the loss first offsets the qualified
-                      dividends entered, then {fmtDollars(pg.capitalLossAllowance)} of
-                      it offsets ordinary income this year (the §1211(b)
-                      capital-loss allowance, up to $3,000).
+                      <strong>Net capital loss of {fmtDollars(pg.capitalLoss)}:</strong>{" "}
+                      capital losses offset capital gains only — the qualified
+                      dividends entered still price in full — and{" "}
+                      {fmtDollars(pg.capitalLossAllowance)} of the loss offsets
+                      ordinary income this year (the §1211(b) capital-loss
+                      allowance, up to $3,000).
                       {pg.capitalLoss > pg.capitalLossAllowance && (
                         <>
                           {" "}The remaining{" "}
@@ -2804,8 +3000,49 @@ export function Playground() {
                         : undefined,
                     )}
                     {stackRow("Total federal tax", fmtDollars(pg.federalTax), undefined, true)}
+                    {pg.educationAotc > 0 &&
+                      stackRow(
+                        "American Opportunity Credit",
+                        fmtDollars(pg.educationAotc),
+                        `${fmtDollars(pg.educationRefundable)} of it is refundable — paid even past a $0 tax bill, shown below, not inside the tax. The nonrefundable part is already inside the total federal tax.`,
+                      )}
+                    {pg.educationLlc > 0 &&
+                      stackRow(
+                        "Lifetime Learning Credit",
+                        fmtDollars(pg.educationLlc),
+                        "Nonrefundable — already inside the total federal tax.",
+                      )}
+                    {(pg.educationAotc > 0 || pg.educationLlc > 0) &&
+                      stackRow(
+                        "Nonrefundable education credits applied",
+                        fmtDollars(pg.educationNonrefundable),
+                      )}
+                    {pg.educationRefundable > 0 &&
+                      stackRow(
+                        "Refundable education credit (AOTC)",
+                        fmtDollars(pg.educationRefundable),
+                        "Paid on top of the tax result — not netted into the total federal tax.",
+                      )}
+                    {pg.amtOwed > 0 &&
+                      stackRow(
+                        "Alternative minimum tax (AMT)",
+                        fmtDollars(pg.amtOwed),
+                        `Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) beat the regular tax — the difference is already inside the total federal tax.`,
+                      )}
+                    {pg.amtOwed === 0 && pg.amti > 0 &&
+                      stackRow(
+                        "Alternative minimum tax (AMT)",
+                        "$0",
+                        `Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) did not beat the regular tax.`,
+                      )}
                     {pg.stateTax > 0 &&
                       stackRow("State tax", fmtDollars(pg.stateTax))}
+                    {pgResidence === "WA" &&
+                      stackRow(
+                        "Washington capital-gains excise",
+                        fmtDollars(pg.stateTax),
+                        `${fmtDollars(pg.waGains)} of gains − ${fmtDollars(pg.waStandardDeduction)} standard deduction = ${fmtDollars(pg.waTaxableGains)} taxable`,
+                      )}
                     {stackRow("MAGI", fmtDollars(pg.magi))}
                     {pg.acaMagi !== pg.magi &&
                       stackRow(
@@ -2969,6 +3206,17 @@ type PgPrefillSource = {
   acaBenchmarkSingle: number | null;
   acaBenchmarkFamily: number | null;
   stateRatePct: number;
+  residenceState: "WA" | "other" | null;
+  // Itemized deductions (T5): the plan's four components in
+  // dollars (null = the plan has none entered).
+  itemizedMortgageInterest: number | null;
+  itemizedSaltPaid: number | null;
+  itemizedCharitable: number | null;
+  itemizedOther: number | null;
+  // Education students (T6): the plan's entered per-student,
+  // per-year expenses in dollars (null = the plan has none
+  // entered); the prefill keeps only the chosen year's rows.
+  educationStudents: { year: number; expenses: number; aotcEligible: boolean }[] | null;
   spouseSoleBeneficiary: boolean;
 };
 
@@ -3041,6 +3289,28 @@ function pgPrefillSourceFrom(
         ? null
         : s.acaBenchmarkFamilyCents / 100,
     stateRatePct: s ? (s.stateRatePct ?? 0) : 0,
+    residenceState: s ? (s.residenceState ?? null) : null,
+    itemizedMortgageInterest:
+      s?.itemizedMortgageInterestCents == null
+        ? null
+        : s.itemizedMortgageInterestCents / 100,
+    itemizedSaltPaid:
+      s?.itemizedSaltPaidCents == null
+        ? null
+        : s.itemizedSaltPaidCents / 100,
+    itemizedCharitable:
+      s?.itemizedCharitableCents == null
+        ? null
+        : s.itemizedCharitableCents / 100,
+    itemizedOther:
+      s?.itemizedOtherCents == null ? null : s.itemizedOtherCents / 100,
+    educationStudents: s
+      ? (s.educationStudents ?? null)?.map((e) => ({
+          year: e.year,
+          expenses: e.expensesCents / 100,
+          aotcEligible: e.aotcEligible === true,
+        })) ?? null
+      : null,
     spouseSoleBeneficiary: s ? (s.spouseSoleBeneficiary ?? true) : true,
   };
 }

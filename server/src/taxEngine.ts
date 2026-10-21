@@ -11,8 +11,11 @@
 // Year loop order (per the design): RMD from the prior Dec 31
 // pre-tax balance → conversion (the fill decision) → Social
 // Security taxable amount by the IRC §86 provisional-income
-// formula → taxable income after the standard deduction, age-65+
-// add-ons and the OBBBA senior deduction → federal tax with
+// formula → taxable income after the year's deduction — the
+// greater of the standard deduction (with age-65+ add-ons)
+// and the household's itemized total (its SALT component
+// capped at the year's §164(b)(6) cap), plus the OBBBA senior
+// deduction on top of either side → federal tax with
 // long-term gains stacked on top of ordinary income → NIIT →
 // IRMAA tier from MAGI (the surcharge PAID in a year is set by
 // MAGI two years earlier) → ACA premium credit for marketplace
@@ -21,14 +24,17 @@
 // the plan's draw order, and taxes + IRMAA paid from Taxable by default (protected
 // to the protect-minimum) or withheld from the conversion.
 //
-// Today's-dollars convention: indexed law figures come from the
-// newest law row and stay constant in real terms; NON-indexed
-// figures (Social Security thresholds, NIIT thresholds, the top
-// IRMAA tier floor through 2028, the OBBBA senior-deduction
-// amount and phase-out start) deflate at the inflation input.
+// Today's-dollars convention (per-calendar-year law tables,
+// T1): each priced year uses its own calendar year's law row;
+// a year beyond the newest published row carries that row
+// forward, so its indexed figures stay constant in real terms.
+// NON-indexed figures (Social Security thresholds, NIIT
+// thresholds, the top IRMAA tier floor through 2028, the
+// OBBBA senior-deduction amount and phase-out start) deflate
+// at the inflation input for each year the priced year runs
+// past the row it prices under — see deflationFactor.
 
 import {
-CURRENT_LAW,
 SENIOR_DEDUCTION,
 SS_THRESHOLDS,
 acaTableFor,
@@ -70,8 +76,9 @@ export function ssTaxableAmount(
 /* ---------------- One year's federal pricing ---------------- */
 
 export type PriceYearInput = {
-  // Calendar year being priced (selects the law row for years
-  // with a published row; later years price under CURRENT_LAW).
+  // Calendar year being priced (selects the law row: the year's
+  // own published row, or the newest published row carried
+  // forward for a year beyond the table).
   calendarYear: number;
   filingStatus: FilingStatus;
   agePrimary: number;
@@ -113,13 +120,123 @@ export type PriceYearInput = {
   // income this year, up to $3,000. It subtracts from AGI
   // (and therefore from MAGI / ACA MAGI, the §86 provisional
   // income, and taxable income) exactly as the Form 1040
-  // capital-loss line does; it is NOT part of the gains stack
-  // and does not enter the NIIT base. Only the single-year
-  // Playground pricer passes it — the plan engine never does,
-  // so plan pricing is unchanged.
+  // capital-loss line does; it is NOT part of the gains stack.
+  // It DOES reduce the §1411 NIIT base (round-7 R7-2): an
+  // allowable net capital loss nets against the year's other
+  // investment income in the base, floored at $0. The
+  // single-year Playground pricer passes it for its typed
+  // sale year; the plan engine passes it in a year its
+  // capital-loss carryforward ledger is active (T4), where
+  // the allowance is the ledger's own priced figure for the
+  // year — a plan with no banked loss never passes it, so
+  // its pricing is unchanged.
   capitalLossAllowance?: number;
   inflationPct: number;
   stateRatePct: number;
+  // State of residence (T3 build; optional — absent / null /
+  // "other" = the pre-T3 pricing, bit-identical): "WA" prices
+  // the state tax under Washington's capital-gains excise
+  // (RCW 82.87) INSTEAD of the flat stateRatePct — the flat
+  // rate is the fallback for any state with no rules layer,
+  // and the two never stack. The excise base is the year's
+  // Washington-allocated long-term capital gains: in this
+  // engine, the `ltcg` input itself (realized gains from
+  // taxable-account sales, plus any injected sale gain).
+  // Qualified dividends are NOT capital gains and never enter
+  // the base; neither do retirement-account distributions
+  // (RMDs, conversions, pre-tax draws) or Social Security —
+  // assets held in retirement accounts are exempt under RCW
+  // 82.87.050(3), and those flows never reach `ltcg`.
+  residenceState?: "WA" | "other" | null;
+  // Itemized deductions (T5 build; all optional — absent /
+  // 0 = no itemized amount entered, and with all four absent
+  // the year's deduction is the standard side exactly as
+  // before this build, bit-identical): the household's
+  // itemized components for the year, kept SEPARATE — never
+  // one lump — because the SALT component is capped on its
+  // own (IRC §164(b)(6), the year's law row) and the T7 AMT
+  // build needs to know which dollars are SALT to add them
+  // back. Each priced year takes the GREATER of its standard
+  // deduction (base + age-65+ add-ons) and the itemized
+  // total (the four components, with the SALT component
+  // capped); the OBBBA senior deduction then applies on top
+  // of whichever side wins — §224 allows it whether or not
+  // the filer itemizes. The components are the household's
+  // own figures as it knows them: the state and local taxes
+  // ENGINE prices (T3) are not re-entered here — this input
+  // is taxes PAID, entered by the household.
+  itemizedMortgageInterest?: number;
+  itemizedSaltPaid?: number;
+  // Charitable contributions — THE one charitable input
+  // (T5): it is a component of the federal itemized total
+  // AND, on the Washington path, the donations figure the
+  // RCW 82.87.080 charitable deduction prices from (fed to
+  // waCapitalGainsTax as its donations). There is no second
+  // charitable input anywhere: before this build the WA
+  // deduction read a WA-only field (waCharitableDonations);
+  // that field is gone and this one input serves both.
+  itemizedCharitable?: number;
+  itemizedOther?: number;
+  // Washington excise base override (T4; optional — absent =
+  // the excise prices on `ltcg`, bit-identical to before):
+  // when present, the WA path prices on THIS figure — the
+  // year's own realized long-term gains BEFORE any federal
+  // capital-loss carryforward netting — instead of the
+  // (possibly netted) `ltcg`. The federal ledger never
+  // enters the excise: Washington takes no carryforward (a
+  // loss year carries nothing, RCW 82.87.040(3)), so a year
+  // whose gains are fully absorbed by a federal carryforward
+  // still prices the excise on the gains it realized. Only
+  // the plan engine passes it, and only in a year its loss
+  // ledger is active.
+  waGainsBase?: number;
+  // Education credits (T6 build; optional — absent / null /
+  // empty = no education expenses entered, no credits price,
+  // bit-identical to before): the year's students, each with
+  // their qualified education expenses for the year and the
+  // household's own mark of whether that student is eligible
+  // for the American Opportunity Tax Credit. The engine
+  // prices the §25A credit math and phase-outs on these
+  // figures only — it never judges enrollment eligibility,
+  // and it never infers expenses from any other input (not
+  // from 529 balances, not from the college-years span).
+  // Priced by educationCreditsFor below: the AOTC per
+  // eligible student, the Lifetime Learning Credit per
+  // return over the remaining students' expenses, the
+  // statutory coordination (the same student's expenses
+  // never support both credits) with the better of the two
+  // statutory allocations taken, the §25A(d) phase-out on
+  // the year's AGI, the nonrefundable portion applied
+  // against the year's income tax (never below $0, and
+  // never against the NIIT — the Form 1040 ordering), and
+  // the refundable AOTC portion reported separately.
+  educationStudents?: EducationStudent[] | null;
+};
+
+// One student's qualified education expenses for a priced
+// year (T6; IRC §25A). `expenses` is the student's qualified
+// expenses in dollars; `aotcEligible` is the household's own
+// mark that this student may claim the American Opportunity
+// Tax Credit (the engine prices credit math and phase-outs,
+// not eligibility — the four-year limit, enrollment, and
+// program rules are the household's to judge, exactly as the
+// mark records). A student not marked eligible prices only
+// into the Lifetime Learning Credit pool.
+export type EducationStudent = {
+  expenses: number;
+  aotcEligible: boolean;
+};
+
+// A plan-level education entry (T6): one student's
+// qualified expenses for ONE calendar year of the plan.
+// The plan carries a list of these — per student and per
+// year, never one household lump — and the march prices
+// each year's entries in that year only. An entry is
+// never inferred: no entry for a year means no expenses
+// that year and no credit, whatever the plan's 529
+// balances or college-years span say.
+export type EducationStudentYear = EducationStudent & {
+  year: number; // calendar year the expenses belong to
 };
 
 export type BracketLayer = {
@@ -155,6 +272,21 @@ export type PriceYearResult = {
   acaMagi: number;
   standardDeduction: number;
   seniorDeduction: number;
+  // Itemized deduction (T5): the year's itemized total AFTER
+  // the §164(b)(6) cap on its SALT component ($0 when no
+  // itemized inputs are entered), the SALT amount allowed
+  // after that cap, the cap itself as it applied to this
+  // year (the law row's cap after its modified-AGI
+  // phase-down and today's-dollars deflation), and which
+  // side of the greater-of comparison the year's deduction
+  // took ("standard" on a tie — the dollars are the same).
+  // `deductions` below is max(standardDeduction,
+  // itemizedDeduction) + seniorDeduction: the senior
+  // deduction applies on top of either side (§224).
+  itemizedDeduction: number;
+  itemizedSaltAllowed: number;
+  itemizedSaltCap: number;
+  deductionTaken: "standard" | "itemized";
   deductions: number;
   taxableIncome: number;
   ordinaryTax: number;
@@ -162,6 +294,61 @@ export type PriceYearResult = {
   niit: number;
   federalTax: number;
   stateTax: number;
+  // Washington excise breakdown (T3): the year's WA-allocated
+  // long-term gains entering the excise base (max(0, ltcg) —
+  // or max(0, waGainsBase) when the caller supplies the
+  // pre-ledger gains (T4); a net loss year enters $0 and
+  // carries nothing forward, RCW 82.87.040(3)), the standard
+  // deduction and charitable deduction applied, and the
+  // taxable Washington capital gains the tiered rate priced.
+  // All $0 on the flat-rate path (any residence other than
+  // WA).
+  waGains: number;
+  waStandardDeduction: number;
+  waCharitableDeduction: number;
+  waTaxableGains: number;
+  // Education credits (T6; all $0 / "none" when no education
+  // expenses are entered): the year's §25A credits under the
+  // better of the two statutory allocations (see
+  // educationCreditsFor) — the tentative American
+  // Opportunity Credit after its phase-out (per eligible
+  // student, summed), the tentative Lifetime Learning
+  // Credit after its phase-out, the choice taken ("aotc"
+  // when the winning allocation claims the AOTC for the
+  // eligible students, "llc" when the winning allocation
+  // claims only the LLC, "none" when no credit prices),
+  // the nonrefundable portion APPLIED against the year's
+  // income tax (the tentative nonrefundable credit capped
+  // at the year's ordinary + capital-gains tax, so the
+  // federal tax never falls below the NIIT through this
+  // credit), and the refundable AOTC portion — reported
+  // separately, never netted into federalTax: a plan's
+  // score credits it like the ACA premium credit, so a
+  // low-liability year cannot silently drop it.
+  educationAotc: number;
+  educationLlc: number;
+  educationChoice: "aotc" | "llc" | "none";
+  educationNonrefundable: number;
+  educationRefundable: number;
+  // Alternative minimum tax (T7; IRC §55, priced by amtFor):
+  // the year's alternative minimum taxable income (regular
+  // taxable income plus the core-scope add-backs — the SALT
+  // deduction actually taken in an itemized year, the
+  // standard deduction in a standard year), the §55(d)
+  // exemption after its phase-out, the tentative minimum
+  // tax (the 26% / 28% rates with the preferential 0% /
+  // 15% / 20% rates preserved on the gains stack), and the
+  // AMT owed — the excess of the tentative tax over the
+  // year's regular income tax, never below $0. The owed
+  // amount is INSIDE federalTax above (federalTax = regular
+  // income tax after nonrefundable credits + NIIT + AMT);
+  // these lines name the component. All $0 (with amti and
+  // amtExemption still priced) in every year the tentative
+  // tax does not exceed the regular tax.
+  amti: number;
+  amtExemption: number;
+  amtTentativeTax: number;
+  amtOwed: number;
   // Marginal ordinary bracket rate (%) on the next dollar of
   // ordinary taxable income.
   marginalBracketPct: number;
@@ -190,8 +377,30 @@ function marginalRate(taxableOrdinary: number, law: YearLaw, fs: FilingStatus): 
   return law.rates[law.rates.length - 1] ?? 37;
 }
 
-export function deflationFactor(calendarYear: number, inflationPct: number): number {
-  const years = Math.max(0, calendarYear - CURRENT_LAW.year);
+// THE UNINDEXED-THRESHOLD DEFLATION RULE (explicit mechanism,
+// T1): the law figures a statute does NOT inflation-index —
+// the §86 Social Security provisional-income thresholds, the
+// §1411 NIIT thresholds, and the OBBBA §224 senior-deduction
+// amount and phase-out start — are stated in the dollars of
+// the law row a year prices under. In today's-dollars pricing
+// those nominal figures buy less each year, so the engine
+// deflates them at the plan's inflation input by the number of
+// years the priced year runs PAST ITS OWN ROW's year: 1.0 for
+// a year pricing under its own published row, and one more
+// deflation step for each carried-forward year beyond the
+// newest row. (Anchoring at the row's year rather than at the
+// newest row is the same number wherever the two could differ
+// today — a year with its own row deflates 0 years under
+// either anchor, and a carried-forward year's row IS the
+// newest row — and it keeps the rule correct when a newer row
+// is added: the new row's unindexed figures start undeflated
+// in its own year.)
+export function deflationFactor(
+  calendarYear: number,
+  lawYear: number,
+  inflationPct: number,
+): number {
+  const years = Math.max(0, calendarYear - lawYear);
   return 1 / Math.pow(1 + inflationPct / 100, years);
 }
 
@@ -199,7 +408,10 @@ export function deflationFactor(calendarYear: number, inflationPct: number): num
 // in today's dollars. Only the second-to-last tier's ceiling
 // (the top tier's floor, $500k single / $750k joint) is adjusted:
 // it is fixed by statute through 2028, then indexed, so in
-// today's dollars it deflates only for the 2027–2028 steps.
+// today's dollars it deflates only for the steps through 2028
+// counted from the row's own year (under the 2026 row: the
+// 2027 and 2028 steps; under carry-forward the deflated floor
+// then stays put in real terms, as an indexed figure does).
 // Tiers 0–3 are indexed figures and stay at their raw values.
 // This is the single source for that deflated floor — both
 // irmaaTierFor and the "just over the line" pill measure
@@ -217,8 +429,8 @@ export function irmaaTierUpTo(
   let upTo = filingStatus === "mfj" ? tier.upToMfj : tier.upToSingle;
   if (tierIndex === law.irmaaTiers.length - 2 && Number.isFinite(upTo)) {
     const deflYears = Math.min(
-      Math.max(0, calendarYear - CURRENT_LAW.year),
-      Math.max(0, 2028 - CURRENT_LAW.year),
+      Math.max(0, calendarYear - law.year),
+      Math.max(0, 2028 - law.year),
     );
     upTo = upTo / Math.pow(1 + inflationPct / 100, deflYears);
   }
@@ -237,6 +449,42 @@ export function irmaaTierFor(
   const tiers = law.irmaaTiers;
   for (let i = 0; i < tiers.length; i++) {
     const upTo = irmaaTierUpTo(i, filingStatus, law, calendarYear, inflationPct);
+    if (i === tiers.length - 2 && Number.isFinite(upTo)) {
+      // The second-highest tier's stored top is the whole
+      // dollar BELOW the top tier's statutory floor ($499,999
+      // under the $500,000 single floor; $749,999 under
+      // $750,000 joint): the top tier starts AT the floor, so
+      // this tier runs up to — but not including — the floor
+      // itself. Where the stored top is the operative boundary
+      // (no deflation step applied — upTo IS the stored top),
+      // compare against the floor (stored top + $1) with a
+      // strict less-than, so a fractional MAGI strictly between
+      // the stored top and the floor — $499,999.50 single,
+      // $749,999.50 joint — lands in THIS tier, while exactly
+      // $500,000 / $750,000 lands in the top tier. (Round-7 fix
+      // 3.1: the plain `magi <= upTo` comparison sent that
+      // fractional MAGI to the top tier.) Integer MAGIs
+      // classify exactly as before at every tier.
+      // In DEFLATED years (the 2027–2028 steps) the boundary
+      // stays the deflated stored top from irmaaTierUpTo: the
+      // tier cap, the "just over the line" pill, and this
+      // classifier deliberately share that ONE deflated line
+      // (the R7-5 alignment), and splitting the classifier off
+      // it by a fraction of a deflated dollar would move the
+      // settled tier-cap fills that alignment pinned.
+      const tier = tiers[i];
+      const rawUpTo = tier
+        ? filingStatus === "mfj"
+          ? tier.upToMfj
+          : tier.upToSingle
+        : upTo;
+      if (upTo === rawUpTo) {
+        if (magi < rawUpTo + 1) return i;
+        continue;
+      }
+      if (magi <= upTo) return i;
+      continue;
+    }
     if (magi <= upTo) return i;
   }
   return tiers.length - 1;
@@ -250,10 +498,538 @@ export function irmaaAnnualPerPerson(tier: number, law: YearLaw): number {
   return r2(((t.partBTotalMonthly - law.partBStandardMonthly) + t.partDSurchargeMonthly) * 12);
 }
 
+/* ---------------- Washington capital-gains excise (RCW 82.87) ----------------
+   The T3 state layer. Washington capital gains (RCW
+   82.87.020(16)) are the individual's adjusted long-term
+   capital gain as modified by the deductions of RCW 82.87.060:
+   the standard deduction and the charitable donation
+   deduction (the qualified family-owned small business
+   deduction of RCW 82.87.070 has no engine input and is not
+   priced). The excise is 7% of Washington capital gains
+   (RCW 82.87.040(1)(a)) plus, from January 1, 2025, 2.9% of
+   the portion exceeding $1,000,000 (RCW 82.87.040(1)(b)) —
+   the DOR's tiered statement of the same law: the first
+   $1,000,000 of TAXABLE Washington capital gains at 7%, the
+   excess at 9.9%. Every parameter comes from the priced
+   year's law row (the T1 mechanism); the $1,000,000
+   threshold is statutory and unindexed (it is not among RCW
+   82.87.150's applicable amounts), so in today's-dollars
+   modeling it is NOT deflated — the statute states it in
+   nominal dollars for every year, exactly as the DOR
+   publishes it. A year whose gains are negative owes $0 and
+   carries nothing forward (RCW 82.87.040(3)): the base here
+   is floored at $0 before any deduction. */
+
+export type WaCapitalGainsResult = {
+  // WA-allocated long-term gains entering the base (≥ 0).
+  waGains: number;
+  standardDeduction: number;
+  charitableDeduction: number;
+  // Washington capital gains after deductions (≥ 0) — the
+  // amount the tiered rate prices.
+  taxableGains: number;
+  tax: number;
+};
+
+export function waCapitalGainsTax(args: {
+  // The year's net long-term capital gain or loss from
+  // capital transactions (the engine's `ltcg`): realized
+  // gains from taxable-account sales. NOT the gains stack —
+  // qualified dividends are not capital gains.
+  ltcg: number;
+  charitableDonations?: number;
+  law: YearLaw;
+}): WaCapitalGainsResult {
+  const waGains = Math.max(0, args.ltcg);
+  const donations = Math.max(0, args.charitableDonations ?? 0);
+  const charitableDeduction = Math.min(
+    args.law.waCharitableCap,
+    Math.max(0, donations - args.law.waCharitableThreshold),
+  );
+  const taxableGains = Math.max(
+    0,
+    waGains - args.law.waStandardDeduction - charitableDeduction,
+  );
+  const atBase = Math.min(taxableGains, args.law.waAdditionalThreshold);
+  const above = taxableGains - atBase;
+  const tax =
+    (args.law.waRatePct / 100) * atBase +
+    ((args.law.waRatePct + args.law.waAdditionalRatePct) / 100) * above;
+  return {
+    waGains: r2(waGains),
+    standardDeduction: r2(args.law.waStandardDeduction),
+    charitableDeduction: r2(charitableDeduction),
+    taxableGains: r2(taxableGains),
+    tax: r2(tax),
+  };
+}
+
+/* ---------------- Capital-loss carryforward ledger (§§1211(b) / 1212) ----------------
+   The T4 build. A net capital loss does not vanish at year
+   end: it offsets the year's gains first, then takes the
+   §1211(b) allowance (up to $3,000 — $1,500 married filing
+   separately) against ordinary income, and the remainder
+   carries into the next year with its character preserved —
+   a short-term loss stays short-term, a long-term loss stays
+   long-term (§1212(b)). In a later year the carryovers are
+   treated as losses of that year and consumed in the
+   worksheet's order (the Capital Loss Carryover Worksheet,
+   Schedule D instructions):
+
+     1. The long-term carryover nets inside the long-term
+        column against the year's own long-term result.
+     2. The short-term carryover — this engine realizes no
+        short-term activity of its own, so the short-term
+        column is the carryover standing alone as a loss —
+        nets against a surviving net long-term gain.
+     3. If a net loss remains, the year's allowance is taken
+        from the short-term remainder first, then the
+        long-term remainder.
+     4. What survives carries out, character intact.
+
+   This transform is the single place those rules live: the
+   plan march routes every pricing of a ledger year through
+   it (via ledgerFields in simulateRothPlan), and the
+   execution-year re-solves in rothOptimizer apply it to
+   their reconstructed bases, so no surface can price a
+   carryforward year two different ways. It is a tax
+   attribute only: it never touches a balance, the taxable
+   pool's basis dollars, or the basis-tier machinery. */
+
+export type LossCarryforward = {
+  st: number; // short-term capital loss carried (a loss amount, ≥ 0)
+  lt: number; // long-term capital loss carried (a loss amount, ≥ 0)
+};
+
+export type LossLedgerYearResult = {
+  // The year's net capital result after the carry-in
+  // netting — the signed figure the year's pricing carries
+  // as its capital result (a net gain when positive; the
+  // year's net capital loss when negative, in full — the
+  // allowance below is priced separately, exactly the split
+  // priceYear has always taken).
+  netResult: number;
+  // The §1211(b) allowance priced this year: the part of
+  // the year's net capital loss that offsets ordinary
+  // income (≤ the cap, ≤ the loss).
+  allowance: number;
+  // The part of the carry-in consumed against this year's
+  // own gains (as opposed to consumed by the allowance or
+  // carried out) — the absorption a gains year performs.
+  absorbedByGains: number;
+  // What carries into the next year, character preserved.
+  carryOut: LossCarryforward;
+};
+
+// The §1211(b) allowance cap: $3,000, or $1,500 for married
+// filing separately. MFS is not among the filing statuses
+// this engine prices (FilingStatus is mfj / single / hoh —
+// the law table holds no MFS row), so every priceable
+// status takes the $3,000 cap; the MFS figure is stated in
+// the ledger rules above so the rule is complete if an MFS
+// row is ever added.
+export function capitalLossAllowanceCap(filingStatus: FilingStatus): number {
+  void filingStatus;
+  return 3000;
+}
+
+export function applyLossLedger(
+  carryIn: LossCarryforward,
+  // The year's own net long-term capital result from capital
+  // transactions (gains positive). In the plan march this is
+  // the year's gross realized gains (draws + any injected
+  // sale gain + harvested gains) — never negative there (the
+  // basis invariant prices draws at a gain rate in [0, 1]),
+  // but the transform is stated for any signed value.
+  ownLongTermResult: number,
+  filingStatus: FilingStatus,
+): LossLedgerYearResult {
+  const stIn = Math.max(0, carryIn.st);
+  const ltIn = Math.max(0, carryIn.lt);
+  // Long-term column: the year's own long-term result netted
+  // with the long-term carryover entering as a loss.
+  const ltNet = ownLongTermResult - ltIn;
+  // Short-term column: the carryover standing alone as a
+  // loss, netted next against a surviving long-term gain.
+  let remainingStLoss = stIn;
+  let remainingLtLoss = 0;
+  let pricedGain = 0;
+  if (ltNet >= 0) {
+    pricedGain = Math.max(0, ltNet - remainingStLoss);
+    remainingStLoss = Math.max(0, remainingStLoss - ltNet);
+  } else {
+    remainingLtLoss = -ltNet;
+  }
+  const totalLoss = remainingStLoss + remainingLtLoss;
+  const allowance =
+    totalLoss > 0
+      ? Math.min(capitalLossAllowanceCap(filingStatus), totalLoss)
+      : 0;
+  // The allowance is consumed from the short-term remainder
+  // first (the worksheet's ordering), the balance from the
+  // long-term remainder.
+  const stConsumedByAllowance = Math.min(allowance, remainingStLoss);
+  const ltConsumedByAllowance = allowance - stConsumedByAllowance;
+  const carryOut: LossCarryforward = {
+    st: r2(remainingStLoss - stConsumedByAllowance),
+    lt: r2(remainingLtLoss - ltConsumedByAllowance),
+  };
+  const absorbedByGains = r2(
+    Math.max(0, stIn + ltIn - carryOut.st - carryOut.lt - allowance),
+  );
+  return {
+    netResult: r2(totalLoss > 0 ? -totalLoss : pricedGain),
+    allowance: r2(allowance),
+    absorbedByGains,
+    carryOut,
+  };
+}
+
+/* ---------------- Education credits (IRC §25A) ----------------
+   The T6 build. One transform prices the year's education
+   credits from the year's entered students — the single
+   place the §25A rules live, shared by every pricing
+   surface through priceYear:
+
+   · The American Opportunity Tax Credit prices PER
+     STUDENT the household marks AOTC-eligible: 100% of
+     the first tier-1 expenses plus the tier-2 rate on the
+     next tier-2 expenses (the year's law row; at the
+     statutory rates the maximum is $2,500 per student).
+   · The Lifetime Learning Credit prices PER RETURN: its
+     rate on up to the row's expense cap of the expenses
+     of the students NOT claimed for the AOTC. The same
+     student's expenses never support both credits
+     (§25A coordination — a student is claimed for one
+     credit or the other, never both).
+   · The CHOICE is priced both statutory ways — (a) AOTC
+     for every eligible student + LLC over the remaining
+     students' expenses, and (b) no AOTC at all, LLC over
+     every student's expenses — and the allocation with
+     the larger total benefit (refundable portion plus
+     the nonrefundable portion the year's tax can absorb)
+     wins; the year output names the choice. (Under the
+     shared phase-out, allocation (a) weakly dominates
+     (b) whenever an eligible student has expenses — the
+     AOTC prices each of its capped dollars at or above
+     the LLC's rate — but both are computed, so the
+     better-of is the engine's priced result, not an
+     assumption, and stays correct if a future law row
+     ever separates the two credits' terms.)
+   · Both credits phase out ratably over the year's
+     §25A(d) range on modified AGI — AGI here: the
+     statute adds back only the §§911 / 931 / 933
+     foreign-income exclusions, which the engine does
+     not model (tax-exempt interest is NOT added back).
+   · The refundable portion is the row's refundable
+     share (40%) of the AOTC after its phase-out
+     (§25A(i)) — payable regardless of the year's
+     liability, reported separately, and never netted
+     into the year's tax by this function.
+   · The nonrefundable portion (the AOTC remainder plus
+     the LLC) is applied against the year's income tax —
+     ordinary + capital-gains tax — capped there, so it
+     can never take the federal tax below the year's
+     NIIT: the Form 1040 ordering (nonrefundable credits
+     reduce the line-16 tax; the NIIT arrives afterward
+     as an other tax).
+   · Every §25A dollar figure is statutory and
+     unindexed, so — like the NIIT thresholds and the
+     SALT cap — the expense caps and the phase-out range
+     deflate by the year's `defl` into today's dollars;
+     in a law row's own year defl is 1 and the published
+     figures apply exactly.
+   Form 8863 rounds the phase-out ratio to three decimals;
+   the engine uses the exact ratio, its standing treatment
+   of statutory ratios (the §86 and §224 phase-outs price
+   the same way). */
+
+export type EducationCreditsResult = {
+  // The winning allocation's tentative AOTC after its
+  // phase-out (summed over the eligible students claimed
+  // for it); $0 when the LLC-only allocation wins or no
+  // credit prices.
+  aotc: number;
+  // The winning allocation's tentative LLC after its
+  // phase-out.
+  llc: number;
+  // Which allocation the year took: "aotc" when the
+  // winning allocation claims the AOTC, "llc" when it
+  // claims only the Lifetime Learning Credit, "none"
+  // when no credit prices.
+  choice: "aotc" | "llc" | "none";
+  // The nonrefundable portion APPLIED against the year's
+  // income tax: the winning allocation's tentative
+  // nonrefundable credit (the AOTC remainder plus the
+  // LLC) capped at the year's income tax before credits.
+  nonrefundableApplied: number;
+  // The refundable AOTC portion (the row's refundable
+  // share of the winning allocation's AOTC after its
+  // phase-out): payable in full regardless of the year's
+  // liability, reported separately — never netted into
+  // the year's tax here.
+  refundable: number;
+};
+
+export function educationCreditsFor(args: {
+  students: EducationStudent[] | null | undefined;
+  filingStatus: FilingStatus;
+  // The year's AGI — the §25A(d) phase-out runs on
+  // modified AGI, which adds back only foreign-income
+  // exclusions the engine does not model.
+  agi: number;
+  // The year's income tax before credits (ordinary +
+  // capital-gains tax; the NIIT is not offsettable by
+  // nonrefundable credits — the Form 1040 ordering).
+  taxBeforeCredits: number;
+  law: YearLaw;
+  // The year's deflation factor for statutory dollar
+  // figures (deflationFactor of the priced year against
+  // its law row).
+  defl: number;
+}): EducationCreditsResult {
+  const none: EducationCreditsResult = {
+    aotc: 0,
+    llc: 0,
+    choice: "none",
+    nonrefundableApplied: 0,
+    refundable: 0,
+  };
+  const students = (args.students ?? []).filter(
+    (s) => s != null && Number.isFinite(s.expenses) && s.expenses > 0,
+  );
+  if (students.length === 0) return none;
+  const law = args.law;
+  const defl = args.defl;
+  const tier1Cap = law.aotcTier1Expenses * defl;
+  const tier2Cap = law.aotcTier2Expenses * defl;
+  const llcCap = law.llcExpenseCap * defl;
+  // The §25A(d) phase-out fraction for the year: the
+  // share of the credit lost to the MAGI range.
+  const phaseStart = law.eduPhaseOutStart[args.filingStatus] * defl;
+  const phaseWidth = law.eduPhaseOutWidth[args.filingStatus] * defl;
+  const excess = Math.max(0, args.agi - phaseStart);
+  const phasedOut =
+    phaseWidth > 0 ? Math.min(1, excess / phaseWidth) : excess > 0 ? 1 : 0;
+  const keep = 1 - phasedOut;
+  if (keep <= 0) return none;
+  const aotcForStudent = (expenses: number): number => {
+    const e = Math.max(0, expenses);
+    const tier1 = Math.min(e, tier1Cap);
+    const tier2 = Math.min(Math.max(0, e - tier1Cap), tier2Cap);
+    return (
+      (law.aotcTier1RatePct / 100) * tier1 +
+      (law.aotcTier2RatePct / 100) * tier2
+    );
+  };
+  const llcForExpenses = (expenses: number): number =>
+    (law.llcRatePct / 100) * Math.min(Math.max(0, expenses), llcCap);
+  const liability = Math.max(0, args.taxBeforeCredits);
+  // One allocation priced end to end: its tentative
+  // credits after the phase-out, split refundable /
+  // nonrefundable, and its total benefit against the
+  // year's liability — the figure the better-of compares.
+  const price = (aotcTentative: number, llcTentative: number) => {
+    const aotc = aotcTentative * keep;
+    const llc = llcTentative * keep;
+    const refundable = (law.aotcRefundablePct / 100) * aotc;
+    const nonrefundableTentative = aotc - refundable + llc;
+    const nonrefundableApplied = Math.min(nonrefundableTentative, liability);
+    return {
+      aotc,
+      llc,
+      refundable,
+      nonrefundableApplied,
+      benefit: refundable + nonrefundableApplied,
+    };
+  };
+  const eligible = students.filter((s) => s.aotcEligible);
+  const others = students.filter((s) => !s.aotcEligible);
+  const sum = (list: EducationStudent[]): number =>
+    list.reduce((a, s) => a + Math.max(0, s.expenses), 0);
+  // Allocation (a): AOTC for every eligible student; the
+  // LLC pool is the OTHER students' expenses only — an
+  // AOTC student's expenses never enter it (coordination).
+  const allocA = price(
+    eligible.reduce((a, s) => a + aotcForStudent(s.expenses), 0),
+    llcForExpenses(sum(others)),
+  );
+  // Allocation (b): no AOTC; every student's expenses
+  // share the one per-return LLC cap.
+  const allocB = price(0, llcForExpenses(sum(students)));
+  const winner = allocB.benefit > allocA.benefit ? allocB : allocA;
+  if (winner.benefit <= 0) return none;
+  return {
+    aotc: r2(winner.aotc),
+    llc: r2(winner.llc),
+    choice: winner.aotc > 0 ? "aotc" : "llc",
+    nonrefundableApplied: r2(winner.nonrefundableApplied),
+    refundable: r2(winner.refundable),
+  };
+}
+
+/* ---------------- Alternative minimum tax (IRC §55) ----------------
+   The T7 build, CORE SCOPE (Decision Point 8 of the
+   tax-engine expansion spec). One transform prices the
+   year's parallel tentative minimum tax from the year's
+   regular-tax result — the single place the §55 rules
+   live, shared by every pricing surface through priceYear:
+
+   · AMTI starts from the year's regular TAXABLE INCOME
+     (Form 6251 line 1 starts from the Form 1040 taxable
+     income, floored at $0 as the 1040 floors it) and adds
+     back the adjustments this engine has the quantities
+     for (§56(b)(1)): the state-and-local-tax deduction
+     ACTUALLY TAKEN — the year's itemized SALT after the
+     §164(b)(6) cap — in a year the itemized side won, and
+     the STANDARD DEDUCTION (base + age-65+ add-ons) in a
+     year the standard side won. The OBBBA §224 senior
+     deduction is NOT added back: §56(b)(1) does not list
+     it and Form 6251 has no line for it, so it stays
+     deducted in AMTI exactly as in taxable income.
+     Mortgage interest and charitable contributions are
+     not adjustments either (acquisition-debt interest
+     and charitable gifts are deductible under both
+     systems), so they never enter AMTI beyond their
+     place inside taxable income.
+   · The §55(d) exemption — the year's law row by filing
+     status — is reduced by the row's phase-out rate for
+     each dollar of AMTI above the row's phase-out start
+     (25% through 2025; 50% from 2026 under OBBBA §70107),
+     never below $0. The taxable excess is AMTI minus the
+     surviving exemption.
+   · The tentative minimum tax prices the excess under
+     §55(b)(3)'s structure: the NON-preferential part at
+     the row's 26% rate up to the row's breakpoint and
+     28% above it, and the preferential part — the
+     long-term gains and qualified dividends inside the
+     year's taxable income, capped at the excess — under
+     the capital-gain worksheet treatment: the same 0% /
+     15% / 20% staircase as the regular tax, stacked on
+     top of the non-preferential excess against the
+     year's own LTCG thresholds. Preferential rates are
+     preserved, as the statute requires — a gains-heavy
+     year is not re-taxed at 26% / 28%. (With preferential
+     rates at or below 20% < 26%, this sum never exceeds
+     the flat 26% / 28% tax on the whole excess, so the
+     worksheet's smaller-of cap can never bind and is not
+     separately computed.)
+   · AMT owed = max(0, tentative minimum tax − regular
+     tax), where the regular tax is the year's income tax
+     (ordinary + capital-gains) after nonrefundable
+     credits — the Form 6251 line-11 side of the
+     comparison. The NIIT is NOT part of that comparison
+     (it is a separate chapter tax, never on Form 6251);
+     it is added to the year's federal tax after, beside
+     the AMT.
+   · Every §55 figure is inflation-indexed and published
+     per year, so — like the brackets and the standard
+     deduction — the row's figures apply as published
+     with NO today's-dollars deflation under
+     carry-forward.
+   · NAMED LIMITATIONS (out of core scope — the engine
+     has no inputs for these §56 / §57 items and invents
+     none): the incentive-stock-option bargain element
+     (§56(b)(3)), tax-exempt interest from private-
+     activity bonds (§57(a)(5)), depreciation differences
+     (§56(a)(1) / (g)), passive-activity and other §56(a)
+     recomputations, the AMT foreign tax credit, and the
+     §53 credit for prior-year minimum tax. A household
+     with those items can owe more AMT than this engine
+     prices; the contract publishes exactly this list. */
+
+export type AmtResult = {
+  // Alternative minimum taxable income: regular taxable
+  // income plus the core-scope add-backs.
+  amti: number;
+  // The §55(d) exemption after its phase-out (the amount
+  // subtracted from AMTI to reach the taxable excess).
+  exemption: number;
+  // Tentative minimum tax (§55(b)): the 26% / 28% tax on
+  // the taxable excess with preferential rates preserved
+  // on the gains stack.
+  tentativeTax: number;
+  // AMT owed: the excess of the tentative tax over the
+  // year's regular income tax, never below $0.
+  owed: number;
+};
+
+export function amtFor(args: {
+  // The year's regular taxable income (already floored
+  // at $0, as priceYear computes it).
+  taxableIncome: number;
+  // Which deduction side the year took (priceYear's
+  // greater-of result) — decides which add-back applies.
+  deductionTaken: "standard" | "itemized";
+  // The standard deduction (base + age-65+ add-ons) —
+  // the add-back in a standard-deduction year. The §224
+  // senior deduction is never part of this figure and
+  // is never added back.
+  standardDeduction: number;
+  // The SALT amount actually deducted (after the
+  // §164(b)(6) cap) — the add-back in an itemized year.
+  itemizedSaltAllowed: number;
+  // The preferential dollars (long-term gains + qualified
+  // dividends) inside the year's regular taxable income —
+  // the part of the taxable excess the capital-gain
+  // worksheet treatment prices at 0% / 15% / 20%.
+  gainsInTaxableIncome: number;
+  // The year's regular income tax for the §55 comparison:
+  // ordinary + capital-gains tax after nonrefundable
+  // credits, BEFORE the NIIT (Form 6251's line-11 side).
+  regularTax: number;
+  filingStatus: FilingStatus;
+  law: YearLaw;
+}): AmtResult {
+  const law = args.law;
+  const fs = args.filingStatus;
+  const addback =
+    args.deductionTaken === "standard"
+      ? Math.max(0, args.standardDeduction)
+      : Math.max(0, args.itemizedSaltAllowed);
+  const amti = Math.max(0, args.taxableIncome) + addback;
+  const phaseOutExcess = Math.max(0, amti - law.amtPhaseOutStart[fs]);
+  const exemption = Math.max(
+    0,
+    law.amtExemption[fs] - (law.amtPhaseOutRatePct / 100) * phaseOutExcess,
+  );
+  const excess = Math.max(0, amti - exemption);
+  const pref = Math.min(excess, Math.max(0, args.gainsInTaxableIncome));
+  const ordinaryExcess = excess - pref;
+  // §55(b)(1) on the non-preferential part (§55(b)(3)(A)
+  // reduces the amount taken into account there by the
+  // capital-gain amount): the low rate up to the
+  // breakpoint, the high rate above it.
+  const atLow = Math.min(ordinaryExcess, law.amtBreakpoint);
+  let tentative =
+    (law.amtRateLowPct / 100) * atLow +
+    (law.amtRateHighPct / 100) * (ordinaryExcess - atLow);
+  // The capital-gain worksheet treatment on the
+  // preferential part: the engine's own regular-tax
+  // staircase (0% to the year's zero top, 15% to the 20%
+  // floor, 20% above), stacked on the non-preferential
+  // excess exactly as the regular gains stack on
+  // ordinary taxable income in priceYear.
+  const zeroSpace = Math.max(0, law.ltcgZeroTop[fs] - ordinaryExcess);
+  const at0 = Math.min(pref, zeroSpace);
+  const afterZero = pref - at0;
+  const twentySpace = Math.max(0, law.ltcg20Floor[fs] - ordinaryExcess - at0);
+  const at15 = Math.min(afterZero, twentySpace);
+  const at20 = afterZero - at15;
+  tentative += 0.15 * at15 + 0.2 * at20;
+  const owed = Math.max(0, tentative - Math.max(0, args.regularTax));
+  return {
+    amti: r2(amti),
+    exemption: r2(exemption),
+    tentativeTax: r2(tentative),
+    owed: r2(owed),
+  };
+}
+
 export function priceYear(input: PriceYearInput): PriceYearResult {
   const law = lawForYear(input.calendarYear);
   const fs = input.filingStatus;
-  const defl = deflationFactor(input.calendarYear, input.inflationPct);
+  const defl = deflationFactor(input.calendarYear, law.year, input.inflationPct);
   // Taxable yields (see PriceYearInput): dividends join the
   // gains stack; interest joins the ordinary side of AGI. With
   // both absent / 0 every sum below is the pre-yield sum, term
@@ -261,7 +1037,18 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   const interestIncome = input.interestIncome ?? 0;
   const ordinaryDividends = input.ordinaryDividends ?? 0;
   const capitalLossAllowance = input.capitalLossAllowance ?? 0;
-  const gainsStack = input.ltcg + (input.qualifiedDividends ?? 0);
+  // Capital netting (round-7 R7-1, defect 5.1; §§1222/1211(b)/
+  // 1(h)): capital gains and losses net against EACH OTHER
+  // only. `ltcg` is the year's net capital gain or loss from
+  // capital transactions; a net capital LOSS does not reduce
+  // qualified dividends — the dividends stay whole in the
+  // preferential stack, and the loss reaches ordinary income
+  // only through the §1211(b) allowance the caller passes
+  // (capitalLossAllowance, subtracted in agiExclSs below).
+  // Before this fix the raw sum netted a negative ltcg
+  // against qualifiedDividends, erasing them from AGI, the
+  // preferential stack, and the ACA MAGI alike.
+  const gainsStack = Math.max(0, input.ltcg) + (input.qualifiedDividends ?? 0);
   const agiExclSs =
     input.otherOrdinary + input.rmd + input.conversion + input.extraPreTaxDraw + gainsStack + interestIncome + ordinaryDividends - capitalLossAllowance;
   const provisional = agiExclSs + input.taxExemptInterest + 0.5 * input.ssBenefits;
@@ -297,7 +1084,48 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     );
     seniorDeduction = perPerson * count65;
   }
-  const deductions = standardDeduction + seniorDeduction;
+  // Itemized vs standard (T5; IRC §63): the year's deduction
+  // is the GREATER of the standard side above (base + age-65+
+  // add-ons — the add-ons belong to the standard deduction
+  // only, §63(f), and never enter the itemized total) and the
+  // household's itemized total, whose state-and-local-taxes
+  // component is capped at the year's §164(b)(6) cap. The
+  // cap is dated law-row data: the row's cap reduced by its
+  // phase-out rate × the modified AGI above the row's
+  // phase-out start, floored at the row's floor. §164(b)(6)
+  // modified AGI adds back only the §§911 / 931 / 933
+  // foreign-income exclusions (none modeled) — tax-exempt
+  // interest is NOT added back — so the phase-down runs on
+  // AGI, exactly as the §224 phase-out above does. The cap's
+  // dollar figures are statutory (not inflation-indexed), so
+  // — like the §86 thresholds, the NIIT threshold, and the
+  // senior-deduction figures — they deflate by `defl` into
+  // today's dollars; in the row's own year defl is 1 and the
+  // published figures apply exactly. The OBBBA senior
+  // deduction is then added on top of WHICHEVER side wins:
+  // §224 allows it whether or not the filer itemizes (the
+  // law table's own note has always stated this; until this
+  // build the engine modeled standard-deduction filers
+  // only, so the distinction never priced). With no itemized
+  // inputs the itemized total is $0, the standard side wins,
+  // and every figure is bit-identical to before this build.
+  const saltEntered = Math.max(0, input.itemizedSaltPaid ?? 0);
+  const saltCapApplied = Math.max(
+    law.saltCapFloor * defl,
+    law.saltCap * defl -
+      (law.saltPhaseOutRatePct / 100) *
+        Math.max(0, agi - law.saltPhaseOutStart * defl),
+  );
+  const itemizedSaltAllowed = Math.min(saltEntered, saltCapApplied);
+  const itemizedDeduction =
+    Math.max(0, input.itemizedMortgageInterest ?? 0) +
+    itemizedSaltAllowed +
+    Math.max(0, input.itemizedCharitable ?? 0) +
+    Math.max(0, input.itemizedOther ?? 0);
+  const deductionTaken: "standard" | "itemized" =
+    itemizedDeduction > standardDeduction ? "itemized" : "standard";
+  const deductions =
+    Math.max(standardDeduction, itemizedDeduction) + seniorDeduction;
   const taxableIncome = Math.max(0, agi - deductions);
 
   const gainsInTi = Math.min(gainsStack, taxableIncome);
@@ -344,12 +1172,94 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // the threshold; the Part A independent verification, D5,
   // priced the statutory base at $1,900 on $300,000 of interest
   // at MAGI $300,000 MFJ, and the fix adopts the statute.)
-  const niitBase = gainsStack + interestIncome + ordinaryDividends;
+  // Round-7 R7-2 (defect 5.2): an allowable net capital loss
+  // reduces the §1411 base — net investment income is
+  // interest + dividends (qualified or not) + NET gain, and a
+  // net capital loss allowable for the year (the §1211(b)
+  // allowance) nets against the other investment income,
+  // floored at $0. The components here: interestIncome +
+  // ordinaryDividends (non-qualified) + qualifiedDividends
+  // (inside gainsStack) + the net capital result — the priced
+  // gain when ltcg is positive, minus the allowable loss when
+  // it is negative. gainsStack already carries the priced
+  // gain + qualified dividends, so the base is gainsStack +
+  // interest + non-qualified dividends − the allowance on a
+  // loss year, floored at $0.
+  const niitBase = Math.max(
+    0,
+    gainsStack +
+      interestIncome +
+      ordinaryDividends -
+      (input.ltcg < 0 ? capitalLossAllowance : 0),
+  );
   const niit =
     (law.niitRate / 100) *
     Math.min(niitBase, Math.max(0, agi - law.niitThreshold[fs] * defl));
-  const federalTax = ordinaryTax + ltcgTax + niit;
-  const stateTax = (input.stateRatePct / 100) * taxableIncome;
+  // Education credits (T6; IRC §25A): priced on the year's
+  // entered students only — with none entered the result
+  // is all $0 and the federal tax below is the pre-T6 sum
+  // term for term. The nonrefundable portion applies
+  // against the income tax (ordinary + capital-gains);
+  // the refundable AOTC portion is reported on the result,
+  // never netted in here.
+  const education = educationCreditsFor({
+    students: input.educationStudents,
+    filingStatus: fs,
+    agi,
+    taxBeforeCredits: ordinaryTax + ltcgTax,
+    law,
+    defl,
+  });
+  const regularTaxAfterCredits = Math.max(
+    0,
+    ordinaryTax + ltcgTax - education.nonrefundableApplied,
+  );
+  // Alternative minimum tax (T7; IRC §55): the parallel
+  // tentative minimum tax on the year's regular-tax
+  // result (see amtFor). Priced on every year; with the
+  // tentative tax at or below the regular tax the owed
+  // amount is $0 and the federal tax below is the pre-T7
+  // sum term for term — bit-identical for every year with
+  // no AMT exposure.
+  const amt = amtFor({
+    taxableIncome,
+    deductionTaken,
+    standardDeduction,
+    itemizedSaltAllowed,
+    gainsInTaxableIncome: gainsInTi,
+    regularTax: regularTaxAfterCredits,
+    filingStatus: fs,
+    law,
+  });
+  const federalTax = regularTaxAfterCredits + niit + amt.owed;
+  // State tax (T3): a Washington-resident year prices the
+  // capital-gains excise on the year's realized long-term
+  // gains (input.ltcg — never the qualified dividends riding
+  // the gains stack beside it) INSTEAD of the flat rate; any
+  // other residence keeps the flat stateRatePct on federal
+  // taxable income, bit-identical to before. The excise is
+  // its own component of the year's tax, exactly where the
+  // flat state tax stood: it feeds the settlement's tax bill,
+  // the fill guardrail's step cost, and the score identity
+  // through `stateTax` unchanged.
+  const wa =
+    input.residenceState === "WA"
+      ? waCapitalGainsTax({
+          // The excise base: the year's own realized gains
+          // when the caller supplies them (T4 — the federal
+          // loss ledger never nets against the excise), else
+          // the priced `ltcg` itself, exactly as before.
+          ltcg: input.waGainsBase ?? input.ltcg,
+          // The ONE charitable input (T5): the same
+          // itemizedCharitable figure that is a component of
+          // the federal itemized total above is the
+          // donations figure the RCW 82.87.080 deduction
+          // prices from — no second charitable input exists.
+          charitableDonations: input.itemizedCharitable,
+          law,
+        })
+      : null;
+  const stateTax = wa ? wa.tax : (input.stateRatePct / 100) * taxableIncome;
   return {
     provisionalIncome: r2(provisional),
     ssTaxable: r2(ssTaxable),
@@ -358,6 +1268,10 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     acaMagi: r2(acaMagi),
     standardDeduction: r2(standardDeduction),
     seniorDeduction: r2(seniorDeduction),
+    itemizedDeduction: r2(itemizedDeduction),
+    itemizedSaltAllowed: r2(itemizedSaltAllowed),
+    itemizedSaltCap: r2(saltCapApplied),
+    deductionTaken,
     deductions: r2(deductions),
     taxableIncome: r2(taxableIncome),
     ordinaryTax: r2(ordinaryTax),
@@ -365,6 +1279,19 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     niit: r2(niit),
     federalTax: r2(federalTax),
     stateTax: r2(stateTax),
+    waGains: wa ? wa.waGains : 0,
+    waStandardDeduction: wa ? wa.standardDeduction : 0,
+    waCharitableDeduction: wa ? wa.charitableDeduction : 0,
+    waTaxableGains: wa ? wa.taxableGains : 0,
+    educationAotc: education.aotc,
+    educationLlc: education.llc,
+    educationChoice: education.choice,
+    educationNonrefundable: education.nonrefundableApplied,
+    educationRefundable: education.refundable,
+    amti: amt.amti,
+    amtExemption: amt.exemption,
+    amtTentativeTax: amt.tentativeTax,
+    amtOwed: amt.owed,
     marginalBracketPct: marginalRate(ordinaryTi, law, fs),
     irmaaTier: irmaaTierFor(magi, fs, law, input.calendarYear, input.inflationPct),
     baseStandardDeduction: r2(law.standardDeduction[fs]),
@@ -1117,6 +2044,60 @@ export type RothPlanInputs = {
   acaSpouseEndAge?: number | null;
   inflationPct: number;
   stateRatePct: number;
+  // State of residence (T3 build). Optional so every
+  // pre-existing constructor keeps its meaning: absent /
+  // null / "other" = the flat stateRatePct above prices the
+  // state tax, bit-identical to before; "WA" = Washington's
+  // capital-gains excise (RCW 82.87) prices it instead, from
+  // each year's own law row, and the flat rate is not used.
+  residenceState?: "WA" | "other" | null;
+  // Capital-loss carryforward ENTERING the plan (T4 build):
+  // the household's banked capital losses from before the
+  // plan's first year, short-term and long-term kept apart
+  // (§1212(b) preserves character across years). Optional so
+  // every pre-existing constructor keeps its meaning: absent
+  // / 0 = no banked loss, the loss ledger never engages, and
+  // the plan prices bit-identically to before. Amounts are
+  // LOSSES stated as positive dollars. A carryforward is a
+  // tax attribute, not a balance: it touches no bucket, no
+  // basis figure, and no ending-wealth total — it only
+  // nets against the plan years' realized gains and, while
+  // a net loss remains, takes the §1211(b) allowance against
+  // ordinary income year by year (see applyLossLedger).
+  capitalLossCarryInSt?: number;
+  capitalLossCarryInLt?: number;
+  // Itemized deductions (T5 build): the household's annual
+  // itemized components, in dollars, entered once for the
+  // plan and priced in EVERY plan year (in today's dollars,
+  // like the plan's other annual amounts — the same four
+  // figures price each year; the year's own law row decides
+  // the SALT cap and the standard side they must beat).
+  // Components stay separate (see PriceYearInput): mortgage
+  // interest, state and local taxes paid, charitable
+  // contributions, and other itemized deductions. The
+  // charitable figure is THE one charitable input: it is
+  // also the donations figure a Washington year's RCW
+  // 82.87.080 charitable deduction prices from. Optional so
+  // every pre-existing constructor keeps its meaning: absent
+  // / 0 on all four = no itemized inputs, the itemized total
+  // is $0, the standard deduction wins every year, and the
+  // plan prices bit-identically to before.
+  itemizedMortgageInterest?: number;
+  itemizedSaltPaid?: number;
+  itemizedCharitable?: number;
+  itemizedOther?: number;
+  // Education expenses (T6 build): the household's entered
+  // qualified education expenses — a list of per-student,
+  // per-calendar-year entries (see EducationStudentYear),
+  // priced by the shared §25A step in each entry's own
+  // year and in no other. Optional so every pre-existing
+  // constructor keeps its meaning: absent / null / empty
+  // = no expenses entered anywhere, no credit prices in
+  // any year, and the plan prices bit-identically to
+  // before. Expenses are entered, never inferred — the
+  // engine does not derive them from 529 balances, the
+  // college window fields, or any other saved field.
+  educationStudents?: EducationStudentYear[] | null;
   heirRatePct: number;
   // "Preserve pre-tax" reserve: a fixed NOMINAL dollar floor
   // (it does not inflate, like protectMinTaxable) that
@@ -1179,7 +2160,12 @@ export type RothPlanInputs = {
   //   priceYear like any realized gain (bracket stacking,
   //   NIIT, ACA / IRMAA MAGI), and the fill solver sees it in
   //   the year's base, so it occupies the ceilings exactly as
-  //   a realized gain does.
+  //   a realized gain does. The sale also moves the basis
+  //   ledger (Round-7 Build 3, N-2): a real sale retires the
+  //   sold shares' basis and replaces it with the proceeds'
+  //   basis, so the ledger steps UP by the gain in the sale
+  //   year — without that step-up a later draw would realize
+  //   the same appreciation a second time.
   saleGainAge?: number | null;
   saleGainAmount?: number;
 };
@@ -1351,6 +2337,78 @@ export type RothYearDetail = {
   // realizedGains; excludes any injected sale gain and any
   // harvested gain, which are separate lines above / in ltcg).
   drawGains: number;
+  // Washington excise surfacing (T3; display only, like
+  // everything in this detail): the year's WA-allocated
+  // long-term gains entering the excise base, the excise's
+  // standard deduction, and the taxable Washington capital
+  // gains after deductions — so a $0 state-tax year shows
+  // WHY (gains under the deduction), not just $0. All $0 on
+  // the flat-rate path. The excise's charitable deduction
+  // prices from the plan's one charitable input (T5 — the
+  // itemized charitable component) and is $0 whenever the
+  // plan enters none.
+  waGains: number;
+  waStandardDeduction: number;
+  waTaxableGains: number;
+  // Itemized-vs-standard surfacing (T5; display only, like
+  // everything in this detail): the year's itemized total
+  // after the §164(b)(6) SALT cap, the SALT amount allowed
+  // after that cap, and which side of the greater-of
+  // comparison the year's deduction took — so a year shows
+  // WHICH deduction won, and by how much (itemizedDeduction
+  // against standardDeduction above). All $0 / "standard"
+  // in every year of a plan with no itemized inputs.
+  itemizedDeduction: number;
+  itemizedSaltAllowed: number;
+  deductionTaken: "standard" | "itemized";
+  // Education credits (T6; display only, like everything
+  // in this detail): the year's §25A credits under the
+  // winning allocation — the tentative AOTC after its
+  // phase-out, the tentative Lifetime Learning Credit
+  // after its phase-out, the choice taken, the
+  // nonrefundable portion applied against the year's
+  // federal tax (already inside federalTax — this line
+  // names the component), and the refundable AOTC
+  // portion (the same figure RothYear carries at top
+  // level; it is NOT inside federalTax — the plan score
+  // credits it separately). All $0 / "none" in every year
+  // with no entered expenses.
+  educationAotc: number;
+  educationLlc: number;
+  educationChoice: "aotc" | "llc" | "none";
+  educationNonrefundable: number;
+  educationRefundable: number;
+  // Alternative minimum tax (T7; display only, like
+  // everything in this detail): the year's AMTI, the
+  // §55(d) exemption after its phase-out, the tentative
+  // minimum tax, and the AMT owed — the excess over the
+  // year's regular tax, already inside federalTax (this
+  // line names the component). amtOwed is $0 in every
+  // year the tentative tax does not exceed the regular
+  // tax; the other three lines are priced in every year
+  // regardless, so a $0 year shows its AMT position, not
+  // just $0.
+  amti: number;
+  amtExemption: number;
+  amtTentativeTax: number;
+  amtOwed: number;
+  // Capital-loss carryforward ledger (T4; display only, like
+  // everything in this detail): the loss carried INTO the
+  // year (short-term / long-term, character preserved), the
+  // part of it this year's gains absorbed, the §1211(b)
+  // allowance priced against ordinary income this year, and
+  // the loss carried OUT into the next year. All $0 in every
+  // year of a plan with no entering carryforward: the
+  // march's own years never realize a net capital loss (the
+  // basis ledger's 0 ≤ basis ≤ balance invariant prices
+  // every draw at a gain rate in [0, 1]), so the entering
+  // input is the ledger's only source.
+  lossCarryInSt: number;
+  lossCarryInLt: number;
+  lossAbsorbed: number;
+  lossAllowance: number;
+  lossCarryOutSt: number;
+  lossCarryOutLt: number;
   taxExemptInterest: number;
   provisionalIncome: number;
   ssTaxable: number;
@@ -1561,6 +2619,24 @@ export type RothYear = {
   federalTax: number;
   stateTax: number;
   penalty: number;
+  // Education credits (T6): the year's refundable American
+  // Opportunity Credit portion — money the household
+  // receives even past a $0 tax bill. It is NOT netted
+  // into federalTax above (the nonrefundable portion is);
+  // the plan score credits it in the identity alongside
+  // the ACA premium credit (see netCostBreakdown in
+  // rothOptimizer.ts), exactly as acaCreditKept is
+  // credited there. $0 in every year with no entered
+  // education expenses.
+  educationRefundable: number;
+  // Alternative minimum tax (T7): the year's AMT owed —
+  // the excess of the year's tentative minimum tax over
+  // its regular tax (see detail.amti / amtExemption /
+  // amtTentativeTax for the priced position). It is
+  // already inside federalTax above — this line names
+  // the component, exactly as detail.amtOwed does. $0 in
+  // every year with no AMT exposure.
+  amtOwed: number;
   effectiveMarginalPct: number | null; // on the conversion; null when no conversion
   irmaaTierSet: number;
   irmaaPaid: number;
@@ -1633,6 +2709,17 @@ export type RothYear = {
   // from these.
   settlementConverged: boolean;
   settlementMismatchCents: { gains: number; pretax: number };
+  // CEILING BREACHED (round-7 R7-4): true when the year
+  // carries a switched-on ceiling and the FINAL priced
+  // figures still exceed it after the settlement reduced the
+  // conversion as far as $0 — the breach comes from the
+  // year's draws / mandatory income alone, which no fill can
+  // fix, so it is disclosed rather than silently shipped.
+  // False when no ceiling is switched on or the year
+  // complies. Distinct from settlementConverged, which says
+  // only that the settlement iteration reached an exact
+  // fixed point — never that the year respects its ceilings.
+  ceilingBreached: boolean;
 };
 
 export type RothPlanResult = {
@@ -1642,6 +2729,25 @@ export type RothPlanResult = {
   lifetimePenalty: number;
   lifetimeIrmaa: number;
   lifetimeAcaKept: number;
+  // Lifetime education credits (T6): the sum of the years'
+  // refundable AOTC portions (see RothYear
+  // .educationRefundable). The nonrefundable portions are
+  // already inside lifetimeFederalTax — they reduced the
+  // years' tax bills directly — so only the refundable
+  // portion needs its own lifetime line for the score
+  // identity to credit. $0 for any plan with no entered
+  // education expenses.
+  lifetimeEducationRefundable: number;
+  // Lifetime AMT (T7): the sum of the years' AMT owed.
+  // Unlike the refundable education credit above, this
+  // amount is ALREADY inside lifetimeFederalTax — the
+  // years' AMT raised their federal tax bills directly —
+  // so this line exists only to name the component of
+  // the lifetime federal total, never to be credited or
+  // charged a second time in any score. $0 for any plan
+  // whose tentative minimum tax never exceeds its
+  // regular tax.
+  lifetimeAmt: number;
   // Lifetime UNPAID TAX (round-5 fix 1): the sum of the years'
   // unpaidTax — priced tax no balance could pay. The lifetime
   // tax totals above carry the full assessed liability; this
@@ -1918,8 +3024,22 @@ export function simulateRothPlan(
   let lifetimePenalty = 0;
   let lifetimeIrmaa = 0;
   let lifetimeAcaKept = 0;
+  let lifetimeEducationRefundable = 0;
+  let lifetimeAmt = 0;
   let lifetimeSsCollected = 0;
   let lifetimeUnpaidTax = 0;
+  // Capital-loss carryforward ledger state (T4): the banked
+  // loss entering the plan, by character. Each year nets it
+  // against the year's own gains in the statutory order (see
+  // applyLossLedger); what survives becomes the next year's
+  // state. It starts at the entering inputs (absent / 0 =
+  // none) and can only shrink from there — the march itself
+  // never realizes a net capital loss (see the RothYearDetail
+  // note) — so a plan that enters with no banked loss holds a
+  // $0 ledger in every year and prices bit-identically to
+  // before this build.
+  let lossCarrySt = Math.max(0, inputs.capitalLossCarryInSt ?? 0);
+  let lossCarryLt = Math.max(0, inputs.capitalLossCarryInLt ?? 0);
   // Gift what-if outflow state (see the input fields): applied
   // exactly once, in the first simulated year at or past the
   // gift age. Never set on a main run, so no main figure moves.
@@ -1985,6 +3105,42 @@ export function simulateRothPlan(
     // 65+ counts and deductions, with no spouse on the return.
     const priceAgePrimary = isSurvivorYear ? (survivorAge ?? age) : age;
     const priceAgeSpouse = isSurvivorYear ? null : spouseAge;
+
+    // T4 loss ledger: this year's carry-in snapshot and the
+    // pricing transform every pricing of the year routes
+    // through. Given the year's GROSS own gains (draws' gains
+    // + any injected sale gain + harvested gains, at whatever
+    // trial total a pricing is testing), ledgerFields returns
+    // the priceYear fields for the NETTED year: the priced
+    // ltcg is the net capital result after the carry-in
+    // netting, the §1211(b) allowance rides alongside it, and
+    // the Washington excise keeps the GROSS gains as its base
+    // (it takes no carryforward). The fill base, every
+    // settlement round, the ceiling re-solves, the harvest
+    // search, and the marginal reprices all price through
+    // this one transform, so they can never disagree about
+    // the year's netting. In a year with no carry-in the
+    // transform is the identity — the returned fields are
+    // exactly the pre-T4 ones — which is what keeps a plan
+    // with no banked loss bit-identical.
+    const carryInSt = lossCarrySt;
+    const carryInLt = lossCarryLt;
+    const ledgerOn = carryInSt > 0 || carryInLt > 0;
+    const ledgerFields = (
+      grossGains: number,
+    ): { ltcg: number; capitalLossAllowance?: number; waGainsBase?: number } => {
+      if (!ledgerOn) return { ltcg: grossGains };
+      const led = applyLossLedger(
+        { st: carryInSt, lt: carryInLt },
+        grossGains,
+        effFilingStatus,
+      );
+      return {
+        ltcg: led.netResult,
+        capitalLossAllowance: led.allowance,
+        waGainsBase: grossGains,
+      };
+    };
 
     // 1. RMDs from the prior Dec 31 pre-tax balances — per
     // spouse, each on their own clock. The primary keeps the
@@ -2297,6 +3453,48 @@ export function simulateRothPlan(
       inputs.saleGainAge != null && age === inputs.saleGainAge
         ? Math.max(0, inputs.saleGainAmount ?? 0)
         : 0;
+    // BASIS STEP-UP FOR THE COUNTERFACTUAL SALE (Round-7
+    // Build 3, N-2): the synthetic sale is a real sale for
+    // basis purposes. The sold shares' basis is retired and
+    // the sale proceeds — which stay in the pool — carry a
+    // basis equal to the sale value, so the pool's basis
+    // dollars rise by exactly the gain the sale realizes.
+    // Applied at the start of the sale year (the gift
+    // outflow's timing), before the year's settlement mirrors
+    // are captured, so no later sale or draw — including the
+    // sale year's own tax payment — can realize that
+    // appreciation again. With basis tiers the step-up lands
+    // with the harvest's own mechanics (stepUpTiers: the
+    // lowest-basis-ratio tiers first, capped at each tier's
+    // unrealized gain); in the single pool it is capped at
+    // the balance, holding the 0 ≤ basis ≤ balance invariant.
+    // On the legacy (blank-basis) path there is no drift
+    // ledger to step up and the flat gain rate prices no
+    // drifted gains, so nothing moves there.
+    if (driftOn && injectedLtcg > 0 && taxable > 0) {
+      if (tiersActive && tierState) {
+        stepUpTiers(tierState, injectedLtcg);
+        taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
+      } else {
+        taxableBasisDollars = Math.min(
+          Math.max(0, taxable),
+          taxableBasisDollars + injectedLtcg,
+        );
+      }
+    }
+    // Education expenses (T6): this year's entered students
+    // — the plan's per-student, per-year entries for THIS
+    // calendar year only. They ride the fill base and every
+    // settlement pricing below, so the fill, the settlement,
+    // and the final pricing can never disagree about the
+    // year's credits (the credits phase out on the year's
+    // AGI, so a trial conversion prices its own shrunken
+    // credit). Empty in every year with no entry — and for
+    // a plan with no entries at all the key is simply the
+    // empty list, which educationCreditsFor prices as none.
+    const eduStudentsYear = (inputs.educationStudents ?? []).filter(
+      (e) => e.year === year,
+    );
     // The fill base: the year's non-conversion income, priced
     // with conversion = 0. The convergence loop below re-solves
     // against copies of this base carrying the realized gains /
@@ -2312,11 +3510,23 @@ export function simulateRothPlan(
       extraPreTaxDraw: 0,
       ssBenefits,
       taxExemptInterest: inputs.taxExemptInterestAnnual,
-      ltcg: injectedLtcg,
+      // The fill base's gains are the injected sale gain
+      // alone, netted through the year's loss ledger exactly
+      // as every later pricing nets its own trial total.
+      ...ledgerFields(injectedLtcg),
       interestIncome,
       qualifiedDividends: dividendIncome,
       inflationPct: inputs.inflationPct,
       stateRatePct: inputs.stateRatePct,
+      residenceState: inputs.residenceState ?? null,
+      // Itemized deductions (T5): the plan's four components
+      // ride every pricing of the year, exactly as entered.
+      itemizedMortgageInterest: inputs.itemizedMortgageInterest,
+      itemizedSaltPaid: inputs.itemizedSaltPaid,
+      itemizedCharitable: inputs.itemizedCharitable,
+      itemizedOther: inputs.itemizedOther,
+      // Education expenses (T6): this year's students.
+      educationStudents: eduStudentsYear,
     };
     // The preserve-pre-tax reserve room: how much of the
     // post-RMD combined pre-tax balance may still convert
@@ -2392,14 +3602,27 @@ export function simulateRothPlan(
         ssBenefits,
         taxExemptInterest: inputs.taxExemptInterestAnnual,
         // The year's own realized gains plus any injected
-        // counterfactual sale gain (0 on every non-gift run).
-        ltcg: ltcg + injectedLtcg,
+        // counterfactual sale gain (0 on every non-gift run),
+        // netted through the year's loss ledger.
+        ...ledgerFields(ltcg + injectedLtcg),
         // The year's fixed yield income rides every pricing
         // (see the yield computation above the fill base).
         interestIncome,
         qualifiedDividends: dividendIncome,
         inflationPct: inputs.inflationPct,
         stateRatePct: inputs.stateRatePct,
+        residenceState: inputs.residenceState ?? null,
+        // Itemized deductions (T5): the same four components
+        // the fill base carries, so the fill, every settlement
+        // round, and the final pricing can never disagree
+        // about the year's deduction.
+        itemizedMortgageInterest: inputs.itemizedMortgageInterest,
+        itemizedSaltPaid: inputs.itemizedSaltPaid,
+        itemizedCharitable: inputs.itemizedCharitable,
+        itemizedOther: inputs.itemizedOther,
+        // Education expenses (T6): the same students the
+        // fill base carries — this year's entries only.
+        educationStudents: eduStudentsYear,
       });
     // The year's starting basis dollars (post-gift). The
     // settlement below is pure in its argument and re-runs
@@ -3161,7 +4384,7 @@ export function simulateRothPlan(
         const target = fillConversion({
           base: {
             ...fillBase,
-            ltcg: settled.realizedGains + injectedLtcg,
+            ...ledgerFields(settled.realizedGains + injectedLtcg),
             extraPreTaxDraw: settled.extraDraw + settled.feedbackPretax,
           },
           ceilings: yearCeilings,
@@ -3182,6 +4405,181 @@ export function simulateRothPlan(
         additional = next;
         conversion = already + additional;
         settled = settleYear(additional);
+      }
+    }
+    // Round-7 R7-4 (defect 2.2) — FINAL CEILING CLAMP: the
+    // re-solve loop above stops after at most 6 settlements
+    // and could ship a year still breaching a switched-on
+    // ceiling with conversion above $0 (external-review
+    // instance: a fill to 35% settled at taxable income
+    // $796,465.20 against the 2026 MFJ 35% top of $768,700 —
+    // a compliant lower fill existed). When a breach remains
+    // and the conversion is above $0, bisect the conversion
+    // against the FINAL priced figures — a settlement's
+    // priced figures are non-decreasing in the conversion, so
+    // the compliant conversions form a prefix and the search
+    // finds the largest of them — until the year complies or
+    // the conversion reaches $0. A breach that remains at
+    // conversion $0 comes from the draws alone: the year
+    // keeps that settlement and is flagged ceilingBreached
+    // at assembly (see the RothYear field), never silently
+    // shipped as compliant.
+    if (
+      yearCeilings &&
+      ceilingsActive(yearCeilings) &&
+      inWindow &&
+      additional > 0 &&
+      !respectsCeilings(settled.priced)
+    ) {
+      const atZero = settleYear(0);
+      if (respectsCeilings(atZero.priced)) {
+        let lo = 0;
+        let hi = Math.round(additional * 100);
+        let bestAdd = 0;
+        let best = atZero;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi + 1) / 2);
+          const candidate = settleYear(mid / 100);
+          if (respectsCeilings(candidate.priced)) {
+            lo = mid;
+            bestAdd = mid / 100;
+            best = candidate;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        additional = bestAdd;
+        conversion = already + additional;
+        settled = best;
+      } else {
+        additional = 0;
+        conversion = already;
+        settled = atZero;
+      }
+    }
+    // Round-7 R7-5 (item K-1) — IRMAA SIZER ALIGNMENT: the
+    // compliance checker measures MAGI against the TOP of the
+    // capped tier (irmaaTierUpTo), but the fill + shrink-only
+    // convergence could settle materially UNDER that line —
+    // the re-solve prices the breaching settlement's gains
+    // feedback, which overstates the gains at the final,
+    // smaller conversion, so the shrink overshot (measured on
+    // the saved IRMAA-Tier-1 scenario: 2030 conversion
+    // $138,200, MAGI $251,059.91 against the $274,000 tier
+    // top). When an IRMAA tier cap is switched on and the
+    // settled year respects every ceiling with MAGI still
+    // below the tier top, grow the conversion back by the
+    // same cent-level bisection the checker-side searches
+    // use: a settlement's MAGI is non-decreasing in the
+    // conversion and respectsCeilings must hold at every
+    // step, so the grown conversion lands MAGI at or under
+    // the tier top — the same ceiling the sizer now targets
+    // and the checker measures. Gated on the IRMAA cap: a
+    // plan with no IRMAA cap (including the user's saved
+    // plan) prices bit-identically to before.
+    if (
+      yearCeilings?.irmaaTierCap != null &&
+      inWindow &&
+      !bunchZero &&
+      !eraZeroFill &&
+      !forceZeroConversion &&
+      respectsCeilings(settled.priced)
+    ) {
+      const lawG = lawForYear(year);
+      const tierTop = irmaaTierUpTo(
+        yearCeilings.irmaaTierCap,
+        effFilingStatus,
+        lawG,
+        year,
+        inputs.inflationPct,
+      );
+      const maxAdditional = Math.max(
+        0,
+        Math.min(pretaxAfterRmd, preserveRoom),
+      );
+      // Cheap bound check: when another switched-on ceiling
+      // is already met to the cent, no conversion growth can
+      // respect it, so the search would only confirm the
+      // current settlement — skip it (this keeps the
+      // optimizer's many IRMAA-capped candidate years, most
+      // of them bracket-bound, at their old cost).
+      const atOtherCap = ((): boolean => {
+        let taxableCap = Infinity;
+        if (yearCeilings.bracketTopPct != null) {
+          const idx = lawG.rates.indexOf(yearCeilings.bracketTopPct);
+          if (idx >= 0) {
+            taxableCap = Math.min(
+              taxableCap,
+              lawG.brackets[effFilingStatus][idx] ?? Infinity,
+            );
+          }
+        }
+        if (yearCeilings.ltcgZeroCap) {
+          taxableCap = Math.min(taxableCap, lawG.ltcgZeroTop[effFilingStatus]);
+        }
+        if (
+          Number.isFinite(taxableCap) &&
+          settled.priced.taxableIncome >= taxableCap - 0.005
+        ) {
+          return true;
+        }
+        if (
+          yearCeilings.magiCap != null &&
+          settled.priced.magi >= yearCeilings.magiCap - 0.005
+        ) {
+          return true;
+        }
+        if (
+          yearCeilings.acaCliffCap &&
+          acaTargetDollars != null &&
+          settled.priced.acaMagi >= acaTargetDollars - 0.005
+        ) {
+          return true;
+        }
+        return false;
+      })();
+      if (
+        Number.isFinite(tierTop) &&
+        settled.priced.magi < tierTop - 0.005 &&
+        additional < maxAdditional &&
+        !atOtherCap
+      ) {
+        // The grown year must also CLASSIFY at or under the
+        // capped tier: respectsCeilings carries a half-cent
+        // tolerance, but irmaaTierFor classifies on the exact
+        // boundary, so a candidate a fraction of a cent over
+        // the deflated tier top would price the NEXT tier's
+        // surcharges while claiming the cap. The sizer targets
+        // the line as the checker measures it — classification
+        // included.
+        const tierOk = (p: PriceYearResult): boolean =>
+          irmaaTierFor(
+            p.magi,
+            effFilingStatus,
+            lawG,
+            year,
+            inputs.inflationPct,
+          ) <= (yearCeilings.irmaaTierCap as number);
+        let lo = 0;
+        let hi = Math.round((maxAdditional - additional) * 100);
+        let bestAdd = additional;
+        let best = settled;
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi + 1) / 2);
+          const candidate = settleYear(additional + mid / 100);
+          if (respectsCeilings(candidate.priced) && tierOk(candidate.priced)) {
+            lo = mid;
+            bestAdd = additional + mid / 100;
+            best = candidate;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        if (bestAdd > additional) {
+          additional = bestAdd;
+          conversion = already + additional;
+          settled = best;
+        }
       }
     }
     // Cliff-cap convergence for the spending draw itself
@@ -3637,6 +5035,28 @@ export function simulateRothPlan(
       sleeveDollars = Math.min(sleeveDollars, Math.max(0, taxableBal));
     }
 
+    // T4 ledger, year end: the year's FINAL ledger outcome —
+    // the transform applied to the year's own total gains
+    // (the draws' realized gains + any injected sale gain +
+    // the harvested gain: the same total detail.ltcg carries)
+    // against the year's carry-in. Every pricing of the year
+    // routed through ledgerFields at its own trial total and
+    // the kept pricing priced exactly this total, so this
+    // outcome is the priced year's own residue: its
+    // allowance is the allowance the year priced, and its
+    // carry-out becomes the next year's carry-in.
+    const ledFinal = ledgerOn
+      ? applyLossLedger(
+          { st: carryInSt, lt: carryInLt },
+          realizedGains + injectedLtcg + gainsHarvested,
+          effFilingStatus,
+        )
+      : null;
+    if (ledFinal) {
+      lossCarrySt = ledFinal.carryOut.st;
+      lossCarryLt = ledFinal.carryOut.lt;
+    }
+
     // ACA credit kept for the year (priced on final ACA MAGI —
     // §36B household income, which adds back the non-taxable
     // portion of Social Security; the premium itself is not part
@@ -3905,6 +5325,8 @@ export function simulateRothPlan(
     lifetimePenalty += penalty;
     lifetimeIrmaa += irmaaPaid;
     lifetimeAcaKept += acaCreditKept;
+    lifetimeEducationRefundable += priced.educationRefundable;
+    lifetimeAmt += priced.amtOwed;
     lifetimeSsCollected += ssBenefits;
     lifetimeUnpaidTax += unpaidTaxYear;
 
@@ -4094,6 +5516,27 @@ export function simulateRothPlan(
       gainsHarvested: r2(gainsHarvested),
       taxableBasisDollars: r2(taxableBasisDollars),
       drawGains: r2(realizedGains),
+      waGains: priced.waGains,
+      waStandardDeduction: priced.waStandardDeduction,
+      waTaxableGains: priced.waTaxableGains,
+      itemizedDeduction: priced.itemizedDeduction,
+      itemizedSaltAllowed: priced.itemizedSaltAllowed,
+      deductionTaken: priced.deductionTaken,
+      educationAotc: priced.educationAotc,
+      educationLlc: priced.educationLlc,
+      educationChoice: priced.educationChoice,
+      educationNonrefundable: priced.educationNonrefundable,
+      educationRefundable: priced.educationRefundable,
+      amti: priced.amti,
+      amtExemption: priced.amtExemption,
+      amtTentativeTax: priced.amtTentativeTax,
+      amtOwed: priced.amtOwed,
+      lossCarryInSt: r2(carryInSt),
+      lossCarryInLt: r2(carryInLt),
+      lossAbsorbed: ledFinal ? ledFinal.absorbedByGains : 0,
+      lossAllowance: ledFinal ? ledFinal.allowance : 0,
+      lossCarryOutSt: ledFinal ? ledFinal.carryOut.st : 0,
+      lossCarryOutLt: ledFinal ? ledFinal.carryOut.lt : 0,
       taxExemptInterest: r2(inputs.taxExemptInterestAnnual),
       provisionalIncome: priced.provisionalIncome,
       ssTaxable: priced.ssTaxable,
@@ -4164,6 +5607,8 @@ export function simulateRothPlan(
       federalTax: r2(federalTax),
       stateTax: r2(stateTax),
       penalty: r2(penalty),
+      educationRefundable: priced.educationRefundable,
+      amtOwed: priced.amtOwed,
       effectiveMarginalPct,
       irmaaTierSet: priced.irmaaTier,
       irmaaPaid: r2(irmaaPaid),
@@ -4187,6 +5632,10 @@ export function simulateRothPlan(
       unpaidTax: r2(unpaidTaxYear),
       settlementConverged: settled.settlementConverged,
       settlementMismatchCents: settled.settlementMismatchCents,
+      ceilingBreached:
+        yearCeilings != null &&
+        ceilingsActive(yearCeilings) &&
+        !respectsCeilings(priced),
     });
   }
 
@@ -4214,6 +5663,8 @@ export function simulateRothPlan(
     lifetimePenalty: r2(lifetimePenalty),
     lifetimeIrmaa: r2(lifetimeIrmaa),
     lifetimeAcaKept: r2(lifetimeAcaKept),
+    lifetimeEducationRefundable: r2(lifetimeEducationRefundable),
+    lifetimeAmt: r2(lifetimeAmt),
     lifetimeSsCollected: r2(lifetimeSsCollected),
     lifetimeUnpaidTax: r2(lifetimeUnpaidTax),
     endingPretax: r2(endingPretaxTotal),

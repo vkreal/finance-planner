@@ -497,21 +497,37 @@ export function flagImportDuplicates(
    and the preview labels the two kinds distinctly. A FITID
    repeated inside the same file flags on its second appearance,
    like the fuzzy check's in-file rule. Rows without a FITID
-   (every CSV row) are never exact duplicates. */
+   (every CSV row) are never exact duplicates.
+   ACCOUNT SCOPING (round-7 fix 6.1): a FITID is unique only
+   within its own account — each bank assigns ids inside one
+   account's statement stream, and two accounts at the same
+   bank (or two banks) can mint the same id for unrelated
+   transactions. The seen-set is therefore keyed by account +
+   FITID: the same FITID under a DIFFERENT account (on either
+   side — recorded or in-file) never flags, while the same
+   FITID twice within one account still flags on its second
+   appearance. Account names compare trimmed and
+   case-insensitively, exactly as the fuzzy key above treats
+   them, so the recorded side and the file side agree on what
+   "the same account" means; a missing account name is the
+   empty account scope on both sides. */
 export function flagExactFitIdDuplicates(
-  rows: readonly { fitId?: string | null }[],
-  recordedFitIds: ReadonlySet<string> | readonly string[],
+  rows: readonly { fitId?: string | null; accountName?: string | null }[],
+  recorded: readonly { fitId?: string | null; accountName?: string | null }[],
 ): boolean[] {
+  const keyOf = (fitId: string, accountName?: string | null): string =>
+    `${(accountName ?? "").trim().toLowerCase()}\u0000${fitId}`;
   const seen = new Set<string>();
-  for (const f of recordedFitIds) {
-    const t = f.trim();
-    if (t !== "") seen.add(t);
+  for (const e of recorded) {
+    const t = (e.fitId ?? "").trim();
+    if (t !== "") seen.add(keyOf(t, e.accountName));
   }
   return rows.map((r) => {
     const f = (r.fitId ?? "").trim();
     if (f === "") return false;
-    const dup = seen.has(f);
-    seen.add(f);
+    const k = keyOf(f, r.accountName);
+    const dup = seen.has(k);
+    seen.add(k);
     return dup;
   });
 }

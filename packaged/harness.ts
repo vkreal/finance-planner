@@ -3,13 +3,21 @@
 // Runs the packaged runtime (real server actions + local adapter) in
 // bun against an in-memory store and verifies, against the same
 // numbers the live app produces:
-//   A. Contract: describeApi reports contract v10 and all 90 actions.
-//   B. Fixture census: extended 85 · roth-cas 15 · retirement-cas 16 ·
-//      ui-state 9 · retirement 55 · integrity 0 through the packaged
-//      dispatcher (plus teeth suites), and the tax census 329 run
-//      chunked from the same bundled fixture module (taxtest.ts —
-//      the single-call suite OOMs on this machine exactly as it
-//      exceeds the live worker's call cap, standing limitation S-2).
+//   A. Contract: describeApi reports the contract version and the
+//      action list — both expectations DERIVED from the source the
+//      contract is built from (API_CONTRACT_VERSION and the Actions
+//      map in server/src/actions.ts, imported below), never
+//      hard-coded numbers (round-7 fix H-1).
+//   B. Fixture census: every suite (extended · roth-cas ·
+//      retirement-cas · ui-state · retirement · integrity) through
+//      the packaged dispatcher (plus teeth suites). Each suite's
+//      expectation is derived from the suite's own response —
+//      passed must equal the total the suite itself reports — and
+//      the tax census runs chunked from the same bundled fixture
+//      module (taxtest.ts — the single-call suite OOMs on this
+//      machine exactly as it exceeds the live worker's call cap,
+//      standing limitation S-2), with its total likewise derived
+//      (see run-harness.mjs).
 //   C. Seeded state + the describeApi runRothCompare example priced
 //      to the live-pinned figures.
 //   D. Backup interop: exportbackup -> clearAllData -> restorebackup
@@ -24,6 +32,13 @@
 // same resolver seams as the browser build).
 import { createRuntime } from "./src/runtime";
 import { memoryStore, BACKUPS_KEY, RSA_PRIV_KEY } from "./src/storage";
+// The single sources of truth the contract expectations derive
+// from (round-7 fix H-1): the same Actions map and contract
+// version constant describeApi publishes, read here directly
+// instead of through the dispatcher — so a dispatcher or seam
+// that dropped an action or mangled the version fails loudly
+// against the source, and growing either never stales this file.
+import { Actions, API_CONTRACT_VERSION } from "../server/src/actions";
 
 const wasmPath = process.env.FPKG_WASM;
 if (!wasmPath) throw new Error("FPKG_WASM env var is required");
@@ -50,8 +65,8 @@ const rt = await createRuntime({ store, wasmUrl: wasmPath });
 // describeApi with no action filter returns the full contract;
 // passing {action} returns just that action's entry.
 const api = await rt.call<any>("describeApi", {});
-eq("A1 apiContractVersion", api.apiContractVersion, 10);
-eq("A2 action count", api.actions.length, 90);
+eq("A1 apiContractVersion", api.apiContractVersion, API_CONTRACT_VERSION);
+eq("A2 action count", api.actions.length, Object.keys(Actions).length);
 eq("A3 actionsMissingPurpose", api.actionsMissingPurpose, []);
 
 // ---------- B. Fixture census ----------
@@ -71,30 +86,41 @@ const only = (process.env.FPKG_ONLY ?? "").split(",").filter(Boolean);
 const skip = (process.env.FPKG_SKIP ?? "").split(",").filter(Boolean);
 const want = (name: string) =>
   (only.length === 0 || only.includes(name)) && !skip.includes(name);
+// Each suite's expectation is derived from the suite's own
+// response (round-7 fix H-1): every case it ran must have passed,
+// and it must have run at least one case — a suite that silently
+// shrank or vanished fails here by name instead of passing
+// against a stale hard-coded count.
+function suiteAllPass(label: string, result: any) {
+  check(
+    label,
+    !!result && result.total > 0 && result.passed === result.total,
+    `suite reports ${result?.passed ?? "?"}/${result?.total ?? "?"} passed`,
+  );
+}
 if (want("integrity")) {
   const integrity = await suite("integrity");
   eq("B-integrity violations", integrity.integrity?.totalViolations, 0);
 }
 if (want("extended")) {
   const extended = await suite("extended");
-  eq("B-extended passed", extended.extendedFixtures?.passed, 85);
-  eq("B-extended total", extended.extendedFixtures?.total, 85);
+  suiteAllPass("B-extended all pass", extended.extendedFixtures);
 }
 if (want("retirement")) {
   const retirement = await suite("retirement");
-  eq("B-retirement passed", retirement.fixtures?.passed, 55);
+  suiteAllPass("B-retirement all pass", retirement.fixtures);
 }
 if (want("roth-cas")) {
   const rothCas = await suite("roth-cas");
-  eq("B-roth-cas passed", rothCas.rothCasFixtures?.passed, 15);
+  suiteAllPass("B-roth-cas all pass", rothCas.rothCasFixtures);
 }
 if (want("retirement-cas")) {
   const retCas = await suite("retirement-cas");
-  eq("B-retirement-cas passed", retCas.retirementCasFixtures?.passed, 16);
+  suiteAllPass("B-retirement-cas all pass", retCas.retirementCasFixtures);
 }
 if (want("ui-state")) {
   const uiState = await suite("ui-state");
-  eq("B-ui-state passed", uiState.uiStateFixtures?.passed, 9);
+  suiteAllPass("B-ui-state all pass", uiState.uiStateFixtures);
 }
 if (want("tax")) {
   // The tax census runs chunked in its own processes (see
@@ -164,6 +190,19 @@ eq("C23 example ssCollectedCents", base?.ssCollectedCents, 139200000);
 
 // Playground year on a synthetic neutral shape — figures pinned from
 // the LIVE app (runPlaygroundYear, same request, 2026-10-19).
+// RE-PINNED at round-7 fix build 2 (H-1 harness repair): the
+// 2026-10-19 pins (MAGI 128,500 / federal $9,200) double-counted
+// the $7,000 of qualified dividends — they are already inside the
+// $9,000 of ordinary dividends — a defect the round-7 engine fixes
+// corrected before this build, so the stale pins failed against
+// the corrected engine. The figures below are the corrected
+// engine's, hand-checked: MAGI = $4,000 interest + $9,000
+// dividends + $100,000 conversion + $8,000 sale gain ($20,000 −
+// $12,000 basis) + $500 tax-exempt interest = $121,500; AGI
+// $121,000 − $32,200 joint standard deduction = $88,800 taxable,
+// of which $15,000 is preferential (qualified dividends + gain)
+// and sits inside the $98,900 joint 0% space, so federal tax is
+// the ordinary tax on $73,800 = $2,480 + $5,880 = $8,360.
 const pg = await rt.call<any>("runPlaygroundYear", {
   taxYear: 2026, filingStatus: "mfj", agePrimary: 60, ageSpouse: 50,
   onMedicarePrimary: false, onMedicareSpouse: false, interest: 4000,
@@ -173,8 +212,8 @@ const pg = await rt.call<any>("runPlaygroundYear", {
   spouseSoleBeneficiary: true, acaHouseholdSize: 2,
   acaBenchmarkAnnual: 22000, stateRatePct: 0,
 });
-eq("C24 playground magi (live-pinned)", pg.result?.magi, 128500);
-eq("C25 playground federalTax (live-pinned)", pg.result?.federalTax, 9200);
+eq("C24 playground magi (live-pinned)", pg.result?.magi, 121500);
+eq("C25 playground federalTax (live-pinned)", pg.result?.federalTax, 8360);
 eq("C26 playground lawYearUsed (live-pinned)", pg.lawYearUsed, 2026);
 
 // ---------- D. Backup / restore interop ----------

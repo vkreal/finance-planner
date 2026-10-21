@@ -1939,6 +1939,32 @@ export function App() {
   const showDivergence = divergenceBig && data.trailingMonthsCovered >= 12;
   const showProvisional = divergenceBig && data.trailingMonthsCovered < 12;
 
+  /* ---- Quick view averages strip (Month mode footer) ----
+     One highlighted line under the six tiles, reading the
+     dashboard's OWN averages: True cost is avgSmoothedCents and
+     Cash out is avgCashOutCents, both averaged by getDashboard
+     over the trailing window trailingMonthsCovered names (up to
+     12 months ending at the viewed month, from the first month
+     with data). The window label is reconstructed from that same
+     count, so it names exactly the months averaged. Hidden when
+     fewer than 2 months are covered — an average of one month is
+     just the month. */
+  const showAvgStrip = data != null && data.trailingMonthsCovered >= 2;
+  const avgWindowLabel = (() => {
+    if (data == null || data.trailingMonthsCovered < 1) return "";
+    const covered = data.trailingMonthsCovered;
+    const start = shiftMonth(month, -(covered - 1));
+    const startShort = MONTH_SHORT[Number(start.slice(5, 7)) - 1] ?? "";
+    const endShort = MONTH_SHORT[Number(month.slice(5, 7)) - 1] ?? "";
+    if (covered >= 12) {
+      return `Last 12 months · ${startShort} ${start.slice(0, 4)}–${endShort} ${month.slice(0, 4)}`;
+    }
+    if (start.slice(0, 4) === month.slice(0, 4)) {
+      return `${startShort}–${endShort} ${month.slice(0, 4)} · ${covered} months`;
+    }
+    return `${startShort} ${start.slice(0, 4)}–${endShort} ${month.slice(0, 4)} · ${covered} months`;
+  })();
+
   /* ---- Year view (Quick view) derived display helpers ---- */
   const inYearMode = quickMode === "year";
   const yv = yearView.data;
@@ -2465,6 +2491,13 @@ export function App() {
                       ytd: data.ytd,
                     })}
                   </div>
+                  {showAvgStrip && (
+                    <p className="tnum mt-3 rounded-[var(--radius)] border-l-4 border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-2 text-sm leading-relaxed font-medium text-[var(--text)]">
+                      Average month · {avgWindowLabel} — True cost{" "}
+                      {fmt(data.avgSmoothedCents)} · Cash out{" "}
+                      {fmt(data.avgCashOutCents)}
+                    </p>
+                  )}
                   <p className="tnum mt-3 text-sm leading-relaxed text-[var(--dim)]">
                     Cash out {fmt(data.cashOutCents)} = Total monthly{" "}
                     {fmt(data.monthlyBillsTotalCents)} + Yearly &amp; periodic
@@ -5012,18 +5045,15 @@ function ImportPanel({
       const data = await api.getImportData({ months });
       setDupFlags(flagImportDuplicates(built.rows, data.existing));
       /* IM-5: the exact check — a row whose bank transaction id
-         was already recorded is an exact duplicate, whatever its
-         date/amount/description look like; a row with a NEW id
-         is never exact (the fuzzy flag above may still mark it
-         as looking already recorded). */
-      setExactFlags(
-        flagExactFitIdDuplicates(
-          built.rows,
-          data.existing
-            .map((e) => e.fitId)
-            .filter((f): f is string => f != null),
-        ),
-      );
+         was already recorded FOR THE SAME ACCOUNT is an exact
+         duplicate, whatever its date/amount/description look
+         like; a row with a NEW id is never exact (the fuzzy flag
+         above may still mark it as looking already recorded).
+         The recorded entries pass through whole (id + account),
+         because a bank transaction id is unique only within its
+         own account — the same id in another account is a
+         different transaction (round-7 fix 6.1). */
+      setExactFlags(flagExactFitIdDuplicates(built.rows, data.existing));
       // IM-4: the same read carries each month's recorded cash
       // out, which the proposal below compares against.
       setRecordedCashOut(data.cashOut);

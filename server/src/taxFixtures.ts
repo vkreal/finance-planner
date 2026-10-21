@@ -16,6 +16,9 @@ import {
 DEFAULT_DRAW_ORDER,
 DRAW_ORDER_OPTIONS,
 acaCreditFor,
+applyLossLedger,
+capitalLossAllowanceCap,
+deflationFactor,
 deriveSpendFromCashSleeveStartDollars,
 drawOrderFromKey,
 drawOrderKey,
@@ -26,6 +29,7 @@ irmaaTierFor,
 priceYear,
 rmdForYear,
 simulateRothPlan,
+waCapitalGainsTax,
 type PriceYearInput,
 type RothPlanInputs,
 type RothStrategy,
@@ -35,6 +39,8 @@ DO_NOTHING_SPEC,
 ROTH_MC_CHECK_SEED,
 claimAgeCombos,
 claimAgeLabel,
+compareJointCandidates,
+compareScoredCandidates,
 consumeExecutionInputs,
 countCeilingViolations,
 executionDollarsFromCents,
@@ -80,10 +86,11 @@ type ScoredCandidate,
 } from "./rothOptimizer";
 import { parseRothBlobRevision } from "./rothRevisionCore";
 import { CURRENT_LAW, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear } from "./taxLaw";
-import { playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
+import { AMT_SEMANTICS, EDUCATION_CREDIT_SEMANTICS, ITEMIZED_DEDUCTION_SEMANTICS, LOSS_CARRYFORWARD_SEMANTICS, bracketTopPctField, playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
 import { computeGiftComparison, parseRothGift } from "./giftModel";
 import {
 contributionStack,
+payrollTaxBreakdown,
 priceOneWorkYear,
 rollWorkYears,
 runWorkYearsCompare,
@@ -1052,8 +1059,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-irmaa-cap-converges-with-gain-bearing-spending",
     kind: "tax",
-    note: "IRMAA Tier 1 cap (MAGI ≤ $274,000, 2026 MFJ) with gain-bearing draws: $50,000 spending from Taxable at 60% basis. The conversion-only fill is $274,000; its tax plus the spending draw realizes $37,291.20 of gains → final MAGI $311,291.20, Tier 2. Re-solving against the settled gains gives $233,600, whose settlement is a fixed point of the settlement iteration (FIX 1): every Taxable sale realizes 40% gains, so gains = 40% × ($50,000 spending + the tax T itself) and MAGI = $233,600 + gains = $269,546.71 — Tier 1 — with gains $35,946.71 and T = $39,866.78 satisfying gains = 40% × $89,866.78 exactly. Final federal tax: ordinary tax on $201,400 = $33,732, plus 15% on the gains (ordinary income is past the 0% space) $5,392.01, plus NIIT 3.8% × min($35,946.71, $269,546.71 − $250,000) = $742.77 → $39,866.78. (Pre-fix this pinned conversion $236,700 / MAGI $270,465.60 / tax $40,256.53: the reprice-delta sale's gains were unpriced, so the re-solve worked against $33,765.60 of gains instead of the full $35,946.71.)",
-    expected: { conversion: 233600, magi: 269546.71, tier: 1, federalTax: 39866.78 },
+    note: "IRMAA Tier 1 cap (MAGI ≤ $274,000, 2026 MFJ) with gain-bearing draws: $50,000 spending from Taxable at 60% basis. The conversion-only fill is $274,000; its tax plus the spending draw realizes $37,291.20 of gains → final MAGI $311,291.20, Tier 2. Re-solving against the settled gains gives $233,600, whose settlement is a fixed point of the settlement iteration (FIX 1): every Taxable sale realizes 40% gains, so gains = 40% × ($50,000 spending + the tax T itself) and MAGI = $233,600 + gains = $269,546.71 — Tier 1 — with gains $35,946.71 and T = $39,866.78 satisfying gains = 40% × $89,866.78 exactly. Final federal tax: ordinary tax on $201,400 = $33,732, plus 15% on the gains (ordinary income is past the 0% space) $5,392.01, plus NIIT 3.8% × min($35,946.71, $269,546.71 − $250,000) = $742.77 → $39,866.78. (Pre-fix this pinned conversion $236,700 / MAGI $270,465.60 / tax $40,256.53: the reprice-delta sale's gains were unpriced, so the re-solve worked against $33,765.60 of gains instead of the full $35,946.71.) RE-PINNED for round-7 R7-5 (IRMAA sizer alignment): the sizer now targets the SAME tier top the checker measures, so instead of stopping at the shrink loop's $233,600 fixed point it grows the conversion back to the exact cap — conversion $237,606.22, MAGI exactly $274,000.00, still Tier 1, and still an exact settlement fixed point (gains $36,393.78 = 40% × ($50,000 + tax $40,984.44)); federal tax $40,984.44 = ordinary $34,613.37 (taxable ordinary $205,406.22) + 15% × $36,393.78 gains $5,459.07 + NIIT 3.8% × min($36,393.78, $24,000) $912.00, hand-verified.",
+    expected: { conversion: 237606.22, magi: 274000, tier: 1, federalTax: 40984.44 },
     actual: () => {
       const plan = basePlan({
         taxableBasisPct: 60,
@@ -1146,8 +1153,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-irmaa-tier4-cap-uses-deflated-top",
     kind: "tax",
-    note: "IRMAA Tier 4 CAP uses the SAME deflated top-of-tier boundary as the classifier (irmaaTierUpTo): the Tier 4 ceiling is $749,999 MFJ in the 2026 law row, fixed through 2028, so in today's dollars at 2.5% inflation the 2028 top of Tier 4 is $749,999 / 1.025² = $713,859.85 — not the raw $749,999. Direct fill (2028, no other income): the largest $100 step at or under $713,859.85 is $713,800. Through the full simulation (age 57 in 2028, $50,000 of spending drawn from Taxable at 60% basis, conversion tax withheld from the conversion): that fill's spending draw realizes $20,000 of gains (40% × $50,000), landing final MAGI at $733,800 — over the deflated cap and Tier 5 by the classifier, though under the raw ceiling — so the convergence check (same deflated cap) re-solves against the settled gains to $691,900, and the settled year lands at $691,900 + $21,904 = $713,804 MAGI — under the $713,859.85 deflated cap, classified Tier 4. The $21,904 of gains is the $20,000 spending-draw gains plus $1,904 the settlement iteration (FIX 1) prices from the tax channels' own Taxable sales (the reprice delta and the unpaid-tax debit, at the pool's 40% gain rate). Final federal tax: ordinary tax on $659,700 of ordinary taxable income ($713,804 AGI − $32,200 standard deduction − $21,904 gains) is $2,480 + $9,120 + $24,332 + $46,116 + $34,848 + 35% × $147,250 = $168,433.50, plus 20% on the $21,904 gains (ordinary income is past the 20% floor) $4,380.80, plus NIIT 3.8% × $21,904 $832.35 → $173,646.65. (Pre-FIX-1 this pinned conversion $693,800 / MAGI $713,800 / tax $173,858.50, with only the $20,000 of draw gains priced. Before the cap fix the same plan settled at MAGI $749,900 — between $713,859.85 and $750,000 — classified and priced Tier 5 while the raw-ceiling machinery reported the Tier 4 cap respected.)",
-    expected: { fillDirect: 713800, conversion: 691900, magi: 713804, tier: 4, federalTax: 173646.65 },
+    note: "IRMAA Tier 4 CAP uses the SAME deflated top-of-tier boundary as the classifier (irmaaTierUpTo): the Tier 4 ceiling is $749,999 MFJ in the 2026 law row, fixed through 2028, so in today's dollars at 2.5% inflation the 2028 top of Tier 4 is $749,999 / 1.025² = $713,859.85 — not the raw $749,999. Direct fill (2028, no other income): the largest $100 step at or under $713,859.85 is $713,800. Through the full simulation (age 57 in 2028, $50,000 of spending drawn from Taxable at 60% basis, conversion tax withheld from the conversion): that fill's spending draw realizes $20,000 of gains (40% × $50,000), landing final MAGI at $733,800 — over the deflated cap and Tier 5 by the classifier, though under the raw ceiling — so the convergence check (same deflated cap) re-solves against the settled gains to $691,900, and the settled year lands at $691,900 + $21,904 = $713,804 MAGI — under the $713,859.85 deflated cap, classified Tier 4. The $21,904 of gains is the $20,000 spending-draw gains plus $1,904 the settlement iteration (FIX 1) prices from the tax channels' own Taxable sales (the reprice delta and the unpaid-tax debit, at the pool's 40% gain rate). Final federal tax: ordinary tax on $659,700 of ordinary taxable income ($713,804 AGI − $32,200 standard deduction − $21,904 gains) is $2,480 + $9,120 + $24,332 + $46,116 + $34,848 + 35% × $147,250 = $168,433.50, plus 20% on the $21,904 gains (ordinary income is past the 20% floor) $4,380.80, plus NIIT 3.8% × $21,904 $832.35 → $173,646.65. (Pre-FIX-1 this pinned conversion $693,800 / MAGI $713,800 / tax $173,858.50, with only the $20,000 of draw gains priced. Before the cap fix the same plan settled at MAGI $749,900 — between $713,859.85 and $750,000 — classified and priced Tier 5 while the raw-ceiling machinery reported the Tier 4 cap respected.) RE-PINNED for round-7 R7-5 (IRMAA sizer alignment): the sizer now grows the conversion back toward the deflated tier top instead of stopping at the shrink loop's $691,900 — conversion $691,955.84, MAGI $713,859.84, one cent under the $713,859.85 deflated cap, with the same $21,904 of gains (MAGI − conversion), still classified Tier 4 (the grow-back acceptance also requires irmaaTierFor to classify at or under the capped tier, since the compliance checker's half-cent tolerance alone would let a fraction-of-a-cent overshoot price Tier 5); federal tax $173,666.20 (the +$55.84 of conversion prices at the 35% marginal rate).",
+    expected: { fillDirect: 713800, conversion: 691955.84, magi: 713859.84, tier: 4, federalTax: 173666.2 },
     actual: () => {
       const fillDirect = fillConversion({
         base: basePrice({ calendarYear: 2028 }),
@@ -1601,8 +1608,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-aca-bunching-beats-level-cliff",
     kind: "tax",
-    note: "ACA bunching: both spouses under 65 from 57, other income $35,000/yr, benchmark premium $12,000/yr priced, pre-tax $900,000, 0% return. The best LEVEL cliff-respecting candidate (fill up to the ACA cliff every year) scores a $17,861.40 lifetime net cost; the best bunching candidate — alternate a big conversion year (credit forfeited) with a $0 year (credit kept at the low applicable percentage) — scores $5,027.63. On this constructed case the alternating schedule beats the level cliff schedule on the same net-cost objective. (Re-pinned 2026-10-14 for the newest-row FPL fallback, hand-reconciled against the pre-fallback run: bunching's winner is the same candidate with identical tax / terminal / conversions — only its kept credits moved, +$63.22 in each $0 year 2029–2043 and +$64.65 in 2044, +$570.41 in all, so its net fell $5,598.04 → $5,027.63. The level-cliff winner converts $1,900/yr more in 2028–2034 as the household-of-2 cliff rises $84,600 → $86,560: tax +$1,543.43, terminal −$2,810.35 (ending pre-tax −$12,774.31 × 22%), kept credits −$555.61 — net $18,572.71 → $17,861.40.)",
-    expected: { bestBunching: 5027.63, bestLevelCliff: 17861.4, bunchingWins: 1 },
+    note: "ACA bunching: both spouses under 65 from 57, other income $35,000/yr, benchmark premium $12,000/yr priced, pre-tax $900,000, 0% return. The best LEVEL cliff-respecting candidate (fill up to the ACA cliff every year) scores a $17,861.40 lifetime net cost; the best bunching candidate — alternate a big conversion year (credit forfeited) with a $0 year (credit kept at the low applicable percentage) — scores $5,027.63. On this constructed case the alternating schedule beats the level cliff schedule on the same net-cost objective. (Re-pinned 2026-10-14 for the newest-row FPL fallback, hand-reconciled against the pre-fallback run: bunching's winner is the same candidate with identical tax / terminal / conversions — only its kept credits moved, +$63.22 in each $0 year 2029–2043 and +$64.65 in 2044, +$570.41 in all, so its net fell $5,598.04 → $5,027.63. The level-cliff winner converts $1,900/yr more in 2028–2034 as the household-of-2 cliff rises $84,600 → $86,560: tax +$1,543.43, terminal −$2,810.35 (ending pre-tax −$12,774.31 × 22%), kept credits −$555.61 — net $18,572.71 → $17,861.40.) (Re-pinned 2026-10-21 for round-7 R7-5: the winning bunching candidate carries an IRMAA tier cap, and the aligned sizer now grows its capped years' conversions up to the tier top instead of stopping short — its lifetime net cost falls $5,027.63 → $5,002.56. Verified by isolation: with the R7-5 grow-back disabled this fixture returns exactly $5,027.63. The level-cliff winner and the bunching ranking are unchanged.)",
+    expected: { bestBunching: 5002.56, bestLevelCliff: 17861.4, bunchingWins: 1 },
     actual: () => {
       const scored = scoreAllCandidates(optAcaPlan());
       const bunch = scored.filter((s) => s.spec.bunching);
@@ -1745,21 +1752,21 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "joint-maxifi-property",
     kind: "tax",
-    note: "MaxiFi property — separate optima are not joint optima: on the torpedo plan ($48,000 of Social Security entered at 65, pre-tax $1,200,000, window 65–74, plan to 85), the best conversion strategy at the ENTERED claim age scores a $181,984.20 lifetime net cost, and the best claiming age under Do Nothing (claim at 62) scores $370,130.65 — but the JOINT winner (claim at 62 for $38,769.23/yr) scores $165,393.40, beating the fixed-claim optimum by $16,590.80 and the best Do Nothing claim by $204,737.25. The joint result's Do Nothing is the best Do Nothing found (at claim 62), priced exactly as the standalone scan prices it. (RE-PINNED by the BASIS-DRIFT build: pre-drift the joint winner claimed at 70 and netted $156,545.03 against a $183,813.90 fixed best. The torpedo plan's basis % is an explicitly set 100% at a 3% return, so under drift the basis share erodes as the balance compounds, later draws and tax payments realize gains the flat model priced at $0, and both searches re-solve — the fixed best rises $1,080.43 and the joint crown moves to claim 62. Do Nothing's best-claim net is unmoved: its spending is covered by benefits and RMDs, so it never draws Taxable into drifted-gain territory. The property itself — joint beats both separate optima — is what the pin protects, and it holds.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo plan's primary (born 1961) is 66 in 2027 and 67 in 2028, and priceYear now deflates the statutory §224 figures into today's dollars at the plan's 2.5% inflation — 2027: $6,000/1.025 = $5,853.66 per person over a $150,000/1.025 = $146,341.46 phase-out start; 2028: $6,000/1.025² = $5,710.89 over $142,772.16 — where the old pins priced the nominal $6,000 / $150,000 in both years. Those two years reprice for every candidate and both searches re-solve: the fixed best rises $119.00 and the joint winner falls $16.99. Do Nothing's best-claim net is unmoved — at its 2027/2028 AGI the deduction is fully phased out under both the nominal and the deflated figures. The corrected fixed best is cross-validated to the cent by opt-ss-collected-carried-by-scores and mc-check-zero-vol-equals-deterministic, the corrected joint winner by claim-table-per-age-best and claim-floor-edges-and-blank.)",
+    note: "MaxiFi property — separate optima are not joint optima: on the torpedo plan ($48,000 of Social Security entered at 65, pre-tax $1,200,000, window 65–74, plan to 85), the best conversion strategy at the ENTERED claim age scores a $223,353.19 lifetime net cost, and the best claiming age under Do Nothing (claim at 62) scores $426,822.66 — but the JOINT winner (claim at 62 for $38,769.23/yr) scores $203,231.48, beating the fixed-claim optimum by $20,121.71 and the best Do Nothing claim by $223,591.18. The joint result's Do Nothing is the best Do Nothing found (at claim 62), priced exactly as the standalone scan prices it. (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: the torpedo primary as originally shaped (born 1961) is 65 at plan start with the claim entered at 65 — already receiving — so the claim is locked at the entered age and no joint search exists on that shape; its locked best, $181,984.20, is pinned by joint-winner-reproduces-from-saved-parameters and claim-floor-edges-and-blank. This case therefore runs the identical torpedo shape with the primary born 1966 — age 60 at plan start, the claim entered at 65 not yet made — restoring the searched 62–70 space, and every figure in this paragraph is re-derived on that shape (its §224 deflation years are 2032–2033, when the primary is 66–67; the FIX 4 paragraph below describes the retired 1961 shape). The property — joint beats both separate optima — is unchanged.) (RE-PINNED by the BASIS-DRIFT build: pre-drift the joint winner claimed at 70 and netted $156,545.03 against a $183,813.90 fixed best. The torpedo plan's basis % is an explicitly set 100% at a 3% return, so under drift the basis share erodes as the balance compounds, later draws and tax payments realize gains the flat model priced at $0, and both searches re-solve — the fixed best rises $1,080.43 and the joint crown moves to claim 62. Do Nothing's best-claim net is unmoved: its spending is covered by benefits and RMDs, so it never draws Taxable into drifted-gain territory. The property itself — joint beats both separate optima — is what the pin protects, and it holds.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo plan's primary (born 1961) is 66 in 2027 and 67 in 2028, and priceYear now deflates the statutory §224 figures into today's dollars at the plan's 2.5% inflation — 2027: $6,000/1.025 = $5,853.66 per person over a $150,000/1.025 = $146,341.46 phase-out start; 2028: $6,000/1.025² = $5,710.89 over $142,772.16 — where the old pins priced the nominal $6,000 / $150,000 in both years. Those two years reprice for every candidate and both searches re-solve: the fixed best rises $119.00 and the joint winner falls $16.99. Do Nothing's best-claim net is unmoved — at its 2027/2028 AGI the deduction is fully phased out under both the nominal and the deflated figures. The corrected fixed best is cross-validated to the cent by opt-ss-collected-carried-by-scores and mc-check-zero-vol-equals-deterministic, the corrected joint winner by claim-table-per-age-best and claim-floor-edges-and-blank.)",
     expected: {
       combos: 9,
-      jointNetCost: 165393.4,
+      jointNetCost: 203231.48,
       jointClaimAge: 62,
       jointAnnual: 38769.23,
       jointLabel: "You claim at 62",
-      fixedBestNetCost: 181984.2,
-      bestDnClaimNetCost: 370130.65,
-      jointBeatsFixedBy: 16590.8,
-      jointBeatsDnClaimBy: 204737.25,
+      fixedBestNetCost: 223353.19,
+      bestDnClaimNetCost: 426822.66,
+      jointBeatsFixedBy: 20121.71,
+      jointBeatsDnClaimBy: 223591.18,
       jointDnIsBestDnClaim: 1,
     },
     actual: () => {
-      const plan = optTorpedoPlan();
+      const plan = { ...optTorpedoPlan(), birthYearPrimary: 1966 };
       const joint = runJointOptimizer(plan);
       const fixed = runOptimizer(plan);
       let bestDn = Infinity;
@@ -1785,7 +1792,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "joint-spouse-blank-searches-entered-spouse-only",
     kind: "tax",
-    note: "Spouse-blank case: only a spouse with an ENTERED benefit is searched. The torpedo plan enters only the primary benefit ($48,000 at 65, spouse blank), so the claim space is the 9 primary ages 62–70 with the spouse age left null on every combination and searchedSpouse false throughout. Entering a spouse benefit too makes the space the full 9 × 9 = 81 combinations; entering neither leaves the single entered combination.",
+    note: "Spouse-blank case: only a spouse with an ENTERED benefit is searched. The torpedo plan enters only the primary benefit ($48,000 at 65, spouse blank), so the claim space is the 9 primary ages 62–70 with the spouse age left null on every combination and searchedSpouse false throughout. Entering a spouse benefit too makes the space the full 9 × 9 = 81 combinations; entering neither leaves the single entered combination. (Round-7 Build 3, N-1: the torpedo primary as originally shaped (born 1961, claim entered at 65 at age 65) is already receiving and locked, so this case runs the torpedo shape with the primary born 1966 — the claim entered at 65 not yet made — where the primary's searched space is the full 62–70.)",
     expected: {
       combosPrimaryOnly: 9,
       spouseSearched: 0,
@@ -1795,7 +1802,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       combosNoneEntered: 1,
     },
     actual: () => {
-      const combos = claimAgeCombos(optTorpedoPlan());
+      const combos = claimAgeCombos({ ...optTorpedoPlan(), birthYearPrimary: 1966 });
       const ages = new Set(combos.map((c) => c.claimAges.primaryAge));
       const both = claimAgeCombos(
         basePlan({ ssPrimaryAnnual: 48000, ssPrimaryStartAge: 67, ssSpouseAnnual: 30000, ssSpouseStartAge: 67 }),
@@ -1815,8 +1822,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "joint-winner-reproduces-from-saved-parameters",
     kind: "tax",
-    note: "Saved joint winner reproduces exactly: a scenario saved from the joint winner stores the winner's claiming ages as its Social Security start-age inputs and the derived benefits as its amounts, alongside the strategy's ceilings, window stop, and variant flags. Re-running those stored parameters through the standard engine — exactly what loading the scenario in Plan mode does — reproduces the joint winner's lifetime totals to the cent (federal + state tax, IRMAA, ACA credit kept, ending pre-tax, and the net-cost objective).",
-    expected: { claimAge: 62, fedDiff: 0, irmaaDiff: 0, acaDiff: 0, pretaxDiff: 0, netCostDiff: 0 },
+    note: "Saved joint winner reproduces exactly: a scenario saved from the joint winner stores the winner's claiming ages as its Social Security start-age inputs and the derived benefits as its amounts, alongside the strategy's ceilings, window stop, draw order, and variant flags. Re-running those stored parameters through the standard engine — exactly what loading the scenario in Plan mode does — reproduces the joint winner's lifetime totals to the cent (federal + state tax, IRMAA, ACA credit kept, ending pre-tax, and the net-cost objective). (Round-7 Build 3: under N-1 the torpedo primary (born 1961, claim entered at 65 at age 65) is already receiving, so the joint winner is the claim-65 winner — Fill to the top of the 12% bracket at the searched draw order Pre-tax → Roth → Taxable, $181,984.20 — and under N-3's ending-wealth tie-break that order's twin is the crowned one. The stored parameters therefore carry the winner's draw order, as the saved record does; earlier crowned winners used the plan's own order, so the field was invisible to this pin. Verified: with the draw order carried, every diff is $0.00.)",
+    expected: { claimAge: 65, fedDiff: 0, irmaaDiff: 0, acaDiff: 0, pretaxDiff: 0, netCostDiff: 0 },
     actual: () => {
       const plan = optTorpedoPlan();
       const winner = runJointOptimizer(plan).winner;
@@ -1824,6 +1831,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         {
           ...plan,
           windowStopAge: winner.spec.windowStopAge,
+          drawOrder: winner.spec.drawOrder,
           ssPrimaryStartAge: winner.claimAges.primaryAge,
           ssPrimaryAnnual: winner.claimAges.primaryAnnual,
           ssSpouseStartAge: winner.claimAges.spouseAge,
@@ -2365,14 +2373,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "takeaway-multi-ceiling-inputs",
     kind: "tax",
-    note: "One-line takeaway inputs (Plan summary): a funded multi-ceiling plan — born 1969 / spouse 1970, pre-tax $5,000,000, Taxable $1,000,000, spending $40,000/yr, 0% return, window 57–74, plan to 75, household of 2 with both ACA benchmarks priced at $20,000 — filled to the top of the 24% bracket, capped at IRMAA Tier 1 and at the ACA cliff. These are exactly the figures the takeaway sentence consumes: the plan's and Do Nothing's lifetime net costs (netCostBreakdown at the 22% heir rate), the converted years where each non-bracket cap bound the fill, and the ending pre-tax with its terminal tax. The ACA cliff for a household of 2 is $84,600 in 2026 coverage (2025 guidelines) and $86,560 from 2027 coverage on (2026 guidelines; guideline 2027+ resolves by the newest-row fallback) — it is the tightest ceiling while either spouse is under 65, so it binds every converted year 2026–2034; once both are 65 (2035 on) the IRMAA Tier 1 ceiling ($274,000 MAGI) binds instead — 2035–2040; no converted year after 2040 is bound by it. The 0% capital-gains and custom MAGI caps are not switched on, so their bound sets are empty. The plan still leaves $1,687,488.56 of pre-tax standing, charged $371,247.48 of terminal tax. (Re-pinned 2026-10-14 for the newest-row fallback, hand-reconciled against the pre-fallback run: conversions in 2028–2034 rise $84,600 → $86,500/yr (+$1,900 × 7 = +$13,300) as the cliff rises; lifetime tax +$1,438.48, kept ACA credits −$1,324.68 (7 × −$189.24 at the higher cliff), ending pre-tax −$12,666.18 (+$13,300 converted, partly offset by the 2044 RMD falling $536.70 = $13,202.88 / 24.6), terminal −$2,786.56 = 22% × $12,666.18 — net $722,015.14 → $721,991.74. Do Nothing keeps no credit in any year, so its net is unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    note: "One-line takeaway inputs (Plan summary): a funded multi-ceiling plan — born 1969 / spouse 1970, pre-tax $5,000,000, Taxable $1,000,000, spending $40,000/yr, 0% return, window 57–74, plan to 75, household of 2 with both ACA benchmarks priced at $20,000 — filled to the top of the 24% bracket, capped at IRMAA Tier 1 and at the ACA cliff. These are exactly the figures the takeaway sentence consumes: the plan's and Do Nothing's lifetime net costs (netCostBreakdown at the 22% heir rate), the converted years where each non-bracket cap bound the fill, and the ending pre-tax with its terminal tax. The ACA cliff for a household of 2 is $84,600 in 2026 coverage (2025 guidelines) and $86,560 from 2027 coverage on (2026 guidelines; guideline 2027+ resolves by the newest-row fallback) — it is the tightest ceiling while either spouse is under 65, so it binds every converted year 2026–2034; once both are 65 (2035 on) the IRMAA Tier 1 ceiling ($274,000 MAGI) binds instead — 2035–2040; no converted year after 2040 is bound by it. The 0% capital-gains and custom MAGI caps are not switched on, so their bound sets are empty. The plan still leaves $1,687,488.56 of pre-tax standing, charged $371,247.48 of terminal tax. (Re-pinned 2026-10-14 for the newest-row fallback, hand-reconciled against the pre-fallback run: conversions in 2028–2034 rise $84,600 → $86,500/yr (+$1,900 × 7 = +$13,300) as the cliff rises; lifetime tax +$1,438.48, kept ACA credits −$1,324.68 (7 × −$189.24 at the higher cliff), ending pre-tax −$12,666.18 (+$13,300 converted, partly offset by the 2044 RMD falling $536.70 = $13,202.88 / 24.6), terminal −$2,786.56 = 22% × $12,666.18 — net $722,015.14 → $721,991.74. Do Nothing keeps no credit in any year, so its net is unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-21 for round-7 R7-5: the aligned IRMAA sizer grows capped years up to the Tier 1 top, so 2041–2043 — whose fills previously stopped short of $274,000 — now bind at the cap too; conversions rise, ending pre-tax falls $1,988.07, terminal falls exactly 22% × $1,988.07 = $437.37, and the fixed recipe's lifetime net cost rises $40.11. Verified by isolation: with the R7-5 grow-back disabled this fixture returns exactly its previous figures.)",
     expected: {
-      planNetCost: 726091.54,
+      planNetCost: 726131.65,
       doNothingNetCost: 1081614,
-      endingPretax: 1687488.56,
-      terminal: 371247.48,
+      endingPretax: 1685500.49,
+      terminal: 370810.11,
       acaBoundYears: "2026,2027,2028,2029,2030,2031,2032,2033,2034",
-      irmaaBoundYears: "2035,2036,2037,2038,2039,2040",
+      irmaaBoundYears: "2035,2036,2037,2038,2039,2040,2041,2042,2043",
       ltcgBoundYears: "",
       magiBoundYears: "",
     },
@@ -2585,14 +2593,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "takeaway-ending-zero-draw-shared",
     kind: "tax",
-    note: "Takeaway ending-clause draw-shared repro: pre-tax $48,500, spending $15,000/yr, window 57–58, plan to 60, filled to a $48,000 MAGI cap, 0% return. The first pretaxEnd === 0 year is 2026 (age 57): its additional (strategy) conversion is $45,500 AND it carries a $3,000 pre-tax spending draw, so cumulative non-conversion outflows across the whole plan — computed with the client's exact formula (Σ rmd + Σ detail.extraPreTaxDraw + Σ balance-identity residual taxDebit = max(0, (priorPretaxBalance − rmd − additional − extraPreTaxDraw) − pretaxEnd / growth), growth = 1 at this fixture's 0% return) — are $3,000, not $0. Total additional is $45,500 and ending pre-tax is $0 — the facts the corrected takeaway consumes when it uses the plain ending clause instead of claiming the pre-tax was fully converted by age 57.",
+    note: "Takeaway ending-clause draw-shared repro: pre-tax $48,500, spending $15,000/yr, window 57–58, plan to 60, filled to a $48,000 MAGI cap, 0% return. Cumulative non-conversion outflows across the whole plan — computed with the client's exact formula (Σ rmd + Σ detail.extraPreTaxDraw + Σ balance-identity residual taxDebit = max(0, (priorPretaxBalance − rmd − additional − extraPreTaxDraw) − pretaxEnd / growth), growth = 1 at this fixture's 0% return). RE-PINNED 2026-10-21 for round-7 R7-4 (ceiling enforcement): the previous pin documented a BREACHED year — its 2026 conversion of $45,500 plus a $3,000 pre-tax draw priced MAGI $48,500 against the plan's own $48,000 MAGI cap, a breach the settlement loop shipped silently. The final clamp now reduces the conversion against the final priced figures until the year complies: 2026 converts $31,500 and the year's draws/tax debits carry the remaining $16,500 of pre-tax outflow, landing MAGI exactly at the $48,000 cap; the last $500 converts in 2027 (age 58, the window's last year), which is therefore the first pretaxEnd === 0 year, with no extra draw. Total additional is $32,000, cumulative non-conversion outflows $16,500, ending pre-tax still $0 — the facts the corrected takeaway consumes when it uses the plain ending clause instead of claiming the pre-tax was fully converted by age 57. Verified by isolation: with the R7-4 clamp disabled this fixture returns exactly its previous (breached) figures.",
     expected: {
-      firstZeroYear: 2026,
-      firstZeroAge: 57,
-      firstZeroAdditional: 45500,
-      firstZeroExtraDraw: 3000,
-      cumulativeNonConversionOutflows: 3000,
-      totalAdditional: 45500,
+      firstZeroYear: 2027,
+      firstZeroAge: 58,
+      firstZeroAdditional: 500,
+      firstZeroExtraDraw: 0,
+      cumulativeNonConversionOutflows: 16500,
+      totalAdditional: 32000,
       endingPretax: 0,
     },
     actual: () => {
@@ -5174,21 +5182,21 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-table-per-age-best",
     kind: "tax",
-    note: "Per-claiming-age table (torpedo plan: primary $48,000 entered at 65, born 1961, spouse blank): the joint result carries one row per primary age 62–70, and each row's best is that age's TRUE best fully-priced candidate — cross-checked against an independent fixed-claim-age run at that age (scoreAllCandidates on the age's own combination, plan draw order): the best net cost, strategy name, and window stop must match the row's exactly at all nine ages. The table's winning row is the joint winner itself (claim 62, $165,393.40, per the MaxiFi pin — RE-PINNED by the BASIS-DRIFT build from claim 70 / $156,545.03, the torpedo plan's set-100% basis drift; see joint-maxifi-property; the dollar figure re-pinned under FIX 4's §224 senior-deduction deflation from $168,927.75 — derivation at joint-maxifi-property) and exactly one row is marked as the winner. Yearly benefits are the statutory derivations from the entered anchor: PIA = $48,000 ÷ (13/15) = $58,292.31, so claim 62 (60 months early, factor 0.70) pays $38,769.23 and claim 70 (factor 1.24) pays $68,676.92; with no spouse benefit, the survivor-keeps figure equals the row's own benefit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    note: "Per-claiming-age table (torpedo plan: primary $48,000 entered at 65, spouse blank): the joint result carries one row per primary age 62–70, and each row's best is that age's TRUE best fully-priced candidate — cross-checked against an independent fixed-claim-age run at that age (scoreAllCandidates on the age's own combination, plan draw order): the best net cost, strategy name, and window stop must match the row's exactly at all nine ages. The table's winning row is the joint winner itself (claim 62, $203,231.48, per the MaxiFi pin — RE-PINNED by the BASIS-DRIFT build from claim 70 / $156,545.03, the torpedo plan's set-100% basis drift; see joint-maxifi-property; the dollar figure re-pinned under FIX 4's §224 senior-deduction deflation from $168,927.75 — derivation at joint-maxifi-property) and exactly one row is marked as the winner. Yearly benefits are the statutory derivations from the entered anchor: PIA = $48,000 ÷ (13/15) = $55,384.62, so claim 62 (60 months early, factor 0.70) pays $38,769.23 and claim 70 (factor 1.24) pays $68,676.92; with no spouse benefit, the survivor-keeps figure equals the row's own benefit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (RE-PINNED by Round-7 Build 3, N-1: on the torpedo shape as originally born (1961) the claim is locked at the entered 65 and the table degenerates to the single entered age, so — like joint-maxifi-property — this case runs the torpedo shape with the primary born 1966, the claim entered at 65 not yet made; the winner-row figure is that shape's joint winner, cross-pinned there. The benefit derivations are unchanged: FRA is 67 for both birth years.)",
     expected: {
       rowCount: 9,
       agesAscending62to70: 1,
       maxNetCostDiffVsFixedAge: 0,
       namesAndWindowsMatchFixedAge: 1,
       winnerRowAge: 62,
-      winnerRowNetCost: 165393.4,
+      winnerRowNetCost: 203231.48,
       winnerRowsMarked: 1,
       annual62: 38769.23,
       annual70: 68676.92,
       survivor62: 38769.23,
     },
     actual: () => {
-      const plan = optTorpedoPlan();
+      const plan = { ...optTorpedoPlan(), birthYearPrimary: 1966 };
       const joint = runJointOptimizer(plan);
       const combos = claimAgeCombos(plan);
       let maxDiff = 0;
@@ -5239,17 +5247,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-crowning",
     kind: "tax",
-    note: "Claim floor crowning (claim-floor plan: primary $48,000 entered at 65, born 1961, pre-tax $300,000, plan to 80 — its per-age bests rise monotonically from 67 to 70, so the floor genuinely bites): with no floor the winner claims at 63 (under FIX 4's §224 deflation the age-62 row repriced past it — see claim-floor-edges-and-blank; pre-FIX 4 it claimed at 62). With floor 67 the crowned winner is the best claim-67 candidate, $4,873.24 — cross-checked against an independent fixed-claim-age run at 67 (scoreAllCandidates on the age-67 combination) — and it is the table's own age-67 row best. (RE-PINNED by the BASIS-DRIFT build from $4,974.99: the claim-floor plan's basis % is an explicitly set 100% at a 3% return, so its candidates price drifted gains on later taxable draws; the crowning mechanics — floor, cross-check, table-row identity, Do Nothing unchanged at $81,117.30 — are the pin's subject and are unmoved.) The age-62 row best appears in the table at $149.54, unmarked as winner (re-pinned under FIX 4 from $42.30: this plan's primary is 66 in 2027 and 67 in 2028, and those years' §224 deductions now deflate — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000; the floor-67 winner likewise rises $23.49, from $4,860.27 to $4,873.24, while Do Nothing's $81,117.30 is unmoved); rows 62–66 are marked below the floor (5 rows), rows 67–70 are not; and the floor moves nothing else — the joint Do Nothing is identical to the no-floor run's, to the cent ($81,117.30).",
+    note: "Claim floor crowning (claim-floor plan: primary $48,000 entered at 65, born 1962 — age 64 at plan start, the claim not yet made — pre-tax $300,000, plan to 80; its searched ages are 64–70 and its per-age bests rise monotonically from 67 to 70, so the floor genuinely bites): with no floor the winner claims at 66 ($2,400.56). With floor 67 the crowned winner is the best claim-67 candidate, $4,632.50 — cross-checked against an independent fixed-claim-age run at 67 (scoreAllCandidates on the age-67 combination) — and it is the table's own age-67 row best. The youngest row (age 64) best appears in the table at $4,261.60, unmarked as winner; rows 64–66 are marked below the floor (3 rows), rows 67–70 are not; and the floor moves nothing else — the joint Do Nothing is identical to the no-floor run's, to the cent ($82,851.40). (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: on the plan's original shape (primary born 1961, claim entered at 65 at age 65, already receiving) the claim is locked and no floor can bite, so the plan's primary is now born 1962 and every figure is re-derived on that shape. The retired 1961 shape's pins — floor-67 winner $4,873.24, age-62 row $149.54, five below-floor rows, Do Nothing $81,117.30 — were themselves re-pinned by the BASIS-DRIFT build and FIX 4's §224 deflation; the crowning mechanics this case pins are unchanged.)",
     expected: {
       winnerAge: 67,
-      winnerNetCost: 4873.24,
+      winnerNetCost: 4632.5,
       winnerNetCostDiffVsFixedAge67: 0,
       winnerIsTableRow67: 1,
-      row62NetCost: 149.54,
-      row62IsWinner: 0,
-      belowFloorRows: 5,
+      row64NetCost: 4261.6,
+      row64IsWinner: 0,
+      belowFloorRows: 3,
       doNothingDiffVsNoFloor: 0,
-      doNothingNetCost: 81117.3,
+      doNothingNetCost: 82851.4,
     },
     actual: () => {
       const plan = claimFloorPlan();
@@ -5264,7 +5272,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           })[0]
         : undefined;
       const row67 = floored.claimAgeTable.find((r) => r.primaryAge === 67);
-      const row62 = floored.claimAgeTable.find((r) => r.primaryAge === 62);
+      const row64 = floored.claimAgeTable.find((r) => r.primaryAge === 64);
       const d = (a: number, b: number) => Math.round((a - b) * 100) / 100;
       return {
         winnerAge: floored.winner.claimAges.primaryAge,
@@ -5274,8 +5282,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           : null,
         winnerIsTableRow67:
           row67 && floored.winner === row67.best ? 1 : 0,
-        row62NetCost: row62?.best.cost.netCost ?? null,
-        row62IsWinner: row62?.isWinner ? 1 : 0,
+        row64NetCost: row64?.best.cost.netCost ?? null,
+        row64IsWinner: row64?.isWinner ? 1 : 0,
         belowFloorRows: floored.claimAgeTable.filter((r) => r.belowFloor).length,
         doNothingDiffVsNoFloor: d(
           floored.doNothing.cost.netCost,
@@ -5288,17 +5296,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-edges-and-blank",
     kind: "tax",
-    note: "Claim floor edges: blank reproduces the pre-build winner — on the torpedo plan a floor key ABSENT crowns the pinned winner (claim 62, $165,393.40); on the claim-floor plan a floor explicitly NULL and a floor of 62 (which excludes no searched age) crown exactly the absent-floor winner, with no row marked below the floor at 62. On the claim-floor plan a floor of 70 leaves only age 70 eligible: the winner is age 70's own best ($11,186.99), all eight younger rows are marked below the floor, and every runner-up is also a claim-70 candidate — no below-floor candidate leaks into the crowned set however cheap it is (the age-62 best is $149.54). (The two winner figures were RE-PINNED by the BASIS-DRIFT build from $156,545.03 (claim 70) and $12,390.94 — both plans carry an explicitly set 100% basis at a 3% return, so their candidates price drifted gains; the edge mechanics are the pin's subject and are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: both plans' primaries (born 1961) are 66 in 2027 and 67 in 2028, and those years now price the deflated §224 figures ($5,853.66 / $146,341.46 in 2027; $5,710.89 / $142,772.16 in 2028) instead of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property). The torpedo absent-floor winner falls $16.99 to $165,393.40 (still claim 62); on the claim-floor plan the near-tie between the age-62 and age-63 rows flips, so the absent/null-floor crown moves from claim 62 to claim 63 — the NULL and floor-62 runs still crown exactly that same winner (nullEqualsAbsent and floor62EqualsAbsent unmoved) — the age-62 row best rises to $64.77, and the floor-70 winner rises $7.35 to $11,186.99.)",
+    note: "Claim floor edges: blank reproduces the un-floored winner — on the torpedo plan a floor key ABSENT crowns the pinned winner (claim 65, $181,984.20 — under N-1 the torpedo primary is already receiving at the entered 65, so the claim is locked and the absent-floor winner is the entered-claim best, cross-pinned by joint-winner-reproduces-from-saved-parameters); on the claim-floor plan a floor explicitly NULL and a floor of 62 (which excludes no searched age) crown exactly the absent-floor winner (claim 66), with no row marked below the floor at 62. On the claim-floor plan a floor of 70 leaves only age 70 eligible: the winner is age 70's own best ($10,610.98), all six younger rows (64–69) are marked below the floor, and every runner-up is also a claim-70 candidate — no below-floor candidate leaks into the crowned set however cheap it is (the age-64 best is $4,261.60). (RE-PINNED by Round-7 Build 3, N-1: the torpedo figure moved because the claim locked at the entered age, and the claim-floor plan's primary is now born 1962 (age 64 at plan start, claim entered at 65 not yet made; searched ages 64–70) — on the retired born-1961 shape, itself re-pinned by the BASIS-DRIFT build, FIX 1, and FIX 4's §224 deflation, the pins were torpedo $165,393.40 at claim 62, floor-70 winner $11,186.99, eight below-floor rows. The edge mechanics are the pin's subject and are unmoved.)",
     expected: {
-      absentWinner: 165393.4,
-      nullWinnerAge: 64,
+      absentWinner: 181984.2,
+      nullWinnerAge: 66,
       nullEqualsAbsent: 1,
       floor62EqualsAbsent: 1,
       floor62BelowRows: 0,
       floor70WinnerAge: 70,
-      floor70WinnerNetCost: 11186.99,
+      floor70WinnerNetCost: 10610.98,
       floor70WinnerIsRow70Best: 1,
-      floor70BelowRows: 8,
+      floor70BelowRows: 6,
       floor70RunnersUpAllAge70: 1,
     },
     actual: () => {
@@ -5348,7 +5356,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-saved-roundtrip",
     kind: "tax",
-    note: "Claim floor saved shape: the key round-trips untouched through the saved-blob split/join passthrough (the scenario writers' raw path, byte-identical), planInputsFromSaved passes 67 through to the optimizer-layer field, and a record without the key — or with it explicitly null — converts to a null floor (no floor). The engine never reads the field: a full simulation on floor-67 inputs is identical to the same inputs with no floor. End to end, a saved record carrying floor 67 (on the claim-floor plan's shape) crowns the claim-67 winner through runJointOptimizer.",
+    note: "Claim floor saved shape: the key round-trips untouched through the saved-blob split/join passthrough (the scenario writers' raw path, byte-identical), planInputsFromSaved passes 67 through to the optimizer-layer field, and a record without the key — or with it explicitly null — converts to a null floor (no floor). The engine never reads the field: a full simulation on floor-67 inputs is identical to the same inputs with no floor. End to end, a saved record carrying floor 67 (on the claim-floor plan's shape) crowns the claim-67 winner through runJointOptimizer. (Round-7 Build 3, N-1: the saved shape's birth year follows the claim-floor plan to 1962 — on the retired 1961 shape the entered claim (65 at age 65) is already receiving and locked, so a saved floor could never move the crown; the crowned age is 67 under both shapes' floors, and only the shape moved.)",
     expected: {
       blobRoundTripIdentical: 1,
       engineFloor: 67,
@@ -5359,7 +5367,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
     actual: () => {
       const savedBase: RothSavedLike = {
-        birthYearPrimary: 1961,
+        birthYearPrimary: 1962,
         birthYearSpouse: 1972,
         filingStatus: "mfj",
         pretaxCents: 30000000,
@@ -5393,7 +5401,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         stateRatePct: 0,
         heirRatePct: 22,
       };
-      const inputsJson = '{"birthYearPrimary":1961,"claimAgeFloor":67}';
+      const inputsJson = '{"birthYearPrimary":1962,"claimAgeFloor":67}';
       const original = `{"inputs":${inputsJson},"scenarios":[]}`;
       const split = splitRothBlob(original);
       const rejoined = split ? joinRothBlob(split.inputsRaw, split.scenariosRaw) : "";
@@ -5417,6 +5425,347 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         engineIgnoresFloor:
           JSON.stringify(simWith) === JSON.stringify(simWithout) ? 1 : 0,
         crownedAgeFromSaved: joint?.winner.claimAges.primaryAge ?? null,
+      };
+    },
+  },
+  {
+    id: "opt-claim-locked-already-claimed",
+    kind: "tax",
+    note: "Round-7 Build 3, N-1 (already-claimed lock — the independently verified probe case): single filer born 1951, age 75 at plan start (2026), entered claim 67 at $48,000/yr, already in payment. Before the fix the joint winner was \u201cYou claim at 62\u201d with the benefit repriced to $33,333.33 (the anchor's PIA $44,444.44 \u00d7 the age-62 factor 0.75 for a 1951 birth, FRA 66 — pinned here as repriced62). After the fix the person's only candidate age is the entered 67: every scored candidate carries claim 67, the winner is at claim 67 with the benefit unchanged at $48,000, the claim table carries no age other than 67, and the claim-search note says in plain words that the age is locked because the benefit has already started. The spouse side is independent: on an MFJ variant (primary born 1971, not yet claimed, entered 67; spouse born 1951, entered 67 at $30,000, already in payment) every combination carries spouse age 67 while the primary's ages still vary.",
+    expected: {
+      repriced62: 33333.33,
+      comboCount: 1,
+      comboAge: 67,
+      lockedFlag: 1,
+      winnerClaimAge: 67,
+      winnerAnnual: 48000,
+      winnerNet: 80018.44,
+      allScoredAt67: 1,
+      tableNon67: 0,
+      noteText: "No claiming ages were searched. Your claiming age is locked at 67 because your benefit has already started \u2014 a claim that is already being paid cannot be changed, so the search kept it exactly as entered. The strategies above were priced at the entered claiming ages, with all six draw orders searched as part of the strategy set.",
+      spouseCombosAll67: 1,
+      primaryStillVaries: 1,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearPrimary: 1951,
+        birthYearSpouse: null,
+        endAgePrimary: 85,
+        retirementAge: 75,
+        windowStartAge: 75,
+        windowStopAge: 80,
+        pretaxStart: 500000,
+        taxableStart: 200000,
+        taxableBasisPct: 100,
+        annualSpending: 60000,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        acaHouseholdSize: 1,
+        acaHouseholdSizeAfter: 1,
+      });
+      const combos = claimAgeCombos(plan);
+      const joint = runJointOptimizer(plan);
+      const spousePlan = basePlan({
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1951,
+        endAgePrimary: 80,
+        retirementAge: 57,
+        windowStartAge: 57,
+        pretaxStart: 500000,
+        taxableStart: 200000,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        ssSpouseAnnual: 30000,
+        ssSpouseStartAge: 67,
+      });
+      const spouseCombos = claimAgeCombos(spousePlan);
+      return {
+        repriced62: ssAnnualAtClaimAge(48000, 67, 62, 1951),
+        comboCount: combos.length,
+        comboAge: combos[0]?.claimAges.primaryAge ?? null,
+        lockedFlag: combos[0]?.claimAges.lockedPrimary ? 1 : 0,
+        winnerClaimAge: joint.winner.claimAges.primaryAge,
+        winnerAnnual: joint.winner.claimAges.primaryAnnual,
+        winnerNet: joint.winner.cost.netCost,
+        allScoredAt67: joint.scored.every((s) => s.claimAges.primaryAge === 67) ? 1 : 0,
+        tableNon67: joint.claimAgeTable.filter((r) => r.primaryAge !== 67).length,
+        noteText: jointSearchNote(joint.jointSearch),
+        spouseCombosAll67: spouseCombos.every((c) => c.claimAges.spouseAge === 67) ? 1 : 0,
+        primaryStillVaries:
+          new Set(spouseCombos.map((c) => c.claimAges.primaryAge)).size > 1 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "opt-claim-attainable-not-yet-claimed",
+    kind: "tax",
+    note: "Round-7 Build 3, N-1 (not-yet-claimed attainability): candidate claiming ages are the person's current age or later \u2014 the search never offers a claim in the past. A 55-year-old (born 1971, plan start 2026) with entered claim 67 keeps the full 62\u201370 candidate set (every age is at or after 55) and the crowned winner is never below age 55. A 64-year-old (born 1962) with entered claim 67 gets exactly the attainable set 64\u201370: no combination, no claim-table row, and no winner below 64. The claimAgeFloor behaviour on top is unchanged (pinned by claim-floor-*).",
+    expected: {
+      youngComboMin: 62,
+      youngWinnerAge: 69,
+      youngWinnerAtOrAbove55: 1,
+      olderComboMin: 64,
+      olderComboCount: 7,
+      olderTableMin: 64,
+      olderWinnerAtOrAbove64: 1,
+    },
+    actual: () => {
+      const young = basePlan({
+        filingStatus: "single",
+        birthYearPrimary: 1971,
+        birthYearSpouse: null,
+        endAgePrimary: 80,
+        retirementAge: 57,
+        windowStartAge: 57,
+        pretaxStart: 500000,
+        taxableStart: 200000,
+        annualSpending: 40000,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        acaHouseholdSize: 1,
+        acaHouseholdSizeAfter: 1,
+      });
+      const youngCombos = claimAgeCombos(young);
+      const youngJoint = runJointOptimizer(young);
+      const older = basePlan({
+        filingStatus: "single",
+        birthYearPrimary: 1962,
+        birthYearSpouse: null,
+        endAgePrimary: 75,
+        retirementAge: 64,
+        windowStartAge: 64,
+        windowStopAge: 74,
+        pretaxStart: 300000,
+        taxableStart: 200000,
+        annualSpending: 40000,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        acaHouseholdSize: 1,
+        acaHouseholdSizeAfter: 1,
+      });
+      const olderCombos = claimAgeCombos(older);
+      const olderJoint = runJointOptimizer(older);
+      const olderAges = olderCombos.map((c) => c.claimAges.primaryAge ?? 0);
+      return {
+        youngComboMin: Math.min(...youngCombos.map((c) => c.claimAges.primaryAge ?? 0)),
+        youngWinnerAge: youngJoint.winner.claimAges.primaryAge,
+        youngWinnerAtOrAbove55:
+          (youngJoint.winner.claimAges.primaryAge ?? 0) >= 55 ? 1 : 0,
+        olderComboMin: Math.min(...olderAges),
+        olderComboCount: olderCombos.length,
+        olderTableMin: Math.min(...olderJoint.claimAgeTable.map((r) => r.primaryAge)),
+        olderWinnerAtOrAbove64:
+          (olderJoint.winner.claimAges.primaryAge ?? 0) >= 64 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "gift-sale-gain-basis-step-up",
+    kind: "tax",
+    note: "Round-7 Build 3, N-2 \u2014 REPRODUCED, then fixed. Shape: MFJ, Taxable $500,000 at a 50% basis ($250,000 of basis dollars), $80,000/yr of other income, $180,000/yr of spending drawn Taxable-first, 0% return, ages 57\u201360, Do Nothing, with the parents' counterfactual sale injected at 58 (saleGain $50,000 \u2014 a $100,000 sale with a $50,000 basis). Pre-fix the synthetic gain left the basis ledger untouched, so the sale year's own tax sale and every later draw re-realized the same appreciation: sale-year gains read $106,797.30 and lifetime federal tax $30,054.06. Post-fix the sale steps the pool's basis up by the $50,000 gain at the start of the sale year (the sold shares' basis is retired; the proceeds carry sale-value basis): sale-year gains are $91,546.63 ($50,000 injected + $41,546.63 realized), the sale year ends with $177,496.39 of basis dollars, the later years' gains fall to $39,282.05, and lifetime federal tax is $27,273.48 \u2014 the double count overstated this shape's tax by $2,780.58 (the review's reported instance, a different plan shape with the same $100K/$50K sale, overstated the gift advantage by $2,213.52).",
+    expected: {
+      saleYearLtcg: 91546.63,
+      saleYearFed: 11306.99,
+      saleYearBasisEnd: 177496.39,
+      laterLtcg: 39282.05,
+      lifetimeFed: 27273.48,
+      endingTaxable: 72726.52,
+    },
+    actual: () => {
+      const plan = basePlan({
+        endAgePrimary: 60,
+        pretaxStart: 0,
+        taxableStart: 500000,
+        taxableBasisPct: 50,
+        annualSpending: 180000,
+        otherOrdinaryAnnual: 80000,
+        retirementAge: 57,
+      });
+      const sold = simulateRothPlan(
+        { ...plan, saleGainAge: 58, saleGainAmount: 50000 },
+        DO_NOTHING,
+      );
+      const y58 = sold.years[1];
+      const y59 = sold.years[2];
+      return {
+        saleYearLtcg: y58?.detail.ltcg ?? null,
+        saleYearFed: y58?.federalTax ?? null,
+        saleYearBasisEnd: y58?.detail.taxableBasisDollars ?? null,
+        laterLtcg: y59?.detail.ltcg ?? null,
+        lifetimeFed: sold.lifetimeFederalTax,
+        endingTaxable: sold.endingTaxable,
+      };
+    },
+  },
+  {
+    id: "gift-sale-gain-basis-step-up-tiers",
+    kind: "tax",
+    note: "Round-7 Build 3, N-2 on the basis-TIERS ledger: the gift-sale-gain-basis-step-up shape with the 50% basis carried as a single tier (100% share at a 50% basis ratio) instead of the single pool. The counterfactual sale's step-up lands through stepUpTiers (the harvest's mechanics: lowest basis ratio first, capped at each tier's unrealized gain), and on a one-tier ledger every figure must agree with the single-pool pin to the cent — sale-year gains $91,546.63, basis dollars at the sale year's end $177,496.39, lifetime federal tax $27,273.48. (Verified by direct comparison of the two ledgers, 2026-10-20.)",
+    expected: {
+      saleYearLtcg: 91546.63,
+      saleYearBasisEnd: 177496.39,
+      lifetimeFed: 27273.48,
+    },
+    actual: () => {
+      const plan = basePlan({
+        endAgePrimary: 60,
+        pretaxStart: 0,
+        taxableStart: 500000,
+        taxableBasisPct: 50,
+        taxableTiers: [{ sharePct: 100, basisPct: 50 }],
+        annualSpending: 180000,
+        otherOrdinaryAnnual: 80000,
+        retirementAge: 57,
+      });
+      const sold = simulateRothPlan(
+        { ...plan, saleGainAge: 58, saleGainAmount: 50000 },
+        DO_NOTHING,
+      );
+      const y58 = sold.years[1];
+      return {
+        saleYearLtcg: y58?.detail.ltcg ?? null,
+        saleYearBasisEnd: y58?.detail.taxableBasisDollars ?? null,
+        lifetimeFed: sold.lifetimeFederalTax,
+      };
+    },
+  },
+  {
+    id: "gift-sale-gain-no-double-count-compare",
+    kind: "tax",
+    note: "Round-7 Build 3, N-2 at the gift-model level: the N-2 shape priced through computeGiftComparison (gift $100,000 at 57, basis $50,000, sale at 58, child born 2000, not a student). The baseline (parents keep and sell the shares) carries the corrected figures from gift-sale-gain-basis-step-up: net cost $27,273.48 and ending after-tax wealth $72,726.52 (pre-fix: $30,054.06 / $69,945.94 \u2014 the $2,780.58 overstatement of the gift's advantage). The with-gift side never carried the sale seam and is unmoved at $21,699.47. Standing gift anchors re-checked under this fix and unmoved: the annual exclusion is $19,000 per donor, and this $100,000 gift's excess over the joint $38,000 exclusion is $62,000 (the Form 8615 stack anchors are pinned by gift-golden-kiddie / gift-kiddie-form-8615-stack-boundary, whose child-side pricing this fix does not touch).",
+    expected: {
+      baselineNet: 27273.48,
+      baselineWealth: 72726.52,
+      withGiftNet: 21699.47,
+      childGain: 50000,
+      childTax: 0,
+      exclPerDonor: 19000,
+      excess: 62000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        endAgePrimary: 60,
+        pretaxStart: 0,
+        taxableStart: 500000,
+        taxableBasisPct: 50,
+        annualSpending: 180000,
+        otherOrdinaryAnnual: 80000,
+        retirementAge: 57,
+      });
+      const cmp = computeGiftComparison(plan, {
+        giftAge: 57,
+        amount: 100000,
+        basis: 50000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: 58,
+      });
+      return {
+        baselineNet: cmp.baseline.netCost,
+        baselineWealth: cmp.baseline.endingAfterTax,
+        withGiftNet: cmp.withGift.netCost,
+        childGain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        exclPerDonor: cmp.giftTax.exclusionPerDonor,
+        excess: cmp.giftTax.excess,
+      };
+    },
+  },
+  {
+    id: "opt-winner-tie-ending-wealth-comparator",
+    kind: "tax",
+    note: "Round-7 Build 3, N-3 (i) \u2014 the reported instance shape at the comparator: two candidates with IDENTICAL net cost and ending wealth $1,080,000 vs $1,113,600 must crown the $1,113,600 candidate. The candidates are real scored candidates from a one-year scan, cloned with the tie imposed (same net cost on both; the lower-wealth clone carries the alphabetically smaller spec key, so the pre-fix key ordering would have crowned it). Both published comparators \u2014 the fixed-age ordering (compareScoredCandidates) and the joint ordering (compareJointCandidates) \u2014 put the $1,113,600 candidate first, from either input order.",
+    expected: {
+      jointFirstWealth: 1113600,
+      jointFirstKey: "z-hi",
+      fixedFirstWealth: 1113600,
+      fixedFirstKey: "z-hi",
+    },
+    actual: () => {
+      const plan = basePlan({ pretaxStart: 100000, taxableStart: 100000 });
+      const scored = scoreAllCandidates(plan);
+      const a = scored[0]!;
+      const b = scored[1]!;
+      const mk = (s: ScoredCandidate, key: string, wealth: number): ScoredCandidate => ({
+        ...s,
+        spec: { ...s.spec, key },
+        cost: { ...s.cost, netCost: 424242.42 },
+        result: { ...s.result, endingAfterTaxWealth: wealth },
+      });
+      const lo = mk(a, "a-lo", 1080000);
+      const hi = mk(b, "z-hi", 1113600);
+      const jointSorted = [lo, hi].sort(compareJointCandidates);
+      const fixedSorted = [hi, lo].sort((x, y) =>
+        compareScoredCandidates(x, y, drawOrderKey(plan.drawOrder)),
+      );
+      return {
+        jointFirstWealth: jointSorted[0]?.result.endingAfterTaxWealth ?? null,
+        jointFirstKey: jointSorted[0]?.spec.key ?? null,
+        fixedFirstWealth: fixedSorted[0]?.result.endingAfterTaxWealth ?? null,
+        fixedFirstKey: fixedSorted[0]?.spec.key ?? null,
+      };
+    },
+  },
+  {
+    id: "opt-winner-tie-ending-wealth-joint",
+    kind: "tax",
+    note: "Round-7 Build 3, N-3 (ii) \u2014 the tie-break at a real joint crowning (the saved-record shape family: the production record's own four-way tie at $510,085.05 in the Fill 32% / claim 67 family is priced on production data the fixtures never read, so the pin uses this synthetic joint shape where the same mechanism is exercised end to end): MFJ born 1971/1982, pre-tax $300,000, Taxable $600,000 at a 0% basis, Roth $100,000, spending $60,000, 3% return, Social Security $48,000 entered at 67, heir rate 0%. Twenty-seven candidates tie at the winning net cost of $0; their ending wealth runs from $814,225.01 to $892,717.46. The pre-fix ordering (net cost, then key, then claim age) would have crowned an ACA-cliff candidate at claim 66 with $887,263.69. The crowned winner is the tied candidate with the highest ending wealth \u2014 Fill to the top of the 10% bracket at claim 65, $892,717.46, its net cost still $0.",
+    expected: {
+      winnerNet: 0,
+      winnerWealth: 892717.46,
+      winnerClaim: 65,
+      winnerName: "Fill to the top of the 10% bracket",
+      tiedCount: 27,
+      winnerIsMaxWealth: 1,
+      oldPickWealth: 887263.69,
+      oldPickClaim: 66,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        endAgePrimary: 80,
+        retirementAge: 57,
+        windowStartAge: 57,
+        pretaxStart: 300000,
+        rothStart: 100000,
+        taxableStart: 600000,
+        taxableBasisPct: 0,
+        annualSpending: 60000,
+        expectedReturnPct: 3,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        heirRatePct: 0,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+      });
+      const joint = runJointOptimizer(plan);
+      const tied = joint.scored.filter(
+        (s) => s.cost.netCost === joint.winner.cost.netCost,
+      );
+      const maxWealth = Math.max(...tied.map((s) => s.result.endingAfterTaxWealth));
+      const dnRank = (s: ScoredCandidate): number =>
+        s.spec.key === DO_NOTHING_SPEC.key ? 0 : 1;
+      const oldPick = [...tied].sort(
+        (x, y) =>
+          x.cost.netCost - y.cost.netCost ||
+          dnRank(x) - dnRank(y) ||
+          (x.spec.key < y.spec.key ? -1 : x.spec.key > y.spec.key ? 1 : 0) ||
+          (x.claimAges.primaryAge ?? 0) - (y.claimAges.primaryAge ?? 0) ||
+          (x.claimAges.spouseAge ?? 0) - (y.claimAges.spouseAge ?? 0),
+      )[0];
+      return {
+        winnerNet: joint.winner.cost.netCost,
+        winnerWealth: joint.winner.result.endingAfterTaxWealth,
+        winnerClaim: joint.winner.claimAges.primaryAge,
+        winnerName: joint.winner.spec.name,
+        tiedCount: tied.length,
+        winnerIsMaxWealth:
+          joint.winner.result.endingAfterTaxWealth === maxWealth ? 1 : 0,
+        oldPickWealth: oldPick?.result.endingAfterTaxWealth ?? null,
+        oldPickClaim: oldPick?.claimAges.primaryAge ?? null,
       };
     },
   },
@@ -5728,7 +6077,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-rmd-and-watch-outs",
     kind: "tax",
-    note: "Playground RMD + watch-outs (hand-derived): (a) a $1,000,000 prior-Dec-31 balance at primary 75 / spouse 64, spouse sole beneficiary, prices the plan's own Joint Life RMD — divisor 25.3 (Pub. 590-B), RMD $39,525.69 — through rmdForYear, the same rule the plan uses. (b) At 57 (RMD age 75 for a 1969 birth year) no RMD is priced, and a typed $60,000 conversion against a $50,000 balance is flagged as exceeding the balance. (c) A sale of $40,000 against a $90,000 basis with $10,000 of qualified dividends nets a $40,000 long-term loss: the gains stack prices $0 of gains (the loss offsets the dividends first), then $3,000 of the loss applies against ordinary income under §1211(b) — with no other income that year AGI is −$3,000 and the federal tax is still $0; the remaining loss is reported, not hidden.",
+    note: "Playground RMD + watch-outs (hand-derived): (a) a $1,000,000 prior-Dec-31 balance at primary 75 / spouse 64, spouse sole beneficiary, prices the plan's own Joint Life RMD — divisor 25.3 (Pub. 590-B), RMD $39,525.69 — through rmdForYear, the same rule the plan uses. (b) At 57 (RMD age 75 for a 1969 birth year) no RMD is priced, and a typed $60,000 conversion against a $50,000 balance is flagged as exceeding the balance. (c) RE-PINNED by round-7 R7-1 (the old pin described the defect): a sale of $40,000 against a $90,000 basis is a $50,000 capital loss from capital transactions only; the $10,000 of qualified dividends are NOT netted against it (§§1222/1(h)) — they price whole in the preferential stack (ltcgPriced $10,000), the capital loss is the full $50,000, and $3,000 of it applies against ordinary income under §1211(b): AGI is $10,000 − $3,000 = $7,000, taxable income is $0 after the $32,200 standard deduction, so the federal tax is $0 and the remaining loss is reported, not hidden.",
     expected: {
       rmd: 39525.69,
       rmdDivisor: 25.3,
@@ -5736,11 +6085,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       youngRmd: 0,
       exceeds: 1,
       stockGain: -50000,
-      ltcgNet: -40000,
-      ltcgPriced: 0,
-      capitalLoss: 40000,
+      ltcgNet: -50000,
+      ltcgPriced: 10000,
+      capitalLoss: 50000,
       lossAllowance: 3000,
-      lossAgi: -3000,
+      lossAgi: 7000,
       lossFederalTax: 0,
     },
     actual: () => {
@@ -6972,6 +7321,203 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "workyears-payroll-per-year-tables",
+    kind: "tax",
+    note: "T2 — a salary year prices its payroll tax under ITS OWN calendar year's law table (the T1 mechanism), with the wage base, rates, and Additional Medicare threshold all read from that year's row. Both lines are MFJ at age 56 with FICA wages of exactly $395,000 (salary set so salary − own payroll HSA = $395,000 in each year: 2025 own HSA is the 2025 family limit $8,550 + $1,000 catch-up = $9,550, so salary $404,550; 2026 own HSA is $8,750 + $1,000 = $9,750, so salary $404,750). Medicare (1.45% × $395,000 = $5,727.50) and Additional Medicare (0.9% × ($395,000 − $250,000) = $1,305.00) are identical across the two rows — the rates and the MFJ threshold are the same in both tables — so the ONLY difference is the wage base: 2025 Social Security = 6.2% × $176,100 = $10,918.20 against 2026's 6.2% × $184,500 = $11,439.00, a $520.80 delta = 6.2% × ($184,500 − $176,100). Totals: 2025 $17,950.70, 2026 $18,471.50. The row data itself is pinned too (wage bases $176,100 / $184,500 in cents ÷ 100; thresholds $250,000 MFJ / $200,000 single).",
+    expected: {
+      y2025Wages: 395000,
+      y2025Ss: 10918.2,
+      y2025Medicare: 5727.5,
+      y2025Additional: 1305,
+      y2025Payroll: 17950.7,
+      y2026Wages: 395000,
+      y2026Ss: 11439,
+      y2026Medicare: 5727.5,
+      y2026Additional: 1305,
+      y2026Payroll: 18471.5,
+      ssDelta: 520.8,
+      base2025: 176100,
+      base2026: 184500,
+      threshold2025Mfj: 250000,
+      threshold2026Single: 200000,
+    },
+    actual: () => {
+      const l25 = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1969,
+          birthYearSpouse: 1980,
+          annualSpending: 150000,
+          retirementAge: 56,
+          windowStartAge: 56,
+        }),
+        { salary: 404550, employer401k: 0, employerHsa: 0 },
+        56,
+      );
+      const l26 = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1970,
+          birthYearSpouse: 1981,
+          annualSpending: 150000,
+          retirementAge: 56,
+          windowStartAge: 56,
+        }),
+        { salary: 404750, employer401k: 0, employerHsa: 0 },
+        56,
+      );
+      return {
+        y2025Wages: l25.ficaWages,
+        y2025Ss: l25.payrollSocialSecurity,
+        y2025Medicare: l25.payrollMedicare,
+        y2025Additional: l25.payrollAdditionalMedicare,
+        y2025Payroll: l25.payrollTax,
+        y2026Wages: l26.ficaWages,
+        y2026Ss: l26.payrollSocialSecurity,
+        y2026Medicare: l26.payrollMedicare,
+        y2026Additional: l26.payrollAdditionalMedicare,
+        y2026Payroll: l26.payrollTax,
+        ssDelta: Math.round((l26.payrollSocialSecurity - l25.payrollSocialSecurity) * 100) / 100,
+        base2025: lawForYear(2025).ssWageBase / 100,
+        base2026: lawForYear(2026).ssWageBase / 100,
+        threshold2025Mfj: lawForYear(2025).payrollAdditionalMedicareThreshold.mfj,
+        threshold2026Single: lawForYear(2026).payrollAdditionalMedicareThreshold.single,
+      };
+    },
+  },
+  {
+    id: "workyears-payroll-wage-base-cap",
+    kind: "tax",
+    note: "T2 — the Social Security wage-base cap (2026 law row, MFJ, priced through payrollTaxBreakdown on stated FICA wages): at $500,000 of wages the Social Security tax is the CAPPED 6.2% × $184,500 = $11,439.00 (uncapped it would be $31,000) while Medicare runs on all wages (1.45% × $500,000 = $7,250) and the Additional Medicare Tax takes 0.9% × ($500,000 − $250,000) = $2,250 — total $20,939. Exactly AT the base ($184,500) the Social Security tax is the same $11,439.00, Medicare $2,675.25, no Additional Medicare — total $14,114.25. BELOW the base ($100,000) the cap never engages: Social Security 6.2% × $100,000 = $6,200, Medicare $1,450, total $7,650.",
+    expected: {
+      aboveBaseSs: 11439,
+      aboveBaseMedicare: 7250,
+      aboveBaseAdditional: 2250,
+      aboveBasePayroll: 20939,
+      atBaseSs: 11439,
+      atBasePayroll: 14114.25,
+      belowBaseSs: 6200,
+      belowBasePayroll: 7650,
+    },
+    actual: () => {
+      const law = lawForYear(2026);
+      const above = payrollTaxBreakdown(500000, "mfj", law);
+      const at = payrollTaxBreakdown(184500, "mfj", law);
+      const below = payrollTaxBreakdown(100000, "mfj", law);
+      return {
+        aboveBaseSs: above.socialSecurity,
+        aboveBaseMedicare: above.medicare,
+        aboveBaseAdditional: above.additionalMedicare,
+        aboveBasePayroll: above.total,
+        atBaseSs: at.socialSecurity,
+        atBasePayroll: at.total,
+        belowBaseSs: below.socialSecurity,
+        belowBasePayroll: below.total,
+      };
+    },
+  },
+  {
+    id: "workyears-payroll-additional-medicare-crossing",
+    kind: "tax",
+    note: "T2 — the Additional Medicare Tax threshold crossing, for MFJ and for single (2026 law row, priced through payrollTaxBreakdown on stated FICA wages; Social Security is capped at $11,439 in every line here). MFJ: at exactly the $250,000 threshold the additional tax is $0 and the total is $11,439 + 1.45% × $250,000 ($3,625) = $15,064; at $260,000 the additional tax is 0.9% × $10,000 = $90 and the total is $11,439 + $3,770 + $90 = $15,299. Single: the threshold is $200,000 — at it the additional tax is $0 and the total is $11,439 + $2,900 = $14,339; at $210,000 the additional tax is $90 and the total is $11,439 + $3,045 + $90 = $14,574. Head of household shares the single $200,000 threshold: at $210,000 its additional tax is also $90.",
+    expected: {
+      mfjAtThresholdAdditional: 0,
+      mfjAtThresholdPayroll: 15064,
+      mfjAboveAdditional: 90,
+      mfjAbovePayroll: 15299,
+      singleAtThresholdAdditional: 0,
+      singleAtThresholdPayroll: 14339,
+      singleAboveAdditional: 90,
+      singleAbovePayroll: 14574,
+      hohAboveAdditional: 90,
+    },
+    actual: () => {
+      const law = lawForYear(2026);
+      const mfjAt = payrollTaxBreakdown(250000, "mfj", law);
+      const mfjAbove = payrollTaxBreakdown(260000, "mfj", law);
+      const singleAt = payrollTaxBreakdown(200000, "single", law);
+      const singleAbove = payrollTaxBreakdown(210000, "single", law);
+      const hohAbove = payrollTaxBreakdown(210000, "hoh", law);
+      return {
+        mfjAtThresholdAdditional: mfjAt.additionalMedicare,
+        mfjAtThresholdPayroll: mfjAt.total,
+        mfjAboveAdditional: mfjAbove.additionalMedicare,
+        mfjAbovePayroll: mfjAbove.total,
+        singleAtThresholdAdditional: singleAt.additionalMedicare,
+        singleAtThresholdPayroll: singleAt.total,
+        singleAboveAdditional: singleAbove.additionalMedicare,
+        singleAbovePayroll: singleAbove.total,
+        hohAboveAdditional: hohAbove.additionalMedicare,
+      };
+    },
+  },
+  {
+    id: "workyears-payroll-fold-in-identity",
+    kind: "tax",
+    note: "T2 — the fold-in identity on the saved record's $425,000 example-salary shape (the golden work-to-60 shape, employer $0, four work years): payroll tax is its own component of the roll totals and of the compare row, and it folds into the plan's total tax and all-in score. Per year the payroll tax is $18,947.38 (the workyears-stack-56-59 pin: Social Security $11,439.00 + Medicare $6,021.13 + Additional Medicare $1,487.25), so over four years payrollTax = $75,789.52 with parts Social Security $45,756.00, Medicare $24,084.52, Additional Medicare $5,949.00 (the parts sum to the total here). The standing golden anchors do NOT move: federal total $284,992, winner net $386,045.08, all-in $746,826.60 — payroll was already inside workTax; T2 names it and folds it into totalTax, it does not re-price it. The identities asserted: workTax = federal + state + payroll (diff $0); totalTax = winnerTax + workTax (diff $0); allInTax = totalTax + penalty + irmaa − acaCredit + terminal (diff $0) — the contract's score identity with payroll inside totalTax. The zero-salary control row prices payrollTax $0 and totalTax exactly the winner's tax (diff $0).",
+    expected: {
+      payrollTotal: 75789.52,
+      payrollSsTotal: 45756,
+      payrollMedicareTotal: 24084.52,
+      payrollAdditionalTotal: 5949,
+      partsDiff: 0,
+      federalTotal: 284992,
+      net: 386045.08,
+      allIn: 746826.6,
+      workTaxDiff: 0,
+      totalTaxDiff: 0,
+      scoreIdentityDiff: 0,
+      zeroPayroll: 0,
+      zeroTotalTaxDiff: 0,
+    },
+    actual: () => {
+      const plan = goldenWorkPlan();
+      if (!plan) return { payrollTotal: null, payrollSsTotal: null, payrollMedicareTotal: null, payrollAdditionalTotal: null, partsDiff: null, federalTotal: null, net: null, allIn: null, workTaxDiff: null, totalTaxDiff: null, scoreIdentityDiff: null, zeroPayroll: null, zeroTotalTaxDiff: null };
+      const job: WorkYearJob = { salary: 425000, employer401k: 0, employerHsa: 0 };
+      const roll = rollWorkYears(plan, job, 60);
+      const row = runWorkYearsCompare(plan, job, [60])[0];
+      const zeroRow = runWorkYearsCompare(
+        plan,
+        { salary: 0, employer401k: 0, employerHsa: 0 },
+        [56],
+      )[0];
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const cost = row?.optimizer.winner.cost;
+      return {
+        payrollTotal: roll.totals.payrollTax,
+        payrollSsTotal: roll.totals.payrollSocialSecurity,
+        payrollMedicareTotal: roll.totals.payrollMedicare,
+        payrollAdditionalTotal: roll.totals.payrollAdditionalMedicare,
+        partsDiff: r2(
+          roll.totals.payrollSocialSecurity +
+            roll.totals.payrollMedicare +
+            roll.totals.payrollAdditionalMedicare -
+            roll.totals.payrollTax,
+        ),
+        federalTotal: roll.totals.federal,
+        net: cost?.netCost ?? null,
+        allIn: row?.allInTax ?? null,
+        workTaxDiff:
+          row == null
+            ? null
+            : r2(row.workTax - (roll.totals.federal + roll.totals.state + roll.totals.payrollTax)),
+        totalTaxDiff:
+          row == null || cost == null
+            ? null
+            : r2(row.totalTax - (cost.tax + row.workTax)),
+        scoreIdentityDiff:
+          row == null || cost == null
+            ? null
+            : r2(
+                row.totalTax + cost.penalty + cost.irmaa - cost.acaCredit + cost.terminal - row.allInTax,
+              ),
+        zeroPayroll: zeroRow?.payrollTax ?? null,
+        zeroTotalTaxDiff:
+          zeroRow == null
+            ? null
+            : r2(zeroRow.totalTax - zeroRow.optimizer.winner.cost.tax),
+      };
+    },
+  },
+  {
     id: "workyears-catchup-pretax",
     kind: "tax",
     note: "Catch-up priced PRE-TAX under the wage threshold: salary $100,000 ≤ $150,000, so the $8,000 catch-up is pre-tax and reduces taxable wages. MFJ: taxable wages = $100,000 − $24,500 − $8,000 − $9,750 = $57,750 → taxable income $25,550 → federal $2,480 + 12% × $750 = $2,570; FICA $6,904.13 (per the FICA-edges case). Single: HSA limit is the SELF limit $5,400, taxable wages = $100,000 − $24,500 − $8,000 − $5,400 = $62,100 → single taxable income $46,000 → federal $1,240 + 12% × $33,600 = $5,272.",
@@ -7570,6 +8116,179 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         taxableWages: line.taxableWages,
       };
     },
+  },
+  {
+    id: "workyears-deficit-shortfall-reported",
+    kind: "tax",
+    note: "Work-year deficit honesty (round-7 fix 1.1), the reported instance: salary $10,000, spending $60,000, no starting Taxable, one work year at age 56 (2026 law, MFJ, 0% return). The stack takes the whole paycheck as the deferral (min($24,500, $10,000)), so taxable wages are $0 and federal/state tax are $0; FICA on $10,000 of wages is $620 + $145 = $765; own contributions are the $10,000 deferral. Surplus = $10,000 − $0 − $0 − $765 − $60,000 − $10,000 = −$60,765 — the figure the pre-fix roll booked straight into Taxable as a −$60,765 negative asset. After the fix the balance floors at $0, the line and the totals report a $60,765 shortfall (spending and tax the salary plus the balance could not fund), and surplusBanked — what actually landed in Taxable — is $0, not −$60,765. Pre-tax still receives the $10,000 deferral on the $1,000,000 start.",
+    expected: {
+      lineSurplus: -60765,
+      lineShortfall: 60765,
+      taxableBalance: 0,
+      totalShortfall: 60765,
+      surplusBanked: 0,
+      pretaxBalance: 1010000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 60000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 10000, employer401k: 0, employerHsa: 0 },
+        57,
+      );
+      return {
+        lineSurplus: roll.lines[0]?.surplus ?? null,
+        lineShortfall: roll.lines[0]?.shortfall ?? null,
+        taxableBalance: roll.balances.taxable,
+        totalShortfall: roll.totals.shortfall,
+        surplusBanked: roll.totals.surplusBanked,
+        pretaxBalance: roll.balances.pretax,
+      };
+    },
+  },
+  {
+    id: "workyears-deficit-balance-absorbs-first",
+    kind: "tax",
+    note: "Work-year deficit, balance absorbs first (round-7 fix 1.1): the same $10,000-salary / $60,000-spending shape as workyears-deficit-shortfall-reported (each year's surplus is −$60,765) but starting Taxable $20,000, 0% return, two work years (ages 56–57). Year 1: the $20,000 balance absorbs the first $20,000 of the deficit, so the shortfall is $60,765 − $20,000 = $40,765 and the balance ends at $0; the amount that actually landed from the surplus stream is −$20,000. Year 2 starts from $0, so the whole deficit is unfunded: shortfall $60,765. Totals: shortfall $101,530, surplusBanked −$20,000, Taxable $0 — the balance never books below zero in either year.",
+    expected: {
+      year1Shortfall: 40765,
+      year2Shortfall: 60765,
+      totalShortfall: 101530,
+      surplusBanked: -20000,
+      taxableBalance: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 60000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 0,
+        taxableStart: 20000,
+        pretaxStart: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 10000, employer401k: 0, employerHsa: 0 },
+        58,
+      );
+      return {
+        year1Shortfall: roll.lines[0]?.shortfall ?? null,
+        year2Shortfall: roll.lines[1]?.shortfall ?? null,
+        totalShortfall: roll.totals.shortfall,
+        surplusBanked: roll.totals.surplusBanked,
+        taxableBalance: roll.balances.taxable,
+      };
+    },
+  },
+  {
+    id: "workyears-415c-comp-limit-10k",
+    kind: "tax",
+    note: "§415(c) 100%-of-compensation limit (round-7 fix 4.1), the reported instance: salary $10,000, age 56, typed employer 401(k) $50,000 (2026 law). The deferral takes the whole $10,000 paycheck, and the additions room is min($72,000 dollar cap, 100% of the $10,000 compensation) − $10,000 deferral = $0, so NO employer money lands and the mega backdoor is $0: total §415(c) additions are exactly $10,000. The pre-fix room read only the dollar cap, so $50,000 of employer money landed and additions booked $60,000 against a $10,000 legal limit.",
+    expected: {
+      deferral: 10000,
+      employer401k: 0,
+      mega: 0,
+      additions: 10000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 10000, employer401k: 50000, employerHsa: 0 },
+        56,
+      );
+      const s = line.stack;
+      return {
+        deferral: s.deferral,
+        employer401k: s.employer401k,
+        mega: s.mega,
+        additions: s.deferral + s.employer401k + s.mega,
+      };
+    },
+  },
+  {
+    id: "workyears-415c-comp-limit-30k",
+    kind: "tax",
+    note: "§415(c) compensation limit binds below the dollar cap (round-7 fix 4.1): salary $30,000, age 56, typed employer 401(k) $50,000 (2026 law). Deferral $24,500 and catch-up $5,500 (the rest of the paycheck) come first; the additions room is min($72,000, $30,000 compensation) − $24,500 deferral = $5,500, so only $5,500 of employer money lands, mega is $0, and §415(c) additions proper (deferral + landed employer + mega; the catch-up is excluded from annual additions) total exactly $30,000 — 100% of compensation. The pre-fix room ($72,000 − $24,500) landed the full $47,500 of room and booked $72,000 of additions on a $30,000 salary.",
+    expected: {
+      deferral: 24500,
+      catchUp: 5500,
+      employer401k: 5500,
+      mega: 0,
+      additions: 30000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1970,
+        birthYearSpouse: 1981,
+        annualSpending: 150000,
+        retirementAge: 56,
+        windowStartAge: 56,
+        expectedReturnPct: 5.75,
+      });
+      const line = priceOneWorkYear(
+        plan,
+        { salary: 30000, employer401k: 50000, employerHsa: 0 },
+        56,
+      );
+      const s = line.stack;
+      return {
+        deferral: s.deferral,
+        catchUp: s.catchUp,
+        employer401k: s.employer401k,
+        mega: s.mega,
+        additions: s.deferral + s.employer401k + s.mega,
+      };
+    },
+  },
+  {
+    id: "irmaa-fractional-tier-boundary",
+    kind: "tax",
+    note: "IRMAA fractional-dollar boundary at the top tier's floor (round-7 fix 3.1), 2026 law row priced in 2026 (no deflation step). The tier table stores the second-highest tier's top as $499,999 single / $749,999 joint — the whole dollar below the statutory $500,000 / $750,000 floor where the TOP tier starts — so a fractional MAGI strictly between the stored top and the floor belongs to the second-highest tier (index 4): $499,999.50 single → 4, $749,999.50 joint → 4, $499,999.50 head-of-household (single thresholds) → 4. Exactly at the floor the top tier takes over: $500,000 single → 5, $750,000 joint → 5. The stored tops themselves still classify second-highest ($499,999 → 4, $749,999 → 4), and fractional MAGI at the ORDINARY tier tops behaves exactly as before — $109,000.50 single is past the first top and classifies tier 1, $205,000.50 is past the $205,000 top and classifies tier 4 — so no integer-MAGI classification changes anywhere. DEFLATED years keep the single shared boundary (the R7-5 alignment of classifier, tier cap, and pill on irmaaTierUpTo's deflated stored top): in 2028 at 2.5% inflation the deflated joint top is $749,999 / 1.025² = $713,859.85, so MAGI $713,859.84 classifies tier 4 and $713,860.35 — half a dollar above the deflated top — classifies tier 5, exactly as the pre-fix classifier read them; the tax-irmaa-tier4-cap-uses-deflated-top case pins the settled fill that boundary produces.",
+    expected: {
+      singleFrac: 4,
+      mfjFrac: 4,
+      hohFrac: 4,
+      singleFloor: 5,
+      mfjFloor: 5,
+      singleStoredTop: 4,
+      mfjStoredTop: 4,
+      singleFirstTopExact: 0,
+      singleFirstTopFrac: 1,
+      singleMidTopFrac: 4,
+      deflatedTopUnder: 4,
+      deflatedGapStaysTop: 5,
+    },
+    actual: () => ({
+      singleFrac: irmaaTierFor(499999.5, "single", TAX_LAW_2026, 2026, 2.5),
+      mfjFrac: irmaaTierFor(749999.5, "mfj", TAX_LAW_2026, 2026, 2.5),
+      hohFrac: irmaaTierFor(499999.5, "hoh", TAX_LAW_2026, 2026, 2.5),
+      singleFloor: irmaaTierFor(500000, "single", TAX_LAW_2026, 2026, 2.5),
+      mfjFloor: irmaaTierFor(750000, "mfj", TAX_LAW_2026, 2026, 2.5),
+      singleStoredTop: irmaaTierFor(499999, "single", TAX_LAW_2026, 2026, 2.5),
+      mfjStoredTop: irmaaTierFor(749999, "mfj", TAX_LAW_2026, 2026, 2.5),
+      singleFirstTopExact: irmaaTierFor(109000, "single", TAX_LAW_2026, 2026, 2.5),
+      singleFirstTopFrac: irmaaTierFor(109000.5, "single", TAX_LAW_2026, 2026, 2.5),
+      singleMidTopFrac: irmaaTierFor(205000.5, "single", TAX_LAW_2026, 2026, 2.5),
+      deflatedTopUnder: irmaaTierFor(713859.84, "mfj", TAX_LAW_2026, 2028, 2.5),
+      deflatedGapStaysTop: irmaaTierFor(713860.35, "mfj", TAX_LAW_2026, 2028, 2.5),
+    }),
   },
   {
     id: "gift-law-constants",
@@ -8925,12 +9644,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-golden-blank-reserve",
     kind: "tax",
-    note: "Blank reserve on the anchor shape (preserve floor $0 = no reserve; engine-derived 2026-10-15, matching the figures settled by review): the joint winner is “Fill to the top of the 24% bracket” at claim 65, net $211,132.62, with the joint Do Nothing at $2,478,733.88 (claim 65). The fixed-claiming-age search (entered claim 67, all six draw orders, 1,513 candidates) crowns “Fill to a $400,000 MAGI cap”, net $216,031.85, against a fixed Do Nothing of $2,545,904.28 — the blank-reserve terminal prices the whole ending pre-tax at the heir rate, unlike the $250,000 @10% split on the preserved shape. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Blank reserve on the anchor shape (preserve floor $0 = no reserve; engine-derived 2026-10-15, matching the figures settled by review): the joint winner is “Fill to the top of the 24% bracket” at claim 65, net $211,132.62, with the joint Do Nothing at $2,478,733.88 (claim 65). The fixed-claiming-age search (entered claim 67, all six draw orders, 1,513 candidates) crowns “Fill to a $400,000 MAGI cap”, net $216,031.85, against a fixed Do Nothing of $2,545,904.28 — the blank-reserve terminal prices the whole ending pre-tax at the heir rate, unlike the $250,000 @10% split on the preserved shape. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (jointNet re-pinned 2026-10-21 for round-7 R7-5: the joint winner is the IRMAA Tier 1 ceiling candidate, and the aligned sizer now grows its capped years' conversions up to the tier top — on this shape the extra conversions cost slightly more than they save, so its net rises $211,132.62 → $211,157.55; it remains the winner, and the fixed-claiming-age figures (a MAGI-cap winner, no IRMAA cap) are unmoved. Verified by isolation: with the R7-5 grow-back disabled this fixture returns exactly $211,132.62.)",
     expected: {
       jointCandidates: 2277,
       jointName: "Fill up to the IRMAA Tier 1 ceiling",
       jointClaim: 65,
-      jointNet: 211132.62,
+      jointNet: 211157.55,
       jointDnNet: 2478733.88,
       fixedCandidates: 1513,
       fixedName: "Fill to a $400,000 MAGI cap",
@@ -9285,8 +10004,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-two-benefit-joint",
     kind: "tax",
-    note: "Two-benefit joint search size (counting pin, engine-derived 2026-10-15): on a two-benefit reconstruction (the torpedo plan plus a $300,000 spouse pre-tax balance and a $30,000 spouse benefit entered at 67) both claiming ages are searched, giving 9 × 9 = 81 claiming-age combinations; each combination prices 253 candidates at the plan's draw order (252 specs + Do Nothing), so the joint search tests 81 × 253 = 20,493 candidates — cross-checked against a full runJointOptimizer on the anchor-family two-benefit shape, which reports candidatesTested 20,493. This fixture pins the search SIZE only: the review shape's exact spouse benefit was not recoverable, and reconstructions' winner / Do Nothing nets diverged from the review's stale figures by far more than any ACA-credit mechanism can explain, so no net is pinned rather than guessing one.",
-    expected: { combos: 81, perComboCandidates: 253, jointTotal: 20493 },
+    note: "Two-benefit joint search size (counting pin, engine-derived 2026-10-15): on a two-benefit reconstruction (the torpedo plan plus a $300,000 spouse pre-tax balance and a $30,000 spouse benefit entered at 67) both claiming ages are searched, giving 9 × 9 = 81 claiming-age combinations; each combination prices 253 candidates at the plan's draw order (252 specs + Do Nothing), so the joint search tests 81 × 253 = 20,493 candidates — cross-checked against a full runJointOptimizer on the anchor-family two-benefit shape, which reports candidatesTested 20,493. This fixture pins the search SIZE only: the review shape's exact spouse benefit was not recoverable, and reconstructions' winner / Do Nothing nets diverged from the review's stale figures by far more than any ACA-credit mechanism can explain, so no net is pinned rather than guessing one. (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: the torpedo primary (born 1961) is 65 at plan start with the claim entered at 65, already receiving, so the primary's side of the space locks to the single entered age; the spouse (born 1972, age 54, claim entered at 67) still searches all nine ages. The space is therefore 1 × 9 = 9 combinations and 9 × 253 = 2,277 candidates; the per-combination candidate count is unmoved. On a not-yet-claimed primary the 81-combination space stands — pinned by joint-spouse-blank-searches-entered-spouse-only's combosBothEntered.)",
+    expected: { combos: 9, perComboCandidates: 253, jointTotal: 2277 },
     actual: () => {
       const plan: RothPlanInputs = {
         ...optTorpedoPlan(),
@@ -10705,11 +11424,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gq-reserve-effect",
     kind: "tax",
-    note: "Golden battery Q15 (engine-derived 2026-10-15): what the $250,000 @10% reserve does to the winner, asserted as the PAIR (each side is also pinned singly in opt-golden-blank-reserve and opt-golden-joint-anchors). Blank reserve: joint winner net $211,132.62. With the reserve: $156,321.51 — on this shape the reserve LOWERS the winner's net cost by $54,811.11. (Re-pinned in the privacy scrub for the rotated synthetic anchor shape; the pair is still asserted exactly, in whichever direction the engine prices it.)",
+    note: "Golden battery Q15 (engine-derived 2026-10-15): what the $250,000 @10% reserve does to the winner, asserted as the PAIR (each side is also pinned singly in opt-golden-blank-reserve and opt-golden-joint-anchors). Blank reserve: joint winner net $211,157.55. With the reserve: $156,321.51 — on this shape the reserve LOWERS the winner's net cost by $54,836.04. (Re-pinned in the privacy scrub for the rotated synthetic anchor shape; the pair is still asserted exactly, in whichever direction the engine prices it.) (Blank side re-pinned 2026-10-21 for round-7 R7-5 — the same move as opt-golden-blank-reserve's jointNet: the blank side's winner is the IRMAA Tier 1 ceiling candidate, sized up by the aligned sizer; the reserved side's winner is unmoved, so the pair difference grows by the same $24.93.)",
     expected: {
-      blankNet: 211132.62,
+      blankNet: 211157.55,
       reserveNet: 156321.51,
-      reserveEffect: 54811.11,
+      reserveEffect: 54836.04,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -15364,6 +16083,2427 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       };
     },
   },
+  {
+    id: "r7-1-capital-loss-never-nets-qualified-dividends",
+    kind: "tax",
+    note: "Round-7 R7-1 (defect 5.1; the external review's exact reproduction, hand-derived from §§1222/1211(b)/1(h)): 2026 MFJ, ages 60/58, other ordinary $80,000, dividends $10,000 total of which $10,000 qualified, a stock sale of $10,000 against a $20,000 basis — a $10,000 capital loss — household 2, benchmark $22,000, no SS/conversion/interest. Capital gains and losses net against each other only: the loss is $10,000 (capital transactions alone), the qualified dividends stay whole in the preferential stack, and $3,000 of the loss offsets ordinary income under §1211(b): AGI = $80,000 + $10,000 − $3,000 = $87,000. Taxable income $87,000 − $32,200 = $54,800; ordinary taxable income $44,800 taxed $2,480 + 12% × $20,000 = $4,880; the $10,000 of qualified dividends sit inside the $98,900 0% gains space, so gains tax $0 and federal tax is $4,880. ACA MAGI $87,000 is over the household-2 cliff ($84,600), so the credit is $0. The same shape priced through priceYear directly — the plan engine's own call shape (ltcg −$10,000, qualifiedDividends $10,000, capitalLossAllowance $3,000) — prices identically. (Broken behaviour this replaces: AGI $80,000, tax $5,240, credit $14,032, allowance $0.)",
+    expected: {
+      agi: 87000,
+      federalTax: 4880,
+      credit: 0,
+      allowance: 3000,
+      capitalLoss: 10000,
+      ltcgPriced: 10000,
+      planAgi: 87000,
+      planFederalTax: 4880,
+      planNiit: 0,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 58,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 10000,
+        otherOrdinary: 80000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 10000,
+        stockBasis: 20000,
+        qualifiedDividends: 10000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 22000,
+        stateRatePct: 0,
+      });
+      const plan = priceYear(
+        basePrice({
+          agePrimary: 60,
+          ageSpouse: 58,
+          otherOrdinary: 80000,
+          ltcg: -10000,
+          qualifiedDividends: 10000,
+          capitalLossAllowance: 3000,
+        }),
+      );
+      return {
+        agi: r.agi,
+        federalTax: r.federalTax,
+        credit: r.aca.credit,
+        allowance: r.capitalLossAllowance,
+        capitalLoss: r.capitalLoss,
+        ltcgPriced: r.ltcgPriced,
+        planAgi: plan.agi,
+        planFederalTax: plan.federalTax,
+        planNiit: plan.niit,
+      };
+    },
+  },
+  {
+    id: "r7-2-niit-allowable-loss-reduces-base",
+    kind: "tax",
+    note: "Round-7 R7-2 (defect 5.2; §1411, hand-derived): net investment income is interest + dividends (qualified or not) + net gain, and an allowable net capital loss nets against the other investment income, floored at $0. 2026 MFJ: other ordinary $300,000, interest $1,000, a $3,000 allowable capital loss (ltcg −$3,000, allowance $3,000): the NIIT base is max(0, $1,000 − $3,000) = $0, so NIIT is $0 even though AGI $298,000 is over the $250,000 threshold. (Broken behaviour: NIIT $38 = 3.8% × $1,000.) Anchor that must not move: $300,000 of interest alone at MAGI $300,000 MFJ prices NIIT $1,900.00 (3.8% × min($300,000, $50,000)).",
+    expected: {
+      niitWithLoss: 0,
+      agiWithLoss: 298000,
+      niitInterestOnly: 1900,
+    },
+    actual: () => {
+      const withLoss = priceYear(
+        basePrice({
+          otherOrdinary: 300000,
+          interestIncome: 1000,
+          ltcg: -3000,
+          capitalLossAllowance: 3000,
+        }),
+      );
+      const interestOnly = priceYear(basePrice({ interestIncome: 300000 }));
+      return {
+        niitWithLoss: withLoss.niit,
+        agiWithLoss: withLoss.agi,
+        niitInterestOnly: interestOnly.niit,
+      };
+    },
+  },
+  {
+    id: "r7-3-bracket-top-pct-supported-values-only",
+    kind: "tax",
+    note: "Round-7 R7-3 (defect K-2/A-1): bracketTopPctField — the ONE field schema every public ceilings path publishes (the writers' shared ceilings object, the strict compute ceilings, scenario overrides, and the Monte Carlo check score in apiContractCore) — accepts null (no fill) and each supported federal bracket rate (10, 12, 22, 24, 32, 35, 37), and REJECTS anything else, including the external review's 13 and the fractional 22.5, with a validation message naming the supported values. Before this fix 13 validated and priced as no ceiling at all while the label claimed a 13% bracket top.",
+    expected: {
+      thirteenRejected: 1,
+      fractionalRejected: 1,
+      nullAccepted: 1,
+      allSupportedAccepted: 1,
+      messageNamesSupported: 1,
+    },
+    actual: () => {
+      const bad13 = bracketTopPctField.safeParse(13);
+      const badFrac = bracketTopPctField.safeParse(22.5);
+      const supported = [10, 12, 22, 24, 32, 35, 37];
+      return {
+        thirteenRejected: bad13.success ? 0 : 1,
+        fractionalRejected: badFrac.success ? 0 : 1,
+        nullAccepted: bracketTopPctField.safeParse(null).success ? 1 : 0,
+        allSupportedAccepted: supported.every(
+          (v) => bracketTopPctField.safeParse(v).success,
+        )
+          ? 1
+          : 0,
+        messageNamesSupported:
+          !bad13.success &&
+          bad13.error.issues.some((i) =>
+            i.message.includes("10, 12, 22, 24, 32, 35, 37"),
+          )
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "r7-4-ceiling-clamp-and-draws-alone-flag",
+    kind: "tax",
+    note: "Round-7 R7-4 (defect 2.2): ceiling enforcement with honest disclosure. (a) A fill to the top of the 35% bracket on a gains-feedback plan (pre-tax $3,000,000, taxable $1,000,000 at 0% basis drawn first, spending $150,000): after the fix EVERY priced year either lands its taxable income at or under the 2026 MFJ 35% top of $768,700, or carries conversion $0 with ceilingBreached set — the pre-fix settlement could ship a 35% fill year at $796,465.20. (b) The draws-alone shape: $900,000 of other ordinary income under a 12% fill — no conversion can comply, so the year prices conversion $0, taxable income over the $100,800 top, ceilingBreached true on the engine year AND on the buildRothFunding row, while a compliant no-ceiling year of the first plan shape is not flagged anywhere it complies.",
+    expected: {
+      fill35Violations: 0,
+      fill35ConvertedYears: 1,
+      drawsConversion: 0,
+      drawsBreached: 1,
+      drawsFundingBreached: 1,
+      drawsTaxableOverTop: 1,
+    },
+    actual: () => {
+      const fill35: RothStrategy = {
+        id: "fill35",
+        name: "Fill 35%",
+        ceilings: {
+          bracketTopPct: 35,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: false,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+      };
+      const planA = basePlan({
+        pretaxStart: 3000000,
+        taxableStart: 1000000,
+        taxableBasisPct: 0,
+        annualSpending: 150000,
+        endAgePrimary: 75,
+      });
+      const yearsA = simulateRothPlan(planA, fill35).years;
+      const violations = yearsA.filter(
+        (y) =>
+          y.taxableIncome > 768700.005 &&
+          !(y.conversion === 0 && y.ceilingBreached),
+      ).length;
+      const converted = yearsA.filter(
+        (y) => y.conversion > 0 && y.taxableIncome <= 768700.005,
+      ).length;
+      const planB = basePlan({
+        otherOrdinaryAnnual: 900000,
+        pretaxStart: 500000,
+        endAgePrimary: 60,
+      });
+      const yB = simulateRothPlan(planB, FILL_12).years[0];
+      const fundingB = buildRothFunding(planB, FILL_12)[0];
+      return {
+        fill35Violations: violations,
+        fill35ConvertedYears: converted > 0 ? 1 : 0,
+        drawsConversion: yB?.conversion ?? null,
+        drawsBreached: yB?.ceilingBreached ? 1 : 0,
+        drawsFundingBreached: fundingB?.ceilingBreached ? 1 : 0,
+        drawsTaxableOverTop:
+          yB != null && yB.taxableIncome > 100800 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "r7-5-irmaa-sizer-targets-tier-top",
+    kind: "tax",
+    note: "Round-7 R7-5 (item K-1): the IRMAA tier cap means MAGI must not exceed the TOP of the capped tier (2026 MFJ tier 1 → $274,000), and the conversion sizer targets that same ceiling the checker measures, accounting for settlement gains feedback. The scenario shape (taxable drawn first at 0% basis so every draw and tax sale realizes gains, spending $100,000, pre-tax $2,000,000, IRMAA tier cap 1 only, no bracket cap): before the fix the shrink-only convergence settled the 2030 year at MAGI $251,059.91-class undershoot on the saved scenario; after the fix the 2030 year (index 4) is sized UP to the tier top — MAGI at or under $274,000 and within $1,000 of it, conversion above $0, no year over the top, and no year flagged breached.",
+    expected: {
+      yearsOverTop: 0,
+      y2030MagiAtOrUnderTop: 1,
+      y2030MagiNearTop: 1,
+      y2030ConversionPositive: 1,
+      y2030Breached: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1966,
+        birthYearSpouse: 1968,
+        endAgePrimary: 70,
+        retirementAge: 60,
+        windowStartAge: 60,
+        pretaxStart: 2000000,
+        taxableStart: 500000,
+        taxableBasisPct: 0,
+        annualSpending: 100000,
+        expectedReturnPct: 0,
+      });
+      const years = simulateRothPlan(plan, FILL_IRMAA1_ONLY).years;
+      const y2030 = years[4];
+      return {
+        yearsOverTop: years.filter((y) => y.magi > 274000.005).length,
+        y2030MagiAtOrUnderTop:
+          y2030 != null && y2030.magi <= 274000.005 ? 1 : 0,
+        y2030MagiNearTop:
+          y2030 != null && y2030.magi >= 273000 ? 1 : 0,
+        y2030ConversionPositive:
+          y2030 != null && y2030.conversion > 0 ? 1 : 0,
+        y2030Breached: y2030?.ceilingBreached ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "t1-own-year-table-2025-vs-2026",
+    kind: "tax",
+    note: "T1 (a) — PER-YEAR TABLE SELECTION: the same year priced under its own calendar year's table where the 2025 and 2026 tables differ. Shape: MFJ, ages 60/49, $150,000 of other ordinary income, nothing else, priced by priceYear in 2025 and again in 2026, plus a do-nothing plan march starting 2025 (born 1969/1980, no balances, no spending, so each year's assessed tax is the year's own priceYear figure, unpaid for want of balances). Hand-derived from the two published tables: 2025 (Rev. Proc. 2024-40 as amended by OBBBA) — standard deduction $31,500, taxable $118,500, tax = $2,385 (10% × $23,850) + $8,772 (12% × $73,100) + $4,741 (22% × $21,550) = $15,898. 2026 (Rev. Proc. 2025-32) — standard deduction $32,200, taxable $117,800, tax = $2,480 + $9,120 (12% × $76,000) + $3,740 (22% × $17,000) = $15,340. The march's 2027 year carries the 2026 table forward (no unindexed figure binds: MAGI $150,000 is under the deflated NIIT threshold $250,000 / 1.025 = $243,902.44 and there are no benefits), so it prices $15,340 again. Before T1 the contract stated the engine priced every year from one table; the 2025 figures here are exactly what that rule could not produce.",
+    expected: {
+      lawYear2025: 2025,
+      lawYear2026: 2026,
+      ded2025: 31500,
+      taxable2025: 118500,
+      tax2025: 15898,
+      ded2026: 32200,
+      taxable2026: 117800,
+      tax2026: 15340,
+      marchY2025: 2025,
+      marchTax2025: 15898,
+      marchTax2026: 15340,
+      marchTax2027: 15340,
+    },
+    actual: () => {
+      const p25 = priceYear(basePrice({ calendarYear: 2025, otherOrdinary: 150000 }));
+      const p26 = priceYear(basePrice({ calendarYear: 2026, otherOrdinary: 150000 }));
+      const march = simulateRothPlan(
+        basePlan({
+          startYear: 2025,
+          birthYearPrimary: 1969,
+          birthYearSpouse: 1980,
+          endAgePrimary: 58,
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 0,
+          hsaStart: 0,
+          otherOrdinaryAnnual: 150000,
+          annualSpending: 0,
+        }),
+        DO_NOTHING,
+      ).years;
+      return {
+        lawYear2025: lawForYear(2025).year,
+        lawYear2026: lawForYear(2026).year,
+        ded2025: p25.standardDeduction,
+        taxable2025: p25.taxableIncome,
+        tax2025: p25.federalTax,
+        ded2026: p26.standardDeduction,
+        taxable2026: p26.taxableIncome,
+        tax2026: p26.federalTax,
+        marchY2025: march[0]?.year ?? null,
+        marchTax2025: march[0]?.federalTax ?? null,
+        marchTax2026: march[1]?.federalTax ?? null,
+        marchTax2027: march[2]?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "t1-carry-forward-beyond-newest-table",
+    kind: "tax",
+    note: "T1 (b) — CARRY-FORWARD: a year beyond the newest published table (2026) prices under that table carried forward, in today's dollars. Pins: lawForYear(2035) IS the 2026 row (object identity, not a copy). A 66/60 MFJ couple with $100,000 of ordinary income at 0% inflation prices in 2029 and again in 2035 exactly as the carried table reads: standard deduction $32,200 + $1,650 age-65 add-on = $33,850, taxable $66,150, tax = $2,480 + 12% × $41,350 = $7,442 — and the OBBBA senior deduction is $0 in both years because its 2025–2028 window is dated table data that has switched off (the same shape priced in 2026, inside the window, takes the full $6,000 — AGI $100,000 is under the $150,000 phase-out start — for deductions $39,850, taxable $60,150, tax $2,480 + 12% × $35,350 = $6,722). With inflation switched on (2.5%) the 2035 indexed figures still sit at the 2026 table's raw values: the $150,000 shape of the own-year case prices standard deduction $32,200 and tax $15,340 in 2035, identical to 2026 — carry-forward moves no indexed figure in real terms.",
+    expected: {
+      lawYear2035: 2026,
+      law2035IsRow2026: 1,
+      ded2029: 33850,
+      senior2029: 0,
+      tax2029: 7442,
+      ded2035: 33850,
+      senior2035: 0,
+      tax2035: 7442,
+      senior2026: 6000,
+      deds2026: 39850,
+      tax2026: 6722,
+      ded2035Infl: 32200,
+      tax2035Infl: 15340,
+    },
+    actual: () => {
+      const shape = {
+        agePrimary: 66,
+        ageSpouse: 60,
+        otherOrdinary: 100000,
+        inflationPct: 0,
+      };
+      const p26 = priceYear(basePrice({ calendarYear: 2026, ...shape }));
+      const p29 = priceYear(basePrice({ calendarYear: 2029, ...shape }));
+      const p35 = priceYear(basePrice({ calendarYear: 2035, ...shape }));
+      const p35i = priceYear(
+        basePrice({ calendarYear: 2035, otherOrdinary: 150000 }),
+      );
+      return {
+        lawYear2035: lawForYear(2035).year,
+        law2035IsRow2026: lawForYear(2035) === TAX_LAW_2026 ? 1 : 0,
+        ded2029: p29.standardDeduction,
+        senior2029: p29.seniorDeduction,
+        tax2029: p29.federalTax,
+        ded2035: p35.standardDeduction,
+        senior2035: p35.seniorDeduction,
+        tax2035: p35.federalTax,
+        senior2026: p26.seniorDeduction,
+        deds2026: p26.deductions,
+        tax2026: p26.federalTax,
+        ded2035Infl: p35i.standardDeduction,
+        tax2035Infl: p35i.federalTax,
+      };
+    },
+  },
+  {
+    id: "t1-unindexed-deflation-under-carry-forward",
+    kind: "tax",
+    note: "T1 (c) — UNINDEXED-THRESHOLD DEFLATION UNDER CARRY-FORWARD: the statutorily unindexed thresholds are stated in their table's dollars and deflate at the plan's inflation rate for each year the priced year runs past the table it prices under (deflationFactor(2030, 2026, 2.5%) = 1 / 1.025^4 = 0.9059506448). NIIT: MFJ, $240,000 of interest income priced in 2030 under the carried-forward 2026 row — the §1411 threshold deflates to $250,000 × 0.9059506448 = $226,487.66, so the excess is $13,512.34 and NIIT = 3.8% × $13,512.34 = $513.47; ordinary tax on $207,800 of taxable income ($240,000 − $32,200) is $2,480 + $9,120 + $23,540 = $35,140 under the carried table's brackets, federal total $35,653.47. The identical shape priced in 2026 (its own row, deflator 1.0) owes NO NIIT — AGI $240,000 never reaches the nominal $250,000 threshold. §86: MFJ, $40,000 of benefits + $30,000 of other ordinary income in 2030 — provisional income $50,000; the §86 thresholds deflate to $32,000 × 0.9059506448 = $28,990.42 and $44,000 × 0.9059506448 = $39,861.83, so taxable benefits = min($20,000, ½ × $10,871.41 = $5,435.70) + 85% × ($50,000 − $39,861.83 = $10,138.17) = $5,435.70 + $8,617.45 = $14,053.15, against $11,100 undeflated (the 2026 control: $6,000 + 85% × $6,000) — the tax torpedo widening by exactly the deflation, four carried-forward years out.",
+    expected: {
+      deflatedNiitThreshold: 226487.66,
+      niit2030: 513.47,
+      federal2030: 35653.47,
+      niit2026Control: 0,
+      ssTaxable2030: 14053.15,
+      ssTaxable2026Control: 11100,
+    },
+    actual: () => {
+      const niitShape = { interestIncome: 240000 };
+      const pNiit30 = priceYear(basePrice({ calendarYear: 2030, ...niitShape }));
+      const pNiit26 = priceYear(basePrice({ calendarYear: 2026, ...niitShape }));
+      const ssShape = { ssBenefits: 40000, otherOrdinary: 30000 };
+      const pSs30 = priceYear(basePrice({ calendarYear: 2030, ...ssShape }));
+      const pSs26 = priceYear(basePrice({ calendarYear: 2026, ...ssShape }));
+      return {
+        deflatedNiitThreshold:
+          Math.round(250000 * deflationFactor(2030, 2026, 2.5) * 100) / 100,
+        niit2030: pNiit30.niit,
+        federal2030: pNiit30.federalTax,
+        niit2026Control: pNiit26.niit,
+        ssTaxable2030: pSs30.ssTaxable,
+        ssTaxable2026Control: pSs26.ssTaxable,
+      };
+    },
+  },
+  {
+    id: "t3-wa-law-rows",
+    kind: "tax",
+    note: "T3 (a) — WA LAW ROWS (RCW 82.87; WA DOR capital-gains page + June 30, 2025 special notice): both published tables carry the excise parameters as dated law-row data — base rate 7% (RCW 82.87.040(1)(a)), additional rate 2.9% over a $1,000,000 threshold (RCW 82.87.040(1)(b); the threshold is not among RCW 82.87.150's adjusted amounts, so it is a fixed $1,000,000), charitable threshold and cap per RCW 82.87.080. The 2025 standard deduction / charitable threshold $278,000 and cap $111,000 are DOR's published 2025 amounts; the 2026 row carries the same amounts forward because DOR had published no 2026 amounts when the table was sourced (the build's disclosed carry-forward, not a published 2026 figure).",
+    expected: {
+      ded2025: 278000,
+      ded2026: 278000,
+      rate2026: 7,
+      addlRate2026: 2.9,
+      threshold2026: 1000000,
+      charThreshold2026: 278000,
+      charCap2026: 111000,
+      charCap2025: 111000,
+    },
+    actual: () => {
+      const l25 = lawForYear(2025);
+      const l26 = lawForYear(2026);
+      return {
+        ded2025: l25.waStandardDeduction,
+        ded2026: l26.waStandardDeduction,
+        rate2026: l26.waRatePct,
+        addlRate2026: l26.waAdditionalRatePct,
+        threshold2026: l26.waAdditionalThreshold,
+        charThreshold2026: l26.waCharitableThreshold,
+        charCap2026: l26.waCharitableCap,
+        charCap2025: l25.waCharitableCap,
+      };
+    },
+  },
+  {
+    id: "t3-wa-below-deduction",
+    kind: "tax",
+    note: "T3 (b) — WA YEAR UNDER THE STANDARD DEDUCTION PRICES $0 (RCW 82.87.040 / 82.87.060(1)): 2026, MFJ, $100,000 of long-term gains and a 5% flat state rate ALSO entered — Washington residence replaces the flat rate, and $100,000 of gains sits under the $278,000 standard deduction, so the state tax is $0 (the flat rate would have taken 5% of taxable income). Federally the $100,000 of gains sits under the $98,900 0% top plus the $32,200 standard deduction, so federal tax is $0 too.",
+    expected: {
+      stateTax: 0,
+      waGains: 100000,
+      waStandardDeduction: 278000,
+      waTaxableGains: 0,
+      federalTax: 0,
+    },
+    actual: () => {
+      const p = priceYear(
+        basePrice({ ltcg: 100000, stateRatePct: 5, residenceState: "WA" }),
+      );
+      return {
+        stateTax: p.stateTax,
+        waGains: p.waGains,
+        waStandardDeduction: p.waStandardDeduction,
+        waTaxableGains: p.waTaxableGains,
+        federalTax: p.federalTax,
+      };
+    },
+  },
+  {
+    id: "t3-wa-above-deduction",
+    kind: "tax",
+    note: "T3 (c) — WA YEAR ABOVE THE STANDARD DEDUCTION (RCW 82.87.040(1)(a)): 2026, MFJ, $378,000 of long-term gains. Taxable Washington capital gains = $378,000 − $278,000 = $100,000, all in the first tier, so the excise is 7% × $100,000 = $7,000 — even with a 5% flat rate also entered (replaced, never stacked). Federal check, hand-derived: taxable income $378,000 − $32,200 = $345,800; gains at 0% $98,900, at 15% $246,900 → $37,035; NIIT 3.8% × min(gains, $378,000 − $250,000) = 3.8% × $128,000 = $4,864; federal total $41,899.",
+    expected: {
+      stateTax: 7000,
+      waGains: 378000,
+      waTaxableGains: 100000,
+      federalTax: 41899,
+    },
+    actual: () => {
+      const p = priceYear(
+        basePrice({ ltcg: 378000, stateRatePct: 5, residenceState: "WA" }),
+      );
+      return {
+        stateTax: p.stateTax,
+        waGains: p.waGains,
+        waTaxableGains: p.waTaxableGains,
+        federalTax: p.federalTax,
+      };
+    },
+  },
+  {
+    id: "t3-wa-boundary",
+    kind: "tax",
+    note: "T3 (d) — WA BOUNDARIES (RCW 82.87.040 / 82.87.060(1)): gains exactly AT the $278,000 standard deduction price $0 of excise with $0 of taxable gains; $1 over prices 7% × $1 = $0.07. Taxable gains exactly AT the $1,000,000 tier threshold (gains $1,278,000) price 7% × $1,000,000 = $70,000 with nothing in the 9.9% tier; $1 over (gains $1,278,001) adds 9.9% × $1 = $0.099 → $70,000.10; gains of $2,278,000 price 7% × $1,000,000 + 9.9% × $1,000,000 = $70,000 + $99,000 = $169,000.",
+    expected: {
+      atDeductionTax: 0,
+      atDeductionTaxable: 0,
+      oneOverTax: 0.07,
+      oneOverTaxable: 1,
+      atTierTax: 70000,
+      tierOneOverTax: 70000.1,
+      twoMillionTax: 169000,
+      twoMillionTaxable: 2000000,
+    },
+    actual: () => {
+      const law = lawForYear(2026);
+      const at = waCapitalGainsTax({ ltcg: 278000, law });
+      const over = waCapitalGainsTax({ ltcg: 278001, law });
+      const tier = waCapitalGainsTax({ ltcg: 1278000, law });
+      const tierOver = waCapitalGainsTax({ ltcg: 1278001, law });
+      const twoM = waCapitalGainsTax({ ltcg: 2278000, law });
+      return {
+        atDeductionTax: at.tax,
+        atDeductionTaxable: at.taxableGains,
+        oneOverTax: over.tax,
+        oneOverTaxable: over.taxableGains,
+        atTierTax: tier.tax,
+        tierOneOverTax: tierOver.tax,
+        twoMillionTax: twoM.tax,
+        twoMillionTaxable: twoM.taxableGains,
+      };
+    },
+  },
+  {
+    id: "t3-wa-flat-fallback",
+    kind: "tax",
+    note: "T3 (e) — FLAT-RATE FALLBACK BIT-IDENTICAL: the t3-wa-above-deduction shape ($378,000 of gains, 5% flat rate entered) priced with residence 'other' and with NO residence at all both price the pre-T3 flat math — 5% × $345,800 of federal taxable income = $17,290 — and carry $0 of WA breakdown, while the same shape as a Washington year prices the $7,000 excise. The fallback never sees the excise and the excise never sees the flat rate.",
+    expected: {
+      otherStateTax: 17290,
+      absentStateTax: 17290,
+      otherWaTaxable: 0,
+      waStateTax: 7000,
+    },
+    actual: () => {
+      const shape = { ltcg: 378000, stateRatePct: 5 };
+      const other = priceYear(basePrice({ ...shape, residenceState: "other" }));
+      const absent = priceYear(basePrice(shape));
+      const wa = priceYear(basePrice({ ...shape, residenceState: "WA" }));
+      return {
+        otherStateTax: other.stateTax,
+        absentStateTax: absent.stateTax,
+        otherWaTaxable: other.waTaxableGains,
+        waStateTax: wa.stateTax,
+      };
+    },
+  },
+  {
+    id: "t3-wa-base-purity",
+    kind: "tax",
+    note: "T3 (f) — THE EXCISE BASE IS LONG-TERM GAINS ONLY (RCW 82.87.020(1)/(16), 82.87.050(3)): a Washington year with $500,000 of other ordinary income (the stand-in for wages / pension / retirement-account draws), $80,000 of Social Security, and $200,000 of qualified dividends prices $0 of excise while its realized gains are $100,000 — none of the other income is in the base, and qualified dividends are not capital gains. The control with gains of $400,000 prices 7% × ($400,000 − $278,000) = 7% × $122,000 = $8,540 — the $200,000 of qualified dividends adds nothing (had it entered the base, the tax would be 7% × $322,000 = $22,540).",
+    expected: {
+      smallGainsStateTax: 0,
+      bigGainsStateTax: 8540,
+      bigGainsWaBase: 400000,
+    },
+    actual: () => {
+      const shape = {
+        otherOrdinary: 500000,
+        ssBenefits: 80000,
+        qualifiedDividends: 200000,
+        residenceState: "WA" as const,
+      };
+      const small = priceYear(basePrice({ ...shape, ltcg: 100000 }));
+      const big = priceYear(basePrice({ ...shape, ltcg: 400000 }));
+      return {
+        smallGainsStateTax: small.stateTax,
+        bigGainsStateTax: big.stateTax,
+        bigGainsWaBase: big.waGains,
+      };
+    },
+  },
+  {
+    id: "t3-wa-charitable-and-loss",
+    kind: "tax",
+    note: "T3 (g) — CHARITABLE DEDUCTION AND LOSS YEARS (RCW 82.87.080; RCW 82.87.040(3)): on $1,000,000 of gains under the 2026 row (threshold $278,000, cap $111,000): donations of $400,000 deduct min($111,000, $400,000 − $278,000) = $111,000 → taxable gains $611,000 → tax $42,770; donations of $300,000 deduct $22,000 → taxable $700,000 → tax $49,000; donations of $200,000 (under the threshold) deduct $0 → taxable $722,000 → tax $50,540. The same $400,000-donation year priced through priceYear carries the deduction on its breakdown and the same $42,770. A net-loss year (gains −$50,000) enters a $0 base, owes $0, and carries nothing forward.",
+    expected: {
+      cappedDeduction: 111000,
+      cappedTax: 42770,
+      partialDeduction: 22000,
+      partialTax: 49000,
+      underThresholdDeduction: 0,
+      underThresholdTax: 50540,
+      pricedStateTax: 42770,
+      pricedCharitable: 111000,
+      lossStateTax: 0,
+      lossWaGains: 0,
+    },
+    actual: () => {
+      const law = lawForYear(2026);
+      const capped = waCapitalGainsTax({
+        ltcg: 1000000,
+        charitableDonations: 400000,
+        law,
+      });
+      const partial = waCapitalGainsTax({
+        ltcg: 1000000,
+        charitableDonations: 300000,
+        law,
+      });
+      const under = waCapitalGainsTax({
+        ltcg: 1000000,
+        charitableDonations: 200000,
+        law,
+      });
+      const priced = priceYear(
+        basePrice({
+          ltcg: 1000000,
+          residenceState: "WA",
+          // T5: the donations figure is the ONE charitable
+          // input (itemizedCharitable) — the field this case
+          // used before T5 (waCharitableDonations) is gone;
+          // the same $400,000 flows to the same deduction and
+          // every pinned figure below is unchanged.
+          itemizedCharitable: 400000,
+        }),
+      );
+      const loss = priceYear(
+        basePrice({ ltcg: -50000, residenceState: "WA" }),
+      );
+      return {
+        cappedDeduction: capped.charitableDeduction,
+        cappedTax: capped.tax,
+        partialDeduction: partial.charitableDeduction,
+        partialTax: partial.tax,
+        underThresholdDeduction: under.charitableDeduction,
+        underThresholdTax: under.tax,
+        pricedStateTax: priced.stateTax,
+        pricedCharitable: priced.waCharitableDeduction,
+        lossStateTax: loss.stateTax,
+        lossWaGains: loss.waGains,
+      };
+    },
+  },
+  {
+    id: "t3-wa-plan-anchor-shape",
+    kind: "tax",
+    note: "T3 (h) — PLAN-LEVEL ANCHOR SHAPE: a Washington plan that lives on taxable-account draws (no pre-tax, $2,000,000 taxable at 50% basis, $200,000/yr of spending, ages 57–60, 0% return) realizes roughly $100–130K of gains a year — every year under the $278,000 standard deduction — so its lifetime state tax is $0 even with a 5% flat rate also entered, and the plan prices bit-identically to the same plan with no residence and a 0% flat rate (same ending taxable balance, same federal tax). The $0 is the deduction working on real realized gains (the largest year's WA base is over $0), not an empty base.",
+    expected: {
+      totalStateTax: 0,
+      yearsPriced: 4,
+      maxWaGainsOverZero: 1,
+      maxWaGainsUnderDeduction: 1,
+      endingMatchesControl: 1,
+      federalMatchesControl: 1,
+    },
+    actual: () => {
+      const shape = {
+        pretaxStart: 0,
+        taxableStart: 2000000,
+        taxableBasisPct: 50,
+        annualSpending: 200000,
+        retirementAge: 57,
+        endAgePrimary: 60,
+      };
+      const wa = simulateRothPlan(
+        basePlan({ ...shape, residenceState: "WA", stateRatePct: 5 }),
+        DO_NOTHING,
+      );
+      const control = simulateRothPlan(basePlan(shape), DO_NOTHING);
+      const maxWaGains = Math.max(...wa.years.map((y) => y.detail.waGains));
+      return {
+        totalStateTax:
+          Math.round(wa.years.reduce((s, y) => s + y.stateTax, 0) * 100) / 100,
+        yearsPriced: wa.years.length,
+        maxWaGainsOverZero: maxWaGains > 0 ? 1 : 0,
+        maxWaGainsUnderDeduction: maxWaGains < 278000 ? 1 : 0,
+        endingMatchesControl:
+          wa.endingTaxable === control.endingTaxable ? 1 : 0,
+        federalMatchesControl:
+          Math.round(
+            (wa.years.reduce((s, y) => s + y.federalTax, 0) -
+              control.years.reduce((s, y) => s + y.federalTax, 0)) *
+              100,
+          ) === 0
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "t3-wa-playground-path",
+    kind: "tax",
+    note: "T3 (i) — PLAYGROUND PATH: a Playground year (2026, MFJ, ages 60/49) whose stock sale realizes the t3-wa-above-deduction gain ($478,000 sold, $100,000 basis → $378,000 gain) prices the same $7,000 excise with the same breakdown through pricePlaygroundYear, and the API argument mapping carries residenceState through (absent → null → the flat rate, so pre-build payloads price exactly as before).",
+    expected: {
+      stateTax: 7000,
+      waGains: 378000,
+      waTaxableGains: 100000,
+      argsResidence: "WA",
+      argsAbsentResidence: "flat",
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 478000,
+        stockBasis: 100000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 5,
+        residenceState: "WA",
+      });
+      const argsBase = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const withWa = playgroundInputsFromArgs({
+        ...argsBase,
+        residenceState: "WA",
+      });
+      const without = playgroundInputsFromArgs(argsBase);
+      return {
+        stateTax: r.stateTax,
+        waGains: r.waGains,
+        waTaxableGains: r.waTaxableGains,
+        argsResidence: withWa.residenceState ?? "missing",
+        argsAbsentResidence:
+          without.residenceState == null ? "flat" : "wrong",
+      };
+    },
+  },
+  {
+    id: "t4-ledger-worksheet-ordering",
+    kind: "tax",
+    note: "T4 (a) — THE LEDGER TRANSFORM, unit-pinned against §§1211(b)/1212 and the Capital Loss Carryover Worksheet (hand-derived): (a) LT carry-in $26,000 against $20,000 of gains → net loss $6,000, allowance $3,000, $20,000 absorbed, $3,000 LT carries out. (b) ST $10,000 + LT $10,000 against $25,000 of gains → the LT column nets to a $15,000 gain, the ST loss offsets it, $5,000 prices as a gain, nothing carries. (c) The same carry-ins against $15,000 of gains → LT column $5,000, ST loss leaves a $5,000 net loss → $3,000 allowance (taken from the ST remainder), $2,000 ST carries out and $0 LT: character survives the netting. (d) No gains, ST $8,000 + LT $8,000 → the $3,000 allowance is consumed from the SHORT-TERM remainder first (worksheet order), so $5,000 ST and the full $8,000 LT carry out. (e) LT $2,500 alone → the allowance is the whole loss (under the cap), nothing carries. (f) The allowance cap is $3,000 for a priceable status (single shown; MFS's $1,500 has no law row in this engine).",
+    expected: {
+      aNet: -6000,
+      aAllowance: 3000,
+      aAbsorbed: 20000,
+      aOutSt: 0,
+      aOutLt: 3000,
+      bNet: 5000,
+      bAllowance: 0,
+      bAbsorbed: 20000,
+      bOutSt: 0,
+      bOutLt: 0,
+      cNet: -5000,
+      cAllowance: 3000,
+      cAbsorbed: 15000,
+      cOutSt: 2000,
+      cOutLt: 0,
+      dNet: -16000,
+      dAllowance: 3000,
+      dAbsorbed: 0,
+      dOutSt: 5000,
+      dOutLt: 8000,
+      eNet: -2500,
+      eAllowance: 2500,
+      eOutSt: 0,
+      eOutLt: 0,
+      capSingle: 3000,
+      capMfj: 3000,
+    },
+    actual: () => {
+      const a = applyLossLedger({ st: 0, lt: 26000 }, 20000, "mfj");
+      const b = applyLossLedger({ st: 10000, lt: 10000 }, 25000, "mfj");
+      const c = applyLossLedger({ st: 10000, lt: 10000 }, 15000, "mfj");
+      const d = applyLossLedger({ st: 8000, lt: 8000 }, 0, "mfj");
+      const e = applyLossLedger({ st: 0, lt: 2500 }, 0, "single");
+      return {
+        aNet: a.netResult,
+        aAllowance: a.allowance,
+        aAbsorbed: a.absorbedByGains,
+        aOutSt: a.carryOut.st,
+        aOutLt: a.carryOut.lt,
+        bNet: b.netResult,
+        bAllowance: b.allowance,
+        bAbsorbed: b.absorbedByGains,
+        bOutSt: b.carryOut.st,
+        bOutLt: b.carryOut.lt,
+        cNet: c.netResult,
+        cAllowance: c.allowance,
+        cAbsorbed: c.absorbedByGains,
+        cOutSt: c.carryOut.st,
+        cOutLt: c.carryOut.lt,
+        dNet: d.netResult,
+        dAllowance: d.allowance,
+        dAbsorbed: d.absorbedByGains,
+        dOutSt: d.carryOut.st,
+        dOutLt: d.carryOut.lt,
+        eNet: e.netResult,
+        eAllowance: e.allowance,
+        eOutSt: e.carryOut.st,
+        eOutLt: e.carryOut.lt,
+        capSingle: capitalLossAllowanceCap("single"),
+        capMfj: capitalLossAllowanceCap("mfj"),
+      };
+    },
+  },
+  {
+    id: "t4-chain-absorb-then-allowance",
+    kind: "tax",
+    note: "T4 (b) — MULTI-YEAR CHAIN (hand-derived): a $26,000 long-term loss banked before the plan (entering carryforward) meets a plan that realizes $20,000 of gains in year 1 ($40,000 drawn from a $200,000 taxable account at 50% basis) and no gains after (Social Security of $40,000 from age 58 covers the $40,000 spending, so nothing is drawn). Year 1: the gains absorb $20,000 of the loss, the remaining $6,000 net loss takes the $3,000 allowance (AGI −$3,000), $3,000 carries out. Year 2: no gains — the carried $3,000 takes the allowance in full (again AGI −$3,000; provisional income $17,000 keeps Social Security untaxed) and the ledger empties. Year 3: the ledger is off — the year prices exactly as a pre-T4 year (AGI $0). Federal tax is $0 in all three years, and the taxable account ends at $160,000 (only year 1 drew).",
+    expected: {
+      y1InLt: 26000,
+      y1Absorbed: 20000,
+      y1Allowance: 3000,
+      y1OutLt: 3000,
+      y1GrossGains: 20000,
+      y1GainsPriced: 0,
+      y1Agi: -3000,
+      y1Tax: 0,
+      y2InLt: 3000,
+      y2Absorbed: 0,
+      y2Allowance: 3000,
+      y2OutLt: 0,
+      y2Agi: -3000,
+      y2Tax: 0,
+      y3InLt: 0,
+      y3Allowance: 0,
+      y3Agi: 0,
+      y3Tax: 0,
+      endingTaxable: 160000,
+    },
+    actual: () => {
+      const r = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 200000,
+          taxableBasisPct: 50,
+          annualSpending: 40000,
+          retirementAge: 57,
+          endAgePrimary: 59,
+          ssPrimaryAnnual: 40000,
+          ssPrimaryStartAge: 58,
+          capitalLossCarryInLt: 26000,
+        }),
+        DO_NOTHING,
+      );
+      const [y1, y2, y3] = r.years;
+      return {
+        y1InLt: y1?.detail.lossCarryInLt ?? null,
+        y1Absorbed: y1?.detail.lossAbsorbed ?? null,
+        y1Allowance: y1?.detail.lossAllowance ?? null,
+        y1OutLt: y1?.detail.lossCarryOutLt ?? null,
+        y1GrossGains: y1?.detail.ltcg ?? null,
+        y1GainsPriced: y1?.detail.gainsInTaxableIncome ?? null,
+        y1Agi: y1?.agi ?? null,
+        y1Tax: y1?.federalTax ?? null,
+        y2InLt: y2?.detail.lossCarryInLt ?? null,
+        y2Absorbed: y2?.detail.lossAbsorbed ?? null,
+        y2Allowance: y2?.detail.lossAllowance ?? null,
+        y2OutLt: y2?.detail.lossCarryOutLt ?? null,
+        y2Agi: y2?.agi ?? null,
+        y2Tax: y2?.federalTax ?? null,
+        y3InLt: y3?.detail.lossCarryInLt ?? null,
+        y3Allowance: y3?.detail.lossAllowance ?? null,
+        y3Agi: y3?.agi ?? null,
+        y3Tax: y3?.federalTax ?? null,
+        endingTaxable: r.endingTaxable,
+      };
+    },
+  },
+  {
+    id: "t4-character-preserved-across-years",
+    kind: "tax",
+    note: "T4 (c) — CHARACTER PRESERVED ACROSS YEARS (hand-derived): entering ST $10,000 + LT $10,000 against two identical gains years ($30,000 drawn each year from a $200,000 account at 50% basis = $15,000 of long-term gains a year). Year 1: the LT column nets to $5,000, the ST loss wipes it and leaves a $5,000 net loss → $3,000 allowance from the ST remainder → $2,000 carries out, ALL of it short-term (the LT carry-in is gone). Year 2: the $2,000 that enters is short-term (lossCarryInSt $2,000, lossCarryInLt $0); it offsets the year's gains first, so $13,000 prices (AGI $13,000, still under the standard deduction, so tax $0) and the ledger empties. A single pooled ledger could not produce the year-2 split this pins.",
+    expected: {
+      y1InSt: 10000,
+      y1InLt: 10000,
+      y1Absorbed: 15000,
+      y1Allowance: 3000,
+      y1OutSt: 2000,
+      y1OutLt: 0,
+      y2InSt: 2000,
+      y2InLt: 0,
+      y2Absorbed: 2000,
+      y2Allowance: 0,
+      y2OutSt: 0,
+      y2OutLt: 0,
+      y2Agi: 13000,
+      y2Tax: 0,
+    },
+    actual: () => {
+      const r = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 200000,
+          taxableBasisPct: 50,
+          annualSpending: 30000,
+          retirementAge: 57,
+          endAgePrimary: 58,
+          capitalLossCarryInSt: 10000,
+          capitalLossCarryInLt: 10000,
+        }),
+        DO_NOTHING,
+      );
+      const [y1, y2] = r.years;
+      return {
+        y1InSt: y1?.detail.lossCarryInSt ?? null,
+        y1InLt: y1?.detail.lossCarryInLt ?? null,
+        y1Absorbed: y1?.detail.lossAbsorbed ?? null,
+        y1Allowance: y1?.detail.lossAllowance ?? null,
+        y1OutSt: y1?.detail.lossCarryOutSt ?? null,
+        y1OutLt: y1?.detail.lossCarryOutLt ?? null,
+        y2InSt: y2?.detail.lossCarryInSt ?? null,
+        y2InLt: y2?.detail.lossCarryInLt ?? null,
+        y2Absorbed: y2?.detail.lossAbsorbed ?? null,
+        y2Allowance: y2?.detail.lossAllowance ?? null,
+        y2OutSt: y2?.detail.lossCarryOutSt ?? null,
+        y2OutLt: y2?.detail.lossCarryOutLt ?? null,
+        y2Agi: y2?.agi ?? null,
+        y2Tax: y2?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "t4-harvest-absorbs-carryforward",
+    kind: "tax",
+    note: "T4 (d) — HARVESTED GAINS ABSORB THE CARRYFORWARD (hand-derived): a $100,000 long-term banked loss, a $500,000 taxable account at 50% basis ($250,000 of unrealized gain), no spending or other income, harvest strategy on. The harvest realizes gains into the year's remaining 0% space — but the first $100,000 of harvested gains is absorbed by the carryforward and never enters the priced stack, so the harvest runs past the naive 0% top: priced gains of $131,100 put exactly $98,900 (the 2026 MFJ 0% top) into taxable income after the $32,200 standard deduction shelters the rest, all at 0%, so the harvest is $231,100 and the federal tax is $0. The basis ledger still steps up by the full harvested amount ($250,000 → $481,100 — the step-up is the sale-and-rebuy's own mechanics, untouched by the tax attribute), the whole carryforward is absorbed, and nothing carries out.",
+    expected: {
+      gainsHarvested: 231100,
+      grossGains: 231100,
+      gainsInTi: 98900,
+      gainsAt0: 98900,
+      gainsAt15: 0,
+      federalTax: 0,
+      basisEnd: 481100,
+      absorbed: 100000,
+      allowance: 0,
+      outLt: 0,
+    },
+    actual: () => {
+      const strat: RothStrategy = {
+        id: "t4-harvest",
+        name: "Harvest (T4)",
+        ceilings: null,
+        gainsHarvest: true,
+      };
+      const r = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 500000,
+          taxableBasisPct: 50,
+          annualSpending: 0,
+          retirementAge: 57,
+          endAgePrimary: 57,
+          capitalLossCarryInLt: 100000,
+        }),
+        strat,
+      );
+      const y = r.years[0];
+      return {
+        gainsHarvested: y?.gainsHarvested ?? null,
+        grossGains: y?.detail.ltcg ?? null,
+        gainsInTi: y?.detail.gainsInTaxableIncome ?? null,
+        gainsAt0: y?.detail.gainsAt0 ?? null,
+        gainsAt15: y?.detail.gainsAt15 ?? null,
+        federalTax: y?.federalTax ?? null,
+        basisEnd: y?.detail.taxableBasisDollars ?? null,
+        absorbed: y?.detail.lossAbsorbed ?? null,
+        allowance: y?.detail.lossAllowance ?? null,
+        outLt: y?.detail.lossCarryOutLt ?? null,
+      };
+    },
+  },
+  {
+    id: "t4-niit-allowance-in-carryforward-year",
+    kind: "tax",
+    note: "T4 (e) — NIIT IN A CARRYFORWARD YEAR (hand-derived; R7-2 extended across the ledger): $300,000 of other ordinary income plus a 10% interest yield on a $100,000 taxable account ($10,000 of interest), no gains, MFJ 2026. With a $50,000 long-term banked loss the year is a net-loss year: the $3,000 allowance prices (AGI $307,000) and — the R7-2 rule — reduces the §1411 base: base = $10,000 − $3,000 = $7,000, excess over the $250,000 threshold is $57,000, so NIIT = 3.8% × $7,000 = $266. Ordinary tax on $274,800 of taxable income = $2,480 + $9,120 + $24,332 + $15,216 = $51,148; federal tax $51,414; $47,000 of the loss carries out. Control (no banked loss): AGI $310,000, NIIT = 3.8% × $10,000 = $380, federal tax $51,868 + $380 = $52,248 — the pair isolates the ledger's effect to the allowance and its NIIT echo.",
+    expected: {
+      agi: 307000,
+      niit: 266,
+      federalTax: 51414,
+      allowance: 3000,
+      outLt: 47000,
+      interestIncome: 10000,
+      controlAgi: 310000,
+      controlNiit: 380,
+      controlFederalTax: 52248,
+    },
+    actual: () => {
+      const shape = {
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 100,
+        taxableInterestYieldPct: 10,
+        annualSpending: 0,
+        retirementAge: 57,
+        endAgePrimary: 57,
+        otherOrdinaryAnnual: 300000,
+      };
+      const withLoss = simulateRothPlan(
+        basePlan({ ...shape, capitalLossCarryInLt: 50000 }),
+        DO_NOTHING,
+      );
+      const control = simulateRothPlan(basePlan(shape), DO_NOTHING);
+      const y = withLoss.years[0];
+      const c = control.years[0];
+      return {
+        agi: y?.agi ?? null,
+        niit: y?.detail.niit ?? null,
+        federalTax: y?.federalTax ?? null,
+        allowance: y?.detail.lossAllowance ?? null,
+        outLt: y?.detail.lossCarryOutLt ?? null,
+        interestIncome: y?.detail.interestIncome ?? null,
+        controlAgi: c?.agi ?? null,
+        controlNiit: c?.detail.niit ?? null,
+        controlFederalTax: c?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "t4-wa-excise-takes-no-carryforward",
+    kind: "tax",
+    note: "T4 (f) — WASHINGTON TAKES NO CARRYFORWARD (hand-derived): a WA plan with a $600,000 long-term banked loss realizes $500,000 of gains in one year ($1,000,000 drawn from a $1,000,000 account at 50% basis). Federally the loss absorbs every gain (absorbed $500,000), the year is still a net-loss year (allowance $3,000, $97,000 carries out) and the federal tax is $0 — but the excise prices on the year's OWN gains, untouched by the federal ledger: $500,000 − $278,000 standard deduction = $222,000 of taxable Washington gains at 7% = $15,540 of state tax, even with a 5% flat rate also entered (the excise replaces it). The $15,540 is paid from the $100,000 pre-tax balance (the taxable account is empty after the draw), which is a distribution, not a gain — the excise base does not move.",
+    expected: {
+      federalTax: 0,
+      stateTax: 15540,
+      waGains: 500000,
+      waTaxableGains: 222000,
+      grossGains: 500000,
+      gainsPriced: 0,
+      absorbed: 500000,
+      allowance: 3000,
+      outLt: 97000,
+    },
+    actual: () => {
+      const r = simulateRothPlan(
+        basePlan({
+          pretaxStart: 100000,
+          taxableStart: 1000000,
+          taxableBasisPct: 50,
+          annualSpending: 1000000,
+          retirementAge: 57,
+          endAgePrimary: 57,
+          residenceState: "WA",
+          stateRatePct: 5,
+          capitalLossCarryInLt: 600000,
+        }),
+        DO_NOTHING,
+      );
+      const y = r.years[0];
+      return {
+        federalTax: y?.federalTax ?? null,
+        stateTax: y?.stateTax ?? null,
+        waGains: y?.detail.waGains ?? null,
+        waTaxableGains: y?.detail.waTaxableGains ?? null,
+        grossGains: y?.detail.ltcg ?? null,
+        gainsPriced: y?.detail.gainsInTaxableIncome ?? null,
+        absorbed: y?.detail.lossAbsorbed ?? null,
+        allowance: y?.detail.lossAllowance ?? null,
+        outLt: y?.detail.lossCarryOutLt ?? null,
+      };
+    },
+  },
+  {
+    id: "t4-qualified-dividends-priced-whole",
+    kind: "tax",
+    note: "T4 (g) — QUALIFIED DIVIDENDS NEVER NETTED, ACROSS YEARS (hand-derived; R7-1 extended over the ledger): a 5% dividend yield on a $2,000,000 taxable account at 100% basis pays $100,000 of qualified dividends a year and realizes NO capital gains, against an $8,000 long-term banked loss. Dividends are not capital gains, so they absorb none of the loss: each year is a net-loss year on the capital side alone — the $3,000 allowance prices, $5,000 then $2,000 carries out — while the dividends price WHOLE in the preferential stack both years: AGI $97,000 (= $100,000 − $3,000, never $92,000 or $95,000), taxable income $64,800, all $64,800 of priced gains inside the 0% space, federal tax $0. (The broken pre-R7-1 netting would have priced the dividends at $92,000 in year 1 and hidden the loss entirely.)",
+    expected: {
+      y1Dividend: 100000,
+      y1Agi: 97000,
+      y1GainsInTi: 64800,
+      y1GainsAt0: 64800,
+      y1Tax: 0,
+      y1Allowance: 3000,
+      y1OutLt: 5000,
+      y2Dividend: 100000,
+      y2Agi: 97000,
+      y2InLt: 5000,
+      y2Allowance: 3000,
+      y2OutLt: 2000,
+      y2Tax: 0,
+    },
+    actual: () => {
+      const r = simulateRothPlan(
+        basePlan({
+          pretaxStart: 0,
+          taxableStart: 2000000,
+          taxableBasisPct: 100,
+          taxableDividendYieldPct: 5,
+          annualSpending: 0,
+          retirementAge: 57,
+          endAgePrimary: 58,
+          capitalLossCarryInLt: 8000,
+        }),
+        DO_NOTHING,
+      );
+      const [y1, y2] = r.years;
+      return {
+        y1Dividend: y1?.detail.dividendIncome ?? null,
+        y1Agi: y1?.agi ?? null,
+        y1GainsInTi: y1?.detail.gainsInTaxableIncome ?? null,
+        y1GainsAt0: y1?.detail.gainsAt0 ?? null,
+        y1Tax: y1?.federalTax ?? null,
+        y1Allowance: y1?.detail.lossAllowance ?? null,
+        y1OutLt: y1?.detail.lossCarryOutLt ?? null,
+        y2Dividend: y2?.detail.dividendIncome ?? null,
+        y2Agi: y2?.agi ?? null,
+        y2InLt: y2?.detail.lossCarryInLt ?? null,
+        y2Allowance: y2?.detail.lossAllowance ?? null,
+        y2OutLt: y2?.detail.lossCarryOutLt ?? null,
+        y2Tax: y2?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "t4-entering-input-and-no-move-anchor",
+    kind: "tax",
+    note: "T4 (h) — ENTERING INPUT PLUMBING + NO-MOVE ANCHOR: the saved shape's capitalLossCarryInStCents / capitalLossCarryInLtCents convert through planInputsFromSaved (the one conversion every pricing path flows through) to engine dollars ($12,345 / $6,789 from 1234500 / 678900 cents), and a record without the keys converts to $0 / $0. On a plan with real conversions, draws, and taxes (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65), an explicit $0 / $0 entering pair prices BIT-IDENTICALLY to the absent pair — same lifetime federal and state tax, same ending wealth, same per-year taxes — which is the anchor every pre-T4 plan relies on. The contract's lossCarryforwardSemantics names the input fields, the $3,000 allowance, the character rule, Washington, and the Playground exclusion.",
+    expected: {
+      stDollars: 12345,
+      ltDollars: 6789,
+      absentSt: 0,
+      absentLt: 0,
+      sameLifetimeFederal: 1,
+      sameLifetimeState: 1,
+      sameEndingWealth: 1,
+      sameYearTaxes: 1,
+      semanticsStField: 1,
+      semanticsAllowance: 1,
+      semanticsCharacter: 1,
+      semanticsWa: 1,
+      semanticsPlayground: 1,
+    },
+    actual: () => {
+      const savedLike = (withLoss: boolean): RothSavedLike => ({
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 0,
+        rothCents: 0,
+        taxableCents: 0,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 57,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: 0,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: 0,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+        ...(withLoss
+          ? {
+              capitalLossCarryInStCents: 1234500,
+              capitalLossCarryInLtCents: 678900,
+            }
+          : {}),
+      });
+      const setInputs = planInputsFromSaved(savedLike(true), 2026);
+      const absentInputs = planInputsFromSaved(savedLike(false), 2026);
+      const shape = {
+        pretaxStart: 500000,
+        taxableStart: 500000,
+        taxableBasisPct: 50,
+        annualSpending: 50000,
+        retirementAge: 57,
+        endAgePrimary: 65,
+      };
+      const absent = simulateRothPlan(basePlan(shape), FILL_12);
+      const explicitZero = simulateRothPlan(
+        basePlan({ ...shape, capitalLossCarryInSt: 0, capitalLossCarryInLt: 0 }),
+        FILL_12,
+      );
+      const sameYearTaxes =
+        absent.years.length === explicitZero.years.length &&
+        absent.years.every(
+          (y, i) =>
+            y.federalTax === explicitZero.years[i]?.federalTax &&
+            y.stateTax === explicitZero.years[i]?.stateTax,
+        )
+          ? 1
+          : 0;
+      const s = LOSS_CARRYFORWARD_SEMANTICS;
+      return {
+        stDollars: setInputs?.capitalLossCarryInSt ?? null,
+        ltDollars: setInputs?.capitalLossCarryInLt ?? null,
+        absentSt: absentInputs?.capitalLossCarryInSt ?? null,
+        absentLt: absentInputs?.capitalLossCarryInLt ?? null,
+        sameLifetimeFederal:
+          absent.lifetimeFederalTax === explicitZero.lifetimeFederalTax ? 1 : 0,
+        sameLifetimeState:
+          absent.lifetimeStateTax === explicitZero.lifetimeStateTax ? 1 : 0,
+        sameEndingWealth:
+          absent.endingAfterTaxWealth === explicitZero.endingAfterTaxWealth
+            ? 1
+            : 0,
+        sameYearTaxes,
+        semanticsStField: s.includes("capitalLossCarryInStCents") ? 1 : 0,
+        semanticsAllowance: s.includes("$3,000") ? 1 : 0,
+        semanticsCharacter: s.includes("character preserved") ? 1 : 0,
+        semanticsWa: s.includes("Washington") ? 1 : 0,
+        semanticsPlayground: s.includes("Playground") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "t5-salt-cap-law-rows",
+    kind: "tax",
+    note: "T5 (a) — THE SALT CAP IS DATED LAW-TABLE DATA (IRC §164(b)(6) as amended by §70120 of Public Law 119-21): the 2025 row carries the statute's 2025 figures — a $40,000 cap, a $500,000 phase-down start, a 30% phase-down rate, a $10,000 floor — and the 2026 row carries the statute's 1% escalation for 2026 ($40,400 cap, $505,000 start; floor and rate unchanged). The caps DIFFER by table year: no single hard-coded figure prices both years.",
+    expected: {
+      cap2025: 40000,
+      floor2025: 10000,
+      start2025: 500000,
+      rate2025: 30,
+      cap2026: 40400,
+      floor2026: 10000,
+      start2026: 505000,
+      rate2026: 30,
+      capsDiffer: 1,
+    },
+    actual: () => {
+      const y25 = lawForYear(2025);
+      const y26 = lawForYear(2026);
+      return {
+        cap2025: y25.saltCap,
+        floor2025: y25.saltCapFloor,
+        start2025: y25.saltPhaseOutStart,
+        rate2025: y25.saltPhaseOutRatePct,
+        cap2026: y26.saltCap,
+        floor2026: y26.saltCapFloor,
+        start2026: y26.saltPhaseOutStart,
+        rate2026: y26.saltPhaseOutRatePct,
+        capsDiffer: y25.saltCap !== y26.saltCap ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "t5-itemized-above-standard-wins",
+    kind: "tax",
+    note: "T5 (b) — ITEMIZED ABOVE THE STANDARD DEDUCTION WINS (hand-derived; §63 greater-of, 2026 MFJ): $200,000 of other ordinary income; itemized components mortgage interest $20,000 + SALT paid $10,000 + charitable $5,000 + other $5,000. AGI $200,000 is under the $505,000 phase-down start, so the SALT cap is the full $40,400 and the whole $10,000 of SALT is allowed; the itemized total is $40,000 against a $32,200 standard deduction (ages 60/49 — no 65+ add-ons, no senior deduction), so the year deducts $40,000. Taxable income $160,000; ordinary tax $2,480 + $9,120 + 22% × $59,200 = $24,624.",
+    expected: {
+      saltAllowed: 10000,
+      saltCap: 40400,
+      itemizedDeduction: 40000,
+      deductionTaken: "itemized",
+      deductions: 40000,
+      taxableIncome: 160000,
+      federalTax: 24624,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 200000,
+          itemizedMortgageInterest: 20000,
+          itemizedSaltPaid: 10000,
+          itemizedCharitable: 5000,
+          itemizedOther: 5000,
+        }),
+      );
+      return {
+        saltAllowed: r.itemizedSaltAllowed,
+        saltCap: r.itemizedSaltCap,
+        itemizedDeduction: r.itemizedDeduction,
+        deductionTaken: r.deductionTaken,
+        deductions: r.deductions,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t5-itemized-below-standard-loses",
+    kind: "tax",
+    note: "T5 (c) — ITEMIZED BELOW THE STANDARD DEDUCTION LOSES (hand-derived; 2026 MFJ): the same $200,000 year with smaller components — mortgage $8,000 + SALT $6,000 + charitable $3,000 + other $3,000 = $20,000 of itemized against the $32,200 standard deduction. The standard side wins; the capped itemized total is still surfaced ($20,000) so the year shows what it gave up. Taxable income $167,800; ordinary tax $2,480 + $9,120 + 22% × $67,000 = $26,340.",
+    expected: {
+      itemizedDeduction: 20000,
+      deductionTaken: "standard",
+      deductions: 32200,
+      taxableIncome: 167800,
+      federalTax: 26340,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 200000,
+          itemizedMortgageInterest: 8000,
+          itemizedSaltPaid: 6000,
+          itemizedCharitable: 3000,
+          itemizedOther: 3000,
+        }),
+      );
+      return {
+        itemizedDeduction: r.itemizedDeduction,
+        deductionTaken: r.deductionTaken,
+        deductions: r.deductions,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t5-salt-cap-binds-by-year",
+    kind: "tax",
+    note: "T5 (d) — THE SALT CAP BINDS, AT EACH YEAR'S OWN FIGURE (hand-derived; §164(b)(6) as amended): $60,000 of SALT paid and nothing else itemized, on $200,000 of other ordinary income. 2026: the cap is $40,400, so $40,400 is allowed; the itemized total $40,400 beats the $32,200 standard deduction; taxable $159,600; tax $2,480 + $9,120 + 22% × $58,800 = $24,536. 2025 (the year's own row): the cap is $40,000, so $40,000 is allowed; the itemized total beats the $31,500 standard deduction; taxable $160,000; tax on the 2025 brackets $2,385 + $8,772 + 22% × $63,050 = $25,028. Same entered SALT, different allowed amounts — the cap is the priced year's table data, not one figure.",
+    expected: {
+      allowed2026: 40400,
+      cap2026: 40400,
+      taken2026: "itemized",
+      tax2026: 24536,
+      allowed2025: 40000,
+      cap2025: 40000,
+      taken2025: "itemized",
+      tax2025: 25028,
+    },
+    actual: () => {
+      const y26 = priceYear(
+        basePrice({ otherOrdinary: 200000, itemizedSaltPaid: 60000 }),
+      );
+      const y25 = priceYear(
+        basePrice({
+          calendarYear: 2025,
+          otherOrdinary: 200000,
+          itemizedSaltPaid: 60000,
+        }),
+      );
+      return {
+        allowed2026: y26.itemizedSaltAllowed,
+        cap2026: y26.itemizedSaltCap,
+        taken2026: y26.deductionTaken,
+        tax2026: y26.federalTax,
+        allowed2025: y25.itemizedSaltAllowed,
+        cap2025: y25.itemizedSaltCap,
+        taken2025: y25.deductionTaken,
+        tax2025: y25.federalTax,
+      };
+    },
+  },
+  {
+    id: "t5-salt-cap-phase-down-and-floor",
+    kind: "tax",
+    note: "T5 (e) — THE CAP PHASES DOWN AND STOPS AT THE FLOOR (hand-derived; §164(b)(6)(B) as amended: the cap is reduced by 30% of modified AGI over the start, never below $10,000; modified AGI here is AGI — the statute's add-backs are foreign-income exclusions the engine does not model). Mid phase-down (2026, AGI $600,000): 30% × ($600,000 − $505,000) = $28,500, so the cap is $40,400 − $28,500 = $11,900 and $60,000 of SALT paid allows $11,900. At the floor (2026, AGI $610,050): 30% × $105,050 = $31,515 would take the cap to $8,885, so the $10,000 floor binds and $10,000 is allowed; the $10,000 itemized total loses to the $32,200 standard deduction; taxable income $577,850; tax $2,480 + $9,120 + $24,332 + $46,116 + $34,848 + 35% × $65,400 = $139,786.",
+    expected: {
+      midCap: 11900,
+      midAllowed: 11900,
+      floorCap: 10000,
+      floorAllowed: 10000,
+      floorTaken: "standard",
+      floorDeductions: 32200,
+      floorTaxable: 577850,
+      floorTax: 139786,
+    },
+    actual: () => {
+      const mid = priceYear(
+        basePrice({ otherOrdinary: 600000, itemizedSaltPaid: 60000 }),
+      );
+      const floor = priceYear(
+        basePrice({ otherOrdinary: 610050, itemizedSaltPaid: 60000 }),
+      );
+      return {
+        midCap: mid.itemizedSaltCap,
+        midAllowed: mid.itemizedSaltAllowed,
+        floorCap: floor.itemizedSaltCap,
+        floorAllowed: floor.itemizedSaltAllowed,
+        floorTaken: floor.deductionTaken,
+        floorDeductions: floor.deductions,
+        floorTaxable: floor.taxableIncome,
+        floorTax: floor.federalTax,
+      };
+    },
+  },
+  {
+    id: "t5-age65-addon-on-standard-side",
+    kind: "tax",
+    note: "T5 (f) — THE 65+ ADDITIONAL AMOUNT APPLIES ON THE STANDARD SIDE OF THE COMPARISON (hand-derived; §63(f) add-ons belong to the standard deduction, §224 senior deduction stacks on top of the winner): (1) MFJ 2026, ages 66/49 — one person 65+, so the standard side is $32,200 + $1,650 = $33,850. Itemized mortgage interest of $33,000 would beat the bare $32,200 base but loses to $33,850 BECAUSE of the add-on: the standard side wins. The senior deduction (primary 66, MAGI $200,000) is $6,000 − 6% × $50,000 = $3,000 and still applies on top, so deductions are $36,850, taxable income $163,150, tax $2,480 + $9,120 + 22% × $62,350 = $25,317. (2) Both spouses 66, $140,000 of income, $40,000 of other itemized: the standard side is $35,500, the itemized total wins, and the full $12,000 senior deduction (MAGI under $150,000, both 65+) stacks on top of the ITEMIZED side — deductions $52,000, taxable $88,000, tax $2,480 + 12% × $63,200 = $10,064. §224 is allowed whether or not the filer itemizes; it is never part of either side of the comparison.",
+    expected: {
+      standardWithAddon: 33850,
+      addonTotal: 1650,
+      count65: 1,
+      itemizedEntered: 33000,
+      takenWithAddon: "standard",
+      seniorWithStandard: 3000,
+      deductionsWithStandard: 36850,
+      taxWithStandard: 25317,
+      standardBoth65: 35500,
+      takenBoth65: "itemized",
+      seniorBoth65: 12000,
+      deductionsBoth65: 52000,
+      taxBoth65: 10064,
+    },
+    actual: () => {
+      const one = priceYear(
+        basePrice({
+          agePrimary: 66,
+          ageSpouse: 49,
+          otherOrdinary: 200000,
+          itemizedMortgageInterest: 33000,
+        }),
+      );
+      const both = priceYear(
+        basePrice({
+          agePrimary: 66,
+          ageSpouse: 66,
+          otherOrdinary: 140000,
+          itemizedOther: 40000,
+        }),
+      );
+      return {
+        standardWithAddon: one.standardDeduction,
+        addonTotal: one.age65AddonTotal,
+        count65: one.count65,
+        itemizedEntered: one.itemizedDeduction,
+        takenWithAddon: one.deductionTaken,
+        seniorWithStandard: one.seniorDeduction,
+        deductionsWithStandard: one.deductions,
+        taxWithStandard: one.federalTax,
+        standardBoth65: both.standardDeduction,
+        takenBoth65: both.deductionTaken,
+        seniorBoth65: both.seniorDeduction,
+        deductionsBoth65: both.deductions,
+        taxBoth65: both.federalTax,
+      };
+    },
+  },
+  {
+    id: "t5-charitable-flows-into-wa-base",
+    kind: "tax",
+    note: "T5 (g) — THE ONE CHARITABLE INPUT FLOWS INTO THE WASHINGTON BASE (hand-derived; RCW 82.87.080): a Washington year with $1,000,000 of long-term gains and the charitable component entered at $400,000 prices the SAME figure twice over, from the one input: federally it is the whole itemized total ($400,000 beats the $32,200 standard deduction; taxable income $600,000; gains tax 15% × ($600,000 − $98,900) = $75,165; NIIT 3.8% × $750,000 = $28,500; federal tax $103,665), and in the Washington base it deducts min($111,000, $400,000 − $278,000) = $111,000, leaving $611,000 of taxable Washington gains at 7% = $42,770 of state tax. No second charitable figure exists anywhere in the pricing.",
+    expected: {
+      itemizedDeduction: 400000,
+      deductionTaken: "itemized",
+      deductions: 400000,
+      federalTax: 103665,
+      waCharitableDeduction: 111000,
+      waTaxableGains: 611000,
+      stateTax: 42770,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          ltcg: 1000000,
+          residenceState: "WA",
+          itemizedCharitable: 400000,
+        }),
+      );
+      return {
+        itemizedDeduction: r.itemizedDeduction,
+        deductionTaken: r.deductionTaken,
+        deductions: r.deductions,
+        federalTax: r.federalTax,
+        waCharitableDeduction: r.waCharitableDeduction,
+        waTaxableGains: r.waTaxableGains,
+        stateTax: r.stateTax,
+      };
+    },
+  },
+  {
+    id: "t5-plan-input-plumbing-and-anchor",
+    kind: "tax",
+    note: "T5 (h) — SAVED-INPUT PLUMBING + NO-MOVE ANCHOR: the saved shape's four itemized cents fields convert through planInputsFromSaved (the one conversion every pricing path flows through) to engine dollars ($20,000 / $10,000 / $5,000 / $2,500 from 2000000 / 1000000 / 500000 / 250000 cents), component by component — never one lump — and a record without the keys converts to $0 on all four. On a plan with real conversions, draws, and taxes (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65), an explicit $0 on all four components prices BIT-IDENTICALLY to the absent set — same lifetime federal and state tax, same ending wealth, same per-year taxes — which is the anchor every pre-T5 plan (including the saved production record, which has none) relies on. The contract's itemizedDeductionSemantics names the four fields, the greater-of rule, the cap as dated table data, and the one charitable input.",
+    expected: {
+      mortgageDollars: 20000,
+      saltDollars: 10000,
+      charitableDollars: 5000,
+      otherDollars: 2500,
+      absentMortgage: 0,
+      absentSalt: 0,
+      absentCharitable: 0,
+      absentOther: 0,
+      sameLifetimeFederal: 1,
+      sameLifetimeState: 1,
+      sameEndingWealth: 1,
+      sameYearTaxes: 1,
+      semanticsSaltField: 1,
+      semanticsGreaterOf: 1,
+      semanticsDatedCap: 1,
+      semanticsOneCharitable: 1,
+    },
+    actual: () => {
+      const savedLike = (withItemized: boolean): RothSavedLike => ({
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 0,
+        rothCents: 0,
+        taxableCents: 0,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 57,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: 0,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: 0,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+        ...(withItemized
+          ? {
+              itemizedMortgageInterestCents: 2000000,
+              itemizedSaltPaidCents: 1000000,
+              itemizedCharitableCents: 500000,
+              itemizedOtherCents: 250000,
+            }
+          : {}),
+      });
+      const setInputs = planInputsFromSaved(savedLike(true), 2026);
+      const absentInputs = planInputsFromSaved(savedLike(false), 2026);
+      const shape = {
+        pretaxStart: 500000,
+        taxableStart: 500000,
+        taxableBasisPct: 50,
+        annualSpending: 50000,
+        retirementAge: 57,
+        endAgePrimary: 65,
+      };
+      const absent = simulateRothPlan(basePlan(shape), FILL_12);
+      const explicitZero = simulateRothPlan(
+        basePlan({
+          ...shape,
+          itemizedMortgageInterest: 0,
+          itemizedSaltPaid: 0,
+          itemizedCharitable: 0,
+          itemizedOther: 0,
+        }),
+        FILL_12,
+      );
+      const sameYearTaxes =
+        absent.years.length === explicitZero.years.length &&
+        absent.years.every(
+          (y, i) =>
+            y.federalTax === explicitZero.years[i]?.federalTax &&
+            y.stateTax === explicitZero.years[i]?.stateTax,
+        )
+          ? 1
+          : 0;
+      const s = ITEMIZED_DEDUCTION_SEMANTICS;
+      return {
+        mortgageDollars: setInputs?.itemizedMortgageInterest ?? null,
+        saltDollars: setInputs?.itemizedSaltPaid ?? null,
+        charitableDollars: setInputs?.itemizedCharitable ?? null,
+        otherDollars: setInputs?.itemizedOther ?? null,
+        absentMortgage: absentInputs?.itemizedMortgageInterest ?? null,
+        absentSalt: absentInputs?.itemizedSaltPaid ?? null,
+        absentCharitable: absentInputs?.itemizedCharitable ?? null,
+        absentOther: absentInputs?.itemizedOther ?? null,
+        sameLifetimeFederal:
+          absent.lifetimeFederalTax === explicitZero.lifetimeFederalTax ? 1 : 0,
+        sameLifetimeState:
+          absent.lifetimeStateTax === explicitZero.lifetimeStateTax ? 1 : 0,
+        sameEndingWealth:
+          absent.endingAfterTaxWealth === explicitZero.endingAfterTaxWealth
+            ? 1
+            : 0,
+        sameYearTaxes,
+        semanticsSaltField: s.includes("itemizedSaltPaidCents") ? 1 : 0,
+        semanticsGreaterOf: s.includes("GREATER") ? 1 : 0,
+        semanticsDatedCap: s.includes("dated law-table data") ? 1 : 0,
+        semanticsOneCharitable: s.includes("ONE charitable input") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "t5-playground-parity",
+    kind: "tax",
+    note: "T5 (i) — THE PLAYGROUND PRICES THE SAME INPUTS IDENTICALLY (hand-derived figures from T5 (b)): the single-year Playground shares the year pricer, so the T5 (b) shape typed as Playground dials (2026 MFJ, ages 60/49, $200,000 other ordinary, components $20,000 / $10,000 / $5,000 / $5,000) returns the same itemized total ($40,000), the same SALT allowed ($10,000), the same winner (itemized), the same deductions ($40,000) and the same federal tax ($24,624) as priceYear — and equals priceYear's own figures field for field. The API contract path carries the components too: playgroundYearIn accepts the four dials and playgroundInputsFromArgs hands them to the pricer; a payload without them prices the standard side (deductionTaken 'standard'), exactly as before this build.",
+    expected: {
+      itemizedDeduction: 40000,
+      saltAllowed: 10000,
+      deductionTaken: "itemized",
+      deductions: 40000,
+      federalTax: 24624,
+      sameFederalAsPriceYear: 1,
+      sameDeductionsAsPriceYear: 1,
+      argsMortgage: 20000,
+      argsSalt: 10000,
+      argsCharitable: 5000,
+      argsOther: 5000,
+      absentTaken: "standard",
+    },
+    actual: () => {
+      const pg = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 200000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        itemizedMortgageInterest: 20000,
+        itemizedSaltPaid: 10000,
+        itemizedCharitable: 5000,
+        itemizedOther: 5000,
+      });
+      const py = priceYear(
+        basePrice({
+          otherOrdinary: 200000,
+          itemizedMortgageInterest: 20000,
+          itemizedSaltPaid: 10000,
+          itemizedCharitable: 5000,
+          itemizedOther: 5000,
+        }),
+      );
+      const args = playgroundInputsFromArgs(
+        playgroundYearIn.parse({
+          taxYear: 2026,
+          filingStatus: "mfj",
+          agePrimary: 60,
+          ageSpouse: 49,
+          onMedicarePrimary: false,
+          onMedicareSpouse: false,
+          interest: 0,
+          ordinaryDividends: 0,
+          otherOrdinary: 200000,
+          taxExemptInterest: 0,
+          ssPrimary: 0,
+          ssSpouse: 0,
+          conversion: 0,
+          stockSold: 0,
+          stockBasis: 0,
+          qualifiedDividends: 0,
+          pretaxBalance: null,
+          spouseSoleBeneficiary: true,
+          acaHouseholdSize: null,
+          acaBenchmarkAnnual: null,
+          stateRatePct: 0,
+          itemizedMortgageInterest: 20000,
+          itemizedSaltPaid: 10000,
+          itemizedCharitable: 5000,
+          itemizedOther: 5000,
+        }),
+      );
+      const absent = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 200000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        itemizedDeduction: pg.itemizedDeduction,
+        saltAllowed: pg.itemizedSaltAllowed,
+        deductionTaken: pg.deductionTaken,
+        deductions: pg.deductions,
+        federalTax: pg.federalTax,
+        sameFederalAsPriceYear: pg.federalTax === py.federalTax ? 1 : 0,
+        sameDeductionsAsPriceYear: pg.deductions === py.deductions ? 1 : 0,
+        argsMortgage: args.itemizedMortgageInterest ?? null,
+        argsSalt: args.itemizedSaltPaid ?? null,
+        argsCharitable: args.itemizedCharitable ?? null,
+        argsOther: args.itemizedOther ?? null,
+        absentTaken: absent.deductionTaken,
+      };
+    },
+  },
+  {
+    id: "t6-aotc-max-single-student",
+    kind: "tax",
+    note: "T6 (a) — AOTC AT THE PER-STUDENT MAXIMUM (hand-derived; IRC §25A(b), Form 8863): 2026 MFJ, $100,000 of other ordinary income, ONE AOTC-eligible student with $10,000 of qualified expenses. The credit prices per student: 100% of the first $2,000 + 25% of the next $2,000 = $2,500 — the statutory maximum, reached at $4,000 of expenses, so the extra $6,000 adds nothing. Tax before credits: taxable income $100,000 − $32,200 = $67,800; tax $2,480 + 12% × $43,000 = $7,640. Split: 40% refundable = $1,000 (reported separately, NOT in the tax); nonrefundable $1,500 applied in full → federal tax $7,640 − $1,500 = $6,140. Choice 'aotc'.",
+    expected: {
+      aotc: 2500,
+      llc: 0,
+      choice: "aotc",
+      nonrefundable: 1500,
+      refundable: 1000,
+      federalTax: 6140,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          educationStudents: [{ expenses: 10000, aotcEligible: true }],
+        }),
+      );
+      return {
+        aotc: r.educationAotc,
+        llc: r.educationLlc,
+        choice: r.educationChoice,
+        nonrefundable: r.educationNonrefundable,
+        refundable: r.educationRefundable,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t6-aotc-two-students-stack",
+    kind: "tax",
+    note: "T6 (b) — TWO STUDENTS STACK PER STUDENT (hand-derived; §25A(b)): the T6 (a) year with TWO AOTC-eligible students at $4,000 of expenses each prices $2,500 + $2,500 = $5,000 of AOTC — the per-student cap applies to each student, never once per return (a per-return cap would price $2,500). Refundable 40% = $2,000; nonrefundable $3,000 applied against the same $7,640 of tax → federal tax $4,640.",
+    expected: {
+      aotc: 5000,
+      choice: "aotc",
+      nonrefundable: 3000,
+      refundable: 2000,
+      federalTax: 4640,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          educationStudents: [
+            { expenses: 4000, aotcEligible: true },
+            { expenses: 4000, aotcEligible: true },
+          ],
+        }),
+      );
+      return {
+        aotc: r.educationAotc,
+        choice: r.educationChoice,
+        nonrefundable: r.educationNonrefundable,
+        refundable: r.educationRefundable,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t6-phase-out-partial-and-full",
+    kind: "tax",
+    note: "T6 (c) — THE §25A(d) MAGI PHASE-OUT, PARTIAL AND FULL (hand-derived): the MFJ range is $160,000–$180,000 of modified AGI (AGI here — the statute adds back only foreign-income exclusions). At AGI $170,000 the year is halfway through the range, so the $2,500 tentative AOTC (one eligible student, $4,000 of expenses) halves to $1,250: refundable $500, nonrefundable $750, tax before credits $19,740 (taxable $137,800: $11,600 + 22% × $37,000) → federal tax $18,990. At AGI $180,000 the credit is FULLY phased out — every credit figure $0, choice 'none', federal tax the uncredited $21,940 (taxable $147,800: $11,600 + 22% × $47,000).",
+    expected: {
+      partialAotc: 1250,
+      partialNonrefundable: 750,
+      partialRefundable: 500,
+      partialFederalTax: 18990,
+      fullAotc: 0,
+      fullRefundable: 0,
+      fullChoice: "none",
+      fullFederalTax: 21940,
+    },
+    actual: () => {
+      const partial = priceYear(
+        basePrice({
+          otherOrdinary: 170000,
+          educationStudents: [{ expenses: 4000, aotcEligible: true }],
+        }),
+      );
+      const full = priceYear(
+        basePrice({
+          otherOrdinary: 180000,
+          educationStudents: [{ expenses: 4000, aotcEligible: true }],
+        }),
+      );
+      return {
+        partialAotc: partial.educationAotc,
+        partialNonrefundable: partial.educationNonrefundable,
+        partialRefundable: partial.educationRefundable,
+        partialFederalTax: partial.federalTax,
+        fullAotc: full.educationAotc,
+        fullRefundable: full.educationRefundable,
+        fullChoice: full.educationChoice,
+        fullFederalTax: full.federalTax,
+      };
+    },
+  },
+  {
+    id: "t6-refundable-low-liability",
+    kind: "tax",
+    note: "T6 (d) — THE REFUNDABLE PORTION SURVIVES A $0-LIABILITY YEAR (hand-derived; §25A(i)): 2026 MFJ, $20,000 of other ordinary income — under the $32,200 standard deduction, so taxable income and tax before credits are both $0 — with one eligible student at $4,000 of expenses. The tentative AOTC is still $2,500 and its 40% refundable portion is still $1,000, reported in full: the nonrefundable $1,500 has no tax to absorb it (applied $0), the federal tax floors at $0, and the $1,000 is NOT dropped by the floor and NOT netted into the tax — it rides the year output for the plan score to credit. A build that netted credits into a floored tax would report $0 here.",
+    expected: {
+      aotc: 2500,
+      choice: "aotc",
+      nonrefundableApplied: 0,
+      refundable: 1000,
+      federalTax: 0,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 20000,
+          educationStudents: [{ expenses: 4000, aotcEligible: true }],
+        }),
+      );
+      return {
+        aotc: r.educationAotc,
+        choice: r.educationChoice,
+        nonrefundableApplied: r.educationNonrefundable,
+        refundable: r.educationRefundable,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t6-llc-coordination-no-double-count",
+    kind: "tax",
+    note: "T6 (e) — LLC COORDINATION, NO DOUBLE-COUNTED EXPENSES (hand-derived; §25A(c),(g)): 2026 MFJ, $100,000 of other ordinary income, one AOTC-eligible student with $4,000 of expenses and one non-eligible student with $3,000. The eligible student's $4,000 prices the AOTC ($2,500) and is EXCLUDED from the LLC pool; the LLC prices on the other student's $3,000 alone: 20% × $3,000 = $600. (Double-counting the eligible student's expenses into the pool would give 20% × $7,000 = $1,400.) Nonrefundable applied = $1,500 (AOTC remainder) + $600 = $2,100; refundable $1,000; federal tax $7,640 − $2,100 = $5,540; choice 'aotc' — the AOTC allocation's benefit ($3,100) beats the LLC-only allocation (20% × $7,000 = $1,400).",
+    expected: {
+      aotc: 2500,
+      llc: 600,
+      choice: "aotc",
+      nonrefundable: 2100,
+      refundable: 1000,
+      federalTax: 5540,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          educationStudents: [
+            { expenses: 4000, aotcEligible: true },
+            { expenses: 3000, aotcEligible: false },
+          ],
+        }),
+      );
+      return {
+        aotc: r.educationAotc,
+        llc: r.educationLlc,
+        choice: r.educationChoice,
+        nonrefundable: r.educationNonrefundable,
+        refundable: r.educationRefundable,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t6-llc-choice-per-return-cap",
+    kind: "tax",
+    note: "T6 (f) — THE LLC-ONLY CHOICE AND ITS PER-RETURN CAP (hand-derived; §25A(c)): 2026 MFJ, $100,000 of other ordinary income, TWO students NOT marked AOTC-eligible with $6,000 of expenses each. No AOTC can price; the LLC pool is $12,000 but the cap is $10,000 PER RETURN: LLC = 20% × $10,000 = $2,000 (a per-student cap would give $2,400). All of it is nonrefundable (the LLC has no refundable portion): applied $2,000, refundable $0, federal tax $7,640 − $2,000 = $5,640, choice 'llc'.",
+    expected: {
+      aotc: 0,
+      llc: 2000,
+      choice: "llc",
+      nonrefundable: 2000,
+      refundable: 0,
+      federalTax: 5640,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          educationStudents: [
+            { expenses: 6000, aotcEligible: false },
+            { expenses: 6000, aotcEligible: false },
+          ],
+        }),
+      );
+      return {
+        aotc: r.educationAotc,
+        llc: r.educationLlc,
+        choice: r.educationChoice,
+        nonrefundable: r.educationNonrefundable,
+        refundable: r.educationRefundable,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t6-plan-year-credit-component-only",
+    kind: "tax",
+    note: "T6 (g) — A PLAN YEAR WHERE AN ENTERED EXPENSE CHANGES ONLY THE CREDIT COMPONENT (hand-derived): a one-year plan (2026, ages 60/49, $60,000 of other ordinary income, no balances, no spending, Do Nothing, ACA benchmark couple $24,000, household 2). Without any entry the year's tax is $2,840 (taxable $27,800: $2,480 + 12% × $3,000) and the ACA credit prices on MAGI $60,000 (under the $84,600 cliff). Adding ONE 2026 entry — an eligible student, $4,000 of expenses — moves NOTHING but the credit component: MAGI and the kept ACA credit are identical, the federal tax falls by exactly the $1,500 nonrefundable portion to $1,340, the year's refundable portion is $1,000 (lifetimeEducationRefundable $1,000), and the plan's net cost falls by exactly $2,500 — the $1,500 inside the tax plus the $1,000 the score identity credits beside the ACA credit (netCostBreakdown's educationRefundable). Credits never touch MAGI, balances, or the ACA price.",
+    expected: {
+      taxWithout: 2840,
+      taxWith: 1340,
+      yearRefundable: 1000,
+      lifetimeRefundable: 1000,
+      detailAotc: 2500,
+      detailNonrefundable: 1500,
+      acaPositive: 1,
+      acaIdentical: 1,
+      netCostDelta: -2500,
+      scoreEducationRefundable: 1000,
+    },
+    actual: () => {
+      const shape = {
+        birthYearPrimary: 1966,
+        birthYearSpouse: 1977,
+        endAgePrimary: 60,
+        retirementAge: 60,
+        pretaxStart: 0,
+        taxableStart: 0,
+        annualSpending: 0,
+        otherOrdinaryAnnual: 60000,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 24000,
+      };
+      const without = simulateRothPlan(basePlan(shape), DO_NOTHING);
+      const withEntry = simulateRothPlan(
+        basePlan({
+          ...shape,
+          educationStudents: [
+            { year: 2026, expenses: 4000, aotcEligible: true },
+          ],
+        }),
+        DO_NOTHING,
+      );
+      const yWithout = without.years[0];
+      const yWith = withEntry.years[0];
+      const costWithout = netCostBreakdown(without, 22);
+      const costWith = netCostBreakdown(withEntry, 22);
+      return {
+        taxWithout: yWithout?.federalTax ?? null,
+        taxWith: yWith?.federalTax ?? null,
+        yearRefundable: yWith?.educationRefundable ?? null,
+        lifetimeRefundable: withEntry.lifetimeEducationRefundable,
+        detailAotc: yWith?.detail.educationAotc ?? null,
+        detailNonrefundable: yWith?.detail.educationNonrefundable ?? null,
+        acaPositive: (yWith?.acaCreditKept ?? 0) > 0 ? 1 : 0,
+        acaIdentical:
+          yWith?.acaCreditKept === yWithout?.acaCreditKept ? 1 : 0,
+        netCostDelta: Math.round((costWith.netCost - costWithout.netCost) * 100) / 100,
+        scoreEducationRefundable: costWith.educationRefundable,
+      };
+    },
+  },
+  {
+    id: "t6-saved-plumbing-and-anchor",
+    kind: "tax",
+    note: "T6 (h) — SAVED-INPUT PLUMBING + NO-MOVE ANCHOR: the saved shape's educationStudents list converts through planInputsFromSaved (the one conversion every pricing path flows through) entry by entry — {year 2026, expensesCents 400000, aotcEligible true} becomes {year 2026, expenses $4,000, aotcEligible true} — and a record without the key converts to null (no entries). On a plan with real conversions, draws, and taxes (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65), an explicit EMPTY list prices BIT-IDENTICALLY to no entries at all — same lifetime federal and state tax, same ending wealth, same per-year taxes, same $0 lifetime refundable credit — which is the anchor every pre-T6 plan (including the saved production record, which has no entries) relies on. The contract's educationCreditSemantics names the field, the per-student AOTC, the refundable share credited in the score, the §25A source, and the never-inferred rule.",
+    expected: {
+      entryYear: 2026,
+      entryExpenses: 4000,
+      entryEligible: 1,
+      absentIsNull: 1,
+      sameLifetimeFederal: 1,
+      sameLifetimeState: 1,
+      sameEndingWealth: 1,
+      sameYearTaxes: 1,
+      emptyLifetimeRefundable: 0,
+      semanticsField: 1,
+      semanticsPerStudent: 1,
+      semanticsRefundable: 1,
+      semanticsStatute: 1,
+      semanticsNeverInferred: 1,
+    },
+    actual: () => {
+      const savedLike = (withStudents: boolean): RothSavedLike => ({
+        birthYearPrimary: 1969,
+        birthYearSpouse: 1980,
+        filingStatus: "mfj",
+        pretaxCents: 0,
+        rothCents: 0,
+        taxableCents: 0,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 57,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: 0,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnualCents: 0,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+        ...(withStudents
+          ? {
+              educationStudents: [
+                { year: 2026, expensesCents: 400000, aotcEligible: true },
+              ],
+            }
+          : {}),
+      });
+      const setInputs = planInputsFromSaved(savedLike(true), 2026);
+      const absentInputs = planInputsFromSaved(savedLike(false), 2026);
+      const entry = setInputs?.educationStudents?.[0];
+      const shape = {
+        pretaxStart: 500000,
+        taxableStart: 500000,
+        taxableBasisPct: 50,
+        annualSpending: 50000,
+        retirementAge: 57,
+        endAgePrimary: 65,
+      };
+      const absent = simulateRothPlan(basePlan(shape), FILL_12);
+      const explicitEmpty = simulateRothPlan(
+        basePlan({ ...shape, educationStudents: [] }),
+        FILL_12,
+      );
+      const sameYearTaxes =
+        absent.years.length === explicitEmpty.years.length &&
+        absent.years.every(
+          (y, i) =>
+            y.federalTax === explicitEmpty.years[i]?.federalTax &&
+            y.stateTax === explicitEmpty.years[i]?.stateTax,
+        )
+          ? 1
+          : 0;
+      const s = EDUCATION_CREDIT_SEMANTICS;
+      return {
+        entryYear: entry?.year ?? null,
+        entryExpenses: entry?.expenses ?? null,
+        entryEligible: entry?.aotcEligible === true ? 1 : 0,
+        absentIsNull: absentInputs?.educationStudents == null ? 1 : 0,
+        sameLifetimeFederal:
+          absent.lifetimeFederalTax === explicitEmpty.lifetimeFederalTax ? 1 : 0,
+        sameLifetimeState:
+          absent.lifetimeStateTax === explicitEmpty.lifetimeStateTax ? 1 : 0,
+        sameEndingWealth:
+          absent.endingAfterTaxWealth === explicitEmpty.endingAfterTaxWealth
+            ? 1
+            : 0,
+        sameYearTaxes,
+        emptyLifetimeRefundable: explicitEmpty.lifetimeEducationRefundable,
+        semanticsField: s.includes("educationStudents") ? 1 : 0,
+        semanticsPerStudent: s.includes("PER STUDENT") ? 1 : 0,
+        semanticsRefundable: s.includes("refundable") ? 1 : 0,
+        semanticsStatute: s.includes("§25A") ? 1 : 0,
+        semanticsNeverInferred: s.includes("never inferred") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "t6-playground-parity",
+    kind: "tax",
+    note: "T6 (i) — THE PLAYGROUND PRICES THE SAME STUDENTS IDENTICALLY (the T6 (a) shape as Playground dials): the single-year Playground shares the year pricer, so 2026 MFJ, ages 60/49, $100,000 other ordinary, one eligible student with $10,000 of expenses returns the same AOTC ($2,500), LLC ($0), choice ('aotc'), nonrefundable applied ($1,500), refundable ($1,000) and federal tax ($6,140) as priceYear — field for field. The API contract path carries the students too: playgroundYearIn accepts the list and playgroundInputsFromArgs hands it to the pricer; a payload without students prices choice 'none' and the uncredited $7,640, exactly as before this build.",
+    expected: {
+      aotc: 2500,
+      llc: 0,
+      choice: "aotc",
+      nonrefundable: 1500,
+      refundable: 1000,
+      federalTax: 6140,
+      sameFederalAsPriceYear: 1,
+      sameAotcAsPriceYear: 1,
+      argsExpenses: 10000,
+      argsEligible: 1,
+      absentChoice: "none",
+      absentFederalTax: 7640,
+    },
+    actual: () => {
+      const pgBase = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 100000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const pg = pricePlaygroundYear({
+        ...pgBase,
+        educationStudents: [{ expenses: 10000, aotcEligible: true }],
+      });
+      const py = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          educationStudents: [{ expenses: 10000, aotcEligible: true }],
+        }),
+      );
+      const args = playgroundInputsFromArgs(
+        playgroundYearIn.parse({
+          ...pgBase,
+          educationStudents: [{ expenses: 10000, aotcEligible: true }],
+        }),
+      );
+      const absent = pricePlaygroundYear(pgBase);
+      return {
+        aotc: pg.educationAotc,
+        llc: pg.educationLlc,
+        choice: pg.educationChoice,
+        nonrefundable: pg.educationNonrefundable,
+        refundable: pg.educationRefundable,
+        federalTax: pg.federalTax,
+        sameFederalAsPriceYear: pg.federalTax === py.federalTax ? 1 : 0,
+        sameAotcAsPriceYear: pg.educationAotc === py.educationAotc ? 1 : 0,
+        argsExpenses: args.educationStudents?.[0]?.expenses ?? null,
+        argsEligible: args.educationStudents?.[0]?.aotcEligible === true ? 1 : 0,
+        absentChoice: absent.educationChoice,
+        absentFederalTax: absent.federalTax,
+      };
+    },
+  },
+  {
+    id: "t7-amt-owing-itemized-salt",
+    kind: "tax",
+    note: "T7 (a) — AN AMT-OWING YEAR (hand-derived; IRC §55, Form 6251, Rev. Proc. 2025-32): 2026 MFJ, $1,400,000 of long-term gains and no ordinary income, itemizing mortgage interest $30,000 + SALT paid $40,400 + charitable $5,000. At AGI $1,400,000 the §164(b)(6) cap phases down to its $10,000 floor (cap $40,400 − 30% × $895,000, floored), so SALT allowed is $10,000 and the itemized total $45,000 beats the $32,200 standard. Regular tax: taxable income $1,355,000, all gains — $98,900 at 0%, $514,800 at 15%, $741,300 at 20% = $225,480, plus NIIT $43,700 (3.8% × ($1,400,000 − $250,000)). AMT: AMTI = $1,355,000 + the $10,000 SALT actually taken added back (§56(b)(1)) = $1,365,000; the exemption is FULLY phased out ($140,200 − 50% × ($1,365,000 − $1,000,000) < 0 → $0), so the taxable excess is $1,365,000: the $10,000 added-back SALT is ordinary excess at 26% = $2,600, and the $1,355,000 preferential part stacks on it — $88,900 at 0%, $514,800 at 15%, $751,300 at 20% = $227,480 — for a tentative minimum tax of $230,080. AMT owed = $230,080 − $225,480 = $4,600 (the NIIT is not part of the comparison), inside a federal tax of $225,480 + $43,700 + $4,600 = $273,780.",
+    expected: {
+      deductionTaken: "itemized",
+      saltAllowed: 10000,
+      saltCap: 10000,
+      ltcgTax: 225480,
+      amti: 1365000,
+      amtExemption: 0,
+      amtTentativeTax: 230080,
+      amtOwed: 4600,
+      federalTax: 273780,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 0,
+          ltcg: 1400000,
+          itemizedMortgageInterest: 30000,
+          itemizedSaltPaid: 40400,
+          itemizedCharitable: 5000,
+        }),
+      );
+      return {
+        deductionTaken: r.deductionTaken,
+        saltAllowed: r.itemizedSaltAllowed,
+        saltCap: r.itemizedSaltCap,
+        ltcgTax: r.ltcgTax,
+        amti: r.amti,
+        amtExemption: r.amtExemption,
+        amtTentativeTax: r.amtTentativeTax,
+        amtOwed: r.amtOwed,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t7-amt-exemption-phase-out",
+    kind: "tax",
+    note: "T7 (b) — THE §55(d) EXEMPTION PHASE-OUT, BOTH DATED RATES (hand-derived): 2026 MFJ, $1,100,000 of other ordinary income, standard deduction. AMTI = taxable income $1,067,800 + the $32,200 standard deduction added back = $1,100,000. The 2026 phase-out (OBBBA §70107: from $1,000,000 at 50%) leaves an exemption of $140,200 − 50% × $100,000 = $90,200; the taxable excess is $1,009,800, all ordinary: 26% × $244,500 + 28% × $765,300 = $63,570 + $214,284 = $277,854 of tentative tax — below the regular tax of $317,250.50 (taxable $1,067,800 through the 2026 brackets), so AMT owed is $0 and the federal tax is the regular tax alone. The same income in 2025 prices under the OLD phase-out (from $1,252,700 at 25%): AMTI $1,100,000 is below the start, so the exemption is the full $137,000 and the tentative tax is 26% × $239,100 + 28% × $723,900 = $264,858. At $1,400,000 of 2025 income the partial phase-out leaves $137,000 − 25% × $147,300 = $100,175 — the dated rate change is table data, not engine code.",
+    expected: {
+      amti26: 1100000,
+      exemption26: 90200,
+      tentative26: 277854,
+      owed26: 0,
+      federal26: 317250.5,
+      exemption25: 137000,
+      tentative25: 264858,
+      owed25: 0,
+      exemption25High: 100175,
+    },
+    actual: () => {
+      const r26 = priceYear(basePrice({ otherOrdinary: 1100000 }));
+      const r25 = priceYear(
+        basePrice({ calendarYear: 2025, otherOrdinary: 1100000 }),
+      );
+      const r25High = priceYear(
+        basePrice({ calendarYear: 2025, otherOrdinary: 1400000 }),
+      );
+      return {
+        amti26: r26.amti,
+        exemption26: r26.amtExemption,
+        tentative26: r26.amtTentativeTax,
+        owed26: r26.amtOwed,
+        federal26: r26.federalTax,
+        exemption25: r25.amtExemption,
+        tentative25: r25.amtTentativeTax,
+        owed25: r25.amtOwed,
+        exemption25High: r25High.amtExemption,
+      };
+    },
+  },
+  {
+    id: "t7-amt-preferential-rates-preserved",
+    kind: "tax",
+    note: "T7 (c) — PREFERENTIAL RATES PRESERVED INSIDE THE TENTATIVE TAX (hand-derived; §55(b)(3) capital-gain worksheet treatment): 2026 MFJ, $100,000 of other ordinary income plus $300,000 of long-term gains, standard deduction. Regular tax: taxable income $367,800 — ordinary part $67,800 taxed $7,640; gains $31,100 at 0% and $268,900 at 15% = $40,335; income tax $47,975, plus NIIT $5,700 (3.8% × ($400,000 − $250,000)) → federal tax $53,675. AMT: AMTI = $367,800 + $32,200 = $400,000; exemption $140,200 (below the phase-out start); taxable excess $259,800, ALL preferential (the ordinary excess is $0), so the worksheet staircase prices $98,900 at 0% and $160,900 at 15% = $24,135 of tentative tax. Had the gains been re-taxed at the flat AMT rates the tentative tax would be 26% × $244,500 + 28% × $15,300 = $67,854 and the year would owe $19,879 of AMT; with the preferential rates preserved it owes $0 — this case fails if the preservation is dropped.",
+    expected: {
+      ordinaryTax: 7640,
+      ltcgTax: 40335,
+      amti: 400000,
+      amtExemption: 140200,
+      amtTentativeTax: 24135,
+      amtOwed: 0,
+      federalTax: 53675,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({ otherOrdinary: 100000, ltcg: 300000 }),
+      );
+      return {
+        ordinaryTax: r.ordinaryTax,
+        ltcgTax: r.ltcgTax,
+        amti: r.amti,
+        amtExemption: r.amtExemption,
+        amtTentativeTax: r.amtTentativeTax,
+        amtOwed: r.amtOwed,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t7-amt-no-amt-anchor",
+    kind: "tax",
+    note: "T7 (d) — NO-AMT ANCHOR (hand-derived): the plain 2026 MFJ year with $100,000 of other ordinary income and the standard deduction (the T6 (a) shape without students). AMTI = taxable income $67,800 + the $32,200 standard deduction added back = $100,000 — under the $140,200 exemption, so the taxable excess and the tentative tax are both $0, AMT owed is $0, and the federal tax is the pre-T7 $7,640 to the cent: a year with no AMT exposure prices bit-identically.",
+    expected: {
+      amti: 100000,
+      amtExemption: 140200,
+      amtTentativeTax: 0,
+      amtOwed: 0,
+      federalTax: 7640,
+    },
+    actual: () => {
+      const r = priceYear(basePrice({ otherOrdinary: 100000 }));
+      return {
+        amti: r.amti,
+        amtExemption: r.amtExemption,
+        amtTentativeTax: r.amtTentativeTax,
+        amtOwed: r.amtOwed,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t7-amt-plan-march-fields",
+    kind: "tax",
+    note: "T7 (e) — THE PLAN MARCH CARRIES THE AMT POSITION EVERY YEAR (hand-derived from T7 (b)): a two-year plan (2026–2027, ages 57–58, $1,100,000 of other ordinary income, no balances, no spending, Do Nothing) prices the T7 (b) year twice — the 2027 year carries the 2026 law row forward, and with no investment income, no Social Security, and nobody 65+ nothing deflates — so each year carries AMTI $1,100,000, exemption $90,200, tentative tax $277,854, AMT owed $0 on its detail and its row, the lifetime AMT is $0, and the lifetime federal tax is 2 × $317,250.50 = $634,501. The AMT component rides the march inside the federal tax; no year needs an opt-in.",
+    expected: {
+      years: 2,
+      y1Amti: 1100000,
+      y1Exemption: 90200,
+      y1Tentative: 277854,
+      y1Owed: 0,
+      y2Owed: 0,
+      lifetimeAmt: 0,
+      lifetimeFederal: 634501,
+    },
+    actual: () => {
+      const plan = simulateRothPlan(
+        basePlan({ endAgePrimary: 58, otherOrdinaryAnnual: 1100000 }),
+        DO_NOTHING,
+      );
+      const y1 = plan.years[0];
+      const y2 = plan.years[1];
+      return {
+        years: plan.years.length,
+        y1Amti: y1?.detail.amti ?? null,
+        y1Exemption: y1?.detail.amtExemption ?? null,
+        y1Tentative: y1?.detail.amtTentativeTax ?? null,
+        y1Owed: y1?.amtOwed ?? null,
+        y2Owed: y2?.amtOwed ?? null,
+        lifetimeAmt: plan.lifetimeAmt,
+        lifetimeFederal: plan.lifetimeFederalTax,
+      };
+    },
+  },
+  {
+    id: "t7-amt-saved-shape-zero-every-year",
+    kind: "tax",
+    note: "T7 (f) — THE SAVED-PLAN SHAPE PRICES AMT $0 IN EVERY YEAR, PROVEN BY PRICING EVERY YEAR: the anchor plan family of T5 (h) / T6 (h) (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65 — nine priced years, 2026–2034, with real conversions, draws, and six-figure gains years in the march) is priced year by year: the maximum AMT owed across all nine years is $0 and the lifetime AMT is $0, so this build moves no figure on the saved plan's shape. (The production record itself was also priced year by year at build time through the app's own actions — see the build report.) The contract's amtSemantics names the core-scope add-backs, the dated §55 figures, the preferential preservation, the score treatment (inside totalTax, never counted twice), and the named limitations (ISO bargain element, private-activity bond interest, depreciation differences).",
+    expected: {
+      years: 9,
+      yearsWithAmtOwed: 0,
+      maxAmtOwed: 0,
+      lifetimeAmt: 0,
+      semanticsAddbacks: 1,
+      semanticsDated: 1,
+      semanticsPreferential: 1,
+      semanticsInsideTotalTax: 1,
+      semanticsLimitations: 1,
+    },
+    actual: () => {
+      const plan = simulateRothPlan(
+        basePlan({
+          pretaxStart: 500000,
+          taxableStart: 500000,
+          taxableBasisPct: 50,
+          annualSpending: 50000,
+          retirementAge: 57,
+          endAgePrimary: 65,
+        }),
+        FILL_12,
+      );
+      const s = AMT_SEMANTICS;
+      return {
+        years: plan.years.length,
+        yearsWithAmtOwed: plan.years.filter((y) => y.amtOwed > 0).length,
+        maxAmtOwed: Math.max(0, ...plan.years.map((y) => y.amtOwed)),
+        lifetimeAmt: plan.lifetimeAmt,
+        semanticsAddbacks: s.includes("adds back") ? 1 : 0,
+        semanticsDated: s.includes("Rev. Proc. 2025-32") ? 1 : 0,
+        semanticsPreferential: s.includes("preferential") ? 1 : 0,
+        semanticsInsideTotalTax: s.includes("inside totalTax") ? 1 : 0,
+        semanticsLimitations: s.includes("incentive-stock-option") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "t7-amt-playground-parity",
+    kind: "tax",
+    note: "T7 (g) — THE PLAYGROUND PRICES THE SAME AMT IDENTICALLY (the T7 (a) shape as Playground dials): the single-year Playground shares the year pricer, so 2026 MFJ, ages 60/49, a $1,400,000 stock sale at $0 basis, mortgage interest $30,000, SALT paid $40,400, charitable $5,000 returns the same AMTI ($1,365,000), exemption ($0), tentative tax ($230,080), AMT owed ($4,600) and federal tax ($273,780) as priceYear — field for field. A payload with no AMT exposure (the T7 (d) year) prices AMT owed $0 and the unadjusted $7,640 federal tax, exactly as before this build.",
+    expected: {
+      amti: 1365000,
+      amtExemption: 0,
+      amtTentativeTax: 230080,
+      amtOwed: 4600,
+      federalTax: 273780,
+      sameFederalAsPriceYear: 1,
+      sameOwedAsPriceYear: 1,
+      plainOwed: 0,
+      plainFederalTax: 7640,
+    },
+    actual: () => {
+      const pgBase = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 1400000,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const pg = pricePlaygroundYear({
+        ...pgBase,
+        itemizedMortgageInterest: 30000,
+        itemizedSaltPaid: 40400,
+        itemizedCharitable: 5000,
+      });
+      const py = priceYear(
+        basePrice({
+          otherOrdinary: 0,
+          ltcg: 1400000,
+          itemizedMortgageInterest: 30000,
+          itemizedSaltPaid: 40400,
+          itemizedCharitable: 5000,
+        }),
+      );
+      const plain = pricePlaygroundYear({
+        ...pgBase,
+        stockSold: 0,
+        otherOrdinary: 100000,
+      });
+      return {
+        amti: pg.amti,
+        amtExemption: pg.amtExemption,
+        amtTentativeTax: pg.amtTentativeTax,
+        amtOwed: pg.amtOwed,
+        federalTax: pg.federalTax,
+        sameFederalAsPriceYear: pg.federalTax === py.federalTax ? 1 : 0,
+        sameOwedAsPriceYear: pg.amtOwed === py.amtOwed ? 1 : 0,
+        plainOwed: plain.amtOwed,
+        plainFederalTax: plain.federalTax,
+      };
+    },
+  },
+  {
+    id: "t7-amt-law-rows",
+    kind: "tax",
+    note: "T7 (h) — THE §55 FIGURES ARE DATED LAW-ROW DATA (Rev. Proc. 2024-40 for 2025; Rev. Proc. 2025-32 for 2026, with the OBBBA §70107 phase-out reset): the 2025 row carries exemption $137,000 MFJ / $88,100 single, phase-out from $1,252,700 / $626,350 at 25%, breakpoint $239,100; the 2026 row carries $140,200 / $90,100, phase-out from $1,000,000 / $500,000 at 50%, breakpoint $244,500. Each row is internally consistent with the published complete-phase-out amounts (start + exemption ÷ rate: 2025 MFJ $1,252,700 + $548,000 = $1,800,700; 2026 MFJ $1,000,000 + $280,400 = $1,280,400). A year beyond the table (2031) prices under the 2026 row carried forward — the T1 mechanism, no engine change.",
+    expected: {
+      ex25Mfj: 137000,
+      ex25Single: 88100,
+      start25Mfj: 1252700,
+      rate25: 25,
+      bp25: 239100,
+      complete25Mfj: 1800700,
+      ex26Mfj: 140200,
+      ex26Single: 90100,
+      start26Mfj: 1000000,
+      start26Single: 500000,
+      rate26: 50,
+      bp26: 244500,
+      complete26Mfj: 1280400,
+      carriedExemption: 140200,
+      carriedRate: 50,
+    },
+    actual: () => {
+      const l25 = lawForYear(2025);
+      const l26 = lawForYear(2026);
+      const l31 = lawForYear(2031);
+      return {
+        ex25Mfj: l25.amtExemption.mfj,
+        ex25Single: l25.amtExemption.single,
+        start25Mfj: l25.amtPhaseOutStart.mfj,
+        rate25: l25.amtPhaseOutRatePct,
+        bp25: l25.amtBreakpoint,
+        complete25Mfj:
+          l25.amtPhaseOutStart.mfj +
+          l25.amtExemption.mfj / (l25.amtPhaseOutRatePct / 100),
+        ex26Mfj: l26.amtExemption.mfj,
+        ex26Single: l26.amtExemption.single,
+        start26Mfj: l26.amtPhaseOutStart.mfj,
+        start26Single: l26.amtPhaseOutStart.single,
+        rate26: l26.amtPhaseOutRatePct,
+        bp26: l26.amtBreakpoint,
+        complete26Mfj:
+          l26.amtPhaseOutStart.mfj +
+          l26.amtExemption.mfj / (l26.amtPhaseOutRatePct / 100),
+        carriedExemption: l31.amtExemption.mfj,
+        carriedRate: l31.amtPhaseOutRatePct,
+      };
+    },
+  },
 ];
 
 const DO_NOTHING: RothStrategy = { id: "none", name: "Do Nothing", ceilings: null };
@@ -15518,11 +18658,17 @@ const optTorpedoPlan = (): RothPlanInputs =>
   });
 // Claim-floor plan: the torpedo shape shrunk (pre-tax $300,000,
 // plan to 80) so its per-claiming-age bests rise monotonically
-// from 67 to 70 while the unrestricted winner claims at 62 — a
+// from 67 to 70 while the unrestricted winner claims at 66 — a
 // floor at 67 genuinely moves the crown to the claim-67 best.
+// (Round-7 Build 3, N-1: the primary was born 1961 — age 65 at
+// plan start with the claim entered at 65, i.e. already
+// receiving, so the attainable-ages rule locks the claim and
+// no floor can bite. The primary is now born 1962 — age 64 at
+// plan start, claim entered at 65 not yet made — and the
+// searched ages are 64–70.)
 const claimFloorPlan = (): RothPlanInputs =>
   basePlan({
-    birthYearPrimary: 1961,
+    birthYearPrimary: 1962,
     birthYearSpouse: 1972,
     endAgePrimary: 80,
     retirementAge: 65,
