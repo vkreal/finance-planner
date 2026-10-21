@@ -98,6 +98,15 @@ export const transactions = sqliteTable("transactions", {
   kind: text("kind", { enum: ["spending", "card_payment", "transfer"] })
     .notNull()
     .default("spending"),
+  // IM-5: the bank's own transaction id (OFX FITID) for rows
+  // imported from an OFX/QFX file — stored encrypted like every
+  // other text field, null for hand-entered and CSV-imported
+  // rows. It exists so a later OFX import can recognise the exact
+  // same transaction again in the preview (exact dedupe);
+  // matching happens client-side in the preview, where plaintext
+  // exists, exactly like the IM-1 fuzzy check. Carried in
+  // backup/restore like every other transaction field.
+  fitId: text("fit_id"),
   category: text("category").notNull().default("Other"),
   yearlyExpenseId: integer("yearly_expense_id").references(
     () => yearlyExpenses.id,

@@ -5728,7 +5728,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-rmd-and-watch-outs",
     kind: "tax",
-    note: "Playground RMD + watch-outs (hand-derived): (a) a $1,000,000 prior-Dec-31 balance at primary 75 / spouse 64, spouse sole beneficiary, prices the plan's own Joint Life RMD — divisor 25.3 (Pub. 590-B), RMD $39,525.69 — through rmdForYear, the same rule the plan uses. (b) At 57 (RMD age 75 for a 1969 birth year) no RMD is priced, and a typed $60,000 conversion against a $50,000 balance is flagged as exceeding the balance. (c) A sale of $40,000 against a $90,000 basis with $10,000 of qualified dividends nets a $40,000 long-term loss: the gains stack prices $0 of gains (the loss offsets the dividends first) and the unpriced loss is reported, not hidden.",
+    note: "Playground RMD + watch-outs (hand-derived): (a) a $1,000,000 prior-Dec-31 balance at primary 75 / spouse 64, spouse sole beneficiary, prices the plan's own Joint Life RMD — divisor 25.3 (Pub. 590-B), RMD $39,525.69 — through rmdForYear, the same rule the plan uses. (b) At 57 (RMD age 75 for a 1969 birth year) no RMD is priced, and a typed $60,000 conversion against a $50,000 balance is flagged as exceeding the balance. (c) A sale of $40,000 against a $90,000 basis with $10,000 of qualified dividends nets a $40,000 long-term loss: the gains stack prices $0 of gains (the loss offsets the dividends first), then $3,000 of the loss applies against ordinary income under §1211(b) — with no other income that year AGI is −$3,000 and the federal tax is still $0; the remaining loss is reported, not hidden.",
     expected: {
       rmd: 39525.69,
       rmdDivisor: 25.3,
@@ -5739,6 +5739,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       ltcgNet: -40000,
       ltcgPriced: 0,
       capitalLoss: 40000,
+      lossAllowance: 3000,
+      lossAgi: -3000,
       lossFederalTax: 0,
     },
     actual: () => {
@@ -5801,6 +5803,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         ltcgNet: c.ltcgNet,
         ltcgPriced: c.ltcgPriced,
         capitalLoss: c.capitalLoss,
+        lossAllowance: c.capitalLossAllowance,
+        lossAgi: c.agi,
         lossFederalTax: c.federalTax,
       };
     },
@@ -5808,14 +5812,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-niit-interest-only-zero",
     kind: "tax",
-    note: "Playground NIIT base (hand-derived; the F1 disclosure acceptance case): 2026 MFJ, ages 60/49, ONLY interest $300,000 typed — MAGI $300,000, past the $250,000 MFJ NIIT threshold, but the engine's NIIT base is the gains stack only (long-term gains + qualified dividends), so with no sale and no qualified dividends the NIIT is $0 even at that MAGI. Taxable income $300,000 − $32,200 = $267,800; ordinary tax $2,480 + $9,120 + $24,332 + 24% × $56,400 = $49,468, which is also the total federal tax. The Playground readout now states this base next to the NIIT figure.",
+    note: "Playground NIIT base (hand-derived; the F1 disclosure acceptance case, re-pinned for the §1411 base fix): 2026 MFJ, ages 60/49, ONLY interest $300,000 typed — MAGI $300,000, past the $250,000 MFJ NIIT threshold. §1411(c)(1)(A)(i) puts gross interest in net investment income, so the NIIT is 3.8% × min($300,000, $300,000 − $250,000) = $1,900 even with no sale and no dividends. (Before the fix the base was the gains stack only and this case priced $0 — the Part A verification's D5 finding.) Taxable income $300,000 − $32,200 = $267,800; ordinary tax $2,480 + $9,120 + $24,332 + 24% × $56,400 = $49,468; total federal tax $49,468 + $1,900 = $51,368. The Playground readout states this base next to the NIIT figure. (The id keeps its pre-fix name — it is the suite's stable identifier for this case.)",
     expected: {
       interest: 300000,
       magi: 300000,
       ltcgPriced: 0,
-      niit: 0,
+      niit: 1900,
       ordinaryTax: 49468,
-      federalTax: 49468,
+      federalTax: 51368,
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -6576,15 +6580,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-sale-after-tax-loss",
     kind: "tax",
-    note: "Playground sale-after-tax line, loss sale (hand-derived): the anchor's ordinary stack beside a $30,000 sale with a $40,000 basis — a $10,000 long-term loss. The loss prices as $0 of gains (it offsets nothing here; no qualified dividends), so the year's tax is the ordinary $11,600 on taxable income $100,800, but the proceeds are still the full $30,000 of cash the sale brought in: $30,000 − $11,600 = $18,400 left.",
+    note: "Playground sale-after-tax line, loss sale (hand-derived; re-pinned for the §1211(b) allowance): the anchor's ordinary stack beside a $30,000 sale with a $40,000 basis — a $10,000 long-term loss. The loss prices as $0 of gains (it offsets nothing here; no qualified dividends), and $3,000 of it offsets ordinary income under §1211(b): AGI $133,000 − $3,000 = $130,000, taxable income $130,000 − $32,200 = $97,800, ordinary tax $2,480 + 12% × $73,000 = $11,240. The proceeds are still the full $30,000 of cash the sale brought in: $30,000 − $11,240 = $18,760 left.",
     expected: {
       stockGain: -10000,
       capitalLoss: 10000,
-      federalTax: 11600,
+      capitalLossAllowance: 3000,
+      federalTax: 11240,
       proceeds: 30000,
-      totalTax: 11600,
-      leftover: 18400,
-      text: "Sale brought in $30,000. After this year's total tax of $11,600, $18,400 of it is left.",
+      totalTax: 11240,
+      leftover: 18760,
+      text: "Sale brought in $30,000. After this year's total tax of $11,240, $18,760 of it is left.",
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -6614,6 +6619,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       return {
         stockGain: r.stockGain,
         capitalLoss: r.capitalLoss,
+        capitalLossAllowance: r.capitalLossAllowance,
         federalTax: r.federalTax,
         proceeds: s?.proceeds ?? null,
         totalTax: s?.totalTax ?? null,
@@ -8668,7 +8674,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-playground-paste-roundtrip-full",
     kind: "tax",
-    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with qualified dividends. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version.",
+    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with dividends entered as printed — $4,500 total ordinary (line 3b), of which $1,500 qualified (line 3a), so the non-qualified part priced on the ordinary stack is $3,000. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version.",
     expected: {
       inputsIdentical: 1,
       magi: 123500,
@@ -8695,7 +8701,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         onMedicarePrimary: true,
         onMedicareSpouse: true,
         interest: 4000,
-        ordinaryDividends: 3000,
+        ordinaryDividends: 4500,
         otherOrdinary: 12000,
         taxExemptInterest: 2500,
         ssPrimary: 30000,
@@ -10435,13 +10441,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-pg1-playground-chips-22-24",
     kind: "tax",
-    note: "Playground pin PG1 / MT-PG1 (engine-derived 2026-10-15): the 22% and 24% bracket chips with only $5,000 of interest typed (2026 MFJ, ages 55/44), solved by solvePlaygroundBracketFill and priced by pricePlaygroundYear — the chip's own path. The 22% fill is $238,600 (taxable income lands exactly on the $211,400 bracket top: $238,600 + $5,000 − $32,200), federal tax $35,932. The 24% fill is $430,750 (taxable $403,550, the 24% top), federal tax $82,048.",
+    note: "Playground pin PG1 / MT-PG1 (engine-derived 2026-10-15; federal24 re-pinned 2026-10-20 for the §1411 base fix): the 22% and 24% bracket chips with only $5,000 of interest typed (2026 MFJ, ages 55/44), solved by solvePlaygroundBracketFill and priced by pricePlaygroundYear — the chip's own path. The 22% fill is $238,600 (taxable income lands exactly on the $211,400 bracket top: $238,600 + $5,000 − $32,200; MAGI $243,600 is under the $250,000 NIIT threshold, so no NIIT), federal tax $35,932. The 24% fill is $430,750 (taxable $403,550, the 24% top; MAGI $435,750): ordinary tax $82,048 plus NIIT of 3.8% × min($5,000 interest in the §1411(c)(1)(A)(i) base, $435,750 − $250,000) = $190, for federal tax $82,238. (Before the fix the interest sat outside the NIIT base and federal24 was $82,048.)",
     expected: {
       fill22: 238600,
       federal22: 35932,
       taxable22: 211400,
       fill24: 430750,
-      federal24: 82048,
+      federal24: 82238,
       taxable24: 403550,
     },
     actual: () => {
@@ -10485,13 +10491,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-pg2-niit-distinguishing",
     kind: "tax",
-    note: "Playground pin PG2 / MT-PG2 (engine-derived 2026-10-15): the NIIT distinguishing case, companion to playground-niit-interest-only-zero. Same $300,000 of interest (MAGI now $305,000) PLUS $5,000 of qualified dividends: the dividends enter the gains stack, so the NIIT prices at 3.8% × $5,000 = $190 — and ONLY on the $5,000, never on the interest. Federal tax foots by hand: ordinary tax $49,468 (on $267,800 of ordinary taxable income, exactly the interest-only case) + 15% × $5,000 of gains ($750) + $190 NIIT = $50,408.",
+    note: "Playground pin PG2 / MT-PG2 (engine-derived 2026-10-15; re-pinned for the §1411 base fix): the NIIT distinguishing case, companion to playground-niit-interest-only-zero. Same $300,000 of interest (MAGI now $305,000) PLUS $5,000 of qualified dividends: the §1411 base is the whole $305,000 of net investment income (interest + dividends), so the NIIT prices at 3.8% × min($305,000, $305,000 − $250,000) = 3.8% × $55,000 = $2,090. (Before the fix only the $5,000 of dividends counted and the NIIT was $190.) Federal tax foots by hand: ordinary tax $49,468 (on $267,800 of ordinary taxable income, exactly the interest-only case) + 15% × $5,000 of gains ($750) + $2,090 NIIT = $52,308.",
     expected: {
       magi: 305000,
       ltcgPriced: 5000,
       gainsAt15: 5000,
-      niit: 190,
-      federalTax: 50408,
+      niit: 2090,
+      federalTax: 52308,
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -12853,10 +12859,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-era-cliff-family-only-yields-sample-shape",
     kind: "tax",
-    note: "ERA-AWARE ACA CLIFF CAP with the working yield calibration (ERA-AWARE ACA CLIFF CAP build, fixture d): the sample shape at retire 57 with acaStepDownYear 2036 and the record's working yields (interest 0.6307267152401136% / dividends 0.0788408394050142% of the taxable balance). Defended in every year the cliff plan nets 233844665 cents; with acaCliffCapFamilyOnly on — family years defended around the yield income, stepped-down years undefended — it nets 168419989 cents. The flag-off side is the yields build's defended-stepdown shape; any era leak into it, or yield leak into the era path, moves a side. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "ERA-AWARE ACA CLIFF CAP with the working yield calibration (ERA-AWARE ACA CLIFF CAP build, fixture d): the sample shape at retire 57 with acaStepDownYear 2036 and the record's working yields (interest 0.6307267152401136% / dividends 0.0788408394050142% of the taxable balance). Defended in every year the cliff plan nets 233844665 cents; with acaCliffCapFamilyOnly on — family years defended around the yield income, stepped-down years undefended — it nets 168419989 cents. The flag-off side is the yields build's defended-stepdown shape; any era leak into it, or yield leak into the era path, moves a side. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned 2026-10-20 for the §1411 NIIT base fix: this shape carries the working interest yield (0.6307% of the taxable balance), and interest is now in the NIIT base per §1411(c)(1)(A)(i), so over-threshold years charge 3.8% on that interest and the added tax compounds through the settlement — defended 206977017 → 211436020, era 146933261 → 153123073. Plan years price dividends on the gains stack, which was already in the base, so the whole movement is the interest inclusion; proof: reverting only the NIIT base line in a scratch copy of the engine reproduces the previous pins exactly.)",
     expected: {
-      defendedNet: 206977017,
-      eraNet: 146933261,
+      defendedNet: 211436020,
+      eraNet: 153123073,
     },
     actual: () => {
       const baseStepYields = {
@@ -12956,7 +12962,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-interest-only-year",
     kind: "tax",
-    note: "TAXABLE YIELDS interest-only year (TAXABLE YIELDS build, fixture c; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, interest yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's interest is 5% × $1,000,000 = $50,000, priced on the ORDINARY stack: AGI $50,000, taxable income $17,800 — all of it ordinary taxable income (gains in taxable income $0) — taxed at the 10% bracket rate for $1,780 of federal tax. The tax is paid from Taxable (100% basis, no gain), leaving $998,220, which grows at the full 5% to $1,048,131; the basis ledger ends at $998,220 (the $50,000 of reinvested interest basis clamps to the settled balance). Interest priced on the gains stack instead would sit in the 0% zone and tax $0. NIIT, priced directly: $300,000 of interest alone (AGI $300,000, over the $250,000 MFJ threshold) prices NIIT $0 — the NIIT base is the gains stack only and interest is NOT in it — while $300,000 of qualified dividends prices NIIT 3.8% × min($300,000, $300,000 − $250,000) = $1,900, with $98,900 of the dividends at 0% and $168,900 at 15% ($25,335), for $27,235 of federal tax.",
+    note: "TAXABLE YIELDS interest-only year (TAXABLE YIELDS build, fixture c; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, interest yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's interest is 5% × $1,000,000 = $50,000, priced on the ORDINARY stack: AGI $50,000, taxable income $17,800 — all of it ordinary taxable income (gains in taxable income $0) — taxed at the 10% bracket rate for $1,780 of federal tax. The tax is paid from Taxable (100% basis, no gain), leaving $998,220, which grows at the full 5% to $1,048,131; the basis ledger ends at $998,220 (the $50,000 of reinvested interest basis clamps to the settled balance). Interest priced on the gains stack instead would sit in the 0% zone and tax $0. NIIT, priced directly: $300,000 of interest alone (AGI $300,000, over the $250,000 MFJ threshold) prices NIIT 3.8% × min($300,000, $300,000 − $250,000) = $1,900 — interest IS in the §1411(c)(1)(A)(i) base (before the base fix this priced $0) — and $300,000 of qualified dividends prices the same $1,900, with $98,900 of the dividends at 0% and $168,900 at 15% ($25,335), for $27,235 of federal tax.",
     expected: {
       interestIncome: 50000,
       dividendIncome: 0,
@@ -12966,7 +12972,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       gainsInTi: 0,
       taxableEnd: 1048131,
       basisEnd: 998220,
-      niitInterestOnly: 0,
+      niitInterestOnly: 1900,
       niitDividends: 1900,
       divGainsAt15: 168900,
       divFederalTax: 27235,
@@ -12999,6 +13005,140 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         niitDividends: divOnly.niit,
         divGainsAt15: divOnly.gainsAt15,
         divFederalTax: divOnly.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-niit-base-ordinary-dividends",
+    kind: "tax",
+    note: "NIIT base, non-qualified dividends (hand-derived; §1411 base fix): priceYear directly, 2026 MFJ ages 60/49. $300,000 of NON-qualified dividends alone: AGI $300,000, over the $250,000 MFJ threshold; §1411(c)(1)(A)(i) puts gross dividends in net investment income whether qualified or not, so NIIT = 3.8% × min($300,000, $50,000) = $1,900 — the same figure interest alone and qualified dividends alone price (tax-yield-interest-only-year). The dividends ride the ORDINARY stack (taxable income $267,800, ordinary tax $49,468 — the interest-only derivation), so federal tax is $49,468 + $1,900 = $51,368. Control: $100,000 interest + $50,000 ordinary dividends + $50,000 of gains (AGI $200,000, under the threshold) prices NIIT $0 — the widened base does not move the threshold test.",
+    expected: {
+      niitOrdDivOnly: 1900,
+      fedOrdDivOnly: 51368,
+      agiOrdDivOnly: 300000,
+      niitMixedBelowThreshold: 0,
+    },
+    actual: () => {
+      const ordDivOnly = priceYear(basePrice({ ordinaryDividends: 300000 }));
+      const mixed = priceYear(
+        basePrice({ interestIncome: 100000, ordinaryDividends: 50000, ltcg: 50000 }),
+      );
+      return {
+        niitOrdDivOnly: ordDivOnly.niit,
+        fedOrdDivOnly: ordDivOnly.federalTax,
+        agiOrdDivOnly: ordDivOnly.agi,
+        niitMixedBelowThreshold: mixed.niit,
+      };
+    },
+  },
+  {
+    id: "playground-anchor-magi-150600-niit-zero",
+    kind: "tax",
+    note: "Playground anchor year (hand-derived; the Part A verification's standing pinned year, S5): 2026 MFJ, ages 55/44, interest $807, ordinary dividends $17,567 entered exactly as printed on the Form 1040's line 3b (the TOTAL, which includes the qualified part), qualified dividends $12,735 entered exactly as printed on line 3a, conversion $132,226, household 5, benchmark $34,330.56. Dividends are counted ONCE: the non-qualified part is $17,567 − $12,735 = $4,832 on the ordinary stack and the $12,735 qualified part rides the gains stack, so MAGI $807 + $17,567 + $132,226 = $150,600 — exactly the household-5 cliff, so the credit is paid: $34,330.56 − 9.96% × $150,600 = $19,330.80. Taxable income $150,600 − $32,200 = $118,400; ordinary taxable income $105,665 taxed $2,480 + $9,120 + 22% × $4,865 = $12,670.30; the $12,735 of qualified dividends all sit past the $98,900 0% top, at 15% = $1,910.25; federal tax $14,580.55. MAGI is under the $250,000 NIIT threshold, so NIIT is $0 — the §1411 base fix (interest and ordinary dividends now in the base) does not move this anchor. No sale, so no capital loss and the §1211(b) allowance is $0.",
+    expected: {
+      magi: 150600,
+      acaMagi: 150600,
+      federalTax: 14580.55,
+      niit: 0,
+      credit: 19330.8,
+      nonQualifiedDividends: 4832,
+      capitalLossAllowance: 0,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 807,
+        ordinaryDividends: 17567,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 132226,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 12735,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 34330.56,
+        stateRatePct: 0,
+      });
+      return {
+        magi: r.magi,
+        acaMagi: r.acaMagi,
+        federalTax: r.federalTax,
+        niit: r.niit,
+        credit: r.aca.credit,
+        nonQualifiedDividends: r.nonQualifiedDividends,
+        capitalLossAllowance: r.capitalLossAllowance,
+      };
+    },
+  },
+  {
+    id: "playground-capital-loss-allowance-1211b",
+    kind: "tax",
+    note: "Playground §1211(b) capital-loss allowance (hand-derived): 2026 MFJ, ages 55/44, a $100,000 conversion and a stock sale of $10,000 against a $53,040.65 basis — a $43,040.65 long-term loss, no qualified dividends, so the net capital loss is $43,040.65. The loss first offsets gains (there are none priced), then exactly $3,000 of it offsets ordinary income: AGI $100,000 − $3,000 = $97,000, MAGI the same, taxable income $97,000 − $32,200 = $64,800, federal tax $2,480 + 12% × $40,000 = $7,280 — exactly $360 (12% × $3,000) less than the same year with no loss (AGI $100,000, taxable $67,800, tax $7,640, allowance $0). A smaller net loss prices only itself: a $2,000 loss (sale $0, basis $2,000) applies a $2,000 allowance — AGI $98,000, taxable $65,800, tax $2,480 + 12% × $41,000 = $7,400.",
+    expected: {
+      stockGain: -43040.65,
+      capitalLoss: 43040.65,
+      allowance: 3000,
+      agi: 97000,
+      magi: 97000,
+      taxableIncome: 64800,
+      federalTax: 7280,
+      noLossAllowance: 0,
+      noLossAgi: 100000,
+      noLossFederalTax: 7640,
+      smallLoss: 2000,
+      smallAllowance: 2000,
+      smallAgi: 98000,
+      smallFederalTax: 7400,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 100000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const loss = pricePlaygroundYear({ ...base, stockSold: 10000, stockBasis: 53040.65 });
+      const noLoss = pricePlaygroundYear({ ...base, stockSold: 0, stockBasis: 0 });
+      const small = pricePlaygroundYear({ ...base, stockSold: 0, stockBasis: 2000 });
+      return {
+        stockGain: loss.stockGain,
+        capitalLoss: loss.capitalLoss,
+        allowance: loss.capitalLossAllowance,
+        agi: loss.agi,
+        magi: loss.magi,
+        taxableIncome: loss.taxableIncome,
+        federalTax: loss.federalTax,
+        noLossAllowance: noLoss.capitalLossAllowance,
+        noLossAgi: noLoss.agi,
+        noLossFederalTax: noLoss.federalTax,
+        smallLoss: small.capitalLoss,
+        smallAllowance: small.capitalLossAllowance,
+        smallAgi: small.agi,
+        smallFederalTax: small.federalTax,
       };
     },
   },
@@ -13630,6 +13770,75 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-funding-rows-match-priced-year",
+    kind: "tax",
+    note: "YEAR FUNDING display cells equal the priced year (Part A verification D2/D6 fix): for the cliff shape at a flat 50% basis AND for the basis-tiers shape, every funding row's acaMagiCents, drawGainsCents and magiCents must equal the SAME run's priced year (simulateRothPlan on the identical inputs and strategy) to the cent — maxDiffCents 0 on all three fields across both shapes. The shapes are chosen so the checks are not vacuous: both run past the Social Security start, so years with acaMagi ≠ magi exist (ssYears > 0), and both realize draw gains (gainYears > 0). (The verification found stale cells on this surface — a 2038 acaMagiCents carrying the following year's value, and tiers-shape drawGainsCents inconsistent with their rows' own MAGI — while the plan-year detail surface priced the same years correctly; this case pins the two surfaces to each other row by row.)",
+    expected: {
+      maxAcaDiffCents: 0,
+      maxGainsDiffCents: 0,
+      maxMagiDiffCents: 0,
+      anySsYears: 1,
+      anyGainYears: 1,
+    },
+    actual: () => {
+      type Base = Parameters<typeof buildCompareScenario>[0];
+      const shapes: { saved: Base; name: string }[] = [
+        {
+          name: "funding-blank",
+          saved: { ...sampleShapeBase50(), retirementAge: 57, windowStartAge: 57 },
+        },
+        {
+          name: "funding-tiers",
+          saved: {
+            ...sampleShapeBase50(),
+            retirementAge: 57,
+            windowStartAge: 57,
+            taxableTiers: [
+              { sharePct: 8.333333333333334, basisPct: 100 },
+              { sharePct: 91.66666666666667, basisPct: 45.45454545454545 },
+            ],
+          },
+        },
+      ];
+      let maxAca = 0;
+      let maxGains = 0;
+      let maxMagi = 0;
+      let anySs = 0;
+      let anyGains = 0;
+      for (const shape of shapes) {
+        const built = buildCompareScenario(
+          shape.saved,
+          shape.name,
+          {
+            ceilings: { bracketTopPct: null, irmaaTierCap: null, ltcgZeroCap: false, acaCliffCap: true, magiCapCents: null },
+            drawOrder: "pretax-taxable-roth" as const,
+          },
+          2026,
+        );
+        if (!built) return { maxAcaDiffCents: null, maxGainsDiffCents: null, maxMagiDiffCents: null, anySsYears: null, anyGainYears: null };
+        const rows = buildRothFunding(built.inputs, built.strategy);
+        const sim = simulateRothPlan(built.inputs, built.strategy);
+        const byYear = new Map(sim.years.map((y) => [y.year, y]));
+        for (const r of rows) {
+          const y = byYear.get(r.year);
+          if (!y) continue;
+          maxAca = Math.max(maxAca, Math.abs(r.acaMagiCents - Math.round(y.acaMagi * 100)));
+          maxGains = Math.max(maxGains, Math.abs(r.drawGainsCents - Math.round(y.detail.drawGains * 100)));
+          maxMagi = Math.max(maxMagi, Math.abs(r.magiCents - Math.round(y.magi * 100)));
+          if (y.ssBenefits > 0 && y.acaMagi !== y.magi) anySs = 1;
+          if (y.detail.drawGains > 0) anyGains = 1;
+        }
+      }
+      return {
+        maxAcaDiffCents: maxAca,
+        maxGainsDiffCents: maxGains,
+        maxMagiDiffCents: maxMagi,
+        anySsYears: anySs,
+        anyGainYears: anyGains,
+      };
+    },
+  },
+  {
     id: "tax-funding-identity-survivor-shape",
     kind: "tax",
     note: "YEAR FUNDING cash identity, survivor shape (YEAR FUNDING build, fixture d): the sample shape at retire 57 (50% basis, the benchmarks) with the survivor scenario on — the primary dies in 2045, so 2045 still files jointly and takes both RMDs, and from 2046 the survivor prices alone as a single filer on the combined pre-tax balance. The identity foots to the cent in every year, death year and survivor years included (maxDiffCents 0).",
@@ -14038,9 +14247,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-yields",
     kind: "tax",
-    note: "SPEND-FROM-CASH X=50 with the working yields (SPEND-FROM-CASH build, fixture 8): the era shape carrying the record's working yield calibration (interest 0.6307267152401136% / dividends 0.0788408394050142% of the folded pool). Yields are still charged on the year's starting taxable balance exactly as without the feature — 2028 prices $17,892.90 of interest and $2,236.61 of dividends — the cash share is still the hand-derived $78,716.04 (the yield cash is reinvested, never counted as sleeve), the sleeve ends 2028 at the pure remainder $145,310.44 (= 200000 − 78716.04), the capped year still lands on the cliff, and the plan nets 156426066 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH X=50 with the working yields (SPEND-FROM-CASH build, fixture 8): the era shape carrying the record's working yield calibration (interest 0.6307267152401136% / dividends 0.0788408394050142% of the folded pool). Yields are still charged on the year's starting taxable balance exactly as without the feature — 2028 prices $17,892.90 of interest and $2,236.61 of dividends — the cash share is still the hand-derived $78,716.04 (the yield cash is reinvested, never counted as sleeve), the sleeve ends 2028 at the pure remainder $145,310.44 (= 200000 − 78716.04), the capped year still lands on the cliff, and the plan nets 156426066 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned 2026-10-20 for the §1411 NIIT base fix: net 88985327 → 94304718. The shape carries the working interest yield, interest is now in the NIIT base per §1411(c)(1)(A)(i), and the added 3.8% on over-threshold years' interest compounds through the settlement; every 2028 detail pin in this case (interest, dividends, cash share, sleeve, ACA MAGI) is unchanged, and reverting only the NIIT base line in a scratch copy of the engine reproduces 88985327 exactly, so the whole movement is the interest inclusion.)",
     expected: {
-      net: 88985327,
+      net: 94304718,
       cash2032: null,
       sleeveEnd2032: null,
       interest2032: null,

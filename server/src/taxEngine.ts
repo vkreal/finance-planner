@@ -83,23 +83,41 @@ export type PriceYearInput = {
   ssBenefits: number;
   taxExemptInterest: number;
   ltcg: number;
-  // Taxable yield income (TAXABLE YIELDS build; both optional —
+  // Taxable yield income (TAXABLE YIELDS build; all optional —
   // absent / 0 = the pre-yield pricing, bit-identical):
   // · interestIncome: taxable interest for the year. It joins
   //   the ORDINARY stack (taxed at ordinary rates, first in the
   //   stack order the plan engine settles — it is part of the
   //   fill base, so fills and draws shrink around it), counts
   //   in AGI / MAGI / ACA MAGI and in the §86 provisional
-  //   income, and is NOT in the NIIT base — the existing engine
-  //   tests NIIT against the gains stack only, and expanding
-  //   the base to interest is a separate, parked decision.
+  //   income, and IS in the NIIT base: §1411(c)(1)(A)(i) puts
+  //   gross interest in net investment income.
+  // · ordinaryDividends: NON-qualified dividends for the year.
+  //   They join the ORDINARY stack exactly as interestIncome
+  //   does, and are likewise in the NIIT base (§1411(c)(1)(A)(i)
+  //   puts gross dividends in net investment income, qualified
+  //   or not).
   // · qualifiedDividends: qualified dividends for the year.
   //   They ride the GAINS stack exactly as ltcg does — the
   //   same 0% / 15% / 20% staircase stacked on ordinary income,
-  //   and the same NIIT base (the engine's NIIT is min(gains
-  //   stack, MAGI over the threshold)).
+  //   and the same NIIT base (the engine's NIIT is min(NII,
+  //   MAGI over the threshold) — see the NIIT step in priceYear).
   interestIncome?: number;
+  ordinaryDividends?: number;
   qualifiedDividends?: number;
+  // Capital-loss allowance (IRC §1211(b); optional — absent /
+  // 0 = the pre-allowance pricing, bit-identical): the part of
+  // a net capital loss (already netted against the year's
+  // gains by the caller — the gains stack above carries only
+  // the priced, non-negative gain) that offsets ORDINARY
+  // income this year, up to $3,000. It subtracts from AGI
+  // (and therefore from MAGI / ACA MAGI, the §86 provisional
+  // income, and taxable income) exactly as the Form 1040
+  // capital-loss line does; it is NOT part of the gains stack
+  // and does not enter the NIIT base. Only the single-year
+  // Playground pricer passes it — the plan engine never does,
+  // so plan pricing is unchanged.
+  capitalLossAllowance?: number;
   inflationPct: number;
   stateRatePct: number;
 };
@@ -241,9 +259,11 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // both absent / 0 every sum below is the pre-yield sum, term
   // for term.
   const interestIncome = input.interestIncome ?? 0;
+  const ordinaryDividends = input.ordinaryDividends ?? 0;
+  const capitalLossAllowance = input.capitalLossAllowance ?? 0;
   const gainsStack = input.ltcg + (input.qualifiedDividends ?? 0);
   const agiExclSs =
-    input.otherOrdinary + input.rmd + input.conversion + input.extraPreTaxDraw + gainsStack + interestIncome;
+    input.otherOrdinary + input.rmd + input.conversion + input.extraPreTaxDraw + gainsStack + interestIncome + ordinaryDividends - capitalLossAllowance;
   const provisional = agiExclSs + input.taxExemptInterest + 0.5 * input.ssBenefits;
   const ssTaxable = ssTaxableAmount(input.ssBenefits, provisional, fs, defl);
   const agi = agiExclSs + ssTaxable;
@@ -314,13 +334,20 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // §1411 MAGI is AGI plus only the foreign-income exclusions
   // (not modeled here) — unlike the IRMAA MAGI above, it does
   // NOT add back tax-exempt interest, so the NIIT threshold is
-  // tested against AGI, not `magi`. The NIIT base is the gains
-  // stack (realized gains + qualified dividends); interest
-  // income is deliberately NOT in the base — see the
-  // PriceYearInput note (a parked decision, not an oversight).
+  // tested against AGI, not `magi`. The NIIT base is net
+  // investment income as §1411(c)(1)(A) defines it: gross
+  // interest and dividends (qualified or not) plus net gain —
+  // here, the gains stack (realized gains + qualified
+  // dividends) plus interest income plus non-qualified
+  // dividends. (Before this fix the base was the gains stack
+  // only, which priced $0 of NIIT on interest-only income over
+  // the threshold; the Part A independent verification, D5,
+  // priced the statutory base at $1,900 on $300,000 of interest
+  // at MAGI $300,000 MFJ, and the fix adopts the statute.)
+  const niitBase = gainsStack + interestIncome + ordinaryDividends;
   const niit =
     (law.niitRate / 100) *
-    Math.min(gainsStack, Math.max(0, agi - law.niitThreshold[fs] * defl));
+    Math.min(niitBase, Math.max(0, agi - law.niitThreshold[fs] * defl));
   const federalTax = ordinaryTax + ltcgTax + niit;
   const stateTax = (input.stateRatePct / 100) * taxableIncome;
   return {

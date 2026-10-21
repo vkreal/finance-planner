@@ -139,6 +139,8 @@ yearlyFrequencyWithDefault,
 type McScoreIn,
 } from "./apiContractCore";
 import { planImportBatch } from "./importCore";
+import { parseImportSettings } from "./importParseCore";
+import { parseNwImportSettings } from "./nwImportCore";
 import {
 runTaxFixtures,
 runTaxTeethCheck,
@@ -446,6 +448,13 @@ const txnInput = z.object({
   kind: txnKind,
   category: z.string().min(1).max(40),
   yearlyExpenseId: z.number().int().positive().nullable().default(null),
+  // IM-5: the bank's transaction id (OFX FITID) when this row
+  // comes from an OFX/QFX import; null for everything else. Only
+  // importTransactions records it (the manual add/edit actions
+  // accept the shared input shape but never set it, and an edit
+  // never clears a recorded id — their SET lists don't name the
+  // column). Stored encrypted; see schema.ts.
+  fitId: z.string().min(1).max(200).nullable().default(null),
 });
 
 const txnOut = z.object({
@@ -609,7 +618,12 @@ type RawYearlyVersionRow = typeof schema.yearlyExpenseVersions.$inferSelect;
 type YearlyVersionRow = Omit<RawYearlyVersionRow, "expectedCents"> & { expectedCents: number };
 
 type RawTxnRow = typeof schema.transactions.$inferSelect;
-type TxnRow = Omit<RawTxnRow, "amountCents"> & { amountCents: number };
+// fitId rides as plaintext here (decrypted in loadAll like the
+// other text fields); the raw row's fitId is ciphertext or null.
+type TxnRow = Omit<RawTxnRow, "amountCents" | "fitId"> & {
+  amountCents: number;
+  fitId: string | null;
+};
 type RawYearlyRow = typeof schema.yearlyExpenses.$inferSelect;
 type YearlyRow = Omit<RawYearlyRow, "expectedCents"> & { expectedCents: number };
 type RawSummaryRow = typeof schema.monthlySummaries.$inferSelect;
@@ -669,14 +683,16 @@ async function loadAll(ctx: Ctx) {
       amountCents: await decryptNum(key, r.amountCents as unknown),
       accountName: await decryptStr(key, r.accountName),
       category: await decryptStr(key, r.category),
+      fitId: await decryptNullable(key, r.fitId),
     };
     txns.push(plain);
-    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || !isEncrypted(r.accountName) || !isEncrypted(r.category)) {
+    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || !isEncrypted(r.accountName) || !isEncrypted(r.category) || (r.fitId != null && !isEncrypted(r.fitId))) {
       await db.update(schema.transactions).set({
         description: await encryptStr(key, plain.description),
         amountCents: await encryptNum(key, plain.amountCents),
         accountName: await encryptStr(key, plain.accountName),
         category: await encryptStr(key, plain.category),
+        fitId: await encryptNullable(key, plain.fitId),
       }).where(eq(schema.transactions.id, r.id));
     }
   }
@@ -1335,10 +1351,14 @@ async function buildBackupPayload(
       // restored under a different encryption key with nothing
       // silently lost (the retirement blob previously travelled
       // as ciphertext and a cross-key restore dropped the saved
-      // inputs while every other figure survived). All remaining
-      // settings (UI flags, the include-property toggle, the
-      // reserve start month) are stored plaintext already and
-      // are carried exactly as stored.
+      // inputs while every other figure survived). The CSV
+      // import setup blobs (IMPORT_SETTINGS_KEY and
+      // NW_IMPORT_SETTINGS_KEY) get the same treatment for the
+      // same reason. All remaining settings
+      // (UI flags, the include-property toggle, the reserve
+      // start month) are stored plaintext already and are
+      // carried exactly as stored. A legacy plaintext import
+      // setup value decrypts to itself via the lenient reader.
       value:
         r.key === "opening_reserve_cents"
           ? (settingsMap.get(r.key) ?? r.value)
@@ -1347,7 +1367,9 @@ async function buildBackupPayload(
               r.key === "retirement_calc_baseline_v1" ||
               r.key === "roth_conversion_inputs_v1"
             ? await decryptStr(key, r.value)
-            : r.value,
+            : r.key === IMPORT_SETTINGS_KEY || r.key === NW_IMPORT_SETTINGS_KEY
+              ? ((await decryptSettingValue(key, r.value)) ?? r.value)
+              : r.value,
     });
   }
   return {
@@ -1385,6 +1407,7 @@ async function buildBackupPayload(
       kind: t.kind,
       category: t.category,
       yearlyExpenseId: t.yearlyExpenseId ?? null,
+      fitId: t.fitId ?? null,
       createdAt: backupTsToMs(t.createdAt),
     })),
     monthlySummaries: summaries.map((s) => ({
@@ -3242,6 +3265,7 @@ const bracketLayerOut = z.object({
 const playgroundYearOut = z.object({
   interest: z.number(),
   ordinaryDividends: z.number(),
+  nonQualifiedDividends: z.number(),
   otherOrdinary: z.number(),
   otherOrdinaryTotal: z.number(),
   rmdPriced: z.boolean(),
@@ -3258,6 +3282,7 @@ const playgroundYearOut = z.object({
   ltcgNet: z.number(),
   ltcgPriced: z.number(),
   capitalLoss: z.number(),
+  capitalLossAllowance: z.number(),
   agi: z.number(),
   magi: z.number(),
   acaMagi: z.number(),
@@ -3982,6 +4007,31 @@ function integrityWarningLines(checks: IntegrityCheck[]): string[] {
    falls back to the household's modal values: "Credit Card" for
    monthly bills, "Checking" for yearly bills. Editing an existing
    bill never reads these — it always shows the bill's own value. */
+/* ---------------- CSV import setup (remembered) ----------------
+   IM-2: the import panel's per-import answers (template, account
+   name, sign convention, keyword lists) and its column-mapping
+   profiles — one per file header layout — persist as ONE
+   settings value under this key, following the app's existing
+   settings-storage pattern (no new storage mechanism). The blob
+   carries user-entered account labels, so it is stored encrypted
+   at rest like the entry-default labels below, exported
+   decrypted in backups like the other saved blobs, and read
+   leniently (a legacy plaintext value is migrated in place on
+   read). Its shape is owned by ./importParseCore
+   (parseImportSettings / serializeImportSettings), which the
+   panel and the fixtures share. */
+const IMPORT_SETTINGS_KEY = "spending_import_settings_v1";
+/* IM-3: the Net Worth balance import's remembered setup — one
+   column-mapping profile per balance-file header layout, plus
+   the label → account/bucket mappings the user confirmed —
+   persists under this key with exactly the spending blob's
+   treatment: encrypted at rest, exported decrypted in backups,
+   re-encrypted on restore, read leniently with a legacy
+   plaintext value migrated in place. Its shape is owned by
+   ./nwImportCore (parseNwImportSettings /
+   serializeNwImportSettings), which the panel and the fixtures
+   share. */
+const NW_IMPORT_SETTINGS_KEY = "nw_import_settings_v1";
 const ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY = "entry_default_monthly_paid_from_v1";
 const ENTRY_DEFAULT_YEARLY_PAID_TYPE_KEY = "entry_default_yearly_paid_type_v1";
 const ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY = "entry_default_yearly_paid_name_v1";
@@ -4239,7 +4289,11 @@ const ACTION_PURPOSES: Record<string, string> = {
   addTransaction: "Record one spending transaction (checking or card).",
   updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
   deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
-  importTransactions: "Import a batch of transactions at once (CSV import path). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. There is NO dedupe: importing the same rows again inserts them again.",
+  importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given.",
+  getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place.",
+  saveImportSettings: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an import-settings blob (importParseCore); anything else is refused and nothing is stored.",
+  getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Read-only apart from migrating a legacy plaintext setup value to encrypted in place.",
+  saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored.",
   addYearlyExpense: "Add a yearly or periodic (smoothed) expense bill. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted.",
   updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched).",
   setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist.",
@@ -5618,6 +5672,251 @@ export const Actions = {
     },
   }),
 
+  /* Import panel read support (IM-1 + IM-2): the remembered
+     import setup, plus the already-recorded transactions for the
+     months being previewed so the panel can flag rows that look
+     already recorded. Dedupe matching happens in the panel
+     against this read data — stored amounts and descriptions
+     are ciphertext, so the server never content-matches them. */
+  getImportData: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      months: z.array(z.string().regex(monthRe)).max(60),
+    }),
+    response: z.object({
+      settingsJson: z.string().nullable(),
+      existing: z.array(
+        z.object({
+          date: z.string(),
+          amountCents: z.number(),
+          description: z.string(),
+          kind: z.string(),
+          accountName: z.string(),
+          // IM-5: the recorded transaction's bank id (OFX FITID),
+          // null for rows that didn't come from an OFX import —
+          // the preview's exact-duplicate check matches on it.
+          fitId: z.string().nullable(),
+        }),
+      ),
+      // IM-4: the recorded cash-out state per requested month —
+      // the entered month total (null when none) and the recorded
+      // cash-out items (id, description, amount), so the proposal
+      // preview can compare against what is recorded and a
+      // confirmed save can replace the month's items through the
+      // existing delete/add item writes.
+      cashOut: z.array(
+        z.object({
+          month: z.string(),
+          enteredCashOutCents: z.number().nullable(),
+          items: z.array(
+            z.object({
+              id: z.number(),
+              description: z.string(),
+              amountCents: z.number(),
+            }),
+          ),
+        }),
+      ),
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const row = (await db.select().from(schema.settings)).find(
+        (r) => r.key === IMPORT_SETTINGS_KEY,
+      );
+      let settingsJson: string | null = null;
+      if (row && row.value !== "") {
+        settingsJson = await decryptSettingValue(key, row.value);
+        // Migrate a legacy plaintext value to encrypted in place
+        // (the loadAll opening-reserve pattern).
+        if (settingsJson != null && !isEncrypted(row.value)) {
+          await db
+            .update(schema.settings)
+            .set({ value: await encryptStr(key, settingsJson) })
+            .where(eq(schema.settings.key, IMPORT_SETTINGS_KEY));
+        }
+      }
+      const existing: {
+        date: string;
+        amountCents: number;
+        description: string;
+        kind: string;
+        accountName: string;
+        fitId: string | null;
+      }[] = [];
+      const cashOut: {
+        month: string;
+        enteredCashOutCents: number | null;
+        items: { id: number; description: string; amountCents: number }[];
+      }[] = [];
+      if (args.months.length > 0) {
+        const { txns, summaries, cashOutItems } = await loadAll(ctx);
+        const wanted = new Set(args.months);
+        for (const t of txns) {
+          if (!wanted.has(t.date.slice(0, 7))) continue;
+          existing.push({
+            date: t.date,
+            amountCents: t.amountCents,
+            description: t.description,
+            kind: t.kind,
+            accountName: t.accountName,
+            fitId: t.fitId ?? null,
+          });
+        }
+        const summaryByMonth = new Map(
+          summaries.map((s) => [s.month, s.cashOutCents]),
+        );
+        for (const m of args.months) {
+          cashOut.push({
+            month: m,
+            enteredCashOutCents: summaryByMonth.get(m) ?? null,
+            items: cashOutItems
+              .filter((it) => it.month === m)
+              .map((it) => ({
+                id: it.id,
+                description: it.description,
+                amountCents: it.amountCents,
+              })),
+          });
+        }
+      }
+      return { settingsJson, existing, cashOut };
+    },
+  }),
+
+  /* Import panel setup save (IM-2): persists the remembered
+     settings + header-keyed mapping profiles as ONE encrypted
+     settings value (IMPORT_SETTINGS_KEY), validated against the
+     shared blob shape before anything is stored. */
+  saveImportSettings: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      settingsJson: z.string().min(2).max(60000),
+    }),
+    response: z.object({ saved: z.literal(true) }),
+    async handler(
+      ctx,
+      args,
+    ): Promise<{ saved: true }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(args.settingsJson);
+      } catch {
+        throw new Error("That import setup could not be read — nothing was saved.");
+      }
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !Array.isArray((parsed as { profiles?: unknown }).profiles)
+      ) {
+        throw new Error("That import setup could not be read — nothing was saved.");
+      }
+      // Round-trip through the shared parser so what lands is
+      // exactly the shape the panel reads back.
+      const blob = parseImportSettings(args.settingsJson);
+      const value = await encryptStr(key, JSON.stringify(blob));
+      await db
+        .insert(schema.settings)
+        .values({ key: IMPORT_SETTINGS_KEY, value })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value },
+        });
+      ctx.invalidateQueries();
+      return { saved: true };
+    },
+  }),
+
+  /* Net Worth balance-import panel read support (IM-3): the
+     remembered setup for the balance importer — column-mapping
+     profiles keyed by header layout plus the confirmed
+     file-label → account/bucket mappings. Same storage pattern
+     as the spending import setup (getImportData): one encrypted
+     settings value, read leniently, a legacy plaintext value
+     migrated to encrypted in place. The snapshot write itself
+     goes through the existing addNwSnapshot — this pair only
+     carries the panel's setup. */
+  getNwImportSettings: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: z.object({
+      settingsJson: z.string().nullable(),
+    }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const row = (await db.select().from(schema.settings)).find(
+        (r) => r.key === NW_IMPORT_SETTINGS_KEY,
+      );
+      let settingsJson: string | null = null;
+      if (row && row.value !== "") {
+        settingsJson = await decryptSettingValue(key, row.value);
+        if (settingsJson != null && !isEncrypted(row.value)) {
+          await db
+            .update(schema.settings)
+            .set({ value: await encryptStr(key, settingsJson) })
+            .where(eq(schema.settings.key, NW_IMPORT_SETTINGS_KEY));
+        }
+      }
+      return { settingsJson };
+    },
+  }),
+
+  /* Net Worth balance-import setup save (IM-3): persists the
+     remembered profiles + label mappings as ONE encrypted
+     settings value (NW_IMPORT_SETTINGS_KEY), validated against
+     the shared blob shape before anything is stored. */
+  saveNwImportSettings: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      settingsJson: z.string().min(2).max(200000),
+    }),
+    response: z.object({ saved: z.literal(true) }),
+    async handler(
+      ctx,
+      args,
+    ): Promise<{ saved: true }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(args.settingsJson);
+      } catch {
+        throw new Error("That import setup could not be read — nothing was saved.");
+      }
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        !Array.isArray((parsed as { profiles?: unknown }).profiles) ||
+        typeof (parsed as { labelMappings?: unknown }).labelMappings !==
+          "object" ||
+        (parsed as { labelMappings?: unknown }).labelMappings === null ||
+        Array.isArray((parsed as { labelMappings?: unknown }).labelMappings)
+      ) {
+        throw new Error("That import setup could not be read — nothing was saved.");
+      }
+      // Round-trip through the shared parser so what lands is
+      // exactly the shape the panel reads back.
+      const blob = parseNwImportSettings(args.settingsJson);
+      const value = await encryptStr(key, JSON.stringify(blob));
+      await db
+        .insert(schema.settings)
+        .values({ key: NW_IMPORT_SETTINGS_KEY, value })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value },
+        });
+      ctx.invalidateQueries();
+      return { saved: true };
+    },
+  }),
+
   importTransactions: defineAction({
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
@@ -5651,12 +5950,25 @@ export const Actions = {
       }
       const plan = planImportBatch(args.rows, (v) => verified.has(v));
       if (!plan.ok) throw new Error(plan.reason);
+      // IM-5: a row's FITID is imported text too, so the same
+      // reserved-prefix guard covers it — a bank id is never
+      // genuine ciphertext, so any prefixed value refuses the
+      // whole batch here, before any write, with the shared
+      // reserved message.
+      for (const r of args.rows) {
+        if (r.fitId != null && hasReservedEncPrefix(r.fitId)) {
+          throw new Error(RESERVED_ENC_PREFIX_MESSAGE);
+        }
+      }
       // Build EVERY row's encrypted insert statement before any
       // write executes, then run them as ONE db.batch: any
       // failure throws with its reason and zero rows from this
       // call are inserted (the client's per-batch retry can then
-      // never duplicate a landed prefix). No dedupe: importing
-      // the same rows again inserts them again.
+      // never duplicate a landed prefix). This action inserts
+      // exactly the rows it is given: duplicate protection lives
+      // in the import preview (IM-1), where the panel compares
+      // parsed rows against read data and excludes the ones that
+      // look already recorded unless the user includes them.
       type BatchItem = Parameters<typeof db.batch>[0][number];
       const statements: BatchItem[] = [];
       for (const r of args.rows) {
@@ -5670,6 +5982,7 @@ export const Actions = {
             kind: r.kind,
             category: await encryptStr(key, r.category),
             yearlyExpenseId: r.yearlyExpenseId,
+            fitId: await encryptNullable(key, r.fitId),
           }),
         );
       }
@@ -10791,7 +11104,8 @@ export const Actions = {
           s.key === KEY_CHECK_SETTING ||
           s.key === "retirement_calc_inputs_v1" ||
           s.key === "retirement_calc_baseline_v1" ||
-          s.key === "roth_conversion_inputs_v1"
+          s.key === "roth_conversion_inputs_v1" ||
+          s.key === NW_IMPORT_SETTINGS_KEY
         ) {
           if (isEncrypted(s.value)) {
             // Reserved-prefix verification (cluster E): a value for
@@ -10921,6 +11235,7 @@ export const Actions = {
           kind: t.kind as typeof schema.transactions.$inferInsert.kind,
           category: await encryptStr(key, t.category),
           yearlyExpenseId: t.yearlyExpenseId,
+          fitId: await encryptNullable(key, t.fitId),
           createdAt: backupMsToDate(t.createdAt),
         });
       }

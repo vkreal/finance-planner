@@ -25,6 +25,35 @@ csvFormulaSafeText,
 csvImportFileError,
 parseCsvChecked,
 } from "./csvUtil";
+import {
+EMPTY_IMPORT_SETTINGS,
+buildCashOutProposals,
+combineDebitCreditAmount,
+compareCashOutProposal,
+detectImportHeader,
+findImportProfile,
+flagExactFitIdDuplicates,
+flagImportDuplicates,
+guessImportMapping,
+importHeaderFingerprint,
+normalizeImportDate,
+parseImportAmount,
+parseImportSettings,
+serializeImportSettings,
+upsertImportProfile,
+withImportOfxAccount,
+withLastImportSettings,
+type CashOutMonthProposal,
+type ImportColumnMapping,
+type ImportFileSettings,
+type ImportSettingsBlob,
+} from "./importParseCore";
+import {
+looksLikeOfx,
+ofxAccountDisplay,
+ofxAccountKey,
+parseOfx,
+} from "./ofxCore";
 import { Explainer } from "./Explainer";
 import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
@@ -147,48 +176,11 @@ function currentMonth(): string {
    The parser lives in ./csvUtil (parseCsvChecked): the same
    grammar this importer has always used, with the import
    budget (size / row / field limits, unclosed-quote refusal)
-   enforced around it — finding S4. */
-
-function normalizeDate(raw: string): string | null {
-  const s = raw.trim();
-  // Only real calendar dates pass: an impossible date (13/45/2026,
-  // 2026-02-31) used to be reformatted blindly here and then rejected
-  // by the server, failing the whole import with no hint which row
-  // was bad. Returning null makes the row count as skipped instead.
-  const isRealDate = (y: number, mo: number, d: number): boolean => {
-    if (mo < 1 || mo > 12 || d < 1) return false;
-    return d <= new Date(y, mo, 0).getDate();
-  };
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) {
-    const [, yyyy = "", mm = "", dd = ""] = iso;
-    return isRealDate(Number(yyyy), Number(mm), Number(dd)) ? s : null;
-  }
-  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  if (m) {
-    const [, mm = "", dd = "", yyyy = ""] = m;
-    if (!isRealDate(Number(yyyy), Number(mm), Number(dd))) return null;
-    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
-  }
-  return null;
-}
-
-function parseCsvAmount(raw: string): number | null {
-  let s = raw.trim().replace(/[$,\s]/g, "");
-  let neg = false;
-  if (s.startsWith("(") && s.endsWith(")")) {
-    neg = true;
-    s = s.slice(1, -1);
-  }
-  if (s.startsWith("-")) {
-    neg = true;
-    s = s.slice(1);
-  }
-  const n = Number(s);
-  if (!Number.isFinite(n) || s === "") return null;
-  const cents = Math.round(n * 100);
-  return neg ? -cents : cents;
-}
+   enforced around it — finding S4. The import panel's own
+   decisions (date and amount reading, debit/credit pairing,
+   column mapping, remembered profiles, duplicate flagging)
+   live in ./importParseCore, shared with the server-side
+   accuracy fixtures so the suite pins the code the panel runs. */
 
 /* ---------------- small pieces ---------------- */
 
@@ -557,6 +549,7 @@ function InlinePaymentForm({
       kind: "spending",
       category: category.trim() || "Other",
       yearlyExpenseId: bill.id,
+      fitId: null,
     });
   }
 
@@ -1642,6 +1635,7 @@ export function App() {
       category: tCategory,
       yearlyExpenseId:
         tKind === "spending" && tYearlyId ? Number(tYearlyId) : null,
+      fitId: null,
     };
     if (editingTxnId) updateTxn.mutate({ ...input, id: editingTxnId });
     else addTxn.mutate(input);
@@ -3795,7 +3789,7 @@ export function App() {
                 </h2>
                 <div className="flex gap-2">
                   <button type="button" className={btnGhost} onClick={() => setShowImport(!showImport)} aria-expanded={showImport}>
-                    Import CSV
+                    Import
                   </button>
                   <button type="button" className={btnPrimary} onClick={() => openNewTxn()}>
                     + Add
@@ -3809,6 +3803,10 @@ export function App() {
                   onDone={(n) => {
                     invalidate();
                     setActionMsg(`Imported ${n} transaction${n === 1 ? "" : "s"}.`);
+                  }}
+                  onCashOutSaved={(m) => {
+                    invalidate();
+                    setActionMsg(`Cash out for ${monthLabel(m)} saved from the checking export.`);
                   }}
                 />
               )}
@@ -4522,14 +4520,16 @@ function ReserveSettings({
   );
 }
 
-/* ---------------- CSV import ---------------- */
+/* ---------------- Statement import (CSV + OFX/QFX) ---------------- */
 
 function ImportPanel({
   month,
   onDone,
+  onCashOutSaved,
 }: {
   month: string;
   onDone: (n: number) => void;
+  onCashOutSaved?: (month: string) => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [csvText, setCsvText] = useState("");
@@ -4538,8 +4538,218 @@ function ImportPanel({
   const [account, setAccount] = useState("Checking");
   const [cardKeyword, setCardKeyword] = useState("card payment, visa, mastercard, amex");
   const [transferKeyword, setTransferKeyword] = useState("transfer, savings");
+  const [mapping, setMapping] = useState<ImportColumnMapping>(() => guessImportMapping(null));
   const [preview, setPreview] = useState<TxnInput[] | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<{ skipped: number; bothFilled: number } | null>(null);
+  const [dupFlags, setDupFlags] = useState<boolean[] | null>(null);
+  /* IM-5: the EXACT duplicate flags (bank transaction id already
+     recorded), kept separate from the fuzzy flags above so the
+     preview can label the two kinds distinctly. */
+  const [exactFlags, setExactFlags] = useState<boolean[] | null>(null);
+  const [dupNote, setDupNote] = useState("");
+  /* IM-5: the loaded OFX file's account identity line (masked)
+     and remembered-mapping note. */
+  const [ofxNotice, setOfxNotice] = useState("");
+  const [includeDups, setIncludeDups] = useState(false);
+  const [checkingDups, setCheckingDups] = useState(false);
   const [error, setError] = useState("");
+  const [profileNotice, setProfileNotice] = useState("");
+  const [settingsBlob, setSettingsBlob] = useState<ImportSettingsBlob>(EMPTY_IMPORT_SETTINGS);
+  /* IM-4 cash-out proposal state: what is already recorded per
+     month (entered total + items, from the same getImportData
+     read as the duplicate check), which month is mid-save, the
+     months saved from this preview, and a save error line. */
+  type RecordedCashOutMonth = ApiResponse<typeof api, "getImportData">["cashOut"][number];
+  const [recordedCashOut, setRecordedCashOut] = useState<RecordedCashOutMonth[] | null>(null);
+  const [savingMonth, setSavingMonth] = useState<string | null>(null);
+  const [savedMonths, setSavedMonths] = useState<Record<string, boolean>>({});
+  const [proposalError, setProposalError] = useState("");
+
+  /* Remembered setup (IM-2): the last-used settings and the
+     header-keyed mapping profiles live in ONE settings value on
+     the server (the app's existing settings storage, carried in
+     backup/restore like the other saved blobs). Loaded once when
+     the panel opens; the last-used values become the defaults,
+     and a profile whose header matches the loaded file applies
+     its mapping and settings automatically (see the effect
+     below). Saving happens on Preview: the current answers are
+     the ones that just proved out against a real file. */
+  const settingsQuery = useQuery({
+    queryKey: ["importSettings"],
+    queryFn: () => api.getImportData({ months: [] }),
+  });
+  const settingsLoaded = settingsQuery.isSuccess;
+  const lastDefaultsAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    const blob = settingsQuery.data.settingsJson
+      ? parseImportSettings(settingsQuery.data.settingsJson)
+      : EMPTY_IMPORT_SETTINGS;
+    setSettingsBlob(blob);
+    if (!lastDefaultsAppliedRef.current) {
+      lastDefaultsAppliedRef.current = true;
+      if (blob.lastSettings) applyFileSettings(blob.lastSettings);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsQuery.data]);
+
+  const saveSetup = useMutation({
+    mutationFn: (json: string) => api.saveImportSettings({ settingsJson: json }),
+    // A failed save never blocks an import — the panel just
+    // keeps working with the values on screen.
+    onError: () => setProfileNotice("Your import setup couldn't be saved this time — the import itself is unaffected."),
+  });
+
+  function applyFileSettings(s: ImportFileSettings) {
+    setTemplate(s.template);
+    setOutSign(s.outSign);
+    setAccount(s.accountName);
+    setCardKeyword(s.cardKeywords);
+    setTransferKeyword(s.transferKeywords);
+  }
+
+  function currentFileSettings(): ImportFileSettings {
+    return {
+      template,
+      accountName: account.trim() || "Checking",
+      outSign,
+      cardKeywords: cardKeyword,
+      transferKeywords: transferKeyword,
+    };
+  }
+
+  /* The loaded file, parsed once per text change. An OFX/QFX
+     file (IM-5) is recognised by its content and parsed by the
+     OFX core instead — no header, no column mapping: the format
+     names its own fields. Its statement account (the first with
+     transactions, else the first in the file) is the one whose
+     transactions this panel imports. Anything else goes through
+     the CSV parser as before: header detection, the header
+     cells (for the mapping selects and the profile
+     fingerprint), and the body rows. */
+  const parsedFile = useMemo(() => {
+    if (csvText.trim() === "") return null;
+    if (looksLikeOfx(csvText)) {
+      const res = parseOfx(csvText);
+      if (!res.ok) {
+        return { error: res.error, header: null as string[] | null, headerLower: null as string[] | null, body: [] as string[][], columnCount: 0, ofx: null };
+      }
+      const account =
+        res.accounts.find((a) => a.transactions.length > 0) ??
+        res.accounts[0] ??
+        null;
+      return {
+        error:
+          account == null
+            ? "That OFX file has no account statement in it — nothing to import."
+            : "",
+        header: null as string[] | null,
+        headerLower: null as string[] | null,
+        body: [] as string[][],
+        columnCount: 0,
+        ofx: {
+          accounts: res.accounts,
+          account,
+          skippedTxns: res.skippedTxns,
+        },
+      };
+    }
+    const parsed = parseCsvChecked(csvText);
+    if ("error" in parsed) {
+      return { error: parsed.error, header: null as string[] | null, headerLower: null as string[] | null, body: [] as string[][], columnCount: 0, ofx: null };
+    }
+    const raw = parsed.rows;
+    const first = raw[0] ?? [];
+    const hasHeader = raw.length > 0 && detectImportHeader(first);
+    return {
+      error: "",
+      header: hasHeader ? first.map((c) => c.trim()) : null,
+      headerLower: hasHeader ? first.map((c) => c.trim().toLowerCase()) : null,
+      body: hasHeader ? raw.slice(1) : raw,
+      columnCount: raw.reduce((n, r) => Math.max(n, r.length), 0),
+      ofx: null,
+    };
+  }, [csvText]);
+
+  /* When a file with a header arrives: if a saved profile
+     matches its header fingerprint, apply the profile's mapping
+     and settings and say so; otherwise start from the automatic
+     guess. Re-applies when the remembered setup finishes
+     loading, so a profile saved earlier wins even if the file
+     was chosen first. Any change of file clears the preview. */
+  const appliedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const header = parsedFile?.header ?? null;
+    const ofxAccount = parsedFile?.ofx?.account ?? null;
+    const key = ofxAccount
+      ? `ofx|${ofxAccountKey(ofxAccount)}|${settingsLoaded ? "loaded" : "pending"}`
+      : `${header ? importHeaderFingerprint(header) : "no-header"}|${settingsLoaded ? "loaded" : "pending"}`;
+    if (appliedKeyRef.current === key) return;
+    appliedKeyRef.current = key;
+    setPreview(null);
+    setPreviewMeta(null);
+    setDupFlags(null);
+    setExactFlags(null);
+    setDupNote("");
+    setRecordedCashOut(null);
+    setSavedMonths({});
+    setProposalError("");
+    if (ofxAccount) {
+      /* IM-5: an OFX file names its account. A remembered
+         mapping for that account refills the account name and
+         template; otherwise the template follows the file's own
+         account kind (a card statement is a card export). The
+         identity is shown masked — the full account id never
+         reaches the screen. */
+      setProfileNotice("");
+      const remembered =
+        settingsBlob.ofxAccounts[ofxAccountKey(ofxAccount)] ?? null;
+      const multi =
+        parsedFile != null && parsedFile.ofx != null && parsedFile.ofx.accounts.length > 1
+          ? ` The file holds ${parsedFile.ofx.accounts.length} accounts; the transactions shown are from this one.`
+          : "";
+      if (remembered) {
+        setAccount(remembered.accountName);
+        setTemplate(remembered.template);
+        setOfxNotice(
+          `This file is for ${ofxAccountDisplay(ofxAccount)} — the account name and type you used for it last time are filled in.${multi}`,
+        );
+      } else {
+        setTemplate(ofxAccount.kind === "card" ? "card" : "checking");
+        setOfxNotice(`This file is for ${ofxAccountDisplay(ofxAccount)}.${multi}`);
+      }
+      return;
+    }
+    setOfxNotice("");
+    if (!header) {
+      setMapping(guessImportMapping(null));
+      setProfileNotice("");
+      return;
+    }
+    const profile = findImportProfile(settingsBlob, header);
+    if (profile) {
+      setMapping(profile.mapping);
+      applyFileSettings(profile.settings);
+      setProfileNotice(
+        "Saved setup applied — this file's columns match a layout you've imported before, so its column mapping and settings were filled in from that profile. Change anything below and the profile updates when you preview.",
+      );
+    } else {
+      setMapping(guessImportMapping(parsedFile?.headerLower ?? null));
+      setProfileNotice("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedFile, settingsLoaded, settingsBlob]);
+
+  function clearPreview() {
+    setPreview(null);
+    setPreviewMeta(null);
+    setDupFlags(null);
+    setExactFlags(null);
+    setDupNote("");
+    setRecordedCashOut(null);
+    setSavedMonths({});
+    setProposalError("");
+  }
 
   // The server accepts at most 1,000 rows per import call, so a big
   // bank export is sent in sequential batches of 500. Previously the
@@ -4578,11 +4788,20 @@ function ImportPanel({
       if (r.remaining.length === 0) {
         onDone(r.imported);
         setPreview(null);
+        setPreviewMeta(null);
+        setDupFlags(null);
+        setExactFlags(null);
+        setRecordedCashOut(null);
+        setSavedMonths({});
+        setProposalError("");
         setCsvText("");
         return;
       }
       if (r.imported > 0) onDone(r.imported);
       setPreview(r.remaining);
+      setDupFlags(null);
+      setExactFlags(null);
+      setDupNote("");
       setError(
         `Imported ${r.imported} row${r.imported === 1 ? "" : "s"}, then a batch failed${r.error ? ` (${r.error})` : ""}. The remaining ${r.remaining.length} row${r.remaining.length === 1 ? " is" : "s are"} still in the preview — press Import again to retry just those.`,
       );
@@ -4590,35 +4809,85 @@ function ImportPanel({
     onError: (e) => setError(String(e)),
   });
 
-  function buildRows(): TxnInput[] | null {
+  function buildRows(): { rows: TxnInput[]; skipped: number; bothFilled: number } | null {
     setError("");
-    const parsed = parseCsvChecked(csvText);
-    if ("error" in parsed) {
-      setError(parsed.error);
-      return null;
-    }
-    const raw = parsed.rows;
-    if (raw.length === 0) {
+    if (!parsedFile) {
       setError("Paste CSV text or choose a file first.");
       return null;
     }
-    let header: string[] | null = null;
-    let body = raw;
-    const first = (raw[0] ?? []).map((c) => c.trim().toLowerCase());
-    if (first.some((c) => c.includes("date")) && first.some((c) => c.includes("amount"))) {
-      header = first;
-      body = raw.slice(1);
+    if (parsedFile.error) {
+      setError(parsedFile.error);
+      return null;
     }
-    const col = (names: string[], fallback: number): number => {
-      if (!header) return fallback;
-      const idx = header.findIndex((h) => names.some((n) => h.includes(n)));
-      return idx >= 0 ? idx : fallback;
-    };
-    const dateCol = col(["date"], 0);
-    const descCol = col(["description", "desc", "name", "payee"], 1);
-    const amountCol = col(["amount", "debit"], 2);
-    const catCol = col(["category"], -1);
-    const kindCol = col(["kind", "type"], -1);
+    if (parsedFile.ofx) {
+      /* IM-5: OFX rows enter the same preview pipeline as CSV
+         rows — the same classification (an explicit kind never
+         exists in OFX, so the checking template's keyword rules
+         apply exactly as for a CSV), the same account-name cap,
+         the same skip counting. Two format differences only:
+         the sign is the format's own (TRNAMT is negative for
+         money out, so it is flipped into the panel's
+         money-out-positive terms and the sign setting does not
+         apply), and each row keeps its bank transaction id for
+         the exact-duplicate check. */
+      const acct = parsedFile.ofx.account;
+      if (!acct) {
+        setError("That OFX file has no account statement in it — nothing to import.");
+        return null;
+      }
+      const acctName = account.trim() || "Checking";
+      if (acctName.length > 60) {
+        setError("That account name is over 60 characters — shorten it and preview again.");
+        return null;
+      }
+      const cardKeys = cardKeyword.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const transferKeys = transferKeyword.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const out: TxnInput[] = [];
+      for (const t of acct.transactions) {
+        let kind: TxnInput["kind"] = "spending";
+        if (template === "checking") {
+          const d = t.description.toLowerCase();
+          if (cardKeys.some((k) => d.includes(k))) kind = "card_payment";
+          else if (transferKeys.some((k) => d.includes(k))) kind = "transfer";
+        }
+        out.push({
+          date: t.date,
+          description: t.description,
+          amountCents: -t.amountCents,
+          sourceType: kind === "spending" ? template : "checking",
+          accountName: kind === "spending" ? acctName : "Checking",
+          kind,
+          category: "Other",
+          yearlyExpenseId: null,
+          fitId: t.fitId,
+        });
+      }
+      if (out.length === 0) {
+        setError(
+          `No usable rows found (${parsedFile.ofx.skippedTxns} skipped). The statement's transactions may all be unreadable — check the file and try again.`,
+        );
+        return null;
+      }
+      return { rows: out, skipped: parsedFile.ofx.skippedTxns, bothFilled: 0 };
+    }
+    const body = parsedFile.body;
+    if (body.length === 0) {
+      setError("That file has no data rows to import.");
+      return null;
+    }
+    // Money comes from one amount column, or from a debit/credit
+    // pair (IM-2): a mapped amount column wins; with none mapped,
+    // a mapped debit or credit column switches the row reading
+    // to the pair rule in importParseCore.
+    const pairMode = mapping.amount < 0 && (mapping.debit >= 0 || mapping.credit >= 0);
+    if (mapping.amount < 0 && !pairMode) {
+      setError("Choose which column holds the amount — or map a debit and/or credit column instead.");
+      return null;
+    }
+    if (mapping.date < 0 || mapping.description < 0) {
+      setError("Choose which columns hold the date and the description.");
+      return null;
+    }
 
     const cardKeys = cardKeyword.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
     const transferKeys = transferKeyword.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
@@ -4636,10 +4905,21 @@ function ImportPanel({
 
     const out: TxnInput[] = [];
     let skipped = 0;
+    let bothFilled = 0;
     for (const r of body) {
-      const date = normalizeDate(r[dateCol] ?? "");
-      const desc = (r[descCol] ?? "").trim();
-      const amount = parseCsvAmount(r[amountCol] ?? "");
+      const date = normalizeImportDate(r[mapping.date] ?? "");
+      const desc = (r[mapping.description] ?? "").trim();
+      let amount: number | null;
+      if (pairMode) {
+        const combined = combineDebitCreditAmount(
+          mapping.debit >= 0 ? (r[mapping.debit] ?? "") : "",
+          mapping.credit >= 0 ? (r[mapping.credit] ?? "") : "",
+        );
+        amount = combined?.cents ?? null;
+        if (combined?.bothFilled) bothFilled++;
+      } else {
+        amount = parseImportAmount(r[mapping.amount] ?? "");
+      }
       // A description over the server's 200-character limit can never
       // import: left in, it would reject its whole 500-row batch and
       // every retry of it. Count it as skipped here, like an
@@ -4649,7 +4929,7 @@ function ImportPanel({
         continue;
       }
       let kind: TxnInput["kind"] = "spending";
-      const explicit = kindCol >= 0 ? (r[kindCol] ?? "").trim().toLowerCase() : "";
+      const explicit = mapping.kind >= 0 ? (r[mapping.kind] ?? "").trim().toLowerCase() : "";
       if (explicit === "card_payment" || explicit === "transfer" || explicit === "spending") {
         kind = explicit;
       } else if (template === "checking") {
@@ -4668,56 +4948,250 @@ function ImportPanel({
         // Category is a grouping label only; the server caps it at
         // 40 characters, so trim a longer one to the cap rather than
         // lose the whole transaction over its label.
+        fitId: null,
         category:
-          catCol >= 0 && (r[catCol] ?? "").trim()
-            ? (r[catCol] ?? "").trim().slice(0, 40)
+          mapping.category >= 0 && (r[mapping.category] ?? "").trim()
+            ? (r[mapping.category] ?? "").trim().slice(0, 40)
             : "Other",
         yearlyExpenseId: null,
       });
     }
     if (out.length === 0) {
       setError(
-        `No usable rows found (${skipped} skipped). Expected columns: date, description, amount.`,
+        `No usable rows found (${skipped} skipped). Check the column mapping below — each row needs a readable date, a description, and an amount.`,
       );
       return null;
     }
-    if (skipped > 0) setError(`${skipped} row(s) skipped — unreadable date or amount, a missing description, or a description over 200 characters.`);
-    return out;
+    return { rows: out, skipped, bothFilled };
   }
+
+  /* Preview: build the rows, remember the setup that produced
+     them (last-used settings, plus the profile for this header),
+     then check the rows against what's already recorded
+     (IM-1). Duplicate matching runs here, where the recorded
+     transactions can be read in plaintext — stored data is
+     encrypted, so no server-side content match is possible. */
+  async function runPreview() {
+    const built = buildRows();
+    if (!built) {
+      clearPreview();
+      return;
+    }
+    setPreview(built.rows);
+    setPreviewMeta({ skipped: built.skipped, bothFilled: built.bothFilled });
+    setIncludeDups(false);
+    setDupFlags(null);
+    setExactFlags(null);
+    setDupNote("");
+    setRecordedCashOut(null);
+    setSavedMonths({});
+    setProposalError("");
+    if (built.skipped > 0) {
+      setError(`${built.skipped} row(s) skipped — unreadable date or amount, a missing description, or a description over 200 characters.`);
+    }
+    const settings = currentFileSettings();
+    let nextBlob = parsedFile?.header
+      ? upsertImportProfile(settingsBlob, parsedFile.header, mapping, settings)
+      : withLastImportSettings(settingsBlob, settings);
+    /* IM-5: remember this OFX account's mapping — the account
+       name and template just previewed — so the next file from
+       the same account opens already set up for it. */
+    const ofxAcct = parsedFile?.ofx?.account ?? null;
+    if (ofxAcct) {
+      nextBlob = withImportOfxAccount(nextBlob, ofxAccountKey(ofxAcct), {
+        accountName: settings.accountName,
+        template: settings.template,
+      });
+    }
+    setSettingsBlob(nextBlob);
+    saveSetup.mutate(serializeImportSettings(nextBlob));
+
+    setCheckingDups(true);
+    try {
+      const months = [...new Set(built.rows.map((r) => r.date.slice(0, 7)))].slice(0, 60);
+      const data = await api.getImportData({ months });
+      setDupFlags(flagImportDuplicates(built.rows, data.existing));
+      /* IM-5: the exact check — a row whose bank transaction id
+         was already recorded is an exact duplicate, whatever its
+         date/amount/description look like; a row with a NEW id
+         is never exact (the fuzzy flag above may still mark it
+         as looking already recorded). */
+      setExactFlags(
+        flagExactFitIdDuplicates(
+          built.rows,
+          data.existing
+            .map((e) => e.fitId)
+            .filter((f): f is string => f != null),
+        ),
+      );
+      // IM-4: the same read carries each month's recorded cash
+      // out, which the proposal below compares against.
+      setRecordedCashOut(data.cashOut);
+    } catch {
+      setDupFlags(null);
+      setExactFlags(null);
+      setRecordedCashOut(null);
+      setDupNote("The duplicate check couldn't run, so review the rows below before importing — rows already recorded won't be flagged this time.");
+    }
+    setCheckingDups(false);
+  }
+
+  /* A row is left out when EITHER check flags it: exact (same
+     bank transaction id — IM-5) or fuzzy (same date, amount,
+     description, kind, and account — IM-1). The two counts are
+     kept separate for the preview copy: exact rows are certain,
+     fuzzy-only rows are look-alikes. */
+  const isDupAt = (i: number): boolean =>
+    (dupFlags?.[i] ?? false) || (exactFlags?.[i] ?? false);
+  const exactCount =
+    preview && exactFlags ? preview.filter((_, i) => exactFlags[i]).length : 0;
+  const dupCount = preview ? preview.filter((_, i) => isDupAt(i)).length : 0;
+  const fuzzyOnlyCount = dupCount - exactCount;
+  const newRows = preview ? preview.filter((_, i) => !isDupAt(i)) : [];
+  const exactRows = preview && exactFlags ? preview.filter((_, i) => exactFlags[i]) : [];
+  const fuzzyOnlyRows = preview
+    ? preview.filter((_, i) => isDupAt(i) && !(exactFlags?.[i] ?? false))
+    : [];
+  const includedRows = preview
+    ? preview.filter((_, i) => includeDups || !isDupAt(i))
+    : [];
+
+  /* IM-4 — cash-out proposals. A checking export is the record
+     of what left the checking account, so alongside the
+     transaction import the panel proposes each month's cash out
+     from the export itself (buildCashOutProposals in
+     importParseCore: every money-out row counts, transfers
+     excluded, duplicate-flagged rows included and marked — the
+     proposal shows the export's arithmetic as-is). Nothing here
+     saves on its own: each month is confirmed separately, and
+     saving writes ONLY through the existing cash-out paths —
+     the month's recorded items are replaced with the proposed
+     items (the existing delete/add item writes) and the
+     proposed total is set as the month's entered total (the
+     existing month-total write), which the app's items-win
+     precedence keeps as the reference figure beside the items.
+     Card-template files get no proposal: a card export is
+     charges, not money out of checking. */
+  const proposals: CashOutMonthProposal[] =
+    template === "checking" && preview
+      ? buildCashOutProposals(
+          preview,
+          dupFlags || exactFlags
+            ? preview.map((_, i) => isDupAt(i))
+            : null,
+        )
+      : [];
+  const recordedByMonth = new Map(
+    (recordedCashOut ?? []).map((c) => [c.month, c] as const),
+  );
+
+  async function saveCashOutProposal(p: CashOutMonthProposal) {
+    const rec = recordedByMonth.get(p.month);
+    setSavingMonth(p.month);
+    setProposalError("");
+    try {
+      // Replace the month's recorded items with the proposed set
+      // first, then set the entered total — if a write fails
+      // partway, the month keeps whatever landed and the error
+      // below says to check it before saving again.
+      if (rec) {
+        for (const it of rec.items) {
+          await api.deleteCashOutItem({ id: it.id });
+        }
+      }
+      for (const it of p.items) {
+        await api.addCashOutItem({
+          month: p.month,
+          description: it.description,
+          amountCents: it.amountCents,
+          note: null,
+        });
+      }
+      await api.upsertMonthlySummary({
+        month: p.month,
+        cashOutCents: p.totalCents,
+      });
+      setSavedMonths((prev) => ({ ...prev, [p.month]: true }));
+      onCashOutSaved?.(p.month);
+      // Refresh the recorded state so the comparison now reads
+      // against what was just saved.
+      try {
+        const data = await api.getImportData({
+          months: proposals.map((x) => x.month),
+        });
+        setRecordedCashOut(data.cashOut);
+      } catch {
+        // The save landed; only the comparison refresh failed.
+      }
+    } catch (e) {
+      setProposalError(
+        `Saving ${monthLabel(p.month)} stopped partway (${e instanceof Error ? e.message : String(e)}). Check that month's cash out in the Cash out section below before saving it again.`,
+      );
+    }
+    setSavingMonth(null);
+  }
+
+  const mappingRoles: { role: keyof ImportColumnMapping; label: string; optional: boolean }[] = [
+    { role: "date", label: "Date", optional: false },
+    { role: "description", label: "Description", optional: false },
+    { role: "amount", label: "Amount", optional: true },
+    { role: "debit", label: "Debit (money out)", optional: true },
+    { role: "credit", label: "Credit (money in)", optional: true },
+    { role: "category", label: "Category", optional: true },
+    { role: "kind", label: "Kind / type", optional: true },
+  ];
 
   return (
     <div className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-      <h3 className="display text-lg font-semibold">Import a CSV</h3>
+      <h3 className="display text-lg font-semibold">Import transactions</h3>
       <p className="text-sm leading-relaxed text-[var(--dim)]">
-        Export a CSV from your bank or card, then paste it here or pick the
-        file. Columns: <code>date, description, amount</code> (a header row
-        is fine; category and kind columns are used if present). For a{" "}
-        <strong>checking</strong> export, rows whose description matches a
-        card-payment keyword below are imported as card payments — cash out
-        only, never double-counted as spending. For a <strong>card</strong>{" "}
-        export, every row is recorded on its own date. Card-export rows
-        keep the export's dates — the charge dates — so an imported charge
-        sits in its charge month, not the month the card payment leaves the
-        bank; the bank-out rule applies to amounts you record by their
-        payment date. Currently viewing{" "}
-        {monthLabel(month)} — imported rows land in their own months.
+        Export a CSV — or an OFX/QFX file, the Quicken format many
+        institutions offer next to CSV — from your bank or card, then
+        paste it here or pick the file. An OFX/QFX file needs no
+        column mapping: it names its own account, dates, and
+        amounts, and each transaction carries the bank&rsquo;s own
+        id, so a re-imported file is recognised exactly (see the
+        preview). For a CSV, the usual columns are <code>date, description, amount</code>{" "}
+        (a header row is fine; category and kind columns are used if
+        present). Files with separate <strong>debit</strong> and{" "}
+        <strong>credit</strong> columns work too — each row's amount comes
+        from whichever of the two is filled, and a row with both is
+        combined as debit minus credit. Two-digit-year dates (like
+        10/3/26) are read as 20YY. For a <strong>checking</strong> export,
+        rows whose description matches a card-payment keyword below are
+        imported as card payments — cash out only, never double-counted
+        as spending. For a <strong>card</strong> export, every row is
+        recorded on its own date. Card-export rows keep the export's
+        dates — the charge dates — so an imported charge sits in its
+        charge month, not the month the card payment leaves the bank; the
+        bank-out rule applies to amounts you record by their payment
+        date. Currently viewing {monthLabel(month)} — imported rows land
+        in their own months. Your settings and column mapping are
+        remembered for next time, and the preview flags rows that look
+        already recorded — and, for an OFX file, rows whose bank
+        transaction id was already recorded — so re-importing a file
+        doesn't double it.
+        For a checking export, the preview also proposes each month's
+        cash out from the file itself — the money that left the
+        account, transfers excluded — which you can review against
+        what's recorded and save month by month.
         Import limits: a file up to 5 MB and 25,000 rows.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label htmlFor="imp-template" className={labelCls}>This CSV is from</label>
-          <select id="imp-template" className={inputCls} value={template} onChange={(e) => setTemplate(e.target.value as "checking" | "card")}>
+          <label htmlFor="imp-template" className={labelCls}>This file is from</label>
+          <select id="imp-template" className={inputCls} value={template} onChange={(e) => { setTemplate(e.target.value as "checking" | "card"); clearPreview(); }}>
             <option value="checking">Checking account</option>
             <option value="card">Credit card</option>
           </select>
         </div>
         <div>
           <label htmlFor="imp-account" className={labelCls}>Account name</label>
-          <input id="imp-account" type="text" className={inputCls} value={account} onChange={(e) => setAccount(e.target.value)} />
+          <input id="imp-account" type="text" className={inputCls} value={account} onChange={(e) => { setAccount(e.target.value); clearPreview(); }} />
         </div>
         <div>
           <label htmlFor="imp-sign" className={labelCls}>In this file, money out is</label>
-          <select id="imp-sign" className={inputCls} value={outSign} onChange={(e) => setOutSign(e.target.value as "positive" | "negative")}>
+          <select id="imp-sign" className={inputCls} value={outSign} onChange={(e) => { setOutSign(e.target.value as "positive" | "negative"); clearPreview(); }}>
             <option value="positive">Positive (charges show as 84.20)</option>
             <option value="negative">Negative (charges show as −84.20)</option>
           </select>
@@ -4727,21 +5201,21 @@ function ImportPanel({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="imp-cardkw" className={labelCls}>Card-payment keywords</label>
-            <input id="imp-cardkw" type="text" className={inputCls} value={cardKeyword} onChange={(e) => setCardKeyword(e.target.value)} />
+            <input id="imp-cardkw" type="text" className={inputCls} value={cardKeyword} onChange={(e) => { setCardKeyword(e.target.value); clearPreview(); }} />
           </div>
           <div>
             <label htmlFor="imp-transferkw" className={labelCls}>Transfer keywords</label>
-            <input id="imp-transferkw" type="text" className={inputCls} value={transferKeyword} onChange={(e) => setTransferKeyword(e.target.value)} />
+            <input id="imp-transferkw" type="text" className={inputCls} value={transferKeyword} onChange={(e) => { setTransferKeyword(e.target.value); clearPreview(); }} />
           </div>
         </div>
       )}
       <div>
-        <label htmlFor="imp-file" className={labelCls}>CSV file</label>
+        <label htmlFor="imp-file" className={labelCls}>Statement file (CSV or OFX/QFX)</label>
         <input
           id="imp-file"
           ref={fileRef}
           type="file"
-          accept=".csv,text/csv,text/plain"
+          accept=".csv,.ofx,.qfx,text/csv,text/plain"
           className="text-sm"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -4765,7 +5239,7 @@ function ImportPanel({
         />
       </div>
       <div>
-        <label htmlFor="imp-text" className={labelCls}>…or paste CSV text</label>
+        <label htmlFor="imp-text" className={labelCls}>…or paste CSV or OFX text</label>
         <textarea
           id="imp-text"
           rows={6}
@@ -4778,33 +5252,253 @@ function ImportPanel({
           placeholder={"date,description,amount\n2026-10-03,Grocery store,84.20"}
         />
       </div>
+      {parsedFile?.ofx && !parsedFile.error && (
+        <p className="text-sm text-[var(--dim)]">
+          {ofxNotice} OFX files carry their own sign convention (money
+          out is negative), so the &ldquo;money out is&rdquo; setting
+          doesn&rsquo;t apply to this file, and there are no columns
+          to map. Each transaction keeps its bank id, so the preview
+          can tell exact duplicates from look-alikes.
+        </p>
+      )}
+      {parsedFile && parsedFile.columnCount > 0 && !parsedFile.error && (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Which column is which?</legend>
+          {profileNotice && <p className="text-sm text-[var(--dim)]">{profileNotice}</p>}
+          <div className="grid grid-cols-2 gap-3">
+            {mappingRoles.map(({ role, label, optional }) => (
+              <div key={role}>
+                <label htmlFor={`imp-col-${role}`} className={labelCls}>{label} column</label>
+                <select
+                  id={`imp-col-${role}`}
+                  className={inputCls}
+                  value={mapping[role]}
+                  onChange={(e) => {
+                    setMapping({ ...mapping, [role]: Number(e.target.value) });
+                    clearPreview();
+                  }}
+                >
+                  {optional && <option value={-1}>Not in this file</option>}
+                  {Array.from({ length: parsedFile.columnCount }, (_, i) => (
+                    <option key={i} value={i}>
+                      {parsedFile.header?.[i] ? parsedFile.header[i] : `Column ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-[var(--dim)]">
+            Map either an amount column, or a debit and/or credit pair.
+            With a pair, the sign setting above applies to the combined
+            amount (debit minus credit).
+          </p>
+        </fieldset>
+      )}
       {error && <p className="text-sm text-[var(--warn)]">{error}</p>}
       {preview && (
         <div className="rounded-[var(--radius)] bg-[var(--surface-alt)] p-3 text-sm">
           <p>
-            Ready to import <strong>{preview.length}</strong> rows, net{" "}
-            {fmt(preview.reduce((s, r) => s + r.amountCents, 0))}.{" "}
+            Ready to import <strong>{newRows.length}</strong> new row
+            {newRows.length === 1 ? "" : "s"}, net{" "}
+            {fmt(newRows.reduce((s, r) => s + r.amountCents, 0))}.{" "}
             {preview.length > 1000 &&
               "Large file — it will be imported in batches of 500 rows. "}
-            {preview.filter((r) => r.kind === "card_payment").length} card
-            payments, {preview.filter((r) => r.kind === "transfer").length}{" "}
-            transfers, {preview.filter((r) => r.kind === "spending").length}{" "}
+            {newRows.filter((r) => r.kind === "card_payment").length} card
+            payments, {newRows.filter((r) => r.kind === "transfer").length}{" "}
+            transfers, {newRows.filter((r) => r.kind === "spending").length}{" "}
             spending.
           </p>
-          <ul className="mt-2 space-y-0.5 text-xs text-[var(--dim)]">
-            {preview.slice(0, 5).map((r, i) => (
+          {previewMeta && previewMeta.bothFilled > 0 && (
+            <p className="mt-1">
+              {previewMeta.bothFilled} row{previewMeta.bothFilled === 1 ? " had" : "s had"} both
+              a debit and a credit — combined as debit minus credit.
+            </p>
+          )}
+          {checkingDups && <p className="mt-1 text-[var(--dim)]">Checking for rows already recorded…</p>}
+          {dupNote && <p className="mt-1 text-[var(--warn)]">{dupNote}</p>}
+          {(dupFlags || exactFlags) && dupCount > 0 && (
+            <>
+              {exactCount > 0 && (
+                <>
+                  <p className="mt-1">
+                    <strong>{exactCount}</strong> row{exactCount === 1 ? "" : "s"}{" "}
+                    {exactCount === 1 ? "is an" : "are"} exact duplicate
+                    {exactCount === 1 ? "" : "s"} — the bank transaction id
+                    matches a transaction already recorded — and{" "}
+                    {exactCount === 1 ? "is" : "are"} left out below.
+                  </p>
+                  <ul className="mt-2 space-y-0.5 text-xs text-[var(--dim)]">
+                    {exactRows.slice(0, 5).map((r, i) => (
+                      <li key={i}>
+                        {r.date} · {r.description} · {fmt(r.amountCents)} · {r.kind} · exact duplicate
+                      </li>
+                    ))}
+                    {exactRows.length > 5 && <li>…and {exactRows.length - 5} more</li>}
+                  </ul>
+                </>
+              )}
+              {fuzzyOnlyCount > 0 && (
+                <>
+                  <p className="mt-1">
+                    <strong>{fuzzyOnlyCount}</strong> row{fuzzyOnlyCount === 1 ? "" : "s"} look
+                    already recorded (same date, amount, description, and kind)
+                    and {fuzzyOnlyCount === 1 ? "is" : "are"} left out below.
+                  </p>
+                  <ul className="mt-2 space-y-0.5 text-xs text-[var(--dim)]">
+                    {fuzzyOnlyRows.slice(0, 5).map((r, i) => (
+                      <li key={i}>
+                        {r.date} · {r.description} · {fmt(r.amountCents)} · {r.kind}
+                      </li>
+                    ))}
+                    {fuzzyOnlyRows.length > 5 && <li>…and {fuzzyOnlyRows.length - 5} more</li>}
+                  </ul>
+                </>
+              )}
+              <label className="mt-2 flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={includeDups}
+                  onChange={(e) => setIncludeDups(e.target.checked)}
+                />
+                <span>
+                  Import the {dupCount} excluded row
+                  {dupCount === 1 ? "" : "s"} too — they're genuinely
+                  separate transactions that happen to match.
+                </span>
+              </label>
+            </>
+          )}
+          <p className="mt-2 text-xs font-medium text-[var(--dim)]">New rows</p>
+          <ul className="mt-1 space-y-0.5 text-xs text-[var(--dim)]">
+            {newRows.slice(0, 5).map((r, i) => (
               <li key={i}>
                 {r.date} · {r.description} · {fmt(r.amountCents)} · {r.kind}
               </li>
             ))}
+            {newRows.length > 5 && <li>…and {newRows.length - 5} more</li>}
           </ul>
+        </div>
+      )}
+      {preview && template === "checking" && proposals.length > 0 && (
+        <div className="rounded-[var(--radius)] border border-[var(--border)] p-3">
+          <h4 className="text-sm font-semibold">Cash out proposed from this export</h4>
+          <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
+            This is a checking export, so it also shows what left the
+            account each month. The proposed cash out counts every
+            money-out row below — spending and card payments alike,
+            since paying the card is money leaving checking — and
+            leaves out transfers between your own accounts and any
+            money that came in. Nothing is saved until you save a
+            month, and months you don't save are left exactly as
+            they are.
+          </p>
+          {proposalError && <p className="mt-2 text-sm text-[var(--warn)]">{proposalError}</p>}
+          <div className="mt-3 space-y-4">
+            {proposals.map((p) => {
+              const rec = recordedByMonth.get(p.month);
+              const cmp = rec
+                ? compareCashOutProposal(p, {
+                    enteredTotalCents: rec.enteredCashOutCents,
+                    itemsTotalCents: rec.items.reduce((s, it) => s + it.amountCents, 0),
+                    itemsCount: rec.items.length,
+                  })
+                : null;
+              const dupItems = p.items.filter((it) => it.isDuplicate).length;
+              const wasSaved = savedMonths[p.month] ?? false;
+              return (
+                <div key={p.month} className="rounded-[var(--radius)] bg-[var(--surface-alt)] p-3 text-sm">
+                  <p>
+                    <strong>{monthLabel(p.month)}</strong> — proposed cash out{" "}
+                    <strong>{fmt(p.totalCents)}</strong> from {p.items.length} money-out row
+                    {p.items.length === 1 ? "" : "s"}.
+                  </p>
+                  <ul className="mt-2 space-y-0.5 text-xs text-[var(--dim)]">
+                    {p.items.slice(0, 10).map((it, i) => (
+                      <li key={i}>
+                        {it.date} · {it.description} · {fmt(it.amountCents)} · {it.kind}
+                        {it.isDuplicate && (
+                          <span className="text-[var(--warn)]"> · looks already recorded</span>
+                        )}
+                      </li>
+                    ))}
+                    {p.items.length > 10 && <li>…and {p.items.length - 10} more</li>}
+                  </ul>
+                  {dupItems > 0 && (
+                    <p className="mt-1 text-xs text-[var(--dim)]">
+                      {dupItems} of these rows look already recorded as transactions.
+                      They're still counted — the proposal is the export's own total,
+                      shown as-is.
+                    </p>
+                  )}
+                  {recordedCashOut === null ? (
+                    <p className="mt-2 text-[var(--dim)]">
+                      What's already recorded for this month couldn't be loaded, so no
+                      comparison is shown and saving is off — preview again to retry.
+                    </p>
+                  ) : cmp && cmp.recordedResolvedCents == null ? (
+                    <p className="mt-2">Nothing is recorded for {monthLabel(p.month)} yet.</p>
+                  ) : cmp && rec ? (
+                    <p className="mt-2">
+                      Recorded now: <strong>{fmt(cmp.recordedResolvedCents ?? 0)}</strong>
+                      {rec.enteredCashOutCents != null &&
+                        ` (entered total ${fmt(rec.enteredCashOutCents)}`}
+                      {rec.enteredCashOutCents != null && rec.items.length > 0 && " · "}
+                      {rec.items.length > 0 &&
+                        `${rec.enteredCashOutCents != null ? "" : "("}${rec.items.length} item${rec.items.length === 1 ? "" : "s"} totalling ${fmt(rec.items.reduce((s, it) => s + it.amountCents, 0))}`}
+                      {(rec.enteredCashOutCents != null || rec.items.length > 0) && ")"}
+                      {cmp.differenceCents != null && cmp.differenceCents !== 0 && (
+                        <>
+                          {" "}— the proposal is{" "}
+                          <strong>
+                            {fmt(Math.abs(cmp.differenceCents))}{" "}
+                            {cmp.differenceCents > 0 ? "more" : "less"}
+                          </strong>{" "}
+                          than recorded.
+                        </>
+                      )}
+                      {cmp.differenceCents === 0 && " — the proposal matches what's recorded."}
+                    </p>
+                  ) : null}
+                  <p className="mt-2 text-[var(--dim)]">
+                    Saving records these {p.items.length} rows as {monthLabel(p.month)}'s
+                    cash-out items and sets the month's entered total to {fmt(p.totalCents)}{" "}
+                    as the reference figure — when a month has both, the items are the cash
+                    out that counts and the entered total stays alongside for comparison.
+                    {rec && rec.items.length > 0 &&
+                      ` The ${rec.items.length} item${rec.items.length === 1 ? "" : "s"} currently recorded for this month will be replaced.`}
+                    {rec && rec.enteredCashOutCents != null && rec.enteredCashOutCents !== p.totalCents &&
+                      ` The entered total, currently ${fmt(rec.enteredCashOutCents)}, will be updated.`}
+                  </p>
+                  {wasSaved && (
+                    <p className="mt-2 font-medium">
+                      Saved — {monthLabel(p.month)}'s cash out is now these items, with{" "}
+                      {fmt(p.totalCents)} kept as the entered total.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className={btnPrimary}
+                    disabled={savingMonth !== null || recordedCashOut === null}
+                    onClick={() => void saveCashOutProposal(p)}
+                  >
+                    {savingMonth === p.month
+                      ? "Saving…"
+                      : wasSaved
+                        ? `Save ${monthLabel(p.month)} cash out again`
+                        : `Save ${monthLabel(p.month)} cash out`}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
       <div className="flex gap-2">
         <button
           type="button"
           className={btnGhost}
-          onClick={() => setPreview(buildRows())}
+          onClick={() => void runPreview()}
         >
           Preview import
         </button>
@@ -4812,10 +5506,10 @@ function ImportPanel({
           <button
             type="button"
             className={btnPrimary}
-            disabled={importer.isPending}
-            onClick={() => importer.mutate(preview)}
+            disabled={importer.isPending || checkingDups || includedRows.length === 0}
+            onClick={() => importer.mutate(includedRows)}
           >
-            Import {preview.length} rows
+            Import {includedRows.length} rows
           </button>
         )}
       </div>
