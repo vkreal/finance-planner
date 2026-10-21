@@ -74,6 +74,25 @@ Most retirement tools optimize tax brackets and stop there. Finance Planner was 
 - **🤖 One engine, every surface.** The app, the browser build, and AI assistants all read the *same* contract-tested engine — ask a question in chat and the answer is the engine's number, not a model's arithmetic.
 - **🔒 A full planner with no account.** Everything — engine included — runs in your browser on local storage, with encrypted backups that move between the browser and server builds. Serious planners usually want your data on their cloud; this one never sees it.
 
+## ♟️ Strategies you can model
+
+The Roth Conversion planner doesn't prescribe a strategy — it prices the ones households actually weigh, on your own numbers, and scores each on lifetime cost *and* ending wealth:
+
+- **Do nothing (the baseline).** Spend from pre-tax, convert nothing, cap nothing. Every other plan has to beat this honestly — including the tax an heir will owe on whatever pre-tax money is left.
+- **Cliff-capped draw.** Size each year's pre-tax draw to land just under the ACA premium-credit cliff, so the draw doubles as spending money without forfeiting the credit.
+- **Cliff-capped, cash-first.** The same draw discipline, plus a sale order inside taxable: sell the highest-basis money (cash first) to pay the tax, so the sale itself doesn't push income over the cliff it's protecting.
+- **Leave a floor.** Draw pre-tax down to a chosen ending balance instead of emptying it — priced with the leftover's exit tax charged at the heir's rate.
+- **Fill a bracket.** Convert each year up to the top of a chosen bracket — 10%, 12%, 22%, 24% — the classic conversion ladder.
+- **Fill to the cliff.** Conversions sized by the ACA cliff rather than a bracket top.
+- **Cap at an IRMAA tier.** Keep conversion income under a Medicare IRMAA threshold, so a good year now doesn't raise premiums two years later.
+- **Bunch.** Alternate one large conversion year with one quiet year, instead of converting evenly.
+- **Taxable first.** Spend the taxable account before touching pre-tax, with or without conversions — pre-tax compounds untouched, and the scoreboard shows what that really costs.
+- **Switch the order mid-plan.** Start with one draw order and change it at a chosen age — for example, Roth first after 75.
+- **Harvest gains on the way.** In low-income years, realize gains deliberately inside the 0% capital-gains zone to reset basis higher.
+- **Survivor variants.** Re-price any strategy with one spouse dying mid-plan and the survivor filing single — same money, very different tax life.
+
+These are modeling patterns, not advice: which one wins depends entirely on a household's buckets, credits, Social Security timing, and heirs. The planner's job is to show the math for each, side by side.
+
 ## 🔀 Two ways to run it
 
 | | 🌐 Browser build | 🖥️ Server build |
