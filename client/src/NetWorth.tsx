@@ -20,7 +20,34 @@ XAxis,
 YAxis,
 } from "recharts";
 import { api, type ApiResponse } from "./api";
-import { csvFormulaSafeText } from "./csvUtil";
+import {
+csvFormulaSafeText,
+csvImportFileError,
+parseCsvChecked,
+} from "./csvUtil";
+import {
+EMPTY_NW_IMPORT_SETTINGS,
+balanceRowsFromOfx,
+buildNwImportDraft,
+detectNwBalanceHeader,
+filterNwDraftEntries,
+findNwImportProfile,
+guessNwBalanceMapping,
+importHeaderFingerprint,
+matchNwImportRows,
+normalizeNwLabel,
+nwImportStatementDate,
+parseNwBalanceRows,
+parseNwImportSettings,
+serializeNwImportSettings,
+upsertNwImportProfile,
+withNwLabelMappings,
+type NwBalanceMapping,
+type NwDraftEntry,
+type NwImportRowTarget,
+type NwImportSettingsBlob,
+} from "./nwImportCore";
+import { looksLikeOfx, parseOfx } from "./ofxCore";
 import { Explainer } from "./Explainer";
 import { TrendBlock } from "./YearBlocks";
 
@@ -1238,6 +1265,972 @@ function BalanceEditor({
   );
 }
 
+/* ---------------- Net Worth balance import (IM-3 + IM-5) ----------------
+   Drop in a balances CSV from an institution — or an OFX/QFX
+   statement file, whose ledger balances become the rows
+   directly — and get a DRAFT
+   snapshot: rows are matched to accounts (remembered mappings
+   first, then by name), unmatched rows are assigned or skipped
+   by hand, splits are proposed (exact bucket amounts from
+   bucket-mapped rows, else the last split's proportions), and
+   accounts missing from the file are carried at their last
+   balance — labelled, and removable. Nothing saves until the
+   draft is confirmed, and the save is the existing
+   addNwSnapshot action. All parsing happens here in the
+   browser through the shared core (server/src/nwImportCore.ts),
+   so the packaged browser-only build behaves identically. */
+
+type NwImportEntryState = {
+  accountId: number;
+  source: NwDraftEntry["source"];
+  splitSource: NwDraftEntry["splitSource"];
+  fileRowCount: number;
+  removed: boolean;
+  mode: "whole" | "split";
+  whole: string;
+  splits: Record<NwSplitBucket, string>;
+};
+
+function nwTargetKey(t: NwImportRowTarget | null): string {
+  if (!t) return "skip";
+  return t.bucket ? `a:${t.accountId}:b:${t.bucket}` : `a:${t.accountId}`;
+}
+
+function nwTargetFromKey(key: string): NwImportRowTarget | null {
+  if (!key.startsWith("a:")) return null;
+  const rest = key.slice(2);
+  const sep = rest.indexOf(":b:");
+  const idPart = sep >= 0 ? rest.slice(0, sep) : rest;
+  const accountId = Number(idPart);
+  if (!Number.isInteger(accountId) || accountId <= 0) return null;
+  if (sep < 0) return { accountId, bucket: null };
+  const bucket = rest.slice(sep + 3);
+  return (NW_SPLIT_BUCKETS as readonly string[]).includes(bucket)
+    ? { accountId, bucket: bucket as NwSplitBucket }
+    : { accountId, bucket: null };
+}
+
+function NwImportPanel({
+  accounts,
+  snapshots,
+  includeProperty,
+  onSaved,
+  onClose,
+}: {
+  accounts: NwAccount[];
+  snapshots: NwSnapshot[];
+  includeProperty: boolean;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [csvText, setCsvText] = useState("");
+  const [mapping, setMapping] = useState<NwBalanceMapping>(() =>
+    guessNwBalanceMapping(null),
+  );
+  const [profileNotice, setProfileNotice] = useState("");
+  const [settingsBlob, setSettingsBlob] = useState<NwImportSettingsBlob>(
+    EMPTY_NW_IMPORT_SETTINGS,
+  );
+  const [error, setError] = useState("");
+  // Per-row target overrides, keyed by parsed-row index. Absent =
+  // keep the automatic match shown in the row's select.
+  const [assign, setAssign] = useState<Record<number, string>>({});
+  const [draft, setDraft] = useState<NwImportEntryState[] | null>(null);
+  const [draftDate, setDraftDate] = useState(todayStr());
+  const [savedBanner, setSavedBanner] = useState<{
+    date: string;
+    totalCents: number;
+    prevTotalCents: number | null;
+    prevDate: string | null;
+  } | null>(null);
+  const pendingBannerRef = useRef<typeof savedBanner>(null);
+
+  /* Remembered setup: header-keyed column profiles plus the
+     confirmed label → account/bucket mappings, in ONE settings
+     value (the app's settings storage, carried in backup/restore
+     like the other saved blobs). Loaded once when the panel
+     opens; a profile whose header matches the loaded file
+     applies its mapping automatically (see the effect below). */
+  const settingsQuery = useQuery({
+    queryKey: ["nwImportSettings"],
+    queryFn: () => api.getNwImportSettings({}),
+  });
+  const settingsLoaded = settingsQuery.isSuccess;
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    setSettingsBlob(
+      settingsQuery.data.settingsJson
+        ? parseNwImportSettings(settingsQuery.data.settingsJson)
+        : EMPTY_NW_IMPORT_SETTINGS,
+    );
+  }, [settingsQuery.data]);
+
+  const saveSetup = useMutation({
+    mutationFn: (json: string) => api.saveNwImportSettings({ settingsJson: json }),
+    // A failed save never blocks an import — the panel just
+    // keeps working with the values on screen.
+    onError: () =>
+      setProfileNotice(
+        "Your import setup couldn't be saved this time — the import itself is unaffected.",
+      ),
+  });
+
+  /* An OFX/QFX file (IM-5), parsed once per text change: each
+     account's ledger balance becomes a balance row directly —
+     no column mapping, since the format names its own fields.
+     Null when the loaded text is a CSV (or nothing). */
+  const ofxData = useMemo(() => {
+    if (csvText.trim() === "" || !looksLikeOfx(csvText)) return null;
+    const res = parseOfx(csvText);
+    if (!res.ok) return { error: res.error, rows: [], skippedAccounts: 0, accountCount: 0 };
+    const built = balanceRowsFromOfx(res.accounts);
+    return {
+      error:
+        built.rows.length === 0
+          ? "That OFX file states no ledger balance for any account — there is no balance to draft from it. (Its transactions can be imported from the Spending view instead.)"
+          : "",
+      rows: built.rows,
+      skippedAccounts: built.skippedAccounts,
+      accountCount: res.accounts.length,
+    };
+  }, [csvText]);
+
+  /* The loaded file, parsed once per text change. */
+  const parsedFile = useMemo(() => {
+    if (csvText.trim() === "") return null;
+    if (ofxData) {
+      return {
+        error: ofxData.error,
+        header: null as string[] | null,
+        body: [] as string[][],
+        columnCount: 0,
+      };
+    }
+    const parsed = parseCsvChecked(csvText);
+    if ("error" in parsed) {
+      return {
+        error: parsed.error,
+        header: null as string[] | null,
+        body: [] as string[][],
+        columnCount: 0,
+      };
+    }
+    const raw = parsed.rows;
+    const first = raw[0] ?? [];
+    const hasHeader = raw.length > 0 && detectNwBalanceHeader(first);
+    return {
+      error: "",
+      header: hasHeader ? first.map((c) => c.trim()) : null,
+      body: hasHeader ? raw.slice(1) : raw,
+      columnCount: raw.reduce((n, r) => Math.max(n, r.length), 0),
+    };
+  }, [csvText]);
+
+  /* When a file with a header arrives: a saved profile for its
+     header applies its mapping and says so; otherwise start
+     from the automatic guess. Any change of file clears the
+     row assignments and the draft. */
+  const appliedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const header = parsedFile?.header ?? null;
+    const key = `${header ? importHeaderFingerprint(header) : "no-header"}|${settingsLoaded ? "loaded" : "pending"}`;
+    if (appliedKeyRef.current === key) return;
+    appliedKeyRef.current = key;
+    setAssign({});
+    setDraft(null);
+    setSavedBanner(null);
+    if (!header) {
+      setMapping(guessNwBalanceMapping(null));
+      setProfileNotice("");
+      return;
+    }
+    const profile = findNwImportProfile(settingsBlob, header);
+    if (profile) {
+      setMapping(profile.mapping);
+      setProfileNotice(
+        "Saved setup applied — this file's columns match a layout you've imported before, so its column mapping was filled in from that profile. Change anything below and the profile updates when you build the draft.",
+      );
+    } else {
+      setMapping(guessNwBalanceMapping(header));
+      setProfileNotice("");
+    }
+  }, [parsedFile, settingsLoaded, settingsBlob]);
+
+  const mappingValid = mapping.label >= 0 && mapping.balance >= 0;
+  const parsedRows = useMemo(() => {
+    if (ofxData) {
+      return ofxData.error
+        ? null
+        : { rows: ofxData.rows, skipped: 0 };
+    }
+    if (!parsedFile || parsedFile.error || !mappingValid) return null;
+    return parseNwBalanceRows(parsedFile.body, mapping);
+  }, [ofxData, parsedFile, mapping, mappingValid]);
+
+  const matchedRows = useMemo(() => {
+    if (!parsedRows) return null;
+    return matchNwImportRows(parsedRows.rows, accounts, settingsBlob.labelMappings);
+  }, [parsedRows, accounts, settingsBlob]);
+
+  const accountById = useMemo(
+    () => new Map(accounts.map((a) => [a.id, a] as [number, NwAccount])),
+    [accounts],
+  );
+  const noSplitIds = useMemo(
+    () =>
+      new Set(
+        accounts
+          .filter((a) => a.propertyKind !== "none" || a.custodial)
+          .map((a) => a.id),
+      ),
+    [accounts],
+  );
+  const latestSnapshot = snapshots[snapshots.length - 1] ?? null;
+  const lastBalances = useMemo(() => {
+    const out: Record<
+      number,
+      { balanceCents: number; splits: { bucket: NwSplitBucket; amountCents: number }[] }
+    > = {};
+    if (latestSnapshot) {
+      for (const b of latestSnapshot.balances) {
+        out[b.accountId] = {
+          balanceCents: b.balanceCents,
+          splits: (b.splits ?? []).map((p) => ({
+            bucket: p.bucket,
+            amountCents: p.amountCents,
+          })),
+        };
+      }
+    }
+    return out;
+  }, [latestSnapshot]);
+
+  function resetWork() {
+    setAssign({});
+    setDraft(null);
+    setSavedBanner(null);
+    setError("");
+  }
+
+  function finalRows() {
+    if (!matchedRows) return null;
+    return matchedRows.map((r, i) => {
+      const key = assign[i];
+      return key === undefined ? r : { ...r, target: nwTargetFromKey(key) };
+    });
+  }
+
+  function buildDraft() {
+    setError("");
+    const rows = finalRows();
+    if (!rows || rows.length === 0) {
+      setError("Load a balances file first — there are no usable rows yet.");
+      return;
+    }
+    if (rows.every((r) => r.target == null)) {
+      setError(
+        "Every row is set to skip — assign at least one row to an account to build a draft.",
+      );
+      return;
+    }
+    const entries = buildNwImportDraft({
+      accounts,
+      rows,
+      lastBalances,
+      noSplitIds,
+    });
+    setDraft(
+      entries.map((entry) => {
+        const splits: Record<NwSplitBucket, string> = {
+          HSA: "", Roth: "", Taxable: "", "Non-Taxable": "", "529": "", Cash: "", "Pre-tax": "",
+        };
+        if (entry.splits) {
+          for (const p of entry.splits) {
+            splits[p.bucket] = (p.amountCents / 100).toFixed(2);
+          }
+        }
+        return {
+          accountId: entry.accountId,
+          source: entry.source,
+          splitSource: entry.splitSource,
+          fileRowCount: entry.fileRowCount,
+          removed: false,
+          mode: entry.splits ? ("split" as const) : ("whole" as const),
+          whole:
+            entry.balanceCents != null
+              ? (entry.balanceCents / 100).toFixed(2)
+              : "",
+          splits,
+        };
+      }),
+    );
+    const dated = rows.filter((r) => r.target != null);
+    setDraftDate(nwImportStatementDate(dated) ?? todayStr());
+    setSavedBanner(null);
+    // Remember what the user just confirmed: the profile for
+    // this header, and every non-skipped row's label mapping.
+    const additions: Record<string, NwImportRowTarget> = {};
+    for (const r of rows) {
+      if (r.target) {
+        additions[normalizeNwLabel(r.matchKey ?? r.label)] = r.target;
+      }
+    }
+    let blob = settingsBlob;
+    if (parsedFile?.header) {
+      blob = upsertNwImportProfile(blob, parsedFile.header, mapping);
+    }
+    blob = withNwLabelMappings(blob, additions);
+    setSettingsBlob(blob);
+    saveSetup.mutate(serializeNwImportSettings(blob));
+  }
+
+  function setDraftEntry(id: number, next: NwImportEntryState) {
+    setDraft((prev) =>
+      prev ? prev.map((e) => (e.accountId === id ? next : e)) : prev,
+    );
+  }
+
+  function draftEntryTotalCents(es: NwImportEntryState): number | null {
+    const acct = accountById.get(es.accountId);
+    const splittable =
+      acct != null && acct.propertyKind === "none" && !acct.custodial;
+    if (es.mode === "split" && splittable) {
+      let sum = 0;
+      let any = false;
+      for (const bucket of NW_SPLIT_BUCKETS) {
+        const parsed = parseBalanceInput(es.splits[bucket] ?? "");
+        if (parsed === undefined) return null;
+        if (parsed != null) {
+          sum += parsed;
+          any = true;
+        }
+      }
+      return any ? sum : null;
+    }
+    const parsed = parseBalanceInput(es.whole);
+    return parsed === undefined ? null : parsed;
+  }
+
+  // The draft's snapshot total under the same rules getNetWorth
+  // applies: custodial balances never count; property counts
+  // only while the include toggle is on (liabilities subtract).
+  const draftTotalCents = useMemo(() => {
+    if (!draft) return null;
+    let total = 0;
+    let any = false;
+    for (const es of draft) {
+      if (es.removed) continue;
+      const acct = accountById.get(es.accountId);
+      if (!acct || acct.custodial) continue;
+      const cents = draftEntryTotalCents(es);
+      if (cents == null) continue;
+      if (acct.propertyKind !== "none") {
+        if (!includeProperty) continue;
+        total += effectiveBalanceCentsClient(acct.propertyKind, cents);
+      } else {
+        total += cents;
+      }
+      any = true;
+    }
+    return any ? total : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, accountById, includeProperty]);
+
+  const dateTaken =
+    draft != null && snapshots.some((s) => s.date === draftDate);
+
+  const saveSnapshot = useMutation({
+    mutationFn: (input: {
+      date: string;
+      note: string | null;
+      balances: {
+        accountId: number;
+        balanceCents: number | null;
+        splits: { bucket: NwSplitBucket; amountCents: number }[] | null;
+      }[];
+    }) => api.addNwSnapshot(input),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setError(r.reason);
+        return;
+      }
+      setSavedBanner(pendingBannerRef.current);
+      setDraft(null);
+      onSaved();
+    },
+    onError: (e) => setError(String(e)),
+  });
+
+  function submitDraft() {
+    setError("");
+    if (!draft) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(draftDate)) {
+      setError("Pick a date for this snapshot.");
+      return;
+    }
+    if (draftDate > todayStr()) {
+      setError("Snapshot date can't be in the future");
+      return;
+    }
+    if (snapshots.some((s) => s.date === draftDate)) {
+      setError(
+        `A snapshot already exists for ${fmtDateLong(draftDate)} — pick a different date, or edit that snapshot instead.`,
+      );
+      return;
+    }
+    const removedIds = new Set(
+      draft.filter((e) => e.removed).map((e) => e.accountId),
+    );
+    const kept = filterNwDraftEntries(draft, removedIds);
+    const balances: {
+      accountId: number;
+      balanceCents: number | null;
+      splits: { bucket: NwSplitBucket; amountCents: number }[] | null;
+    }[] = [];
+    for (const es of kept) {
+      const acct = accountById.get(es.accountId);
+      if (!acct) continue;
+      const splittable = acct.propertyKind === "none" && !acct.custodial;
+      if (es.mode === "split" && splittable) {
+        const parts: { bucket: NwSplitBucket; amountCents: number }[] = [];
+        let invalid = false;
+        for (const bucket of NW_SPLIT_BUCKETS) {
+          const parsed = parseBalanceInput(es.splits[bucket] ?? "");
+          if (parsed === undefined) {
+            invalid = true;
+            break;
+          }
+          if (parsed != null) parts.push({ bucket, amountCents: parsed });
+        }
+        if (invalid) {
+          setError(
+            `Check the split for ${acct.name} — one of its bucket amounts isn't a number.`,
+          );
+          return;
+        }
+        if (parts.length === 0) {
+          balances.push({ accountId: acct.id, balanceCents: null, splits: null });
+        } else {
+          const total = parts.reduce((s, p) => s + p.amountCents, 0);
+          balances.push({ accountId: acct.id, balanceCents: total, splits: parts });
+        }
+        continue;
+      }
+      const parsed = parseBalanceInput(es.whole);
+      if (parsed === undefined) {
+        setError(`Check the balance for ${acct.name} — it isn't a number.`);
+        return;
+      }
+      balances.push({ accountId: acct.id, balanceCents: parsed, splits: null });
+    }
+    if (balances.every((b) => b.balanceCents == null)) {
+      setError(
+        "Enter at least one balance — every account in the draft is blank or removed.",
+      );
+      return;
+    }
+    // The banner compares this snapshot's total with the
+    // previous latest snapshot's, under the same total rules.
+    let total = 0;
+    for (const b of balances) {
+      if (b.balanceCents == null) continue;
+      const acct = accountById.get(b.accountId);
+      if (!acct || acct.custodial) continue;
+      if (acct.propertyKind !== "none") {
+        if (!includeProperty) continue;
+        total += effectiveBalanceCentsClient(acct.propertyKind, b.balanceCents);
+      } else {
+        total += b.balanceCents;
+      }
+    }
+    pendingBannerRef.current = {
+      date: draftDate,
+      totalCents: total,
+      prevTotalCents: latestSnapshot?.totalCents ?? null,
+      prevDate: latestSnapshot?.date ?? null,
+    };
+    saveSnapshot.mutate({ date: draftDate, note: null, balances });
+  }
+
+  const mappingRoles: { role: keyof NwBalanceMapping; label: string; optional: boolean }[] = [
+    { role: "label", label: "Account label", optional: false },
+    { role: "balance", label: "Balance", optional: false },
+    { role: "date", label: "Date", optional: true },
+  ];
+  const unmatchedCount = matchedRows
+    ? matchedRows.filter(
+        (r, i) => (assign[i] === undefined ? r.target : nwTargetFromKey(assign[i])) == null,
+      ).length
+    : 0;
+
+  return (
+    <div className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="display text-lg font-semibold">Import account balances</h3>
+        <button
+          type="button"
+          aria-label="Close balance import"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-lg"
+          onClick={onClose}
+        >
+          ✕
+        </button>
+      </div>
+      <p className="text-sm leading-relaxed text-[var(--dim)]">
+        Export a balances or positions CSV from your bank or brokerage —
+        one row per account or sub-account, with a label column and a
+        balance column (a date column is used when present) — or an
+        OFX/QFX statement file, whose ledger balance and as-of date
+        are read directly for each account it holds (account numbers
+        are shown masked) — then pick
+        the file or paste it here. Rows are matched to your accounts by
+        mappings you&rsquo;ve confirmed before, then by name; anything
+        unmatched waits for you to assign or skip it. The result is a{" "}
+        <strong>draft snapshot</strong>: accounts the file doesn&rsquo;t
+        mention are carried at their last recorded balance and marked as
+        carried, never silently zeroed, and every figure — including
+        each proposed bucket split — stays editable. Nothing is saved
+        until you confirm the draft. Column mappings and account
+        assignments you confirm are remembered for next time. Import
+        limits: a file up to 5 MB and 25,000 rows.
+      </p>
+      <div>
+        <label htmlFor="nw-imp-file" className={labelCls}>Balances file (CSV or OFX/QFX)</label>
+        <input
+          id="nw-imp-file"
+          ref={fileRef}
+          type="file"
+          accept=".csv,.ofx,.qfx,text/csv,text/plain"
+          className="text-sm"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) {
+              // Size budget first (csvUtil, finding S4): an
+              // oversized file is refused by name before it is
+              // read into the page at all.
+              const sizeError = csvImportFileError(f.size);
+              if (sizeError) {
+                setError(sizeError);
+                e.target.value = "";
+                return;
+              }
+              void f.text().then((t) => {
+                setCsvText(t);
+                resetWork();
+              });
+            }
+          }}
+        />
+      </div>
+      <div>
+        <label htmlFor="nw-imp-text" className={labelCls}>…or paste CSV or OFX text</label>
+        <textarea
+          id="nw-imp-text"
+          rows={6}
+          className={`${inputCls} font-mono text-sm`}
+          value={csvText}
+          onChange={(e) => {
+            setCsvText(e.target.value);
+            resetWork();
+          }}
+          placeholder={"account,balance\nBrokerage,125000.50\nBank,4200"}
+        />
+      </div>
+      {parsedFile && parsedFile.error && (
+        <p className="text-sm text-[var(--warn)]">{parsedFile.error}</p>
+      )}
+      {ofxData && !ofxData.error && (
+        <p className="text-sm text-[var(--dim)]">
+          OFX statement file — {ofxData.rows.length} account
+          {ofxData.rows.length === 1 ? "" : "s"} with a ledger balance
+          {ofxData.accountCount > 1 ? `, of ${ofxData.accountCount} in the file` : ""}.
+          Each balance below is the statement&rsquo;s own ledger balance
+          as of its date; there are no columns to map.
+          {ofxData.skippedAccounts > 0 &&
+            ` ${ofxData.skippedAccounts} account${ofxData.skippedAccounts === 1 ? "" : "s"} in the file state${ofxData.skippedAccounts === 1 ? "s" : ""} no ledger balance and contribute${ofxData.skippedAccounts === 1 ? "s" : ""} no row.`}
+        </p>
+      )}
+      {parsedFile && parsedFile.columnCount > 0 && !parsedFile.error && (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Which column is which?</legend>
+          {profileNotice && <p className="text-sm text-[var(--dim)]">{profileNotice}</p>}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {mappingRoles.map(({ role, label, optional }) => (
+              <div key={role}>
+                <label htmlFor={`nw-imp-col-${role}`} className={labelCls}>{label} column</label>
+                <select
+                  id={`nw-imp-col-${role}`}
+                  className={inputCls}
+                  value={mapping[role]}
+                  onChange={(e) => {
+                    setMapping({ ...mapping, [role]: Number(e.target.value) });
+                    setDraft(null);
+                    setAssign({});
+                    setSavedBanner(null);
+                  }}
+                >
+                  {optional && <option value={-1}>Not in this file</option>}
+                  {Array.from({ length: parsedFile.columnCount }, (_, i) => (
+                    <option key={i} value={i}>
+                      {parsedFile.header?.[i] ? parsedFile.header[i] : `Column ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+          {!mappingValid && (
+            <p className="text-xs text-[var(--warn)]">
+              Choose which columns hold the account label and the balance.
+            </p>
+          )}
+        </fieldset>
+      )}
+      {parsedRows && parsedRows.skipped > 0 && (
+        <p className="text-sm text-[var(--warn)]">
+          {parsedRows.skipped} row{parsedRows.skipped === 1 ? "" : "s"} skipped —
+          a missing label, a label over 200 characters or carrying the
+          reserved enc:v1: prefix, or a balance that isn&rsquo;t a number.
+        </p>
+      )}
+      {matchedRows && matchedRows.length > 0 && !draft && !savedBanner && (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">
+            Match the file&rsquo;s rows to your accounts
+          </legend>
+          <p className="text-xs text-[var(--dim)]">
+            Rows matched to the same account add together into that
+            account&rsquo;s new balance. Assigning a row to one bucket of
+            an account (for example, a Roth sub-account row) uses that
+            exact amount for the bucket in the draft&rsquo;s split.
+            {unmatchedCount > 0 &&
+              ` ${unmatchedCount} row${unmatchedCount === 1 ? " doesn't" : "s don't"} match an account yet — assign or skip ${unmatchedCount === 1 ? "it" : "them"} below.`}
+          </p>
+          <ul className="space-y-2">
+            {matchedRows.slice(0, 100).map((r, i) => {
+              const value = assign[i] ?? nwTargetKey(r.target);
+              return (
+                <li
+                  key={i}
+                  className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-2"
+                >
+                  <span className="min-w-40 flex-1">
+                    <span className="block text-sm font-medium break-words">{r.label}</span>
+                    <span className="tnum block text-xs text-[var(--dim)]">
+                      {fmt(r.balanceCents)}
+                      {r.date ? ` · ${fmtDateShort(r.date)}` : ""}
+                      {assign[i] === undefined && r.matchedBy === "remembered"
+                        ? " · remembered mapping"
+                        : assign[i] === undefined && r.matchedBy === "name"
+                          ? " · matched by name"
+                          : assign[i] === undefined
+                            ? " · not matched"
+                            : ""}
+                    </span>
+                  </span>
+                  <label className="sr-only" htmlFor={`nw-imp-assign-${i}`}>
+                    Account for file row {r.label}
+                  </label>
+                  <select
+                    id={`nw-imp-assign-${i}`}
+                    className="w-full min-w-52 flex-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-base text-[var(--text)] sm:w-auto"
+                    value={value}
+                    onChange={(e) =>
+                      setAssign((prev) => ({ ...prev, [i]: e.target.value }))
+                    }
+                  >
+                    <option value="skip">Skip this row</option>
+                    {accounts.map((a) => (
+                      <optgroup key={a.id} label={a.name}>
+                        <option value={`a:${a.id}`}>{a.name} — whole balance</option>
+                        {a.propertyKind === "none" &&
+                          !a.custodial &&
+                          NW_SPLIT_BUCKETS.map((b) => (
+                            <option key={b} value={`a:${a.id}:b:${b}`}>
+                              {a.name} — {bucketLabel(b)} bucket
+                            </option>
+                          ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </li>
+              );
+            })}
+          </ul>
+          {matchedRows.length > 100 && (
+            <p className="text-xs text-[var(--dim)]">
+              …and {matchedRows.length - 100} more rows, matched the same way.
+            </p>
+          )}
+        </fieldset>
+      )}
+      {error && <p className="text-sm text-[var(--bad)]">{error}</p>}
+      {!draft && !savedBanner && (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className={btnPrimary}
+            disabled={!matchedRows || matchedRows.length === 0}
+            onClick={buildDraft}
+          >
+            Build draft snapshot
+          </button>
+        </div>
+      )}
+      {savedBanner && (
+        <div className="rounded-[var(--radius)] bg-[var(--surface-alt)] p-3 text-sm" role="status">
+          <p>
+            Saved the {fmtDateLong(savedBanner.date)} snapshot — it totals{" "}
+            <strong>{fmt(savedBanner.totalCents)}</strong>
+            {savedBanner.prevTotalCents != null && savedBanner.prevDate
+              ? `, next to the previous snapshot (${fmtDateShort(savedBanner.prevDate)}) at ${fmt(savedBanner.prevTotalCents)} — a change of ${fmtSigned(savedBanner.totalCents - savedBanner.prevTotalCents)}.`
+              : " — the first snapshot recorded."}
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button type="button" className={btnGhost} onClick={onClose}>
+              Done
+            </button>
+            <button
+              type="button"
+              className={btnGhost}
+              onClick={() => {
+                setSavedBanner(null);
+                setCsvText("");
+                resetWork();
+              }}
+            >
+              Import another file
+            </button>
+          </div>
+        </div>
+      )}
+      {draft && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label htmlFor="nw-imp-date" className={labelCls}>Snapshot date</label>
+              <input
+                id="nw-imp-date"
+                type="date"
+                required
+                max={todayStr()}
+                className={inputCls}
+                value={draftDate}
+                onChange={(e) => setDraftDate(e.target.value)}
+              />
+            </div>
+            <p className="text-sm text-[var(--dim)]" aria-live="polite">
+              {draftTotalCents != null
+                ? `Draft total: ${fmt(draftTotalCents)}${includeProperty ? "" : " (property excluded — the Include house & mortgage toggle is off)"}`
+                : "Draft total: —"}
+              {latestSnapshot
+                ? ` · Previous snapshot (${fmtDateShort(latestSnapshot.date)}): ${fmt(latestSnapshot.totalCents)}`
+                : ""}
+            </p>
+          </div>
+          {dateTaken && (
+            <p className="text-sm text-[var(--warn)]">
+              A snapshot already exists for this date — saving will be
+              refused. Pick a different date, or close this and edit that
+              snapshot instead.
+            </p>
+          )}
+          {draft.map((es) => {
+            const acct = accountById.get(es.accountId);
+            if (!acct) return null;
+            const splittable = acct.propertyKind === "none" && !acct.custodial;
+            const lastBal = lastBalances[es.accountId];
+            const total = es.mode === "split" && splittable ? draftEntryTotalCents(es) : null;
+            return (
+              <div
+                key={es.accountId}
+                className={`rounded-[var(--radius)] border border-[var(--border)] p-3 ${es.removed ? "opacity-60" : ""}`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold">{acct.name}</span>
+                  {acct.propertyKind === "asset" && (
+                    <span className="text-xs font-medium text-[var(--dim)]">Property asset</span>
+                  )}
+                  {acct.propertyKind === "liability" && (
+                    <span className="text-xs font-medium text-[var(--dim)]">Property liability</span>
+                  )}
+                  {acct.custodial && (
+                    <span className="text-xs font-medium text-[var(--dim)]">Custodial — not counted</span>
+                  )}
+                  {es.source === "file" && (
+                    <span className="text-xs font-medium text-[var(--accent)]">
+                      From file{es.fileRowCount > 1 ? ` · ${es.fileRowCount} rows summed` : ""}
+                    </span>
+                  )}
+                  {es.source === "carried" && (
+                    <span className="text-xs font-medium text-[var(--warn)]">Not in file — carried</span>
+                  )}
+                  {es.source === "blank" && (
+                    <span className="text-xs text-[var(--dim)]">No balance in the file or earlier snapshots</span>
+                  )}
+                  <button
+                    type="button"
+                    className="ml-auto text-sm font-medium text-[var(--accent)] underline underline-offset-2"
+                    aria-label={
+                      es.removed
+                        ? `Restore ${acct.name} in this draft snapshot`
+                        : `Remove ${acct.name} from this draft snapshot`
+                    }
+                    onClick={() => setDraftEntry(es.accountId, { ...es, removed: !es.removed })}
+                  >
+                    {es.removed ? "Restore" : "Remove"}
+                  </button>
+                </div>
+                {es.removed ? (
+                  <p className="mt-1 text-sm text-[var(--dim)]">
+                    Removed — this account won&rsquo;t be recorded in the
+                    snapshot. Its earlier snapshots are untouched.
+                  </p>
+                ) : es.mode === "split" && splittable ? (
+                  <>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {NW_SPLIT_BUCKETS.map((bucket, i) => (
+                        <div key={bucket}>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label
+                              htmlFor={`nw-imp-bal-${es.accountId}-${bucketKey(bucket)}`}
+                              className="text-sm font-medium text-[var(--text)]"
+                            >
+                              <span
+                                aria-hidden="true"
+                                className="mr-1.5 inline-block h-2 w-2 rounded-full align-middle"
+                                style={{ background: BUCKET_COLORS[bucket] }}
+                              />
+                              {bucketLabel(bucket)}
+                            </label>
+                            <BucketHelp bucket={bucket} align={i % 2 === 0 ? "left" : "right"} />
+                          </div>
+                          <input
+                            id={`nw-imp-bal-${es.accountId}-${bucketKey(bucket)}`}
+                            aria-label={`${acct.name} ${bucketLabel(bucket)} amount`}
+                            type="text"
+                            inputMode="decimal"
+                            className={inputCls}
+                            value={es.splits[bucket]}
+                            onChange={(e) =>
+                              setDraftEntry(es.accountId, {
+                                ...es,
+                                splits: { ...es.splits, [bucket]: e.target.value },
+                              })
+                            }
+                            placeholder="Blank = $0"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <p className="tnum text-sm text-[var(--dim)]" aria-live="polite">
+                        {total != null
+                          ? `Balance total: ${fmt(total)} — the bucket amounts are the balance`
+                          : "Enter at least one bucket amount, or use one balance"}
+                        {es.splitSource === "exact" &&
+                          " · Split from the file's bucket rows — exact amounts."}
+                        {es.splitSource === "proportional" &&
+                          " · Split proposed from the last snapshot's proportions."}
+                        {es.splitSource === "mixed" &&
+                          " · Bucket amounts from the file; whole-account rows spread by the last split's proportions."}
+                        {es.splitSource === "carried" &&
+                          " · Split carried from the last snapshot."}
+                      </p>
+                      <button
+                        type="button"
+                        aria-label={`Clear split for ${acct.name} and use a single balance`}
+                        className="text-sm font-medium text-[var(--accent)] underline underline-offset-2"
+                        onClick={() =>
+                          setDraftEntry(es.accountId, {
+                            ...es,
+                            mode: "whole",
+                            whole: total != null ? (total / 100).toFixed(2) : es.whole,
+                          })
+                        }
+                      >
+                        Clear split — use one balance
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-2">
+                    <label htmlFor={`nw-imp-bal-${es.accountId}`} className={labelCls}>
+                      Balance
+                      {lastBal && es.source !== "file"
+                        ? ` — last recorded ${fmt(lastBal.balanceCents)}`
+                        : ""}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id={`nw-imp-bal-${es.accountId}`}
+                        type="text"
+                        inputMode="decimal"
+                        className={inputCls}
+                        value={es.whole}
+                        onChange={(e) =>
+                          setDraftEntry(es.accountId, { ...es, whole: e.target.value })
+                        }
+                        placeholder="Blank = not recorded"
+                      />
+                      {splittable && (
+                        <button
+                          type="button"
+                          aria-label={`Split ${acct.name} into buckets`}
+                          className="shrink-0 text-sm font-medium whitespace-nowrap text-[var(--accent)] underline underline-offset-2"
+                          onClick={() => setDraftEntry(es.accountId, { ...es, mode: "split" })}
+                        >
+                          Split into buckets
+                        </button>
+                      )}
+                    </div>
+                    {acct.propertyKind === "liability" && (
+                      <p className="mt-1 text-xs leading-relaxed text-[var(--dim)]">
+                        Enter the amount owed as a positive number — it
+                        subtracts from net worth when house &amp; mortgage
+                        are included.
+                      </p>
+                    )}
+                    {acct.propertyKind === "asset" && (
+                      <p className="mt-1 text-xs leading-relaxed text-[var(--dim)]">
+                        Property asset — it adds to net worth when house &amp;
+                        mortgage are included, and never counts in a tax bucket.
+                      </p>
+                    )}
+                    {acct.custodial && (
+                      <p className="mt-1 text-xs leading-relaxed text-[var(--dim)]">
+                        Custodial — not counted. {CUSTODIAL_EXPLAINER}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={btnPrimary}
+              disabled={saveSnapshot.isPending}
+              onClick={submitDraft}
+            >
+              {saveSnapshot.isPending ? "Saving…" : "Save snapshot"}
+            </button>
+            <button
+              type="button"
+              className={btnGhost}
+              onClick={() => setDraft(null)}
+            >
+              Back to row matching
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- net worth slice & dice explorer ---------------- */
 
 type NwExplorerGroupBy = "account" | "bucket" | "property";
@@ -1844,6 +2837,7 @@ export function NetWorthView() {
     snapshot: NwSnapshot;
   } | null>(null);
   const [showNwExplorer, setShowNwExplorer] = useState(false);
+  const [showNwImport, setShowNwImport] = useState(false);
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountType, setNewAccountType] =
@@ -2116,7 +3110,26 @@ export function NetWorthView() {
           <button type="button" className={btnGhost} onClick={() => setShowAccountForm(true)}>
             Add an account
           </button>
+          {accounts.length > 0 && (
+            <button
+              type="button"
+              className={btnGhost}
+              aria-expanded={showNwImport}
+              onClick={() => setShowNwImport(!showNwImport)}
+            >
+              Import balances
+            </button>
+          )}
         </div>
+        {showNwImport && accounts.length > 0 && (
+          <NwImportPanel
+            accounts={accounts.filter((a) => !a.archived)}
+            snapshots={snapshots}
+            includeProperty={data.includeProperty}
+            onSaved={invalidate}
+            onClose={() => setShowNwImport(false)}
+          />
+        )}
         {showAccountForm && (
           <form
             className="mt-4 flex flex-wrap items-end gap-2"
@@ -2523,6 +3536,14 @@ export function NetWorthView() {
           >
             Slice &amp; dice
           </button>
+          <button
+            type="button"
+            className={btnGhost}
+            aria-expanded={showNwImport}
+            onClick={() => setShowNwImport(!showNwImport)}
+          >
+            Import balances
+          </button>
           <button type="button" className={btnPrimary} onClick={openAddSnapshot}>
             Add snapshot
           </button>
@@ -2600,6 +3621,16 @@ export function NetWorthView() {
             “Include house &amp; mortgage” is on, and never sit in a tax bucket.
           </p>
         </form>
+      )}
+
+      {showNwImport && (
+        <NwImportPanel
+          accounts={activeAccounts}
+          snapshots={snapshots}
+          includeProperty={includeProperty}
+          onSaved={invalidate}
+          onClose={() => setShowNwImport(false)}
+        />
       )}
 
       {/* property include toggle */}

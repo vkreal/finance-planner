@@ -38,6 +38,48 @@ planImportBatch,
 type ImportTextRow,
 } from "./importCore";
 import {
+EMPTY_IMPORT_SETTINGS,
+buildCashOutProposals,
+combineDebitCreditAmount,
+compareCashOutProposal,
+findImportProfile,
+flagExactFitIdDuplicates,
+flagImportDuplicates,
+guessImportMapping,
+importHeaderFingerprint,
+normalizeImportDate,
+parseImportAmount,
+parseImportSettings,
+serializeImportSettings,
+upsertImportProfile,
+withLastImportSettings,
+type ImportColumnMapping,
+type ImportFileSettings,
+} from "./importParseCore";
+import {
+EMPTY_NW_IMPORT_SETTINGS,
+balanceRowsFromOfx,
+buildNwImportDraft,
+detectNwBalanceHeader,
+filterNwDraftEntries,
+findNwImportProfile,
+guessNwBalanceMapping,
+matchNwImportRows,
+normalizeNwLabel,
+nwImportStatementDate,
+parseNwBalanceRows,
+parseNwImportSettings,
+proportionalNwSplit,
+serializeNwImportSettings,
+upsertNwImportProfile,
+withNwLabelMappings,
+} from "./nwImportCore";
+import {
+ofxAccountDisplay,
+parseOfx,
+parseOfxDate,
+} from "./ofxCore";
+import {
 attemptNwSnapshotWrite,
 bucketSubtotals,
 buildNwSnapshotWritePlan,
@@ -2748,6 +2790,892 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         failedAppended: failed.stored.length - priorList.length,
         failedStoredUnchanged:
           JSON.stringify(failed.stored) === JSON.stringify(priorList) ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "import-debit-credit-pair-parsing",
+    kind: "spending",
+    note: "IM-2 dialect fix, hand-derived from combineDebitCreditAmount's rule (debit = money out by magnitude, credit = money in by magnitude, both filled nets debit − credit): a debit-only row \"84.20\" parses to +8420 cents with bothFilled unset — the single-amount path's value. A credit-only row \"250.00\" parses to −25000 (money in): before the fix this row's empty debit cell failed the amount parse and the row was silently skipped. A both-filled row (debit 100.00, credit 40.00) nets to +6000 with bothFilled set, so the preview can surface the combined-row count. Two empty cells and a garbled non-empty cell each yield null (row skipped — a garbled pair never imports one-sided), and a signed debit cell \"-30.00\" still counts by magnitude as +3000 of money out.",
+    expected: {
+      debitOnlyCents: 8420, debitOnlyBoth: 0,
+      creditOnlyCents: -25000, creditOnlyBoth: 0,
+      bothCents: 6000, bothFlag: 1,
+      emptyIsNull: 1, garbledIsNull: 1, signedDebitCents: 3000,
+    },
+    actual: () => {
+      const debitOnly = combineDebitCreditAmount("84.20", "");
+      const creditOnly = combineDebitCreditAmount("", "250.00");
+      const both = combineDebitCreditAmount("100.00", "40.00");
+      const signedDebit = combineDebitCreditAmount("-30.00", "");
+      return {
+        debitOnlyCents: debitOnly?.cents ?? -999999,
+        debitOnlyBoth: debitOnly?.bothFilled ? 1 : 0,
+        creditOnlyCents: creditOnly?.cents ?? -999999,
+        creditOnlyBoth: creditOnly?.bothFilled ? 1 : 0,
+        bothCents: both?.cents ?? -999999,
+        bothFlag: both?.bothFilled ? 1 : 0,
+        emptyIsNull: combineDebitCreditAmount("", "") === null ? 1 : 0,
+        garbledIsNull: combineDebitCreditAmount("abc", "") === null ? 1 : 0,
+        signedDebitCents: signedDebit?.cents ?? -999999,
+      };
+    },
+  },
+  {
+    id: "import-two-digit-year-dates",
+    kind: "spending",
+    note: "IM-2 dialect fix, hand-derived from the calendar: normalizeImportDate reads M/D/YY as 20YY — \"10/3/26\" is 2026-10-03 and the dash form \"10-3-26\" agrees. 2024 is a leap year so \"2/29/24\" is the real date 2024-02-29; 2026 is not, so \"2/29/26\" is refused, as are month 13 (\"13/1/26\") and the ISO impossible date \"2026-02-31\" (the pre-existing real-calendar rule, unchanged). The four-digit form \"10/3/2026\" still reads as 2026-10-03.",
+    expected: {
+      slashYY: 1, dashYY: 1, fourDigit: 1,
+      leap24Accepted: 1, leap26Refused: 1,
+      month13Refused: 1, isoImpossibleRefused: 1,
+    },
+    actual: () => ({
+      slashYY: normalizeImportDate("10/3/26") === "2026-10-03" ? 1 : 0,
+      dashYY: normalizeImportDate("10-3-26") === "2026-10-03" ? 1 : 0,
+      fourDigit: normalizeImportDate("10/3/2026") === "2026-10-03" ? 1 : 0,
+      leap24Accepted: normalizeImportDate("2/29/24") === "2024-02-29" ? 1 : 0,
+      leap26Refused: normalizeImportDate("2/29/26") === null ? 1 : 0,
+      month13Refused: normalizeImportDate("13/1/26") === null ? 1 : 0,
+      isoImpossibleRefused: normalizeImportDate("2026-02-31") === null ? 1 : 0,
+    }),
+  },
+  {
+    id: "import-dedupe-flags-reimport-not-lookalikes",
+    kind: "spending",
+    note: "IM-1, hand-derived from flagImportDuplicates' match rule (date + amount + description + kind + account, description/account case-insensitive): against one recorded transaction (2026-10-03, 8420, \"Grocery store\", spending, Checking), an exact re-import of that row flags; a same-date same-amount row with a different description (\"Pharmacy\") does NOT flag — same amount alone is not a duplicate; the same row under a different kind (card_payment) or a different account (Card) does not flag either. A row repeated inside the file itself flags on its second appearance. Total flagged across the five rows: the exact re-import and the in-file repeat = 2.",
+    expected: {
+      flaggedTotal: 2, exactReimport: 1, diffDescription: 0,
+      diffKind: 0, diffAccount: 0, withinFileRepeat: 1,
+    },
+    actual: () => {
+      const existing = [
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking" },
+      ];
+      const rows = [
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking" },
+        { date: "2026-10-03", amountCents: 8420, description: "Pharmacy", kind: "spending", accountName: "Checking" },
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "card_payment", accountName: "Checking" },
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Card" },
+        { date: "2026-10-03", amountCents: 8420, description: "Pharmacy", kind: "spending", accountName: "Checking" },
+      ];
+      const flags = flagImportDuplicates(rows, existing);
+      return {
+        flaggedTotal: flags.filter(Boolean).length,
+        exactReimport: flags[0] ? 1 : 0,
+        diffDescription: flags[1] ? 1 : 0,
+        diffKind: flags[2] ? 1 : 0,
+        diffAccount: flags[3] ? 1 : 0,
+        withinFileRepeat: flags[4] ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "import-profile-persistence-round-trip",
+    kind: "spending",
+    note: "IM-2, hand-derived: a profile saved for the header [Date, Description, Debit, Credit, Balance] with a user-overridden mapping (category pointed at column 4) and settings (card template is NOT used — checking, account \"Everyday\", money-out negative, custom keyword lists) survives a serialize → parse round trip byte-for-byte in effect: findImportProfile locates it from a case/whitespace-shifted copy of the same header (the fingerprint normalizes both), all seven mapping indices and all five settings fields come back identical, the blob's lastSettings is the profile's settings, and the automatic guess for this header independently maps the debit/credit pair (amount unmapped, debit 2, credit 3). withLastImportSettings then replaces lastSettings without touching the profile list (still 1 profile).",
+    expected: {
+      found: 1, fingerprintStable: 1, mappingKept: 1, settingsKept: 1,
+      lastSettingsKept: 1, guessPair: 1, profilesAfterLastOnly: 1,
+    },
+    actual: () => {
+      const header = ["Date", "Description", "Debit", "Credit", "Balance"];
+      const mapping: ImportColumnMapping = {
+        date: 0, description: 1, amount: -1, debit: 2, credit: 3, category: 4, kind: -1,
+      };
+      const settings: ImportFileSettings = {
+        template: "checking",
+        accountName: "Everyday",
+        outSign: "negative",
+        cardKeywords: "card payment, visa",
+        transferKeywords: "transfer",
+      };
+      const saved = upsertImportProfile(EMPTY_IMPORT_SETTINGS, header, mapping, settings);
+      const reloaded = parseImportSettings(serializeImportSettings(saved));
+      const shifted = [" date ", "DESCRIPTION", "Debit", "Credit", "Balance"];
+      const found = findImportProfile(reloaded, shifted);
+      const mappingKept =
+        found != null &&
+        (Object.keys(mapping) as (keyof ImportColumnMapping)[]).every(
+          (k) => found.mapping[k] === mapping[k],
+        )
+          ? 1
+          : 0;
+      const settingsKept =
+        found != null &&
+        found.settings.template === settings.template &&
+        found.settings.accountName === settings.accountName &&
+        found.settings.outSign === settings.outSign &&
+        found.settings.cardKeywords === settings.cardKeywords &&
+        found.settings.transferKeywords === settings.transferKeywords
+          ? 1
+          : 0;
+      const guess = guessImportMapping(header.map((h) => h.toLowerCase()));
+      const relast = withLastImportSettings(reloaded, {
+        ...settings,
+        accountName: "Other",
+      });
+      return {
+        found: found ? 1 : 0,
+        fingerprintStable:
+          importHeaderFingerprint(shifted) === importHeaderFingerprint(header)
+            ? 1
+            : 0,
+        mappingKept,
+        settingsKept,
+        lastSettingsKept:
+          reloaded.lastSettings?.accountName === "Everyday" &&
+          reloaded.lastSettings?.outSign === "negative"
+            ? 1
+            : 0,
+        guessPair:
+          guess.amount === -1 && guess.debit === 2 && guess.credit === 3
+            ? 1
+            : 0,
+        profilesAfterLastOnly: relast.profiles.length,
+      };
+    },
+  },
+  {
+    id: "nw-import-balance-file-matches-into-draft",
+    kind: "networth",
+    note: "IM-3 (a), hand-derived: the header [Account, Balance] is detected as a balance-file header and the guess maps label 0 / balance 1 / no date column. Of the body rows, the two labelled \"Brokerage\" ($100.00 and $50.50) name-match the Brokerage account and SUM into one new balance of $150.50 (15050¢); the \"Mystery fund\" row ($25.00) matches nothing and stays unmatched for the user to assign or skip. The Bank account is absent from the file, so its draft entry carries its last recorded balance ($200.00). The draft holds exactly the two app accounts.",
+    expected: {
+      headerDetected: 1, mapLabel: 0, mapBalance: 1, mapDate: -1,
+      parsedRows: 3, skipped: 0, matchedRows: 2, unmatchedRows: 1,
+      brokerageCents: 15050, bankCents: 20000, bankCarried: 1, entries: 2,
+    },
+    actual: () => {
+      const header = ["Account", "Balance"];
+      const mapping = guessNwBalanceMapping(header);
+      const { rows, skipped } = parseNwBalanceRows(
+        [
+          ["Brokerage", "100.00"],
+          ["Brokerage", "50.50"],
+          ["Mystery fund", "25.00"],
+        ],
+        mapping,
+      );
+      const accounts = [
+        { id: 1, name: "Brokerage" },
+        { id: 2, name: "Bank" },
+      ];
+      const matched = matchNwImportRows(rows, accounts, {});
+      const draft = buildNwImportDraft({
+        accounts,
+        rows: matched,
+        lastBalances: {
+          1: { balanceCents: 9000, splits: [] },
+          2: { balanceCents: 20000, splits: [] },
+        },
+      });
+      const e1 = draft.find((e) => e.accountId === 1);
+      const e2 = draft.find((e) => e.accountId === 2);
+      return {
+        headerDetected: detectNwBalanceHeader(header) ? 1 : 0,
+        mapLabel: mapping.label,
+        mapBalance: mapping.balance,
+        mapDate: mapping.date,
+        parsedRows: rows.length,
+        skipped,
+        matchedRows: matched.filter((r) => r.target != null).length,
+        unmatchedRows: matched.filter((r) => r.target == null).length,
+        brokerageCents: e1?.balanceCents ?? -1,
+        bankCents: e2?.balanceCents ?? -1,
+        bankCarried: e2?.source === "carried" ? 1 : 0,
+        entries: draft.length,
+      };
+    },
+  },
+  {
+    id: "nw-import-proportional-split-sums-exactly",
+    kind: "networth",
+    note: "IM-3 (b), hand-derived: the last split is three equal $100.00 parts ($300.00 total). Applied to a new balance of $100.01, each share rounds to $33.34 — $100.02 in total — so the −1¢ remainder lands on the largest part (all three tied, so the first: Taxable): Taxable $33.33, Roth $33.34, Cash $33.34, summing EXACTLY to $100.01, the invariant a split's parts must satisfy. A clean $600.00 balance splits $200.00 each with no remainder. No prior parts, or parts summing to $0, propose no split at all (null).",
+    expected: {
+      taxable: 3333, roth: 3334, cash: 3334, sum: 10001,
+      cleanEach: 20000, emptyIsNull: 1, zeroTotalIsNull: 1,
+    },
+    actual: () => {
+      const last = [
+        { bucket: "Taxable" as const, amountCents: 10000 },
+        { bucket: "Roth" as const, amountCents: 10000 },
+        { bucket: "Cash" as const, amountCents: 10000 },
+      ];
+      const parts = proportionalNwSplit(10001, last);
+      const clean = proportionalNwSplit(60000, last);
+      const get = (
+        arr: { bucket: string; amountCents: number }[] | null,
+        b: string,
+      ): number => arr?.find((p) => p.bucket === b)?.amountCents ?? -1;
+      return {
+        taxable: get(parts, "Taxable"),
+        roth: get(parts, "Roth"),
+        cash: get(parts, "Cash"),
+        sum: parts?.reduce((s, p) => s + p.amountCents, 0) ?? -1,
+        cleanEach:
+          clean != null && clean.every((p) => p.amountCents === 20000)
+            ? 20000
+            : -1,
+        emptyIsNull: proportionalNwSplit(10001, []) === null ? 1 : 0,
+        zeroTotalIsNull:
+          proportionalNwSplit(10001, [{ bucket: "Cash", amountCents: 0 }]) ===
+          null
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "nw-import-carried-account-labelled-and-removable",
+    kind: "networth",
+    note: "IM-3 (c), hand-derived: the file names only the Brokerage account ($600.00). The Bank account is absent from the file, so its draft entry is source \"carried\" at its last recorded balance ($750.00) with its last split (all Taxable) carried too — it is labelled \"not in file — carried\" in the draft and never silently zeroed by a partial file. A third account with no file row and no earlier balance drafts blank (null balance). Removing the carried entry (filterNwDraftEntries — the exact filter the panel's save path applies) leaves two entries whose balances total the file account's $600.00 only.",
+    expected: {
+      entries: 3, carriedCents: 75000, carriedSplitKept: 1, blankIsNull: 1,
+      afterRemove: 2, afterRemoveHasBank: 0, afterRemoveSum: 60000,
+    },
+    actual: () => {
+      const accounts = [
+        { id: 1, name: "Brokerage" },
+        { id: 2, name: "Bank" },
+        { id: 3, name: "New account" },
+      ];
+      const matched = matchNwImportRows(
+        parseNwBalanceRows([["Brokerage", "600.00"]], {
+          label: 0,
+          balance: 1,
+          date: -1,
+        }).rows,
+        accounts,
+        {},
+      );
+      const draft = buildNwImportDraft({
+        accounts,
+        rows: matched,
+        lastBalances: {
+          1: { balanceCents: 50000, splits: [] },
+          2: {
+            balanceCents: 75000,
+            splits: [{ bucket: "Taxable", amountCents: 75000 }],
+          },
+        },
+      });
+      const bank = draft.find((e) => e.accountId === 2);
+      const blank = draft.find((e) => e.accountId === 3);
+      const kept = filterNwDraftEntries(draft, new Set([2]));
+      return {
+        entries: draft.length,
+        carriedCents:
+          bank?.source === "carried" ? (bank.balanceCents ?? -1) : -1,
+        carriedSplitKept:
+          bank?.splits?.length === 1 &&
+          bank.splits[0]?.bucket === "Taxable" &&
+          bank.splits[0]?.amountCents === 75000
+            ? 1
+            : 0,
+        blankIsNull:
+          blank?.source === "blank" && blank.balanceCents === null ? 1 : 0,
+        afterRemove: kept.length,
+        afterRemoveHasBank: kept.some((e) => e.accountId === 2) ? 1 : 0,
+        afterRemoveSum: kept.reduce((s, e) => s + (e.balanceCents ?? 0), 0),
+      };
+    },
+  },
+  {
+    id: "nw-import-exact-bucket-rows-beat-proportions",
+    kind: "networth",
+    note: "IM-3 (d), hand-derived: remembered sub-account mappings point the file's \"Brokerage Roth\" row ($40.00) at the Brokerage account's Roth bucket and its \"Brokerage Taxable\" row ($60.00) at the Taxable bucket. The account's last split was 90/10 (Taxable $90.00 / Roth $10.00 of $100.00), so proportional carry-over would propose Taxable $90.00 / Roth $10.00 against the new $100.00 balance — but the file's exact bucket amounts win instead: the draft balance is $100.00 with split Taxable $60.00 / Roth $40.00, splitSource \"exact\", and both rows report matchedBy \"remembered\".",
+    expected: {
+      balance: 10000, taxable: 6000, roth: 4000,
+      exactSource: 1, rememberedMatches: 2,
+    },
+    actual: () => {
+      const accounts = [{ id: 1, name: "Brokerage" }];
+      const labelMappings = {
+        "brokerage roth": { accountId: 1, bucket: "Roth" as const },
+        "brokerage taxable": { accountId: 1, bucket: "Taxable" as const },
+      };
+      const matched = matchNwImportRows(
+        parseNwBalanceRows(
+          [
+            ["Brokerage Roth", "40.00"],
+            ["Brokerage Taxable", "60.00"],
+          ],
+          { label: 0, balance: 1, date: -1 },
+        ).rows,
+        accounts,
+        labelMappings,
+      );
+      const draft = buildNwImportDraft({
+        accounts,
+        rows: matched,
+        lastBalances: {
+          1: {
+            balanceCents: 10000,
+            splits: [
+              { bucket: "Taxable", amountCents: 9000 },
+              { bucket: "Roth", amountCents: 1000 },
+            ],
+          },
+        },
+      });
+      const e = draft[0];
+      return {
+        balance: e?.balanceCents ?? -1,
+        taxable:
+          e?.splits?.find((p) => p.bucket === "Taxable")?.amountCents ?? -1,
+        roth: e?.splits?.find((p) => p.bucket === "Roth")?.amountCents ?? -1,
+        exactSource: e?.splitSource === "exact" ? 1 : 0,
+        rememberedMatches: matched.filter(
+          (r) => r.matchedBy === "remembered",
+        ).length,
+      };
+    },
+  },
+  {
+    id: "nw-import-settings-round-trip",
+    kind: "networth",
+    note: "IM-3 setup persistence, hand-derived: a column profile saved for the header [Account, Balance, As of] (date hand-mapped to column 2) and a confirmed label mapping (\"brokerage roth\" → account 1's Roth bucket) survive a serialize → parse round trip: findNwImportProfile locates the profile from a case/whitespace-shifted copy of the same header (the shared fingerprint normalizes both), the mapping indices come back 0 / 1 / 2, and the label mapping's account and bucket are intact. A garbage stored value parses to the empty blob instead of throwing, so a damaged setup record can never block an import.",
+    expected: {
+      found: 1, mapLabel: 0, mapBalance: 1, mapDate: 2,
+      labelAccount: 1, labelBucketKept: 1, garbageIsEmpty: 1,
+    },
+    actual: () => {
+      const header = ["Account", "Balance", "As of"];
+      let blob = upsertNwImportProfile(EMPTY_NW_IMPORT_SETTINGS, header, {
+        label: 0,
+        balance: 1,
+        date: 2,
+      });
+      blob = withNwLabelMappings(blob, {
+        "brokerage roth": { accountId: 1, bucket: "Roth" },
+      });
+      const reloaded = parseNwImportSettings(serializeNwImportSettings(blob));
+      const found = findNwImportProfile(reloaded, [
+        " account ",
+        "BALANCE",
+        "As of",
+      ]);
+      const lm = reloaded.labelMappings["brokerage roth"];
+      const garbage = parseNwImportSettings("not json {");
+      return {
+        found: found ? 1 : 0,
+        mapLabel: found?.mapping.label ?? -9,
+        mapBalance: found?.mapping.balance ?? -9,
+        mapDate: found?.mapping.date ?? -9,
+        labelAccount: lm?.accountId ?? -1,
+        labelBucketKept: lm?.bucket === "Roth" ? 1 : 0,
+        garbageIsEmpty:
+          garbage.profiles.length === 0 &&
+          Object.keys(garbage.labelMappings).length === 0
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "cashout-proposal-includes-card-payments-excludes-transfers",
+    kind: "spending",
+    note: "IM-4 (a), hand-derived from buildCashOutProposals' rule (every money-out row counts, transfers excluded, money-in rows are not outflow): the October rows are a grocery spend $84.20, a card payment $1,500.00, a transfer out $500.00, a paycheck in −$2,500.00, an electric bill $120.50, and a transfer in −$300.00. The proposal holds the three money-out non-transfer rows and totals $84.20 + $1,500.00 + $120.50 = $1,704.70 (170470¢) — the card payment counts in full, neither transfer appears, and the deposit does not net against the total. The duplicate flag rides on the card-payment row (index 1): that item is marked isDuplicate and STILL counted, so the proposal shows the export's arithmetic as-is.",
+    expected: {
+      proposals: 1, totalCents: 170470, items: 3,
+      cardPaymentItems: 1, dupMarked: 1, dupStillCounted: 170470,
+    },
+    actual: () => {
+      const rows = [
+        { date: "2026-10-03", description: "Grocery store", amountCents: 8420, kind: "spending" },
+        { date: "2026-10-05", description: "Visa card payment", amountCents: 150000, kind: "card_payment" },
+        { date: "2026-10-07", description: "Transfer to savings", amountCents: 50000, kind: "transfer" },
+        { date: "2026-10-09", description: "Paycheck deposit", amountCents: -250000, kind: "spending" },
+        { date: "2026-10-11", description: "Electric bill", amountCents: 12050, kind: "spending" },
+        { date: "2026-10-12", description: "Transfer from savings", amountCents: -30000, kind: "transfer" },
+      ];
+      const flags = [false, true, false, false, false, false];
+      const proposals = buildCashOutProposals(rows, flags);
+      const p = proposals[0];
+      return {
+        proposals: proposals.length,
+        totalCents: p?.totalCents ?? -1,
+        items: p?.items.length ?? -1,
+        cardPaymentItems: p?.items.filter((it) => it.kind === "card_payment").length ?? -1,
+        dupMarked: p?.items.filter((it) => it.isDuplicate).length ?? -1,
+        dupStillCounted: p?.totalCents ?? -1,
+      };
+    },
+  },
+  {
+    id: "cashout-proposal-multi-month-grouping",
+    kind: "spending",
+    note: "IM-4 (b), hand-derived: one export spanning three months yields one proposal per month, months ascending, each totaling only its own rows. September: rent $1,400.00 + a card payment $200.00 = $1,600.00 across 2 items. October: groceries $50.00 only — its $999.00 transfer out is excluded. November: utilities $75.50, 1 item. The file lists October before September's second row; grouping is by each row's own date, not by file position.",
+    expected: {
+      proposals: 3, ascending: 1,
+      sepTotal: 160000, sepItems: 2,
+      octTotal: 5000, octItems: 1,
+      novTotal: 7550, novItems: 1,
+    },
+    actual: () => {
+      const rows = [
+        { date: "2026-09-15", description: "Rent", amountCents: 140000, kind: "spending" },
+        { date: "2026-10-02", description: "Groceries", amountCents: 5000, kind: "spending" },
+        { date: "2026-09-20", description: "Card payment", amountCents: 20000, kind: "card_payment" },
+        { date: "2026-11-01", description: "Utilities", amountCents: 7550, kind: "spending" },
+        { date: "2026-10-31", description: "Transfer out", amountCents: 99900, kind: "transfer" },
+      ];
+      const proposals = buildCashOutProposals(rows);
+      const byMonth = new Map(proposals.map((p) => [p.month, p]));
+      return {
+        proposals: proposals.length,
+        ascending:
+          proposals[0]?.month === "2026-09" &&
+          proposals[1]?.month === "2026-10" &&
+          proposals[2]?.month === "2026-11"
+            ? 1
+            : 0,
+        sepTotal: byMonth.get("2026-09")?.totalCents ?? -1,
+        sepItems: byMonth.get("2026-09")?.items.length ?? -1,
+        octTotal: byMonth.get("2026-10")?.totalCents ?? -1,
+        octItems: byMonth.get("2026-10")?.items.length ?? -1,
+        novTotal: byMonth.get("2026-11")?.totalCents ?? -1,
+        novItems: byMonth.get("2026-11")?.items.length ?? -1,
+      };
+    },
+  },
+  {
+    id: "cashout-proposal-comparison-difference",
+    kind: "spending",
+    note: "IM-4 (c), hand-derived from compareCashOutProposal's rule (the recorded figure is the month's RESOLVED cash out — items sum when the month has items, else the entered total, else nothing): the proposal is $1,704.70. Against recorded items totalling $1,650.00 (3 items, entered total also present at $1,600.00) the items win, so the difference is $1,704.70 − $1,650.00 = +$54.70 (5470¢). Against an entered total alone of $1,800.00 the difference is −$95.30 (−9530¢). Against nothing recorded, both resolved and difference are null (encoded 1 in the IsNull fields). Against items alone totalling exactly $1,704.70 the difference is 0.",
+    expected: {
+      itemsWinResolved: 165000, itemsWinDiff: 5470,
+      enteredOnlyResolved: 180000, enteredOnlyDiff: -9530,
+      nothingResolvedIsNull: 1, nothingDiffIsNull: 1,
+      exactMatchDiff: 0,
+    },
+    actual: () => {
+      const proposal = buildCashOutProposals([
+        { date: "2026-10-03", description: "Money out", amountCents: 170470, kind: "spending" },
+      ])[0] ?? { month: "2026-10", totalCents: 0, items: [] };
+      const itemsWin = compareCashOutProposal(proposal, {
+        enteredTotalCents: 160000, itemsTotalCents: 165000, itemsCount: 3,
+      });
+      const enteredOnly = compareCashOutProposal(proposal, {
+        enteredTotalCents: 180000, itemsTotalCents: 0, itemsCount: 0,
+      });
+      const nothing = compareCashOutProposal(proposal, {
+        enteredTotalCents: null, itemsTotalCents: 0, itemsCount: 0,
+      });
+      const exact = compareCashOutProposal(proposal, {
+        enteredTotalCents: null, itemsTotalCents: 170470, itemsCount: 2,
+      });
+      return {
+        itemsWinResolved: itemsWin.recordedResolvedCents ?? -1,
+        itemsWinDiff: itemsWin.differenceCents ?? -999999,
+        enteredOnlyResolved: enteredOnly.recordedResolvedCents ?? -1,
+        enteredOnlyDiff: enteredOnly.differenceCents ?? -999999,
+        nothingResolvedIsNull: nothing.recordedResolvedCents === null ? 1 : 0,
+        nothingDiffIsNull: nothing.differenceCents === null ? 1 : 0,
+        exactMatchDiff: exact.differenceCents ?? -999999,
+      };
+    },
+  },
+  {
+    id: "cashout-proposal-saved-foots-through-identity",
+    kind: "spending",
+    note: "IM-4 (d), hand-derived: the March 2025 proposal is rent $1,450.00 + a card payment $620.00 = $2,070.00 (207000¢); its $250.00 transfer and −$15.00 refund stay out. Saving it the way the panel does — the proposed items written as the month's cash-out items and the proposed total set as the month's entered total — makes the month's RESOLVED cash out, through spendingCore's standing identity (items sum wins over the entered total, which wins over transactions), exactly $2,070.00, even with a $9,999.99 checking transaction sitting in the same month: the transaction is not added in. Incurred follows cash out on an items month, so it reads $2,070.00 too.",
+    expected: {
+      proposedTotal: 207000, proposedItems: 2,
+      resolvedCashOut: 207000, resolvedIncurred: 207000,
+    },
+    actual: () => {
+      const rows = [
+        { date: "2025-03-04", description: "Rent", amountCents: 145000, kind: "spending" },
+        { date: "2025-03-06", description: "Mastercard payment", amountCents: 62000, kind: "card_payment" },
+        { date: "2025-03-09", description: "Transfer to savings", amountCents: 25000, kind: "transfer" },
+        { date: "2025-03-12", description: "Refund", amountCents: -1500, kind: "spending" },
+      ];
+      const proposal = buildCashOutProposals(rows)[0] ?? {
+        month: "2025-03", totalCents: 0, items: [],
+      };
+      // The save, in the app's own stored shapes: the proposed
+      // items as cash-out items, the proposed total as the
+      // month's entered summary total.
+      const core = createSpendingCore({
+        txns: [
+          { date: "2025-03-10", kind: "spending", sourceType: "checking", amountCents: 999999, yearlyExpenseId: null },
+        ],
+        yearly: [],
+        yearlyVersions: [],
+        summaries: [{ month: proposal.month, cashOutCents: proposal.totalCents }],
+        cashOutItems: proposal.items.map((it) => ({
+          month: proposal.month,
+          amountCents: it.amountCents,
+        })),
+        bills: [],
+        billVersions: [],
+        oneOffs: [],
+        openingReserveCents: 0,
+        reserveStartSetting: null,
+      });
+      const e = core.eff(proposal.month);
+      return {
+        proposedTotal: proposal.totalCents,
+        proposedItems: proposal.items.length,
+        resolvedCashOut: e.cashOut,
+        resolvedIncurred: e.incurred,
+      };
+    },
+  },
+  {
+    id: "ofx-sgml-and-xml-parse-to-csv-twin-rows",
+    kind: "spending",
+    note: "IM-5 (a), hand-derived: an OFX 1.x SGML statement (unclosed leaf tags, FI block naming Example Bank, account 000123456789) carries three transactions — 2026-10-03 Grocery store −84.20 (FITID FIT20261003001), 2026-10-05 Visa card payment −1500.00 (FIT20261005001), 2026-10-07 Payroll deposit +2500.00 (FIT20261007001) — and a ledger balance of 4321.55 as of 2026-10-15. The parser returns exactly those rows in the file's own sign terms (money out negative: −8420, −150000, +250000 cents) and they equal, row for row, the rows its CSV twin produces through the shared CSV row reading (normalizeImportDate + parseImportAmount). The OFX 2.x XML rendering of the same statement (every tag closed) parses to the identical three rows.",
+    expected: {
+      ok: 1, accounts: 1, skipped: 0, txns: 3,
+      firstDate: 1, firstCents: -8420, secondCents: -150000, thirdCents: 250000,
+      firstFitId: 1, ledgerCents: 432155, ledgerDate: 1,
+      twinRowsEqual: 1, xmlRowsEqual: 1, institution: 1, accountKind: 1,
+    },
+    actual: () => {
+      const sgml = [
+        "OFXHEADER:100",
+        "DATA:OFXSGML",
+        "VERSION:102",
+        "SECURITY:NONE",
+        "ENCODING:USASCII",
+        "",
+        "<OFX>",
+        "<SIGNONMSGSRSV1>",
+        "<SONRS>",
+        "<STATUS>",
+        "<CODE>0",
+        "<SEVERITY>INFO",
+        "</STATUS>",
+        "<DTSERVER>20261015000000[-5:EST]",
+        "<LANGUAGE>ENG",
+        "<FI>",
+        "<ORG>Example Bank",
+        "<FID>9999",
+        "</FI>",
+        "</SONRS>",
+        "</SIGNONMSGSRSV1>",
+        "<BANKMSGSRSV1>",
+        "<STMTTRNRS>",
+        "<TRNUID>1",
+        "<STMTRS>",
+        "<CURDEF>USD",
+        "<BANKACCTFROM>",
+        "<BANKID>021000021",
+        "<ACCTID>000123456789",
+        "<ACCTTYPE>CHECKING",
+        "</BANKACCTFROM>",
+        "<BANKTRANLIST>",
+        "<DTSTART>20261001000000[-5:EST]",
+        "<DTEND>20261015000000[-5:EST]",
+        "<STMTTRN>",
+        "<TRNTYPE>DEBIT",
+        "<DTPOSTED>20261003000000[-5:EST]",
+        "<TRNAMT>-84.20",
+        "<FITID>FIT20261003001",
+        "<NAME>Grocery store",
+        "</STMTTRN>",
+        "<STMTTRN>",
+        "<TRNTYPE>DEBIT",
+        "<DTPOSTED>20261005",
+        "<TRNAMT>-1500.00",
+        "<FITID>FIT20261005001",
+        "<NAME>Visa card payment",
+        "</STMTTRN>",
+        "<STMTTRN>",
+        "<TRNTYPE>CREDIT",
+        "<DTPOSTED>20261007",
+        "<TRNAMT>2500.00",
+        "<FITID>FIT20261007001",
+        "<NAME>Payroll deposit",
+        "</STMTTRN>",
+        "</BANKTRANLIST>",
+        "<LEDGERBAL>",
+        "<BALAMT>4321.55",
+        "<DTASOF>20261015000000[-5:EST]",
+        "</LEDGERBAL>",
+        "</STMTRS>",
+        "</STMTTRNRS>",
+        "</BANKMSGSRSV1>",
+        "</OFX>",
+      ].join("\n");
+      const xml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<?OFX OFXHEADER="200" VERSION="211"?>',
+        "<OFX>",
+        "<SIGNONMSGSRSV1><SONRS><STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>",
+        "<DTSERVER>20261015000000[-5:EST]</DTSERVER><LANGUAGE>ENG</LANGUAGE>",
+        "<FI><ORG>Example Bank</ORG><FID>9999</FID></FI>",
+        "</SONRS></SIGNONMSGSRSV1>",
+        "<BANKMSGSRSV1><STMTTRNRS><TRNUID>1</TRNUID><STMTRS>",
+        "<CURDEF>USD</CURDEF>",
+        "<BANKACCTFROM><BANKID>021000021</BANKID><ACCTID>000123456789</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>",
+        "<BANKTRANLIST><DTSTART>20261001000000[-5:EST]</DTSTART><DTEND>20261015000000[-5:EST]</DTEND>",
+        "<STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20261003000000[-5:EST]</DTPOSTED><TRNAMT>-84.20</TRNAMT><FITID>FIT20261003001</FITID><NAME>Grocery store</NAME></STMTTRN>",
+        "<STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20261005</DTPOSTED><TRNAMT>-1500.00</TRNAMT><FITID>FIT20261005001</FITID><NAME>Visa card payment</NAME></STMTTRN>",
+        "<STMTTRN><TRNTYPE>CREDIT</TRNTYPE><DTPOSTED>20261007</DTPOSTED><TRNAMT>2500.00</TRNAMT><FITID>FIT20261007001</FITID><NAME>Payroll deposit</NAME></STMTTRN>",
+        "</BANKTRANLIST>",
+        "<LEDGERBAL><BALAMT>4321.55</BALAMT><DTASOF>20261015000000[-5:EST]</DTASOF></LEDGERBAL>",
+        "</STMTRS></STMTTRNRS></BANKMSGSRSV1>",
+        "</OFX>",
+      ].join("\n");
+      const res = parseOfx(sgml);
+      if (!res.ok) {
+        return {
+          ok: 0, accounts: 0, skipped: -1, txns: 0,
+          firstDate: 0, firstCents: 0, secondCents: 0, thirdCents: 0,
+          firstFitId: 0, ledgerCents: 0, ledgerDate: 0,
+          twinRowsEqual: 0, xmlRowsEqual: 0, institution: 0, accountKind: 0,
+        };
+      }
+      const acct = res.accounts[0];
+      const txns = acct?.transactions ?? [];
+      const rowKey = (t: { date: string; amountCents: number; description: string; fitId: string | null }): string =>
+        [t.date, String(t.amountCents), t.description, t.fitId ?? ""].join("|");
+      // The CSV twin, read through the same shared row functions
+      // the CSV panel path uses.
+      const twinText = [
+        "2026-10-03,Grocery store,-84.20",
+        "2026-10-05,Visa card payment,-1500.00",
+        "2026-10-07,Payroll deposit,2500.00",
+      ];
+      const twinKeys = twinText.map((line) => {
+        const [d = "", desc = "", amt = ""] = line.split(",");
+        return [
+          normalizeImportDate(d) ?? "?",
+          String(parseImportAmount(amt) ?? NaN),
+          desc,
+          "",
+        ].join("|");
+      });
+      const ofxKeys = txns.map((t) =>
+        [t.date, String(t.amountCents), t.description, ""].join("|"),
+      );
+      const xmlRes = parseOfx(xml);
+      const xmlKeys =
+        xmlRes.ok && xmlRes.accounts[0]
+          ? xmlRes.accounts[0].transactions.map(rowKey)
+          : [];
+      return {
+        ok: 1,
+        accounts: res.accounts.length,
+        skipped: res.skippedTxns,
+        txns: txns.length,
+        firstDate: txns[0]?.date === "2026-10-03" ? 1 : 0,
+        firstCents: txns[0]?.amountCents ?? 0,
+        secondCents: txns[1]?.amountCents ?? 0,
+        thirdCents: txns[2]?.amountCents ?? 0,
+        firstFitId: txns[0]?.fitId === "FIT20261003001" ? 1 : 0,
+        ledgerCents: acct?.ledgerBalanceCents ?? 0,
+        ledgerDate: acct?.ledgerDate === "2026-10-15" ? 1 : 0,
+        twinRowsEqual:
+          JSON.stringify(ofxKeys) === JSON.stringify(twinKeys) ? 1 : 0,
+        xmlRowsEqual:
+          JSON.stringify(xmlKeys) === JSON.stringify(txns.map(rowKey))
+            ? 1
+            : 0,
+        institution: acct?.institution === "Example Bank" ? 1 : 0,
+        accountKind: acct?.kind === "bank" ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "ofx-fitid-exact-dedupe-vs-fuzzy-lookalike",
+    kind: "spending",
+    note: "IM-5 (b), hand-derived from flagExactFitIdDuplicates' rule (the bank id alone decides; a repeated id inside the file flags on its second appearance) against recorded FITIDs FIT-A and FIT-B: a row carrying FIT-A flags EXACT even though its date, amount, and description match nothing recorded — the id is the identity. A row with the NEW id FIT-NEW whose date/amount/description/kind/account exactly equal a recorded transaction does NOT flag exact, while the fuzzy IM-1 check flags that same row as a look-alike — the two labels stay distinct. FIT-B flags exact (recorded); a FITID-less row never flags exact; FIT-NEW repeated inside the file flags exact on its second appearance. Exact flags: [1, 0, 1, 0, 1] = 3.",
+    expected: {
+      exactTotal: 3, recordedIdAlone: 1, newIdNotExact: 0,
+      newIdFuzzy: 1, secondRecordedId: 1, noIdNeverExact: 0,
+      inFileRepeatExact: 1,
+    },
+    actual: () => {
+      const recorded = [
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking", fitId: "FIT-A" },
+        { date: "2026-10-04", amountCents: 1200, description: "Coffee", kind: "spending", accountName: "Checking", fitId: "FIT-B" },
+      ];
+      const rows = [
+        { date: "2026-09-01", amountCents: 555, description: "Unrelated", kind: "spending", accountName: "Checking", fitId: "FIT-A" },
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking", fitId: "FIT-NEW" },
+        { date: "2026-10-04", amountCents: 1200, description: "Coffee", kind: "spending", accountName: "Checking", fitId: "FIT-B" },
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking", fitId: null },
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking", fitId: "FIT-NEW" },
+      ];
+      const exact = flagExactFitIdDuplicates(
+        rows,
+        recorded.map((r) => r.fitId).filter((f): f is string => f != null),
+      );
+      const fuzzy = flagImportDuplicates(rows, recorded);
+      return {
+        exactTotal: exact.filter(Boolean).length,
+        recordedIdAlone: exact[0] ? 1 : 0,
+        newIdNotExact: exact[1] ? 1 : 0,
+        newIdFuzzy: fuzzy[1] ? 1 : 0,
+        secondRecordedId: exact[2] ? 1 : 0,
+        noIdNeverExact: exact[3] ? 1 : 0,
+        inFileRepeatExact: exact[4] ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "ofx-dtposted-timezone-suffix-lands-on-stated-date",
+    kind: "spending",
+    note: "IM-5 (c), hand-derived from the calendar: DTPOSTED carries the bank's stated posted date first — the time and timezone suffix that follow never shift it. \"20261003000000[-5:EST]\" lands on 2026-10-03; a late-evening timestamp in a +10 zone, \"20260228235959[+10:AEST]\", still lands on its stated 2026-02-28 (no conversion to the viewer's zone); the bare \"20261003\" form agrees. Impossible dates are refused outright: \"20260231000000[0:UTC]\" (February 31st) and month 13 both return null, and end-to-end through parseOfx a statement whose only transaction is dated 2026-02-31 yields zero transactions with one skipped row counted.",
+    expected: {
+      estSuffix: 1, plusTenSuffix: 1, bareDate: 1,
+      feb31Refused: 1, month13Refused: 1,
+      badDateTxnSkipped: 1, badDateSkippedCount: 1,
+    },
+    actual: () => {
+      const badFile = [
+        "OFXHEADER:100",
+        "DATA:OFXSGML",
+        "",
+        "<OFX>",
+        "<BANKMSGSRSV1>",
+        "<STMTTRNRS>",
+        "<STMTRS>",
+        "<CURDEF>USD",
+        "<BANKACCTFROM>",
+        "<BANKID>021000021",
+        "<ACCTID>000123456789",
+        "<ACCTTYPE>CHECKING",
+        "</BANKACCTFROM>",
+        "<BANKTRANLIST>",
+        "<STMTTRN>",
+        "<TRNTYPE>DEBIT",
+        "<DTPOSTED>20260231000000[0:UTC]",
+        "<TRNAMT>-10.00",
+        "<FITID>BAD1",
+        "<NAME>Impossible date row",
+        "</STMTTRN>",
+        "</BANKTRANLIST>",
+        "</STMTRS>",
+        "</STMTTRNRS>",
+        "</BANKMSGSRSV1>",
+        "</OFX>",
+      ].join("\n");
+      const res = parseOfx(badFile);
+      return {
+        estSuffix: parseOfxDate("20261003000000[-5:EST]") === "2026-10-03" ? 1 : 0,
+        plusTenSuffix: parseOfxDate("20260228235959[+10:AEST]") === "2026-02-28" ? 1 : 0,
+        bareDate: parseOfxDate("20261003") === "2026-10-03" ? 1 : 0,
+        feb31Refused: parseOfxDate("20260231000000[0:UTC]") === null ? 1 : 0,
+        month13Refused: parseOfxDate("20261301000000") === null ? 1 : 0,
+        badDateTxnSkipped:
+          res.ok && (res.accounts[0]?.transactions.length ?? -1) === 0 ? 1 : 0,
+        badDateSkippedCount: res.ok ? res.skippedTxns : -1,
+      };
+    },
+  },
+  {
+    id: "ofx-ledger-balance-arrives-in-nw-draft",
+    kind: "networth",
+    note: "IM-5 (d), hand-derived: the Example Bank OFX statement's LEDGERBAL is 4321.55 as of 2026-10-15. balanceRowsFromOfx turns it into exactly one balance row — 432155 cents, dated 2026-10-15, labelled with the MASKED display \"Example Bank ····6789\" (the full account id never appears in the label) and carrying the account key as its matchKey. A remembered mapping under that key matches the row to the Everyday checking account (matchedBy \"remembered\"); the draft then holds that account as a file entry at exactly 432155 cents, the second account (no file row, no earlier balance) drafts blank, and the shared statement-date rule reads the rows' date — the ledger as-of date — as the draft's date.",
+    expected: {
+      rows: 1, balanceCents: 432155, rowDate: 1, maskedLabel: 1,
+      matchedRemembered: 1, draftFileCents: 432155, draftBlankSecond: 1,
+      statementDate: 1, skippedAccounts: 0,
+    },
+    actual: () => {
+      const text = [
+        "OFXHEADER:100",
+        "DATA:OFXSGML",
+        "",
+        "<OFX>",
+        "<SIGNONMSGSRSV1>",
+        "<SONRS>",
+        "<STATUS>",
+        "<CODE>0",
+        "<SEVERITY>INFO",
+        "</STATUS>",
+        "<FI>",
+        "<ORG>Example Bank",
+        "<FID>9999",
+        "</FI>",
+        "</SONRS>",
+        "</SIGNONMSGSRSV1>",
+        "<BANKMSGSRSV1>",
+        "<STMTTRNRS>",
+        "<STMTRS>",
+        "<CURDEF>USD",
+        "<BANKACCTFROM>",
+        "<BANKID>021000021",
+        "<ACCTID>000123456789",
+        "<ACCTTYPE>CHECKING",
+        "</BANKACCTFROM>",
+        "<BANKTRANLIST>",
+        "<STMTTRN>",
+        "<TRNTYPE>DEBIT",
+        "<DTPOSTED>20261003",
+        "<TRNAMT>-84.20",
+        "<FITID>FIT1",
+        "<NAME>Grocery store",
+        "</STMTTRN>",
+        "</BANKTRANLIST>",
+        "<LEDGERBAL>",
+        "<BALAMT>4321.55",
+        "<DTASOF>20261015",
+        "</LEDGERBAL>",
+        "</STMTRS>",
+        "</STMTTRNRS>",
+        "</BANKMSGSRSV1>",
+        "</OFX>",
+      ].join("\n");
+      const res = parseOfx(text);
+      if (!res.ok) {
+        return {
+          rows: 0, balanceCents: 0, rowDate: 0, maskedLabel: 0,
+          matchedRemembered: 0, draftFileCents: 0, draftBlankSecond: 0,
+          statementDate: 0, skippedAccounts: -1,
+        };
+      }
+      const built = balanceRowsFromOfx(res.accounts);
+      const row = built.rows[0];
+      const accounts = [
+        { id: 1, name: "Everyday checking" },
+        { id: 2, name: "Savings" },
+      ];
+      const labelMappings =
+        row?.matchKey != null
+          ? {
+              [normalizeNwLabel(row.matchKey)]: {
+                accountId: 1,
+                bucket: null,
+              },
+            }
+          : {};
+      const matched = matchNwImportRows(built.rows, accounts, labelMappings);
+      const draft = buildNwImportDraft({
+        accounts,
+        rows: matched,
+        lastBalances: {},
+      });
+      const first = draft.find((e) => e.accountId === 1);
+      const second = draft.find((e) => e.accountId === 2);
+      return {
+        rows: built.rows.length,
+        balanceCents: row?.balanceCents ?? 0,
+        rowDate: row?.date === "2026-10-15" ? 1 : 0,
+        maskedLabel:
+          row?.label === ofxAccountDisplay({
+            kind: "bank",
+            institution: "Example Bank",
+            accountId: "000123456789",
+          }) &&
+          row?.label === "Example Bank ····6789"
+            ? 1
+            : 0,
+        matchedRemembered: matched[0]?.matchedBy === "remembered" ? 1 : 0,
+        draftFileCents:
+          first?.source === "file" ? (first.balanceCents ?? 0) : 0,
+        draftBlankSecond:
+          second?.source === "blank" && second.balanceCents === null
+            ? 1
+            : 0,
+        statementDate:
+          nwImportStatementDate(built.rows) === "2026-10-15" ? 1 : 0,
+        skippedAccounts: built.skippedAccounts,
       };
     },
   },

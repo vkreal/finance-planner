@@ -16,8 +16,14 @@
 //      write executes;
 //   3. executes all statements as a single db.batch, so any
 //      failure lands ZERO rows from that call.
-// There is deliberately NO dedupe: re-importing the same rows
-// inserts them again (describeApi states this on the action).
+// This write path has NO dedupe of its own, deliberately:
+// duplicate protection lives in the import preview (IM-1),
+// where the panel compares parsed rows against already-recorded
+// transactions read back in plaintext and excludes matches
+// unless the user includes them — stored amounts/descriptions
+// are ciphertext, so content matching can only happen where
+// plaintext exists. describeApi states this split on the
+// importTransactions action.
 
 import {
 planTextStore,

@@ -57,7 +57,10 @@ import { parsePlaygroundPaste, pricePlaygroundYear, solvePlaygroundBracketFill, 
    fallback row included); this computes nothing but layout —
    cumulative offsets, widths, band spans, and marker positions.
    Sourcing: Interest ← pg.interest; Ordinary dividends ←
-   pg.ordinaryDividends; Other ordinary income ← pg.otherOrdinary;
+   pg.nonQualifiedDividends (the part of the entered line 3b
+   total that is not qualified — the qualified part rides the
+   gains stack, so the total is counted once); Other ordinary
+   income ← pg.otherOrdinary;
    Taxable Social Security ← pg.ssTaxable; RMD ← pg.rmd (only when
    pg.rmdPriced); Conversion ← pg.conversion (stacked last);
    Deductions ← pg.deductions; ordinary taxable income ←
@@ -113,7 +116,7 @@ function buildStackModel(
   const rates = law.rates;
   const ordSegs: StackSeg[] = [
     { key: "interest", label: "Interest", amount: pg.interest, color: "#2563eb" },
-    { key: "orddiv", label: "Ordinary dividends", short: "Ord dividends", amount: pg.ordinaryDividends, color: "#0891b2" },
+    { key: "orddiv", label: "Ordinary dividends (non-qualified part)", short: "Ord dividends", amount: pg.nonQualifiedDividends, color: "#0891b2" },
     { key: "other", label: "Other ordinary income", short: "Other income", amount: pg.otherOrdinary, color: "#d97706" },
     { key: "ss", label: "Taxable Social Security", short: "Taxable SS", amount: pg.ssTaxable, color: "#dc2626" },
   ];
@@ -126,7 +129,10 @@ function buildStackModel(
   const deductions = pg.deductions;
   const ordinaryTaxable = pg.ordinaryTaxableIncome;
   const gainsTotal = pg.ltcgPriced;
-  const grossTotal = grossOrd + gainsTotal;
+  // The §1211(b) capital-loss allowance reduces the net
+  // stack (it is priced against ordinary income, after the
+  // loss offsets gains), so the gross total foots to AGI.
+  const grossTotal = grossOrd + gainsTotal - pg.capitalLossAllowance;
   const top24 = tops[3] ?? 0;
   // The taxable axis runs to the top of the highest bracket the
   // ordinary stack reaches into — the smallest bracket top at or
@@ -1825,8 +1831,9 @@ export function Playground() {
             {moneyField("Interest", pgInterest, setPgInterest, {
               info: "Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income.",
             })}
-            {moneyField("Ordinary dividends (non-qualified)", pgOrdDiv, setPgOrdDiv, {
-              info: "Dividends that don't qualify for the lower capital-gains rate — from things like REITs and money funds (like SPAXX and VMFXX). Taxed as ordinary income.",
+            {moneyField("Ordinary dividends — total (line 3b)", pgOrdDiv, setPgOrdDiv, {
+              hint: "Type it exactly as printed on the Form 1040 (line 3b). It includes the qualified dividends (line 3a) — they are counted once, not added again.",
+              info: "All the ordinary dividends for the year — the total on Form 1040 line 3b (your 1099-DIV's total ordinary dividends). That total already includes the qualified dividends on line 3a: the qualified part is priced at the lower gains rates and the rest at ordinary rates, with the total counted once.",
               infoAlign: "right",
             })}
             {moneyField("Other ordinary income (wages, pension)", pgOther, setPgOther, {
@@ -1956,8 +1963,9 @@ export function Playground() {
               info: "What you originally paid for the stock. Only the part of the sale above this is gain — the rest is your own money coming back, untaxed.",
               infoAlign: "right",
             })}
-            {moneyField("Qualified dividends", pgQualDiv, setPgQualDiv, {
-              info: "Dividends that qualify for the lower tax rate — your 1099-DIV marks these as qualified dividends. They ride the lower 0% / 15% / 20% gains staircase instead of the ordinary rates.",
+            {moneyField("Qualified dividends (line 3a)", pgQualDiv, setPgQualDiv, {
+              hint: "Part of the line 3b total above — not in addition to it.",
+              info: "Dividends that qualify for the lower tax rate — Form 1040 line 3a, exactly as printed. This amount is part of the total ordinary dividends (line 3b) you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates.",
             })}
           </div>
           ))}
@@ -2475,9 +2483,15 @@ export function Playground() {
                   },
                   {
                     key: "orddiv",
-                    node: stackRow("Ordinary dividends", fmtDollars(pg.ordinaryDividends)),
-                    aca: pg.ordinaryDividends,
-                    irmaa: pg.ordinaryDividends,
+                    node: stackRow(
+                      "Ordinary dividends (non-qualified part)",
+                      fmtDollars(pg.nonQualifiedDividends),
+                      pg.qualifiedDividends > 0
+                        ? `of the ${fmtDollars(pg.ordinaryDividends)} total (line 3b) — the qualified ${fmtDollars(pg.qualifiedDividends)} rides the gains stack below`
+                        : undefined,
+                    ),
+                    aca: pg.nonQualifiedDividends,
+                    irmaa: pg.nonQualifiedDividends,
                   },
                   {
                     key: "other",
@@ -2540,6 +2554,23 @@ export function Playground() {
                     irmaa: pg.ltcgPriced,
                   },
                 ];
+                // The §1211(b) capital-loss allowance, when a
+                // net capital loss priced one: a negative row
+                // after the gains row (the loss offsets gains
+                // first, then up to $3,000 of ordinary income),
+                // so the additive rows foot to AGI / MAGI.
+                if (pg.capitalLossAllowance > 0) {
+                  additive.push({
+                    key: "caplossallowance",
+                    node: stackRow(
+                      "Capital-loss allowance (§1211(b))",
+                      `−${fmtDollars(pg.capitalLossAllowance)}`,
+                      "Net capital loss applied against ordinary income",
+                    ),
+                    aca: -pg.capitalLossAllowance,
+                    irmaa: -pg.capitalLossAllowance,
+                  });
+                }
                 // The ACA section applies for these markers when
                 // the result carries a cliff figure — set only
                 // when a household size was entered and not
@@ -2675,9 +2706,16 @@ export function Playground() {
                     <p className="mt-2 text-sm" role="note">
                       <strong>Net long-term loss of {fmtDollars(pg.capitalLoss)}:</strong>{" "}
                       priced as $0 of gains — the loss first offsets the qualified
-                      dividends entered. This one-year pricing doesn&rsquo;t model
-                      the $3,000-a-year capital-loss deduction or loss
-                      carryforwards.
+                      dividends entered, then {fmtDollars(pg.capitalLossAllowance)} of
+                      it offsets ordinary income this year (the §1211(b)
+                      capital-loss allowance, up to $3,000).
+                      {pg.capitalLoss > pg.capitalLossAllowance && (
+                        <>
+                          {" "}The remaining{" "}
+                          {fmtDollars(pg.capitalLoss - pg.capitalLossAllowance)} isn&rsquo;t
+                          priced here — in real life it carries forward to later years.
+                        </>
+                      )}
                     </p>
                   )}
 
@@ -2881,7 +2919,7 @@ export function Playground() {
                     {stackRow(
                       "Net investment income tax",
                       fmtDollars(pg.niit),
-                      "Priced on gains and qualified dividends — interest and ordinary dividends are not counted in its base",
+                      "Priced on interest, dividends and gains — the net investment income base",
                     )}
                   </dl>
 

@@ -149,7 +149,13 @@ export type PlaygroundYearArgs = z.infer<typeof playgroundYearIn>;
    inert: age null, Social Security $0, not on Medicare) — those
    are status semantics, not clamps. The schema has already
    rejected every negative amount, so nothing is normalized
-   here; the values pass through exactly as validated. */
+   here; the values pass through exactly as validated.
+   Dividend dials are the Form 1040's own lines, typed exactly
+   as printed: ordinaryDividends is line 3b (the TOTAL, which
+   includes the qualified part) and qualifiedDividends is
+   line 3a (a subset of 3b, not an amount on top of it); the
+   pricer (pricePlaygroundYear) splits the total so dividends
+   are counted once. */
 export function playgroundInputsFromArgs(
   args: PlaygroundYearArgs,
 ): PlaygroundYearInputs {

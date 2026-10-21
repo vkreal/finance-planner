@@ -73,6 +73,11 @@ export const backupTransaction = z.object({
   kind: z.string(),
   category: z.string(),
   yearlyExpenseId: z.number().int().nullable(),
+  // Added with IM-5 (the OFX FITID a transaction was imported
+  // with): backups from before it have no such field, so a
+  // missing value restores as null (no bank id) — the same
+  // treatment the later NW split columns above already carry.
+  fitId: z.string().nullable().default(null),
   createdAt: z.number(),
 });
 export const backupMonthlySummary = z.object({

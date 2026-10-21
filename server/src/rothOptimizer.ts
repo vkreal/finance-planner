@@ -2213,7 +2213,13 @@ export type PlaygroundYearInputs = {
   onMedicarePrimary: boolean;
   onMedicareSpouse: boolean;
   interest: number;
-  ordinaryDividends: number; // non-qualified
+  // TOTAL ordinary dividends, exactly as printed on the
+  // Form 1040 (line 3b) / 1099-DIV: this total INCLUDES the
+  // qualified part below. The pricer counts dividends once —
+  // the non-qualified part (total − qualified) rides the
+  // ordinary stack and the qualified part rides the gains
+  // stack (see pricePlaygroundYear).
+  ordinaryDividends: number;
   otherOrdinary: number; // wages, pension, etc.
   taxExemptInterest: number;
   ssPrimary: number;
@@ -2221,6 +2227,9 @@ export type PlaygroundYearInputs = {
   conversion: number; // the typed Roth conversion for the year
   stockSold: number;
   stockBasis: number;
+  // Qualified dividends, exactly as printed on the Form 1040
+  // (line 3a): a SUBSET of ordinaryDividends (line 3b) above,
+  // never an amount on top of it.
   qualifiedDividends: number;
   // Combined pre-tax balance at the prior Dec 31, or null when
   // not entered — null prices no RMD and caps nothing.
@@ -2234,8 +2243,18 @@ export type PlaygroundYearInputs = {
 export type PlaygroundYearResult = {
   // Income stack (engine-priced components).
   interest: number;
+  // The total ordinary dividends as entered (Form 1040
+  // line 3b — includes the qualified part).
   ordinaryDividends: number;
+  // The NON-qualified part of that total — max(0, total −
+  // qualified) — the part that rides the ordinary stack.
+  // (When qualified alone was entered with no total, this
+  // is $0 and the qualified amount still prices once, on
+  // the gains stack.)
+  nonQualifiedDividends: number;
   otherOrdinary: number;
+  // Ordinary-stack total: interest + non-qualified
+  // dividends + other ordinary income.
   otherOrdinaryTotal: number;
   rmdPriced: boolean;
   rmd: number;
@@ -2250,7 +2269,14 @@ export type PlaygroundYearResult = {
   qualifiedDividends: number;
   ltcgNet: number; // qualified dividends + stock gain (can be negative)
   ltcgPriced: number; // what the gains stack priced: max(0, ltcgNet)
-  capitalLoss: number; // max(0, −ltcgNet) — not priced beyond offsetting gains
+  capitalLoss: number; // max(0, −ltcgNet) — the net capital loss for the year
+  // The IRC §1211(b) capital-loss allowance priced this
+  // year: min($3,000, capitalLoss), applied against
+  // ordinary income AFTER the loss has offset gains (the
+  // gains stack above). $0 when there is no net capital
+  // loss. Any loss beyond the allowance is not priced
+  // (in real life it carries forward).
+  capitalLossAllowance: number;
   agi: number;
   magi: number;
   acaMagi: number;
@@ -2418,10 +2444,27 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   const ageSpouse = joint ? inp.ageSpouse : null;
   const law = lawForYear(inp.taxYear);
   const ssBenefits = r2(inp.ssPrimary + (joint ? inp.ssSpouse : 0));
-  const otherOrdinaryTotal = r2(inp.interest + inp.ordinaryDividends + inp.otherOrdinary);
+  // Dividends are entered exactly as printed on the Form
+  // 1040: ordinaryDividends is the line 3b TOTAL, which
+  // already includes the line 3a qualified part. Count them
+  // once by splitting the total — the non-qualified part
+  // (total − qualified, floored at $0) rides the ordinary
+  // stack, the qualified part rides the gains stack below.
+  // (Qualified entered with no total still prices once:
+  // the non-qualified part is $0 and the qualified amount
+  // prices on the gains stack alone.)
+  const nonQualifiedDividends = r2(
+    Math.max(0, inp.ordinaryDividends - inp.qualifiedDividends),
+  );
+  const otherOrdinaryTotal = r2(inp.interest + nonQualifiedDividends + inp.otherOrdinary);
   const stockGain = r2(inp.stockSold - inp.stockBasis);
   const ltcgNet = r2(inp.qualifiedDividends + stockGain);
   const ltcgPriced = Math.max(0, ltcgNet);
+  const capitalLoss = Math.max(0, -ltcgNet);
+  // IRC §1211(b): after a net capital loss has offset the
+  // year's gains (ltcgPriced $0 above), up to $3,000 of
+  // the loss also offsets ordinary income this year.
+  const capitalLossAllowance = Math.min(3000, capitalLoss);
 
   // The year's RMD — the plan's own rule (rmdForYear on the
   // primary's clock, Joint Life when applicable) over the
@@ -2448,13 +2491,27 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     filingStatus: fs,
     agePrimary: inp.agePrimary,
     ageSpouse,
-    otherOrdinary: otherOrdinaryTotal,
+    // The three ordinary dials reach priceYear separately —
+    // not folded into one lump — so the §1411 NIIT base can
+    // tell investment income (interest, and the non-qualified
+    // dividends typed here) from other ordinary income: the
+    // statute taxes the former, never the latter. The sums
+    // priceYear forms (AGI, provisional income, the ordinary
+    // stack) are the same total as the folded otherOrdinaryTotal
+    // this replaces, term for term.
+    otherOrdinary: inp.otherOrdinary,
+    interestIncome: inp.interest,
+    // priceYear's ordinaryDividends is the NON-qualified
+    // part only (its internal stack contract) — the split
+    // of the entered line 3b total computed above.
+    ordinaryDividends: nonQualifiedDividends,
     rmd,
     conversion: inp.conversion,
     extraPreTaxDraw: 0,
     ssBenefits,
     taxExemptInterest: inp.taxExemptInterest,
     ltcg: ltcgPriced,
+    capitalLossAllowance,
     inflationPct: 0,
     stateRatePct: inp.stateRatePct,
   };
@@ -2547,10 +2604,12 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // Gains-deciding comparison: the same year priced a second
   // time through the shared engine with the gains stack zeroed
   // (ltcg 0 — the sale gain and the qualified dividends both
-  // removed; every other input identical, including the RMD and
+  // removed, and with them the capital-loss allowance a net
+  // loss priced — there is no loss without the gains stack;
+  // every other input identical, including the RMD and
   // the conversion). Flags derive ONLY from comparing the two
   // engine pricings.
-  const pricedWithoutGains = priceYear({ ...base, ltcg: 0 });
+  const pricedWithoutGains = priceYear({ ...base, ltcg: 0, capitalLossAllowance: 0 });
   const hasGainsTyped = stockGain !== 0 || inp.qualifiedDividends !== 0;
   let withoutAcaOverCliff = false;
   let withoutAcaPosition: number | null = null;
@@ -2713,6 +2772,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   return {
     interest: inp.interest,
     ordinaryDividends: inp.ordinaryDividends,
+    nonQualifiedDividends,
     otherOrdinary: inp.otherOrdinary,
     otherOrdinaryTotal,
     rmdPriced: inp.pretaxBalance != null,
@@ -2728,7 +2788,8 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     qualifiedDividends: inp.qualifiedDividends,
     ltcgNet,
     ltcgPriced,
-    capitalLoss: Math.max(0, -ltcgNet),
+    capitalLoss,
+    capitalLossAllowance,
     agi: priced.agi,
     magi: priced.magi,
     acaMagi: priced.acaMagi,
