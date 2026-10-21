@@ -10,17 +10,28 @@
 // DATA-PLAN.md ("Roth Conversion view — tax-law table").
 //
 // MODELING CONVENTION (today's dollars, consistent with the rest
-// of the app): the engine always prices with the NEWEST table row
-// (2026) in today's dollars — inflation-indexed figures (brackets,
-// standard deduction, LTCG thresholds, IRMAA tiers except the
-// frozen top tier) therefore stay constant in real terms, exactly
-// as the Retirement engines treat returns. NON-indexed figures
-// (Social Security provisional-income thresholds, NIIT thresholds)
-// are DEFLATED year by year at the plan's inflation input inside
-// the engine; the top IRMAA tier's $500k single / $750k joint
-// floor, fixed by statute through 2028 and indexed after that, is
-// deflated only for the 2027–2028 steps. The 2025 row is kept
-// so a year can be priced under 2025 law exactly (the fixtures do).
+// of the app): the tables are keyed by calendar year and the
+// engine prices each plan year under ITS OWN calendar year's
+// table (T1 build). A year with no published row of its own
+// prices under the NEWEST published row, carried forward — so
+// in today's dollars the carried-forward table's inflation-
+// indexed figures (brackets, standard deduction, LTCG
+// thresholds, IRMAA tiers except the frozen top tier) stay
+// constant in real terms, exactly as the Retirement engines
+// treat returns, until a newer row is added. A scheduled law
+// change is expressed as dated table data (a new row, or a
+// dated window like the OBBBA senior deduction's 2025–2028
+// span), never as engine code. NON-indexed figures stated in
+// a row (Social Security provisional-income thresholds, NIIT
+// thresholds) are in that row's dollars: the engine DEFLATES
+// them year by year at the plan's inflation input for each
+// year the priced year runs past the row it prices under —
+// under carry-forward that is each year past the newest row.
+// The top IRMAA tier's $500k single / $750k joint floor, fixed
+// by statute through 2028 and indexed after that, deflates
+// only for the steps through 2028 counted from the row's year.
+// The 2025 row is kept so a year can be priced under 2025 law
+// exactly (the fixtures do).
 
 export type FilingStatus = "mfj" | "single" | "hoh";
 
@@ -85,6 +96,24 @@ export type YearLaw = {
   hsaCatchUp55: number;
   // Social Security taxable wage base.
   ssWageBase: number;
+  /* ---- Employee payroll tax (T2 build) — the employee share
+     of FICA (IRC §3101), priced on salary in work years by
+     server/src/workYears.ts. Dated law-row data like every
+     other figure here: a future row can carry different
+     values with no engine change. The employer share
+     (§3111) is NOT priced — it is never a household outlay.
+     Rates are percentage points; the Additional Medicare
+     thresholds are DOLLARS (statutory withholding thresholds,
+     not indexed: $250,000 MFJ / $200,000 single or HOH). ---- */
+  // Social Security (OASDI) employee rate, on wages up to
+  // ssWageBase.
+  payrollSsRatePct: number;
+  // Medicare (HI) employee rate, on all FICA wages.
+  payrollMedicareRatePct: number;
+  // Additional Medicare Tax rate (IRC §3101(b)(2)), on wages
+  // above payrollAdditionalMedicareThreshold.
+  payrollAdditionalMedicareRatePct: number;
+  payrollAdditionalMedicareThreshold: Record<FilingStatus, number>;
   // Prior-year wage threshold above which catch-ups must be
   // Roth (IRC §414(v)(7), added by SECURE 2.0 §603; the engine
   // uses the entered salary as the wage proxy — disclosed on
@@ -104,23 +133,205 @@ export type YearLaw = {
   // under §63(c)(5)(A) ($1,350 in both 2025 and 2026), so the
   // threshold is $2,700 in both years.
   kiddieTaxThresholdCents: number;
+  /* ---- Washington capital-gains excise (T3 build) — RCW
+     82.87, priced by waCapitalGainsTax in taxEngine.ts for a
+     plan whose state of residence is Washington. Dated
+     law-row data like every other figure here: a future row
+     can carry different values with no engine change. All
+     amounts are DOLLARS. Sources (cited in full in
+     DATA-PLAN.md): RCW 82.87.040 (the tax imposed), RCW
+     82.87.060 (deductions), RCW 82.87.080 (charitable
+     deduction), RCW 82.87.150 (annual adjustments), and the
+     WA Department of Revenue's capital-gains page and its
+     June 30, 2025 special notice on the tiered rates, which
+     publish the inflation-adjusted amounts for each year. ---- */
+  // Standard deduction (RCW 82.87.060(1)): the statutory base
+  // is $250,000 per individual — and the SAME combined
+  // $250,000 for spouses or domestic partners, filing jointly
+  // or separately — adjusted annually under RCW 82.87.150.
+  // DOR-published adjusted amounts: $270,000 for 2024 and
+  // $278,000 for 2025. DOR had published no 2026 amount when
+  // this build was sourced (checked October 2026), so the
+  // 2026 row carries the 2025 amount forward unchanged —
+  // this table's today's-dollars convention for an
+  // inflation-indexed figure whose newer row is not yet
+  // published, NOT a published 2026 figure.
+  waStandardDeduction: number;
+  // Base excise rate (RCW 82.87.040(1)(a)): 7% of Washington
+  // capital gains (the adjusted long-term gain after the
+  // deductions of RCW 82.87.060).
+  waRatePct: number;
+  // Additional excise (RCW 82.87.040(1)(b), beginning
+  // January 1, 2025, per ESSB 5813, ch. 421, Laws of 2025):
+  // 2.9% on the portion of Washington capital gains exceeding
+  // waAdditionalThreshold — a 9.9% combined marginal rate
+  // above the threshold. The statute does not index the
+  // threshold (RCW 82.87.150's adjustment list does not reach
+  // it), so it is a fixed $1,000,000 in every row.
+  waAdditionalRatePct: number;
+  waAdditionalThreshold: number;
+  // Charitable donation deduction (RCW 82.87.080):
+  // donations to qualified organizations (IRC §170(c)
+  // organizations principally directed and managed in
+  // Washington) are deductible only for the amount donated
+  // ABOVE waCharitableThreshold, and the deduction is capped
+  // at waCharitableCap. Statutory bases are $250,000 / $100,000,
+  // both adjusted annually under RCW 82.87.150; DOR publishes
+  // the threshold as the same amount as the year's standard
+  // deduction and the cap as $108,000 for 2024 and $111,000
+  // for 2025. The 2026 row carries both 2025 amounts forward,
+  // on the same convention as waStandardDeduction above.
+  waCharitableThreshold: number;
+  waCharitableCap: number;
+  /* ---- State and local tax (SALT) deduction cap (T5
+     build) — IRC §164(b)(6), priced by priceYear in
+     taxEngine.ts inside the itemized-deduction total.
+     Dated law-row data like every other figure here: a
+     future row can carry different values with no engine
+     change. All amounts are DOLLARS, per RETURN (the cap
+     is not doubled for a joint return; married filing
+     separately takes half — $20,000 / $20,200 — a filing
+     status this engine does not price). Source: §164(b)(6)
+     as amended by §70120 of Public Law 119-21 (the One Big
+     Beautiful Bill Act): the Tax Cuts and Jobs Act's
+     $10,000 cap was replaced for 2025 by $40,000, increased
+     by 1% for each of 2026–2029 ($40,400 in 2026), and
+     reverts to $10,000 for tax years beginning after
+     December 31, 2029 — the scheduled reversion lands as a
+     future dated row, never as engine code. Like the NIIT
+     thresholds and the §224 senior-deduction figures, the
+     cap is statutory (not inflation-indexed — the 1% bump
+     is a fixed statutory escalator), so the engine DEFLATES
+     these dollar figures at the plan's inflation input for
+     each year the priced year runs past its row, under the
+     table's today's-dollars convention; in a row's own year
+     the deflation factor is 1 and the figures price exactly
+     as published. ---- */
+  // The year's §164(b)(6) cap on the state and local tax
+  // deduction, before the modified-AGI phase-down below.
+  saltCap: number;
+  // The phase-down's floor: the cap never falls below this
+  // amount, however high the year's modified AGI runs.
+  saltCapFloor: number;
+  // Modified AGI above which the cap phases down (§164(b)(6)
+  // modified AGI is AGI increased by the §§911 / 931 / 933
+  // foreign-income exclusions — none modeled by this engine,
+  // and tax-exempt interest is NOT added back, so the engine
+  // phases the cap down on AGI, exactly as it phases out
+  // the §224 senior deduction).
+  saltPhaseOutStart: number;
+  // The phase-down rate: the cap is reduced by this percent
+  // of the modified AGI above saltPhaseOutStart, down to
+  // saltCapFloor.
+  saltPhaseOutRatePct: number;
+  /* ---- Education credits (T6 build) — IRC §25A, priced
+     by educationCreditsFor in taxEngine.ts: the American
+     Opportunity Tax Credit (AOTC, §25A(b) / (i)) per
+     eligible student and the Lifetime Learning Credit
+     (LLC, §25A(c)) per return. Dated law-row data like
+     every other figure here: a future row can carry
+     different values with no engine change. All amounts
+     are DOLLARS. Every §25A dollar figure is statutory
+     and NOT inflation-indexed (the AOTC amounts date to
+     2009 and were made permanent by the PATH Act of 2015;
+     the LLC expense cap dates to 2002; the shared
+     phase-out thresholds were set for the LLC by the
+     Taxpayer Certainty and Disaster Tax Relief Act of
+     2020), so the engine DEFLATES them at the plan's
+     inflation input for each year the priced year runs
+     past its row, under the table's today's-dollars
+     convention — in a row's own year the deflation factor
+     is 1 and the figures price exactly as published.
+     Sources: IRC §25A(b), (c), (d), (g), (i) and IRS
+     Form 8863 / Topic No. 313; cited in full in
+     DATA-PLAN.md. ---- */
+  // AOTC tier 1: this percent of the first
+  // aotcTier1Expenses of qualified expenses, per student.
+  aotcTier1RatePct: number;
+  aotcTier1Expenses: number;
+  // AOTC tier 2: this percent of the next
+  // aotcTier2Expenses of qualified expenses, per student.
+  // (Tier 1 + tier 2 at the statutory rates is the
+  // $2,500 per-student maximum credit.)
+  aotcTier2RatePct: number;
+  aotcTier2Expenses: number;
+  // The refundable share of the AOTC (§25A(i)): 40% of
+  // the credit is a refundable credit; the rest is
+  // nonrefundable.
+  aotcRefundablePct: number;
+  // LLC: this percent of the first llcExpenseCap of
+  // qualified expenses, per RETURN (all students whose
+  // expenses are not claimed for the AOTC share one cap).
+  llcRatePct: number;
+  llcExpenseCap: number;
+  // The §25A(d) phase-out, shared by both credits since
+  // 2021: the credit is reduced ratably as modified AGI
+  // (AGI plus the §§911 / 931 / 933 foreign-income
+  // exclusions — none modeled, so the engine phases out
+  // on AGI) runs from the start through start + width.
+  eduPhaseOutStart: Record<FilingStatus, number>;
+  eduPhaseOutWidth: Record<FilingStatus, number>;
+  /* ---- Alternative minimum tax (T7 build) — IRC §55,
+     priced by amtFor in taxEngine.ts: the parallel
+     tentative minimum tax every priced year computes
+     alongside its regular tax. Dated law-row data like
+     every other figure here: a future row can carry
+     different values with no engine change. All amounts
+     are DOLLARS. Every §55 figure below is inflation-
+     indexed (published per year in the year's revenue
+     procedure), so — like the brackets, the standard
+     deduction, and the LTCG thresholds — the engine does
+     NOT deflate them under carry-forward: they stay
+     constant in real terms in today's-dollars pricing.
+     Sources: IRC §55(b), (d); IRS Rev. Proc. 2024-40
+     (2025 figures) and Rev. Proc. 2025-32 (2026 figures);
+     the 2026 phase-out reset — thresholds back to
+     $500,000 / $1,000,000 and the phase-out rate doubled
+     to 50% — is §70107 of Public Law 119-21 (the One Big
+     Beautiful Bill Act) amending §55(d); cited in full in
+     DATA-PLAN.md. Internal consistency check the rows
+     satisfy: complete phase-out = phase-out start +
+     exemption ÷ phase-out rate (2025 MFJ: $1,252,700 +
+     $137,000 ÷ 0.25 = $1,800,700, the published figure;
+     2026 MFJ: $1,000,000 + $140,200 ÷ 0.50 = $1,280,400,
+     likewise). ---- */
+  // The §55(d)(1) exemption amount by filing status.
+  // Head of household takes the unmarried-individual
+  // amount (§55(d)(1)(B)) — the same figure as single in
+  // every published year.
+  amtExemption: Record<FilingStatus, number>;
+  // AMTI above which the exemption phases out
+  // (§55(d)(2) / (d)(3) as amended): the exemption is
+  // reduced by amtPhaseOutRatePct of the AMTI above this
+  // amount, never below $0.
+  amtPhaseOutStart: Record<FilingStatus, number>;
+  // The phase-out rate: 25% through 2025 (§55(d)(2)'s
+  // long-standing quarter), 50% from 2026 (OBBBA §70107).
+  amtPhaseOutRatePct: number;
+  // The §55(b)(1) breakpoint: the taxable excess (AMTI
+  // minus the exemption) taxed at amtRateLowPct runs up
+  // to this amount; the excess above it is taxed at
+  // amtRateHighPct. The same amount for every filing
+  // status this engine prices (married filing separately
+  // takes half — a status the engine does not price).
+  amtBreakpoint: number;
+  amtRateLowPct: number;
+  amtRateHighPct: number;
 };
 
-/* -------- FICA payroll-tax rates (named constants) --------
-   Employee share: Social Security 6.2% up to the year's wage
-   base (in the law row above), Medicare 1.45% on all FICA
-   wages, plus the 0.9% Additional Medicare Tax on wages over
-   $250,000 (MFJ) / $200,000 (Single or HOH) — the statutory
-   withholding thresholds, not indexed. */
-export const FICA_RATES = {
-  socialSecurityPct: 6.2,
-  medicarePct: 1.45,
-  additionalMedicarePct: 0.9,
-  additionalMedicareThreshold: { mfj: 250000, single: 200000, hoh: 200000 } as Record<
-    FilingStatus,
-    number
-  >,
-};
+/* -------- FICA payroll-tax rates --------
+   Employee share (IRC §3101): Social Security 6.2% up to the
+   year's wage base, Medicare 1.45% on all FICA wages, plus
+   the 0.9% Additional Medicare Tax on wages over $250,000
+   (MFJ) / $200,000 (Single or HOH) — the statutory
+   withholding thresholds, not indexed. Since the T2 build
+   these figures live IN each year's law row above
+   (payrollSsRatePct / payrollMedicareRatePct /
+   payrollAdditionalMedicareRatePct /
+   payrollAdditionalMedicareThreshold, beside ssWageBase), so
+   a salary year prices its payroll tax entirely from its own
+   year's table — the T1 mechanism — and no payroll figure is
+   a global constant. */
 
 export const TAX_RATES = [10, 12, 22, 24, 32, 35, 37];
 
@@ -157,11 +368,61 @@ export const TAX_LAW_2025: YearLaw = {
   hsaLimitFamily: 855000,
   hsaCatchUp55: 100000,
   ssWageBase: 17610000,
+  payrollSsRatePct: 6.2,
+  payrollMedicareRatePct: 1.45,
+  payrollAdditionalMedicareRatePct: 0.9,
+  payrollAdditionalMedicareThreshold: { mfj: 250000, single: 200000, hoh: 200000 },
   // §414(v)(7) statutory base: $145,000 for 2025; the
   // $150,000 threshold first applies to 2026.
   rothCatchUpWageThreshold: 14500000,
   giftAnnualExclusionCents: 1900000,
   kiddieTaxThresholdCents: 270000,
+  // WA excise (T3): the 2025 row prices under 2025's own
+  // DOR-published amounts ($278,000 standard deduction /
+  // charitable threshold, $111,000 charitable cap); the
+  // tiered rate (7% + 2.9% over $1,000,000) applies from
+  // January 1, 2025 (RCW 82.87.040(1)(b)).
+  waStandardDeduction: 278000,
+  waRatePct: 7,
+  waAdditionalRatePct: 2.9,
+  waAdditionalThreshold: 1000000,
+  waCharitableThreshold: 278000,
+  waCharitableCap: 111000,
+  // SALT cap (T5): the 2025 row prices under §164(b)(6) as
+  // OBBBA §70120 rewrote it for tax year 2025 — a $40,000
+  // cap, phasing down by 30% of modified AGI over $500,000
+  // to a $10,000 floor.
+  saltCap: 40000,
+  saltCapFloor: 10000,
+  saltPhaseOutStart: 500000,
+  saltPhaseOutRatePct: 30,
+  // Education credits (T6): §25A's figures are statutory
+  // and identical in both rows — 100% of the first $2,000
+  // plus 25% of the next $2,000 per student for the AOTC
+  // (a $2,500 maximum), 40% of it refundable; 20% of the
+  // first $10,000 per return for the LLC; the shared
+  // phase-out runs $160,000–$180,000 MFJ and
+  // $80,000–$90,000 for single / head of household.
+  aotcTier1RatePct: 100,
+  aotcTier1Expenses: 2000,
+  aotcTier2RatePct: 25,
+  aotcTier2Expenses: 2000,
+  aotcRefundablePct: 40,
+  llcRatePct: 20,
+  llcExpenseCap: 10000,
+  eduPhaseOutStart: { mfj: 160000, single: 80000, hoh: 80000 },
+  eduPhaseOutWidth: { mfj: 20000, single: 10000, hoh: 10000 },
+  // AMT (T7): Rev. Proc. 2024-40 — exemption $137,000
+  // MFJ / $88,100 unmarried; phase-out from $1,252,700
+  // MFJ / $626,350 unmarried at the long-standing 25%
+  // rate; the 28% rate applies to the taxable excess
+  // over $239,100 (§55(b)(1)).
+  amtExemption: { mfj: 137000, single: 88100, hoh: 88100 },
+  amtPhaseOutStart: { mfj: 1252700, single: 626350, hoh: 626350 },
+  amtPhaseOutRatePct: 25,
+  amtBreakpoint: 239100,
+  amtRateLowPct: 26,
+  amtRateHighPct: 28,
 };
 
 export const TAX_LAW_2026: YearLaw = {
@@ -196,9 +457,56 @@ export const TAX_LAW_2026: YearLaw = {
   hsaLimitFamily: 875000,
   hsaCatchUp55: 100000,
   ssWageBase: 18450000,
+  payrollSsRatePct: 6.2,
+  payrollMedicareRatePct: 1.45,
+  payrollAdditionalMedicareRatePct: 0.9,
+  payrollAdditionalMedicareThreshold: { mfj: 250000, single: 200000, hoh: 200000 },
   rothCatchUpWageThreshold: 15000000,
   giftAnnualExclusionCents: 1900000,
   kiddieTaxThresholdCents: 270000,
+  // WA excise (T3): DOR had published no 2026 adjusted
+  // amounts when this build was sourced, so — per the field
+  // note on YearLaw — the 2025 amounts carry forward
+  // unchanged (today's-dollars convention); the rate
+  // structure and the unindexed $1,000,000 threshold are
+  // statutory and identical in both rows.
+  waStandardDeduction: 278000,
+  waRatePct: 7,
+  waAdditionalRatePct: 2.9,
+  waAdditionalThreshold: 1000000,
+  waCharitableThreshold: 278000,
+  waCharitableCap: 111000,
+  // SALT cap (T5): the 2026 row carries the statute's own
+  // 1% escalation of the 2025 figures — a $40,400 cap and a
+  // $505,000 phase-down start; the $10,000 floor and the
+  // 30% rate are unchanged (§164(b)(6) as amended).
+  saltCap: 40400,
+  saltCapFloor: 10000,
+  saltPhaseOutStart: 505000,
+  saltPhaseOutRatePct: 30,
+  // Education credits (T6): the same §25A figures as the
+  // 2025 row — the statute does not index them, so no
+  // year's revenue procedure moves them.
+  aotcTier1RatePct: 100,
+  aotcTier1Expenses: 2000,
+  aotcTier2RatePct: 25,
+  aotcTier2Expenses: 2000,
+  aotcRefundablePct: 40,
+  llcRatePct: 20,
+  llcExpenseCap: 10000,
+  eduPhaseOutStart: { mfj: 160000, single: 80000, hoh: 80000 },
+  eduPhaseOutWidth: { mfj: 20000, single: 10000, hoh: 10000 },
+  // AMT (T7): Rev. Proc. 2025-32 — exemption $140,200
+  // MFJ / $90,100 unmarried; the OBBBA §70107 reset
+  // prices the phase-out from $1,000,000 MFJ / $500,000
+  // unmarried at the new 50% rate; the 28% rate applies
+  // to the taxable excess over $244,500 (§55(b)(1)).
+  amtExemption: { mfj: 140200, single: 90100, hoh: 90100 },
+  amtPhaseOutStart: { mfj: 1000000, single: 500000, hoh: 500000 },
+  amtPhaseOutRatePct: 50,
+  amtBreakpoint: 244500,
+  amtRateLowPct: 26,
+  amtRateHighPct: 28,
 };
 
 export const TAX_LAW_YEARS: YearLaw[] = [TAX_LAW_2025, TAX_LAW_2026];
@@ -212,8 +520,10 @@ export const CURRENT_LAW: YearLaw = TAX_LAW_YEARS[TAX_LAW_YEARS.length - 1]!;
 export function lawForYear(year: number): YearLaw {
   // Called once per priced year in every simulation; the table
   // is static, so resolve by direct comparison instead of a
-  // find() scan (identical result: first matching row, else the
-  // current-law fallback).
+  // find() scan (identical result: the year's own row when one
+  // is published; any other year — later than the newest row,
+  // or earlier than the oldest — resolves to the newest row,
+  // which is the carry-forward rule for years past the table).
   for (const law of TAX_LAW_YEARS) {
     if (law.year === year) return law;
   }

@@ -130,6 +130,36 @@ function tiersFromRows(
   return tiers;
 }
 
+// Education students from the Plan tab's editor rows (T6
+// build): the saved {year, expensesCents, aotcEligible}
+// list, or null when the rows do not (yet) describe a
+// complete list — no rows, or a row missing its year or its
+// expenses. Null saves as "no expenses entered anywhere",
+// so a half-edited student list never reaches the record
+// half-formed; the editor shows why the entries are not
+// applying yet whenever rows exist but this returns null.
+// Each row is ONE student in ONE calendar year: the
+// American Opportunity Credit prices per student, so two
+// students in the same year are two rows with that year.
+type EduStudentRow = { year: string; expenses: string; aotcEligible: boolean };
+function studentsFromRows(
+  rows: EduStudentRow[],
+): { year: number; expensesCents: number; aotcEligible: boolean }[] | null {
+  if (rows.length === 0) return null;
+  const students: { year: number; expensesCents: number; aotcEligible: boolean }[] = [];
+  for (const r of rows) {
+    const y = parseIntField(r.year);
+    const cents = parseMoney(r.expenses);
+    if (y == null || cents == null) return null;
+    students.push({
+      year: Math.min(2200, Math.max(1900, y)),
+      expensesCents: Math.max(0, cents),
+      aotcEligible: r.aotcEligible,
+    });
+  }
+  return students;
+}
+
 // Named conversion-ceiling presets: pure presentation over the
 // saved ceiling fields. Each preset is one exact field
 // combination (in the engine's FillCeilings terms — magiCap in
@@ -436,6 +466,35 @@ export function RothConversion() {
   const [acaSpouseEndAge, setAcaSpouseEndAge] = useState("");
   const [inflation, setInflation] = useState(String(SEED_INFLATION));
   const [stateRate, setStateRate] = useState("0");
+  // State of residence (T3 build): "WA" prices Washington's
+  // capital-gains excise instead of the flat state rate;
+  // "other" (and a record saved before this build, which has
+  // no value) keeps the flat rate.
+  const [residenceState, setResidenceState] = useState<"WA" | "other">("other");
+  // Capital-loss carryforward entering the plan (T4 build):
+  // unused net capital losses banked before the plan's first
+  // year, short-term and long-term kept separate (the IRS
+  // worksheet nets them in a fixed order and character is
+  // preserved). Blank = none.
+  const [carryInSt, setCarryInSt] = useState("");
+  const [carryInLt, setCarryInLt] = useState("");
+  // Itemized deductions (T5 build): the household's annual
+  // itemized components — each priced year takes the greater
+  // of the itemized total (SALT capped) and the standard
+  // deduction. Blank = $0 on that component.
+  const [itemizedMortgage, setItemizedMortgage] = useState("");
+  const [itemizedSalt, setItemizedSalt] = useState("");
+  const [itemizedCharitable, setItemizedCharitable] = useState("");
+  const [itemizedOther, setItemizedOther] = useState("");
+  // Education expenses (T6 build): the household's entered
+  // qualified education expenses as editor rows — one row
+  // per student per calendar year (year + expenses as typed
+  // text, plus the AOTC-eligible mark). No rows = no
+  // expenses entered: no education credit prices and the
+  // plan prices exactly as before. Expenses are entered
+  // here only — never inferred from the 529 balances or the
+  // college-years fields.
+  const [eduStudents, setEduStudents] = useState<EduStudentRow[]>([]);
   const [heirRate, setHeirRate] = useState(String(SEED_HEIR_RATE));
   // Fill ceilings (the "current strategy").
   const [ceilBracket, setCeilBracket] = useState<"" | "10" | "12" | "22" | "24">("12");
@@ -901,6 +960,16 @@ export function RothConversion() {
     acaSpouseEndAge?: number | null;
     inflationPct: number | null;
     stateRatePct: number | null;
+    residenceState?: "WA" | "other" | null;
+    capitalLossCarryInStCents?: number | null;
+    capitalLossCarryInLtCents?: number | null;
+    itemizedMortgageInterestCents?: number | null;
+    itemizedSaltPaidCents?: number | null;
+    itemizedCharitableCents?: number | null;
+    itemizedOtherCents?: number | null;
+    educationStudents?:
+      | { year: number; expensesCents: number; aotcEligible: boolean }[]
+      | null;
     heirRatePct: number | null;
     ceilings: {
       bracketTopPct: number | null;
@@ -1018,6 +1087,20 @@ export function RothConversion() {
     setAcaSpouseEndAge(num(src.acaSpouseEndAge ?? null));
     setInflation(num(src.inflationPct));
     setStateRate(num(src.stateRatePct));
+    setResidenceState(src.residenceState === "WA" ? "WA" : "other");
+    setCarryInSt(money(src.capitalLossCarryInStCents ?? null));
+    setCarryInLt(money(src.capitalLossCarryInLtCents ?? null));
+    setItemizedMortgage(money(src.itemizedMortgageInterestCents ?? null));
+    setItemizedSalt(money(src.itemizedSaltPaidCents ?? null));
+    setItemizedCharitable(money(src.itemizedCharitableCents ?? null));
+    setItemizedOther(money(src.itemizedOtherCents ?? null));
+    setEduStudents(
+      (src.educationStudents ?? []).map((s) => ({
+        year: String(s.year),
+        expenses: money(s.expensesCents),
+        aotcEligible: s.aotcEligible === true,
+      })),
+    );
     setHeirRate(num(src.heirRatePct));
     const c = src.ceilings;
     setCeilBracket(
@@ -1510,6 +1593,14 @@ export function RothConversion() {
       })(),
       inflationPct: parseNum(inflation),
       stateRatePct: pct(stateRate),
+      residenceState,
+      capitalLossCarryInStCents: parseMoney(carryInSt),
+      capitalLossCarryInLtCents: parseMoney(carryInLt),
+      itemizedMortgageInterestCents: parseMoney(itemizedMortgage),
+      itemizedSaltPaidCents: parseMoney(itemizedSalt),
+      itemizedCharitableCents: parseMoney(itemizedCharitable),
+      itemizedOtherCents: parseMoney(itemizedOther),
+      educationStudents: studentsFromRows(eduStudents),
       heirRatePct: pct(heirRate),
       ceilings: {
         bracketTopPct: ceilBracket === "" ? null : Number(ceilBracket),
@@ -1704,7 +1795,7 @@ export function RothConversion() {
     jobSalary, jobEmployer401k, jobEmployerHsa,
     drawOrder, drawOrderSwitchAge, drawOrderAfter,
     soleBeneficiary, acaSize, acaSizeAfter, acaStepYear, collegeFromYear, collegeThroughYear, benchCouple, benchSingle, benchFamily,
-    inflation, stateRate, heirRate, ceilBracket, ceilIrmaa, ceilLtcg, ceilAca, ceilAcaFamilyOnly, magiCap, cliffBuffer,
+    inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, ceilBracket, ceilIrmaa, ceilLtcg, ceilAca, ceilAcaFamilyOnly, magiCap, cliffBuffer,
     guardrailOn, bunchingOn, gainsHarvestOn,
     balanceOverrides,
     execPretax, execPretaxSpouse, execRoth, execTaxable, execHsa,
@@ -2292,6 +2383,17 @@ export function RothConversion() {
           : Math.min(80, Math.max(55, sc.acaSpouseEndAge)),
       inflationPct: sc.inflationPct ?? null,
       stateRatePct: clampPct(sc.stateRatePct ?? null),
+      residenceState:
+        sc.residenceState === "WA" || sc.residenceState === "other"
+          ? sc.residenceState
+          : null,
+      capitalLossCarryInStCents: sc.capitalLossCarryInStCents ?? null,
+      capitalLossCarryInLtCents: sc.capitalLossCarryInLtCents ?? null,
+      itemizedMortgageInterestCents: sc.itemizedMortgageInterestCents ?? null,
+      itemizedSaltPaidCents: sc.itemizedSaltPaidCents ?? null,
+      itemizedCharitableCents: sc.itemizedCharitableCents ?? null,
+      itemizedOtherCents: sc.itemizedOtherCents ?? null,
+      educationStudents: sc.educationStudents ?? null,
       heirRatePct: clampPct(sc.heirRatePct ?? null),
       ceilings: {
         bracketTopPct:
@@ -2980,6 +3082,19 @@ export function RothConversion() {
       acaSpouseEndAge: parseIntField(acaSpouseEndAge),
       inflationPct: parseNum(inflation) ?? SEED_INFLATION,
       stateRatePct: parseNum(stateRate) ?? 0,
+      residenceState,
+      capitalLossCarryInSt: parseDollars(carryInSt) ?? 0,
+      capitalLossCarryInLt: parseDollars(carryInLt) ?? 0,
+      itemizedMortgageInterest: parseDollars(itemizedMortgage) ?? 0,
+      itemizedSaltPaid: parseDollars(itemizedSalt) ?? 0,
+      itemizedCharitable: parseDollars(itemizedCharitable) ?? 0,
+      itemizedOther: parseDollars(itemizedOther) ?? 0,
+      educationStudents:
+        studentsFromRows(eduStudents)?.map((s) => ({
+          year: s.year,
+          expenses: s.expensesCents / 100,
+          aotcEligible: s.aotcEligible,
+        })) ?? null,
       heirRatePct: parseNum(heirRate) ?? SEED_HEIR_RATE,
       // Display-layer only: gates the college-years watch-out.
       // The priced taxable balance (Cash included when following
@@ -2998,7 +3113,7 @@ export function RothConversion() {
     hsaBal, basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS,
     ssSAge, ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom,
     protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, acaSize, acaSizeAfter, acaStepYear, collegeFromYear, collegeThroughYear, benchCouple,
-    benchSingle, benchFamily, acaSpouseEndAge, inflation, stateRate, heirRate, balanceOverrides, data,
+    benchSingle, benchFamily, acaSpouseEndAge, inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, balanceOverrides, data,
   ]);
 
   const ceilings: FillCeilings = useMemo(
@@ -4011,6 +4126,15 @@ export function RothConversion() {
                         </>
                       )}
                     </li>
+                    {detailRow.detail.itemizedDeduction > 0 && (
+                      <li>
+                        Itemized deductions:{" "}
+                        <span className="tnum">{fmtDollars(detailRow.detail.itemizedDeduction)}</span>{" "}
+                        {detailRow.detail.deductionTaken === "itemized"
+                          ? "— more than the standard deduction, so the itemized total is used."
+                          : "— less than the standard deduction, so the standard deduction is used."}
+                      </li>
+                    )}
                     {detailRow.detail.seniorDeduction > 0 && (
                       <li>
                         Temporary senior deduction (2025–2028):{" "}
@@ -4082,11 +4206,61 @@ export function RothConversion() {
                       {detailRow.stateTax > 0 && (
                         <> · state tax <span className="tnum">{fmtDollars(detailRow.stateTax)}</span></>
                       )}
+                      {detailRow.detail.waStandardDeduction > 0 && (
+                        <>
+                          {" "}
+                          · Washington excise:{" "}
+                          <span className="tnum">{fmtDollars(detailRow.detail.waGains)}</span>{" "}
+                          of gains −{" "}
+                          <span className="tnum">{fmtDollars(detailRow.detail.waStandardDeduction)}</span>{" "}
+                          standard deduction ={" "}
+                          <span className="tnum">{fmtDollars(detailRow.detail.waTaxableGains)}</span>{" "}
+                          taxable
+                        </>
+                      )}
                       {detailRow.penalty > 0 && (
                         <> · early-withholding penalty <span className="tnum">{fmtDollars(detailRow.penalty)}</span></>
                       )}
                     </li>
                   </ul>
+                  {(detailRow.detail.lossCarryInSt > 0 ||
+                    detailRow.detail.lossCarryInLt > 0 ||
+                    detailRow.detail.lossAllowance > 0 ||
+                    detailRow.detail.lossCarryOutSt > 0 ||
+                    detailRow.detail.lossCarryOutLt > 0) && (
+                    <p className="mt-2 text-sm">
+                      Capital-loss carryforward:{" "}
+                      {detailRow.detail.lossCarryInSt + detailRow.detail.lossCarryInLt > 0 && (
+                        <>
+                          <span className="tnum">
+                            {fmtDollars(detailRow.detail.lossCarryInSt + detailRow.detail.lossCarryInLt)}
+                          </span>{" "}
+                          carried in (
+                          <span className="tnum">{fmtDollars(detailRow.detail.lossCarryInSt)}</span>{" "}
+                          short-term,{" "}
+                          <span className="tnum">{fmtDollars(detailRow.detail.lossCarryInLt)}</span>{" "}
+                          long-term)
+                        </>
+                      )}
+                      {detailRow.detail.lossAbsorbed > 0 && (
+                        <>
+                          {" "}· <span className="tnum">{fmtDollars(detailRow.detail.lossAbsorbed)}</span>{" "}
+                          absorbed by this year&rsquo;s gains
+                        </>
+                      )}
+                      {detailRow.detail.lossAllowance > 0 && (
+                        <>
+                          {" "}· <span className="tnum">{fmtDollars(detailRow.detail.lossAllowance)}</span>{" "}
+                          used against other income (the $3,000 yearly allowance)
+                        </>
+                      )}
+                      {" "}·{" "}
+                      <span className="tnum">
+                        {fmtDollars(detailRow.detail.lossCarryOutSt + detailRow.detail.lossCarryOutLt)}
+                      </span>{" "}
+                      carries into next year.
+                    </p>
+                  )}
 
                   <h4 className="mt-4 text-sm font-semibold">The fill</h4>
                   {detailRow.detail.fill.outcome === "converted" ? (
@@ -4224,6 +4398,65 @@ export function RothConversion() {
                       Not a marketplace year (before retirement, or nobody under 65) — no
                       ACA credit is priced.
                     </p>
+                  )}
+
+                  {(detailRow.detail.educationAotc > 0 ||
+                    detailRow.detail.educationLlc > 0) && (
+                    <>
+                      <h4 className="mt-4 text-sm font-semibold">Education credits</h4>
+                      <ul className="mt-1.5 space-y-1 text-sm">
+                        {detailRow.detail.educationAotc > 0 && (
+                          <li>
+                            American Opportunity Credit:{" "}
+                            <span className="tnum font-medium">{fmtDollars(detailRow.detail.educationAotc)}</span>{" "}
+                            after the income phase-out —{" "}
+                            <span className="tnum">{fmtDollars(detailRow.detail.educationRefundable)}</span>{" "}
+                            of it is refundable (paid even past a $0 tax bill, and
+                            counted in the plan&rsquo;s score); the rest reduced
+                            this year&rsquo;s tax.
+                          </li>
+                        )}
+                        {detailRow.detail.educationLlc > 0 && (
+                          <li>
+                            Lifetime Learning Credit:{" "}
+                            <span className="tnum font-medium">{fmtDollars(detailRow.detail.educationLlc)}</span>{" "}
+                            after the income phase-out — nonrefundable; it
+                            reduced this year&rsquo;s tax.
+                          </li>
+                        )}
+                        <li>
+                          Nonrefundable education credits applied:{" "}
+                          <span className="tnum">{fmtDollars(detailRow.detail.educationNonrefundable)}</span>{" "}
+                          — already inside the federal tax above.{" "}
+                          {detailRow.detail.educationChoice === "aotc"
+                            ? "This year claims the American Opportunity Credit (plus the Lifetime Learning Credit on any other students' expenses) — the better of the two ways the law lets the year's expenses be claimed."
+                            : "This year claims the Lifetime Learning Credit only — the better of the two ways the law lets the year's expenses be claimed."}
+                        </li>
+                      </ul>
+                    </>
+                  )}
+
+                  {detailRow.detail.amti > 0 && (
+                    <>
+                      <h4 className="mt-4 text-sm font-semibold">Alternative minimum tax</h4>
+                      <p className="mt-1.5 text-sm">
+                        AMT income{" "}
+                        <span className="tnum">{fmtDollars(detailRow.detail.amti)}</span>
+                        , exemption{" "}
+                        <span className="tnum">{fmtDollars(detailRow.detail.amtExemption)}</span>
+                        , tentative minimum tax{" "}
+                        <span className="tnum">{fmtDollars(detailRow.detail.amtTentativeTax)}</span>
+                        {detailRow.detail.amtOwed > 0 ? (
+                          <>
+                            {" "}— AMT owed{" "}
+                            <span className="tnum font-medium">{fmtDollars(detailRow.detail.amtOwed)}</span>
+                            , already inside the federal tax above.
+                          </>
+                        ) : (
+                          <> — no AMT owed; the tentative tax did not beat the regular tax.</>
+                        )}
+                      </p>
+                    </>
                   )}
 
                   {detailRow.spendShortfall > 0 && (
@@ -5350,9 +5583,137 @@ export function RothConversion() {
             {pctField("Inflation", inflation, setInflation, {
               hint: "Figures the law does not index (Social Security thresholds, NIIT) shrink by this rate each year in today's dollars; indexed figures stay constant. The top IRMAA tier is frozen only until 2028.",
             })}
+            <div>
+              <label className={labelCls} htmlFor="roth-residence-state">
+                State of residence
+              </label>
+              <select
+                id="roth-residence-state"
+                aria-label="State of residence"
+                className={inputCls}
+                value={residenceState}
+                onChange={(e) =>
+                  setResidenceState(e.target.value === "WA" ? "WA" : "other")
+                }
+              >
+                <option value="WA">Washington — capital-gains excise</option>
+                <option value="other">Other / none — flat rate below</option>
+              </select>
+              <p className={hintCls}>
+                Washington prices the state tax under its capital-gains
+                excise (on long-term gains above the state&rsquo;s standard
+                deduction) instead of the flat rate. Any other state uses
+                the flat rate.
+              </p>
+            </div>
             {pctField("State tax rate", stateRate, setStateRate, {
-              hint: "One flat rate on taxable income.",
+              hint:
+                residenceState === "WA"
+                  ? "Ignored for Washington — the excise prices the state tax instead."
+                  : "One flat rate on taxable income.",
             })}
+            {moneyField("Capital-loss carryforward — short-term", carryInSt, setCarryInSt, {
+              hint: "Unused net short-term capital losses banked before the plan starts. They offset later gains first, then up to $3,000 a year against other income, and keep carrying forward. Blank = none.",
+            })}
+            {moneyField("Capital-loss carryforward — long-term", carryInLt, setCarryInLt, {
+              hint: "Unused net long-term capital losses banked before the plan starts. Short-term and long-term are tracked separately, the way the IRS worksheet does it. Blank = none.",
+            })}
+            {moneyField("Mortgage interest", itemizedMortgage, setItemizedMortgage, {
+              hint: "Itemized deductions: the household's annual mortgage interest. Each priced year takes the greater of the itemized total and that year's standard deduction. Blank = $0.",
+            })}
+            {moneyField("State and local taxes paid", itemizedSalt, setItemizedSalt, {
+              hint: "Itemized deductions: state and local taxes PAID for the year (property tax, state income or sales tax). This component is capped on its own at the year's SALT cap ($40,000 in the 2025 table, $40,400 in the 2026 table, reduced for very high incomes) before the itemized total is compared with the standard deduction. Blank = $0.",
+            })}
+            {moneyField("Charitable contributions", itemizedCharitable, setItemizedCharitable, {
+              hint: "Itemized deductions: charitable contributions for the year. This same figure is the one charitable input the Washington capital-gains layer also reads for its charitable deduction — there is no second charitable figure. Blank = $0.",
+            })}
+            {moneyField("Other itemized deductions", itemizedOther, setItemizedOther, {
+              hint: "Itemized deductions: any other itemized amounts not covered by the three fields above. The four components stay separate so the SALT cap applies to that component alone. Blank = $0.",
+            })}
+            <div className="col-span-2 sm:col-span-4">
+              <span className={labelCls}>Education expenses — for education credits</span>
+              <p className={hintCls}>
+                Optional: one row per student per year — that student&rsquo;s
+                qualified education expenses for that calendar year, and
+                whether the student is eligible for the American Opportunity
+                Credit (AOTC). The AOTC prices per student (100% of the first
+                $2,000 plus 25% of the next $2,000 — up to $2,500 each, 40% of
+                it refundable); expenses of students not marked AOTC-eligible
+                price the Lifetime Learning Credit instead (20% of up to
+                $10,000 per return), and the same student&rsquo;s expenses
+                never count toward both. Both credits phase out as income
+                runs from $160,000 to $180,000 (married filing jointly;
+                $80,000–$90,000 otherwise). Leave empty for no credits —
+                expenses are never guessed from 529 balances or the college
+                years above.
+              </p>
+              {eduStudents.map((row, i) => (
+                <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
+                  <div className="w-28">
+                    {numField(`Student ${i + 1} year`, row.year, (v) =>
+                      setEduStudents((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, year: v } : r)),
+                      ),
+                    )}
+                  </div>
+                  <div className="min-w-40 flex-1">
+                    {moneyField(`Student ${i + 1} qualified expenses`, row.expenses, (v) =>
+                      setEduStudents((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, expenses: v } : r)),
+                      ),
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 pb-2">
+                    <input
+                      id={`roth-edu-aotc-${i}`}
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={row.aotcEligible}
+                      onChange={(e) =>
+                        setEduStudents((rows) =>
+                          rows.map((r, j) =>
+                            j === i ? { ...r, aotcEligible: e.target.checked } : r,
+                          ),
+                        )
+                      }
+                    />
+                    <label htmlFor={`roth-edu-aotc-${i}`} className="text-sm">
+                      AOTC-eligible
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove student ${i + 1}`}
+                    className="px-2 py-2 text-base text-[var(--dim)] hover:text-[var(--bad)]"
+                    onClick={() =>
+                      setEduStudents((rows) => rows.filter((_, j) => j !== i))
+                    }
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {eduStudents.length < 24 && (
+                <button
+                  type="button"
+                  className="mt-2 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+                  onClick={() =>
+                    setEduStudents((rows) => [
+                      ...rows,
+                      { year: "", expenses: "", aotcEligible: true },
+                    ])
+                  }
+                >
+                  Add a student
+                </button>
+              )}
+              {eduStudents.length > 0 && studentsFromRows(eduStudents) == null && (
+                <p className="mt-2 text-sm text-[var(--bad)]">
+                  Fill in the year and the expenses on every student row.
+                  Until every row is complete, no education credits price.
+                </p>
+              )}
+            </div>
             {pctField("Heir rate", heirRate, setHeirRate, {
               hint: "Rate applied to leftover pre-tax money in the ending after-tax wealth figure — heirs are taxed when they withdraw it.",
             })}
@@ -6512,12 +6873,28 @@ export function RothConversion() {
                         <>, state tax{" "}{fmtDollars(row.ledger.state)}</>
                       ) : null}
                       , payroll tax{" "}
-                      {fmtDollars(row.ledger.fica)}; banked{" "}
+                      {fmtDollars(row.ledger.payrollTax)} (Social Security{" "}
+                      {fmtDollars(row.ledger.payrollSocialSecurity)}, Medicare{" "}
+                      {fmtDollars(row.ledger.payrollMedicare)}
+                      {row.ledger.payrollAdditionalMedicare !== 0 ? (
+                        <>, additional Medicare{" "}
+                        {fmtDollars(row.ledger.payrollAdditionalMedicare)}</>
+                      ) : null}
+                      ); banked{" "}
                       {fmtDollars(row.ledger.pretaxContributions)} to Pre-tax,{" "}
                       {fmtDollars(row.ledger.rothContributions)} to Roth,{" "}
                       {fmtDollars(row.ledger.hsaContributions)} to HSA, and{" "}
                       {fmtDollars(row.ledger.surplusBanked)} of leftover salary
                       to Taxable.
+                      {row.ledger.shortfall > 0 ? (
+                        <>
+                          {" "}
+                          Shortfall: {fmtDollars(row.ledger.shortfall)} of
+                          work-year spending and tax ran past the salary plus
+                          the Taxable balance, which stops at $0 — that part
+                          was not funded.
+                        </>
+                      ) : null}
                     </p>
                   ))}
               </div>
@@ -6573,6 +6950,13 @@ export function RothConversion() {
                   additional Medicare tax over $250,000 (joint) or $200,000
                   (single). The salary years are taxed at your plan&rsquo;s
                   state tax rate, the same rate the conversion years use.
+                </p>
+                <p>
+                  If a work year&rsquo;s spending and tax run past the salary,
+                  the Taxable balance covers the gap down to $0 — it never
+                  goes negative — and whatever is left uncovered is reported
+                  as a shortfall next to that row&rsquo;s ledger, not folded
+                  silently into the balances the retirement years start from.
                 </p>
                 <p>
                   Your Social Security benefit is held at the amount on your
@@ -7021,6 +7405,7 @@ export function RothConversion() {
               : ""}. That last
             term matters — unconverted pre-tax money is taxed eventually, through late
             RMDs or by heirs, so without it the search would convert too little.
+            Ties on cost are broken by ending wealth.
           </p>
           <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]">
             The search screens every claiming-age combination, then fully prices
@@ -7179,6 +7564,12 @@ export function RothConversion() {
                     <dt className="text-[var(--dim)]">ACA credit kept</dt>
                     <dd className="tnum font-medium">−{fmtDollars(optResult.winner.acaCredit)}</dd>
                   </div>
+                  {optResult.winner.educationRefundable > 0 && (
+                    <div>
+                      <dt className="text-[var(--dim)]">Refundable education credit (AOTC)</dt>
+                      <dd className="tnum font-medium">−{fmtDollars(optResult.winner.educationRefundable)}</dd>
+                    </div>
+                  )}
                   <div>
                     <dt className="text-[var(--dim)]">Lifetime Social Security collected</dt>
                     <dd className="tnum font-medium">{fmtDollars(optResult.winner.ssCollected)}</dd>
@@ -8730,7 +9121,9 @@ export function RothConversion() {
             Only federal income tax, the flat state rate entered, Medicare IRMAA
             surcharges, and the ACA premium credit are priced. Premiums themselves are
             not part of the spending input, so the ACA credit is tracked per year, not
-            added to balances. No payroll, estate, or local taxes; no tax on HSA
+            added to balances. No payroll tax in these retirement years — the employee
+            payroll tax on salary is priced in the Work years tab, from each work
+            year&rsquo;s own law table; no estate or local taxes; no tax on HSA
             withdrawals (assumed used for medical costs); no FAFSA or aid modeling —
             college years inside the window are flagged in the watch-outs instead.
           </li>

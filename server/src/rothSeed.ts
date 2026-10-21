@@ -117,6 +117,27 @@ export type RothSeedInputs = {
   acaSpouseEndAge: null;
   inflationPct: number;
   stateRatePct: number;
+  // State of residence (T3 build): null in the seed = no
+  // rules layer chosen, so the seed prices the flat rate
+  // (0% here) exactly as before this build.
+  residenceState: "WA" | "other" | null;
+  // Capital-loss carryforward entering the plan (T4 build):
+  // null in the seed = blank = no banked loss, like every
+  // optional pricing input the seed does not presume.
+  capitalLossCarryInStCents: null;
+  capitalLossCarryInLtCents: null;
+  // Itemized deductions (T5 build): null in the seed = blank
+  // = no itemized components, like every optional pricing
+  // input the seed does not presume.
+  itemizedMortgageInterestCents: null;
+  itemizedSaltPaidCents: null;
+  itemizedCharitableCents: null;
+  itemizedOtherCents: null;
+  // Education expenses (T6 build): null in the seed = blank
+  // = no students entered, like every optional pricing
+  // input the seed does not presume — the seed never
+  // invents a household's students.
+  educationStudents: null;
   heirRatePct: number;
   ceilings: {
     bracketTopPct: number;
@@ -195,6 +216,14 @@ export function seedRothInputs(derived: {
     acaSpouseEndAge: null,
     inflationPct: SEED_INFLATION,
     stateRatePct: 0,
+    residenceState: null,
+    capitalLossCarryInStCents: null,
+    capitalLossCarryInLtCents: null,
+    itemizedMortgageInterestCents: null,
+    itemizedSaltPaidCents: null,
+    itemizedCharitableCents: null,
+    itemizedOtherCents: null,
+    educationStudents: null,
     heirRatePct: SEED_HEIR_RATE,
     // The seed's Fill 12% ceilings shape.
     ceilings: {

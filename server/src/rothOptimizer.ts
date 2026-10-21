@@ -56,6 +56,7 @@ ALL_DRAW_ORDERS,
 DEFAULT_DRAW_ORDER,
 NO_CEILINGS,
 acaCreditFor,
+applyLossLedger,
 ceilingsActive,
 drawOrderFromKey,
 drawOrderKey,
@@ -68,6 +69,7 @@ priceYear,
 rmdForYear,
 simulateRothPlan,
 type DrawOrder,
+type EducationStudent,
 type FilingStatus,
 type FillCeilings,
 type PriceYearInput,
@@ -153,7 +155,12 @@ export function ssAnnualAtClaimAge(
 // spouses whose claiming age the joint search actually varied
 // (only a spouse with an entered benefit is searched); for a
 // fixed-age run both flags are false and the ages are the
-// entered ones.
+// entered ones. `locked*` (Round-7 Build 3, N-1) marks a person
+// whose benefit had already started at plan start — their
+// entered claim age is the ONLY candidate age for them, because
+// a claim that is already being paid cannot be changed.
+// Optional so every pre-existing literal keeps its meaning:
+// absent = not locked.
 export type ClaimAgeInfo = {
   primaryAge: number | null;
   spouseAge: number | null;
@@ -161,6 +168,8 @@ export type ClaimAgeInfo = {
   spouseAnnual: number;
   searchedPrimary: boolean;
   searchedSpouse: boolean;
+  lockedPrimary?: boolean;
+  lockedSpouse?: boolean;
 };
 
 export function enteredClaimInfo(inputs: RothPlanInputs): ClaimAgeInfo {
@@ -194,6 +203,25 @@ export type NetCostBreakdown = {
   irmaa: number;
   // Lifetime ACA premium credit kept (subtracted).
   acaCredit: number;
+  // Lifetime refundable education credit (subtracted; T6):
+  // the sum of the years' refundable American Opportunity
+  // Credit portions. The NONrefundable education portions
+  // are already inside `tax` — they reduced the years'
+  // federal tax bills directly — so only the refundable
+  // portion is credited here, exactly as the ACA premium
+  // credit is: a credit the household receives beyond its
+  // tax bills, which a floored federal tax must not
+  // silently drop. $0 for any plan with no entered
+  // education expenses.
+  educationRefundable: number;
+  // Lifetime AMT owed (T7): the sum of the years' AMT —
+  // already inside `tax` above (each year's AMT raised its
+  // federal tax bill, which lifetimeFederalTax sums), so
+  // this line only NAMES the component of the lifetime
+  // tax; it is never added to or subtracted from the
+  // identity a second time. $0 for any plan whose
+  // tentative minimum tax never exceeds its regular tax.
+  amt: number;
   // Terminal tax on the ending pre-tax balance. Without a
   // preserve reserve this is the whole balance × heir rate,
   // exactly as before. With a reserve it splits: the portion
@@ -229,6 +257,8 @@ export function netCostBreakdown(
   const penalty = r2(result.lifetimePenalty);
   const irmaa = r2(result.lifetimeIrmaa);
   const acaCredit = r2(result.lifetimeAcaKept);
+  const educationRefundable = r2(result.lifetimeEducationRefundable);
+  const amt = r2(result.lifetimeAmt);
   // Split terminal pricing. With no reserve (floor absent /
   // 0) the preserved part is $0 and the terminal is the old
   // single-rate figure bit for bit: r2(0 × exit) = 0 and
@@ -245,12 +275,14 @@ export function netCostBreakdown(
     penalty,
     irmaa,
     acaCredit,
+    educationRefundable,
+    amt,
     terminal,
     preservedPretax,
     terminalPreserved,
     excessPretax,
     terminalExcess,
-    netCost: r2(tax + penalty + irmaa - acaCredit + terminal),
+    netCost: r2(tax + penalty + irmaa - acaCredit - educationRefundable + terminal),
     ssCollected: r2(result.lifetimeSsCollected),
   };
 }
@@ -496,17 +528,67 @@ export const DO_NOTHING_SPEC: OptimizerCandidateSpec = {
   drawOrder: DEFAULT_DRAW_ORDER,
 };
 
+/* ---------------- Winner ordering (Round-7 Build 3, N-3) ----
+   The winner is the LOWEST lifetime net cost; exact ties on
+   net cost are broken by ENDING WEALTH (the candidate's ending
+   after-tax wealth — higher wins); the remaining tie-breaks
+   keep their existing order after that (Do Nothing first, then
+   the plan's own draw order, then the candidate key, then —
+   in the joint search — the claiming ages). The candidate's
+   ending wealth is the engine's own endingAfterTaxWealth on
+   its priced result, which the lean pricing path produces
+   exactly as the full path does, so no candidate's priced
+   figures move — the wealth was always computed; it simply
+   was not part of the ordering before. Both comparators are
+   exported so the fixtures pin the ordering directly. */
+
+export function compareScoredCandidates(
+  a: ScoredCandidate,
+  b: ScoredCandidate,
+  planOrderKey: string,
+): number {
+  const dnRank = (s: ScoredCandidate): number =>
+    s.spec.key === DO_NOTHING_SPEC.key ? 0 : 1;
+  const orderRank = (s: ScoredCandidate): number =>
+    drawOrderKey(s.spec.drawOrder) === planOrderKey ? 0 : 1;
+  return (
+    a.cost.netCost - b.cost.netCost ||
+    b.result.endingAfterTaxWealth - a.result.endingAfterTaxWealth ||
+    dnRank(a) - dnRank(b) ||
+    orderRank(a) - orderRank(b) ||
+    (a.spec.key < b.spec.key ? -1 : a.spec.key > b.spec.key ? 1 : 0)
+  );
+}
+
+export function compareJointCandidates(
+  a: ScoredCandidate,
+  b: ScoredCandidate,
+): number {
+  const dnRank = (s: ScoredCandidate): number =>
+    s.spec.key === DO_NOTHING_SPEC.key ? 0 : 1;
+  return (
+    a.cost.netCost - b.cost.netCost ||
+    b.result.endingAfterTaxWealth - a.result.endingAfterTaxWealth ||
+    dnRank(a) - dnRank(b) ||
+    (a.spec.key < b.spec.key ? -1 : a.spec.key > b.spec.key ? 1 : 0) ||
+    (a.claimAges.primaryAge ?? 0) - (b.claimAges.primaryAge ?? 0) ||
+    (a.claimAges.spouseAge ?? 0) - (b.claimAges.spouseAge ?? 0)
+  );
+}
+
 /* ---------------- The scan ---------------- */
 
 // Score every candidate (plus Do Nothing) against the objective.
-// Sorted best-first; an exact net-cost tie that includes Do
-// Nothing crowns Do Nothing, and remaining ties break toward
-// the plan's own draw order (a different order must price
-// strictly lower to be recommended), then on the candidate key
-// so the ordering — and therefore the winner — is deterministic. With
-// `searchOrders: false` only the plan's own draw order is
-// priced: the joint claiming-age search and the sensitivity
-// strips hold the order, the fixed-age run searches it.
+// Sorted best-first by the winner ordering above: lowest net
+// cost, ending wealth breaking exact cost ties, then Do
+// Nothing, then the plan's own draw order (a different order
+// must price strictly lower — or tie on cost with higher
+// ending wealth — to be recommended), then the candidate key
+// so the ordering — and therefore the winner — is
+// deterministic. With `searchOrders: false` only the plan's
+// own draw order is priced: the joint claiming-age search and
+// the sensitivity strips hold the order, the fixed-age run
+// searches it.
 export function scoreAllCandidates(
   inputs: RothPlanInputs,
   claimAges: ClaimAgeInfo = enteredClaimInfo(inputs),
@@ -552,22 +634,7 @@ export function scoreAllCandidates(
       claimAges,
     });
   }
-  const orderRank = (s: ScoredCandidate): number =>
-    drawOrderKey(s.spec.drawOrder) === planOrderKey ? 0 : 1;
-  // Do Nothing wins an EXACT net-cost tie: when a converting
-  // candidate merely matches Do Nothing's score, there is no
-  // gain to recommend, so Do Nothing is crowned ahead of the
-  // draw-order and key tie-breaks. Ties among converting
-  // candidates keep the existing order below.
-  const dnRank = (s: ScoredCandidate): number =>
-    s.spec.key === DO_NOTHING_SPEC.key ? 0 : 1;
-  scored.sort(
-    (a, b) =>
-      a.cost.netCost - b.cost.netCost ||
-      dnRank(a) - dnRank(b) ||
-      orderRank(a) - orderRank(b) ||
-      (a.spec.key < b.spec.key ? -1 : a.spec.key > b.spec.key ? 1 : 0),
-  );
+  scored.sort((a, b) => compareScoredCandidates(a, b, planOrderKey));
   return scored;
 }
 
@@ -606,7 +673,11 @@ export function runOptimizer(
    the bigger later benefit changes which ceiling wins after.
    This search therefore varies each ENTERED benefit's claiming
    age over every age 62–70 JOINTLY with the conversion
-   strategies. A spouse whose benefit is blank is not searched —
+   strategies — over ATTAINABLE ages only (Round-7 Build 3,
+   N-1): a person whose benefit already started at plan start
+   is locked at their entered age, and a person who has not
+   claimed yet is only offered ages at or after their current
+   age. A spouse whose benefit is blank is not searched —
    there is no anchor to derive other ages from — and the result
    says so.
 
@@ -657,6 +728,16 @@ export type JointSearchInfo = {
   // info literal (the fixtures' note-copy cases) needs no key:
   // absent reads exactly as null.
   claimAgeFloor?: number | null;
+  // Round-7 Build 3 (N-1): a searched person whose benefit had
+  // already started at plan start is LOCKED at their entered
+  // claim age — the search kept that age as their only
+  // candidate. Optional for the same literal reason as the
+  // floor: absent = nobody locked, and the note copy is then
+  // exactly the pre-build wording.
+  lockedPrimary?: boolean;
+  lockedSpouse?: boolean;
+  lockedPrimaryAge?: number | null;
+  lockedSpouseAge?: number | null;
   // The plan's draw order, kept by every combination the joint
   // search prices — named in the result note.
   drawOrderLabel: string;
@@ -704,13 +785,54 @@ export function claimAgeCombos(inputs: RothPlanInputs): ClaimCombo[] {
     effSpouse > 0 &&
     inputs.ssSpouseStartAge != null &&
     inputs.birthYearSpouse != null;
-  const ages = (searched: boolean, entered: number | null): (number | null)[] =>
-    searched
-      ? [62, 63, 64, 65, 66, 67, 68, 69, 70]
-      : [entered];
+  // ATTAINABLE claiming ages (Round-7 Build 3, N-1): the search
+  // must never recommend changing a claim that is already made,
+  // or claiming in the past. Per person, independently:
+  //   (a) already receiving at plan start — the entered start
+  //       age is at or below the person's age at plan start —
+  //       the ONLY candidate is the entered age (locked);
+  //   (b) not yet claimed — candidates are the person's current
+  //       age or later (the claimAgeFloor still applies on top
+  //       of this at crowning time, unchanged).
+  const currentAgePrimary = inputs.startYear - inputs.birthYearPrimary;
+  const currentAgeSpouse =
+    inputs.birthYearSpouse != null
+      ? inputs.startYear - inputs.birthYearSpouse
+      : null;
+  const attainable = (
+    searched: boolean,
+    entered: number | null,
+    currentAge: number | null,
+  ): { ages: (number | null)[]; locked: boolean } => {
+    if (!searched || entered == null) return { ages: [entered], locked: false };
+    if (currentAge != null && entered <= currentAge) {
+      return { ages: [entered], locked: true };
+    }
+    const floorAge = currentAge ?? 62;
+    const list = [62, 63, 64, 65, 66, 67, 68, 69, 70].filter(
+      (a) => a >= floorAge,
+    );
+    // The entered age itself stays a candidate when it is a
+    // real claiming age outside the 62–70 grid (a claim past
+    // 70); an entered age under 62 was never on the grid and
+    // is not invented as one.
+    if (!list.includes(entered) && entered >= 62) list.push(entered);
+    list.sort((x, y) => x - y);
+    return { ages: list, locked: false };
+  };
+  const primaryAtt = attainable(
+    searchedPrimary,
+    inputs.ssPrimaryStartAge,
+    currentAgePrimary,
+  );
+  const spouseAtt = attainable(
+    searchedSpouse,
+    inputs.ssSpouseStartAge,
+    currentAgeSpouse,
+  );
   const combos: ClaimCombo[] = [];
-  for (const pAge of ages(searchedPrimary, inputs.ssPrimaryStartAge)) {
-    for (const sAge of ages(searchedSpouse, inputs.ssSpouseStartAge)) {
+  for (const pAge of primaryAtt.ages) {
+    for (const sAge of spouseAtt.ages) {
       const primaryAnnual =
         searchedPrimary && pAge != null
           ? ssAnnualAtClaimAge(
@@ -744,6 +866,8 @@ export function claimAgeCombos(inputs: RothPlanInputs): ClaimCombo[] {
           spouseAnnual,
           searchedPrimary,
           searchedSpouse,
+          lockedPrimary: primaryAtt.locked,
+          lockedSpouse: spouseAtt.locked,
         },
         isEntered:
           pAge === inputs.ssPrimaryStartAge && sAge === inputs.ssSpouseStartAge,
@@ -797,6 +921,12 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
     screenStrategiesPerCombo: SCREEN_CEILINGS.length + 1,
     finalistCombos: 1,
     claimAgeFloor: floor,
+    lockedPrimary: first?.claimAges.lockedPrimary === true,
+    lockedSpouse: first?.claimAges.lockedSpouse === true,
+    lockedPrimaryAge:
+      first?.claimAges.lockedPrimary === true ? first.claimAges.primaryAge : null,
+    lockedSpouseAge:
+      first?.claimAges.lockedSpouse === true ? first.claimAges.spouseAge : null,
     drawOrderLabel: drawOrderLabel(inputs.drawOrder),
   };
   if (combos.length <= 1) {
@@ -855,21 +985,13 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
       ...scoreAllCandidates(combo.inputs, combo.claimAges, { searchOrders: false }),
     );
   }
-  // Same Do Nothing tie-break as the fixed-age search: on an
-  // EXACT net-cost tie that includes a Do Nothing candidate,
-  // Do Nothing sorts first (ahead of the key tie-break), so
-  // the crowning below picks it. Ties among converting
-  // candidates keep the existing key / claiming-age order.
-  const dnRank = (s: ScoredCandidate): number =>
-    s.spec.key === DO_NOTHING_SPEC.key ? 0 : 1;
-  scoredAll.sort(
-    (a, b) =>
-      a.cost.netCost - b.cost.netCost ||
-      dnRank(a) - dnRank(b) ||
-      (a.spec.key < b.spec.key ? -1 : a.spec.key > b.spec.key ? 1 : 0) ||
-      (a.claimAges.primaryAge ?? 0) - (b.claimAges.primaryAge ?? 0) ||
-      (a.claimAges.spouseAge ?? 0) - (b.claimAges.spouseAge ?? 0),
-  );
+  // The winner ordering (N-3): lowest net cost, ending wealth
+  // breaking exact cost ties, then the existing tie-breaks —
+  // Do Nothing first, the candidate key, and the claiming
+  // ages. The per-age table's bests and the Do Nothing pick
+  // below read this same order, so every "best" the joint
+  // search reports is crowned the same way.
+  scoredAll.sort(compareJointCandidates);
   // Crowning. With no floor the winner is the best candidate
   // found, exactly as before. With a floor, the winner is the
   // best candidate whose primary claiming age is at or above
@@ -891,7 +1013,7 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   const doNothing =
     scoredAll
       .filter((s) => s.spec.key === DO_NOTHING_SPEC.key)
-      .sort((a, b) => a.cost.netCost - b.cost.netCost)[0] ?? winner;
+      .sort(compareJointCandidates)[0] ?? winner;
   const runnersUp: ScoredCandidate[] = [];
   for (const s of eligible) {
     if (runnersUp.length >= 3) break;
@@ -1001,6 +1123,19 @@ export function jointSearchNote(info: JointSearchInfo): string {
     info.claimAgeFloor != null
       ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later, and the younger ages in the table below are marked as below your floor.`
       : "";
+  // Locked claiming ages (N-1), in plain words, when a benefit
+  // had already started at plan start. Empty when nobody is
+  // locked, so an unlocked record's note is exactly as before.
+  const lockedPrimary = info.lockedPrimary === true;
+  const lockedSpouse = info.lockedSpouse === true;
+  const lockedSentence =
+    lockedPrimary && lockedSpouse
+      ? ` Your claiming age is locked at ${info.lockedPrimaryAge} and your spouse's at ${info.lockedSpouseAge} because those benefits have already started — a claim that is already being paid cannot be changed, so the search kept both ages exactly as entered.`
+      : lockedPrimary
+        ? ` Your claiming age is locked at ${info.lockedPrimaryAge} because your benefit has already started — a claim that is already being paid cannot be changed, so the search kept it exactly as entered.`
+        : lockedSpouse
+          ? ` Your spouse's claiming age is locked at ${info.lockedSpouseAge} because their benefit has already started — a claim that is already being paid cannot be changed, so the search kept it exactly as entered.`
+          : "";
   if (!info.searchedPrimary && !info.searchedSpouse) {
     if (declaredPrimary && declaredSpouse) {
       return "Neither person has a Social Security benefit — both are marked as having no benefit — so there are no claiming ages to search. The strategies above were priced with no Social Security benefit for either person, with all six draw orders searched as part of the strategy set.";
@@ -1012,6 +1147,14 @@ export function jointSearchNote(info: JointSearchInfo): string {
       return "The primary person has no Social Security benefit, and the spouse's benefit hasn't been entered yet, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.";
     }
     return "No Social Security benefit is entered, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.";
+  }
+  // Every searched benefit is locked (N-1): no claiming age
+  // was actually varied, so the note says so plainly instead
+  // of describing a 62–70 search that never happened.
+  const variedPrimary = info.searchedPrimary && !lockedPrimary;
+  const variedSpouse = info.searchedSpouse && !lockedSpouse;
+  if (!variedPrimary && !variedSpouse) {
+    return `No claiming ages were searched.${lockedSentence} The strategies above were priced at the entered claiming ages, with all six draw orders searched as part of the strategy set.${floorSentence}`;
   }
   // At least one benefit was searched. When the unsearched person
   // is declared, use neutral labels throughout and the settled-fact
@@ -1027,9 +1170,9 @@ export function jointSearchNote(info: JointSearchInfo): string {
       : " The primary person has no Social Security benefit, so there is no second claiming age to search.";
     return `Claiming ages were searched jointly with the conversion strategies: ${whoNeutral} over every age 62–70 (${info.combosTested} combinations screened, ${pricedPhrase}).${settled} Every combination kept your draw order (${info.drawOrderLabel}) — draw order itself is searched at your entered claiming ages, in the draw-order result below.${floorSentence}`;
   }
-  const who = info.searchedPrimary && info.searchedSpouse
+  const who = variedPrimary && variedSpouse
     ? "both spouses' claiming ages"
-    : info.searchedPrimary
+    : variedPrimary
       ? "your claiming age"
       : "the spouse's claiming age";
   const notSearched = info.searchedPrimary && !info.searchedSpouse
@@ -1037,7 +1180,7 @@ export function jointSearchNote(info: JointSearchInfo): string {
     : !info.searchedPrimary && info.searchedSpouse
       ? " Your Social Security isn't entered, so your claiming age wasn't searched."
       : "";
-  return `Claiming ages were searched jointly with the conversion strategies: ${who} over every age 62–70 (${info.combosTested} combinations screened, ${pricedPhrase}).${notSearched} Every combination kept your draw order (${info.drawOrderLabel}) — draw order itself is searched at your entered claiming ages, in the draw-order result below.${floorSentence}`;
+  return `Claiming ages were searched jointly with the conversion strategies: ${who} over every age 62–70 (${info.combosTested} combinations screened, ${pricedPhrase}).${notSearched} Every combination kept your draw order (${info.drawOrderLabel}) — draw order itself is searched at your entered claiming ages, in the draw-order result below.${lockedSentence}${floorSentence}`;
 }
 
 // Re-run the whole search at a different expected return (the
@@ -1745,6 +1888,45 @@ export type RothSavedLike = {
   acaSpouseEndAge?: number | null;
   inflationPct: number | null;
   stateRatePct: number | null;
+  // State of residence (T3 build). Optional: a saved record
+  // written before this build has no such key, which reads as
+  // blank = the flat stateRatePct prices the state tax,
+  // bit-identical to before. "WA" prices Washington's
+  // capital-gains excise instead.
+  residenceState?: "WA" | "other" | null;
+  // Capital-loss carryforward entering the plan (T4 build),
+  // short-term and long-term, in integer cents. Optional: a
+  // saved record written before this build has neither key,
+  // which reads as blank = $0 = no banked loss, so an
+  // untouched record prices bit-identically to before.
+  capitalLossCarryInStCents?: number | null;
+  capitalLossCarryInLtCents?: number | null;
+  // Itemized deductions (T5 build), in integer cents:
+  // mortgage interest, state and local taxes paid,
+  // charitable contributions, and other itemized
+  // deductions, kept as separate components (the SALT
+  // component is capped on its own in pricing, and the
+  // charitable component is the one charitable input the
+  // Washington layer also reads). Optional: a saved record
+  // written before this build has none of the keys, which
+  // reads as blank = $0 on every component, so an untouched
+  // record prices bit-identically to before.
+  itemizedMortgageInterestCents?: number | null;
+  itemizedSaltPaidCents?: number | null;
+  itemizedCharitableCents?: number | null;
+  itemizedOtherCents?: number | null;
+  // Education expenses (T6 build): the household's entered
+  // qualified education expenses as a list of per-student,
+  // per-calendar-year entries, expenses in integer cents.
+  // Optional: a saved record written before this build has
+  // no such key, which reads as blank = no expenses entered
+  // anywhere = no education credit prices, so an untouched
+  // record prices bit-identically to before. Entries are
+  // never inferred from any other field (not from 529
+  // balances, not from the college window below).
+  educationStudents?:
+    | { year: number; expensesCents: number; aotcEligible: boolean }[]
+    | null;
   heirRatePct: number | null;
   // Transient FAFSA-reportable assets (integer cents), assembled
   // client-side via fafsaReportableAssets and sent ONLY with the
@@ -1992,6 +2174,31 @@ export type ExecutionYearResult = {
 // cap that binds at the target, measured by pricing the target
 // through the engine's priceYear and matching the priced
 // year's own cap records.
+// T4: the loss-ledger fields for a reconstructed one-year
+// base (the execution-year re-solves below). The execution
+// year is priced by a one-year simulateRothPlan run that
+// starts at the plan's entering carryforward, so when the
+// plan carries a banked loss, the reconstructed base's
+// gross gains (detail.ltcg — the year's own total) are
+// netted through the same ledger transform the march
+// priced with, and the re-solve prices the year the sim
+// priced. No banked loss → the base keeps its gross ltcg
+// and carries no allowance, bit-identical to before.
+function executionLedgerFields(
+  plan: RothPlanInputs,
+  y: RothYear,
+): { ltcg: number; capitalLossAllowance?: number; waGainsBase?: number } {
+  const st = Math.max(0, plan.capitalLossCarryInSt ?? 0);
+  const lt = Math.max(0, plan.capitalLossCarryInLt ?? 0);
+  if (st <= 0 && lt <= 0) return { ltcg: y.detail.ltcg };
+  const led = applyLossLedger({ st, lt }, y.detail.ltcg, y.filingStatus);
+  return {
+    ltcg: led.netResult,
+    capitalLossAllowance: led.allowance,
+    waGainsBase: y.detail.ltcg,
+  };
+}
+
 function executionFillTarget(
   plan: RothPlanInputs,
   execInputs: RothPlanInputs,
@@ -2009,9 +2216,27 @@ function executionFillTarget(
     extraPreTaxDraw: y.detail.extraPreTaxDraw,
     ssBenefits: y.ssBenefits,
     taxExemptInterest: execInputs.taxExemptInterestAnnual,
-    ltcg: y.detail.ltcg,
+    ...executionLedgerFields(plan, y),
     inflationPct: plan.inflationPct,
     stateRatePct: plan.stateRatePct,
+    residenceState: plan.residenceState ?? null,
+    // Itemized deductions (T5): the re-solve prices the
+    // settled year, so its base carries the plan's itemized
+    // components exactly as the sim priced them — a fill
+    // target solved against the standard deduction for a
+    // year the sim priced as itemized would name the wrong
+    // room.
+    itemizedMortgageInterest: plan.itemizedMortgageInterest,
+    itemizedSaltPaid: plan.itemizedSaltPaid,
+    itemizedCharitable: plan.itemizedCharitable,
+    itemizedOther: plan.itemizedOther,
+    // Education expenses (T6): the same — this execution
+    // year's entered students, exactly as the sim priced
+    // them, so the fill target re-solves against the year's
+    // real (phase-out-shrunken) credits.
+    educationStudents: (plan.educationStudents ?? []).filter(
+      (e) => e.year === y.year,
+    ),
   };
   const target = fillConversion({
     base,
@@ -2153,9 +2378,19 @@ export function priceExecutionYear(
       extraPreTaxDraw: y.detail.extraPreTaxDraw,
       ssBenefits: y.ssBenefits,
       taxExemptInterest: execInputs.taxExemptInterestAnnual,
-      ltcg: y.detail.ltcg,
+      ...executionLedgerFields(plan, y),
       inflationPct: plan.inflationPct,
       stateRatePct: plan.stateRatePct,
+      residenceState: plan.residenceState ?? null,
+      // Education expenses (T6): this execution year's
+      // entered students ride the at-zero pricing too, so
+      // every pricing of the settled year carries the same
+      // credits (the measures read here — taxable income
+      // and MAGI — do not depend on credits, but the year
+      // is priced whole, exactly as the sim priced it).
+      educationStudents: (plan.educationStudents ?? []).filter(
+        (e) => e.year === y.year,
+      ),
     });
     const measureAtZero =
       overshot.kind === "bracket" || overshot.kind === "ltcgZero"
@@ -2238,6 +2473,37 @@ export type PlaygroundYearInputs = {
   acaHouseholdSize: number | null;
   acaBenchmarkAnnual: number | null;
   stateRatePct: number;
+  // State of residence (T3 build; optional — absent / null /
+  // "other" = the flat stateRatePct prices the state tax,
+  // bit-identical to before; "WA" = Washington's
+  // capital-gains excise prices it instead, on the year's
+  // realized stock gain only). Deliberately NOT part of the
+  // paste payload: old pastes keep loading.
+  residenceState?: "WA" | "other" | null;
+  // Itemized deductions (T5 build; all optional — absent /
+  // 0 = blank, and the year prices on the standard side
+  // exactly as before): the year's itemized components,
+  // priced through the same shared priceYear greater-of
+  // rule as a plan year (the SALT component capped at the
+  // typed taxYear's law-row cap). The charitable component
+  // is the one charitable input — on a Washington year it
+  // is also the donations figure the RCW 82.87.080
+  // deduction prices from. Deliberately NOT part of the
+  // paste payload, like residenceState: old pastes keep
+  // loading and price exactly as before.
+  itemizedMortgageInterest?: number;
+  itemizedSaltPaid?: number;
+  itemizedCharitable?: number;
+  itemizedOther?: number;
+  // Education expenses (T6 build; optional — absent / null /
+  // empty = no students entered, no credits price, and the
+  // year prices exactly as before): the year's students,
+  // each with their qualified expenses and the household's
+  // AOTC-eligibility mark, priced through the same shared
+  // priceYear §25A step as a plan year. Deliberately NOT
+  // part of the paste payload, like the itemized dials:
+  // old pastes keep loading and price exactly as before.
+  educationStudents?: EducationStudent[] | null;
 };
 
 export type PlaygroundYearResult = {
@@ -2267,13 +2533,19 @@ export type PlaygroundYearResult = {
   conversion: number;
   stockGain: number; // sold − basis (negative = the sale is a loss)
   qualifiedDividends: number;
-  ltcgNet: number; // qualified dividends + stock gain (can be negative)
-  ltcgPriced: number; // what the gains stack priced: max(0, ltcgNet)
+  // The net capital gain or loss from CAPITAL transactions
+  // only (the stock gain; negative = a net capital loss).
+  // Qualified dividends are NOT capital gains for netting
+  // (round-7 R7-1): a net capital loss never reduces them.
+  ltcgNet: number;
+  // What the preferential stack priced: the priced capital
+  // gain, max(0, ltcgNet), PLUS the qualified dividends,
+  // whole.
+  ltcgPriced: number;
   capitalLoss: number; // max(0, −ltcgNet) — the net capital loss for the year
   // The IRC §1211(b) capital-loss allowance priced this
   // year: min($3,000, capitalLoss), applied against
-  // ordinary income AFTER the loss has offset gains (the
-  // gains stack above). $0 when there is no net capital
+  // ordinary income. $0 when there is no net capital
   // loss. Any loss beyond the allowance is not priced
   // (in real life it carries forward).
   capitalLossAllowance: number;
@@ -2286,6 +2558,39 @@ export type PlaygroundYearResult = {
   count65: number;
   standardDeduction: number;
   seniorDeduction: number;
+  // Itemized deduction (T5): the year's itemized total
+  // after the §164(b)(6) SALT cap, the SALT amount allowed
+  // after that cap, and which side of the greater-of
+  // comparison the year's deduction took. $0 / "standard"
+  // when no itemized amounts are typed.
+  itemizedDeduction: number;
+  itemizedSaltAllowed: number;
+  deductionTaken: "standard" | "itemized";
+  // Education credits (T6): the year's §25A credits under
+  // the winning allocation — the tentative AOTC after its
+  // phase-out, the tentative Lifetime Learning Credit
+  // after its phase-out, the choice taken, the
+  // nonrefundable portion applied (already inside
+  // federalTax), and the refundable AOTC portion
+  // (reported separately; NOT inside federalTax or
+  // totalTax). All $0 / "none" when no students are
+  // entered.
+  educationAotc: number;
+  educationLlc: number;
+  educationChoice: "aotc" | "llc" | "none";
+  educationNonrefundable: number;
+  educationRefundable: number;
+  // Alternative minimum tax (T7): the year's AMTI, the
+  // §55(d) exemption after its phase-out, the tentative
+  // minimum tax, and the AMT owed (already inside
+  // federalTax / totalTax — these lines name the
+  // component and the year's AMT position). amtOwed is
+  // $0 whenever the tentative tax does not exceed the
+  // regular tax.
+  amti: number;
+  amtExemption: number;
+  amtTentativeTax: number;
+  amtOwed: number;
   deductions: number;
   taxableIncome: number;
   ordinaryTaxableIncome: number;
@@ -2302,6 +2607,16 @@ export type PlaygroundYearResult = {
   niit: number;
   federalTax: number;
   stateTax: number;
+  // Washington excise breakdown (T3; $0 unless residence is
+  // Washington): the WA-allocated gains entering the excise
+  // base, the standard deduction applied, and the taxable
+  // Washington capital gains the tiered rate priced. The
+  // charitable deduction prices from the year's one
+  // charitable input (T5 — the itemized charitable
+  // component) and is $0 when none is typed.
+  waGains: number;
+  waStandardDeduction: number;
+  waTaxableGains: number;
   totalTax: number;
   // Bracket landing for the conversion (stacked last): the
   // bracket its last dollar falls in, that bracket's top, the
@@ -2423,8 +2738,10 @@ export type PlaygroundIrmaaGainsFlag = {
 };
 
 export type PlaygroundGainsFlags = {
-  // The priced gains stack as typed: sale gain + qualified
-  // dividends (the result's ltcgNet; negative = a net loss).
+  // The preferential income as typed: sale gain + qualified
+  // dividends (an arithmetic total of what was typed, NOT a
+  // netting — a sale loss in it never reduces the dividends
+  // the engine priced; negative = the typed total is a loss).
   gainsStack: number;
   // True when anything was typed into the gains stack at all
   // (a non-zero sale gain or any qualified dividends).
@@ -2458,13 +2775,26 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   );
   const otherOrdinaryTotal = r2(inp.interest + nonQualifiedDividends + inp.otherOrdinary);
   const stockGain = r2(inp.stockSold - inp.stockBasis);
-  const ltcgNet = r2(inp.qualifiedDividends + stockGain);
-  const ltcgPriced = Math.max(0, ltcgNet);
-  const capitalLoss = Math.max(0, -ltcgNet);
-  // IRC §1211(b): after a net capital loss has offset the
-  // year's gains (ltcgPriced $0 above), up to $3,000 of
-  // the loss also offsets ordinary income this year.
+  // Capital netting (round-7 R7-1, defect 5.1; §§1222/1211(b)/
+  // 1(h)): capital gains and losses net against each other
+  // ONLY. The stock gain/loss is the year's net capital
+  // result; qualified dividends are not capital gains and are
+  // never netted against a capital loss — they stay whole in
+  // the preferential stack (ltcgPriced below and the
+  // qualifiedDividends passed to priceYear separately). A
+  // net capital loss reaches ordinary income only through
+  // the §1211(b) allowance: up to $3,000 of it offsets
+  // ordinary income this year. (Before this fix the loss was
+  // netted against the qualified dividends first, erasing
+  // them from AGI and inventing ACA credit.)
+  const ltcgNet = stockGain;
+  const ltcgPriced = r2(Math.max(0, stockGain) + inp.qualifiedDividends);
+  const capitalLoss = Math.max(0, -stockGain);
   const capitalLossAllowance = Math.min(3000, capitalLoss);
+  // The total preferential income typed (capital result +
+  // qualified dividends) — the gains flags' stack figure and
+  // phrase, as before.
+  const prefTyped = r2(stockGain + inp.qualifiedDividends);
 
   // The year's RMD — the plan's own rule (rmdForYear on the
   // primary's clock, Joint Life when applicable) over the
@@ -2510,10 +2840,27 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     extraPreTaxDraw: 0,
     ssBenefits,
     taxExemptInterest: inp.taxExemptInterest,
-    ltcg: ltcgPriced,
+    // The capital result passes RAW (negative = a net
+    // capital loss): priceYear prices max(0, ltcg) on the
+    // gains stack and never nets the loss against the
+    // qualified dividends passed beside it.
+    ltcg: stockGain,
+    qualifiedDividends: inp.qualifiedDividends,
     capitalLossAllowance,
     inflationPct: 0,
     stateRatePct: inp.stateRatePct,
+    residenceState: inp.residenceState ?? null,
+    // Itemized deductions (T5): the typed components price
+    // through the shared greater-of rule, identically to a
+    // plan year — absent = blank = the standard side.
+    itemizedMortgageInterest: inp.itemizedMortgageInterest,
+    itemizedSaltPaid: inp.itemizedSaltPaid,
+    itemizedCharitable: inp.itemizedCharitable,
+    itemizedOther: inp.itemizedOther,
+    // Education expenses (T6): the typed students price
+    // through the shared §25A step, identically to a plan
+    // year — absent = no students = no credits.
+    educationStudents: inp.educationStudents ?? null,
   };
   const priced = priceYear(base);
   const pricedZero = priceYear({ ...base, conversion: 0 });
@@ -2609,7 +2956,12 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // every other input identical, including the RMD and
   // the conversion). Flags derive ONLY from comparing the two
   // engine pricings.
-  const pricedWithoutGains = priceYear({ ...base, ltcg: 0, capitalLossAllowance: 0 });
+  const pricedWithoutGains = priceYear({
+    ...base,
+    ltcg: 0,
+    qualifiedDividends: 0,
+    capitalLossAllowance: 0,
+  });
   const hasGainsTyped = stockGain !== 0 || inp.qualifiedDividends !== 0;
   let withoutAcaOverCliff = false;
   let withoutAcaPosition: number | null = null;
@@ -2627,9 +2979,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       inp.acaBenchmarkAnnual != null ? resW.credit : null;
   }
   const gainsPhrase =
-    ltcgNet < 0
-      ? `the ${fmtDollars(-ltcgNet)} loss`
-      : `the ${fmtDollars(ltcgNet)} gain`;
+    prefTyped < 0
+      ? `the ${fmtDollars(-prefTyped)} loss`
+      : `the ${fmtDollars(prefTyped)} gain`;
   let acaFlag: PlaygroundAcaGainsFlag | null = null;
   if (
     hasGainsTyped &&
@@ -2650,7 +3002,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
           : "";
       acaFlag = {
         kind: "flipped-over",
-        gainsStack: ltcgNet,
+        gainsStack: prefTyped,
         typedOverCliff: aca.overCliff,
         withoutOverCliff: withoutAcaOverCliff,
         typedPositionDollars: aca.positionDollars,
@@ -2667,7 +3019,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
           : "";
       acaFlag = {
         kind: "flipped-under",
-        gainsStack: ltcgNet,
+        gainsStack: prefTyped,
         typedOverCliff: aca.overCliff,
         withoutOverCliff: withoutAcaOverCliff,
         typedPositionDollars: aca.positionDollars,
@@ -2684,7 +3036,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
           : "increased";
       acaFlag = {
         kind: "credit-changed",
-        gainsStack: ltcgNet,
+        gainsStack: prefTyped,
         typedOverCliff: aca.overCliff,
         withoutOverCliff: withoutAcaOverCliff,
         typedPositionDollars: aca.positionDollars,
@@ -2705,7 +3057,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     if (tier > withoutTier) {
       irmaaFlag = {
         kind: "tier-up",
-        gainsStack: ltcgNet,
+        gainsStack: prefTyped,
         typedTier: tier,
         withoutTier,
         premiumYear: inp.taxYear + 2,
@@ -2718,7 +3070,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     } else {
       irmaaFlag = {
         kind: "tier-down",
-        gainsStack: ltcgNet,
+        gainsStack: prefTyped,
         typedTier: tier,
         withoutTier,
         premiumYear: inp.taxYear + 2,
@@ -2731,7 +3083,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     }
   }
   const gainsFlags: PlaygroundGainsFlags = {
-    gainsStack: ltcgNet,
+    gainsStack: prefTyped,
     hasGainsTyped,
     withoutMagi: pricedWithoutGains.magi,
     withoutAcaMagi: pricedWithoutGains.acaMagi,
@@ -2798,6 +3150,18 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     count65: priced.count65,
     standardDeduction: priced.standardDeduction,
     seniorDeduction: priced.seniorDeduction,
+    itemizedDeduction: priced.itemizedDeduction,
+    itemizedSaltAllowed: priced.itemizedSaltAllowed,
+    deductionTaken: priced.deductionTaken,
+    educationAotc: priced.educationAotc,
+    educationLlc: priced.educationLlc,
+    educationChoice: priced.educationChoice,
+    educationNonrefundable: priced.educationNonrefundable,
+    educationRefundable: priced.educationRefundable,
+    amti: priced.amti,
+    amtExemption: priced.amtExemption,
+    amtTentativeTax: priced.amtTentativeTax,
+    amtOwed: priced.amtOwed,
     deductions: priced.deductions,
     taxableIncome: priced.taxableIncome,
     ordinaryTaxableIncome: priced.ordinaryTaxableIncome,
@@ -2814,6 +3178,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     niit: priced.niit,
     federalTax: priced.federalTax,
     stateTax: priced.stateTax,
+    waGains: priced.waGains,
+    waStandardDeduction: priced.waStandardDeduction,
+    waTaxableGains: priced.waTaxableGains,
     totalTax: r2(priced.federalTax + priced.stateTax),
     landingBracketPct,
     landingBracketTop,
@@ -3398,6 +3765,60 @@ export type RothFundingRow = {
   // integer cents (both 0 when converged).
   settlementConverged: boolean;
   settlementMismatchCents: { gains: number; pretax: number };
+  // Ceiling breached (round-7 R7-4, from the engine's
+  // RothYear): true when a switched-on ceiling is still
+  // breached by the year's final priced figures at
+  // conversion $0 — the draws alone breach. See the
+  // ceilingBreachedSemantics convention describeApi
+  // publishes.
+  ceilingBreached: boolean;
+  // Capital-loss carryforward ledger (T4, from the engine's
+  // RothYearDetail; integer cents): the loss carried into
+  // the year by character, the part this year's gains
+  // absorbed, the §1211(b) allowance priced, and the loss
+  // carried out into the next year by character. All 0 in
+  // every year of a plan with no entering carryforward.
+  lossCarryInStCents: number;
+  lossCarryInLtCents: number;
+  lossAbsorbedCents: number;
+  lossAllowanceCents: number;
+  lossCarryOutStCents: number;
+  lossCarryOutLtCents: number;
+  // Itemized-vs-standard (T5, from the engine's
+  // RothYearDetail): the year's itemized total after the
+  // §164(b)(6) SALT cap, in integer cents, and which side
+  // of the greater-of comparison the year's deduction
+  // took. 0 / "standard" in every year of a plan with no
+  // itemized inputs.
+  itemizedDeductionCents: number;
+  deductionTaken: "standard" | "itemized";
+  // Education credits (T6, from the engine's RothYear /
+  // RothYearDetail; integer cents): the year's refundable
+  // AOTC portion (credited in the plan score, not a
+  // funding source or need — it never enters the cash
+  // identity, exactly as acaCreditCents does not), the
+  // tentative AOTC and Lifetime Learning Credit after
+  // their phase-outs, the nonrefundable portion applied
+  // (already inside federalTaxCents — the year's federal
+  // tax NEED is net of it), and the choice taken. All 0 /
+  // "none" in every year with no entered expenses.
+  educationRefundableCents: number;
+  educationAotcCents: number;
+  educationLlcCents: number;
+  educationNonrefundableCents: number;
+  educationChoice: "aotc" | "llc" | "none";
+  // Alternative minimum tax (T7, from the engine's
+  // RothYearDetail; integer cents): the year's AMTI, the
+  // §55(d) exemption after its phase-out, the tentative
+  // minimum tax, and the AMT owed — already inside
+  // federalTaxCents (the year's federal tax NEED includes
+  // it), so these lines name the component and never
+  // enter the cash identity a second time. amtOwedCents
+  // is 0 in every year with no AMT exposure.
+  amtiCents: number;
+  amtExemptionCents: number;
+  amtTentativeTaxCents: number;
+  amtOwedCents: number;
 };
 
 export function buildRothFunding(
@@ -3443,6 +3864,24 @@ export function buildRothFunding(
       ssTaxableCents: cents(y.detail.ssTaxable),
       settlementConverged: y.settlementConverged,
       settlementMismatchCents: y.settlementMismatchCents,
+      ceilingBreached: y.ceilingBreached,
+      lossCarryInStCents: cents(y.detail.lossCarryInSt),
+      lossCarryInLtCents: cents(y.detail.lossCarryInLt),
+      lossAbsorbedCents: cents(y.detail.lossAbsorbed),
+      lossAllowanceCents: cents(y.detail.lossAllowance),
+      lossCarryOutStCents: cents(y.detail.lossCarryOutSt),
+      lossCarryOutLtCents: cents(y.detail.lossCarryOutLt),
+      itemizedDeductionCents: cents(y.detail.itemizedDeduction),
+      deductionTaken: y.detail.deductionTaken,
+      educationRefundableCents: cents(y.educationRefundable),
+      educationAotcCents: cents(y.detail.educationAotc),
+      educationLlcCents: cents(y.detail.educationLlc),
+      educationNonrefundableCents: cents(y.detail.educationNonrefundable),
+      educationChoice: y.detail.educationChoice,
+      amtiCents: cents(y.detail.amti),
+      amtExemptionCents: cents(y.detail.amtExemption),
+      amtTentativeTaxCents: cents(y.detail.amtTentativeTax),
+      amtOwedCents: cents(y.detail.amtOwed),
     };
     row.totalNeedCents =
       row.spendingCents + row.federalTaxCents + row.stateTaxCents + row.irmaaCents;
@@ -3599,6 +4038,45 @@ export function planInputsFromSaved(
     acaSpouseEndAge: saved.acaSpouseEndAge ?? null,
     inflationPct: saved.inflationPct ?? 2.5,
     stateRatePct: saved.stateRatePct ?? 0,
+    // Residence passthrough (T3): absent / null / "other" =
+    // the flat rate prices the state tax, bit-identical.
+    residenceState: saved.residenceState ?? null,
+    // Loss-carryforward passthrough (T4): absent / null
+    // cents = blank = $0 entering either character, so the
+    // ledger never engages and the plan prices
+    // bit-identically to before. Every pricing path builds
+    // its engine inputs from this one construction or
+    // spreads it, so the banked loss reaches every path
+    // exactly as entered.
+    capitalLossCarryInSt: dollars(saved.capitalLossCarryInStCents ?? null),
+    capitalLossCarryInLt: dollars(saved.capitalLossCarryInLtCents ?? null),
+    // Itemized passthrough (T5): absent / null cents = blank
+    // = $0 on that component, so the itemized total is $0,
+    // the standard deduction wins, and the plan prices
+    // bit-identically to before. Every pricing path builds
+    // its engine inputs from this one construction or
+    // spreads it, so the components reach every path exactly
+    // as entered.
+    itemizedMortgageInterest: dollars(saved.itemizedMortgageInterestCents ?? null),
+    itemizedSaltPaid: dollars(saved.itemizedSaltPaidCents ?? null),
+    itemizedCharitable: dollars(saved.itemizedCharitableCents ?? null),
+    itemizedOther: dollars(saved.itemizedOtherCents ?? null),
+    // Education passthrough (T6): absent / null = blank =
+    // no entries, so no credit prices and the plan prices
+    // bit-identically to before. Cents convert to engine
+    // dollars entry by entry; the year and the household's
+    // AOTC-eligibility mark ride verbatim. Every pricing
+    // path builds its engine inputs from this one
+    // construction or spreads it, so the entries reach
+    // every path exactly as entered.
+    educationStudents:
+      saved.educationStudents == null
+        ? null
+        : saved.educationStudents.map((s) => ({
+            year: s.year,
+            expenses: s.expensesCents / 100,
+            aotcEligible: s.aotcEligible === true,
+          })),
     heirRatePct: saved.heirRatePct ?? 22,
     // Transient display-layer passthrough (cents → dollars):
     // gates only the college watch-out's emission. Absent / null
@@ -3851,6 +4329,22 @@ export type RothCompareScenarioResult = {
   penaltyCents: number;
   irmaaCents: number;
   acaCreditCents: number;
+  // Lifetime refundable education credit (T6): the sum of
+  // the scenario's years' refundable AOTC portions — the
+  // component the net-cost identity subtracts beside
+  // acaCreditCents (the nonrefundable portions are already
+  // inside totalTaxCents, having reduced the years'
+  // federal tax). 0 for any scenario with no entered
+  // education expenses.
+  educationRefundableCents: number;
+  // Lifetime AMT owed (T7): the sum of the scenario's
+  // years' AMT — already inside totalTaxCents (each
+  // year's AMT raised its federal tax), so this line
+  // names the component of the lifetime tax and is never
+  // counted a second time in the identity. 0 for any
+  // scenario whose tentative minimum tax never exceeds
+  // its regular tax.
+  amtCents: number;
   terminalCents: number;
   ssCollectedCents: number;
   // Lifetime UNPAID TAX (round-5 fix 1): the part of the
@@ -3867,6 +4361,10 @@ export type RothCompareScenarioResult = {
   endingAfterTaxWealthCents: number;
   deltaNetCostCents: number;
   deltaAcaCreditCents: number;
+  // Scenario − baseline refundable education credit (T6),
+  // same sign convention as deltaAcaCreditCents: positive
+  // means the scenario receives more refundable credit.
+  deltaEducationRefundableCents: number;
 };
 
 export type RothCompareResult = {
@@ -3931,6 +4429,8 @@ export function runRothCompare(
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),
       acaCreditCents: toCents(cost.acaCredit),
+      educationRefundableCents: toCents(cost.educationRefundable),
+      amtCents: toCents(cost.amt),
       terminalCents: toCents(cost.terminal),
       ssCollectedCents: toCents(cost.ssCollected),
       unpaidTaxCents: toCents(result.lifetimeUnpaidTax),
@@ -3955,6 +4455,8 @@ export function runRothCompare(
       penaltyCents: p.penaltyCents,
       irmaaCents: p.irmaaCents,
       acaCreditCents: p.acaCreditCents,
+      educationRefundableCents: p.educationRefundableCents,
+      amtCents: p.amtCents,
       terminalCents: p.terminalCents,
       ssCollectedCents: p.ssCollectedCents,
       unpaidTaxCents: p.unpaidTaxCents,
@@ -3965,6 +4467,8 @@ export function runRothCompare(
       endingAfterTaxWealthCents: p.endingAfterTaxWealthCents,
       deltaNetCostCents: p.netCostCents - basePriced.netCostCents,
       deltaAcaCreditCents: p.acaCreditCents - basePriced.acaCreditCents,
+      deltaEducationRefundableCents:
+        p.educationRefundableCents - basePriced.educationRefundableCents,
     })),
   };
 }

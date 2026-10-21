@@ -3501,10 +3501,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking", fitId: null },
         { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking", fitId: "FIT-NEW" },
       ];
-      const exact = flagExactFitIdDuplicates(
-        rows,
-        recorded.map((r) => r.fitId).filter((f): f is string => f != null),
-      );
+      const exact = flagExactFitIdDuplicates(rows, recorded);
       const fuzzy = flagImportDuplicates(rows, recorded);
       return {
         exactTotal: exact.filter(Boolean).length,
@@ -3514,6 +3511,40 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         secondRecordedId: exact[2] ? 1 : 0,
         noIdNeverExact: exact[3] ? 1 : 0,
         inFileRepeatExact: exact[4] ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "ofx-fitid-exact-dedupe-account-scoped",
+    kind: "spending",
+    note: "IM-5 account scoping (round-7 fix 6.1), hand-derived from flagExactFitIdDuplicates' scoped rule: a FITID is unique only within its own account, so the seen-set keys on account + FITID. Recorded: FIT-X in Checking, FIT-Y in Savings. A file row carrying FIT-X under Savings does NOT flag exact — the id is recorded, but for a different account (the pre-fix flat set false-flagged it); the same FIT-X under Checking DOES flag (recorded there). FIT-Y under Savings flags (recorded there); FIT-Y under Checking does not. Within the file, FIT-X under Savings appearing a second time flags on its second appearance — the in-file repeat rule is scoped the same way — while a FITID-less row never flags. Exact flags: [0, 1, 1, 0, 1, 0] = 3.",
+    expected: {
+      exactTotal: 3, otherAccountNotExact: 0, recordedAccountExact: 1,
+      secondAccountExact: 1, wrongAccountForSecondId: 0,
+      inFileRepeatScopedExact: 1, noIdNeverExact: 0,
+    },
+    actual: () => {
+      const recorded = [
+        { date: "2026-10-03", amountCents: 8420, description: "Grocery store", kind: "spending", accountName: "Checking", fitId: "FIT-X" },
+        { date: "2026-10-04", amountCents: 1200, description: "Coffee", kind: "spending", accountName: "Savings", fitId: "FIT-Y" },
+      ];
+      const rows = [
+        { date: "2026-09-01", amountCents: 555, description: "Unrelated", kind: "spending", accountName: "Savings", fitId: "FIT-X" },
+        { date: "2026-09-02", amountCents: 556, description: "Unrelated 2", kind: "spending", accountName: "Checking", fitId: "FIT-X" },
+        { date: "2026-09-03", amountCents: 557, description: "Unrelated 3", kind: "spending", accountName: "Savings", fitId: "FIT-Y" },
+        { date: "2026-09-04", amountCents: 558, description: "Unrelated 4", kind: "spending", accountName: "Checking", fitId: "FIT-Y" },
+        { date: "2026-09-05", amountCents: 559, description: "Unrelated 5", kind: "spending", accountName: "Savings", fitId: "FIT-X" },
+        { date: "2026-09-06", amountCents: 560, description: "Unrelated 6", kind: "spending", accountName: "Savings", fitId: null },
+      ];
+      const exact = flagExactFitIdDuplicates(rows, recorded);
+      return {
+        exactTotal: exact.filter(Boolean).length,
+        otherAccountNotExact: exact[0] ? 1 : 0,
+        recordedAccountExact: exact[1] ? 1 : 0,
+        secondAccountExact: exact[2] ? 1 : 0,
+        wrongAccountForSecondId: exact[3] ? 1 : 0,
+        inFileRepeatScopedExact: exact[4] ? 1 : 0,
+        noIdNeverExact: exact[5] ? 1 : 0,
       };
     },
   },
@@ -3826,8 +3857,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-score-identities-content",
     kind: "apicontract",
-    note: "Score identities (hardening package, finding A-4): describeApi publishes SCORE_IDENTITIES verbatim (the handler returns this exact constant), and it must state both identities in the response field names — netCostCents as totalTax + IRMAA + penalty + terminal − ACA credit, with the terminal split (preserveExitRatePct inside preservePretaxCents, heirRatePct on the excess) — state plainly that the score 'can be NEGATIVE', carry the synthetic fixture-plan specimen (-21041257), and state the ending-wealth identity. The identities themselves are exercised arithmetically in api-compare-example-executes; this fixture pins only that the published text cannot silently lose them.",
-    expected: { phrasesFound: 5 },
+    note: "Score identities (hardening package, finding A-4; extended by the T2 payroll build): describeApi publishes SCORE_IDENTITIES verbatim (the handler returns this exact constant), and it must state both identities in the response field names — netCostCents as totalTax + IRMAA + penalty + terminal − ACA credit, with the terminal split (preserveExitRatePct inside preservePretaxCents, heirRatePct on the excess) — state plainly that the score 'can be NEGATIVE', carry the synthetic fixture-plan specimen (-21041257), state the ending-wealth identity, and state the T2 fold-in: on a salary-carrying row the all-in identity holds with totalTax folding in the work years' employee payroll tax as its own component, priced from each salary year's own law table, the employer share not priced. The identities themselves are exercised arithmetically in api-compare-example-executes and in the tax suite's workyears-payroll-fold-in-identity case; this fixture pins only that the published text cannot silently lose them.",
+    expected: { phrasesFound: 6 },
     actual: () => {
       const phrases = [
         "netCostCents = totalTaxCents + irmaaCents + penaltyCents + terminalCents − acaCreditCents",
@@ -3835,6 +3866,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "can be NEGATIVE",
         "-21041257",
         "endingAfterTaxWealthCents = endingPretaxCents + endingRothCents + endingTaxableCents + endingHsaCents − terminalCents",
+        "payroll tax is its own component of totalTax",
       ];
       return {
         phrasesFound: phrases.filter((p) => SCORE_IDENTITIES.includes(p))
@@ -3876,12 +3908,14 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-law-year-semantics-content",
     kind: "apicontract",
-    note: "Law-year semantics (hardening package, finding A-13): describeApi publishes LAW_YEAR_SEMANTICS verbatim, and it must state the single-table rule — one published law table prices every year of a plan, the engine 'does not switch law tables mid-plan', and lawYearsAvailable's meaning.",
-    expected: { phrasesFound: 3 },
+    note: "Law-year semantics (hardening package, finding A-13; rewritten by the T1 build, per-calendar-year law tables): describeApi publishes LAW_YEAR_SEMANTICS verbatim, and it must state the per-year rule — lawYear names the newest published table, each plan year 'prices under its own calendar year's table', a year past the table 'carries that newest table forward', the unindexed thresholds 'deflate at the plan's inflation rate' for years past the table priced under, and lawYearsAvailable's meaning. (The pre-T1 text stated the opposite — a single table for every year, the engine 'does not switch law tables mid-plan'; T1 replaced both the text and this pin.)",
+    expected: { phrasesFound: 5 },
     actual: () => {
       const phrases = [
-        "single published law table every year of a plan prices under",
-        "does not switch law tables mid-plan",
+        "lawYear names the newest published law table",
+        "prices under its own calendar year's table",
+        "carries that newest table forward",
+        "deflate at the plan's inflation rate",
         "lawYearsAvailable lists every table the engine holds",
       ];
       return {
@@ -4083,10 +4117,10 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-compare-example-executes",
     kind: "apicontract",
-    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 17 published fields of both scenarios (fieldsCompared 34, all matching: fieldsMatched 34 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; the seeded plan is fully funded, so it publishes 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both scenarios (netCostIdentityExact 2), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent 2) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2).",
+    note: "Worked example (hardening package, findings A-5(b), A-4, A-12(b)): describeApi publishes ROTH_COMPARE_EXAMPLE — one complete runRothCompare request (the seeded fresh-user plan shape with explicit balances) and its response. This fixture RE-EXECUTES that exact request against runRothCompare at start year 2026 on every suite run and compares all 19 published fields of both scenarios (fieldsCompared 38, all matching: fieldsMatched 38 — unpaidTaxCents joined the compared set in the round-5 fixes build, when the field was added to the compare response; educationRefundableCents and deltaEducationRefundableCents joined in the T6 build, when the refundable education credit joined the score identity — the seeded plan enters no education expenses, so both publish 0), so the published example can never rot: if engine pricing moves a figure, this fixture fails until the example is re-derived. It also verifies the A-4 identities on the executed figures — the net-cost identity exact in cents for both scenarios (netCostIdentityExact 2; the identity subtracts the refundable education credit beside the ACA credit — both are 0 here, so the T6 term moves nothing), the wealth identity within the published one-cent rounding clause (wealthIdentityWithinCent 2) — and the A-12(b) prefix: both descriptions lead with 'Retire at ' (descriptionsCarryRetirePrefix 2).",
     expected: {
-      fieldsCompared: 34,
-      fieldsMatched: 34,
+      fieldsCompared: 38,
+      fieldsMatched: 38,
       netCostIdentityExact: 2,
       wealthIdentityWithinCent: 2,
       descriptionsCarryRetirePrefix: 2,
@@ -4111,6 +4145,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "penaltyCents",
         "irmaaCents",
         "acaCreditCents",
+        "educationRefundableCents",
         "terminalCents",
         "ssCollectedCents",
         "unpaidTaxCents",
@@ -4121,6 +4156,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "endingAfterTaxWealthCents",
         "deltaNetCostCents",
         "deltaAcaCreditCents",
+        "deltaEducationRefundableCents",
       ] as const;
       const published = ROTH_COMPARE_EXAMPLE.response.scenarios as unknown as Record<
         string,
@@ -4141,7 +4177,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         if (
           s.netCostCents ===
           s.totalTaxCents + s.irmaaCents + s.penaltyCents + s.terminalCents -
-            s.acaCreditCents
+            s.acaCreditCents -
+            s.educationRefundableCents
         )
           netCostIdentityExact += 1;
         if (
@@ -4223,6 +4260,52 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         fractionalWindowStopRejected: rejected({ windowStopAge: 74.5 }),
         fractionalClaimAgeRejected: rejected({ claimPrimaryAge: 67.5 }),
         bogusDrawOrderRejected: rejected({ drawOrder: "bogus-key" }),
+      };
+    },
+  },
+  {
+    id: "api-mc-score-bracket-top-supported-only",
+    kind: "apicontract",
+    note: "Round-7 R7-3 (defect K-2/A-1) on the Monte Carlo check path: mcScoreIn's ceilings.bracketTopPct is the shared bracketTopPctField (apiContractCore), so the external review's 13 and the fractional 22.5 are REJECTED on this path too, while null (no fill) and each supported rate (10, 12, 22, 24, 32, 35, 37) are ACCEPTED. The same field object is published by the writers' shared ceilings object and the strict compute ceilings in actions.ts, so every public path that accepts ceilings enforces the same list.",
+    expected: {
+      thirteenRejected: 1,
+      fractionalRejected: 1,
+      nullAccepted: 1,
+      allSupportedAccepted: 1,
+    },
+    actual: () => {
+      const valid = {
+        name: "Winner",
+        windowStopAge: 74,
+        guardrail: false,
+        bunching: false,
+        ceilings: {
+          bracketTopPct: 12,
+          irmaaTierCap: 1,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCapCents: 15000000,
+          acaCliffBufferCents: 500000,
+        },
+        claimPrimaryAge: 67,
+        claimSpouseAge: null,
+        ssPrimaryAnnual: 48000.5,
+        ssSpouseAnnual: 0,
+        drawOrder: "pretax-taxable-roth" as const,
+      };
+      const withBracket = (bracketTopPct: number | null) =>
+        mcScoreIn.safeParse({
+          ...valid,
+          ceilings: { ...valid.ceilings, bracketTopPct },
+        }).success;
+      return {
+        thirteenRejected: withBracket(13) ? 0 : 1,
+        fractionalRejected: withBracket(22.5) ? 0 : 1,
+        nullAccepted: withBracket(null) ? 1 : 0,
+        allSupportedAccepted: [10, 12, 22, 24, 32, 35, 37].every(withBracket)
+          ? 1
+          : 0,
       };
     },
   },
