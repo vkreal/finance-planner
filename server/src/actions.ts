@@ -121,11 +121,13 @@ IRMAA_TIER_CAP_SEMANTICS,
 ITEMIZED_DEDUCTION_SEMANTICS,
 LAW_YEAR_SEMANTICS,
 LOSS_CARRYFORWARD_SEMANTICS,
+PLAYGROUND_YEAR_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_COMPARE_EXAMPLE,
 SAVE_FLATTENING_SENTENCE,
 SCORE_IDENTITIES,
 STATE_SEMANTICS,
+TAX_RETURN_SEMANTICS,
 TIER_SEMANTICS,
 UNITS_SEMANTICS,
 UNPAID_TAX_SEMANTICS,
@@ -211,6 +213,11 @@ parseRothGift,
 type RothGiftStored,
 } from "./giftModel";
 import {
+BLANK_ROTH_TAX_RETURN,
+parseRothTaxReturn,
+type RothTaxReturnStored,
+} from "./taxReturnCore";
+import {
 SEED_RETIREMENT_AGE_FALLBACK,
 seedRothRecord,
 } from "./rothSeed";
@@ -270,6 +277,10 @@ buildClearAllPlan,
 isClearAllConfirmed,
 type ClearAllTable,
 } from "./clearDataCore";
+import {
+classifyBackupAuthenticity,
+computeBackupMac,
+} from "./backupMacCore";
 import {
 ENC_PREFIX,
 RESERVED_ENC_PREFIX_MESSAGE,
@@ -1278,7 +1289,13 @@ type OkReason = z.infer<typeof okReasonResponse>;
    every value on write. The settings array carries every settings
    row; the opening reserve and the internal encryption key-check
    constant are exported decrypted like every other figure (the
-   key-check is re-encrypted and re-validated on restore). */
+   key-check is re-encrypted and re-validated on restore).
+   Authenticity (S1): the payload also carries an authenticityMac —
+   a keyed HMAC-SHA-256 over the payload's canonical form
+   (server/src/backupMacCore.ts), computed here at export and
+   verified in restorebackup's preflight. A carried MAC that does
+   not verify refuses the restore; a payload with no MAC (written
+   before MAC signing) restores labelled UNAUTHENTICATED. */
 
 function backupTsToMs(v: unknown): number {
   if (v instanceof Date) return v.getTime();
@@ -1301,6 +1318,13 @@ function backupMsToDate(ms: number): Date {
 const restoreBackupOut = z.object({
   ok: z.boolean(),
   reason: z.string(),
+  // The restored backup's authenticity verdict (S1): true ONLY
+  // when the payload carried an authenticity MAC that verified
+  // over its contents. A pre-MAC backup (no MAC) restores with
+  // authenticated: false and the reason labels it
+  // UNAUTHENTICATED; a MAC that fails verification never reaches
+  // a restore at all (ok: false from preflight).
+  authenticated: z.boolean(),
 });
 
 /* Builds the complete backup payload (every spending and Net Worth
@@ -1380,10 +1404,14 @@ async function buildBackupPayload(
               : r.value,
     });
   }
-  return {
+  const payload: z.infer<typeof backupPayload> = {
     format: BACKUP_FORMAT,
     schemaVersion: BACKUP_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
+    // Filled in below, once the payload's contents are final:
+    // the MAC is computed over the payload with this field
+    // excluded, then attached (backupMacCore).
+    authenticityMac: null,
     yearlyExpenses: yearly.map((y) => ({
       id: y.id,
       name: y.name,
@@ -1480,6 +1508,8 @@ async function buildBackupPayload(
     })),
     settings: settingsExport,
   };
+  payload.authenticityMac = computeBackupMac(payload);
+  return payload;
 }
 
 /* ---------------- Retirement calculator storage ----------------
@@ -2473,6 +2503,39 @@ const rothGiftResponse = z.object({ ...rothGiftFields });
 // parse the planner uses. parseRothInputs never sees these
 // keys — exactly like the execution and mcCheck blocks.
 
+/* Tax-return actuals fields — PLAN-RECORD ONLY, following the
+   execution / mcCheck / gift pattern exactly. The household's
+   most recent Form 1040 actuals (line 2b taxable interest,
+   line 3a qualified dividends, line 3b ordinary dividends)
+   live in the same saved inputs record under their own
+   taxReturn* keys, accepted ONLY by saveRothInputs and
+   returned ONLY by getRothPlanner (its own taxReturn block).
+   They are deliberately NOT part of rothInputFields: they
+   never enter scenarios, never reach planInputsFromSaved, and
+   never affect planner / optimizer / compare / funding /
+   work-years pricing — those keep modelling interest and
+   dividends from the yield fields. Their ONE consumer is the
+   Playground's "Start from my numbers" prefill (see
+   taxReturnCore.ts and the taxReturnSemantics convention
+   describeApi publishes). All nullable integer cents; null on
+   records written before this build = blank = that line not
+   entered, so an untouched record is exactly as before.
+   Adding these three fields grows the saveRothInputs request
+   from 67 to 70 fields. */
+const rothTaxReturnFields = {
+  taxReturnInterestCents: z.number().int().nullable(),
+  taxReturnQualifiedDividendsCents: z.number().int().nullable(),
+  taxReturnOrdinaryDividendsCents: z.number().int().nullable(),
+};
+const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
+// The stored tax-return shape, its ONE parse, and the prefill
+// mapping live in server/src/taxReturnCore.ts
+// (parseRothTaxReturn / BLANK_ROTH_TAX_RETURN /
+// taxReturnPrefillDollars, imported above) so the accuracy
+// fixtures pin the exact parse and mapping the app uses.
+// parseRothInputs never sees these keys — exactly like the
+// execution, mcCheck, and gift blocks.
+
 /* ---------------- API contract & provenance (model-friendly API) ----------------
    Version stamps shared by describeApi (Piece 1) and by the
    provenance block on every pricing response (Piece 2) — ONE
@@ -2495,7 +2558,7 @@ const rothGiftResponse = z.object({ ...rothGiftFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 20;
+export const API_CONTRACT_VERSION = 24;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -2593,7 +2656,8 @@ type RothScenario = z.infer<typeof rothScenario>;
 type RothStoredInputs = RothInputs &
   RothExecutionCents &
   RothMcCheckStored &
-  RothGiftStored;
+  RothGiftStored &
+  RothTaxReturnStored;
 
 function parseRothInputs(raw: unknown): RothInputs | null {
   if (raw == null || typeof raw !== "object") return null;
@@ -2863,6 +2927,7 @@ async function readRothBlob(
   execution: RothExecutionResponse;
   mcVolatilityPct: number | null;
   gift: RothGiftStored;
+  taxReturn: RothTaxReturnStored;
   // The record's write revision (lenient read — see
   // rothRevisionCore.ts): 0 for a blob written before revisions
   // existed, and for an absent or unreadable row.
@@ -2880,15 +2945,16 @@ async function readRothBlob(
     clearedYear: null,
   };
   const blankGift = { ...BLANK_ROTH_GIFT };
+  const blankTaxReturn = { ...BLANK_ROTH_TAX_RETURN };
   const rows = await db.select().from(schema.settings);
   const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
   if (!raw)
-    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: undefined };
+    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: undefined };
   try {
     const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
     const parsed = JSON.parse(plain) as unknown;
     if (parsed == null || typeof parsed !== "object")
-      return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
+      return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
     const blob = parsed as Record<string, unknown>;
     // Execution inputs are consumed HERE, at load: a shape whose
     // year stamp is not the current calendar year comes back
@@ -2917,6 +2983,11 @@ async function readRothBlob(
       // parseRothInputs never sees it, so it can never reach a
       // pricing path other than the gift comparison itself.
       gift: parseRothGift(blob.inputs),
+      // The tax-return actuals block rides along in the same
+      // record; parseRothInputs never sees it, so it can never
+      // reach a pricing path — its only consumer is the
+      // Playground's "Start from my numbers" prefill.
+      taxReturn: parseRothTaxReturn(blob.inputs),
       // The record's write revision: a sibling of `inputs` at
       // the blob's top level, read leniently (absent, non-integer,
       // or negative counts as 0) — parseRothInputs never sees it.
@@ -2925,7 +2996,7 @@ async function readRothBlob(
       storedRaw: raw,
     };
   } catch {
-    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
+    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
   }
 }
 
@@ -3134,6 +3205,7 @@ async function seedRothStoredInputs(
     ...seed.execution,
     mcVolatilityPct: seed.mcVolatilityPct,
     ...seed.gift,
+    ...seed.taxReturn,
   };
 }
 
@@ -3659,6 +3731,19 @@ const playgroundPasteOut = z.object({
   acaHouseholdSize: z.number().nullable(),
   acaBenchmarkAnnual: z.number().nullable(),
   stateRatePct: z.number(),
+  // Cold-AI audit fix: the paste payload carries the state
+  // of residence and the year's education students, so
+  // replaying a paste reprices the same state layer and the
+  // same §25A credits instead of silently dropping them.
+  residenceState: z.enum(["WA", "other"]).nullable(),
+  educationStudents: z
+    .array(
+      z.object({
+        expenses: z.number(),
+        aotcEligible: z.boolean(),
+      }),
+    )
+    .nullable(),
 });
 
 const planYearRowOut = z.object({
@@ -4773,11 +4858,11 @@ const ACTION_PURPOSES: Record<string, string> = {
   saveRetirementScenario: "Save a Retirement scenario.",
   deleteRetirementScenario: "Delete a saved Retirement scenario.",
   renameRetirementScenario: "Rename a saved Retirement scenario.",
-  getRothPlanner: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, and the latest Net Worth snapshot subtotals.",
-  resetRothPlanner: "Reset the Roth plan record (plan inputs plus the execution-year, gift, and MC-volatility blocks) to the seeded fresh-user defaults; saved scenarios pass through untouched. The reset commits against the record it read, retrying against the freshest record a bounded number of times if another save lands first; if it keeps losing that race it is refused with the current record — the same conflict shape saveRothInputs returns — instead of overwriting the newer save.",
+  getRothPlanner: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, tax-return actuals block, and the latest Net Worth snapshot subtotals.",
+  resetRothPlanner: "Reset the Roth plan record (plan inputs plus the execution-year, gift, MC-volatility, and tax-return blocks) to the seeded fresh-user defaults; saved scenarios pass through untouched. The reset commits against the record it read, retrying against the freshest record a bounded number of times if another save lands first; if it keeps losing that race it is refused with the current record — the same conflict shape saveRothInputs returns — instead of overwriting the newer save.",
   getRothUiState: "Read the Roth view's UI state (open sections, year table, workspace mode) plus the Playground form's remembered dial state, with the blob's current write revision.",
   setRothUiState: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current blob and its revision instead of overwriting it.",
-  saveRothInputs: "Save the Roth plan record (inputs plus execution-year, MC-volatility, and gift blocks). Writers are strict: a complete record is required. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current record and its revision instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. " + SAVE_FLATTENING_SENTENCE + " " + CONVERTED_ALREADY_DISTINCTION_SENTENCE,
+  saveRothInputs: "Save the Roth plan record (inputs plus execution-year, MC-volatility, gift, and tax-return blocks). Writers are strict: a complete record is required. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current record and its revision instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. " + SAVE_FLATTENING_SENTENCE + " " + CONVERTED_ALREADY_DISTINCTION_SENTENCE,
   saveRothScenario: "Save the given plan inputs as a new named Roth scenario (complete record required).",
   updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
   deleteRothScenario: "Delete a saved Roth scenario by name.",
@@ -4788,7 +4873,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
   runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing.",
   runRothGiftCompare: "Price the plan as saved versus with a one-off gift of appreciated stock to a child, including the child's sale tax and the gift-tax exclusion check. Compute-only; saves nothing.",
-  runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced. The optional residenceState prices the state tax under a state's rules layer instead of the flat stateRatePct when present ('WA' = Washington's capital-gains excise, RCW 82.87 — see the stateSemantics convention); absent prices the flat rate exactly as before.",
+  runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced. The optional residenceState prices the state tax under a state's rules layer instead of the flat stateRatePct when present ('WA' = Washington's capital-gains excise, RCW 82.87 — see the stateSemantics convention); absent prices the flat rate exactly as before. Dividends follow the playgroundYearSemantics convention describeApi publishes: the Ordinary dividends input is the total and the Qualified input is its subset, and the pricer derives the non-qualified part from the pair.",
   runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state); ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
   runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the eleven source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income (interestYieldCents, then dividendYieldCents — each the yield on the year's opening Taxable balance, reinvested in the engine's mechanics, so its application offsets the year's taxable sales, spending sales first), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits; taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — net of the yield cash applied to them; rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the eleven sources plus spendShortfallCents plus unpaidTaxCents foot to totalNeedCents in every year. unpaidTaxCents is the year's unpaid tax: the part of the assessed tax bill (federal, state, penalty, IRMAA) still owed after every balance the debit chain could draw from was exhausted — reported, never treated as paid (see the unpaidTaxSemantics convention describeApi publishes); neither it nor the shortfall is ever reconciled into a source field. A year whose balances cannot cover its needs foots exactly, by the sum of its unfunded spending and its unpaid tax. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state) and ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Compute-only; saves nothing.",
   getYearSummary: "Year summary for one year: spending figures and Net Worth movement on the same math as their own views. The Keep-the-lights-on floor is priced for the requested year: at the current month for the current year, otherwise at the last month included in that year's totals (or that year's December when it has none).",
@@ -4803,8 +4888,8 @@ const ACTION_PURPOSES: Record<string, string> = {
   renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist.",
   setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
   deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
-  exportbackup: "Export the complete dataset as one decrypted backup payload.",
-  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. A plaintext backup payload is NOT authenticated: its encryption key check is a compatibility check only (same-key decryptability), not proof the file is unmodified — see the backupAuthenticitySemantics convention describeApi publishes. Before restoring a payload from a file you were handed, state that plainly and confirm with the user; restore only payloads from a trusted source.",
+  exportbackup: "Export the complete dataset as one decrypted backup payload. The payload carries an authenticityMac — a keyed MAC over its contents — which restorebackup verifies before restoring.",
+  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes.",
   listBackups: "List the encrypted backup files in the backups folder.",
   deleteBackup: "Delete one backup-*.mstbak file from the backups folder.",
   deleteAllBackups: "Delete every backup file in the backups folder.",
@@ -4836,6 +4921,8 @@ const describeApiResponse = z.object({
   educationCreditSemantics: z.string(),
   amtSemantics: z.string(),
   tierSemantics: z.string(),
+  playgroundYearSemantics: z.string(),
+  taxReturnSemantics: z.string(),
   examples: z.array(
     z.object({
       action: z.string(),
@@ -4920,6 +5007,9 @@ const rothPlannerResponse = z.object({
   // The gift-stock what-if description — its own block,
   // plan-record only (see rothGiftFields).
   gift: rothGiftResponse,
+  // The tax-return actuals (Form 1040 lines 2b / 3a / 3b) —
+  // its own block, plan-record only (see rothTaxReturnFields).
+  taxReturn: rothTaxReturnResponse,
   // The record's write revision (API follow-on 1): writers pass
   // it back as saveRothInputs' baseRevision so a stale save is
   // refused instead of silently overwriting a newer one. 0 for
@@ -4987,6 +5077,7 @@ async function loadRothPlannerResponse(ctx: Ctx): Promise<RothPlannerResponse> {
     execution: blob.execution,
     mcCheck: { mcVolatilityPct: blob.mcVolatilityPct },
     gift: blob.gift,
+    taxReturn: blob.taxReturn,
     revision: blob.revision,
   };
 }
@@ -5040,6 +5131,8 @@ export const Actions = {
         educationCreditSemantics: EDUCATION_CREDIT_SEMANTICS,
         amtSemantics: AMT_SEMANTICS,
         tierSemantics: TIER_SEMANTICS,
+        playgroundYearSemantics: PLAYGROUND_YEAR_SEMANTICS,
+        taxReturnSemantics: TAX_RETURN_SEMANTICS,
         examples: [ROTH_COMPARE_EXAMPLE],
         actions: visible.map(([name, def]) => ({
           name,
@@ -9137,7 +9230,8 @@ export const Actions = {
     // optimizer request included) spread rothComputeFields, so
     // execution fields can never leak into a scenario or a
     // pricing request. The market-uncertainty check's volatility
-    // preference follows the same rule (rothMcCheckFields).
+    // preference follows the same rule (rothMcCheckFields), and
+    // so do the tax-return actuals (rothTaxReturnFields).
     // baseRevision (API follow-on 1) is the CAS base: the
     // revision the writer's copy of the record was read at.
     request: z.object({
@@ -9145,6 +9239,7 @@ export const Actions = {
       ...rothExecutionFields,
       ...rothMcCheckFields,
       ...rothGiftFields,
+      ...rothTaxReturnFields,
       baseRevision: z.number().int().nonnegative().optional(),
     }),
     response: saveRothInputsResponse,
@@ -9179,6 +9274,9 @@ export const Actions = {
         executionTaxExemptInterestCents: args.executionTaxExemptInterestCents,
         executionAlreadyConvertedCents: args.executionAlreadyConvertedCents,
         mcVolatilityPct: args.mcVolatilityPct,
+        taxReturnInterestCents: args.taxReturnInterestCents,
+        taxReturnQualifiedDividendsCents: args.taxReturnQualifiedDividendsCents,
+        taxReturnOrdinaryDividendsCents: args.taxReturnOrdinaryDividendsCents,
       };
       const blob = await readRothBlob(db, key);
       // Fast-path CAS check on the decrypted read: a writer
@@ -11523,10 +11621,12 @@ export const Actions = {
          propertyKind restores as "none", missing split keys as
          null). Everything else that can refuse the restore is
          checked here, against the payload alone: its own encryption
-         key-check under the current key, every enum, intra-payload
-         uniqueness, and referential integrity. Any failure returns
-         ok:false with zero writes — the current data is untouched,
-         byte for byte. */
+         key-check under the current key, its authenticity MAC
+         (S1 — a carried MAC that does not verify refuses; no MAC
+         restores labelled unauthenticated), every enum,
+         intra-payload uniqueness, and referential integrity. Any
+         failure returns ok:false with zero writes — the current
+         data is untouched, byte for byte. */
       const keyCheckValue = payloadKeyCheckValue(args);
       let payloadKeyCheckValid: boolean | null = null;
       if (keyCheckValue != null) {
@@ -11546,9 +11646,21 @@ export const Actions = {
           payloadKeyCheckValid = keyCheckValue === KEY_CHECK_PLAINTEXT;
         }
       }
-      const preflight = preflightRestoreBackup(args, payloadKeyCheckValid);
+      // The authenticity MAC verdict (S1), computed from the
+      // payload alone by backupMacCore's pure classifier — the
+      // same verdict restoreCore's fixture model computes:
+      // "verified" (MAC present, verifies), "mismatch" (MAC
+      // present, does not verify — preflight refuses), "absent"
+      // (no MAC — a pre-MAC backup; restores, labelled
+      // UNAUTHENTICATED in the result below).
+      const payloadAuthenticity = classifyBackupAuthenticity(args);
+      const preflight = preflightRestoreBackup(
+        args,
+        payloadKeyCheckValid,
+        payloadAuthenticity,
+      );
       if (!preflight.ok) {
-        return { ok: false, reason: preflight.reason };
+        return { ok: false, reason: preflight.reason, authenticated: false };
       }
 
       /* ---- Build every row value (encrypting as we go) ----
@@ -11613,6 +11725,7 @@ export const Actions = {
                 ok: false,
                 reason:
                   "A saved planner value in that backup can't be decrypted with this app's encryption key, so the restore was refused — nothing was changed.",
+                authenticated: false,
               };
             }
             if (s.key === RESTORE_ROTH_BLOB_KEY) {
@@ -11827,9 +11940,17 @@ export const Actions = {
       // settings (creates it when the payload did not carry one).
       await ensureKeyCheck(ctx, db, key);
       ctx.invalidateQueries();
+      // The authenticity label (S1): a MAC-verified restore says
+      // so; a pre-MAC backup (no MAC) is labelled UNAUTHENTICATED
+      // in as many words — it restored, but nothing in it proves
+      // its contents are unmodified since export.
+      const authenticated = payloadAuthenticity === "verified";
       return {
         ok: true,
-        reason: `Backup restored: ${args.monthlyBills.length} monthly bills, ${args.yearlyExpenses.length} yearly expenses, ${args.transactions.length} transactions, ${args.nwAccounts.length} Net Worth accounts, ${args.nwSnapshots.length} snapshots, ${args.nwBalances.length} balances.`,
+        authenticated,
+        reason: authenticated
+          ? `Backup restored (authenticity MAC verified): ${args.monthlyBills.length} monthly bills, ${args.yearlyExpenses.length} yearly expenses, ${args.transactions.length} transactions, ${args.nwAccounts.length} Net Worth accounts, ${args.nwSnapshots.length} snapshots, ${args.nwBalances.length} balances.`
+          : `Backup restored (UNAUTHENTICATED backup — no authenticity MAC, so nothing proves its contents are unmodified since export; written before MAC signing or the MAC was removed): ${args.monthlyBills.length} monthly bills, ${args.yearlyExpenses.length} yearly expenses, ${args.transactions.length} transactions, ${args.nwAccounts.length} Net Worth accounts, ${args.nwSnapshots.length} snapshots, ${args.nwBalances.length} balances.`,
       };
     },
   }),

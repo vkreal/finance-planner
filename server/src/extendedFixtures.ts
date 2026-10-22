@@ -145,12 +145,16 @@ BACKUP_AUTHENTICITY_SEMANTICS,
 BALANCE_SEMANTICS,
 CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
+EDUCATION_CREDIT_SEMANTICS,
 LAW_YEAR_SEMANTICS,
+PLAYGROUND_YEAR_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_BALANCE_KEYS,
 ROTH_COMPARE_EXAMPLE,
 SAVE_FLATTENING_SENTENCE,
 SCORE_IDENTITIES,
+STATE_SEMANTICS,
+TAX_RETURN_SEMANTICS,
 TIER_SEMANTICS,
 UNITS_SEMANTICS,
 UNPAID_TAX_SEMANTICS,
@@ -192,6 +196,15 @@ stampRestoredRothBlob,
 type BackupPayload,
 type RestoreState,
 } from "./restoreCore";
+import {
+bytesToHex,
+classifyBackupAuthenticity,
+computeBackupMac,
+hmacSha256Bytes,
+sha256Hex,
+utf8Bytes,
+type BackupAuthenticity,
+} from "./backupMacCore";
 import {
 backupReadSource,
 chooseBackupFilename,
@@ -675,6 +688,23 @@ function restoreKeyCheckValidFor(raw: unknown): boolean | null {
   const value = payloadKeyCheckValue(parsed.data);
   if (value == null) return null;
   return value === BACKUP_KEY_CHECK_PLAINTEXT;
+}
+
+// The base payload SIGNED, exactly as exportbackup now writes it:
+// the MAC is computed over the payload's contents (the field
+// itself excluded) and attached as authenticityMac
+// (backupMacCore.computeBackupMac — the same call
+// buildBackupPayload makes).
+function macdRestorePayload(): Record<string, unknown> {
+  const raw = baseRestorePayload();
+  raw.authenticityMac = computeBackupMac(raw);
+  return raw;
+}
+
+// The authenticity verdict as a fixture number: verified 2,
+// absent (no MAC) 1, mismatch 0.
+function authenticityCode(a: BackupAuthenticity): number {
+  return a === "verified" ? 2 : a === "absent" ? 1 : 0;
 }
 
 /* ------------- Backup isolation (cluster B) synthetic layout -------------
@@ -1702,6 +1732,146 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         priorIntact:
           restoreStateFingerprint(res.state) === restoreStateFingerprint(prior) ? 1 : 0,
         controlRestores: control.ok && control.committed ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "backup-mac-primitives-known-answers",
+    kind: "backup",
+    note: "S1 foundation: the pure SHA-256 / HMAC-SHA-256 implementation backupMacCore carries (the shared restore path is synchronous, so no platform crypto) matches the published known answers — FIPS 180-4 SHA-256 for the empty string, \"abc\", and the 56-byte two-block message, and RFC 4231 HMAC-SHA-256 test cases 1 (key 20×0x0b), 2 (key \"Jefe\"), and 6 (a 131-byte key, longer than the block size, exercising the hash-the-key-first path). A MAC primitive that drifted from these vectors would silently invalidate every backup ever written, so the vectors are pinned, not trusted.",
+    expected: {
+      sha256Empty: 1, sha256Abc: 1, sha256TwoBlock: 1,
+      hmacCase1: 1, hmacCase2: 1, hmacCase6: 1,
+    },
+    actual: () => {
+      const hex = (b: Uint8Array) => bytesToHex(b);
+      return {
+        sha256Empty:
+          sha256Hex("") ===
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ? 1 : 0,
+        sha256Abc:
+          sha256Hex("abc") ===
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ? 1 : 0,
+        sha256TwoBlock:
+          sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ===
+          "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1" ? 1 : 0,
+        hmacCase1:
+          hex(hmacSha256Bytes(new Uint8Array(20).fill(0x0b), utf8Bytes("Hi There"))) ===
+          "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7" ? 1 : 0,
+        hmacCase2:
+          hex(hmacSha256Bytes(utf8Bytes("Jefe"), utf8Bytes("what do ya want for nothing?"))) ===
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843" ? 1 : 0,
+        hmacCase6:
+          hex(hmacSha256Bytes(
+            new Uint8Array(131).fill(0xaa),
+            utf8Bytes("Test Using Larger Than Block-Size Key - Hash Key First"),
+          )) ===
+          "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54" ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "backup-mac-verified-backup-restores",
+    kind: "restore",
+    note: "S1 acceptance (a): a payload carrying a valid authenticity MAC — computed over its exact contents by backupMacCore, the way buildBackupPayload attaches it at export — restores clean through the real restore flow: committed, authenticity verdict 'verified' (code 2), and the payload's rows land (1 Net Worth account, 1 balance at its payload figure $300.00).",
+    expected: { restored: 1, committed: 1, authenticityCode: 2, accounts: 1, balanceCents: 30000 },
+    actual: () => {
+      const raw = macdRestorePayload();
+      const res = attemptRestore(restorePriorState(), raw, restoreKeyCheckValidFor(raw));
+      const bal = res.state.nwBalances[0] ?? {};
+      return {
+        restored: res.ok ? 1 : 0,
+        committed: res.committed ? 1 : 0,
+        authenticityCode: authenticityCode(res.authenticity),
+        accounts: res.state.nwAccounts.length,
+        balanceCents: typeof bal.balanceCents === "number" ? bal.balanceCents : null,
+      };
+    },
+  },
+  {
+    id: "backup-mac-tampered-backup-refused",
+    kind: "restore",
+    note: "S1 acceptance (b): the same MAC'd payload with ONE byte of content changed after signing — the balance figure $300.00 → $300.01, the MAC left exactly as exported — is refused by preflight with the authenticity error ('its authenticity check failed'): no commit, prior state byte-identical, verdict 'mismatch' (code 0). Before this build the same tampered payload passed the compatibility key check and restored silently. A second tamper — the MAC value itself altered, contents untouched — is likewise refused (macTamperRejected).",
+    expected: {
+      rejected: 1, committed: 0, priorIntact: 1, authenticityCode: 0,
+      reasonNamesAuthenticity: 1, macTamperRejected: 1,
+    },
+    actual: () => {
+      const prior = restorePriorState();
+      const raw = macdRestorePayload();
+      (raw.nwBalances as Record<string, unknown>[])[0] = {
+        ...(raw.nwBalances as Record<string, unknown>[])[0],
+        balanceCents: 30001,
+      };
+      const res = attemptRestore(prior, raw, restoreKeyCheckValidFor(raw));
+      const macTampered = macdRestorePayload();
+      const mac = String(macTampered.authenticityMac);
+      macTampered.authenticityMac =
+        (mac.startsWith("0") ? "1" : "0") + mac.slice(1);
+      const res2 = attemptRestore(
+        restorePriorState(),
+        macTampered,
+        restoreKeyCheckValidFor(macTampered),
+      );
+      return {
+        rejected: res.ok ? 0 : 1,
+        committed: res.committed ? 1 : 0,
+        priorIntact:
+          restoreStateFingerprint(res.state) === restoreStateFingerprint(prior) ? 1 : 0,
+        authenticityCode: authenticityCode(res.authenticity),
+        reasonNamesAuthenticity: res.reason.includes("authenticity check failed") ? 1 : 0,
+        macTamperRejected: !res2.ok && !res2.committed ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "backup-mac-premac-backup-restores-unauthenticated",
+    kind: "restore",
+    note: "S1 acceptance (c) — the option C compatibility rule: a pre-MAC backup (baseRestorePayload carries no authenticityMac — the shape of every backup written before this build) is NOT hard-refused: it restores and commits, with the authenticity verdict 'absent' (code 1) that the restore result labels UNAUTHENTICATED. A MAC'd backup whose MAC was stripped lands in exactly the same place (strippedRestores 1, strippedCode 1): stripping can only ever downgrade a backup to unauthenticated, never upgrade one to verified.",
+    expected: { restored: 1, committed: 1, authenticityCode: 1, strippedRestores: 1, strippedCode: 1 },
+    actual: () => {
+      const raw = baseRestorePayload();
+      const res = attemptRestore(restorePriorState(), raw, restoreKeyCheckValidFor(raw));
+      const stripped = macdRestorePayload();
+      delete stripped.authenticityMac;
+      const res2 = attemptRestore(
+        restorePriorState(),
+        stripped,
+        restoreKeyCheckValidFor(stripped),
+      );
+      return {
+        restored: res.ok ? 1 : 0,
+        committed: res.committed ? 1 : 0,
+        authenticityCode: authenticityCode(res.authenticity),
+        strippedRestores: res2.ok && res2.committed ? 1 : 0,
+        strippedCode: authenticityCode(res2.authenticity),
+      };
+    },
+  },
+  {
+    id: "backup-mac-canonical-form-key-order",
+    kind: "backup",
+    note: "S1 interop pin (supports acceptance (d)): the MAC is computed over a key-sorted canonical serialization, so identical contents MAC identically regardless of the producing object's key order — a deep key-reversed copy of a MAC'd payload yields the same MAC (reorderedMacEqual) and still verifies (reorderedVerifies), and a JSON serialize/parse round trip still verifies (roundTripVerifies). This is the property that lets a backup exported by the live app verify in the packaged build and vice versa: different builders, same contents, same MAC.",
+    expected: { reorderedMacEqual: 1, reorderedVerifies: 1, roundTripVerifies: 1 },
+    actual: () => {
+      const raw = macdRestorePayload();
+      const reorder = (v: unknown): unknown => {
+        if (Array.isArray(v)) return v.map(reorder);
+        if (v != null && typeof v === "object") {
+          const out: Record<string, unknown> = {};
+          for (const k of Object.keys(v as Record<string, unknown>).reverse()) {
+            out[k] = reorder((v as Record<string, unknown>)[k]);
+          }
+          return out;
+        }
+        return v;
+      };
+      const reordered = reorder(raw);
+      const roundTripped = JSON.parse(JSON.stringify(raw)) as unknown;
+      return {
+        reorderedMacEqual: computeBackupMac(reordered) === computeBackupMac(raw) ? 1 : 0,
+        reorderedVerifies: classifyBackupAuthenticity(reordered) === "verified" ? 1 : 0,
+        roundTripVerifies: classifyBackupAuthenticity(roundTripped) === "verified" ? 1 : 0,
       };
     },
   },
@@ -3835,16 +4005,17 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-backup-authenticity-semantics-content",
     kind: "apicontract",
-    note: "Hardening S1 (round-5 security review; Kyle ruled option C, 2026-10-19): describeApi publishes BACKUP_AUTHENTICITY_SEMANTICS verbatim (the handler returns this exact constant), and it must draw the authenticity line in as many words: a plaintext backup payload is NOT authenticated; its key check is a COMPATIBILITY check only, not a signature or a MAC; a payload with no key check is likewise accepted; restore only from a trusted source and confirm first because restoring replaces everything. The .mstbak leg is pinned to its actual guarantee (integrity-protected by authenticated encryption, a modified file fails decryption) — no phrase here may upgrade either side: the three-state key-check behaviour itself is unchanged and stays pinned by the restore fixtures.",
-    expected: { phrasesFound: 8 },
+    note: "Hardening S1 (round-5 security review; the user chose option C, 2026-10-19; MAC half shipped as the follow-on build): describeApi publishes BACKUP_AUTHENTICITY_SEMANTICS verbatim (the handler returns this exact constant), and it must state the authenticity rule in as many words: payloads carry an authenticity MAC that restore verifies before writing; a MAC that does not verify is REFUSED with an authenticity error; a payload with NO MAC still restores and is labelled UNAUTHENTICATED; the MAC's honest scope — the MAC key ships with the app, so it is tamper and corruption DETECTION, not proof of origin, and not a signature; the key check remains a COMPATIBILITY check only. The .mstbak leg stays pinned to its actual guarantee (integrity-protected by authenticated encryption, a modified file fails decryption). The behaviour itself is pinned by the backupmac restore fixtures; no phrase here may upgrade either side.",
+    expected: { phrasesFound: 9 },
     actual: () => {
       const phrases = [
-        "NOT authenticated",
+        "authenticity MAC",
+        "is REFUSED with an authenticity error",
+        "labels it UNAUTHENTICATED",
+        "the MAC key ships with the app",
+        "tamper and corruption DETECTION",
+        "not a signature",
         "COMPATIBILITY check only",
-        "not a signature or a MAC",
-        "no key check at all is likewise accepted",
-        "Only restore a plaintext backup from a source you trust",
-        "confirm with the user",
         "integrity-protected by their authenticated encryption",
         "a modified .mstbak fails decryption",
       ];
@@ -3857,16 +4028,20 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-score-identities-content",
     kind: "apicontract",
-    note: "Score identities (hardening package, finding A-4; extended by the T2 payroll build): describeApi publishes SCORE_IDENTITIES verbatim (the handler returns this exact constant), and it must state both identities in the response field names — netCostCents as totalTax + IRMAA + penalty + terminal − ACA credit, with the terminal split (preserveExitRatePct inside preservePretaxCents, heirRatePct on the excess) — state plainly that the score 'can be NEGATIVE', carry the synthetic fixture-plan specimen (-21041257), state the ending-wealth identity, and state the T2 fold-in: on a salary-carrying row the all-in identity holds with totalTax folding in the work years' employee payroll tax as its own component, priced from each salary year's own law table, the employer share not priced. The identities themselves are exercised arithmetically in api-compare-example-executes and in the tax suite's workyears-payroll-fold-in-identity case; this fixture pins only that the published text cannot silently lose them.",
-    expected: { phrasesFound: 6 },
+    note: "Score identities (hardening package, finding A-4; extended by the T2 payroll build; extended by the cold-AI audit fix): describeApi publishes SCORE_IDENTITIES verbatim (the handler returns this exact constant), and it must state both identities in the response field names — netCostCents as totalTax + IRMAA + penalty + terminal − ACA credit − educationRefundableCents (the refundable AOTC term the cold-AI audit found missing: educationCreditSemantics credits it in the score beside the ACA credit, and netCostBreakdown subtracts it, so the printed formula must too), with the terminal split (preserveExitRatePct inside preservePretaxCents, heirRatePct on the excess) — state in the identity itself that AMT is inside federalTax and never added on top, and where the NIIT sits (inside federalTax, therefore inside totalTax) — state plainly that the score 'can be NEGATIVE', carry the synthetic fixture-plan specimen (-21041257), state the ending-wealth identity, and state the T2 fold-in: on a salary-carrying row the all-in identity holds (with the same − educationRefundable term) with totalTax folding in the work years' employee payroll tax as its own component, priced from each salary year's own law table, the employer share not priced. The identities themselves are exercised arithmetically in api-compare-example-executes and in the tax suite's workyears-payroll-fold-in-identity case; this fixture pins only that the published text cannot silently lose them.",
+    expected: { phrasesFound: 10 },
     actual: () => {
       const phrases = [
-        "netCostCents = totalTaxCents + irmaaCents + penaltyCents + terminalCents − acaCreditCents",
+        "netCostCents = totalTaxCents + irmaaCents + penaltyCents + terminalCents − acaCreditCents − educationRefundableCents",
         "priced at preserveExitRatePct, any excess at heirRatePct",
         "can be NEGATIVE",
         "-21041257",
         "endingAfterTaxWealthCents = endingPretaxCents + endingRothCents + endingTaxableCents + endingHsaCents − terminalCents",
         "payroll tax is its own component of totalTax",
+        "allInTax = totalTax + penalty + irmaa − acaCredit − educationRefundable + terminal",
+        "AMT is inside federalTax and never added on top",
+        "The NIIT likewise sits inside federalTax",
+        "credited beside the ACA premium credit",
       ];
       return {
         phrasesFound: phrases.filter((p) => SCORE_IDENTITIES.includes(p))
@@ -3908,8 +4083,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-law-year-semantics-content",
     kind: "apicontract",
-    note: "Law-year semantics (hardening package, finding A-13; rewritten by the T1 build, per-calendar-year law tables): describeApi publishes LAW_YEAR_SEMANTICS verbatim, and it must state the per-year rule — lawYear names the newest published table, each plan year 'prices under its own calendar year's table', a year past the table 'carries that newest table forward', the unindexed thresholds 'deflate at the plan's inflation rate' for years past the table priced under, and lawYearsAvailable's meaning. (The pre-T1 text stated the opposite — a single table for every year, the engine 'does not switch law tables mid-plan'; T1 replaced both the text and this pin.)",
-    expected: { phrasesFound: 5 },
+    note: "Law-year semantics (hardening package, finding A-13; rewritten by the T1 build, per-calendar-year law tables; extended by the cold-AI audit fix): describeApi publishes LAW_YEAR_SEMANTICS verbatim, and it must state the per-year rule — lawYear names the newest published table, each plan year 'prices under its own calendar year's table', a year past the table 'carries that newest table forward', the unindexed thresholds 'deflate at the plan's inflation rate' for years past the table priced under, and lawYearsAvailable's meaning. The cold-AI audit fix completes the deflation rule's named list — the SALT cap figures and the education-credit figures deflate too, not only the NIIT and §86 thresholds — and adds the one-sentence ACA guideline convention (projected years on the newest row in today's dollars; the single-year pricer on the statutory lookback). (The pre-T1 text stated the opposite — a single table for every year, the engine 'does not switch law tables mid-plan'; T1 replaced both the text and this pin.)",
+    expected: { phrasesFound: 9 },
     actual: () => {
       const phrases = [
         "lawYear names the newest published law table",
@@ -3917,9 +4092,77 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "carries that newest table forward",
         "deflate at the plan's inflation rate",
         "lawYearsAvailable lists every table the engine holds",
+        "the SALT cap figures",
+        "the education-credit figures",
+        "projected years price the ACA cliff on the newest poverty-guideline row in today's dollars",
+        "the single-year pricer applies the statutory lookback to its named year",
       ];
       return {
         phrasesFound: phrases.filter((p) => LAW_YEAR_SEMANTICS.includes(p))
+          .length,
+      };
+    },
+  },
+  {
+    id: "api-cold-audit-wording-content",
+    kind: "apicontract",
+    note: "Cold-AI audit wording (2026-10-21 audit, explanation-level findings): describeApi publishes STATE_SEMANTICS and EDUCATION_CREDIT_SEMANTICS verbatim, and they must state two things the audit found unstated — whether the Washington $1,000,000 surtax threshold deflates (it does NOT: waCapitalGainsTax applies the nominal threshold in every year, unlike the deflating federal thresholds), and how the Playground's totalTax treats the refundable education credit (totalTax is federalTax plus stateTax and does NOT subtract the refundable portion, which is reported separately and never netted into federalTax or totalTax — the same treatment the plan score identity gives it). This fixture pins only that the published text cannot silently lose either statement.",
+    expected: { phrasesFound: 4 },
+    actual: () => {
+      const phrases: [string, string][] = [
+        ["the Washington $1,000,000 surtax threshold does NOT deflate", STATE_SEMANTICS],
+        ["it stays at $1,000,000 in every priced year", STATE_SEMANTICS],
+        ["The Playground's totalTax treats the refundable education credit the same way", EDUCATION_CREDIT_SEMANTICS],
+        ["totalTax is federalTax plus stateTax, so it does NOT subtract the refundable portion", EDUCATION_CREDIT_SEMANTICS],
+      ];
+      return {
+        phrasesFound: phrases.filter(([p, s]) => s.includes(p)).length,
+      };
+    },
+  },
+  {
+    id: "api-playground-year-semantics-content",
+    kind: "apicontract",
+    note: "Playground year semantics — the dividend derivation (dividend-pair guard, projection solidity check 2026-10-21): describeApi publishes PLAYGROUND_YEAR_SEMANTICS verbatim, and it must state the single-year pricer's dividend rule in as many words — the Ordinary dividends input is 'the TOTAL ordinary dividends' (the 'Form 1099-DIV box 1a' figure), the Qualified input 'is a subset of that total', the derivation 'nonQualifiedDividends = max(0, ordinaryDividends − qualifiedDividends)', the overage rule (the qualified figure 'cannot exceed the total'; the derivation 'floors the non-qualified part at $0' and 'the excess is not counted'), and that the Playground flags the pair ('shows a note on the form in that case'). The behaviour itself is pinned by the tax suite's playground-dividend-split-normal and playground-dividend-split-overage fixtures; this fixture pins only that the published text cannot silently lose the derivation.",
+    expected: { phrasesFound: 7 },
+    actual: () => {
+      const phrases = [
+        "the TOTAL ordinary dividends",
+        "Form 1099-DIV box 1a",
+        "is a subset of that total",
+        "nonQualifiedDividends = max(0, ordinaryDividends − qualifiedDividends)",
+        "cannot exceed the total",
+        "floors the non-qualified part at $0",
+        "the excess is not counted",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => PLAYGROUND_YEAR_SEMANTICS.includes(p))
+          .length,
+      };
+    },
+  },
+  {
+    id: "api-tax-return-semantics-content",
+    kind: "apicontract",
+    note: "Tax-return semantics (1040 LINES build): describeApi publishes TAX_RETURN_SEMANTICS verbatim, and it must state the three fields and their prefill-only role in as many words — the fields are the return's 'Form 1040 actuals' (line 2b 'taxable interest', line 3a 'qualified dividends', line 3b 'ordinary dividends'), they are 'plan-record only' (accepted ONLY by saveRothInputs, returned ONLY by getRothPlanner, 'never enter a saved scenario'), their one consumer is the Playground prefill with the mapping 'interest ← line 2b', 'qualified dividends ← line 3a', and ordinary dividends '← line 3b written as the TOTAL' ('never the non-qualified remainder'), and 'Plan pricing NEVER reads them' — pricing keeps modelling from 'the plan's yield fields' and a saved plan 'prices bit-identically with the three fields set or blank'. The behaviour itself is pinned by the tax suite's tax-return-prefill-mapping and tax-return-pricing-identity fixtures; this fixture pins only that the published text cannot silently lose the prefill-only role.",
+    expected: { phrasesFound: 12 },
+    actual: () => {
+      const phrases = [
+        "Form 1040 actuals",
+        "taxable interest (line 2b)",
+        "qualified dividends (line 3a)",
+        "ordinary dividends (line 3b)",
+        "plan-record only",
+        "never enter a saved scenario",
+        "interest ← line 2b",
+        "qualified dividends ← line 3a",
+        "line 3b written as the TOTAL",
+        "never the non-qualified remainder",
+        "Plan pricing NEVER reads them",
+        "prices bit-identically with the three fields set or blank",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => TAX_RETURN_SEMANTICS.includes(p))
           .length,
       };
     },
@@ -4905,6 +5148,165 @@ const uiCasCases: {
         failures.push("unrelated write must preserve ceilCustomOpen true");
       if (after.yearTableOpen !== true)
         failures.push("unrelated write: expected yearTableOpen true");
+      return failures;
+    },
+  },
+  {
+    id: "ui-proj-template-persists",
+    note: "The projTemplate field (projection click fix): a legacy blob without the key parses projTemplate null (no snapshot — the view captures one when the panel opens); a write storing a template snapshot round-trips it field-for-field through applyRothUiWrite and parse; an unrelated field write preserves it; and a malformed snapshot (a required figure missing) reads leniently as null rather than half-loading and mis-basing the projection. The snapshot is what the projection chart runs from, so losing or mangling it on save would re-base the chart — the exact shrink this field exists to prevent.",
+    run: () => {
+      const failures: string[] = [];
+      const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete (legacyObj.playground as Record<string, unknown>).projTemplate;
+      const raw = JSON.stringify(legacyObj);
+      if (parseRothUiState(raw).playground.projTemplate !== null)
+        failures.push("legacy blob without the key: expected projTemplate null");
+      const template = {
+        taxYear: 2050,
+        filingStatus: "mfj" as const,
+        agePrimary: 79,
+        ageSpouse: 68,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 1200,
+        ordinaryDividends: 6000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 50520,
+        ssSpouse: 0,
+        conversion: 35330.16,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 9000,
+        pretaxBalance: 37028.73,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        residenceState: "other" as const,
+        itemizedMortgageInterest: 0,
+        itemizedSaltPaid: 0,
+        itemizedCharitable: 0,
+        itemizedOther: 0,
+        educationStudents: null,
+      };
+      const res = applyRothUiWrite(raw, 0, (s) => {
+        s.playground.projTemplate = template;
+      });
+      if (res.status !== "ok") {
+        failures.push(`write: expected ok, got ${res.status}`);
+        return failures;
+      }
+      const stored = parseRothUiState(res.raw).playground.projTemplate;
+      if (JSON.stringify(stored) !== JSON.stringify(template))
+        failures.push(
+          `stored projTemplate must round-trip field-for-field, got ${JSON.stringify(stored)}`,
+        );
+      const res2 = applyRothUiWrite(res.raw, res.revision, (s) => {
+        s.playground.conversion = "999";
+      });
+      if (res2.status !== "ok") {
+        failures.push(`unrelated write: expected ok, got ${res2.status}`);
+        return failures;
+      }
+      if (
+        JSON.stringify(parseRothUiState(res2.raw).playground.projTemplate) !==
+        JSON.stringify(template)
+      )
+        failures.push("unrelated write must preserve projTemplate");
+      const malformed = JSON.parse(res.raw) as Record<string, unknown>;
+      const mp = malformed.playground as Record<string, unknown>;
+      const mt = { ...(mp.projTemplate as Record<string, unknown>) };
+      delete mt.conversion;
+      mp.projTemplate = mt;
+      if (parseRothUiState(JSON.stringify(malformed)).playground.projTemplate !== null)
+        failures.push("malformed snapshot (conversion missing): expected projTemplate null");
+      return failures;
+    },
+  },
+  {
+    id: "ui-proj-from-age-persists",
+    note: "The projFromAge field (projection start-age control): a legacy blob without the key parses projFromAge blank (\"\" — the template's own age, exactly the behaviour before the dial existed); a write storing a from-age round-trips it through applyRothUiWrite and parse; an unrelated field write preserves it; and clearing it back to blank round-trips too, so the projection returns to the template-age walk. The dial is remembered form state like the other projection dials, so losing it on save would silently re-base the chart's window.",
+    run: () => {
+      const failures: string[] = [];
+      const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete (legacyObj.playground as Record<string, unknown>).projFromAge;
+      const raw = JSON.stringify(legacyObj);
+      if (parseRothUiState(raw).playground.projFromAge !== "")
+        failures.push("legacy blob without the key: expected projFromAge blank");
+      const res = applyRothUiWrite(raw, 0, (s) => {
+        s.playground.projFromAge = "57";
+      });
+      if (res.status !== "ok") {
+        failures.push(`write: expected ok, got ${res.status}`);
+        return failures;
+      }
+      if (parseRothUiState(res.raw).playground.projFromAge !== "57")
+        failures.push("stored blob: expected projFromAge 57 after the write");
+      const res2 = applyRothUiWrite(res.raw, res.revision, (s) => {
+        s.playground.conversion = "999";
+      });
+      if (res2.status !== "ok") {
+        failures.push(`unrelated write: expected ok, got ${res2.status}`);
+        return failures;
+      }
+      if (parseRothUiState(res2.raw).playground.projFromAge !== "57")
+        failures.push("unrelated write must preserve projFromAge");
+      const res3 = applyRothUiWrite(res2.raw, res2.revision, (s) => {
+        s.playground.projFromAge = "";
+      });
+      if (res3.status !== "ok") {
+        failures.push(`clearing write: expected ok, got ${res3.status}`);
+        return failures;
+      }
+      if (parseRothUiState(res3.raw).playground.projFromAge !== "")
+        failures.push("clearing the dial must round-trip as blank");
+      return failures;
+    },
+  },
+  {
+    id: "ui-proj-selected-year-persists",
+    note: "The projSelectedYear field (selected projection year survives refresh): a legacy blob without the key parses projSelectedYear null (no year loaded — no highlight, exactly the behaviour before the selection was remembered); a write storing a selected year round-trips it through applyRothUiWrite and parse; an unrelated field write preserves it; clearing it back to null round-trips too (re-run / Reset clear the highlight); and a malformed value (a string, or an out-of-range year) reads leniently as null rather than lighting a bar that was never clicked. The selection drives the chart's ring, dimming, bold label, and Showing caption, so losing it on save would leave the chart and the single-year view disagreeing after a refresh — the exact gap this field exists to close.",
+    run: () => {
+      const failures: string[] = [];
+      const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete (legacyObj.playground as Record<string, unknown>).projSelectedYear;
+      const raw = JSON.stringify(legacyObj);
+      if (parseRothUiState(raw).playground.projSelectedYear !== null)
+        failures.push("legacy blob without the key: expected projSelectedYear null");
+      const res = applyRothUiWrite(raw, 0, (s) => {
+        s.playground.projSelectedYear = 2029;
+      });
+      if (res.status !== "ok") {
+        failures.push(`write: expected ok, got ${res.status}`);
+        return failures;
+      }
+      if (parseRothUiState(res.raw).playground.projSelectedYear !== 2029)
+        failures.push("stored blob: expected projSelectedYear 2029 after the write");
+      const res2 = applyRothUiWrite(res.raw, res.revision, (s) => {
+        s.playground.conversion = "999";
+      });
+      if (res2.status !== "ok") {
+        failures.push(`unrelated write: expected ok, got ${res2.status}`);
+        return failures;
+      }
+      if (parseRothUiState(res2.raw).playground.projSelectedYear !== 2029)
+        failures.push("unrelated write must preserve projSelectedYear");
+      const res3 = applyRothUiWrite(res2.raw, res2.revision, (s) => {
+        s.playground.projSelectedYear = null;
+      });
+      if (res3.status !== "ok") {
+        failures.push(`clearing write: expected ok, got ${res3.status}`);
+        return failures;
+      }
+      if (parseRothUiState(res3.raw).playground.projSelectedYear !== null)
+        failures.push("clearing the selection must round-trip as null");
+      for (const bad of ["2029", 1800, 2029.5]) {
+        const badObj = JSON.parse(res.raw) as Record<string, unknown>;
+        (badObj.playground as Record<string, unknown>).projSelectedYear = bad;
+        if (parseRothUiState(JSON.stringify(badObj)).playground.projSelectedYear !== null)
+          failures.push(`malformed projSelectedYear ${JSON.stringify(bad)}: expected null`);
+      }
       return failures;
     },
   },

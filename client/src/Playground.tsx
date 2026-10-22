@@ -31,9 +31,10 @@ type RothData,
 // server/src/taxLaw.ts. The client runs the same code the fixtures
 // pin, so what is priced here is what is tested there.
 import { irmaaTierUpTo } from "@space/server/taxEngine";
+import { taxReturnPrefillDollars } from "@space/server/taxReturnCore";
 import { lawForYear, TAX_LAW_YEARS } from "@space/server/taxLaw";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
-import { parsePlaygroundPaste, pricePlaygroundYear, solvePlaygroundBracketFill, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
+import { parsePlaygroundPaste, pricePlaygroundYear, projectPlaygroundYears, solvePlaygroundBracketFill, type PlaygroundProjection, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
 
 /* The Playground view — one standalone year priced from typed
    dials through the shared engine (pricePlaygroundYear in
@@ -346,6 +347,47 @@ function solvePlaygroundAcaCliffFill(
    field) — the form's dials in their own typed-string units. */
 type PgSavedForm = ApiResponse<typeof api, "getRothUiState">["playground"];
 
+/* The projection template snapshot in the store's shape, and
+   back: the store carries exactly the engine-input fields the
+   projection runs from (see playgroundProjTemplateState in
+   rothUiStateCore.ts), so the two shapes differ only in the
+   optional-field spellings buildPgInputs leaves open. */
+type PgProjTemplateStored = NonNullable<PgSavedForm["projTemplate"]>;
+const projTemplateToStored = (
+  inp: PlaygroundYearInputs,
+): PgProjTemplateStored => ({
+  taxYear: inp.taxYear,
+  filingStatus: inp.filingStatus,
+  agePrimary: inp.agePrimary,
+  ageSpouse: inp.ageSpouse,
+  onMedicarePrimary: inp.onMedicarePrimary,
+  onMedicareSpouse: inp.onMedicareSpouse,
+  interest: inp.interest,
+  ordinaryDividends: inp.ordinaryDividends,
+  otherOrdinary: inp.otherOrdinary,
+  taxExemptInterest: inp.taxExemptInterest,
+  ssPrimary: inp.ssPrimary,
+  ssSpouse: inp.ssSpouse,
+  conversion: inp.conversion,
+  stockSold: inp.stockSold,
+  stockBasis: inp.stockBasis,
+  qualifiedDividends: inp.qualifiedDividends,
+  pretaxBalance: inp.pretaxBalance,
+  spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
+  acaHouseholdSize: inp.acaHouseholdSize,
+  acaBenchmarkAnnual: inp.acaBenchmarkAnnual,
+  stateRatePct: inp.stateRatePct,
+  residenceState: inp.residenceState === "WA" ? "WA" : "other",
+  itemizedMortgageInterest: inp.itemizedMortgageInterest ?? 0,
+  itemizedSaltPaid: inp.itemizedSaltPaid ?? 0,
+  itemizedCharitable: inp.itemizedCharitable ?? 0,
+  itemizedOther: inp.itemizedOther ?? 0,
+  educationStudents: inp.educationStudents ?? null,
+});
+const projTemplateFromStored = (
+  s: PgProjTemplateStored,
+): PlaygroundYearInputs => ({ ...s });
+
 export function Playground() {
   const rq = useQuery({ queryKey: ["rothplanner"], queryFn: () => api.getRothPlanner({}) });
   // Remembered form state rides the Roth UI-state blob (its
@@ -476,9 +518,66 @@ export function Playground() {
      the hold (pgHoldOn off; the target is kept as the
      last-tapped target, so toggling Hold back on resumes it);
      switching Hold off also releases while keeping the target.
-     Reset / prefill / a successful paste-load clear BOTH. */
+     Loading a projected year from the chart does NOT release
+     it — the loaded dials re-solve against the held target,
+     like any other dial change. Reset / prefill / a successful
+     paste-load clear BOTH. */
   const [pgHoldOn, setPgHoldOn] = useState(false);
   const [pgHeldTarget, setPgHeldTarget] = useState<PgHeldTarget | null>(null);
+  /* Projection controls — remembered with the rest of the
+     form, like every other playground dial. Blank override
+     dials (return, claiming ages and amounts, ACA step-down,
+     starting balances) fall back at projection time to the
+     template dials or, where the template has no figure, to
+     the saved plan's (see the projection block below), so a
+     blank never silently means $0 for a figure the plan
+     carries. pgProjSelectedYear is remembered with the rest
+     of the form: the calendar year last loaded from the
+     projection chart into the single-year view, named in the
+     chart's caption — so a refresh restores the chart's
+     highlight on the year actually being viewed.
+     pgProjTemplate is the projection's captured template —
+     the single-year dials priced into engine inputs at the
+     moment the projection last (re)started (panel opened, or
+     the panel's re-run button pressed). The chart runs from
+     this snapshot ONLY, never from the live dials, so loading
+     a projected year into the single-year view — which
+     overwrites the dials — can never shrink or re-base the
+     chart. It is remembered with the rest of the form (the
+     store carries it as projTemplate), so the decoupling
+     survives a reload too: the saved dials may sit on a
+     loaded year while the saved template still starts the
+     chart at its original year. */
+  const [pgProjOpen, setPgProjOpen] = useState(false);
+  // The Projection panel's "More" expander for its longer
+  // methodology — session-only, like the Roth view's How
+  // toggles: the panel's always-visible intro is a short lead
+  // (what the panel is, plus the ACA-convention disclosure),
+  // and the mechanics live behind this toggle.
+  const [pgProjHowOpen, setPgProjHowOpen] = useState(false);
+  const [pgProjToAge, setPgProjToAge] = useState("95");
+  // Projection from age (start-age control): blank = the
+  // template's own age, exactly the walk before this dial
+  // existed. Earlier starts the walk at that age; later
+  // keeps the walk from the template year and shows the
+  // years from that age on (see the projection block below).
+  const [pgProjFromAge, setPgProjFromAge] = useState("");
+  const [pgProjTaxableStart, setPgProjTaxableStart] = useState("");
+  const [pgProjRothStart, setPgProjRothStart] = useState("");
+  const [pgProjReturnPct, setPgProjReturnPct] = useState("");
+  const [pgProjDrawMode, setPgProjDrawMode] = useState<"repeat" | "replace">("repeat");
+  const [pgProjMoneyOutKind, setPgProjMoneyOutKind] = useState<"conversion" | "draw">("conversion");
+  const [pgProjStopKind, setPgProjStopKind] = useState<"none" | "age" | "floor">("none");
+  const [pgProjStopValue, setPgProjStopValue] = useState("");
+  const [pgProjSsPClaimAge, setPgProjSsPClaimAge] = useState("");
+  const [pgProjSsSClaimAge, setPgProjSsSClaimAge] = useState("");
+  const [pgProjSsPAnnual, setPgProjSsPAnnual] = useState("");
+  const [pgProjSsSAnnual, setPgProjSsSAnnual] = useState("");
+  const [pgProjAcaSizeAfter, setPgProjAcaSizeAfter] = useState("");
+  const [pgProjAcaStepYear, setPgProjAcaStepYear] = useState("");
+  const [pgProjSelectedYear, setPgProjSelectedYear] = useState<number | null>(null);
+  const [pgProjTemplate, setPgProjTemplate] =
+    useState<PlaygroundYearInputs | null>(null);
   /* Fold state for the playground's five input sections —
      remembered with the rest of the form, like every other
      playground dial, so the form reopens with the same
@@ -506,19 +605,34 @@ export function Playground() {
   // title itself a real button carrying aria-expanded and the
   // app's ▾/▸ disclosure glyph; folding hides the whole card
   // body and the heading row stays visible inside the card,
-  // folded or open.
-  const pgSectionCard = (id: PgSectionId, title: string, children: ReactNode) => (
+  // folded or open. Like the Roth view's rothSection, the header
+  // button also carries the section's live one-line summary
+  // (the `summary` argument — derived from the section's own
+  // dials at the call sites below), so a folded section still
+  // shows its main settings at a glance and the line updates
+  // as the dials change.
+  const pgSectionCard = (
+    id: PgSectionId,
+    title: string,
+    summary: string,
+    children: ReactNode,
+  ) => (
     <section className={sectionCls} aria-label={title}>
-      <h3 className="text-base font-semibold">
+      <h3>
         <button
           type="button"
           aria-expanded={pgOpenSections[id]}
           aria-label={`${title} section`}
-          className="flex w-full items-center justify-between gap-3 text-left"
+          className="flex w-full items-start justify-between gap-3 text-left"
           onClick={() => togglePgSection(id)}
         >
-          <span>{title}</span>
-          <span aria-hidden="true" className="shrink-0 text-[var(--dim)]">
+          <span>
+            <span className="block text-base font-semibold">{title}</span>
+            <span className="mt-0.5 block text-sm text-[var(--dim)]">
+              {summary}
+            </span>
+          </span>
+          <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
             {pgOpenSections[id] ? "▾" : "▸"}
           </span>
         </button>
@@ -583,6 +697,26 @@ export function Playground() {
     setPgSoleBeneficiary(s.soleBeneficiary);
     setPgHoldOn(s.holdOn);
     setPgHeldTarget(s.heldTarget);
+    setPgProjOpen(s.projOpen);
+    setPgProjToAge(s.projToAge);
+    setPgProjFromAge(s.projFromAge);
+    setPgProjTaxableStart(s.projTaxableStart);
+    setPgProjRothStart(s.projRothStart);
+    setPgProjReturnPct(s.projReturnPct);
+    setPgProjDrawMode(s.projDrawMode);
+    setPgProjMoneyOutKind(s.projMoneyOutKind);
+    setPgProjStopKind(s.projStopKind);
+    setPgProjStopValue(s.projStopValue);
+    setPgProjSsPClaimAge(s.projSsPrimaryClaimAge);
+    setPgProjSsSClaimAge(s.projSsSpouseClaimAge);
+    setPgProjSsPAnnual(s.projSsPrimaryAnnual);
+    setPgProjSsSAnnual(s.projSsSpouseAnnual);
+    setPgProjAcaSizeAfter(s.projAcaSizeAfter);
+    setPgProjAcaStepYear(s.projAcaStepYear);
+    setPgProjSelectedYear(s.projSelectedYear);
+    setPgProjTemplate(
+      s.projTemplate != null ? projTemplateFromStored(s.projTemplate) : null,
+    );
     setPgOpenSections(s.openSections);
   };
   useEffect(() => {
@@ -635,6 +769,25 @@ export function Playground() {
     soleBeneficiary: pgSoleBeneficiary,
     holdOn: pgHoldOn,
     heldTarget: pgHeldTarget,
+    projOpen: pgProjOpen,
+    projToAge: pgProjToAge,
+    projFromAge: pgProjFromAge,
+    projTaxableStart: pgProjTaxableStart,
+    projRothStart: pgProjRothStart,
+    projReturnPct: pgProjReturnPct,
+    projDrawMode: pgProjDrawMode,
+    projMoneyOutKind: pgProjMoneyOutKind,
+    projStopKind: pgProjStopKind,
+    projStopValue: pgProjStopValue,
+    projSsPrimaryClaimAge: pgProjSsPClaimAge,
+    projSsSpouseClaimAge: pgProjSsSClaimAge,
+    projSsPrimaryAnnual: pgProjSsPAnnual,
+    projSsSpouseAnnual: pgProjSsSAnnual,
+    projAcaSizeAfter: pgProjAcaSizeAfter,
+    projAcaStepYear: pgProjAcaStepYear,
+    projSelectedYear: pgProjSelectedYear,
+    projTemplate:
+      pgProjTemplate != null ? projTemplateToStored(pgProjTemplate) : null,
     openSections: pgOpenSections,
   };
   const pgFormJson = JSON.stringify(pgFormSnapshot);
@@ -906,6 +1059,18 @@ export function Playground() {
     setPgBenchmarkLoaded(null);
     setPgStateRate(String(inp.stateRatePct));
     setPgSoleBeneficiary(inp.spouseSoleBeneficiary);
+    // Cold-AI audit fix: the paste payload now carries the
+    // state of residence and the education students, so a
+    // replayed paste reprices the same state layer and the
+    // same credits. An older paste carries neither — the
+    // flat-rate residence and no students, exactly as before.
+    setPgResidence(inp.residenceState === "WA" ? "WA" : "other");
+    setPgEduStudents(
+      (inp.educationStudents ?? []).map((s) => ({
+        expenses: fmtMoneyInput(s.expenses),
+        aotcEligible: s.aotcEligible,
+      })),
+    );
     // A successful paste-load releases the hold.
     setPgHoldOn(false);
     setPgHeldTarget(null);
@@ -944,6 +1109,26 @@ export function Playground() {
     // Reset releases the hold.
     setPgHoldOn(false);
     setPgHeldTarget(null);
+    // Reset also returns the projection controls to their
+    // fresh defaults (the panel closes; its overrides blank).
+    setPgProjOpen(false);
+    setPgProjToAge("95");
+    setPgProjFromAge("");
+    setPgProjTaxableStart("");
+    setPgProjRothStart("");
+    setPgProjReturnPct("");
+    setPgProjDrawMode("repeat");
+    setPgProjMoneyOutKind("conversion");
+    setPgProjStopKind("none");
+    setPgProjStopValue("");
+    setPgProjSsPClaimAge("");
+    setPgProjSsSClaimAge("");
+    setPgProjSsPAnnual("");
+    setPgProjSsSAnnual("");
+    setPgProjAcaSizeAfter("");
+    setPgProjAcaStepYear("");
+    setPgProjSelectedYear(null);
+    setPgProjTemplate(null);
     setPgOpenSections(PG_SECTIONS_OPEN);
     // Reset also clears the REMEMBERED copy, immediately (not
     // just via the debounced save), so a reload straight after
@@ -980,6 +1165,24 @@ export function Playground() {
       soleBeneficiary: true,
       holdOn: false,
       heldTarget: null,
+      projOpen: false,
+      projToAge: "95",
+      projFromAge: "",
+      projTaxableStart: "",
+      projRothStart: "",
+      projReturnPct: "",
+      projDrawMode: "repeat",
+      projMoneyOutKind: "conversion",
+      projStopKind: "none",
+      projStopValue: "",
+      projSsPrimaryClaimAge: "",
+      projSsSpouseClaimAge: "",
+      projSsPrimaryAnnual: "",
+      projSsSpouseAnnual: "",
+      projAcaSizeAfter: "",
+      projAcaStepYear: "",
+      projSelectedYear: null,
+      projTemplate: null,
       openSections: PG_SECTIONS_OPEN,
     };
     pgForceWholesaleRef.current = false;
@@ -1171,6 +1374,199 @@ export function Playground() {
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
   ]);
 
+  /* Capture the current dials as the projection template:
+     the ONLY way the template changes. Called by the effect
+     below when an open panel has no snapshot yet, and by the
+     panel's re-run button — never as a side effect of viewing
+     a year. Capturing clears the loaded-year selection,
+     because the chart is about to re-base on the year above. */
+  const captureProjTemplate = () => {
+    if (pgAgePNum == null || pgAgePNum <= 0) return;
+    setPgProjTemplate(buildPgInputs(parseDollars(pgConversion) ?? 0));
+    setPgProjSelectedYear(null);
+  };
+  /* A panel restored open from the remembered form (or opened
+     before any template existed) captures its first template
+     from the dials as they stand — once. After that, only
+     captureProjTemplate moves it. */
+  useEffect(() => {
+    if (!pgProjOpen || pgProjTemplate != null) return;
+    if (pgAgePNum == null || pgAgePNum <= 0) return;
+    setPgProjTemplate(buildPgInputs(parseDollars(pgConversion) ?? 0));
+    // buildPgInputs is rebuilt every render from the dial
+    // state; this capture runs once, when an open panel first
+    // has a usable age and no template yet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pgProjOpen, pgProjTemplate, pgAgePNum]);
+  /* Whether the single-year view above still shows the
+     template year the projection runs from. After a bar is
+     clicked (or the dials are edited) it does not — and that
+     is fine, because the chart no longer follows the dials;
+     the panel names the template and offers the re-run button
+     instead. The comparison prices the dials and the snapshot
+     through the same construction and compares the stored
+     shapes, so a loaded projected year — whose Medicare flags
+     follow age and whose ACA convention is the projection's
+     own — compares on the dial fields only. */
+  const pgProjTemplateIsCurrent =
+    pgProjTemplate == null
+      ? true
+      : pgAgePNum != null &&
+        pgAgePNum > 0 &&
+        JSON.stringify(
+          projTemplateToStored(buildPgInputs(parseDollars(pgConversion) ?? 0)),
+        ) === JSON.stringify(projTemplateToStored(pgProjTemplate));
+
+  /* Projection — the CAPTURED template year, repeated from
+     its primary age to the projection end age through
+     projectPlaygroundYears (rothOptimizer.ts — the same
+     pricing path as the single-year readout, so a projected
+     year can never disagree with the view below beyond the
+     one sanctioned ACA-convention difference the panel
+     names). Computed only while the panel is open, and only
+     from pgProjTemplate plus the panel's own override dials:
+     the single-year dials are NOT inputs here, so loading a
+     year into the view below (loadProjYear) — or editing the
+     dials — leaves every bar standing. Blank override dials
+     fall back to the template's figures or the saved plan's
+     (claiming ages and amounts, the ACA step-down, the
+     expected return, the starting balances), and each
+     control's hint names its fallback, so a blank is never a
+     silent $0 for a figure the plan carries. */
+  const pgProjection: PlaygroundProjection | null = useMemo(() => {
+    if (!pgProjOpen) return null;
+    if (pgProjTemplate == null) return null;
+    const template = pgProjTemplate;
+    const templateAge = template.agePrimary;
+    if (templateAge <= 0) return null;
+    const src = pgPrefillSource;
+    const intOr = (s: string, fb: number | null): number | null => {
+      const n = parseIntField(s);
+      return n != null ? n : fb;
+    };
+    const moneyOr = (s: string, fb: number | null): number | null => {
+      const n = parseDollars(s);
+      return n != null ? Math.max(0, n) : fb;
+    };
+    const toAgeRaw = parseIntField(pgProjToAge);
+    const toAge =
+      toAgeRaw != null
+        ? Math.min(120, Math.max(templateAge, toAgeRaw))
+        : Math.max(templateAge, 95);
+    // Projection from age: blank = the template's own age.
+    // A typed age is clamped to a plausible span; the engine
+    // decides what it means (an earlier age starts the walk
+    // there, a later one slices the shown years) — the clamp
+    // here only keeps a typo from producing an absurd range.
+    const fromAgeRaw = parseIntField(pgProjFromAge);
+    const fromAge =
+      fromAgeRaw != null ? Math.min(120, Math.max(0, fromAgeRaw)) : null;
+    const templateSsP = Math.max(0, template.ssPrimary);
+    const templateSsS = Math.max(0, template.ssSpouse);
+    const ssPAnnual = moneyOr(
+      pgProjSsPAnnual,
+      templateSsP > 0
+        ? templateSsP
+        : src != null && !src.ssPrimaryNoBenefit
+          ? src.ssPrimaryAnnual
+          : templateSsP,
+    );
+    const ssSAnnual = moneyOr(
+      pgProjSsSAnnual,
+      templateSsS > 0
+        ? templateSsS
+        : src != null && !src.ssSpouseNoBenefit
+          ? src.ssSpouseAnnual
+          : templateSsS,
+    );
+    const stepYear = intOr(pgProjAcaStepYear, src?.acaStepDownYear ?? null);
+    const sizeAfter = intOr(
+      pgProjAcaSizeAfter,
+      src != null ? src.acaHouseholdSizeAfter : null,
+    );
+    const returnRaw = parseNum(pgProjReturnPct);
+    const returnPct =
+      returnRaw != null
+        ? Math.min(100, Math.max(-90, returnRaw))
+        : (src?.expectedReturnPct ?? blendedExpected(STOCKS_PCT_DEFAULT));
+    const stopAge =
+      pgProjStopKind === "age" ? parseIntField(pgProjStopValue) : null;
+    const stopFloor =
+      pgProjStopKind === "floor"
+        ? Math.max(0, parseDollars(pgProjStopValue) ?? 0)
+        : null;
+    return projectPlaygroundYears(template, {
+      toAge,
+      fromAge,
+      ssPrimaryClaimAge: intOr(pgProjSsPClaimAge, src?.ssPrimaryStartAge ?? null),
+      ssSpouseClaimAge: intOr(pgProjSsSClaimAge, src?.ssSpouseStartAge ?? null),
+      ssPrimaryAnnual: ssPAnnual,
+      ssSpouseAnnual: ssSAnnual,
+      acaHouseholdSizeAfter: stepYear != null ? sizeAfter : null,
+      acaStepDownYear: stepYear,
+      startTaxable: moneyOr(pgProjTaxableStart, src != null ? src.taxableStart : null),
+      startRoth: moneyOr(pgProjRothStart, src != null ? src.rothStart : 0) ?? 0,
+      returnPct,
+      drawMode: pgProjDrawMode,
+      moneyOutKind: pgProjMoneyOutKind,
+      stopKind: pgProjStopKind,
+      stopAge,
+      stopFloor,
+    });
+    // The memo keys on the captured template and the panel's
+    // own override dials ONLY — deliberately not on the
+    // single-year dials, which loadProjYear overwrites.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    pgProjOpen, pgPrefillSource, pgProjTemplate,
+    pgProjToAge, pgProjFromAge, pgProjTaxableStart, pgProjRothStart, pgProjReturnPct,
+    pgProjDrawMode, pgProjMoneyOutKind, pgProjStopKind, pgProjStopValue,
+    pgProjSsPClaimAge, pgProjSsSClaimAge, pgProjSsPAnnual, pgProjSsSAnnual,
+    pgProjAcaSizeAfter, pgProjAcaStepYear,
+  ]);
+
+  /* Load one projected year into the single-year view: the
+     year's own priced inputs become the dials (its calendar
+     year and ages, its Social Security amounts, its effective
+     pre-tax money out, its stock sale, its starting pre-tax
+     balance, its household size), and the readout below
+     reprices them through the single-year path — unchanged.
+     The Medicare dials return to following age, which is the
+     rule the projection itself priced by. Loading a year does
+     NOT release the fill hold: the loaded dials are a change
+     like any other, so with Hold on the hold effect re-solves
+     the loaded year's pre-tax money out against the held
+     target the moment it lands (a year that cannot hold the
+     target gets the usual can't-hold caption instead). The
+     raw amount the projection walked stays visible in the
+     bar itself; Hold off loads a year untouched. It
+     deliberately does NOT touch the projection template: the
+     chart above keeps every bar and keeps running from its
+     captured template, so any bar can be clicked in any
+     order — earlier years included — and the way back to the
+     template year is clicking its bar. */
+  const loadProjYear = (calendarYear: number) => {
+    const y = pgProjection?.years.find((yr) => yr.calendarYear === calendarYear);
+    if (!y) return;
+    const inp = y.inputs;
+    pgForceWholesaleRef.current = true;
+    setPgYear(String(inp.taxYear));
+    setPgAgeP(String(inp.agePrimary));
+    setPgAgeS(inp.ageSpouse != null ? String(inp.ageSpouse) : "");
+    setPgMedP(null);
+    setPgMedS(null);
+    setPgSsP(fmtMoneyInput(inp.ssPrimary));
+    setPgSsS(fmtMoneyInput(inp.ssSpouse));
+    setPgConversion(fmtMoneyInput(inp.conversion));
+    setPgSold(fmtMoneyInput(inp.stockSold));
+    setPgBasis(fmtMoneyInput(inp.stockBasis));
+    setPgPretax(inp.pretaxBalance == null ? "" : fmtMoneyInput(inp.pretaxBalance));
+    setPgAcaSize(
+      inp.acaHouseholdSize != null ? String(inp.acaHouseholdSize) : "",
+    );
+    setPgProjSelectedYear(calendarYear);
+  };
+
   // "Start from my numbers": prefill the dials from the
   // saved plan (the working plan inputs, which already carry the
   // Net Worth-resolved balances). Ages derive from the plan's
@@ -1178,7 +1574,10 @@ export function Playground() {
   // Security is the plan's amount when the chosen year reaches
   // that person's claim age, else $0; the ACA size follows the
   // plan's step-down year; the benchmark keys on who is on the
-  // marketplace that year (see the pick below). Starting here
+  // marketplace that year (see the pick below). Interest and
+  // the two dividend dials come from the plan record's
+  // tax-return actuals (Form 1040 lines 2b / 3a / 3b — the only
+  // figures those fields feed). Starting here
   // never writes the plan, and editing the dials never writes
   // back — the prefilled dials simply become the remembered
   // form state, like typed values.
@@ -1287,6 +1686,27 @@ export function Playground() {
           expenses: fmtMoneyInput(e.expenses),
           aotcEligible: e.aotcEligible,
         })),
+    );
+    // Tax-return actuals (1040 LINES build): the plan record's
+    // Form 1040 lines fill the three income dials — interest ←
+    // line 2b, qualified dividends ← line 3a, ordinary
+    // dividends ← the line 3b TOTAL (the dial takes the total;
+    // the pricer derives the non-qualified part). A line the
+    // plan has not entered leaves its dial blank.
+    setPgInterest(
+      pgPrefillSource.taxReturnInterest != null
+        ? fmtMoneyInput(pgPrefillSource.taxReturnInterest)
+        : "",
+    );
+    setPgQualDiv(
+      pgPrefillSource.taxReturnQualifiedDividends != null
+        ? fmtMoneyInput(pgPrefillSource.taxReturnQualifiedDividends)
+        : "",
+    );
+    setPgOrdDiv(
+      pgPrefillSource.taxReturnOrdinaryDividends != null
+        ? fmtMoneyInput(pgPrefillSource.taxReturnOrdinaryDividends)
+        : "",
     );
     setPgSoleBeneficiary(pgPrefillSource.spouseSoleBeneficiary);
   };
@@ -1431,6 +1851,97 @@ export function Playground() {
       return PG_BENCH_SOURCE_CAPTIONS[pgBenchmarkLoaded.kind];
     }
     return "Your typed value";
+  })();
+
+  /* Dividend-pair guard (projection solidity check,
+     2026-10-21) — display ONLY, rendered under the Qualified
+     dividends dial in the Stock sale section. The Ordinary
+     dividends dial is the TOTAL (Form 1040 line 3b) and the
+     Qualified dial is a subset of it (line 3a), so a qualified
+     figure above the total is a pair that cannot occur on a
+     real 1099-DIV. The engine derives the non-qualified part
+     as max(0, total − qualified) — $0 on such a pair, the
+     excess not counted — and this note makes that visible at
+     the dials instead of letting the excess drop out
+     silently. It reads the two dials exactly as the priced
+     inputs clamp them (negatives to $0), so it appears
+     precisely when the priced pair is impossible, and it
+     never alters pricing. */
+  const pgDividendPairNote: string | null = (() => {
+    const total = Math.max(0, parseDollars(pgOrdDiv) ?? 0);
+    const qualified = Math.max(0, parseDollars(pgQualDiv) ?? 0);
+    if (qualified <= total) return null;
+    return `Qualified dividends (${fmtDollars(qualified)}) can't exceed the total ordinary dividends (${fmtDollars(total)}) — the qualified figure is part of that total, so the excess isn't counted and the non-qualified part prices as $0.`;
+  })();
+
+  /* Section-header summaries — display ONLY, derived live from
+     the dials read the way buildPgInputs reads them (money
+     dials clamped at $0; a typed ACA household size of 0 or
+     less reads as blank), in the Roth view's section-summary
+     style: one line per section naming its main settings, so a
+     folded section shows what it holds and the line updates as
+     the dials change. Nothing here prices anything. */
+  const pgMoneySummary = (s: string): string => {
+    const d = parseDollars(s);
+    return d == null ? "—" : fmtDollars(Math.max(0, d));
+  };
+  const pgYearSummary = [
+    pgYear.trim() !== "" ? pgYear.trim() : "—",
+    pgFiling === "mfj"
+      ? "MFJ"
+      : pgFiling === "single"
+        ? "Single"
+        : "Head of household",
+    pgFiling === "mfj"
+      ? `ages ${pgAgeP.trim() !== "" ? pgAgeP.trim() : "—"}/${pgAgeS.trim() !== "" ? pgAgeS.trim() : "—"}`
+      : `age ${pgAgeP.trim() !== "" ? pgAgeP.trim() : "—"}`,
+  ].join(" · ");
+  const pgSsSummary = ((): string => {
+    const p = parseDollars(pgSsP);
+    const s = pgFiling === "mfj" ? parseDollars(pgSsS) : null;
+    if (p == null && s == null) return "—";
+    return fmtDollars(Math.max(0, p ?? 0) + Math.max(0, s ?? 0));
+  })();
+  const pgIncomeSummary = `Interest ${pgMoneySummary(pgInterest)} · Dividends ${pgMoneySummary(pgOrdDiv)} (qualified ${pgMoneySummary(pgQualDiv)}) · SS ${pgSsSummary}`;
+  const pgConversionSummary = `Money out ${pgMoneySummary(pgConversion)} · balance ${pgMoneySummary(pgPretax)}`;
+  const pgStockSummary = ((): string => {
+    const sold = Math.max(0, parseDollars(pgSold) ?? 0);
+    if (sold <= 0) return "None";
+    const basis = Math.max(0, parseDollars(pgBasis) ?? 0);
+    return `Sold ${fmtDollars(sold)} · basis ${fmtDollars(basis)} · gain ${fmtDollars(sold - basis)}`;
+  })();
+  const pgAcaSummary = ((): string => {
+    const size = parseIntField(pgAcaSize);
+    const rate =
+      pgResidence === "WA"
+        ? "capital-gains excise"
+        : `${((): string => {
+            const n = parseNum(pgStateRate);
+            return n == null ? "0" : String(Math.max(0, n));
+          })()}%`;
+    return [
+      `Household ${size != null && size > 0 ? String(size) : "—"}`,
+      `benchmark ${pgMoneySummary(pgBenchmark)}`,
+      pgResidence === "WA" ? "Washington" : "other state",
+      rate,
+    ].join(" · ");
+  })();
+  /* The Projection panel's header summary, same treatment:
+     the template year it runs from, the projected age window
+     (the from-age when one is set, otherwise the template's
+     own age, through the to-age), and the draw mode. */
+  const pgProjSummary = ((): string => {
+    const templateYear = pgProjTemplate?.taxYear ?? parseIntField(pgYear);
+    const templateAge = pgProjTemplate?.agePrimary ?? pgAgePNum;
+    const fromAge = parseIntField(pgProjFromAge) ?? templateAge;
+    const toAge = parseIntField(pgProjToAge) ?? 95;
+    return [
+      `Template ${templateYear ?? "—"}`,
+      `ages ${fromAge ?? "—"}→${toAge}`,
+      pgProjDrawMode === "replace"
+        ? "SS and RMDs replace the draw"
+        : "draw repeats as entered",
+    ].join(" · ");
   })();
 
   return (
@@ -1790,7 +2301,7 @@ export function Playground() {
             )}
           </div>
 
-          {pgSectionCard("year", "The year", (
+          {pgSectionCard("year", "The year", pgYearSummary, (
             <>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             <div>
@@ -1818,6 +2329,14 @@ export function Playground() {
                     {l.year}
                   </option>
                 ))}
+                {/* A year loaded from the projection chart can
+                    sit past the law table — keep it selectable
+                    so the dial shows the year actually priced
+                    (the hint below names the law row used). */}
+                {!TAX_LAW_YEARS.some((l) => String(l.year) === pgYear) &&
+                  pgYear.trim() !== "" && (
+                    <option value={pgYear}>{pgYear}</option>
+                  )}
               </select>
               <p className={hintCls}>
                 {(() => {
@@ -1915,7 +2434,7 @@ export function Playground() {
             </>
           ))}
 
-          {pgSectionCard("income", "Income for the year", (
+          {pgSectionCard("income", "Income for the year", pgIncomeSummary, (
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {moneyField("Interest", pgInterest, setPgInterest, {
               info: "Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income.",
@@ -1945,7 +2464,7 @@ export function Playground() {
           </div>
           ))}
 
-          {pgSectionCard("conversion", "Pre-tax money out", (
+          {pgSectionCard("conversion", "Pre-tax money out", pgConversionSummary, (
             <>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {moneyField("Pre-tax money out (draw or conversion)", pgConversion, setPgConversion, {
@@ -2042,7 +2561,8 @@ export function Playground() {
             </>
           ))}
 
-          {pgSectionCard("stock", "Stock sale (long-term)", (
+          {pgSectionCard("stock", "Stock sale (long-term)", pgStockSummary, (
+          <>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {moneyField("Stock sold", pgSold, setPgSold, {
               info: "The total sale price of the stock you sell — what you receive for it. Only the part of this above your cost basis is a gain.",
@@ -2057,9 +2577,15 @@ export function Playground() {
               info: "Dividends that qualify for the lower tax rate — Form 1040 line 3a, exactly as printed. This amount is part of the total ordinary dividends (line 3b) you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates.",
             })}
           </div>
+          {pgDividendPairNote && (
+            <p className="mt-2 text-sm text-[var(--warn)]" role="note">
+              {pgDividendPairNote}
+            </p>
+          )}
+          </>
           ))}
 
-          {pgSectionCard("aca", "ACA & state", (
+          {pgSectionCard("aca", "ACA & state", pgAcaSummary, (
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {numField("ACA household size", pgAcaSize, setPgAcaSize, {
               hint: "Sets the 400% poverty-line cliff. Needed to see the ACA position.",
@@ -2188,6 +2714,556 @@ export function Playground() {
             </div>
           </div>
           ))}
+
+          <section className={sectionCls} aria-label="Projection">
+            <h3>
+              <button
+                type="button"
+                aria-expanded={pgProjOpen}
+                aria-label="Projection section"
+                className="flex w-full items-start justify-between gap-3 text-left"
+                onClick={() => setPgProjOpen((v) => !v)}
+              >
+                <span>
+                  <span className="block text-base font-semibold">Projection — repeat {pgProjTemplate != null ? `${pgProjTemplate.taxYear} (age ${pgProjTemplate.agePrimary})` : "this year"}{pgProjFromAge.trim() !== "" ? ` from age ${pgProjFromAge.trim()}` : ""} to age {pgProjToAge.trim() === "" ? "95" : pgProjToAge}</span>
+                  <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                    {pgProjSummary}
+                  </span>
+                </span>
+                <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
+                  {pgProjOpen ? "▾" : "▸"}
+                </span>
+              </button>
+            </h3>
+            {pgProjOpen && (
+              <>
+                <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]">
+                  A captured template year repeats, one bar per year,
+                  priced by the same engine as the single-year view.
+                  Projected years price the ACA cliff on the newest
+                  poverty-guideline row, in today&rsquo;s dollars, while
+                  the single-year view applies the statutory lookback to
+                  its named year — so a loaded year&rsquo;s cliff can
+                  differ from the chart&rsquo;s line.
+                </p>
+                <button
+                  type="button"
+                  aria-label="More about how the projection works"
+                  aria-expanded={pgProjHowOpen}
+                  className="mt-1 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+                  onClick={() => setPgProjHowOpen((o) => !o)}
+                >
+                  {pgProjHowOpen ? "Less" : "More"}
+                </button>
+                {pgProjHowOpen && (
+                  <div className="mt-2 max-w-3xl space-y-2 text-sm text-[var(--dim)]">
+                    <p>
+                      Medicare switches on at 65 for each person, Social
+                      Security starts at its claiming age, RMDs price off
+                      the balance as it walks down, the ACA household
+                      steps down in its step-down year, and ACA ends once
+                      everyone is on Medicare.
+                    </p>
+                    <p>
+                      Click any bar to load that year into the
+                      single-year view — the chart itself runs from a
+                      captured snapshot of the template year and never
+                      changes when you click, so every year stays on the
+                      chart and any bar can be clicked again to go back.
+                    </p>
+                    <p>
+                      “Projection from age” starts the window at a
+                      different age without touching the template:
+                      earlier than the template age, the walk itself
+                      starts there — the calendar years and your
+                      spouse&rsquo;s age shift back with it, the
+                      template&rsquo;s income shape repeats from that
+                      age, every age-keyed switch follows each projected
+                      year&rsquo;s own ages, and the starting balances
+                      (the template&rsquo;s pre-tax balance and the
+                      starting taxable and Roth balances below) are the
+                      balances at that first projected year. Later than
+                      the template age, the walk still runs from the
+                      template year and the charts show the years from
+                      that age on, so the first shown year&rsquo;s
+                      balances are the walked ones.
+                    </p>
+                  </div>
+                )}
+                {pgProjTemplate != null && (
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+                    <p role="note" className="text-[var(--dim)]">
+                      Projection template: {pgProjTemplate.taxYear} (age{" "}
+                      {pgProjTemplate.agePrimary})
+                      {!pgProjTemplateIsCurrent &&
+                        " — the single-year view above shows a different year; the chart still runs from this template."}
+                    </p>
+                    <button
+                      type="button"
+                      aria-label="Re-run projection from the year above"
+                      disabled={pgProjTemplateIsCurrent || pgAgePNum == null || pgAgePNum <= 0}
+                      className="px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:no-underline disabled:opacity-50"
+                      onClick={captureProjTemplate}
+                    >
+                      {pgProjTemplateIsCurrent
+                        ? "Already running from the year above"
+                        : "Re-run projection from the year above"}
+                    </button>
+                  </div>
+                )}
+                <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {numField("Projection from age", pgProjFromAge, setPgProjFromAge, {
+                    idLabel: "Projection from age",
+                    hint:
+                      pgProjTemplate != null
+                        ? `Blank uses the template's own age (${pgProjTemplate.agePrimary}). Earlier starts the walk at that age, with the starting balances as that year's balances; later shows the years from that age on.`
+                        : "Blank uses the template year's own age. Earlier starts the walk at that age, with the starting balances as that year's balances; later shows the years from that age on.",
+                  })}
+                  {numField("Project to age", pgProjToAge, setPgProjToAge, {
+                    idLabel: "Projection to age",
+                    hint: "The last age projected. 95 unless you change it.",
+                  })}
+                  {pctField("Expected return", pgProjReturnPct, setPgProjReturnPct, {
+                    idLabel: "Projection expected return",
+                    hint:
+                      pgPrefillSource != null
+                        ? `Blank uses your plan's expected return (${pgPrefillSource.expectedReturnPct}%). Balances grow at this rate after each year's money moves.`
+                        : "Balances grow at this rate after each year's money moves.",
+                  })}
+                  <div>
+                    <label className={labelCls} htmlFor="roth-pg-proj-draw-mode">
+                      When Social Security and RMDs arrive
+                    </label>
+                    <select
+                      id="roth-pg-proj-draw-mode"
+                      aria-label="Projection draw behavior"
+                      className={inputCls}
+                      value={pgProjDrawMode}
+                      onChange={(e) =>
+                        setPgProjDrawMode(e.target.value === "replace" ? "replace" : "repeat")
+                      }
+                    >
+                      <option value="repeat">The draw repeats as entered</option>
+                      <option value="replace">Social Security and RMDs replace the draw</option>
+                    </select>
+                    <p className={hintCls}>
+                      “Replace” shrinks the pre-tax money out by whatever
+                      Social Security and RMDs arrive beyond the template
+                      year&rsquo;s own, floored at $0.
+                    </p>
+                  </div>
+                  <div>
+                    <label className={labelCls} htmlFor="roth-pg-proj-kind">
+                      Pre-tax money out is
+                    </label>
+                    <select
+                      id="roth-pg-proj-kind"
+                      aria-label="Projection money out kind"
+                      className={inputCls}
+                      value={pgProjMoneyOutKind}
+                      onChange={(e) =>
+                        setPgProjMoneyOutKind(e.target.value === "draw" ? "draw" : "conversion")
+                      }
+                    >
+                      <option value="conversion">A conversion — it lands in Roth</option>
+                      <option value="draw">A draw — it leaves as spending</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls} htmlFor="roth-pg-proj-stop">
+                      The money out stops
+                    </label>
+                    <select
+                      id="roth-pg-proj-stop"
+                      aria-label="Projection stop rule"
+                      className={inputCls}
+                      value={pgProjStopKind}
+                      onChange={(e) =>
+                        setPgProjStopKind(
+                          e.target.value === "age"
+                            ? "age"
+                            : e.target.value === "floor"
+                              ? "floor"
+                              : "none",
+                        )
+                      }
+                    >
+                      <option value="none">Never — it repeats every year</option>
+                      <option value="age">After a stop age</option>
+                      <option value="floor">At a pre-tax floor</option>
+                    </select>
+                  </div>
+                  {pgProjStopKind === "age" &&
+                    numField("Convert through age", pgProjStopValue, setPgProjStopValue, {
+                      idLabel: "Projection convert through age",
+                      hint: "The last age the money out runs. $0 after it.",
+                    })}
+                  {pgProjStopKind === "floor" &&
+                    moneyField("Pre-tax floor", pgProjStopValue, setPgProjStopValue, {
+                      idLabel: "Projection pre-tax floor",
+                      hint: "The money out shrinks so the pre-tax balance never goes below this, and stops once it is reached.",
+                    })}
+                  {numField("Your Social Security claiming age", pgProjSsPClaimAge, setPgProjSsPClaimAge, {
+                    idLabel: "Projection your claiming age",
+                    hint:
+                      pgPrefillSource?.ssPrimaryStartAge != null
+                        ? `Blank uses your plan's claiming age (${pgPrefillSource.ssPrimaryStartAge}).`
+                        : "Blank keeps the template amount in pay every year.",
+                  })}
+                  {moneyField("Your Social Security per year", pgProjSsPAnnual, setPgProjSsPAnnual, {
+                    idLabel: "Projection your Social Security per year",
+                    hint: "What the benefit pays from the claiming age. Blank uses the template amount, or your plan's when the template year is before claiming.",
+                  })}
+                  {pgFiling === "mfj" &&
+                    numField("Spouse Social Security claiming age", pgProjSsSClaimAge, setPgProjSsSClaimAge, {
+                      idLabel: "Projection spouse claiming age",
+                      hint:
+                        pgPrefillSource?.ssSpouseStartAge != null
+                          ? `Blank uses your plan's claiming age (${pgPrefillSource.ssSpouseStartAge}).`
+                          : "Blank keeps the template amount in pay every year.",
+                    })}
+                  {pgFiling === "mfj" &&
+                    moneyField("Spouse Social Security per year", pgProjSsSAnnual, setPgProjSsSAnnual, {
+                      idLabel: "Projection spouse Social Security per year",
+                      hint: "What the spouse benefit pays from its claiming age. Blank follows the same rule as yours.",
+                    })}
+                  {moneyField("Starting taxable balance", pgProjTaxableStart, setPgProjTaxableStart, {
+                    idLabel: "Projection starting taxable balance",
+                    hint:
+                      pgPrefillSource != null
+                        ? `Blank uses your plan's taxable balance (${fmtDollars(pgPrefillSource.taxableStart)}). This is the balance at the projection's first year; the stock sale draws it down from there.`
+                        : "This is the balance at the projection's first year; the stock sale draws it down from there. Blank = no taxable balance tracked — the sale repeats as typed.",
+                  })}
+                  {moneyField("Starting Roth balance", pgProjRothStart, setPgProjRothStart, {
+                    idLabel: "Projection starting Roth balance",
+                    hint:
+                      pgPrefillSource != null
+                        ? `Blank uses your plan's Roth balance (${fmtDollars(pgPrefillSource.rothStart)}). This is the balance at the projection's first year.`
+                        : "This is the balance at the projection's first year.",
+                  })}
+                  {numField("ACA household size after step-down", pgProjAcaSizeAfter, setPgProjAcaSizeAfter, {
+                    idLabel: "Projection ACA household size after",
+                    hint: "The household size from the step-down year on.",
+                  })}
+                  {numField("ACA step-down year", pgProjAcaStepYear, setPgProjAcaStepYear, {
+                    idLabel: "Projection ACA step-down year",
+                    hint:
+                      pgPrefillSource?.acaStepDownYear != null
+                        ? `Blank uses your plan's step-down year (${pgPrefillSource.acaStepDownYear}).`
+                        : "Blank = no step-down.",
+                  })}
+                </div>
+                {pgProjection == null && (
+                  <p className="mt-3 text-sm text-[var(--dim)]" role="note">
+                    Enter your age for the template year above and the
+                    projection draws here.
+                  </p>
+                )}
+                {pgProjection != null &&
+                  (() => {
+                    const proj = pgProjection;
+                    const n = proj.years.length;
+                    const segDefs = [
+                      { key: "interest", label: "Interest", color: "#2563eb" },
+                      { key: "orddiv", label: "Ordinary dividends (non-qualified part)", color: "#0891b2" },
+                      { key: "other", label: "Other ordinary income", color: "#d97706" },
+                      { key: "ss", label: "Taxable Social Security", color: "#dc2626" },
+                      { key: "rmd", label: "RMD", color: "#7c3aed" },
+                      { key: "conv", label: "Pre-tax money out", color: "#14705a" },
+                    ] as const;
+                    const segAmount = (
+                      r: PlaygroundYearResult,
+                      key: (typeof segDefs)[number]["key"],
+                    ): number =>
+                      key === "interest"
+                        ? r.interest
+                        : key === "orddiv"
+                          ? r.nonQualifiedDividends
+                          : key === "other"
+                            ? r.otherOrdinary
+                            : key === "ss"
+                              ? r.ssTaxable
+                              : key === "rmd"
+                                ? r.rmd
+                                : r.conversion;
+                    const stackTotal = (r: PlaygroundYearResult) =>
+                      segDefs.reduce((a, d) => a + segAmount(r, d.key), 0);
+                    const yMax = Math.max(
+                      1,
+                      ...proj.years.map((y) =>
+                        Math.max(
+                          stackTotal(y.result),
+                          y.result.magi,
+                          y.result.aca.cliff ?? 0,
+                        ),
+                      ),
+                    );
+                    const magiPoints = proj.years
+                      .map(
+                        (y, i) =>
+                          `${i + 0.5},${100 - (y.result.magi / yMax) * 100}`,
+                      )
+                      .join(" ");
+                    // ACA cliff line runs: consecutive years that
+                    // carry a hard cliff (ACA applies, a cliff
+                    // figure, coverage 2026+).
+                    const cliffRuns: { x1: number; y1: number; x2: number; y2: number }[] = [];
+                    proj.years.forEach((y, i) => {
+                      const cliff =
+                        y.calendarYear >= 2026 && y.result.aca.applies
+                          ? y.result.aca.cliff
+                          : null;
+                      if (cliff == null) return;
+                      const prev = i > 0 ? proj.years[i - 1] : undefined;
+                      const prevCliff =
+                        prev != null &&
+                        prev.calendarYear >= 2026 &&
+                        prev.result.aca.applies
+                          ? prev.result.aca.cliff
+                          : null;
+                      if (prevCliff != null) {
+                        cliffRuns.push({
+                          x1: i - 0.5,
+                          y1: 100 - (prevCliff / yMax) * 100,
+                          x2: i + 0.5,
+                          y2: 100 - (cliff / yMax) * 100,
+                        });
+                      } else {
+                        cliffRuns.push({
+                          x1: i + 0.1,
+                          y1: 100 - (cliff / yMax) * 100,
+                          x2: i + 0.9,
+                          y2: 100 - (cliff / yMax) * 100,
+                        });
+                      }
+                    });
+                    const presentSegs = segDefs.filter((d) =>
+                      proj.years.some((y) => segAmount(y.result, d.key) !== 0),
+                    );
+                    // Balances area chart: one point per year
+                    // boundary (each year's starting balances,
+                    // plus the final ending balances).
+                    const balPoints = [
+                      ...proj.years.map((y) => y.startBalances),
+                      proj.endBalances,
+                    ];
+                    const balLayers = [
+                      { key: "pretax", label: "Pre-tax", color: "#7c3aed", get: (b: (typeof balPoints)[number]) => b.pretax },
+                      { key: "taxable", label: "Taxable", color: "#d97706", get: (b: (typeof balPoints)[number]) => b.taxable },
+                      { key: "roth", label: "Roth", color: "#14705a", get: (b: (typeof balPoints)[number]) => b.roth },
+                    ].filter((l) => balPoints.some((b) => l.get(b) != null));
+                    const balCum = balPoints.map((b) => {
+                      let cum = 0;
+                      return balLayers.map((l) => {
+                        const v = l.get(b) ?? 0;
+                        const lo = cum;
+                        cum += v;
+                        return { lo, hi: cum };
+                      });
+                    });
+                    const balTotalAt = (i: number): number => {
+                      const c = balCum[i];
+                      if (c == null || c.length === 0) return 0;
+                      return c[c.length - 1]?.hi ?? 0;
+                    };
+                    const balMax = Math.max(1, ...balCum.map((c) => c[c.length - 1]?.hi ?? 0));
+                    const balX = (i: number) =>
+                      balPoints.length > 1 ? (i / (balPoints.length - 1)) * 100 : 50;
+                    const balY = (v: number) => 100 - (v / balMax) * 100;
+                    return (
+                      <>
+                        <div className="mt-4" aria-label="Projected income by year chart">
+                          <h4 className="text-sm font-semibold">
+                            Income stack by year — ages {proj.years[0]?.agePrimary} to{" "}
+                            {proj.years[n - 1]?.agePrimary}
+                          </h4>
+                          <div className="relative mt-2 h-56">
+                            <div className="absolute inset-0 flex items-end gap-[2px]">
+                              {proj.years.map((y) => {
+                                let cum = 0;
+                                const segs = segDefs
+                                  .map((d) => {
+                                    const amount = segAmount(y.result, d.key);
+                                    const start = cum;
+                                    cum += amount;
+                                    return { ...d, amount, start };
+                                  })
+                                  .filter((s) => s.amount !== 0);
+                                const selected =
+                                  pgProjSelectedYear === y.calendarYear;
+                                return (
+                                  <button
+                                    key={y.calendarYear}
+                                    type="button"
+                                    aria-label={`Load ${y.calendarYear} (age ${y.agePrimary}) into the single-year view — MAGI ${fmtDollars(y.result.magi)}, total tax ${fmtDollars(y.result.totalTax)}`}
+                                    aria-pressed={selected}
+                                    className={`relative h-full min-w-0 flex-1 rounded-sm hover:bg-[var(--accent-soft)] ${selected ? "ring-2 ring-[var(--accent)] ring-inset" : pgProjSelectedYear != null ? "opacity-40" : ""}`}
+                                    onClick={() => loadProjYear(y.calendarYear)}
+                                  >
+                                    {segs.map((s) => (
+                                      <span
+                                        key={s.key}
+                                        aria-hidden="true"
+                                        className="absolute right-0 left-0 border-b border-[var(--bg)]"
+                                        style={{
+                                          bottom: `${(Math.min(s.start, s.start + s.amount) / yMax) * 100}%`,
+                                          height: `${(Math.abs(s.amount) / yMax) * 100}%`,
+                                          background: s.color,
+                                        }}
+                                      />
+                                    ))}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <svg
+                              className="pointer-events-none absolute inset-0 h-full w-full"
+                              viewBox={`0 0 ${n} 100`}
+                              preserveAspectRatio="none"
+                              aria-hidden="true"
+                            >
+                              {cliffRuns.map((r, i) => (
+                                <line
+                                  key={i}
+                                  x1={r.x1}
+                                  y1={r.y1}
+                                  x2={r.x2}
+                                  y2={r.y2}
+                                  stroke="var(--warn)"
+                                  strokeWidth={1.5}
+                                  strokeDasharray="5 3"
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              ))}
+                              <polyline
+                                points={magiPoints}
+                                fill="none"
+                                stroke="var(--text)"
+                                strokeWidth={1.5}
+                                vectorEffect="non-scaling-stroke"
+                              />
+                            </svg>
+                          </div>
+                          <div className="mt-1 flex gap-[2px]" aria-hidden="true">
+                            {proj.years.map((y) => {
+                              const labelSelected =
+                                pgProjSelectedYear === y.calendarYear;
+                              return (
+                                <span
+                                  key={y.calendarYear}
+                                  className={`min-w-0 flex-1 text-center whitespace-nowrap ${labelSelected ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
+                                >
+                                  {labelSelected ||
+                                  y.agePrimary % 5 === 0 ||
+                                  y.agePrimary === proj.years[0]?.agePrimary ||
+                                  y.agePrimary === proj.years[n - 1]?.agePrimary
+                                    ? y.agePrimary
+                                    : ""}
+                                </span>
+                              );
+                            })}
+                          </div>
+                          <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                            {presentSegs.map((d) => (
+                              <span key={d.key} className="inline-flex items-center gap-1.5">
+                                <span
+                                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                                  style={{ background: d.color }}
+                                  aria-hidden="true"
+                                />
+                                {d.label}
+                              </span>
+                            ))}
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                aria-hidden="true"
+                                className="inline-block h-0 w-4 border-t-2 border-[var(--text)]"
+                              />
+                              MAGI
+                            </span>
+                            {cliffRuns.length > 0 && (
+                              <span className="inline-flex items-center gap-1.5">
+                                <span
+                                  aria-hidden="true"
+                                  className="inline-block h-0 w-4 border-t-2 border-dashed border-[var(--warn)]"
+                                />
+                                ACA cliff (plan convention)
+                              </span>
+                            )}
+                          </p>
+                          {pgProjSelectedYear != null && (
+                            <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                              Showing {pgProjSelectedYear} in the single-year
+                              view below. Click any other bar to view that
+                              year instead — the chart stays as it is.
+                            </p>
+                          )}
+                        </div>
+                        <div className="mt-5" aria-label="Projected balances chart">
+                          <h4 className="text-sm font-semibold">Balances by year</h4>
+                          <p className="mt-1 text-xs text-[var(--dim)]">
+                            Each balance grows at the expected return after the
+                            year&rsquo;s money moves: the pre-tax balance falls
+                            by its RMD and the money out, the taxable balance
+                            by the stock sale, and a conversion lands in Roth
+                            (a draw leaves instead). Taxes are not taken out
+                            of any balance here.
+                          </p>
+                          <svg
+                            className="mt-2 h-44 w-full"
+                            viewBox="0 0 100 100"
+                            preserveAspectRatio="none"
+                            role="img"
+                            aria-label={`Stacked balances from ${fmtDollars(balTotalAt(0))} at age ${proj.years[0]?.agePrimary} to ${fmtDollars(balTotalAt(balCum.length - 1))} after age ${proj.years[n - 1]?.agePrimary}`}
+                          >
+                            {balLayers.map((l, li) => {
+                              const top = balCum
+                                .map((c, i) => `${balX(i)},${balY(c[li]?.hi ?? 0)}`)
+                                .join(" ");
+                              const bottom = balCum
+                                .map((c, i) => `${balX(i)},${balY(c[li]?.lo ?? 0)}`)
+                                .reverse()
+                                .join(" ");
+                              return (
+                                <polygon
+                                  key={l.key}
+                                  points={`${top} ${bottom}`}
+                                  fill={l.color}
+                                  fillOpacity={0.75}
+                                  stroke={l.color}
+                                  strokeWidth={0.4}
+                                />
+                              );
+                            })}
+                          </svg>
+                          <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                            {balLayers.map((l) => {
+                              const firstBal = balPoints[0];
+                              const lastBal = balPoints[balPoints.length - 1];
+                              const first = firstBal != null ? l.get(firstBal) : null;
+                              const last = lastBal != null ? l.get(lastBal) : null;
+                              return (
+                                <span key={l.key} className="inline-flex items-center gap-1.5">
+                                  <span
+                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                                    style={{ background: l.color }}
+                                    aria-hidden="true"
+                                  />
+                                  {l.label}{" "}
+                                  <span className="font-medium text-[var(--text)]">
+                                    {fmtDollars(first ?? 0)} → {fmtDollars(last ?? 0)}
+                                  </span>
+                                </span>
+                              );
+                            })}
+                          </p>
+                        </div>
+                      </>
+                    );
+                  })()}
+              </>
+            )}
+          </section>
 
           {playgroundResult == null && (
             <p className="mt-4 text-sm text-[var(--dim)]" role="note">
@@ -2598,7 +3674,7 @@ export function Playground() {
                           before the gains stack on top is priced
                           (the Gains stack panel below carries the
                           post-gains room). It also carries the
-                          plain-words scope note Kyle asked for. */}
+                          plain-words scope note the user asked for. */}
                       <span style={{ color: "#65a30d" }}>
                         0% gains end {fmtDollars(zeroTop)} —{" "}
                         {zeroTop - ordinaryTaxable > 0.5
@@ -3217,7 +4293,25 @@ type PgPrefillSource = {
   // per-year expenses in dollars (null = the plan has none
   // entered); the prefill keeps only the chosen year's rows.
   educationStudents: { year: number; expenses: number; aotcEligible: boolean }[] | null;
+  // Tax-return actuals (1040 LINES build): the plan record's
+  // Form 1040 lines in dollars (null = that line not entered),
+  // mapped by taxReturnPrefillDollars — interest ← line 2b,
+  // qualified dividends ← line 3a, ordinary dividends ← the
+  // line 3b TOTAL. These are the ONLY plan figures behind the
+  // prefill's Interest / dividend dials: the plan itself prices
+  // yields, never these amounts.
+  taxReturnInterest: number | null;
+  taxReturnQualifiedDividends: number | null;
+  taxReturnOrdinaryDividends: number | null;
   spouseSoleBeneficiary: boolean;
+  // Projection defaults (projection build): the plan's
+  // resolved expected return and its starting taxable / Roth
+  // balances in dollars — the projection panel's blank dials
+  // fall back to these, exactly as its other defaults fall
+  // back to the plan (claiming ages, step-down) above.
+  expectedReturnPct: number;
+  taxableStart: number;
+  rothStart: number;
 };
 
 function pgPrefillSourceFrom(
@@ -3251,6 +4345,7 @@ function pgPrefillSourceFrom(
         ? Math.max(0, snap.pretaxCents - (wifeSavedCents ?? 0))
         : null))
     : (snap?.pretaxCents ?? null);
+  const taxReturnDollars = taxReturnPrefillDollars(data.taxReturn);
   return {
     birthYearPrimary: byP,
     birthYearSpouse: s ? s.birthYearSpouse : SEED_BIRTH_YEAR_SPOUSE,
@@ -3311,7 +4406,17 @@ function pgPrefillSourceFrom(
           aotcEligible: e.aotcEligible === true,
         })) ?? null
       : null,
+    // The tax-return block rides the planner response beside
+    // the saved inputs (it is plan-record only, never part of
+    // them); the mapping to dial dollars is taxReturnCore's.
+    taxReturnInterest: taxReturnDollars.interest,
+    taxReturnQualifiedDividends: taxReturnDollars.qualifiedDividends,
+    taxReturnOrdinaryDividends: taxReturnDollars.ordinaryDividends,
     spouseSoleBeneficiary: s ? (s.spouseSoleBeneficiary ?? true) : true,
+    expectedReturnPct: expRet,
+    taxableStart:
+      ((s ? s.taxableCents : null) ?? snap?.taxableCents ?? 0) / 100,
+    rothStart: ((s ? s.rothCents : null) ?? snap?.rothCents ?? 0) / 100,
   };
 }
 

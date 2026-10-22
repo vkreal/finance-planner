@@ -61,6 +61,7 @@ resolvePlanBalances,
 playgroundSaleAfterTax,
 priceExecutionYear,
 pricePlaygroundYear,
+projectPlaygroundYears,
 rothMcReturnSeries,
 rothMcShockSeries,
 rothMcStream,
@@ -88,6 +89,7 @@ import { parseRothBlobRevision } from "./rothRevisionCore";
 import { CURRENT_LAW, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear } from "./taxLaw";
 import { AMT_SEMANTICS, EDUCATION_CREDIT_SEMANTICS, ITEMIZED_DEDUCTION_SEMANTICS, LOSS_CARRYFORWARD_SEMANTICS, bracketTopPctField, playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
 import { computeGiftComparison, parseRothGift } from "./giftModel";
+import { parseRothTaxReturn, taxReturnPrefillDollars } from "./taxReturnCore";
 import {
 contributionStack,
 payrollTaxBreakdown,
@@ -2853,7 +2855,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ss-no-benefit-saved-conversion-normalize-and-copy",
     kind: "tax",
-    note: "Saved-shape conversion, save normalization, scenario persistence, and claiming-note copy for the declared \"No benefit\" state: (a) planInputsFromSaved zeroes a declared amount ($30,000 stored + flag → $0 engine annual, flag carried through), prices an entered $0 at $0 with no flag, and prices a blank (null amount, no flag key — a pre-existing record) at $0 with no flag, exactly as before; an entered amount with no flag prices at its amount. (b) normalizeSsDeclarations: declared clears the stored amount and keeps the flag; an amount with the flag unset stays and the flag reads false; blank + undeclared stores flag false. (c) A scenario blob carrying the flags round-trips through splitRothBlob/joinRothBlob byte-identically, flags included. (d) jointSearchNote copy: blank uses the neutral wording; declared uses the settled-fact wording (household-neutral), distinct for both-declared, one-declared-with-other-blank, and one-searched-with-other-declared (both people).",
+    note: "Saved-shape conversion, save normalization, scenario persistence, and claiming-note copy for the declared \"No benefit\" state: (a) planInputsFromSaved zeroes a declared amount ($30,000 stored + flag → $0 engine annual, flag carried through), prices an entered $0 at $0 with no flag, and prices a blank (null amount, no flag key — a pre-existing record) at $0 with no flag, exactly as before; an entered amount with no flag prices at its amount. (b) normalizeSsDeclarations: declared clears the stored amount and keeps the flag; an amount with the flag unset stays and the flag reads false; blank + undeclared stores flag false. (c) A scenario blob carrying the flags round-trips through splitRothBlob/joinRothBlob byte-identically, flags included. (d) jointSearchNote copy: blank uses the neutral wording; declared uses the settled-fact wording (household-neutral), distinct for both-declared, one-declared-with-other-blank, and one-searched-with-other-declared (both people). The searched branches quote the ages actually searched (small-fry copy pass, 2026-10-21): a not-yet-claimed person's range starts at their current age rather than a blanket 62–70, a varied person beside a locked spouse is quoted by their own range with the spouse named by the locked sentence, and two different ranges are quoted side by side.",
     expected: {
       declaredSpouseEngineAnnual: 0,
       declaredSpouseEngineFlag: 1,
@@ -2876,6 +2878,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       noteSearchedPrimaryDeclaredSpouse: "Claiming ages were searched jointly with the conversion strategies: the primary person's claiming age over every age 62–70 (9 combinations screened, the best 5 priced against the full strategy set). The spouse has no Social Security benefit, so there is no second claiming age to search. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
       noteSearchedSpouseDeclaredPrimary: "Claiming ages were searched jointly with the conversion strategies: the spouse's claiming age over every age 62–70 (9 combinations screened, the best 5 priced against the full strategy set). The primary person has no Social Security benefit, so there is no second claiming age to search. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
       noteSearchedPrimaryBlankSpouse: "Claiming ages were searched jointly with the conversion strategies: your claiming age over every age 62–70 (9 combinations screened, the best 5 priced against the full strategy set). The spouse's Social Security isn't entered, so their claiming age wasn't searched. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
+      noteSearchedTruncatedPrimary: "Claiming ages were searched jointly with the conversion strategies: your claiming age over every age 64–70 (7 combinations screened, every combination priced against the full strategy set). The spouse's Social Security isn't entered, so their claiming age wasn't searched. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
+      noteSearchedVariedPrimaryLockedSpouse: "Claiming ages were searched jointly with the conversion strategies: your claiming age over every age 64–70 (7 combinations screened, every combination priced against the full strategy set). Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below. Your spouse's claiming age is locked at 67 because their benefit has already started — a claim that is already being paid cannot be changed, so the search kept it exactly as entered.",
+      noteSearchedBothDifferingRanges: "Claiming ages were searched jointly with the conversion strategies: your claiming age over every age 62–70 and the spouse's claiming age over every age 66–70 (45 combinations screened, every combination priced against the full strategy set). Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
     },
     actual: () => {
       const savedBase: RothSavedLike = {
@@ -2996,6 +3001,29 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           searchedPrimary: true,
           combosTested: 9,
           finalistCombos: 5,
+        }),
+        noteSearchedTruncatedPrimary: note({
+          searchedPrimary: true,
+          combosTested: 7,
+          finalistCombos: 7,
+          searchedPrimaryAges: [64, 65, 66, 67, 68, 69, 70],
+        }),
+        noteSearchedVariedPrimaryLockedSpouse: note({
+          searchedPrimary: true,
+          searchedSpouse: true,
+          lockedSpouse: true,
+          lockedSpouseAge: 67,
+          combosTested: 7,
+          finalistCombos: 7,
+          searchedPrimaryAges: [64, 65, 66, 67, 68, 69, 70],
+        }),
+        noteSearchedBothDifferingRanges: note({
+          searchedPrimary: true,
+          searchedSpouse: true,
+          combosTested: 45,
+          finalistCombos: 45,
+          searchedPrimaryAges: [62, 63, 64, 65, 66, 67, 68, 69, 70],
+          searchedSpouseAges: [66, 67, 68, 69, 70],
         }),
       };
     },
@@ -5500,15 +5528,18 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-claim-attainable-not-yet-claimed",
     kind: "tax",
-    note: "Round-7 Build 3, N-1 (not-yet-claimed attainability): candidate claiming ages are the person's current age or later \u2014 the search never offers a claim in the past. A 55-year-old (born 1971, plan start 2026) with entered claim 67 keeps the full 62\u201370 candidate set (every age is at or after 55) and the crowned winner is never below age 55. A 64-year-old (born 1962) with entered claim 67 gets exactly the attainable set 64\u201370: no combination, no claim-table row, and no winner below 64. The claimAgeFloor behaviour on top is unchanged (pinned by claim-floor-*).",
+    note: "Round-7 Build 3, N-1 (not-yet-claimed attainability): candidate claiming ages are the person's current age or later \u2014 the search never offers a claim in the past. A 55-year-old (born 1971, plan start 2026) with entered claim 67 keeps the full 62\u201370 candidate set (every age is at or after 55) and the crowned winner is never below age 55. A 64-year-old (born 1962) with entered claim 67 gets exactly the attainable set 64\u201370: no combination, no claim-table row, and no winner below 64. The claimAgeFloor behaviour on top is unchanged (pinned by claim-floor-*). The result note quotes the ages actually searched (small-fry copy pass, 2026-10-21): the 64-year-old's note reads 64–70 — never the pre-N-1 blanket 62–70 — and each joint result carries its varied person's searched age list.",
     expected: {
       youngComboMin: 62,
       youngWinnerAge: 69,
       youngWinnerAtOrAbove55: 1,
+      youngSearchedAges: "62,63,64,65,66,67,68,69,70",
       olderComboMin: 64,
       olderComboCount: 7,
       olderTableMin: 64,
       olderWinnerAtOrAbove64: 1,
+      olderSearchedAges: "64,65,66,67,68,69,70",
+      olderNoteText: "Claiming ages were searched jointly with the conversion strategies: your claiming age over every age 64–70 (7 combinations screened, every combination priced against the full strategy set). The spouse's Social Security isn't entered, so their claiming age wasn't searched. Every combination kept your draw order (Taxable → Pre-tax → Roth) — draw order itself is searched at your entered claiming ages, in the draw-order result below.",
     },
     actual: () => {
       const young = basePlan({
@@ -5552,11 +5583,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         youngWinnerAge: youngJoint.winner.claimAges.primaryAge,
         youngWinnerAtOrAbove55:
           (youngJoint.winner.claimAges.primaryAge ?? 0) >= 55 ? 1 : 0,
+        youngSearchedAges: (youngJoint.jointSearch.searchedPrimaryAges ?? []).join(","),
         olderComboMin: Math.min(...olderAges),
         olderComboCount: olderCombos.length,
         olderTableMin: Math.min(...olderJoint.claimAgeTable.map((r) => r.primaryAge)),
         olderWinnerAtOrAbove64:
           (olderJoint.winner.claimAges.primaryAge ?? 0) >= 64 ? 1 : 0,
+        olderSearchedAges: (olderJoint.jointSearch.searchedPrimaryAges ?? []).join(","),
+        olderNoteText: jointSearchNote(olderJoint.jointSearch),
       };
     },
   },
@@ -9434,6 +9468,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         acaHouseholdSize: 3,
         acaBenchmarkAnnual: 18000,
         stateRatePct: 5,
+        residenceState: null,
+        educationStudents: null,
       };
       const direct = pricePlaygroundYear(inp);
       const payload = playgroundPastePayload(inp);
@@ -9460,6 +9496,82 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         tierDiff: diff(rt?.irmaa.tier, direct.irmaa.tier),
         unknownFieldOk: unknown.ok ? 1 : 0,
         wrongVersionOk: wrongVersion.ok ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "ea-playground-paste-carries-residence-and-students",
+    kind: "tax",
+    note: "Cold-AI audit fix — the Playground paste payload carries residenceState and educationStudents, so replaying a paste no longer silently reprices the year. Shape: 2026 MFJ, ages 60/49, other ordinary −$140,000 (a signed loss, as the dial allows), a $290,000 stock sale at $0 basis (a $290,000 gain; AGI $150,000, under the §25A phase-out start), residence WA, and one AOTC-eligible student with $10,000 of expenses. Washington prices the excise instead of the flat 0% rate: taxable WA gains $290,000 − $278,000 standard deduction = $12,000 at 7% = $840 of state tax; the student prices the full AOTC $2,500 ($1,500 nonrefundable, $1,000 refundable). The canonical payload round-trips with both fields intact and reprices bit-identically to the direct call. A paste written BEFORE the fix (the same payload with the two keys stripped) still loads — with residence null and no students, pricing $0 of state tax and $0 of refundable credit, exactly as it priced before — and a paste with an unknown residence or a malformed student entry is refused whole.",
+    expected: {
+      carriedResidence: "WA",
+      carriedStudents: 1,
+      stateTax: 840,
+      refundable: 1000,
+      stateDiff: 0,
+      federalDiff: 0,
+      totalDiff: 0,
+      oldPasteOk: 1,
+      oldStateTax: 0,
+      oldRefundable: 0,
+      badResidenceOk: 0,
+      badStudentOk: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: -140000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 290000,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        residenceState: "WA" as const,
+        educationStudents: [{ expenses: 10000, aotcEligible: true }],
+      };
+      const direct = pricePlaygroundYear(inp);
+      const payload = playgroundPastePayload(inp);
+      const parsed = parsePlaygroundPaste(JSON.parse(JSON.stringify(payload)));
+      const rt = parsed.ok ? pricePlaygroundYear(parsed.inputs) : null;
+      const oldRaw: Record<string, unknown> = { ...payload };
+      delete oldRaw.residenceState;
+      delete oldRaw.educationStudents;
+      const oldParsed = parsePlaygroundPaste(oldRaw);
+      const oldRt = oldParsed.ok ? pricePlaygroundYear(oldParsed.inputs) : null;
+      const badResidence = parsePlaygroundPaste({ ...payload, residenceState: "CA" });
+      const badStudent = parsePlaygroundPaste({
+        ...payload,
+        educationStudents: [{ expenses: -5, aotcEligible: true }],
+      });
+      const diff = (a: number | null | undefined, b: number | null | undefined) =>
+        a == null || b == null ? null : Math.round((a - b) * 100) / 100;
+      return {
+        carriedResidence: parsed.ok ? (parsed.inputs.residenceState ?? null) : null,
+        carriedStudents: parsed.ok ? (parsed.inputs.educationStudents?.length ?? null) : null,
+        stateTax: rt?.stateTax ?? null,
+        refundable: rt?.educationRefundable ?? null,
+        stateDiff: diff(rt?.stateTax, direct.stateTax),
+        federalDiff: diff(rt?.federalTax, direct.federalTax),
+        totalDiff: diff(rt?.totalTax, direct.totalTax),
+        oldPasteOk: oldParsed.ok ? 1 : 0,
+        oldStateTax: oldRt?.stateTax ?? null,
+        oldRefundable: oldRt?.educationRefundable ?? null,
+        badResidenceOk: badResidence.ok ? 1 : 0,
+        badStudentOk: badStudent.ok ? 1 : 0,
       };
     },
   },
@@ -11267,13 +11379,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-pg3-playground-statelessness",
     kind: "tax",
-    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 23 keys (kind + version + the 21 dial fields) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
+    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 25 keys (kind + version + the 23 dial fields — the 21 original dials plus residenceState and educationStudents, added by the cold-AI audit fix so a replayed paste reprices the same year) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
     expected: {
       firstTotalTax: 14600,
       secondTotalTax: 14600,
       deterministic: 1,
       inputsUnmutated: 1,
-      payloadKeys: 23,
+      payloadKeys: 25,
       payloadResultKeys: 0,
     },
     actual: () => {
@@ -13751,40 +13863,40 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
-    id: "playground-anchor-magi-150600-niit-zero",
+    id: "playground-anchor-magi-172600-niit-zero",
     kind: "tax",
-    note: "Playground anchor year (hand-derived; the Part A verification's standing pinned year, S5): 2026 MFJ, ages 55/44, interest $807, ordinary dividends $17,567 entered exactly as printed on the Form 1040's line 3b (the TOTAL, which includes the qualified part), qualified dividends $12,735 entered exactly as printed on line 3a, conversion $132,226, household 5, benchmark $34,330.56. Dividends are counted ONCE: the non-qualified part is $17,567 − $12,735 = $4,832 on the ordinary stack and the $12,735 qualified part rides the gains stack, so MAGI $807 + $17,567 + $132,226 = $150,600 — exactly the household-5 cliff, so the credit is paid: $34,330.56 − 9.96% × $150,600 = $19,330.80. Taxable income $150,600 − $32,200 = $118,400; ordinary taxable income $105,665 taxed $2,480 + $9,120 + 22% × $4,865 = $12,670.30; the $12,735 of qualified dividends all sit past the $98,900 0% top, at 15% = $1,910.25; federal tax $14,580.55. MAGI is under the $250,000 NIIT threshold, so NIIT is $0 — the §1411 base fix (interest and ordinary dividends now in the base) does not move this anchor. No sale, so no capital loss and the §1211(b) allowance is $0.",
+    note: "Playground anchor year (hand-derived; synthetic example with invented figures): a tax year priced as married filing jointly, with interest $1,800, total ordinary dividends $22,000 (the total, which includes the qualified part), qualified dividends $15,000 (a subset of that total), a conversion of $148,800, a household size of 6, and a benchmark of $36,000. Dividends are counted ONCE: the non-qualified part is $22,000 − $15,000 = $7,000 on the ordinary stack and the $15,000 qualified part rides the gains stack, so MAGI $1,800 + $22,000 + $148,800 = $172,600 — exactly the cliff for that household size, so the credit is paid: $36,000 − 9.96% × $172,600 = $18,809.04. Taxable income $172,600 − $32,200 = $140,400; ordinary taxable income $125,400 taxed $2,480 + $9,120 + 22% × $24,600 = $17,012; the $15,000 of qualified dividends all sit past the $98,900 0% top, at 15% = $2,250; federal tax $19,262. MAGI is under the $250,000 NIIT threshold, so NIIT is $0 — the §1411 base fix (interest and ordinary dividends now in the base) does not move this anchor. No sale, so no capital loss and the §1211(b) allowance is $0.",
     expected: {
-      magi: 150600,
-      acaMagi: 150600,
-      federalTax: 14580.55,
+      magi: 172600,
+      acaMagi: 172600,
+      federalTax: 19262,
       niit: 0,
-      credit: 19330.8,
-      nonQualifiedDividends: 4832,
+      credit: 18809.04,
+      nonQualifiedDividends: 7000,
       capitalLossAllowance: 0,
     },
     actual: () => {
       const r = pricePlaygroundYear({
         taxYear: 2026,
         filingStatus: "mfj",
-        agePrimary: 55,
-        ageSpouse: 44,
+        agePrimary: 58,
+        ageSpouse: 50,
         onMedicarePrimary: false,
         onMedicareSpouse: false,
-        interest: 807,
-        ordinaryDividends: 17567,
+        interest: 1800,
+        ordinaryDividends: 22000,
         otherOrdinary: 0,
         taxExemptInterest: 0,
         ssPrimary: 0,
         ssSpouse: 0,
-        conversion: 132226,
+        conversion: 148800,
         stockSold: 0,
         stockBasis: 0,
-        qualifiedDividends: 12735,
+        qualifiedDividends: 15000,
         pretaxBalance: null,
         spouseSoleBeneficiary: true,
-        acaHouseholdSize: 5,
-        acaBenchmarkAnnual: 34330.56,
+        acaHouseholdSize: 6,
+        acaBenchmarkAnnual: 36000,
         stateRatePct: 0,
       });
       return {
@@ -13795,6 +13907,96 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         credit: r.aca.credit,
         nonQualifiedDividends: r.nonQualifiedDividends,
         capitalLossAllowance: r.capitalLossAllowance,
+      };
+    },
+  },
+  {
+    id: "playground-dividend-split-normal",
+    kind: "tax",
+    note: "Playground dividend derivation, the normal split (dividend-pair guard; hand-derived; synthetic example with invented figures): a year priced as married filing jointly, dividends only — total ordinary dividends $22,000 and qualified dividends $15,000 as a subset of that total. The pricer derives the non-qualified part as max(0, $22,000 − $15,000) = $7,000, which is the whole ordinary stack (otherOrdinaryTotal $7,000 with no interest or other ordinary income), while the $15,000 qualified part rides the gains stack (ltcgPriced $15,000 with no stock sale), so the entered total is counted exactly once: AGI $7,000 + $15,000 = $22,000. The derivation is the one the contract's playgroundYearSemantics states.",
+    expected: {
+      ordinaryDividends: 22000,
+      qualifiedDividends: 15000,
+      nonQualifiedDividends: 7000,
+      otherOrdinaryTotal: 7000,
+      ltcgPriced: 15000,
+      agi: 22000,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 50,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 22000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        ordinaryDividends: r.ordinaryDividends,
+        qualifiedDividends: r.qualifiedDividends,
+        nonQualifiedDividends: r.nonQualifiedDividends,
+        otherOrdinaryTotal: r.otherOrdinaryTotal,
+        ltcgPriced: r.ltcgPriced,
+        agi: r.agi,
+      };
+    },
+  },
+  {
+    id: "playground-dividend-split-overage",
+    kind: "tax",
+    note: "Playground dividend derivation, the overage case (dividend-pair guard; hand-derived; synthetic example with invented figures): the same synthetic year with the pair inverted — total ordinary dividends $7,000 and qualified dividends $15,000. That pair cannot occur in the underlying dividend reporting, where the qualified figure is a subset of the total and cannot exceed it. The derivation floors at zero: max(0, $7,000 − $15,000) = $0 of non-qualified dividends, so nothing rides the ordinary stack (otherOrdinaryTotal $0) and the excess is not counted as non-qualified dividends; the qualified figure as entered still rides the gains stack whole (ltcgPriced $15,000, as in the normal split). The Playground form shows a note on this pair (the qualified figure can't exceed the total and the excess isn't counted) instead of pricing it silently.",
+    expected: {
+      ordinaryDividends: 7000,
+      qualifiedDividends: 15000,
+      nonQualifiedDividends: 0,
+      otherOrdinaryTotal: 0,
+      ltcgPriced: 15000,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 50,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 7000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        ordinaryDividends: r.ordinaryDividends,
+        qualifiedDividends: r.qualifiedDividends,
+        nonQualifiedDividends: r.nonQualifiedDividends,
+        otherOrdinaryTotal: r.otherOrdinaryTotal,
+        ltcgPriced: r.ltcgPriced,
       };
     },
   },
@@ -18501,6 +18703,658 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           l26.amtExemption.mfj / (l26.amtPhaseOutRatePct / 100),
         carriedExemption: l31.amtExemption.mfj,
         carriedRate: l31.amtPhaseOutRatePct,
+      };
+    },
+  },
+  {
+    id: "proj-reproduces-single-year",
+    kind: "tax",
+    note: "Playground projection (a) — A PROJECTED YEAR REPRODUCES THE SINGLE-YEAR PRICER, with the ONE sanctioned difference named in the contract: the projection prices the ACA cliff on the plan convention (the newest guideline row, in today's dollars) while the single-year pricer applies the statutory lookback. Template: 2026 MFJ, ages 57/46, interest $10,000, other ordinary $20,000, pre-tax money out $50,000, pre-tax balance $1,000,000, household 5, benchmark $32,000, projected for the template year only, every projection switch aligned (claim ages unset, no step-down, no stop, repeat draw). Every non-ACA figure must match pricePlaygroundYear on the same inputs exactly. The cliffs differ by construction: lookback 2026 coverage uses the 2025 guidelines — household of 5 = $15,650 + 4 × $5,500 = $37,650, cliff $150,600; the newest row (2026 guidelines) gives $15,960 + 4 × $5,680 = $38,680, cliff $154,720. ACA MAGI is $80,000 either way ($10,000 + $20,000 + $50,000, no Social Security), so the positions are $70,600 of room (lookback) vs $74,720 (plan convention). The ACA CREDIT under both conventions is pinned separately (cold-AI audit fix — the projection build pinned the two cliffs but not the credit): at MAGI $80,000 the lookback reads 212.48% of the $37,650 FPL — the 200–250% band interpolates to a 7.06% applicable percentage, expected contribution $5,647.51, credit $32,000 − $5,647.51 = $26,352.49 — while the plan convention reads 206.83% of the $38,680 FPL — a 6.85% applicable percentage, expected contribution $5,480.93, credit $26,519.07. Same inputs, same benchmark: the convention alone moves the credit by $166.58.",
+    expected: {
+      years: 1,
+      sameMagi: 1,
+      sameFederalTax: 1,
+      sameTaxableIncome: 1,
+      sameAcaMagi: 1,
+      sameSsTaxable: 1,
+      sameTotalTax: 1,
+      singleCliff: 150600,
+      projCliff: 154720,
+      projFpl: 38680,
+      projPosition: 74720,
+      singlePosition: 70600,
+      singleCredit: 26352.49,
+      projCredit: 26519.07,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 57,
+        ageSpouse: 46,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 10000,
+        ordinaryDividends: 0,
+        otherOrdinary: 20000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 50000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 1000000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 32000,
+        stateRatePct: 0,
+      };
+      const single = pricePlaygroundYear(inp);
+      const proj = projectPlaygroundYears(inp, {
+        toAge: 57,
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSizeAfter: null,
+        acaStepDownYear: null,
+        startTaxable: null,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat",
+        moneyOutKind: "conversion",
+        stopKind: "none",
+        stopAge: null,
+        stopFloor: null,
+      });
+      const y = proj.years[0]!;
+      const eq = (a: number, b: number) => (a === b ? 1 : 0);
+      return {
+        years: proj.years.length,
+        sameMagi: eq(y.result.magi, single.magi),
+        sameFederalTax: eq(y.result.federalTax, single.federalTax),
+        sameTaxableIncome: eq(y.result.taxableIncome, single.taxableIncome),
+        sameAcaMagi: eq(y.result.acaMagi, single.acaMagi),
+        sameSsTaxable: eq(y.result.ssTaxable, single.ssTaxable),
+        sameTotalTax: eq(y.result.totalTax, single.totalTax),
+        singleCliff: single.aca.cliff,
+        projCliff: y.result.aca.cliff,
+        projFpl: y.result.aca.fpl,
+        projPosition: y.result.aca.positionDollars,
+        singlePosition: single.aca.positionDollars,
+        singleCredit: single.aca.credit,
+        projCredit: y.result.aca.credit,
+      };
+    },
+  },
+  {
+    id: "proj-switches-and-balances",
+    kind: "tax",
+    note: "Playground projection (b) — THE AGE-DRIVEN SWITCHES AND THE BALANCE WALK, hand-derived. Template: 2026 MFJ, ages 63/54, pre-tax balance $246,000, money out $10,000/yr as a conversion, return 0%, taxable start $50,000 (no sale), Roth start $5,000; Social Security $30,000/yr claiming at 67 (typed $0 in the template year); born 1963, so the RMD age is 75 (SECURE 2.0, born 1960+). Medicare: the primary is off at 64, on at 65 (the priced year's IRMAA block switches on). Social Security pays $0 at 66 and $30,000 at 67. Balances at 0% return fall by exactly the money out: $246,000 − 12 × $10,000 (ages 63–74, no RMD before 75) leaves $126,000 at the start of 75, whose RMD is $126,000 ÷ 24.6 (Uniform Lifetime, Pub. 590-B) = $5,121.95; the end-of-75 pre-tax balance is $126,000 − $5,121.95 − $10,000 = $110,878.05. The Roth balance takes every conversion: $5,000 + 5 × $10,000 = $55,000 at the end of age 67, and $5,000 + 14 × $10,000 = $145,000 at the end of age 76. The taxable balance never moves (no sale, 0% return).",
+    expected: {
+      years: 14,
+      medicareAt64: 0,
+      medicareAt65: 1,
+      ssAt66: 0,
+      ssAt67: 30000,
+      rmdAt74: 0,
+      rmdAt75: 5121.95,
+      pretaxEnd75: 110878.05,
+      rothEnd67: 55000,
+      rothEndFinal: 145000,
+      taxableEndFinal: 50000,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 63,
+        ageSpouse: 54,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 10000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 246000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const proj = projectPlaygroundYears(inp, {
+        toAge: 76,
+        ssPrimaryClaimAge: 67,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: 30000,
+        ssSpouseAnnual: null,
+        acaHouseholdSizeAfter: null,
+        acaStepDownYear: null,
+        startTaxable: 50000,
+        startRoth: 5000,
+        returnPct: 0,
+        drawMode: "repeat",
+        moneyOutKind: "conversion",
+        stopKind: "none",
+        stopAge: null,
+        stopFloor: null,
+      });
+      const at = (age: number) => proj.years.find((y) => y.agePrimary === age)!;
+      return {
+        years: proj.years.length,
+        medicareAt64: at(64).result.irmaa.applies ? 1 : 0,
+        medicareAt65: at(65).result.irmaa.applies ? 1 : 0,
+        ssAt66: at(66).result.ssBenefits,
+        ssAt67: at(67).result.ssBenefits,
+        rmdAt74: at(74).result.rmd,
+        rmdAt75: at(75).result.rmd,
+        pretaxEnd75: at(75).endBalances.pretax,
+        rothEnd67: at(67).endBalances.roth,
+        rothEndFinal: proj.endBalances.roth,
+        taxableEndFinal: proj.endBalances.taxable,
+      };
+    },
+  },
+  {
+    id: "proj-draw-replace-and-stops",
+    kind: "tax",
+    note: "Playground projection (c) — THE DRAW MODES AND STOP RULES, hand-derived. Replace mode: template ages 66/55, money out $40,000, Social Security $30,000/yr from claim age 67, pre-tax $500,000, 0% return. The template year itself carries no Social Security and no RMD (age 66 < 75), so the baseline arrival is $0: at 66 the draw repeats whole ($40,000); at 67 the arrived $30,000 of Social Security shrinks it to $10,000; at 68 the same $30,000 arrival (not a cumulative one) leaves $10,000 again. Stop age (repeat mode, stop at 67): the amount runs through age 67 ($40,000) and is $0 at 68. Pre-tax floor (template age 75, balance $126,000, money out $50,000, floor $100,000): the RMD at 75 is $126,000 ÷ 24.6 = $5,121.95, leaving $120,878.05; the floor caps the amount at $120,878.05 − $100,000 = $20,878.05, ending the year exactly on the $100,000 floor; at 76 the balance after its RMD ($100,000 ÷ 23.7 = $4,219.41) is under the floor, so the amount is $0.",
+    expected: {
+      replace66: 40000,
+      replace67: 10000,
+      replace68: 10000,
+      stopAge67: 40000,
+      stopAge68: 0,
+      floor75: 20878.05,
+      floorEnd75: 100000,
+      floor76: 0,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        ageSpouse: 55,
+        onMedicarePrimary: true,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const opts = {
+        ssPrimaryClaimAge: 67,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: 30000,
+        ssSpouseAnnual: null,
+        acaHouseholdSizeAfter: null,
+        acaStepDownYear: null,
+        startTaxable: null,
+        startRoth: 0,
+        returnPct: 0,
+        moneyOutKind: "draw" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const replace = projectPlaygroundYears(
+        { ...base, agePrimary: 66, conversion: 40000, pretaxBalance: 500000 },
+        { ...opts, toAge: 68, drawMode: "replace" },
+      );
+      const stopAge = projectPlaygroundYears(
+        { ...base, agePrimary: 66, conversion: 40000, pretaxBalance: 500000 },
+        { ...opts, toAge: 68, drawMode: "repeat", stopKind: "age", stopAge: 67 },
+      );
+      const floor = projectPlaygroundYears(
+        {
+          ...base,
+          agePrimary: 75,
+          ageSpouse: 66,
+          conversion: 50000,
+          pretaxBalance: 126000,
+        },
+        { ...opts, toAge: 76, drawMode: "repeat", stopKind: "floor", stopFloor: 100000 },
+      );
+      const at = (
+        p: ReturnType<typeof projectPlaygroundYears>,
+        age: number,
+      ) => p.years.find((y) => y.agePrimary === age)!;
+      return {
+        replace66: at(replace, 66).moneyOut,
+        replace67: at(replace, 67).moneyOut,
+        replace68: at(replace, 68).moneyOut,
+        stopAge67: at(stopAge, 67).moneyOut,
+        stopAge68: at(stopAge, 68).moneyOut,
+        floor75: at(floor, 75).moneyOut,
+        floorEnd75: at(floor, 75).endBalances.pretax,
+        floor76: at(floor, 76).moneyOut,
+      };
+    },
+  },
+  {
+    id: "proj-aca-stepdown-and-off",
+    kind: "tax",
+    note: "Playground projection (d) — THE ACA HOUSEHOLD STEP-DOWN AND ACA SWITCHING OFF, on the plan convention (newest guideline row: 2026 guidelines, household of 5 = $38,680 → cliff $154,720; household of 2 = $21,640 → cliff $86,560). Template: 2026 MFJ, ages 60/49, interest $50,000, household 5 stepping down to 2 in 2031, no pre-tax balance. The cliff is the household-of-5 line through 2030 (age 64) and the household-of-2 line from 2031 (age 65). ACA still applies at primary age 75 (the spouse is 64, not yet on Medicare) and no longer applies at 76, when the spouse turns 65 and everyone is on Medicare — the pricer's own applicability rule, driven by the projected ages.",
+    expected: {
+      cliff2030: 154720,
+      cliff2031: 86560,
+      appliesAt75: 1,
+      appliesAt76: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 50000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 24000,
+        stateRatePct: 0,
+      };
+      const proj = projectPlaygroundYears(inp, {
+        toAge: 76,
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: 2031,
+        startTaxable: null,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat",
+        moneyOutKind: "draw",
+        stopKind: "none",
+        stopAge: null,
+        stopFloor: null,
+      });
+      const at = (age: number) => proj.years.find((y) => y.agePrimary === age)!;
+      return {
+        cliff2030: at(64).result.aca.cliff,
+        cliff2031: at(65).result.aca.cliff,
+        appliesAt75: at(75).result.aca.applies ? 1 : 0,
+        appliesAt76: at(76).result.aca.applies ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "proj-growth-and-sale-scale",
+    kind: "tax",
+    note: "Playground projection (e) — BALANCE GROWTH AND THE SALE CAP, hand-derived. One projected year (age 60): starting taxable $40,000 against a template sale of $50,000 with $25,000 of basis — the sale is capped at the balance ($40,000) and the basis scales by the same fraction ($25,000 × 40/50 = $20,000), so the priced gain is $20,000 and the taxable balance ends at ($40,000 − $40,000) × 1.10 = $0. The Roth balance, with no conversion, simply grows: $10,000 × 1.10 = $11,000 at the entered 10% return.",
+    expected: {
+      soldEffective: 40000,
+      basisEffective: 20000,
+      stockGain: 20000,
+      taxableEnd: 0,
+      rothEnd: 11000,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 49,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 50000,
+        stockBasis: 25000,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const proj = projectPlaygroundYears(inp, {
+        toAge: 60,
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSizeAfter: null,
+        acaStepDownYear: null,
+        startTaxable: 40000,
+        startRoth: 10000,
+        returnPct: 10,
+        drawMode: "repeat",
+        moneyOutKind: "conversion",
+        stopKind: "none",
+        stopAge: null,
+        stopFloor: null,
+      });
+      const y = proj.years[0]!;
+      return {
+        soldEffective: y.stockSoldEffective,
+        basisEffective: y.stockBasisEffective,
+        stockGain: y.result.stockGain,
+        taxableEnd: y.endBalances.taxable,
+        rothEnd: y.endBalances.roth,
+      };
+    },
+  },
+  {
+    id: "proj-from-age-early-late-and-clear",
+    kind: "tax",
+    note: "Playground projection (f) — THE START-AGE CONTROL (fromAge), hand-derived. Template: 2030 MFJ, ages 70/60, pre-tax balance $246,000, money out $10,000/yr as a conversion, return 0%, taxable start $50,000 (no sale), Roth start $5,000, Social Security $30,000/yr claiming at 67 (typed $0 in the template year), household 2 with a $24,000 benchmark; born 1960, so the RMD age is 75 (SECURE 2.0, born 1960+) and the spouse is exactly 10 years younger, so the Uniform Lifetime table prices the RMD (divisor at 75 = 24.6, Pub. 590-B). EARLY START (fromAge 63): the walk itself starts at 63 — calendar year and spouse age shift by the same −7 (first year 2023, spouse 53), the starting balances are the entered balances AT that first year ($246,000 / $50,000 / $5,000), and every switch follows the projected ages: Medicare (IRMAA) off at 64 and on at 65, Social Security $0 at 66 and $30,000 at 67, the spouse on Medicare at primary 75 (spouse 65) and not at 74, ACA applying at 74 (spouse 64, not yet on Medicare) and off at 75 (everyone on Medicare), no RMD at 74. Balances at 0% fall by the money out: $246,000 − 12 × $10,000 (ages 63–74) leaves $126,000 at the start of 75, whose RMD is $126,000 ÷ 24.6 = $5,121.95, ending 75 at $110,878.05; Roth at the end of 67 is $5,000 + 5 × $10,000 = $55,000. LATE START (fromAge 72, same template): the walk still runs from the template year, so the shown years are 72–76 (5) and the first shown year's starting balances are the WALKED ones — pre-tax $246,000 − 2 × $10,000 = $226,000, Roth $5,000 + 2 × $10,000 = $25,000 — and the final Roth balance is the full walk's $5,000 + 7 × $10,000 = $75,000. CLEARED (fromAge null): every figure returns to the plain template walk — 7 years from 2030 (age 70, spouse 60), the start-of-75 balance is $246,000 − 5 × $10,000 = $196,000, its RMD is $196,000 ÷ 24.6 = $7,967.48, and 75 ends at $178,032.52.",
+    expected: {
+      years: 14,
+      firstYear: 2023,
+      firstAge: 63,
+      firstSpouse: 53,
+      firstPretaxStart: 246000,
+      firstTaxableStart: 50000,
+      firstRothStart: 5000,
+      medicareAt64: 0,
+      medicareAt65: 1,
+      ssAt66: 0,
+      ssAt67: 30000,
+      acaAt74: 1,
+      acaAt75: 0,
+      spouseMedicareAt74: 0,
+      spouseMedicareAt75: 1,
+      rmdAt74: 0,
+      rmdAt75: 5121.95,
+      pretaxEnd75: 110878.05,
+      rothEnd67: 55000,
+      lateYears: 5,
+      lateFirstYear: 2032,
+      lateFirstAge: 72,
+      lateFirstSpouse: 62,
+      lateFirstPretaxStart: 226000,
+      lateFirstRothStart: 25000,
+      lateRothEnd: 75000,
+      clearedYears: 7,
+      clearedFirstYear: 2030,
+      clearedFirstAge: 70,
+      clearedFirstSpouse: 60,
+      clearedRmd75: 7967.48,
+      clearedPretaxEnd75: 178032.52,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2030,
+        filingStatus: "mfj" as const,
+        agePrimary: 70,
+        ageSpouse: 60,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 10000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 246000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 24000,
+        stateRatePct: 0,
+      };
+      const opts = {
+        toAge: 76,
+        ssPrimaryClaimAge: 67,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: 30000,
+        ssSpouseAnnual: null,
+        acaHouseholdSizeAfter: null,
+        acaStepDownYear: null,
+        startTaxable: 50000,
+        startRoth: 5000,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const early = projectPlaygroundYears(inp, { ...opts, fromAge: 63 });
+      const late = projectPlaygroundYears(inp, { ...opts, fromAge: 72 });
+      const cleared = projectPlaygroundYears(inp, { ...opts, fromAge: null });
+      const at = (
+        p: ReturnType<typeof projectPlaygroundYears>,
+        age: number,
+      ) => p.years.find((y) => y.agePrimary === age)!;
+      const first = early.years[0]!;
+      const lateFirst = late.years[0]!;
+      const clearedFirst = cleared.years[0]!;
+      return {
+        years: early.years.length,
+        firstYear: first.calendarYear,
+        firstAge: first.agePrimary,
+        firstSpouse: first.ageSpouse,
+        firstPretaxStart: first.startBalances.pretax,
+        firstTaxableStart: first.startBalances.taxable,
+        firstRothStart: first.startBalances.roth,
+        medicareAt64: at(early, 64).result.irmaa.applies ? 1 : 0,
+        medicareAt65: at(early, 65).result.irmaa.applies ? 1 : 0,
+        ssAt66: at(early, 66).result.ssBenefits,
+        ssAt67: at(early, 67).result.ssBenefits,
+        acaAt74: at(early, 74).result.aca.applies ? 1 : 0,
+        acaAt75: at(early, 75).result.aca.applies ? 1 : 0,
+        spouseMedicareAt74: at(early, 74).inputs.onMedicareSpouse ? 1 : 0,
+        spouseMedicareAt75: at(early, 75).inputs.onMedicareSpouse ? 1 : 0,
+        rmdAt74: at(early, 74).result.rmd,
+        rmdAt75: at(early, 75).result.rmd,
+        pretaxEnd75: at(early, 75).endBalances.pretax,
+        rothEnd67: at(early, 67).endBalances.roth,
+        lateYears: late.years.length,
+        lateFirstYear: lateFirst.calendarYear,
+        lateFirstAge: lateFirst.agePrimary,
+        lateFirstSpouse: lateFirst.ageSpouse,
+        lateFirstPretaxStart: lateFirst.startBalances.pretax,
+        lateFirstRothStart: lateFirst.startBalances.roth,
+        lateRothEnd: late.endBalances.roth,
+        clearedYears: cleared.years.length,
+        clearedFirstYear: clearedFirst.calendarYear,
+        clearedFirstAge: clearedFirst.agePrimary,
+        clearedFirstSpouse: clearedFirst.ageSpouse,
+        clearedRmd75: at(cleared, 75).result.rmd,
+        clearedPretaxEnd75: at(cleared, 75).endBalances.pretax,
+      };
+    },
+  },
+  {
+    id: "tax-return-prefill-mapping",
+    kind: "tax",
+    note: "Playground prefill mapping for the plan record's tax-return actuals (1040 LINES build): round illustrative values only — line 2b taxable interest $1,000, line 3a qualified dividends $2,500, line 3b ordinary dividends $4,000 (stored as integer cents 100000 / 250000 / 400000) — map through taxReturnPrefillDollars (the exact function the Playground's \"Start from my numbers\" calls) to the dial values interest $1,000, qualified dividends $2,500, ordinary dividends $4,000: interest ← 2b, qualified ← 3a, and ordinary ← the 3b TOTAL as written (never the $1,500 non-qualified remainder). A blank record (all three null) maps to three nulls — blank dials, nothing invented — and a partial record (only 3b entered) maps only that line, the other two staying null.",
+    expected: {
+      interest: 1000,
+      qualified: 2500,
+      ordinary: 4000,
+      blankNulls: 3,
+      partialInterest: null,
+      partialQualified: null,
+      partialOrdinary: 4000,
+    },
+    actual: () => {
+      const full = taxReturnPrefillDollars(
+        parseRothTaxReturn({
+          taxReturnInterestCents: 100000,
+          taxReturnQualifiedDividendsCents: 250000,
+          taxReturnOrdinaryDividendsCents: 400000,
+        }),
+      );
+      const blank = taxReturnPrefillDollars(
+        parseRothTaxReturn({
+          taxReturnInterestCents: null,
+          taxReturnQualifiedDividendsCents: null,
+          taxReturnOrdinaryDividendsCents: null,
+        }),
+      );
+      const partial = taxReturnPrefillDollars(
+        parseRothTaxReturn({
+          taxReturnInterestCents: null,
+          taxReturnQualifiedDividendsCents: null,
+          taxReturnOrdinaryDividendsCents: 400000,
+        }),
+      );
+      return {
+        interest: full.interest,
+        qualified: full.qualifiedDividends,
+        ordinary: full.ordinaryDividends,
+        blankNulls: Object.values(blank).filter((v) => v === null).length,
+        partialInterest: partial.interest,
+        partialQualified: partial.qualifiedDividends,
+        partialOrdinary: partial.ordinaryDividends,
+      };
+    },
+  },
+  {
+    id: "tax-return-saved-shape-round-trip",
+    kind: "tax",
+    note: "Saved-shape round-trip for the three tax-return fields (1040 LINES build): the stored shape {taxReturnInterestCents 123400, taxReturnQualifiedDividendsCents 567800, taxReturnOrdinaryDividendsCents 901200} parses back with all three values exactly, and split/join of the blob carrying it is byte-identical. The all-null shape parses to three nulls (count 3) — a line not entered stays null, never coerced to $0 — and an absent shape (a record written before this build) parses to the same three nulls.",
+    expected: {
+      interest: 123400,
+      qualified: 567800,
+      ordinary: 901200,
+      byteIdentical: 1,
+      allNullCount: 3,
+      absentNullCount: 3,
+    },
+    actual: () => {
+      const stored = {
+        taxReturnInterestCents: 123400,
+        taxReturnQualifiedDividendsCents: 567800,
+        taxReturnOrdinaryDividendsCents: 901200,
+      };
+      const plain = JSON.stringify({ inputs: stored, scenarios: [] });
+      const split = splitRothBlob(plain);
+      const parsed = parseRothTaxReturn(split?.inputsRaw);
+      const joined = split
+        ? joinRothBlob(split.inputsRaw, split.scenariosRaw)
+        : "";
+      const allNull = parseRothTaxReturn({
+        taxReturnInterestCents: null,
+        taxReturnQualifiedDividendsCents: null,
+        taxReturnOrdinaryDividendsCents: null,
+      });
+      const absent = parseRothTaxReturn({});
+      return {
+        interest: parsed.taxReturnInterestCents,
+        qualified: parsed.taxReturnQualifiedDividendsCents,
+        ordinary: parsed.taxReturnOrdinaryDividendsCents,
+        byteIdentical: joined === plain ? 1 : 0,
+        allNullCount: Object.values(allNull).filter((v) => v === null).length,
+        absentNullCount: Object.values(absent).filter((v) => v === null).length,
+      };
+    },
+  },
+  {
+    id: "tax-return-pricing-identity",
+    kind: "tax",
+    note: "GUARD — the tax-return actuals never reach plan pricing (1040 LINES build): the saved-plan anchor shape (the same record family gift-main-run-identity pins — born 1975/1985, Fill-era plan with real balances, benchmarks, and yields modelled from the yield fields) with all three tax-return fields sentinel-set and the same record with all three blank convert through planInputsFromSaved to BIT-IDENTICAL plan inputs — the conversion never reads the tax-return fields (they are read only by the Playground prefill) — so the joint optimizer's winner net cost differs by exactly $0 and the saved plan prices bit-identically with the fields set or blank. The parse layer proves the fields were really present in one record (sentinel interest $99,999,999 in cents) and really absent in the other (null).",
+    expected: { plansIdentical: 1, winnerNetDiff: 0, sentinelParsed: 99999999, blankParsed: null },
+    actual: () => {
+      const savedShape: RothSavedLike = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj",
+        pretaxCents: 180000000,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 55000000,
+        taxableCents: 240000000,
+        hsaCents: 11000000,
+        taxableBasisPct: null,
+        annualSpendingCents: 15000000,
+        retirementAge: 56,
+        endAge: 95,
+        expectedReturnPct: 5.75,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 67,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 56,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 5000000,
+        preservePretaxCents: 25000000,
+        preserveExitRatePct: 10,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaHouseholdSizeAfter: 2,
+        acaStepDownYear: null,
+        acaBenchmarkCoupleCents: 2000000,
+        acaBenchmarkSingleCents: 1500000,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const sentinel = {
+        taxReturnInterestCents: 99999999,
+        taxReturnQualifiedDividendsCents: 88888888,
+        taxReturnOrdinaryDividendsCents: 77777777,
+      };
+      const blankReturn = {
+        taxReturnInterestCents: null,
+        taxReturnQualifiedDividendsCents: null,
+        taxReturnOrdinaryDividendsCents: null,
+      };
+      const withReturn = planInputsFromSaved({ ...savedShape, ...sentinel }, 2026);
+      const withoutReturn = planInputsFromSaved({ ...savedShape, ...blankReturn }, 2026);
+      const netWith = withReturn ? runJointOptimizer(withReturn).winner.cost.netCost : null;
+      const netWithout = withoutReturn ? runJointOptimizer(withoutReturn).winner.cost.netCost : null;
+      return {
+        plansIdentical:
+          withReturn != null && withoutReturn != null &&
+          JSON.stringify(withReturn) === JSON.stringify(withoutReturn)
+            ? 1
+            : 0,
+        winnerNetDiff:
+          netWith != null && netWithout != null
+            ? Math.round((netWith - netWithout) * 100) / 100
+            : null,
+        sentinelParsed: parseRothTaxReturn(sentinel).taxReturnInterestCents,
+        blankParsed: parseRothTaxReturn(blankReturn).taxReturnInterestCents,
       };
     },
   },

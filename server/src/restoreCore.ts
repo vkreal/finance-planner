@@ -10,7 +10,10 @@
 //   1. FULL preflight before any write. The whole payload is
 //      schema-validated (with the legacy defaults below applied),
 //      the payload's own encryption key-check is verified against
-//      the current key, every enum is checked for membership, and
+//      the current key, the payload's authenticity MAC is checked
+//      (S1: a carried MAC that does not verify refuses the
+//      restore; no MAC restores labelled unauthenticated), every
+//      enum is checked for membership, and
 //      intra-payload uniqueness + referential integrity are
 //      checked. Any failure refuses the restore with zero writes.
 //   2. The destructive replacement is ONE atomic batch: the wipe
@@ -23,6 +26,10 @@
 
 import { z } from "@hatch/space-sdk";
 import { NW_PROPERTY_KINDS, splitPartsOf } from "./nwCore";
+import {
+classifyBackupAuthenticity,
+type BackupAuthenticity,
+} from "./backupMacCore";
 import {
 parseRothBlobRevision,
 withRothBlobRevision,
@@ -172,6 +179,18 @@ export const backupPayload = z.object({
   format: z.string(),
   schemaVersion: z.number().int(),
   exportedAt: z.string(),
+  // The authenticity MAC (S1, backupMacCore): an HMAC-SHA-256
+  // over the payload's canonical form, written by exportbackup
+  // since this build. Backups written before it carry no such
+  // field, so a missing value parses as null — the payload is
+  // then restored labelled UNAUTHENTICATED, never hard-refused
+  // (the option C compatibility rule). A PRESENT value is
+  // verified in preflight: one that does not verify refuses the
+  // restore outright. Stripping the field is indistinguishable
+  // from a pre-MAC backup, so a strip downgrades a backup to
+  // the unauthenticated label — it can never upgrade one to
+  // authenticated.
+  authenticityMac: z.string().nullable().default(null),
   yearlyExpenses: z.array(backupYearlyExpense),
   yearlyExpenseVersions: z.array(backupYearlyExpenseVersion),
   transactions: z.array(backupTransaction),
@@ -251,7 +270,14 @@ export function isBackupMonth(s: string): boolean {
    the current key (or carries the constant decrypted, as current
    exports do), false when it carries one that does not, and null
    when the payload carries no key-check setting at all (nothing to
-   verify — the restore creates one afterwards, as before). */
+   verify — the restore creates one afterwards, as before).
+   `payloadAuthenticity` is the payload's MAC verdict
+   (backupMacCore.classifyBackupAuthenticity): "verified" when the
+   payload carries a MAC that verifies over its contents,
+   "mismatch" when it carries one that does not, and "absent" when
+   it carries none (a pre-MAC backup). Only "mismatch" refuses:
+   "absent" restores with the UNAUTHENTICATED label, exactly the
+   compatibility rule the settlement settled on. */
 
 export function payloadKeyCheckValue(
   payload: BackupPayload,
@@ -281,6 +307,7 @@ function refuse(reason: string): RestorePreflightResult {
 export function preflightRestoreBackup(
   payload: BackupPayload,
   payloadKeyCheckValid: boolean | null,
+  payloadAuthenticity: BackupAuthenticity,
 ): RestorePreflightResult {
   if (
     payload.format !== BACKUP_FORMAT ||
@@ -288,6 +315,18 @@ export function preflightRestoreBackup(
   ) {
     return refuse(
       `Not a recognised backup payload (expected format "${BACKUP_FORMAT}", schemaVersion ${BACKUP_SCHEMA_VERSION}).`,
+    );
+  }
+  // The authenticity MAC, before any delete: a payload that
+  // CARRIES a MAC whose value does not verify over its contents
+  // was changed after export — edited, truncated, or corrupted —
+  // and is refused outright instead of passing the compatibility
+  // key check below silently. A payload carrying NO MAC (written
+  // before MAC signing) is not refused here; the restore result
+  // labels it UNAUTHENTICATED.
+  if (payloadAuthenticity === "mismatch") {
+    return refuse(
+      "Backup rejected: its authenticity check failed — the backup's contents do not match the authenticity MAC they were exported with, so the file was changed or corrupted after export.",
     );
   }
   // The encryption key check against the PAYLOAD, before any
@@ -733,7 +772,13 @@ export function attemptRestore(
   rawPayload: unknown,
   payloadKeyCheckValid: boolean | null,
   failAtStatement: number | null = null,
-): { ok: boolean; reason: string; state: RestoreState; committed: boolean } {
+): {
+  ok: boolean;
+  reason: string;
+  state: RestoreState;
+  committed: boolean;
+  authenticity: BackupAuthenticity;
+} {
   const parsed = backupPayload.safeParse(rawPayload);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -743,10 +788,17 @@ export function attemptRestore(
       reason: `Backup rejected: the payload does not match the backup schema${where ? ` (at ${where})` : ""}${issue ? `: ${issue.message}` : ""}. Nothing was changed.`,
       state: prior,
       committed: false,
+      authenticity: classifyBackupAuthenticity(rawPayload),
     };
   }
-  const pre = preflightRestoreBackup(parsed.data, payloadKeyCheckValid);
-  if (!pre.ok) return { ok: false, reason: pre.reason, state: prior, committed: false };
+  // The MAC verdict is computed from the payload alone, by the
+  // same pure classifier the handler calls: a MAC'd payload whose
+  // contents were touched after export is refused by preflight;
+  // a pre-MAC payload (no MAC) restores labelled unauthenticated.
+  const authenticity = classifyBackupAuthenticity(parsed.data);
+  const pre = preflightRestoreBackup(parsed.data, payloadKeyCheckValid, authenticity);
+  if (!pre.ok)
+    return { ok: false, reason: pre.reason, state: prior, committed: false, authenticity };
   const priorRothRow = prior.settings.find((s) => s.key === RESTORE_ROTH_BLOB_KEY);
   const preRestoreRevision =
     priorRothRow && typeof priorRothRow.value === "string"
@@ -768,7 +820,8 @@ export function attemptRestore(
       reason: "Restore failed partway through and was rolled back — the previous data is intact. Nothing was changed.",
       state: prior,
       committed: false,
+      authenticity,
     };
   }
-  return { ok: true, reason: "Restored.", state: exec.state, committed: true };
+  return { ok: true, reason: "Restored.", state: exec.state, committed: true, authenticity };
 }

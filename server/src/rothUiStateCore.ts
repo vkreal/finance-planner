@@ -118,6 +118,53 @@ const blankLabDials = (): RothLabDials => ({
    deliberately NOT part of this state — only the dials a
    successful paste sets are remembered, exactly like typed
    values. */
+/* Projection template snapshot (projection click fix): the
+   single-year dials, priced into engine inputs, captured at
+   the moment the projection last (re)started. The projection
+   chart runs from THIS snapshot — never from the live dials —
+   so loading a projected year into the single-year view (which
+   overwrites the dials) can never shrink or re-base the chart,
+   in the session or across a reload. It is stored in engine-
+   input units (numbers, not typed strings) because it is not
+   a form the user types into; it changes only on a deliberate
+   capture (opening the panel, or the panel's re-run button).
+   A blob written before this field existed parses it null —
+   no snapshot yet — and the view captures one when the panel
+   next opens. */
+export const playgroundProjTemplateState = z.object({
+  taxYear: z.number().int(),
+  filingStatus: z.enum(["mfj", "single", "hoh"]),
+  agePrimary: z.number(),
+  ageSpouse: z.number().nullable(),
+  onMedicarePrimary: z.boolean(),
+  onMedicareSpouse: z.boolean(),
+  interest: z.number(),
+  ordinaryDividends: z.number(),
+  otherOrdinary: z.number(),
+  taxExemptInterest: z.number(),
+  ssPrimary: z.number(),
+  ssSpouse: z.number(),
+  conversion: z.number(),
+  stockSold: z.number(),
+  stockBasis: z.number(),
+  qualifiedDividends: z.number(),
+  pretaxBalance: z.number().nullable(),
+  spouseSoleBeneficiary: z.boolean(),
+  acaHouseholdSize: z.number().nullable(),
+  acaBenchmarkAnnual: z.number().nullable(),
+  stateRatePct: z.number(),
+  residenceState: z.enum(["WA", "other"]),
+  itemizedMortgageInterest: z.number(),
+  itemizedSaltPaid: z.number(),
+  itemizedCharitable: z.number(),
+  itemizedOther: z.number(),
+  educationStudents: z
+    .array(z.object({ expenses: z.number(), aotcEligible: z.boolean() }))
+    .nullable(),
+});
+export type PlaygroundProjTemplateState = z.infer<
+  typeof playgroundProjTemplateState
+>;
 export const playgroundFormState = z.object({
   year: z.string().max(12),
   filing: z.enum(["mfj", "single", "hoh"]),
@@ -175,6 +222,45 @@ export const playgroundFormState = z.object({
   soleBeneficiary: z.boolean(),
   holdOn: z.boolean(),
   heldTarget: z.union([z.number(), z.literal("aca")]).nullable(),
+  // Projection controls (Playground projection build): the
+  // projection panel's own dials, in the form's typed-string
+  // units like every other dial here. A blob written before
+  // these fields existed parses them at the fresh defaults
+  // (project to 95, repeat draw, conversions, no stop rule,
+  // every override blank = follow the template / the plan).
+  projOpen: z.boolean(),
+  projToAge: z.string().max(12),
+  // Projection from age (start-age control build): the
+  // projection panel's own start-age dial, in the form's
+  // typed-string units like every other dial here. Blank
+  // ("") = the template's own age — exactly the behaviour
+  // before this field existed. A blob written before this
+  // field existed parses it blank.
+  projFromAge: z.string().max(12),
+  projTaxableStart: z.string().max(64),
+  projRothStart: z.string().max(64),
+  projReturnPct: z.string().max(12),
+  projDrawMode: z.enum(["repeat", "replace"]),
+  projMoneyOutKind: z.enum(["conversion", "draw"]),
+  projStopKind: z.enum(["none", "age", "floor"]),
+  projStopValue: z.string().max(64),
+  projSsPrimaryClaimAge: z.string().max(12),
+  projSsSpouseClaimAge: z.string().max(12),
+  projSsPrimaryAnnual: z.string().max(64),
+  projSsSpouseAnnual: z.string().max(64),
+  projAcaSizeAfter: z.string().max(12),
+  projAcaStepYear: z.string().max(12),
+  // Projection selected year: the calendar year last loaded
+  // from the projection chart into the single-year view.
+  // Remembered with the rest of the form so a refresh
+  // restores the chart's highlight (ring, dimming, bold
+  // label) and the "Showing …" caption on the year actually
+  // being viewed. Null = no year loaded. A blob written
+  // before this field existed parses it null.
+  projSelectedYear: z.number().int().min(1900).max(2200).nullable(),
+  // Projection template snapshot (see playgroundProjTemplateState
+  // above): null = no snapshot captured yet.
+  projTemplate: playgroundProjTemplateState.nullable(),
   openSections: z.object({
     year: z.boolean(),
     income: z.boolean(),
@@ -220,6 +306,24 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     soleBeneficiary: true,
     holdOn: false,
     heldTarget: null,
+    projOpen: false,
+    projToAge: "95",
+    projFromAge: "",
+    projTaxableStart: "",
+    projRothStart: "",
+    projReturnPct: "",
+    projDrawMode: "repeat",
+    projMoneyOutKind: "conversion",
+    projStopKind: "none",
+    projStopValue: "",
+    projSsPrimaryClaimAge: "",
+    projSsSpouseClaimAge: "",
+    projSsPrimaryAnnual: "",
+    projSsSpouseAnnual: "",
+    projAcaSizeAfter: "",
+    projAcaStepYear: "",
+    projSelectedYear: null,
+    projTemplate: null,
     openSections: { year: true, income: true, conversion: true, stock: true, aca: true },
   };
 }
@@ -238,6 +342,117 @@ function parsePgBenchmarkSource(
     return { kind: b.kind as (typeof kinds)[number], value: b.value };
   }
   return null;
+}
+/* Lenient read of the projection template snapshot: every
+   required field must be present and well-typed, or the whole
+   snapshot reads as null (no snapshot — the view captures a
+   fresh one when the panel opens). A malformed snapshot can
+   never half-load and mis-base the projection. */
+function parsePgProjTemplate(
+  v: unknown,
+): PlaygroundFormState["projTemplate"] {
+  if (v == null || typeof v !== "object" || Array.isArray(v)) return null;
+  const t = v as Record<string, unknown>;
+  const num = (x: unknown): number | null =>
+    typeof x === "number" && Number.isFinite(x) ? x : null;
+  const numOrNull = (x: unknown): number | null | undefined =>
+    x === null ? null : num(x) ?? undefined;
+  const taxYear = num(t.taxYear);
+  const agePrimary = num(t.agePrimary);
+  const ageSpouse = numOrNull(t.ageSpouse);
+  const interest = num(t.interest);
+  const ordinaryDividends = num(t.ordinaryDividends);
+  const otherOrdinary = num(t.otherOrdinary);
+  const taxExemptInterest = num(t.taxExemptInterest);
+  const ssPrimary = num(t.ssPrimary);
+  const ssSpouse = num(t.ssSpouse);
+  const conversion = num(t.conversion);
+  const stockSold = num(t.stockSold);
+  const stockBasis = num(t.stockBasis);
+  const qualifiedDividends = num(t.qualifiedDividends);
+  const pretaxBalance = numOrNull(t.pretaxBalance);
+  const acaHouseholdSize = numOrNull(t.acaHouseholdSize);
+  const acaBenchmarkAnnual = numOrNull(t.acaBenchmarkAnnual);
+  const stateRatePct = num(t.stateRatePct);
+  const itemizedMortgageInterest = num(t.itemizedMortgageInterest);
+  const itemizedSaltPaid = num(t.itemizedSaltPaid);
+  const itemizedCharitable = num(t.itemizedCharitable);
+  const itemizedOther = num(t.itemizedOther);
+  if (
+    taxYear == null ||
+    !Number.isInteger(taxYear) ||
+    agePrimary == null ||
+    ageSpouse === undefined ||
+    interest == null ||
+    ordinaryDividends == null ||
+    otherOrdinary == null ||
+    taxExemptInterest == null ||
+    ssPrimary == null ||
+    ssSpouse == null ||
+    conversion == null ||
+    stockSold == null ||
+    stockBasis == null ||
+    qualifiedDividends == null ||
+    pretaxBalance === undefined ||
+    acaHouseholdSize === undefined ||
+    acaBenchmarkAnnual === undefined ||
+    stateRatePct == null ||
+    itemizedMortgageInterest == null ||
+    itemizedSaltPaid == null ||
+    itemizedCharitable == null ||
+    itemizedOther == null ||
+    (t.filingStatus !== "mfj" && t.filingStatus !== "single" && t.filingStatus !== "hoh") ||
+    typeof t.onMedicarePrimary !== "boolean" ||
+    typeof t.onMedicareSpouse !== "boolean" ||
+    typeof t.spouseSoleBeneficiary !== "boolean" ||
+    (t.residenceState !== "WA" && t.residenceState !== "other")
+  ) {
+    return null;
+  }
+  let educationStudents: { expenses: number; aotcEligible: boolean }[] | null =
+    null;
+  if (Array.isArray(t.educationStudents)) {
+    const rows: { expenses: number; aotcEligible: boolean }[] = [];
+    for (const rawRow of t.educationStudents as unknown[]) {
+      if (rawRow == null || typeof rawRow !== "object") return null;
+      const row = rawRow as Record<string, unknown>;
+      const expenses = num(row.expenses);
+      if (expenses == null || typeof row.aotcEligible !== "boolean") return null;
+      rows.push({ expenses, aotcEligible: row.aotcEligible });
+    }
+    educationStudents = rows;
+  } else if (t.educationStudents !== null && t.educationStudents !== undefined) {
+    return null;
+  }
+  return {
+    taxYear,
+    filingStatus: t.filingStatus as "mfj" | "single" | "hoh",
+    agePrimary,
+    ageSpouse,
+    onMedicarePrimary: t.onMedicarePrimary as boolean,
+    onMedicareSpouse: t.onMedicareSpouse as boolean,
+    interest,
+    ordinaryDividends,
+    otherOrdinary,
+    taxExemptInterest,
+    ssPrimary,
+    ssSpouse,
+    conversion,
+    stockSold,
+    stockBasis,
+    qualifiedDividends,
+    pretaxBalance,
+    spouseSoleBeneficiary: t.spouseSoleBeneficiary as boolean,
+    acaHouseholdSize,
+    acaBenchmarkAnnual,
+    stateRatePct,
+    residenceState: t.residenceState as "WA" | "other",
+    itemizedMortgageInterest,
+    itemizedSaltPaid,
+    itemizedCharitable,
+    itemizedOther,
+    educationStudents,
+  };
 }
 function parsePgOpenSections(
   v: unknown,
@@ -456,6 +671,33 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         soleBeneficiary:
           typeof g.soleBeneficiary === "boolean" ? g.soleBeneficiary : true,
         holdOn: typeof g.holdOn === "boolean" ? g.holdOn : false,
+        projOpen: typeof g.projOpen === "boolean" ? g.projOpen : false,
+        projToAge: str(g.projToAge, "95"),
+        projFromAge: str(g.projFromAge, ""),
+        projTaxableStart: str(g.projTaxableStart, ""),
+        projRothStart: str(g.projRothStart, ""),
+        projReturnPct: str(g.projReturnPct, ""),
+        projDrawMode: g.projDrawMode === "replace" ? "replace" : "repeat",
+        projMoneyOutKind: g.projMoneyOutKind === "draw" ? "draw" : "conversion",
+        projStopKind:
+          g.projStopKind === "age" || g.projStopKind === "floor"
+            ? g.projStopKind
+            : "none",
+        projStopValue: str(g.projStopValue, ""),
+        projSsPrimaryClaimAge: str(g.projSsPrimaryClaimAge, ""),
+        projSsSpouseClaimAge: str(g.projSsSpouseClaimAge, ""),
+        projSsPrimaryAnnual: str(g.projSsPrimaryAnnual, ""),
+        projSsSpouseAnnual: str(g.projSsSpouseAnnual, ""),
+        projAcaSizeAfter: str(g.projAcaSizeAfter, ""),
+        projAcaStepYear: str(g.projAcaStepYear, ""),
+        projSelectedYear:
+          typeof g.projSelectedYear === "number" &&
+          Number.isInteger(g.projSelectedYear) &&
+          g.projSelectedYear >= 1900 &&
+          g.projSelectedYear <= 2200
+            ? g.projSelectedYear
+            : null,
+        projTemplate: parsePgProjTemplate(g.projTemplate),
         heldTarget:
           g.heldTarget === "aca"
             ? "aca"

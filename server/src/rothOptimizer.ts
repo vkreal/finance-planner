@@ -81,6 +81,7 @@ type TaxableTier,
 } from "./taxEngine";
 import {
 CURRENT_LAW,
+FPL_GUIDELINES,
 fplFor,
 lawForYear,
 rmdAgeForBirthYear,
@@ -738,6 +739,18 @@ export type JointSearchInfo = {
   lockedSpouse?: boolean;
   lockedPrimaryAge?: number | null;
   lockedSpouseAge?: number | null;
+  // The claiming ages actually searched for each person whose
+  // age varied (small-fry copy pass, 2026-10-21): the attainable
+  // candidate list from claimAgeCombos. Since N-1 a
+  // not-yet-claimed person's list starts at their current age,
+  // so the result note quotes these ages instead of asserting
+  // the full 62–70 grid. Set only for a varied person (a locked
+  // or unsearched person has no searched ages). Optional for
+  // the same literal reason as the lock fields: absent = the
+  // full 62–70 grid, and the note copy is then exactly the
+  // pre-pass wording.
+  searchedPrimaryAges?: number[];
+  searchedSpouseAges?: number[];
   // The plan's draw order, kept by every combination the joint
   // search prices — named in the result note.
   drawOrderLabel: string;
@@ -929,6 +942,22 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
       first?.claimAges.lockedSpouse === true ? first.claimAges.spouseAge : null,
     drawOrderLabel: drawOrderLabel(inputs.drawOrder),
   };
+  // The ages actually searched for each varied person, quoted
+  // by the result note: the distinct candidate ages the
+  // combinations carry for that person (the cross product holds
+  // each person's full attainable list). A locked person's only
+  // candidate is the entered age — not a search — so they get
+  // no list, exactly like an unsearched person.
+  const distinctAges = (pick: (c: ClaimCombo) => number | null): number[] =>
+    [...new Set(combos.map(pick).filter((a): a is number => a != null))].sort(
+      (x, y) => x - y,
+    );
+  if (info.searchedPrimary && !info.lockedPrimary) {
+    info.searchedPrimaryAges = distinctAges((c) => c.claimAges.primaryAge);
+  }
+  if (info.searchedSpouse && !info.lockedSpouse) {
+    info.searchedSpouseAges = distinctAges((c) => c.claimAges.spouseAge);
+  }
   if (combos.length <= 1) {
     const res = runOptimizer(inputs);
     return { ...res, jointSearch: info, claimAgeTable: [] };
@@ -1106,7 +1135,12 @@ export function runJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult 
 // undeclared record's copy does not move. A declared person is
 // never described as a missing input: the note states the settled
 // fact — that person has no benefit, so there is no claiming age
-// to search for them.
+// to search for them. The searched branches quote the claiming
+// ages the search actually covered (info.searched*Ages): a
+// benefit already being paid is locked at its entered age and
+// not searched, and a not-yet-claimed person's ages start at
+// their current age — the note never describes the search as
+// covering ages it did not.
 export function jointSearchNote(info: JointSearchInfo): string {
   const declaredPrimary = info.declaredPrimary === true;
   const declaredSpouse = info.declaredSpouse === true;
@@ -1153,6 +1187,45 @@ export function jointSearchNote(info: JointSearchInfo): string {
   // of describing a 62–70 search that never happened.
   const variedPrimary = info.searchedPrimary && !lockedPrimary;
   const variedSpouse = info.searchedSpouse && !lockedSpouse;
+  // The ages a varied person's claiming age was searched over,
+  // quoted exactly: since N-1 the attainable list starts at
+  // the person's current age when they are past 62, so the
+  // pre-N-1 "every age 62–70" claim is only made when the list
+  // really is the full grid (an absent list reads as the full
+  // grid, per the JointSearchInfo contract). A contiguous list
+  // quotes as its end ages; a list with a gap (an entered claim
+  // age past 70 rides along above the grid) is enumerated, so
+  // the note never claims an age was searched that was not.
+  const rangePhrase = (ages: number[] | undefined): string => {
+    const list =
+      ages && ages.length > 0 ? ages : [62, 63, 64, 65, 66, 67, 68, 69, 70];
+    const first = list[0]!;
+    const last = list[list.length - 1]!;
+    if (list.length === 1) return `at age ${first}`;
+    const contiguous = list.every((a, i) => i === 0 || a === list[i - 1]! + 1);
+    if (contiguous) return `over every age ${first}–${last}`;
+    return `over ages ${list.slice(0, -1).join(", ")} and ${last}`;
+  };
+  // The "whose claiming age, over which ages" clause for a
+  // searched branch: one shared span when both people varied
+  // over the same ages, otherwise each person's own span.
+  const searchedClause = (
+    primaryLabel: string,
+    spouseLabel: string,
+    bothLabel: string,
+  ): string => {
+    if (variedPrimary && variedSpouse) {
+      const primaryRange = rangePhrase(info.searchedPrimaryAges);
+      const spouseRange = rangePhrase(info.searchedSpouseAges);
+      return primaryRange === spouseRange
+        ? `${bothLabel} ${primaryRange}`
+        : `${primaryLabel} ${primaryRange} and ${spouseLabel} ${spouseRange}`;
+    }
+    if (variedPrimary) {
+      return `${primaryLabel} ${rangePhrase(info.searchedPrimaryAges)}`;
+    }
+    return `${spouseLabel} ${rangePhrase(info.searchedSpouseAges)}`;
+  };
   if (!variedPrimary && !variedSpouse) {
     return `No claiming ages were searched.${lockedSentence} The strategies above were priced at the entered claiming ages, with all six draw orders searched as part of the strategy set.${floorSentence}`;
   }
@@ -1160,27 +1233,17 @@ export function jointSearchNote(info: JointSearchInfo): string {
   // is declared, use neutral labels throughout and the settled-fact
   // sentence; otherwise keep the prior wording exactly.
   if ((info.searchedPrimary && declaredSpouse) || (info.searchedSpouse && declaredPrimary)) {
-    const whoNeutral = info.searchedPrimary && info.searchedSpouse
-      ? "both people's claiming ages"
-      : info.searchedPrimary
-        ? "the primary person's claiming age"
-        : "the spouse's claiming age";
     const settled = info.searchedPrimary && declaredSpouse
       ? " The spouse has no Social Security benefit, so there is no second claiming age to search."
       : " The primary person has no Social Security benefit, so there is no second claiming age to search.";
-    return `Claiming ages were searched jointly with the conversion strategies: ${whoNeutral} over every age 62–70 (${info.combosTested} combinations screened, ${pricedPhrase}).${settled} Every combination kept your draw order (${info.drawOrderLabel}) — draw order itself is searched at your entered claiming ages, in the draw-order result below.${floorSentence}`;
+    return `Claiming ages were searched jointly with the conversion strategies: ${searchedClause("the primary person's claiming age", "the spouse's claiming age", "both people's claiming ages")} (${info.combosTested} combinations screened, ${pricedPhrase}).${settled} Every combination kept your draw order (${info.drawOrderLabel}) — draw order itself is searched at your entered claiming ages, in the draw-order result below.${floorSentence}`;
   }
-  const who = variedPrimary && variedSpouse
-    ? "both spouses' claiming ages"
-    : variedPrimary
-      ? "your claiming age"
-      : "the spouse's claiming age";
   const notSearched = info.searchedPrimary && !info.searchedSpouse
     ? " The spouse's Social Security isn't entered, so their claiming age wasn't searched."
     : !info.searchedPrimary && info.searchedSpouse
       ? " Your Social Security isn't entered, so your claiming age wasn't searched."
       : "";
-  return `Claiming ages were searched jointly with the conversion strategies: ${who} over every age 62–70 (${info.combosTested} combinations screened, ${pricedPhrase}).${notSearched} Every combination kept your draw order (${info.drawOrderLabel}) — draw order itself is searched at your entered claiming ages, in the draw-order result below.${lockedSentence}${floorSentence}`;
+  return `Claiming ages were searched jointly with the conversion strategies: ${searchedClause("your claiming age", "the spouse's claiming age", "both spouses' claiming ages")} (${info.combosTested} combinations screened, ${pricedPhrase}).${notSearched} Every combination kept your draw order (${info.drawOrderLabel}) — draw order itself is searched at your entered claiming ages, in the draw-order result below.${lockedSentence}${floorSentence}`;
 }
 
 // Re-run the whole search at a different expected return (the
@@ -2477,8 +2540,11 @@ export type PlaygroundYearInputs = {
   // "other" = the flat stateRatePct prices the state tax,
   // bit-identical to before; "WA" = Washington's
   // capital-gains excise prices it instead, on the year's
-  // realized stock gain only). Deliberately NOT part of the
-  // paste payload: old pastes keep loading.
+  // realized stock gain only). Part of the paste payload
+  // (cold-AI audit fix): a paste carries it so replaying the
+  // paste reprices the same state layer; pastes written
+  // before it was included carry no such key and load with
+  // it absent (the flat rate), exactly as before.
   residenceState?: "WA" | "other" | null;
   // Itemized deductions (T5 build; all optional — absent /
   // 0 = blank, and the year prices on the standard side
@@ -2500,10 +2566,28 @@ export type PlaygroundYearInputs = {
   // year prices exactly as before): the year's students,
   // each with their qualified expenses and the household's
   // AOTC-eligibility mark, priced through the same shared
-  // priceYear §25A step as a plan year. Deliberately NOT
-  // part of the paste payload, like the itemized dials:
-  // old pastes keep loading and price exactly as before.
+  // priceYear §25A step as a plan year. Part of the paste
+  // payload (cold-AI audit fix): a paste carries the list so
+  // replaying the paste reprices the same credits; pastes
+  // written before it was included carry no such key and
+  // load with it absent (no students), exactly as before.
   educationStudents?: EducationStudent[] | null;
+  // ACA guideline convention (Playground projection build):
+  // absent / "lookback" = the single-year rule — acaCreditFor
+  // prices the coverage year off the PRIOR year's poverty
+  // guidelines, the statutory §36B lookback. "newest" = the
+  // plan convention for projected future years — the cliff
+  // prices off the NEWEST guideline row in the table, in
+  // today's dollars, the same carry-forward the plan engine
+  // reaches for years past the guideline table. This is the
+  // ONE sanctioned difference between a projected year and
+  // the single-year pricer for the same inputs: every other
+  // figure is bit-identical. Only the guideline year moves —
+  // the applicable-percentage table still keys on the real
+  // coverage year (its fallback row is the newest table), and
+  // the convention never invents a cliff for a pre-2026 year
+  // (the enhanced-credit years have none under either rule).
+  acaConvention?: "lookback" | "newest";
 };
 
 export type PlaygroundYearResult = {
@@ -2895,6 +2979,23 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     (inp.onMedicarePrimary ? 0 : 1) +
     (joint && !inp.onMedicareSpouse ? 1 : 0);
   const acaApplies = notMedicareCount > 0;
+  // The coverage year the ACA block prices off. Normally the
+  // year's own (acaCreditFor then applies the statutory
+  // lookback to the prior year's guidelines). Under the
+  // projection's "newest" convention, a coverage year of
+  // (newest guideline year + 1) makes acaCreditFor's lookback
+  // land exactly on the newest guideline row — the plan
+  // convention — while acaTableFor still resolves the real
+  // year's table (any year past the table falls back to the
+  // newest one). Pre-2026 years keep the real coverage year:
+  // the enhanced-credit schedule has no cliff to re-price.
+  const newestGuidelineYear = Math.max(
+    ...Object.keys(FPL_GUIDELINES).map(Number),
+  );
+  const acaCoverageYear =
+    inp.acaConvention === "newest" && inp.taxYear >= 2026
+      ? Math.max(inp.taxYear, newestGuidelineYear + 1)
+      : inp.taxYear;
   let aca: PlaygroundYearResult["aca"] = {
     applies: acaApplies,
     everyoneOnMedicare: notMedicareCount === 0,
@@ -2911,7 +3012,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     const res = acaCreditFor({
       magi: priced.acaMagi,
       householdSize: inp.acaHouseholdSize,
-      coverageYear: inp.taxYear,
+      coverageYear: acaCoverageYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
     });
     aca = {
@@ -2970,7 +3071,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     const resW = acaCreditFor({
       magi: pricedWithoutGains.acaMagi,
       householdSize: inp.acaHouseholdSize,
-      coverageYear: inp.taxYear,
+      coverageYear: acaCoverageYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
     });
     withoutAcaOverCliff = resW.overCliff;
@@ -3222,6 +3323,366 @@ export function playgroundSaleAfterTax(
   return pricePlaygroundYear(inp).saleAfterTax;
 }
 
+/* ---------------- Playground projection ----------------
+   The Playground's projection mode: the current single-year
+   dials become a TEMPLATE year, repeated from the primary's
+   template age through an end age (95 by default), one year
+   at a time. Every projected year is priced by
+   pricePlaygroundYear itself — the same pricing path as the
+   single-year view — with only the year's age-driven inputs
+   changed:
+
+   · ages advance one year per step (the calendar year with
+     them); Medicare follows age — on at 65 for each person,
+     whatever the template year's checkboxes said;
+   · Social Security pays $0 before the person's claiming
+     age and the entered yearly amount from that age on (a
+     null claiming age keeps the template amount every year);
+   · the RMD is priced by the pricer off the year's starting
+     (prior Dec 31) pre-tax balance, exactly as the template
+     year prices it;
+   · the ACA household size steps down at the step-down year
+     when one is set, and ACA ends on its own once everyone
+     is on Medicare (the pricer's own applicability rule);
+   · every projected year prices its ACA cliff on the PLAN
+     convention — the newest poverty-guideline row, in
+     today's dollars (acaConvention "newest" above). That is
+     the ONE sanctioned difference from the single-year
+     pricer, which applies the statutory lookback to its
+     named year; with the template's own switches aligned, a
+     projected year reproduces the single-year result on
+     every figure except the ACA block.
+
+   The template's pre-tax money out repeats each year,
+   adjusted by two user controls:
+   · draw mode "replace": Social Security and RMDs that
+     arrive beyond what the template year itself carried
+     shrink the amount dollar for dollar, floored at $0
+     (mode "repeat" leaves it exactly as entered);
+   · a stop rule: with "age", the amount runs through the
+     stop age and is $0 after it; with "floor", the amount
+     is capped so the pre-tax balance left after the year's
+     RMD and the amount itself never goes below the floor
+     (and is $0 once the balance is at the floor).
+   Either way the amount never exceeds the pre-tax balance
+   left after the year's RMD when a balance is in play.
+
+   Balances evolve beside the pricing — presentation-grade
+   bookkeeping, not a second tax model. Each year: the
+   pre-tax balance is drawn down by the year's RMD and the
+   money out; the taxable balance by the year's stock sale
+   (a sale larger than the balance sells what is there, its
+   basis scaled by the same fraction, so the priced gain
+   ratio is the template's); in "conversion" mode the money
+   out lands in the Roth balance, in "draw" mode it leaves
+   as spending. What remains of each balance then grows at
+   the entered return for the year. Taxes are NOT debited
+   from any balance — the priced drawdowns are exactly the
+   draws, sales, RMDs, and conversions, as the balances
+   chart's caption states. A balance the user never entered
+   (a blank pre-tax dial, or no starting taxable entered)
+   stays unentered: its years price exactly as the
+   single-year view prices a blank balance (no RMD, no cap,
+   sales unscaled) and the chart shows no balance for it.
+
+   The projection's start age (opts.fromAge — the panel's
+   "Projection from age" dial; null / absent = the template's
+   own age, exactly the walk above):
+   · EARLIER than the template age: the walk itself starts
+     at the from-age. Calendar years and the spouse's age
+     shift by the same difference, the template's income
+     shape repeats from that age, and every age-keyed switch
+     above follows each projected year's own ages — ACA
+     while it applies on the plan convention, Medicare at 65
+     for each person, Social Security from its claiming age,
+     RMDs from the RMD age. The starting balances — the
+     template's pre-tax balance and the entered starting
+     taxable and Roth balances — are the balances AT that
+     first projected year: the walk begins there, it does not
+     walk forward to the template year first. The "replace"
+     draw mode likewise measures arrivals beyond the FIRST
+     projected year's own arrival, not the template year's.
+   · LATER than the template age: the walk still computes
+     from the template year (so balances walk), and only the
+     years from the from-age on are returned — the first
+     shown year's starting balances are the walked ones, not
+     the entered starting balances. */
+
+export type PlaygroundProjectionOptions = {
+  // Last primary age projected (inclusive).
+  toAge: number;
+  // First primary age shown / walked from (see the header
+  // comment): null (or absent) = the template's own age.
+  fromAge?: number | null;
+  // Claiming ages for the two benefits; null = the template
+  // amount (if any) is in pay every year, as typed.
+  ssPrimaryClaimAge: number | null;
+  ssSpouseClaimAge: number | null;
+  // Yearly benefit from the claiming age; null = the
+  // template year's typed amount.
+  ssPrimaryAnnual: number | null;
+  ssSpouseAnnual: number | null;
+  // ACA step-down: from acaStepDownYear (a calendar year) on,
+  // the household size is acaHouseholdSizeAfter. Either null
+  // = no step-down.
+  acaHouseholdSizeAfter: number | null;
+  acaStepDownYear: number | null;
+  // Starting balances: taxable is null when none was entered
+  // (sales then repeat unscaled and no taxable balance is
+  // tracked); Roth starts at the entered figure ($0 default).
+  startTaxable: number | null;
+  startRoth: number;
+  // Yearly growth applied to each balance after the year's
+  // drawdowns (and the conversion's landing in Roth).
+  returnPct: number;
+  drawMode: "repeat" | "replace";
+  moneyOutKind: "conversion" | "draw";
+  stopKind: "none" | "age" | "floor";
+  stopAge: number | null;
+  stopFloor: number | null;
+};
+
+export type PlaygroundProjectionBalances = {
+  pretax: number | null;
+  taxable: number | null;
+  roth: number;
+};
+
+export type PlaygroundProjectionYear = {
+  calendarYear: number;
+  agePrimary: number;
+  ageSpouse: number | null;
+  // The exact inputs this year was priced with — clicking
+  // the year in the chart loads these into the single-year
+  // view's dials.
+  inputs: PlaygroundYearInputs;
+  result: PlaygroundYearResult;
+  // The effective pre-tax money out priced (after the draw
+  // mode, the stop rule, and the balance cap).
+  moneyOut: number;
+  stockSoldEffective: number;
+  stockBasisEffective: number;
+  startBalances: PlaygroundProjectionBalances;
+  endBalances: PlaygroundProjectionBalances;
+};
+
+export type PlaygroundProjection = {
+  years: PlaygroundProjectionYear[];
+  // Balances after the final projected year (the last year's
+  // endBalances; the starting balances when the range is
+  // empty).
+  endBalances: PlaygroundProjectionBalances;
+};
+
+export function projectPlaygroundYears(
+  template: PlaygroundYearInputs,
+  opts: PlaygroundProjectionOptions,
+): PlaygroundProjection {
+  const joint = template.filingStatus === "mfj";
+  const birthYearPrimary = template.taxYear - template.agePrimary;
+  // The projection's start age (see the header comment):
+  // an earlier from-age moves the WALK's start (the entered
+  // starting balances are that first year's balances); a
+  // later from-age leaves the walk starting at the template
+  // year and only slices the returned years.
+  const requestedFromAge =
+    opts.fromAge != null && Number.isFinite(opts.fromAge)
+      ? Math.max(0, Math.round(opts.fromAge))
+      : null;
+  const walkStartAge =
+    requestedFromAge != null
+      ? Math.min(requestedFromAge, template.agePrimary)
+      : template.agePrimary;
+  const displayFromAge = requestedFromAge ?? template.agePrimary;
+  const ssFor = (
+    claimAge: number | null,
+    annual: number | null,
+    typed: number,
+    personAge: number | null,
+  ): number => {
+    if (personAge == null) return 0;
+    if (claimAge == null) return typed;
+    return personAge >= claimAge ? (annual ?? typed) : 0;
+  };
+  const spouseAgeAt = (age: number): number | null =>
+    joint && template.ageSpouse != null
+      ? template.ageSpouse + (age - template.agePrimary)
+      : null;
+  // The baseline the "replace" draw mode measures arrivals
+  // against: the FIRST walked year's own Social Security
+  // total and RMD (its starting pre-tax balance is the
+  // template's balance, at the walk's first year). With no
+  // from-age — or a later one — the first walked year IS the
+  // template year, so this is exactly the template baseline
+  // the walk has always used; an earlier start re-anchors it
+  // to the earlier first year, whose switches price by that
+  // year's own ages.
+  const walkStartSpouseAge = spouseAgeAt(walkStartAge);
+  const baselineArrival =
+    ssFor(
+      opts.ssPrimaryClaimAge,
+      opts.ssPrimaryAnnual,
+      template.ssPrimary,
+      walkStartAge,
+    ) +
+    (joint
+      ? ssFor(
+          opts.ssSpouseClaimAge,
+          opts.ssSpouseAnnual,
+          template.ssSpouse,
+          walkStartSpouseAge,
+        )
+      : 0) +
+    (template.pretaxBalance != null
+      ? rmdForYear({
+          priorDec31PreTax: template.pretaxBalance,
+          agePrimary: walkStartAge,
+          ageSpouse: walkStartSpouseAge,
+          birthYearPrimary,
+          spouseSoleBeneficiary: template.spouseSoleBeneficiary,
+        }).rmd
+      : 0);
+  const growth = 1 + opts.returnPct / 100;
+  let pretax: number | null = template.pretaxBalance;
+  let taxable: number | null = opts.startTaxable;
+  let roth = opts.startRoth;
+  const years: PlaygroundProjectionYear[] = [];
+  const toAge = Math.max(
+    template.agePrimary,
+    walkStartAge,
+    displayFromAge,
+    Math.round(opts.toAge),
+  );
+  for (let age = walkStartAge; age <= toAge; age++) {
+    const step = age - template.agePrimary;
+    const calendarYear = template.taxYear + step;
+    const ageSpouse = spouseAgeAt(age);
+    const ssPrimary = ssFor(
+      opts.ssPrimaryClaimAge,
+      opts.ssPrimaryAnnual,
+      template.ssPrimary,
+      age,
+    );
+    const ssSpouse = joint
+      ? ssFor(
+          opts.ssSpouseClaimAge,
+          opts.ssSpouseAnnual,
+          template.ssSpouse,
+          ageSpouse,
+        )
+      : 0;
+    // The year's RMD on the starting balance — the engine's
+    // own rmdForYear, the same call pricePlaygroundYear makes
+    // with this balance, so the figure the draw mode and the
+    // caps use is the figure the pricing produces.
+    const rmdThis =
+      pretax != null
+        ? rmdForYear({
+            priorDec31PreTax: pretax,
+            agePrimary: age,
+            ageSpouse,
+            birthYearPrimary,
+            spouseSoleBeneficiary: template.spouseSoleBeneficiary,
+          }).rmd
+        : 0;
+    let moneyOut = Math.max(0, template.conversion);
+    if (opts.stopKind === "age" && opts.stopAge != null && age > opts.stopAge) {
+      moneyOut = 0;
+    }
+    if (opts.drawMode === "replace" && moneyOut > 0) {
+      const arrival = ssPrimary + ssSpouse + rmdThis;
+      moneyOut = Math.max(0, moneyOut - Math.max(0, arrival - baselineArrival));
+    }
+    if (pretax != null && moneyOut > 0) {
+      const afterRmd = Math.max(0, pretax - rmdThis);
+      moneyOut = Math.min(moneyOut, afterRmd);
+      if (opts.stopKind === "floor" && opts.stopFloor != null) {
+        moneyOut = Math.min(moneyOut, Math.max(0, afterRmd - opts.stopFloor));
+      }
+    }
+    moneyOut = r2(moneyOut);
+    // The year's sale: capped at the tracked taxable balance
+    // when one was entered, its basis scaled by the same
+    // fraction so the gain ratio is the template's.
+    let stockSoldEffective = template.stockSold;
+    let stockBasisEffective = template.stockBasis;
+    if (taxable != null && template.stockSold > 0 && template.stockSold > taxable) {
+      stockSoldEffective = Math.max(0, taxable);
+      stockBasisEffective = r2(
+        template.stockBasis * (stockSoldEffective / template.stockSold),
+      );
+    }
+    const householdSize =
+      template.acaHouseholdSize == null
+        ? null
+        : opts.acaStepDownYear != null &&
+            opts.acaHouseholdSizeAfter != null &&
+            calendarYear >= opts.acaStepDownYear
+          ? opts.acaHouseholdSizeAfter
+          : template.acaHouseholdSize;
+    const inputs: PlaygroundYearInputs = {
+      ...template,
+      taxYear: calendarYear,
+      agePrimary: age,
+      ageSpouse,
+      onMedicarePrimary: age >= 65,
+      onMedicareSpouse: ageSpouse != null && ageSpouse >= 65,
+      ssPrimary,
+      ssSpouse,
+      conversion: moneyOut,
+      stockSold: stockSoldEffective,
+      stockBasis: stockBasisEffective,
+      pretaxBalance: pretax,
+      acaHouseholdSize: householdSize,
+      acaConvention: "newest",
+    };
+    const result = pricePlaygroundYear(inputs);
+    const startBalances: PlaygroundProjectionBalances = {
+      pretax,
+      taxable,
+      roth,
+    };
+    const endPretax =
+      pretax == null
+        ? null
+        : r2(Math.max(0, pretax - result.rmd - moneyOut) * growth);
+    const endTaxable =
+      taxable == null
+        ? null
+        : r2(Math.max(0, taxable - stockSoldEffective) * growth);
+    const endRoth = r2(
+      (roth + (opts.moneyOutKind === "conversion" ? moneyOut : 0)) * growth,
+    );
+    years.push({
+      calendarYear,
+      agePrimary: age,
+      ageSpouse,
+      inputs,
+      result,
+      moneyOut,
+      stockSoldEffective,
+      stockBasisEffective,
+      startBalances,
+      endBalances: { pretax: endPretax, taxable: endTaxable, roth: endRoth },
+    });
+    pretax = endPretax;
+    taxable = endTaxable;
+    roth = endRoth;
+  }
+  // A later from-age only slices the shown years (the walk
+  // above still ran from the template / walk-start year, so
+  // the first shown year's startBalances are the walked
+  // ones); an earlier or absent from-age shows the whole walk.
+  const shownYears =
+    displayFromAge > walkStartAge
+      ? years.filter((y) => y.agePrimary >= displayFromAge)
+      : years;
+  return {
+    years: shownYears,
+    endBalances: { pretax, taxable, roth },
+  };
+}
+
 /* Bracket-fill solve for the Playground's quick-set chips.
    Returns the conversion (to the cent) that lands the year's
    ORDINARY taxable income exactly on the top of the named
@@ -3329,9 +3790,17 @@ export function solvePlaygroundBracketFill(
    naming every Playground dial, in dollars (the engine's units),
    exactly as PlaygroundYearInputs carries them. `kind`/`version`
    tag the shape so a loader can refuse anything else plainly. */
-export type PlaygroundPastePayload = PlaygroundYearInputs & {
+export type PlaygroundPastePayload = Omit<
+  PlaygroundYearInputs,
+  "residenceState" | "educationStudents"
+> & {
   kind: "playground-year";
   version: 1;
+  // Always present in a payload this builder emits (null when
+  // unset), so a replay prices the same state layer and the
+  // same credits the copied year priced.
+  residenceState: "WA" | "other" | null;
+  educationStudents: EducationStudent[] | null;
 };
 
 export const PLAYGROUND_PASTE_FIELDS = [
@@ -3356,6 +3825,19 @@ export const PLAYGROUND_PASTE_FIELDS = [
   "acaHouseholdSize",
   "acaBenchmarkAnnual",
   "stateRatePct",
+  "residenceState",
+  "educationStudents",
+] as const;
+
+/* The paste fields a payload written before the cold-AI
+   audit fix may legitimately omit: residenceState and
+   educationStudents were added to the payload by that fix,
+   so an older paste carries neither key and must still load
+   (absent prices exactly as before — the flat state rate and
+   no students). Every other field stays required. */
+export const PLAYGROUND_PASTE_OPTIONAL_FIELDS = [
+  "residenceState",
+  "educationStudents",
 ] as const;
 
 export function playgroundPastePayload(
@@ -3385,18 +3867,29 @@ export function playgroundPastePayload(
     acaHouseholdSize: inp.acaHouseholdSize,
     acaBenchmarkAnnual: inp.acaBenchmarkAnnual,
     stateRatePct: inp.stateRatePct,
+    residenceState: inp.residenceState ?? null,
+    educationStudents: inp.educationStudents
+      ? inp.educationStudents.map((s) => ({
+          expenses: s.expenses,
+          aotcEligible: s.aotcEligible,
+        }))
+      : null,
   };
 }
 
 /* Validate a parsed paste (the JSON.parse result) FULLY, before
-   anything is applied: the object must carry exactly the
-   canonical keys (kind/version plus every dial field — an
-   unknown key or a missing one refuses the whole paste), and
-   every field must be of the right type and in range. Money
-   fields may not be negative — except otherOrdinary, which the
-   Playground itself prices signed (a genuine loss). On success
-   the dial inputs are returned whole; on failure one plain
-   error string and nothing else. */
+   anything is applied: the object must carry the canonical
+   keys (kind/version plus every dial field — an unknown key
+   or a missing required one refuses the whole paste), and
+   every field must be of the right type and in range. The
+   two fields the cold-AI audit fix added (residenceState,
+   educationStudents) are OPTIONAL: a paste written before
+   that fix carries neither and loads with them absent,
+   pricing exactly as before. Money fields may not be
+   negative — except otherOrdinary, which the Playground
+   itself prices signed (a genuine loss). On success the dial
+   inputs are returned whole; on failure one plain error
+   string and nothing else. */
 export function parsePlaygroundPaste(
   raw: unknown,
 ): { ok: true; inputs: PlaygroundYearInputs } | { ok: false; error: string } {
@@ -3406,12 +3899,14 @@ export function parsePlaygroundPaste(
   }
   const r = raw as Record<string, unknown>;
   const allowed = new Set<string>(["kind", "version", ...PLAYGROUND_PASTE_FIELDS]);
+  const optional = new Set<string>(PLAYGROUND_PASTE_OPTIONAL_FIELDS);
   for (const k of Object.keys(r)) {
     if (!allowed.has(k)) {
       return fail(`That paste has a field this loader does not know (“${k}”) — nothing was loaded.`);
     }
   }
   for (const k of allowed) {
+    if (optional.has(k)) continue;
     if (!(k in r)) {
       return fail(`That paste is missing the “${k}” field — nothing was loaded.`);
     }
@@ -3497,6 +3992,46 @@ export function parsePlaygroundPaste(
   if (stateRatePct == null || stateRatePct < 0 || stateRatePct > 100) {
     return fail("That paste’s state rate is not a valid percent — nothing was loaded.");
   }
+  // residenceState (cold-AI audit fix): absent (an older
+  // paste) or null prices the flat rate, exactly as before;
+  // "WA" / "other" carry through; anything else refuses.
+  let residenceState: "WA" | "other" | null = null;
+  if ("residenceState" in r && r.residenceState !== null && r.residenceState !== undefined) {
+    if (r.residenceState !== "WA" && r.residenceState !== "other") {
+      return fail("That paste’s state of residence is not one this loader knows — nothing was loaded.");
+    }
+    residenceState = r.residenceState;
+  }
+  // educationStudents (cold-AI audit fix): absent (an older
+  // paste) or null prices no students, exactly as before; a
+  // list carries through entry by entry after the same
+  // validation the action schema applies (at most 12
+  // students, expenses a valid non-negative dollar figure,
+  // the eligibility mark a yes/no value); anything else
+  // refuses the whole paste.
+  let educationStudents: EducationStudent[] | null = null;
+  if (
+    "educationStudents" in r &&
+    r.educationStudents !== null &&
+    r.educationStudents !== undefined
+  ) {
+    if (!Array.isArray(r.educationStudents) || r.educationStudents.length > 12) {
+      return fail("That paste’s education students are not a valid list — nothing was loaded.");
+    }
+    const parsedStudents: EducationStudent[] = [];
+    for (const entry of r.educationStudents) {
+      if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+        return fail("That paste’s education students are not a valid list — nothing was loaded.");
+      }
+      const e = entry as Record<string, unknown>;
+      const exp = num(e.expenses);
+      if (exp == null || exp < 0 || typeof e.aotcEligible !== "boolean") {
+        return fail("That paste’s education students are not a valid list — nothing was loaded.");
+      }
+      parsedStudents.push({ expenses: exp, aotcEligible: e.aotcEligible });
+    }
+    educationStudents = parsedStudents;
+  }
   return {
     ok: true,
     inputs: {
@@ -3521,6 +4056,8 @@ export function parsePlaygroundPaste(
       acaHouseholdSize,
       acaBenchmarkAnnual,
       stateRatePct,
+      residenceState,
+      educationStudents,
     },
   };
 }
