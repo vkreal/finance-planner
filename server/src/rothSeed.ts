@@ -28,6 +28,7 @@
 import { DEFAULT_DRAW_ORDER_KEY } from "./taxEngine";
 import { rmdAgeForBirthYear } from "./taxLaw";
 import { BLANK_ROTH_GIFT, type RothGiftStored } from "./giftModel";
+import { BLANK_ROTH_TAX_RETURN, type RothTaxReturnStored } from "./taxReturnCore";
 import type { RothExecutionCents } from "./rothOptimizer";
 
 // Seed constants (used on a fresh open, before anything is
@@ -266,9 +267,11 @@ export function seedRothExecution(currentYear: number): RothExecutionCents {
 }
 
 // The full seeded plan record: plan inputs + execution block +
-// MC-check volatility + gift block, ready to persist as the
-// record's inputs (the scenarios array is NOT part of this — it
-// is never the seed's business).
+// MC-check volatility + gift block + tax-return block, ready
+// to persist as the record's inputs (the scenarios array is
+// NOT part of this — it is never the seed's business). The
+// tax-return block seeds BLANK: the seed never invents a
+// household's Form 1040 actuals.
 export function seedRothRecord(
   derived: {
     annualSpendingCents: number;
@@ -281,11 +284,13 @@ export function seedRothRecord(
   execution: RothExecutionCents;
   mcVolatilityPct: number;
   gift: RothGiftStored;
+  taxReturn: RothTaxReturnStored;
 } {
   return {
     inputs: seedRothInputs(derived),
     execution: seedRothExecution(currentYear),
     mcVolatilityPct: SEED_MC_VOLATILITY_PCT,
     gift: { ...BLANK_ROTH_GIFT },
+    taxReturn: { ...BLANK_ROTH_TAX_RETURN },
   };
 }

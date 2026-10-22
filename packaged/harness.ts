@@ -21,8 +21,11 @@
 //   C. Seeded state + the describeApi runRothCompare example priced
 //      to the live-pinned figures.
 //   D. Backup interop: exportbackup -> clearAllData -> restorebackup
-//      round trip; createBackupNow .mstbak envelope decrypted with
-//      the install's private key and verified against its sha256.
+//      round trip; the S1 authenticity MAC legs (MAC'd restore
+//      authenticated, byte-tampered restore refused, pre-MAC
+//      restore labelled unauthenticated); createBackupNow .mstbak
+//      envelope decrypted with the install's private key and
+//      verified against its sha256.
 //   E. Persistence: a second runtime over the same store reads back
 //      identical state (the localStorage chunk round trip).
 //   F. CAS spot check: a stale-revision saveRothInputs is refused
@@ -226,11 +229,55 @@ const dashWiped = await rt.call<any>("getDashboard", { month: "2026-09" });
 eq("D3 wiped dashboard hasAnyData", dashWiped.hasAnyData, false);
 const restored = await rt.call<any>("restorebackup", payload);
 eq("D4 restorebackup ok", restored.ok, true);
+// S1 (backup authenticity MAC): the exported payload carries a
+// MAC, and the packaged dispatcher verifies it on restore — the
+// export -> restore direction of the live/packaged interop pair
+// (the shared backupMacCore + the app-shipped key make the same
+// payload verify in the live app; the live direction is pinned
+// by the extended fixtures and the build's audit probes).
+check(
+  "D4a exportbackup payload carries a MAC",
+  typeof payload.authenticityMac === "string" && /^[0-9a-f]{64}$/.test(payload.authenticityMac),
+  String(payload.authenticityMac).slice(0, 16),
+);
+eq("D4b restorebackup authenticated", restored.authenticated, true);
 const nwAfter = await rt.call<any>("getNetWorth", {});
 eq(
   "D5 NW totals identical after restore",
   (nwAfter.snapshots ?? []).map((s: any) => s.totalCents),
   (nwBefore.snapshots ?? []).map((s: any) => s.totalCents),
+);
+
+// S1 tamper + pre-MAC legs, through the same dispatcher: one
+// changed byte of content (exportedAt) under the original MAC is
+// REFUSED with the authenticity error and writes nothing; the
+// same payload with the MAC stripped (the pre-MAC shape)
+// restores, labelled unauthenticated.
+const tampered = JSON.parse(JSON.stringify(payload));
+tampered.exportedAt = "2020-01-01T00:00:00.000Z";
+const refused = await rt.call<any>("restorebackup", tampered);
+eq("D5a tampered restore refused", refused.ok, false);
+eq("D5b tampered restore unauthenticated", refused.authenticated, false);
+check(
+  "D5c refusal names the authenticity check",
+  typeof refused.reason === "string" && refused.reason.includes("authenticity check failed"),
+  refused.reason,
+);
+const nwAfterRefusal = await rt.call<any>("getNetWorth", {});
+eq(
+  "D5d state untouched by refused restore",
+  (nwAfterRefusal.snapshots ?? []).map((s: any) => s.totalCents),
+  (nwAfter.snapshots ?? []).map((s: any) => s.totalCents),
+);
+const stripped = JSON.parse(JSON.stringify(payload));
+delete stripped.authenticityMac;
+const strippedRestore = await rt.call<any>("restorebackup", stripped);
+eq("D5e pre-MAC restore ok", strippedRestore.ok, true);
+eq("D5f pre-MAC restore unauthenticated", strippedRestore.authenticated, false);
+check(
+  "D5g pre-MAC restore labelled UNAUTHENTICATED",
+  typeof strippedRestore.reason === "string" && strippedRestore.reason.includes("UNAUTHENTICATED"),
+  strippedRestore.reason,
 );
 
 const created = await rt.call<any>("createBackupNow", {});
@@ -271,6 +318,7 @@ const digest = await crypto.subtle.digest("SHA-256", plainBytes as BufferSource)
 const digestHex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 eq("D13 envelope payloadSha256 verifies", digestHex, envelope.payloadSha256);
 check("D14 decrypted payload is a backup payload", (() => { try { const p = JSON.parse(plainText); return typeof p === "object" && p !== null; } catch { return false; } })());
+check("D14a decrypted payload carries a MAC", (() => { try { const p = JSON.parse(plainText); return typeof p.authenticityMac === "string" && /^[0-9a-f]{64}$/.test(p.authenticityMac); } catch { return false; } })());
 
 const deleted = await rt.call<any>("deleteBackup", { filename: created.filename });
 eq("D15 deleteBackup ok", deleted.ok, true);
@@ -298,12 +346,14 @@ eq(
 const current = await rt2.call<any>("getRothPlanner", {});
 const rev = current.revision as number;
 // saveRothInputs is the strict writer: the complete record, flattened
-// (plan fields + execution-year + MC + gift blocks), plus baseRevision.
+// (plan fields + execution-year + MC + gift + tax-return blocks),
+// plus baseRevision.
 const saveArgs = {
   ...current.saved,
   ...current.execution,
   ...current.mcCheck,
   ...current.gift,
+  ...current.taxReturn,
   baseRevision: rev,
 };
 const savedOnce = await rt2.call<any>("saveRothInputs", saveArgs);

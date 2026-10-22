@@ -421,6 +421,18 @@ export function RothConversion() {
   const [otherOrd, setOtherOrd] = useState("");
   const [taxExempt, setTaxExempt] = useState("");
   const [convertedAlready, setConvertedAlready] = useState("");
+  // Tax-return actuals (Form 1040 lines 2b / 3a / 3b from the
+  // household's most recent return): plan-record-only fields,
+  // following the execution / gift pattern — they save WITH the
+  // plan record under their own taxReturn* keys (via
+  // buildInputsPayload only) and are read by exactly one thing:
+  // the Playground's "Start from my numbers" prefill. They
+  // never enter a scenario, a pricing request, or the working
+  // plan inputs — the plan keeps modelling interest and
+  // dividends from the yield fields. Blank = not entered.
+  const [taxReturnInterest, setTaxReturnInterest] = useState("");
+  const [taxReturnQualDiv, setTaxReturnQualDiv] = useState("");
+  const [taxReturnOrdDiv, setTaxReturnOrdDiv] = useState("");
   const [winStart, setWinStart] = useState("");
   const [winStop, setWinStop] = useState("");
   const [payTaxFrom, setPayTaxFrom] = useState<"taxable" | "conversion">("taxable");
@@ -1331,6 +1343,15 @@ export function RothConversion() {
       setGiftKidOtherIncome(gMoney(g.giftKidOtherIncomeCents));
       setGiftSaleAge(gNum(g.giftSaleAge));
     }
+    // Tax-return actuals: the saved Form 1040 lines, blank on
+    // any record written before these fields existed.
+    {
+      const t = data.taxReturn;
+      const tMoney = (c: number | null) => (c == null ? "" : fmtMoneyInput(c / 100));
+      setTaxReturnInterest(tMoney(t.taxReturnInterestCents));
+      setTaxReturnQualDiv(tMoney(t.taxReturnQualifiedDividendsCents));
+      setTaxReturnOrdDiv(tMoney(t.taxReturnOrdinaryDividendsCents));
+    }
     // Record the seeded defaults for the "Calculated with"
     // diff (see seedDefaultsList above).
     defaultsRef.current = seedDefaultsList(snap);
@@ -1402,6 +1423,13 @@ export function RothConversion() {
       setGiftKidStudent(g.giftKidStudent);
       setGiftKidOtherIncome(gMoney(g.giftKidOtherIncomeCents));
       setGiftSaleAge(gNum(g.giftSaleAge));
+    }
+    {
+      const t = res.taxReturn;
+      const tMoney = (c: number | null) => (c == null ? "" : fmtMoneyInput(c / 100));
+      setTaxReturnInterest(tMoney(t.taxReturnInterestCents));
+      setTaxReturnQualDiv(tMoney(t.taxReturnQualifiedDividendsCents));
+      setTaxReturnOrdDiv(tMoney(t.taxReturnOrdinaryDividendsCents));
     }
     defaultsRef.current = seedDefaultsList(snap);
     planRevisionRef.current = res.revision;
@@ -1681,6 +1709,13 @@ export function RothConversion() {
         const n = parseIntField(giftSaleAge);
         return n == null ? null : Math.min(120, Math.max(0, n));
       })(),
+      // The tax-return actuals save WITH the plan record too,
+      // under their own taxReturn* keys — the only other reader
+      // is the Playground's "Start from my numbers" prefill.
+      // Scenarios and every pricing run never see them.
+      taxReturnInterestCents: parseMoney(taxReturnInterest),
+      taxReturnQualifiedDividendsCents: parseMoney(taxReturnQualDiv),
+      taxReturnOrdinaryDividendsCents: parseMoney(taxReturnOrdDiv),
     };
   };
 
@@ -1803,6 +1838,7 @@ export function RothConversion() {
     mcVolatility,
     giftAge, giftAmount, giftBasis, giftKidBirthYear, giftKidStudent,
     giftKidOtherIncome, giftSaleAge,
+    taxReturnInterest, taxReturnQualDiv, taxReturnOrdDiv,
   ]);
 
   /* ---------------- scenarios ---------------- */
@@ -5344,6 +5380,22 @@ export function RothConversion() {
           {moneyField("Tax-exempt interest / yr", taxExempt, setTaxExempt, {
             hint: "Counts toward provisional income and MAGI, though it is not itself taxed.",
           })}
+          {moneyField("Taxable interest — Form 1040 line 2b", taxReturnInterest, setTaxReturnInterest, {
+            hint: "From your most recent tax return. Prefill only — see the note below.",
+          })}
+          {moneyField("Qualified dividends — Form 1040 line 3a", taxReturnQualDiv, setTaxReturnQualDiv, {
+            hint: "From your most recent tax return. Prefill only — see the note below.",
+          })}
+          {moneyField("Ordinary dividends — Form 1040 line 3b", taxReturnOrdDiv, setTaxReturnOrdDiv, {
+            hint: "The total, including the line 3a qualified part. Prefill only — see the note below.",
+          })}
+          <p className="col-span-2 text-xs text-[var(--dim)] sm:col-span-4">
+            The three Form 1040 lines above are your most recent tax return&rsquo;s
+            actuals. They are used for one thing only: the Playground&rsquo;s
+            &ldquo;Start from my numbers&rdquo; fills its Interest and Dividends
+            fields from them. This plan does not price them — it models interest
+            and dividends from the yield fields under Your money.
+          </p>
         </div>
       ))}
 
@@ -6605,7 +6657,7 @@ export function RothConversion() {
                 shortfall is funded in full by the columns shown.
               </p>
               <div className="mt-3 overflow-x-auto">
-                <table className="w-full min-w-[1180px] text-sm">
+                <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[var(--border)] text-left">
                       <th scope="col" className="px-2 py-2 font-medium">Year (age)</th>
@@ -7440,11 +7492,15 @@ export function RothConversion() {
             ages, or the best claiming ages under Do Nothing. Do Nothing is always
             a candidate, so the winner can never score worse than doing nothing.
             Social Security claiming ages are searched jointly with the strategies,
-            not fixed in advance: for each spouse with a benefit entered, every
-            claiming age 62–70 is screened (the benefit at each age derived from
-            the entered amount by the statutory early / delayed adjustments),
-            because the best claim age and the best conversion strategy depend on
-            each other. One steady return path drives the answer, so the
+            not fixed in advance: for each person with a benefit entered who has
+            not yet claimed, that person&rsquo;s attainable claiming ages are
+            screened — from their current age (or 62 if they are younger) through
+            70, plus their entered age itself when it is a claiming age past 70
+            (the benefit at each age derived from the entered amount by the
+            statutory early / delayed adjustments) — because the best claim age
+            and the best conversion strategy depend on each other. A benefit that
+            has already started is locked at its entered age and is not searched,
+            because a claim that is already being paid cannot be changed. One steady return path drives the answer, so the
             sensitivity strips below show whether the winner changes at a return
             1% higher or lower, or at a different heir rate. Running the search
             changes nothing saved — save a result as a scenario to keep it.
@@ -8166,7 +8222,7 @@ export function RothConversion() {
           {yearTableOpen && (
             <>
               <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[1180px] text-sm">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)] text-left">
                   <th scope="col" className="px-2 py-2 font-medium">Year (ages)</th>
