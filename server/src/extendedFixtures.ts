@@ -5311,6 +5311,47 @@ const uiCasCases: {
     },
   },
   {
+    id: "ui-legacy-chart-mode-opens-stack",
+    note: "The retired chartMode key (the chart card's old Stack | Waterfall toggle, removed when the card went back to the stack alone with the equation line under it): a stored blob carrying chartMode \"waterfall\" — a form saved while the toggle was in waterfall mode — parses to EXACTLY the same state as the same blob without the key (the key is not read, so the form opens on the stack with no error), the same holds for \"stack\" and for malformed values (an unknown string, a number, null), a revision-checked write on such a blob succeeds and the stored result carries no chartMode key (the retired key drops out on the next write), and an unrelated field write on the result round-trips normally.",
+    run: () => {
+      const failures: string[] = [];
+      const baseObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete (baseObj.playground as Record<string, unknown>).chartMode;
+      const baseRaw = JSON.stringify(baseObj);
+      const baseParsed = JSON.stringify(parseRothUiState(baseRaw));
+      for (const v of ["waterfall", "stack", "water", 1, null]) {
+        const obj = JSON.parse(baseRaw) as Record<string, unknown>;
+        (obj.playground as Record<string, unknown>).chartMode = v;
+        let parsed: string;
+        try {
+          parsed = JSON.stringify(parseRothUiState(JSON.stringify(obj)));
+        } catch (err) {
+          failures.push(`chartMode ${JSON.stringify(v)}: parse threw ${String(err)}`);
+          continue;
+        }
+        if (parsed !== baseParsed)
+          failures.push(`chartMode ${JSON.stringify(v)}: expected the parse to ignore the retired key entirely`);
+        if ("chartMode" in parseRothUiState(JSON.stringify(obj)).playground)
+          failures.push(`chartMode ${JSON.stringify(v)}: parsed state must not carry the retired key`);
+      }
+      const wfObj = JSON.parse(baseRaw) as Record<string, unknown>;
+      (wfObj.playground as Record<string, unknown>).chartMode = "waterfall";
+      const res = applyRothUiWrite(JSON.stringify(wfObj), 0, (s) => {
+        s.playground.conversion = "999";
+      });
+      if (res.status !== "ok") {
+        failures.push(`write on a waterfall-saved blob: expected ok, got ${res.status}`);
+        return failures;
+      }
+      const stored = JSON.parse(res.raw) as Record<string, unknown>;
+      if ("chartMode" in (stored.playground as Record<string, unknown>))
+        failures.push("stored blob: the retired chartMode key must drop out on write");
+      if (parseRothUiState(res.raw).playground.conversion !== "999")
+        failures.push("stored blob: expected the unrelated field write to land (conversion 999)");
+      return failures;
+    },
+  },
+  {
     id: "ui-cas-malformed-revision-reads-as-0",
     note: "A stored revision that is a string, negative, or fractional — and a wholly unparseable blob — all read leniently as revision 0 with defaults, never a crash.",
     run: () => {

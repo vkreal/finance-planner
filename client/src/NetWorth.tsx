@@ -3245,6 +3245,32 @@ export function NetWorthView() {
     return `${etaMonth} ${eta.getUTCFullYear()}`;
   })();
 
+  /* ----- current bucket mix (latest snapshot only) -----
+     One segment per nonzero bucket, largest first, fed by the
+     same bucket subtotals the History grid shows for the latest
+     snapshot (bucketTotalForSnapshot: property accounts are
+     always outside the buckets, custodial accounts never count).
+     Shares are of the segments' own sum, so they always add to
+     100%; with property excluded from the snapshot total the
+     segment sum IS the headline total. When property is included
+     and has a balance, the mix covers only the bucketed part of
+     net worth, and the section says so (see below). */
+  const bucketMix: { bucket: NwBucket; cents: number }[] = latest
+    ? NW_BUCKETS.map((bucket) => ({
+        bucket,
+        cents: bucketTotalForSnapshot(latest, bucket, kindById, custodialIds) ?? 0,
+      }))
+        .filter((s) => s.cents > 0)
+        .sort((a, b) => b.cents - a.cents)
+    : [];
+  const bucketMixTotal = bucketMix.reduce((sum, s) => sum + s.cents, 0);
+  // Property included in the totals with a nonzero net: the one
+  // case where the mix's total and the headline total differ.
+  const bucketMixPropertyNet =
+    includeProperty && latestPropertyNet != null && latestPropertyNet !== 0
+      ? latestPropertyNet
+      : null;
+
   /* ----- main chart data (true time axis) ----- */
   type MainPoint = {
     ts: number;
@@ -3705,6 +3731,102 @@ export function NetWorthView() {
         ))}
       </div>
 
+      {/* current bucket mix — one stacked bar from the latest
+          snapshot's bucket subtotals */}
+      <section
+        aria-label="Current buckets"
+        className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="display text-lg font-semibold">Current buckets</h3>
+            <p className="mt-0.5 text-sm text-[var(--dim)]">
+              {latest
+                ? `From the ${fmtDateLong(latest.date)} snapshot`
+                : ""}
+            </p>
+          </div>
+          {bucketMix.length > 0 && (
+            <div className="text-right">
+              <p className="tnum display text-xl font-semibold whitespace-nowrap sm:text-2xl">
+                {fmt(bucketMixTotal)}
+              </p>
+              {targetCents != null && targetCents > 0 && (
+                <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
+                  {((bucketMixTotal / targetCents) * 100).toFixed(1)}% of the{" "}
+                  {fmt(targetCents)} target
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+        {bucketMix.length > 0 ? (
+          <>
+            <div
+              className="mt-3 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
+              role="img"
+              aria-label={`Bucket mix: ${bucketMix
+                .map(
+                  (s) =>
+                    `${bucketLabel(s.bucket)} ${fmt(s.cents)}, ${bucketMixTotal > 0 ? ((s.cents / bucketMixTotal) * 100).toFixed(1) : "0.0"} percent`,
+                )
+                .join("; ")}`}
+            >
+              {bucketMix.map((s) => (
+                <div
+                  key={s.bucket}
+                  className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
+                  style={{
+                    width: `${bucketMixTotal > 0 ? (s.cents / bucketMixTotal) * 100 : 0}%`,
+                    background: BUCKET_COLORS[s.bucket],
+                  }}
+                >
+                  {(s.cents / bucketMixTotal) * 100 >= 7 && (
+                    <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
+                      {bucketLabel(s.bucket)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+              {bucketMix.map((s) => (
+                <li
+                  key={s.bucket}
+                  className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+                    style={{ background: BUCKET_COLORS[s.bucket] }}
+                  />
+                  <span className="font-medium">{bucketLabel(s.bucket)}</span>
+                  <span>{fmt(s.cents)}</span>
+                  <span className="text-[var(--dim)]">
+                    ·{" "}
+                    {bucketMixTotal > 0
+                      ? ((s.cents / bucketMixTotal) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {bucketMixPropertyNet != null && (
+              <p className="mt-2 text-sm text-[var(--dim)]">
+                Property net {fmt(bucketMixPropertyNet)} is counted in net
+                worth, outside the buckets — so this mix covers the bucketed
+                part of the total.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="mt-2 text-sm text-[var(--dim)]">
+            No bucket amounts recorded in the latest snapshot yet.
+          </p>
+        )}
+      </section>
+
       {/* net worth target */}
       <section
         aria-label="Net worth target"
@@ -3938,6 +4060,12 @@ export function NetWorthView() {
               onChange={(e) => {
                 setGrowthSinceDate(e.target.value);
                 setNwGrowthSince.mutate(e.target.value);
+                // Picking a baseline date only takes effect in the
+                // Growth view, so turn Growth on with the pick —
+                // otherwise the choice saves silently and nothing on
+                // screen changes. (The select is disabled in Share
+                // mode, so this never fires there.)
+                setGrowthOn(true);
               }}
             >
               {snapshots.map((s) => (

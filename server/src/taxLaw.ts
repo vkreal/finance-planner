@@ -184,36 +184,42 @@ export type YearLaw = {
   waCharitableThreshold: number;
   waCharitableCap: number;
   /* ---- State and local tax (SALT) deduction cap (T5
-     build) — IRC §164(b)(6), priced by priceYear in
+     build) — IRC §164(b)(7), priced by priceYear in
      taxEngine.ts inside the itemized-deduction total.
-     Dated law-row data like every other figure here: a
-     future row can carry different values with no engine
-     change. All amounts are DOLLARS, per RETURN (the cap
+     All amounts are DOLLARS, per RETURN (the cap
      is not doubled for a joint return; married filing
      separately takes half — $20,000 / $20,200 — a filing
-     status this engine does not price). Source: §164(b)(6)
+     status this engine does not price). Source: §164(b)(7)
      as amended by §70120 of Public Law 119-21 (the One Big
      Beautiful Bill Act): the Tax Cuts and Jobs Act's
      $10,000 cap was replaced for 2025 by $40,000, increased
      by 1% for each of 2026–2029 ($40,400 in 2026), and
      reverts to $10,000 for tax years beginning after
-     December 31, 2029 — the scheduled reversion lands as a
-     future dated row, never as engine code. Like the NIIT
-     thresholds and the §224 senior-deduction figures, the
-     cap is statutory (not inflation-indexed — the 1% bump
-     is a fixed statutory escalator), so the engine DEFLATES
-     these dollar figures at the plan's inflation input for
-     each year the priced year runs past its row, under the
-     table's today's-dollars convention; in a row's own year
-     the deflation factor is 1 and the figures price exactly
-     as published. ---- */
-  // The year's §164(b)(6) cap on the state and local tax
+     December 31, 2029. The FULL enacted schedule — every
+     year 2025–2029 plus the permanent post-2029 $10,000
+     limitation — lives in SALT_SCHEDULE below, and the
+     pricer consults THAT schedule by calendar year for
+     every year from 2025 on (Build B): these row fields
+     carry only the schedule's 2025 / 2026 entries, kept so
+     the law rows stay self-describing and the T5 fixtures
+     that pin them keep their meaning; they price only
+     years before 2025, on the pre-Build-B path. Like the
+     NIIT thresholds and the §224 senior-deduction figures,
+     the cap is statutory (not inflation-indexed — the 1%
+     bump is a fixed statutory escalator), so the engine
+     DEFLATES these dollar figures at the plan's inflation
+     input for each year the priced year runs past the
+     schedule entry it prices under, under the table's
+     today's-dollars convention; in an entry's own year
+     the deflation factor is 1 and the figures price
+     exactly as enacted. ---- */
+  // The year's §164(b)(7) cap on the state and local tax
   // deduction, before the modified-AGI phase-down below.
   saltCap: number;
   // The phase-down's floor: the cap never falls below this
   // amount, however high the year's modified AGI runs.
   saltCapFloor: number;
-  // Modified AGI above which the cap phases down (§164(b)(6)
+  // Modified AGI above which the cap phases down (§164(b)(7)
   // modified AGI is AGI increased by the §§911 / 931 / 933
   // foreign-income exclusions — none modeled by this engine,
   // and tax-exempt interest is NOT added back, so the engine
@@ -388,7 +394,7 @@ export const TAX_LAW_2025: YearLaw = {
   waAdditionalThreshold: 1000000,
   waCharitableThreshold: 278000,
   waCharitableCap: 111000,
-  // SALT cap (T5): the 2025 row prices under §164(b)(6) as
+  // SALT cap (T5): the 2025 row prices under §164(b)(7) as
   // OBBBA §70120 rewrote it for tax year 2025 — a $40,000
   // cap, phasing down by 30% of modified AGI over $500,000
   // to a $10,000 floor.
@@ -479,7 +485,7 @@ export const TAX_LAW_2026: YearLaw = {
   // SALT cap (T5): the 2026 row carries the statute's own
   // 1% escalation of the 2025 figures — a $40,400 cap and a
   // $505,000 phase-down start; the $10,000 floor and the
-  // 30% rate are unchanged (§164(b)(6) as amended).
+  // 30% rate are unchanged (§164(b)(7) as amended).
   saltCap: 40400,
   saltCapFloor: 10000,
   saltPhaseOutStart: 505000,
@@ -529,6 +535,140 @@ export function lawForYear(year: number): YearLaw {
   }
   return CURRENT_LAW;
 }
+
+/* -------- SALT dated schedule (Build B) — IRC §164(b)(7),
+   as amended by §70120 of Public Law 119-21 --------
+   The statute does not leave the SALT limitation to a
+   carry-forward: it ENACTS the amount for every year.
+   §164(b)(7) sets the applicable limitation at $40,000
+   for 2025 and increases it by 1% for each succeeding
+   year through 2029 — 101% of the prior year's amount,
+   successively, rounded to cents: $40,400 (2026),
+   $40,804 (2027), $41,212.04 (2028), $41,624.16 (2029) —
+   and for taxable years beginning after 2029 the
+   limitation is $10,000, permanently: no later year ever
+   returns to a higher cap. The same 101% escalator runs
+   on the phase-down threshold ($500,000 for 2025:
+   $505,000, $510,050, $515,150.50, $520,302.01), and the
+   pre-2030 phase-down mechanics are the T5 mechanics
+   unchanged: the cap is reduced by 30% of modified AGI
+   above the year's threshold, never below the $10,000
+   floor. From 2030 the limitation is $10,000 with NO
+   phase-down (the rate below is 0 and the floor equals
+   the cap, so the applied cap is $10,000 at any income).
+   The limitation is the same for every filing status
+   this engine prices; married filing separately takes
+   half — a status this engine does not price.
+   The pricer (priceYear in taxEngine.ts) consults this
+   schedule BY CALENDAR YEAR for every year from 2025
+   on, instead of the law row's SALT fields: a priced
+   year can no longer inherit the 2026 row's $40,400 cap
+   by carry-forward. Each entry prices exactly in its
+   own year; the post-2029 entry is dated 2030 and, like
+   every other unindexed statutory figure carried past
+   its row, deflates at the plan's inflation input for
+   years past 2030 under the today's-dollars convention.
+   The 2025 and 2026 entries replicate the law rows'
+   SALT fields exactly, so 2025 and 2026 pricing is
+   bit-identical to before this build. */
+export type SaltScheduleEntry = {
+  // The year's applicable limitation, before phase-down.
+  cap: number;
+  // The phase-down floor (the $10,000 statutory floor).
+  capFloor: number;
+  // Modified AGI above which the cap phases down.
+  phaseOutStart: number;
+  // The phase-down rate, percent of modified AGI above
+  // phaseOutStart (0 from 2030: no phase-down).
+  phaseOutRatePct: number;
+};
+
+export const SALT_SCHEDULE_FIRST_YEAR = 2025;
+export const SALT_REVERSION_YEAR = 2030;
+
+export const SALT_SCHEDULE: Record<number, SaltScheduleEntry> = {
+  2025: { cap: 40000, capFloor: 10000, phaseOutStart: 500000, phaseOutRatePct: 30 },
+  2026: { cap: 40400, capFloor: 10000, phaseOutStart: 505000, phaseOutRatePct: 30 },
+  2027: { cap: 40804, capFloor: 10000, phaseOutStart: 510050, phaseOutRatePct: 30 },
+  2028: { cap: 41212.04, capFloor: 10000, phaseOutStart: 515150.5, phaseOutRatePct: 30 },
+  2029: { cap: 41624.16, capFloor: 10000, phaseOutStart: 520302.01, phaseOutRatePct: 30 },
+};
+
+// Taxable years beginning after 2029 (§164(b)(7)): the
+// $10,000 limitation, flat and permanent, no phase-down.
+export const SALT_POST_2029: SaltScheduleEntry = {
+  cap: 10000,
+  capFloor: 10000,
+  phaseOutStart: Infinity,
+  phaseOutRatePct: 0,
+};
+
+/* The schedule entry a calendar year prices under, with
+   the year that entry is dated (its deflation anchor —
+   see deflationFactor in taxEngine.ts). Years from 2030
+   on resolve to the post-2029 entry, dated 2030; years
+   before the schedule's first year resolve to the 2025
+   entry (the pricer does not consult the schedule for
+   those years — it keeps the law-row path — so this
+   fallback serves direct callers only). */
+export function saltScheduleForYear(
+  calendarYear: number,
+): SaltScheduleEntry & { entryYear: number } {
+  if (calendarYear >= SALT_REVERSION_YEAR) {
+    return { ...SALT_POST_2029, entryYear: SALT_REVERSION_YEAR };
+  }
+  const entry = SALT_SCHEDULE[calendarYear];
+  if (entry) return { ...entry, entryYear: calendarYear };
+  return {
+    ...SALT_SCHEDULE[SALT_SCHEDULE_FIRST_YEAR]!,
+    entryYear: SALT_SCHEDULE_FIRST_YEAR,
+  };
+}
+
+/* -------- 2026 deduction trio (Pub. L. 119-21, tax years
+   beginning after December 31, 2025) --------
+   Three deduction rules the year pricer (priceYear in
+   taxEngine.ts) applies ONLY for law years 2026 and later;
+   a year priced under the 2025 row is untouched by all
+   three:
+   · The charitable floor for itemizers (IRC §170(b)(1)(I)):
+     an itemizer's deductible charitable contributions are
+     reduced by 0.5% of the contribution base (AGI; the
+     engine models no NOL carryback). Floor-disallowed
+     amounts do NOT carry forward.
+   · The non-itemizer charitable deduction (IRC §170(p)):
+     a standard-deduction filer's charitable contributions
+     (the engine's single charitable input, treated as cash
+     contributions) are deductible up to the cap below.
+     The floor never applies to this deduction.
+   · The §68 limitation: the otherwise-allowable itemized
+     total is reduced by 2/37 of the lesser of the itemized
+     total or the excess of (taxable income without regard
+     to §68, plus the itemized total) over the dollar
+     threshold where the 37% bracket begins for the filing
+     status and law year — that threshold is READ FROM the
+     year's bracket row (the top of the 35% bracket), never
+     a separate constant here. §68 applies AFTER every other
+     limitation (the SALT cap, the charitable floor, the
+     mortgage rules), and home mortgage interest is NOT
+     exempt (the 2025 amendment removed the old carve-outs).
+   The §170(p) caps are statutory for the statuses this
+   engine prices ($2,000 MFJ / $1,000 single or head of
+   household); married filing separately — a status this
+   engine does not price — is shown at $500, the Code's
+   usual halving of the single figure: that $500 is an
+   ASSUMED figure, named as such in the API contract. */
+export const DEDUCTION_2026 = {
+  firstYear: 2026,
+  charitableFloorRatePct: 0.5,
+  nonItemizerCharitableCap: {
+    mfj: 2000,
+    single: 1000,
+    hoh: 1000,
+  } as Record<FilingStatus, number>,
+  section68Numerator: 2,
+  section68Denominator: 37,
+};
 
 /* -------- OBBBA senior deduction (2025–2028 only) --------
    $6,000 per person aged 65+, on top of the standard deduction
@@ -588,9 +728,23 @@ export function fplFor(householdSize: number, guidelineYear: number): number {
 /* -------- ACA applicable percentages (IRC §36B) --------
    Share of household income the household is expected to pay
    toward the benchmark (2nd-lowest Silver) plan, by income as a
-   % of FPL, linearly interpolated inside each band. At or below
-   the band's lower edge the initial % applies; 300–400% rises
-   to the band's cap.
+   % of FPL, linearly interpolated inside each band.
+   BAND EDGES ARE LOWER-INCLUSIVE (Build C): the published
+   tables define each band as "at least X% but less than Y%"
+   (Rev. Proc. 2025-25, §3.01 for 2026; Rev. Proc. 2026-26 for
+   2027), so income exactly at a band's lower edge takes THAT
+   band's INITIAL percentage, interpolating to its final
+   percentage at the top edge. The selector in acaCreditFor
+   (taxEngine.ts) therefore matches a band only when
+   pctFpl < upToPctFpl (the last band also takes its top edge
+   and, in 2025, everything above it). The one edge where this
+   changes the priced figure is 133%: the first band's final
+   percentage (2.10% in 2026, 2.15% in 2027) differs from the
+   second band's initial percentage (3.14% in 2026, 3.23% in
+   2027); every other edge is continuous (the lower band's
+   final equals the next band's initial), so the rule prices
+   identically there either way. The 400% cliff is unchanged:
+   for 2026+ a credit pays at exactly 400% FPL and is $0 above.
    2025 is the ENHANCED schedule (ARPA §9661 as extended by the
    IRA, percentages per Rev. Proc. 2024-35): 0% below 150% FPL,
    rising 0–2% / 2–4% / 4–6% / 6–8.5% across the 150–200 /
@@ -598,7 +752,22 @@ export function fplFor(householdSize: number, guidelineYear: number): number {
    FPL and above — there is NO cliff in 2025, and the engine
    prices a credit above 400% FPL for 2025 coverage.
    Above 400% FPL there is NO credit for 2026+ (the enhanced
-   credits expired Dec 31, 2025) — the cliff the engine prices. */
+   credits expired Dec 31, 2025) — the cliff the engine prices.
+   2027 TABLE SCOPE (Build C): the 2027 row (Rev. Proc.
+   2026-26, Internal Revenue Bulletin 2026-31) is a PARTIAL
+   law row — it publishes only the §36B applicable
+   percentages, not a complete 2027 law table. It therefore
+   prices coverage year 2027 ONLY where a specific coverage
+   year is priced (the single-year pricer: acaCreditFor's
+   default mode, and pricePlaygroundYear under its statutory
+   "lookback" convention). It is NOT the fallback for 2028
+   or later — a specific year after 2027 falls back to the
+   2026 row, the newest COMPLETE law row — and projected
+   years never use it at all: the plan march
+   (simulateRothPlan) and the Playground projection
+   (acaConvention "newest") price EVERY projected year on
+   the 2026 row, via acaTableFor's projected mode, until
+   the full 2027 law build lands a complete 2027 row. */
 export type AcaBand = { upToPctFpl: number; initialPct: number; finalPct: number };
 export const ACA_TABLES: Record<number, AcaBand[]> = {
   2025: [
@@ -617,8 +786,45 @@ export const ACA_TABLES: Record<number, AcaBand[]> = {
     { upToPctFpl: 300, initialPct: 8.44, finalPct: 9.96 },
     { upToPctFpl: 400, initialPct: 9.96, finalPct: 9.96 },
   ],
+  // 2027 (Rev. Proc. 2026-26, IRB 2026-31): under 133% →
+  // 2.15; 133–150% → 3.23 to 4.30; 150–200% → 4.30 to 6.78;
+  // 200–250% → 6.78 to 8.66; 250–300% → 8.66 to 10.22;
+  // 300–400% → 10.22 (the required contribution percentage
+  // for 2027 is likewise 10.22%).
+  2027: [
+    { upToPctFpl: 133, initialPct: 2.15, finalPct: 2.15 },
+    { upToPctFpl: 150, initialPct: 3.23, finalPct: 4.3 },
+    { upToPctFpl: 200, initialPct: 4.3, finalPct: 6.78 },
+    { upToPctFpl: 250, initialPct: 6.78, finalPct: 8.66 },
+    { upToPctFpl: 300, initialPct: 8.66, finalPct: 10.22 },
+    { upToPctFpl: 400, initialPct: 10.22, finalPct: 10.22 },
+  ],
 };
-export function acaTableFor(coverageYear: number): AcaBand[] {
+/* The ACA table a coverage year prices under. Default
+   ("specific") mode — a named coverage year priced on its
+   own: the year's own row when one is published (2025,
+   2026, or the partial 2027 row for coverage year 2027
+   exactly), otherwise the 2026 row — the newest complete
+   law row, and deliberately NOT the 2027 partial row, so
+   2028+ never falls back to 2027 percentages. Projected
+   mode — a year inside a multi-year projection (the plan
+   march, the Playground projection): EVERY projected year
+   prices on the 2026 row, including a projected 2027, for
+   the same reason — projected years stay on the newest
+   complete law row until the full 2027 law build. */
+export function acaTableFor(
+  coverageYear: number,
+  opts?: { projected?: boolean },
+): AcaBand[] {
+  if (opts?.projected) {
+    // A projected year prices exactly as it priced before
+    // the 2027 partial row existed: its own row at or
+    // before 2026 (the 2025 enhanced schedule included),
+    // and the 2026 row for every year after 2026.
+    const own = coverageYear <= 2026 ? ACA_TABLES[coverageYear] : undefined;
+    return own ?? ACA_TABLES[2026] ?? [];
+  }
+  if (coverageYear === 2027) return ACA_TABLES[2027] ?? [];
   return ACA_TABLES[coverageYear] ?? ACA_TABLES[2026] ?? [];
 }
 

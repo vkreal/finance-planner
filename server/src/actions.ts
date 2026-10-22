@@ -114,9 +114,11 @@ CEILING_BREACHED_SEMANTICS,
 CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
 DRAW_ORDER_KEYS,
+ACA_SEMANTICS,
 AMT_SEMANTICS,
 EDUCATION_CREDIT_SEMANTICS,
 FLEX_SEMANTICS,
+IRMAA_LOOKBACK_SEMANTICS,
 IRMAA_TIER_CAP_SEMANTICS,
 ITEMIZED_DEDUCTION_SEMANTICS,
 LAW_YEAR_SEMANTICS,
@@ -2281,7 +2283,7 @@ const rothInputFields = {
   // interest, state and local taxes paid, charitable
   // contributions, and other itemized deductions — kept
   // separate (never one lump) because the SALT component is
-  // capped on its own at the priced year's §164(b)(6) cap
+  // capped on its own at the priced year's §164(b)(7) cap
   // and the charitable component is the one charitable
   // input the Washington layer also reads. Null on records
   // written before this build = blank = $0 on that
@@ -2558,7 +2560,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 24;
+export const API_CONTRACT_VERSION = 29;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3591,12 +3593,21 @@ const playgroundYearOut = z.object({
   standardDeduction: z.number(),
   seniorDeduction: z.number(),
   // Itemized deduction (T5; $0 unless itemized amounts are
-  // typed): the itemized total after the §164(b)(6) SALT
+  // typed): the itemized total after the §164(b)(7) SALT
   // cap, the SALT amount allowed after that cap, and which
   // side of the greater-of comparison the year took.
   itemizedDeduction: z.number(),
   itemizedSaltAllowed: z.number(),
   deductionTaken: z.enum(["standard", "itemized"]),
+  // 2026 deduction trio: the charitable amount allowed
+  // inside the itemized total after the §170(b)(1)(I)
+  // floor, the §68 reduction, and the §170(p) non-itemizer
+  // charitable deduction applied above the line (inside
+  // agi / magi / acaMagi above; NOT inside deductions).
+  // All $0 under the 2025 law row.
+  itemizedCharitableAllowed: z.number(),
+  section68Reduction: z.number(),
+  nonItemizerCharitableDeduction: z.number(),
   // Education credits (T6; $0 / "none" unless students are
   // entered): the tentative AOTC and Lifetime Learning
   // Credit after their phase-outs, the choice taken, the
@@ -3785,13 +3796,23 @@ const planYearRowOut = z.object({
   lossCarryOutSt: z.number(),
   lossCarryOutLt: z.number(),
   // Itemized-vs-standard (T5): the year's itemized total
-  // after the §164(b)(6) SALT cap (dollars, like every
+  // after the §164(b)(7) SALT cap (dollars, like every
   // money figure in this row) and which side of the
   // greater-of comparison the year's deduction took. $0 /
   // "standard" in every year of a plan with no itemized
   // inputs.
   itemizedDeduction: z.number(),
   deductionTaken: z.enum(["standard", "itemized"]),
+  // 2026 deduction trio (dollars, like every money figure
+  // in this row): the charitable amount allowed inside the
+  // itemized total after the §170(b)(1)(I) floor, the §68
+  // reduction, and the §170(p) non-itemizer charitable
+  // deduction applied above the line (inside the row's
+  // magi / acaMagi; NOT inside deductions). All $0 in
+  // every year priced under the 2025 law row.
+  itemizedCharitableAllowed: z.number(),
+  section68Reduction: z.number(),
+  nonItemizerCharitableDeduction: z.number(),
   // Education credits (T6): the year's §25A credits under
   // the winning allocation (dollars, like every money
   // figure in this row) — the tentative AOTC and Lifetime
@@ -3932,6 +3953,9 @@ function toPlanYearRow(y: {
     lossCarryOutLt: number;
     itemizedDeduction: number;
     deductionTaken: "standard" | "itemized";
+    itemizedCharitableAllowed: number;
+    section68Reduction: number;
+    nonItemizerCharitableDeduction: number;
     educationAotc: number;
     educationLlc: number;
     educationChoice: "aotc" | "llc" | "none";
@@ -3976,6 +4000,9 @@ function toPlanYearRow(y: {
     lossCarryOutLt: y.detail.lossCarryOutLt,
     itemizedDeduction: y.detail.itemizedDeduction,
     deductionTaken: y.detail.deductionTaken,
+    itemizedCharitableAllowed: y.detail.itemizedCharitableAllowed,
+    section68Reduction: y.detail.section68Reduction,
+    nonItemizerCharitableDeduction: y.detail.nonItemizerCharitableDeduction,
     educationAotc: y.detail.educationAotc,
     educationLlc: y.detail.educationLlc,
     educationChoice: y.detail.educationChoice,
@@ -4090,13 +4117,23 @@ const fundingRowOut = z.object({
   lossCarryOutStCents: z.number(),
   lossCarryOutLtCents: z.number(),
   // Itemized-vs-standard (T5): the year's itemized total
-  // after the §164(b)(6) SALT cap (integer cents, like
+  // after the §164(b)(7) SALT cap (integer cents, like
   // every money figure in this row) and which side of the
   // greater-of comparison the year's deduction took. 0 /
   // "standard" in every year of a plan with no itemized
   // inputs.
   itemizedDeductionCents: z.number(),
   deductionTaken: z.enum(["standard", "itemized"]),
+  // 2026 deduction trio (integer cents, like every money
+  // figure in this row): the charitable amount allowed
+  // inside the itemized total after the §170(b)(1)(I)
+  // floor, the §68 reduction, and the §170(p) non-itemizer
+  // charitable deduction applied above the line (inside
+  // magiCents / acaMagiCents; never a funding source or
+  // need). All 0 under the 2025 law row.
+  itemizedCharitableAllowedCents: z.number(),
+  section68ReductionCents: z.number(),
+  nonItemizerCharitableDeductionCents: z.number(),
   // Education credits (T6): the year's refundable AOTC
   // portion, the tentative AOTC and Lifetime Learning
   // Credit after their phase-outs, the nonrefundable
@@ -4105,8 +4142,13 @@ const fundingRowOut = z.object({
   // (integer cents, like every money figure in this row).
   // The refundable portion is a credit the score counts,
   // not a funding source or need — it never enters the
-  // cash identity. All 0 / "none" in every year with no
-  // entered expenses.
+  // cash identity. It is not lost cash, though (Build D):
+  // the march deposits it into the taxable pool at 100%
+  // basis at the start of the FOLLOWING year, so it raises
+  // that year's opening balance (and a final year's portion
+  // is inside the ending taxable balance) rather than
+  // appearing as a source on any year's row. All 0 / "none"
+  // in every year with no entered expenses.
   educationRefundableCents: z.number(),
   educationAotcCents: z.number(),
   educationLlcCents: z.number(),
@@ -4911,10 +4953,12 @@ const describeApiResponse = z.object({
   protectMinSemantics: z.string(),
   unpaidTaxSemantics: z.string(),
   irmaaTierCapSemantics: z.string(),
+  irmaaLookbackSemantics: z.string(),
   ceilingBreachedSemantics: z.string(),
   backupAuthenticitySemantics: z.string(),
   scoreIdentities: z.string(),
   lawYearSemantics: z.string(),
+  acaSemantics: z.string(),
   stateSemantics: z.string(),
   lossCarryforwardSemantics: z.string(),
   itemizedDeductionSemantics: z.string(),
@@ -5121,10 +5165,12 @@ export const Actions = {
         protectMinSemantics: PROTECT_MIN_SEMANTICS,
         unpaidTaxSemantics: UNPAID_TAX_SEMANTICS,
         irmaaTierCapSemantics: IRMAA_TIER_CAP_SEMANTICS,
+        irmaaLookbackSemantics: IRMAA_LOOKBACK_SEMANTICS,
         ceilingBreachedSemantics: CEILING_BREACHED_SEMANTICS,
         backupAuthenticitySemantics: BACKUP_AUTHENTICITY_SEMANTICS,
         scoreIdentities: SCORE_IDENTITIES,
         lawYearSemantics: LAW_YEAR_SEMANTICS,
+        acaSemantics: ACA_SEMANTICS,
         stateSemantics: STATE_SEMANTICS,
         lossCarryforwardSemantics: LOSS_CARRYFORWARD_SEMANTICS,
         itemizedDeductionSemantics: ITEMIZED_DEDUCTION_SEMANTICS,
