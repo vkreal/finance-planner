@@ -2587,6 +2587,13 @@ export type PlaygroundYearInputs = {
   // coverage year (its fallback row is the newest table), and
   // the convention never invents a cliff for a pre-2026 year
   // (the enhanced-credit years have none under either rule).
+  // Build C adds a SECOND sanctioned difference, on the
+  // applicable-percentage table alone: under "newest" the
+  // year is PROJECTED pricing and prices on the 2026 table
+  // for every projected year (acaCreditFor's projected
+  // mode), while under "lookback" a specific coverage year
+  // prices its own table — including the 2027 table
+  // (Rev. Proc. 2026-26) for coverage year 2027 exactly.
   acaConvention?: "lookback" | "newest";
 };
 
@@ -2643,13 +2650,23 @@ export type PlaygroundYearResult = {
   standardDeduction: number;
   seniorDeduction: number;
   // Itemized deduction (T5): the year's itemized total
-  // after the §164(b)(6) SALT cap, the SALT amount allowed
+  // after the §164(b)(7) SALT cap, the SALT amount allowed
   // after that cap, and which side of the greater-of
   // comparison the year's deduction took. $0 / "standard"
   // when no itemized amounts are typed.
   itemizedDeduction: number;
   itemizedSaltAllowed: number;
   deductionTaken: "standard" | "itemized";
+  // 2026 deduction trio: the charitable amount allowed
+  // inside the itemized total after the §170(b)(1)(I)
+  // floor, the §68 reduction taken off the itemized
+  // total, and the §170(p) non-itemizer charitable
+  // deduction applied above the line (already inside agi
+  // / magi / acaMagi above; NOT inside deductions below).
+  // All $0 under the 2025 law row.
+  itemizedCharitableAllowed: number;
+  section68Reduction: number;
+  nonItemizerCharitableDeduction: number;
   // Education credits (T6): the year's §25A credits under
   // the winning allocation — the tentative AOTC after its
   // phase-out, the tentative Lifetime Learning Credit
@@ -2985,9 +3002,16 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // projection's "newest" convention, a coverage year of
   // (newest guideline year + 1) makes acaCreditFor's lookback
   // land exactly on the newest guideline row — the plan
-  // convention — while acaTableFor still resolves the real
-  // year's table (any year past the table falls back to the
-  // newest one). Pre-2026 years keep the real coverage year:
+  // convention. The applicable-percentage table no longer
+  // rides this coverage-year value (Build C): acaCreditFor
+  // is told explicitly whether this is projected pricing
+  // (acaProjected below), and in projected mode it prices
+  // the 2026 table whatever this value is — before Build C
+  // the table fell back to 2026 for every year past 2026,
+  // so the coverage-year shift was table-inert; with the
+  // 2027 partial row published it would otherwise have
+  // leaked the 2027 percentages into projected 2026 and
+  // 2027 years. Pre-2026 years keep the real coverage year:
   // the enhanced-credit schedule has no cliff to re-price.
   const newestGuidelineYear = Math.max(
     ...Object.keys(FPL_GUIDELINES).map(Number),
@@ -2996,6 +3020,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     inp.acaConvention === "newest" && inp.taxYear >= 2026
       ? Math.max(inp.taxYear, newestGuidelineYear + 1)
       : inp.taxYear;
+  const acaProjected = inp.acaConvention === "newest";
   let aca: PlaygroundYearResult["aca"] = {
     applies: acaApplies,
     everyoneOnMedicare: notMedicareCount === 0,
@@ -3014,6 +3039,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       householdSize: inp.acaHouseholdSize,
       coverageYear: acaCoverageYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
+      projected: acaProjected,
     });
     aca = {
       ...aca,
@@ -3073,6 +3099,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       householdSize: inp.acaHouseholdSize,
       coverageYear: acaCoverageYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
+      projected: acaProjected,
     });
     withoutAcaOverCliff = resW.overCliff;
     withoutAcaPosition = r2(resW.cliff - pricedWithoutGains.acaMagi);
@@ -3254,6 +3281,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     itemizedDeduction: priced.itemizedDeduction,
     itemizedSaltAllowed: priced.itemizedSaltAllowed,
     deductionTaken: priced.deductionTaken,
+    itemizedCharitableAllowed: priced.itemizedCharitableAllowed,
+    section68Reduction: priced.section68Reduction,
+    nonItemizerCharitableDeduction: priced.nonItemizerCharitableDeduction,
     educationAotc: priced.educationAotc,
     educationLlc: priced.educationLlc,
     educationChoice: priced.educationChoice,
@@ -3346,12 +3376,16 @@ export function playgroundSaleAfterTax(
      is on Medicare (the pricer's own applicability rule);
    · every projected year prices its ACA cliff on the PLAN
      convention — the newest poverty-guideline row, in
-     today's dollars (acaConvention "newest" above). That is
-     the ONE sanctioned difference from the single-year
-     pricer, which applies the statutory lookback to its
-     named year; with the template's own switches aligned, a
-     projected year reproduces the single-year result on
-     every figure except the ACA block.
+     today's dollars (acaConvention "newest" above) — and,
+     since Build C, its applicable percentage on the 2026
+     table for every projected year, while the single-year
+     pricer prices a specific 2027 coverage year on the
+     published 2027 table. Those are the sanctioned
+     differences from the single-year pricer, which applies
+     the statutory lookback to its named year; with the
+     template's own switches aligned, a projected year
+     reproduces the single-year result on every figure
+     except the ACA block.
 
    The template's pre-tax money out repeats each year,
    adjusted by two user controls:
@@ -4323,12 +4357,23 @@ export type RothFundingRow = {
   lossCarryOutLtCents: number;
   // Itemized-vs-standard (T5, from the engine's
   // RothYearDetail): the year's itemized total after the
-  // §164(b)(6) SALT cap, in integer cents, and which side
+  // §164(b)(7) SALT cap, in integer cents, and which side
   // of the greater-of comparison the year's deduction
   // took. 0 / "standard" in every year of a plan with no
   // itemized inputs.
   itemizedDeductionCents: number;
   deductionTaken: "standard" | "itemized";
+  // 2026 deduction trio (from the engine's RothYearDetail;
+  // integer cents): the charitable amount allowed inside
+  // the itemized total after the §170(b)(1)(I) floor, the
+  // §68 reduction taken off the itemized total, and the
+  // §170(p) non-itemizer charitable deduction applied
+  // above the line (inside magiCents / acaMagiCents; it is
+  // not a funding source or need and never enters the
+  // cash identity). All 0 under the 2025 law row.
+  itemizedCharitableAllowedCents: number;
+  section68ReductionCents: number;
+  nonItemizerCharitableDeductionCents: number;
   // Education credits (T6, from the engine's RothYear /
   // RothYearDetail; integer cents): the year's refundable
   // AOTC portion (credited in the plan score, not a
@@ -4410,6 +4455,9 @@ export function buildRothFunding(
       lossCarryOutLtCents: cents(y.detail.lossCarryOutLt),
       itemizedDeductionCents: cents(y.detail.itemizedDeduction),
       deductionTaken: y.detail.deductionTaken,
+      itemizedCharitableAllowedCents: cents(y.detail.itemizedCharitableAllowed),
+      section68ReductionCents: cents(y.detail.section68Reduction),
+      nonItemizerCharitableDeductionCents: cents(y.detail.nonItemizerCharitableDeduction),
       educationRefundableCents: cents(y.educationRefundable),
       educationAotcCents: cents(y.detail.educationAotc),
       educationLlcCents: cents(y.detail.educationLlc),

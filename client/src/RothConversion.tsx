@@ -4171,6 +4171,20 @@ export function RothConversion() {
                           : "— less than the standard deduction, so the standard deduction is used."}
                       </li>
                     )}
+                    {detailRow.detail.section68Reduction > 0 && (
+                      <li>
+                        §68 limitation (2026 law): the itemized total above is after a{" "}
+                        <span className="tnum">{fmtDollars(detailRow.detail.section68Reduction)}</span>{" "}
+                        reduction for income over the 37%-bracket threshold.
+                      </li>
+                    )}
+                    {detailRow.detail.nonItemizerCharitableDeduction > 0 && (
+                      <li>
+                        Charitable deduction for non-itemizers (§170(p), 2026 law):{" "}
+                        <span className="tnum">{fmtDollars(detailRow.detail.nonItemizerCharitableDeduction)}</span>{" "}
+                        — already taken off AGI above, so it is not in the deductions below.
+                      </li>
+                    )}
                     {detailRow.detail.seniorDeduction > 0 && (
                       <li>
                         Temporary senior deduction (2025–2028):{" "}
@@ -4447,9 +4461,10 @@ export function RothConversion() {
                             <span className="tnum font-medium">{fmtDollars(detailRow.detail.educationAotc)}</span>{" "}
                             after the income phase-out —{" "}
                             <span className="tnum">{fmtDollars(detailRow.detail.educationRefundable)}</span>{" "}
-                            of it is refundable (paid even past a $0 tax bill, and
-                            counted in the plan&rsquo;s score); the rest reduced
-                            this year&rsquo;s tax.
+                            of it is refundable (paid even past a $0 tax bill,
+                            counted in the plan&rsquo;s score, and deposited
+                            into the taxable account at the start of the next
+                            year); the rest reduced this year&rsquo;s tax.
                           </li>
                         )}
                         {detailRow.detail.educationLlc > 0 && (
@@ -8201,6 +8216,228 @@ export function RothConversion() {
           )}
         </section>
       )}
+
+      {/* Plan income chart — one stacked bar per plan year, in the
+          Playground projection chart's shape and colours, but driven
+          by the SAVED plan's priced march (mainResult — the same
+          simulateRothPlan result the year-by-year table below
+          renders, so the chart can never disagree with the table and
+          no new pricing happens here). Segment sourcing, bottom to
+          top, every figure read straight off the year's own priced
+          row: Interest ← detail.interestIncome; Qualified dividends
+          ← detail.dividendIncome; Other ordinary income ←
+          detail.otherOrdinary; Taxable Social Security ←
+          detail.ssTaxable; RMD ← rmd (the table's RMD column);
+          Pre-tax money out ← conversion (the table's Conversion
+          column); Pre-tax draw for spending ←
+          detail.extraPreTaxDraw; Long-term gains ← detail.ltcg;
+          Tax-exempt interest ← detail.taxExemptInterest; and, only
+          in a year the capital-loss ledger prices one, the
+          capital-loss allowance as a negative top segment
+          (−detail.lossAllowance). With that last segment the stack
+          foots to the year's MAGI: the pieces sum to AGI and the
+          tax-exempt interest completes MAGI, exactly as priceYear
+          composes them. The line across the top is the table's MAGI
+          column (magi); the dashed line is the ACA cliff
+          (detail.aca.cliff) drawn only for marketplace years
+          (acaActive with a priced cliff). Picking a bar opens that
+          year's "Show the math" panel under the table below. */}
+      {resultsMode === "plan" && planInputs && mainResult && (() => {
+        const planYears = mainResult.years;
+        const segDefs = [
+          { key: "interest", label: "Interest", color: "#2563eb", amount: (y: RothYear) => y.detail.interestIncome },
+          { key: "qualdiv", label: "Qualified dividends", color: "#65a30d", amount: (y: RothYear) => y.detail.dividendIncome },
+          { key: "other", label: "Other ordinary income", color: "#d97706", amount: (y: RothYear) => y.detail.otherOrdinary },
+          { key: "ss", label: "Taxable Social Security", color: "#dc2626", amount: (y: RothYear) => y.detail.ssTaxable },
+          { key: "rmd", label: "RMD", color: "#7c3aed", amount: (y: RothYear) => y.rmd },
+          { key: "conv", label: "Pre-tax money out", color: "#14705a", amount: (y: RothYear) => y.conversion },
+          { key: "extra", label: "Pre-tax draw for spending", color: "#14b8a6", amount: (y: RothYear) => y.detail.extraPreTaxDraw },
+          { key: "gains", label: "Long-term gains", color: "#ea580c", amount: (y: RothYear) => y.detail.ltcg },
+          { key: "taxexempt", label: "Tax-exempt interest", color: "#94a3b8", amount: (y: RothYear) => y.detail.taxExemptInterest },
+          { key: "lossallow", label: "Capital-loss allowance", color: "#475569", amount: (y: RothYear) => -y.detail.lossAllowance },
+        ] as const;
+        const stackTotal = (y: RothYear): number =>
+          segDefs.reduce((a, d) => a + d.amount(y), 0);
+        const cliffOf = (y: RothYear): number | null =>
+          y.acaActive ? y.detail.aca.cliff : null;
+        const n = planYears.length;
+        const yMax = Math.max(
+          1,
+          ...planYears.map((y) =>
+            Math.max(stackTotal(y), y.magi, cliffOf(y) ?? 0),
+          ),
+        );
+        const magiPoints = planYears
+          .map((y, i) => `${i + 0.5},${100 - (y.magi / yMax) * 100}`)
+          .join(" ");
+        // ACA cliff line runs: consecutive marketplace years that
+        // carry a priced cliff, drawn the Playground way — a step
+        // segment across each year, joined to the next year's level.
+        const cliffRuns: { x1: number; y1: number; x2: number; y2: number }[] = [];
+        planYears.forEach((y, i) => {
+          const cliff = cliffOf(y);
+          if (cliff == null) return;
+          const prev = i > 0 ? planYears[i - 1] : undefined;
+          const prevCliff = prev != null ? cliffOf(prev) : null;
+          if (prevCliff != null) {
+            cliffRuns.push({
+              x1: i - 0.5,
+              y1: 100 - (prevCliff / yMax) * 100,
+              x2: i + 0.5,
+              y2: 100 - (cliff / yMax) * 100,
+            });
+          } else {
+            cliffRuns.push({
+              x1: i + 0.1,
+              y1: 100 - (cliff / yMax) * 100,
+              x2: i + 0.9,
+              y2: 100 - (cliff / yMax) * 100,
+            });
+          }
+        });
+        const presentSegs = segDefs.filter((d) =>
+          planYears.some((y) => d.amount(y) !== 0),
+        );
+        const openYearFromChart = (yr: number) => {
+          setDetailYear(yr);
+          if (!yearTableOpen) {
+            setYearTableOpen(true);
+            saveUiState.mutate({ yearTableOpen: true });
+          }
+        };
+        return (
+          <section className={sectionCls} aria-label="Plan income by year chart">
+            <h2 className="text-base font-semibold">
+              Income stack by year — ages {planYears[0]?.agePrimary} to{" "}
+              {planYears[n - 1]?.agePrimary}
+            </h2>
+            <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+              One bar per plan year, stacking the priced income pieces from
+              the year-by-year table below — the money out and RMD columns,
+              taxable Social Security, and the other income in that
+              year&rsquo;s math. The line across the top is each
+              year&rsquo;s MAGI from the table; the dashed line is the ACA
+              cliff while someone is on the marketplace. Pick a bar to open
+              that year&rsquo;s math under the table.
+            </p>
+            <div className="relative mt-3 h-56">
+              <div className="absolute inset-0 flex items-end gap-[2px]">
+                {planYears.map((y) => {
+                  let cum = 0;
+                  const segs = segDefs
+                    .map((d) => {
+                      const amount = d.amount(y);
+                      const start = cum;
+                      cum += amount;
+                      return { ...d, amount, start };
+                    })
+                    .filter((s) => s.amount !== 0);
+                  const selected = detailYear === y.year;
+                  const segSummary = segs
+                    .map((s) => `${s.label} ${fmtDollars(s.amount)}`)
+                    .join("; ");
+                  return (
+                    <button
+                      key={y.year}
+                      type="button"
+                      aria-label={`Show the math for ${y.year} (age ${y.agePrimary}) — MAGI ${fmtDollars(y.magi)}${segSummary ? ` — ${segSummary}` : ""}`}
+                      aria-pressed={selected}
+                      className={`relative h-full min-w-0 flex-1 rounded-sm hover:bg-[var(--accent-soft)] ${selected ? "ring-2 ring-[var(--accent)] ring-inset" : detailYear != null ? "opacity-40" : ""}`}
+                      onClick={() => openYearFromChart(y.year)}
+                    >
+                      {segs.map((s) => (
+                        <span
+                          key={s.key}
+                          aria-hidden="true"
+                          className="absolute right-0 left-0 border-b border-[var(--bg)]"
+                          style={{
+                            bottom: `${(Math.min(s.start, s.start + s.amount) / yMax) * 100}%`,
+                            height: `${(Math.abs(s.amount) / yMax) * 100}%`,
+                            background: s.color,
+                          }}
+                        />
+                      ))}
+                    </button>
+                  );
+                })}
+              </div>
+              <svg
+                className="pointer-events-none absolute inset-0 h-full w-full"
+                viewBox={`0 0 ${n} 100`}
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                {cliffRuns.map((r, i) => (
+                  <line
+                    key={i}
+                    x1={r.x1}
+                    y1={r.y1}
+                    x2={r.x2}
+                    y2={r.y2}
+                    stroke="var(--warn)"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                <polyline
+                  points={magiPoints}
+                  fill="none"
+                  stroke="var(--text)"
+                  strokeWidth={1.5}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            </div>
+            <div className="mt-1 flex gap-[2px]" aria-hidden="true">
+              {planYears.map((y) => {
+                const labelSelected = detailYear === y.year;
+                return (
+                  <span
+                    key={y.year}
+                    className={`min-w-0 flex-1 text-center whitespace-nowrap ${labelSelected ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
+                  >
+                    {labelSelected ||
+                    y.agePrimary % 5 === 0 ||
+                    y.agePrimary === planYears[0]?.agePrimary ||
+                    y.agePrimary === planYears[n - 1]?.agePrimary
+                      ? y.agePrimary
+                      : ""}
+                  </span>
+                );
+              })}
+            </div>
+            <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+              {presentSegs.map((d) => (
+                <span key={d.key} className="inline-flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                    style={{ background: d.color }}
+                    aria-hidden="true"
+                  />
+                  {d.label}
+                </span>
+              ))}
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-0 w-4 border-t-2 border-[var(--text)]"
+                />
+                MAGI
+              </span>
+              {cliffRuns.length > 0 && (
+                <span className="inline-flex items-center gap-1.5">
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-0 w-4 border-t-2 border-dashed border-[var(--warn)]"
+                  />
+                  ACA cliff
+                </span>
+              )}
+            </p>
+          </section>
+        );
+      })()}
 
       {resultsMode === "plan" && planInputs && mainResult && (
         <section className={sectionCls} aria-label="Year by year">

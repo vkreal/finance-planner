@@ -697,6 +697,13 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
           g.projSelectedYear <= 2200
             ? g.projSelectedYear
             : null,
+        // A stored blob may still carry the retired chartMode
+        // key (the chart card's old Stack | Waterfall toggle —
+        // including a form saved in "waterfall"). It is
+        // deliberately not read: the card is stack-only now, so
+        // such a blob parses exactly like any other and opens
+        // on the stack, and the key drops out of the blob on
+        // the next write.
         projTemplate: parsePgProjTemplate(g.projTemplate),
         heldTarget:
           g.heldTarget === "aca"

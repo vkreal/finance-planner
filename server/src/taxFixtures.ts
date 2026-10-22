@@ -86,8 +86,8 @@ type RothSavedLike,
 type ScoredCandidate,
 } from "./rothOptimizer";
 import { parseRothBlobRevision } from "./rothRevisionCore";
-import { CURRENT_LAW, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear } from "./taxLaw";
-import { AMT_SEMANTICS, EDUCATION_CREDIT_SEMANTICS, ITEMIZED_DEDUCTION_SEMANTICS, LOSS_CARRYFORWARD_SEMANTICS, bracketTopPctField, playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
+import { CURRENT_LAW, DEDUCTION_2026, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear, saltScheduleForYear } from "./taxLaw";
+import { ACA_SEMANTICS, AMT_SEMANTICS, EDUCATION_CREDIT_SEMANTICS, IRMAA_LOOKBACK_SEMANTICS, ITEMIZED_DEDUCTION_SEMANTICS, LOSS_CARRYFORWARD_SEMANTICS, bracketTopPctField, playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
 import { computeGiftComparison, parseRothGift } from "./giftModel";
 import { parseRothTaxReturn, taxReturnPrefillDollars } from "./taxReturnCore";
 import {
@@ -9792,13 +9792,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-golden-survivor",
     kind: "tax",
-    note: "Survivor variant of the anchor shape (primary dies in 2060, Single filing from 2061; engine-derived 2026-10-15): the joint winner stays “Fill to the top of the 24% bracket” at claim 62, net $174,755.58 (pre-FPL-fallback $226,397.31; −$1,961.82 of kept-credit change). Do Nothing (best at claim 65) is $2,680,829.34 (pre-fallback $2,756,783.33; the +$38,443.84 move is the same fallback credit effect that moved the non-survivor anchor Do Nothing by +$39,552.43 when its best claiming age's credits repriced under the 2026 guidelines).",
+    note: "Survivor variant of the anchor shape (primary dies in 2060, Single filing from 2061; engine-derived 2026-10-15): the joint winner stays “Fill to the top of the 24% bracket” at claim 62, net $174,755.58 (pre-FPL-fallback $226,397.31; −$1,961.82 of kept-credit change). Do Nothing (best at claim 65) is $2,677,358.94 (pre-fallback $2,756,783.33; the +$38,443.84 move is the same fallback credit effect that moved the non-survivor anchor Do Nothing by +$39,552.43 when its best claiming age's credits repriced under the 2026 guidelines). RE-PINNED for Build E (survivor IRMAA lookback status; SSA POMS HI 01101.010 / HI 01101.020; 20 CFR 418.1135), dnNet only, $2,680,829.34 → $2,677,358.94, re-derived independently of the engine's new code path: the only premium years whose grading can change are 2061 and 2062, whose lookback returns (2059 and the 2060 death year) were filed jointly. Do Nothing's 2061 lookback MAGI (2059) is $0 — tier 0 on both tables, no change. Its 2062 lookback MAGI (2060) is $269,027.65: on the JOINT table that is tier 2 (top $342,000), per-person (Part B $405.80 − $202.90 + Part D $37.50) × 12 = $2,884.80; on the SINGLE table the pre-fix engine used it is tier 4 (tier-3 top $205,000), per-person $6,355.20. One person is on Medicare in 2062 (the surviving spouse), so the year's IRMAA falls by $6,355.20 − $2,884.80 = $3,470.40, and because the surcharge is paid from a 100%-basis (blank-basis) taxable pool it creates no gains and no tax feedback — the net cost falls by exactly that $3,470.40. The winner does not move: its 2059 / 2060 MAGIs are $29,426.48 / $31,051.77, tier 0 on both tables, $0 of IRMAA either way.",
     expected: {
       candidates: 2277,
       winnerName: "Fill to the top of the 24% bracket",
       winnerClaim: 62,
       winnerNet: 174755.58,
-      dnNet: 2680829.34,
+      dnNet: 2677358.94,
       dnClaim: 65,
     },
     actual: () => {
@@ -16208,12 +16208,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-2027-schema-and-fallback-pricing",
     kind: "tax",
-    note: "Playground contract truth (API follow-on 2, finding F20), pinned through the ACTION's own schema + handler construction (playgroundYearIn and playgroundInputsFromArgs from apiContractCore — the exact objects runPlaygroundYear publishes and uses): the 2027 paste-loader worked example (interest $16,000, qualified dividends $2,000, conversion $136,720, household 5, benchmark $32,000, everything else $0 / blank) validates and prices MAGI $154,720 (= 16,000 + 2,000 + 136,720), ACA credit $16,589.89, federal tax $16,238.40 — under the 2026 law row via the lawForYear fallback, so lawYearUsed is 2026. The tightened schema REJECTS a negative interest dial, a 150% state rate, and taxYear 1999, while otherOrdinary −$500 is accepted by design (a loss keeps its sign) and prices MAGI exactly $500 lower, $154,220.",
+    note: "Playground contract truth (API follow-on 2, finding F20), pinned through the ACTION's own schema + handler construction (playgroundYearIn and playgroundInputsFromArgs from apiContractCore — the exact objects runPlaygroundYear publishes and uses): the 2027 paste-loader worked example (interest $16,000, qualified dividends $2,000, conversion $136,720, household 5, benchmark $32,000, everything else $0 / blank) validates and prices MAGI $154,720 (= 16,000 + 2,000 + 136,720), federal tax $16,238.40 — under the 2026 law row via the lawForYear fallback, so lawYearUsed is 2026. ACA credit RE-DERIVED for Build C: this is a SPECIFIC 2027 coverage year priced by the single-year pricer, so its applicable percentage now comes from the published 2027 table (Rev. Proc. 2026-26) — MAGI $154,720 is exactly 400% of the household-of-5 FPL on the 2026 guidelines ($38,680 × 4), the 2027 table's 300–400% percentage is 10.22%, the expected contribution is $154,720 × 10.22% = $15,812.38, and the credit is $32,000 − $15,812.38 = $16,187.62 (the pre-Build-C pin of $16,589.89 priced the 2026 table's 9.96% — the exact figure Build C corrects for a specific 2027 year). The tightened schema REJECTS a negative interest dial, a 150% state rate, and taxYear 1999, while otherOrdinary −$500 is accepted by design (a loss keeps its sign) and prices MAGI exactly $500 lower, $154,220.",
     expected: {
       schemaAccepted: 1,
       magi: 154720,
       federalTax: 16238.4,
-      acaCredit: 16589.89,
+      acaCredit: 16187.62,
       lawYearUsed: 2026,
       negativeInterestRejected: 1,
       state150Rejected: 1,
@@ -17492,15 +17492,15 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t5-itemized-above-standard-wins",
     kind: "tax",
-    note: "T5 (b) — ITEMIZED ABOVE THE STANDARD DEDUCTION WINS (hand-derived; §63 greater-of, 2026 MFJ): $200,000 of other ordinary income; itemized components mortgage interest $20,000 + SALT paid $10,000 + charitable $5,000 + other $5,000. AGI $200,000 is under the $505,000 phase-down start, so the SALT cap is the full $40,400 and the whole $10,000 of SALT is allowed; the itemized total is $40,000 against a $32,200 standard deduction (ages 60/49 — no 65+ add-ons, no senior deduction), so the year deducts $40,000. Taxable income $160,000; ordinary tax $2,480 + $9,120 + 22% × $59,200 = $24,624.",
+    note: "T5 (b) — ITEMIZED ABOVE THE STANDARD DEDUCTION WINS (hand-derived; §63 greater-of, 2026 MFJ; RE-DERIVED for Build A's §170(b)(1)(I) charitable floor — the pre-trio pin of $40,000 / $24,624 priced the charitable component whole): $200,000 of other ordinary income; itemized components mortgage interest $20,000 + SALT paid $10,000 + charitable $5,000 + other $5,000. AGI $200,000 is under the $505,000 phase-down start, so the SALT cap is the full $40,400 and the whole $10,000 of SALT is allowed; the charitable floor is 0.5% × $200,000 = $1,000, so the charitable component is $4,000 and the itemized total is $39,000 against a $32,200 standard deduction (ages 60/49 — no 65+ add-ons, no senior deduction; the standard side's $2,000 §170(p) candidate does not close the gap), so the year deducts $39,000. Taxable income $161,000; ordinary tax $2,480 + $9,120 + 22% × $60,200 = $24,844.",
     expected: {
       saltAllowed: 10000,
       saltCap: 40400,
-      itemizedDeduction: 40000,
+      itemizedDeduction: 39000,
       deductionTaken: "itemized",
-      deductions: 40000,
-      taxableIncome: 160000,
-      federalTax: 24624,
+      deductions: 39000,
+      taxableIncome: 161000,
+      federalTax: 24844,
     },
     actual: () => {
       const r = priceYear(
@@ -17526,13 +17526,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t5-itemized-below-standard-loses",
     kind: "tax",
-    note: "T5 (c) — ITEMIZED BELOW THE STANDARD DEDUCTION LOSES (hand-derived; 2026 MFJ): the same $200,000 year with smaller components — mortgage $8,000 + SALT $6,000 + charitable $3,000 + other $3,000 = $20,000 of itemized against the $32,200 standard deduction. The standard side wins; the capped itemized total is still surfaced ($20,000) so the year shows what it gave up. Taxable income $167,800; ordinary tax $2,480 + $9,120 + 22% × $67,000 = $26,340.",
+    note: "T5 (c) — ITEMIZED BELOW THE STANDARD DEDUCTION LOSES (hand-derived; 2026 MFJ; RE-DERIVED for Build A's deduction trio — the pre-trio pin of $20,000 / $167,800 / $26,340 priced the charitable component whole and knew no §170(p)): the same $200,000 year with smaller components — mortgage $8,000 + SALT $6,000 + charitable $3,000 + other $3,000. The charitable floor is 0.5% × $200,000 = $1,000, so the charitable component is $2,000 and the itemized total is $19,000 against the standard side. The standard side wins, and §170(p) applies above the line: the lesser of the $3,000 input and the $2,000 MFJ cap reduces AGI to $198,000, the capped itemized total is still surfaced ($19,000) so the year shows what it gave up, and deductions are the $32,200 standard deduction. Taxable income $165,800; ordinary tax $2,480 + $9,120 + 22% × $65,000 = $25,900.",
     expected: {
-      itemizedDeduction: 20000,
+      itemizedDeduction: 19000,
       deductionTaken: "standard",
       deductions: 32200,
-      taxableIncome: 167800,
-      federalTax: 26340,
+      taxableIncome: 165800,
+      federalTax: 25900,
     },
     actual: () => {
       const r = priceYear(
@@ -17679,12 +17679,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t5-charitable-flows-into-wa-base",
     kind: "tax",
-    note: "T5 (g) — THE ONE CHARITABLE INPUT FLOWS INTO THE WASHINGTON BASE (hand-derived; RCW 82.87.080): a Washington year with $1,000,000 of long-term gains and the charitable component entered at $400,000 prices the SAME figure twice over, from the one input: federally it is the whole itemized total ($400,000 beats the $32,200 standard deduction; taxable income $600,000; gains tax 15% × ($600,000 − $98,900) = $75,165; NIIT 3.8% × $750,000 = $28,500; federal tax $103,665), and in the Washington base it deducts min($111,000, $400,000 − $278,000) = $111,000, leaving $611,000 of taxable Washington gains at 7% = $42,770 of state tax. No second charitable figure exists anywhere in the pricing.",
+    note: "T5 (g) — THE ONE CHARITABLE INPUT FLOWS INTO THE WASHINGTON BASE (hand-derived; RCW 82.87.080; RE-DERIVED for Build A's deduction trio — the pre-trio pin of $400,000 / $103,665 priced the federal side with no floor and no §68; the Washington figures are unchanged because the excise prices from the RAW input): a Washington year with $1,000,000 of long-term gains and the charitable component entered at $400,000 prices the SAME entered figure into both systems, each under its own rules: federally the §170(b)(1)(I) floor (0.5% × $1,000,000 AGI = $5,000) leaves $395,000 of charitable, and §68 then reduces the $395,000 itemized total by 2/37 × min($395,000, $1,000,000 − $768,700 = $231,300) = $12,502.70, leaving $382,497.30 (which beats the $32,200 standard deduction); taxable income $617,502.70, all gains — $98,900 at 0%, $514,800 at 15%, $3,802.70 at 20% = $77,980.54 of gains tax; NIIT 3.8% × $750,000 = $28,500; federal tax $106,480.54. In the Washington base the SAME raw $400,000 deducts min($111,000, $400,000 − $278,000) = $111,000, leaving $611,000 of taxable Washington gains at 7% = $42,770 of state tax. No second charitable figure exists anywhere in the pricing.",
     expected: {
-      itemizedDeduction: 400000,
+      itemizedDeduction: 382497.3,
       deductionTaken: "itemized",
-      deductions: 400000,
-      federalTax: 103665,
+      deductions: 382497.3,
+      federalTax: 106480.54,
       waCharitableDeduction: 111000,
       waTaxableGains: 611000,
       stateTax: 42770,
@@ -17833,13 +17833,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t5-playground-parity",
     kind: "tax",
-    note: "T5 (i) — THE PLAYGROUND PRICES THE SAME INPUTS IDENTICALLY (hand-derived figures from T5 (b)): the single-year Playground shares the year pricer, so the T5 (b) shape typed as Playground dials (2026 MFJ, ages 60/49, $200,000 other ordinary, components $20,000 / $10,000 / $5,000 / $5,000) returns the same itemized total ($40,000), the same SALT allowed ($10,000), the same winner (itemized), the same deductions ($40,000) and the same federal tax ($24,624) as priceYear — and equals priceYear's own figures field for field. The API contract path carries the components too: playgroundYearIn accepts the four dials and playgroundInputsFromArgs hands them to the pricer; a payload without them prices the standard side (deductionTaken 'standard'), exactly as before this build.",
+    note: "T5 (i) — THE PLAYGROUND PRICES THE SAME INPUTS IDENTICALLY (hand-derived figures from T5 (b), as re-derived for Build A's charitable floor): the single-year Playground shares the year pricer, so the T5 (b) shape typed as Playground dials (2026 MFJ, ages 60/49, $200,000 other ordinary, components $20,000 / $10,000 / $5,000 / $5,000) returns the same itemized total ($39,000 after the $1,000 floor on the charitable component), the same SALT allowed ($10,000), the same winner (itemized), the same deductions ($39,000) and the same federal tax ($24,844) as priceYear — and equals priceYear's own figures field for field. The API contract path carries the components too: playgroundYearIn accepts the four dials and playgroundInputsFromArgs hands them to the pricer; a payload without them prices the standard side (deductionTaken 'standard'), exactly as before this build.",
     expected: {
-      itemizedDeduction: 40000,
+      itemizedDeduction: 39000,
       saltAllowed: 10000,
       deductionTaken: "itemized",
-      deductions: 40000,
-      federalTax: 24624,
+      deductions: 39000,
+      federalTax: 24844,
       sameFederalAsPriceYear: 1,
       sameDeductionsAsPriceYear: 1,
       argsMortgage: 20000,
@@ -18389,19 +18389,151 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "edu-refund-deposit-two-year-probe",
+    kind: "tax",
+    note: "BUILD D — THE REFUNDABLE CREDIT LANDS IN THE CASH FLOW, ACCEPTANCE PROBE (hand-derived; IRC §25A(b),(i)): a two-year isolated projection — parent aged 55 in 2026 (plan 2026–2027, ages 55–56), taxable $10,000 at 100% basis, pre-tax and Roth $0, spending $4,000 in each year, zero returns, no other income, ONE AOTC-eligible student with $4,000 of expenses in 2026 only. The 2026 AOTC is 100% × $2,000 + 25% × $2,000 = $2,500; its refundable portion is 40% × $2,500 = $1,000 (§25A(i)) and the nonrefundable $1,500 has no tax to absorb (no income either year), so every tax figure is $0. 2026: the pool pays the $4,000 of spending and ends at $6,000 — the refund has NOT landed yet (the 2026 return is filed in spring 2027). 2027: the $1,000 is deposited at the start of the year at 100% basis, so the pool opens at $7,000, pays the $4,000 of spending, and ends at $3,000. Score: net cost = $0 of tax − $1,000 of refundable credit = −$1,000, UNCHANGED from before this build — what changed is that the scored dollar is now in a balance: ending taxable is $3,000, not the $2,000 the pre-fix march produced (it recorded the $1,000 and deposited $0).",
+    expected: {
+      refundable2026: 1000,
+      lifetimeRefundable: 1000,
+      taxableEnd2026: 6000,
+      taxableEnd2027: 3000,
+      endingTaxable: 3000,
+      endingWealth: 3000,
+      netCost: -1000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1971,
+          birthYearSpouse: 1980,
+          endAgePrimary: 56,
+          retirementAge: 55,
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 10000,
+          taxableBasisPct: 100,
+          annualSpending: 4000,
+          expectedReturnPct: 0,
+          educationStudents: [
+            { year: 2026, expenses: 4000, aotcEligible: true },
+          ],
+        }),
+        DO_NOTHING,
+      );
+      const cost = netCostBreakdown(res, 22);
+      return {
+        refundable2026: res.years[0]?.educationRefundable ?? null,
+        lifetimeRefundable: res.lifetimeEducationRefundable,
+        taxableEnd2026: res.years[0]?.taxableEnd ?? null,
+        taxableEnd2027: res.years[1]?.taxableEnd ?? null,
+        endingTaxable: res.endingTaxable,
+        endingWealth: res.endingAfterTaxWealth,
+        netCost: cost.netCost,
+      };
+    },
+  },
+  {
+    id: "edu-refund-deposit-final-year",
+    kind: "tax",
+    note: "BUILD D — THE FINAL-YEAR CASE (hand-derived; IRC §25A(b),(i)): the acceptance probe's shape cut to a ONE-year plan (2026 only, age 55). The same student prices the same $2,500 AOTC and $1,000 refundable portion, but the plan has no 2027 for the refund to land in — so the $1,000 is included in the plan's ending taxable balance itself: $10,000 − $4,000 of spending + $1,000 = $7,000, reported identically by the year's row and the plan ending. Net cost is again −$1,000, and here the agreement the build guarantees is visible in one line: the score credits $1,000 and the ending wealth IS $7,000 — $1,000 more than the $6,000 of cash the spending left — so the scored dollar is in the balance even when it is earned in the last year.",
+    expected: {
+      lifetimeRefundable: 1000,
+      taxableEnd2026: 7000,
+      endingTaxable: 7000,
+      endingWealth: 7000,
+      netCost: -1000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1971,
+          birthYearSpouse: 1980,
+          endAgePrimary: 55,
+          retirementAge: 55,
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 10000,
+          taxableBasisPct: 100,
+          annualSpending: 4000,
+          expectedReturnPct: 0,
+          educationStudents: [
+            { year: 2026, expenses: 4000, aotcEligible: true },
+          ],
+        }),
+        DO_NOTHING,
+      );
+      const cost = netCostBreakdown(res, 22);
+      return {
+        lifetimeRefundable: res.lifetimeEducationRefundable,
+        taxableEnd2026: res.years[0]?.taxableEnd ?? null,
+        endingTaxable: res.endingTaxable,
+        endingWealth: res.endingAfterTaxWealth,
+        netCost: cost.netCost,
+      };
+    },
+  },
+  {
+    id: "edu-refund-deposit-spent-on-landing",
+    kind: "tax",
+    note: "BUILD D — MULTI-YEAR: THE DEPOSIT IS SPENT THE YEAR IT LANDS, AND IT LANDS AT 100% BASIS (hand-derived; IRC §25A(b),(i) for the credit; pro-rata basis accounting for the draws): three years (2026–2028, ages 55–57), taxable $5,000 at 50% basis (basis dollars $2,500), spending $3,000 a year, zero returns, no other income, the same $4,000-expense eligible student in 2026 (AOTC $2,500, refundable $1,000 — every year's gains sit under the $32,200 standard deduction, so every tax is $0). 2026: the $3,000 draw leaves pro-rata at the 50% ratio — $1,500 of long-term gain — and the pool ends at $2,000 with $1,000 of basis. 2027: the $1,000 refund deposits at 100% basis, so the pool opens at $3,000 with $2,000 of basis (a two-thirds ratio); the year's $3,000 draw takes the WHOLE pool and realizes $3,000 × one-third = $1,000 of gain — had the deposit landed at 0% basis the basis would be $1,000 and the gain $2,000, so this figure pins the basis rule. And the year's shortfall is $0 only because the deposit landed: the pre-deposit pool ($2,000) could not cover the $3,000 of spending, so $1,000 of the deposit was necessarily spent the year it landed (without it, 2027 shorts by exactly $1,000). 2028: the pool is empty, the full $3,000 of spending is short, and the plan ends at $0. Lifetime refundable $1,000; net cost −$1,000.",
+    expected: {
+      ltcg2026: 1500,
+      taxableEnd2026: 2000,
+      ltcg2027: 1000,
+      taxableEnd2027: 0,
+      shortfall2027: 0,
+      shortfall2028: 3000,
+      endingTaxable: 0,
+      lifetimeRefundable: 1000,
+      netCost: -1000,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1971,
+          birthYearSpouse: 1980,
+          endAgePrimary: 57,
+          retirementAge: 55,
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 5000,
+          taxableBasisPct: 50,
+          annualSpending: 3000,
+          expectedReturnPct: 0,
+          educationStudents: [
+            { year: 2026, expenses: 4000, aotcEligible: true },
+          ],
+        }),
+        DO_NOTHING,
+      );
+      const cost = netCostBreakdown(res, 22);
+      return {
+        ltcg2026: res.years[0]?.detail.ltcg ?? null,
+        taxableEnd2026: res.years[0]?.taxableEnd ?? null,
+        ltcg2027: res.years[1]?.detail.ltcg ?? null,
+        taxableEnd2027: res.years[1]?.taxableEnd ?? null,
+        shortfall2027: res.years[1]?.spendShortfall ?? null,
+        shortfall2028: res.years[2]?.spendShortfall ?? null,
+        endingTaxable: res.endingTaxable,
+        lifetimeRefundable: res.lifetimeEducationRefundable,
+        netCost: cost.netCost,
+      };
+    },
+  },
+  {
     id: "t7-amt-owing-itemized-salt",
     kind: "tax",
-    note: "T7 (a) — AN AMT-OWING YEAR (hand-derived; IRC §55, Form 6251, Rev. Proc. 2025-32): 2026 MFJ, $1,400,000 of long-term gains and no ordinary income, itemizing mortgage interest $30,000 + SALT paid $40,400 + charitable $5,000. At AGI $1,400,000 the §164(b)(6) cap phases down to its $10,000 floor (cap $40,400 − 30% × $895,000, floored), so SALT allowed is $10,000 and the itemized total $45,000 beats the $32,200 standard. Regular tax: taxable income $1,355,000, all gains — $98,900 at 0%, $514,800 at 15%, $741,300 at 20% = $225,480, plus NIIT $43,700 (3.8% × ($1,400,000 − $250,000)). AMT: AMTI = $1,355,000 + the $10,000 SALT actually taken added back (§56(b)(1)) = $1,365,000; the exemption is FULLY phased out ($140,200 − 50% × ($1,365,000 − $1,000,000) < 0 → $0), so the taxable excess is $1,365,000: the $10,000 added-back SALT is ordinary excess at 26% = $2,600, and the $1,355,000 preferential part stacks on it — $88,900 at 0%, $514,800 at 15%, $751,300 at 20% = $227,480 — for a tentative minimum tax of $230,080. AMT owed = $230,080 − $225,480 = $4,600 (the NIIT is not part of the comparison), inside a federal tax of $225,480 + $43,700 + $4,600 = $273,780.",
+    note: "T7 (a) — AN AMT-OWING YEAR (hand-derived; IRC §55, Form 6251, Rev. Proc. 2025-32; RE-DERIVED for Build A's deduction trio — the pre-trio pin priced the charitable component whole with no §68): 2026 MFJ, $1,400,000 of long-term gains and no ordinary income, itemizing mortgage interest $30,000 + SALT paid $40,400 + charitable $5,000. At AGI $1,400,000 the §164(b)(6) cap phases down to its $10,000 floor (cap $40,400 − 30% × $895,000, floored), so SALT allowed is $10,000; the §170(b)(1)(I) floor is 0.5% × $1,400,000 = $7,000 — more than the $5,000 given — so the charitable component is $0 and the otherwise-allowable itemized total is $40,000; §68 then reduces it by 2/37 × min($40,000, $1,400,000 − $768,700) = $2,162.16, leaving $37,837.84, which still beats the $32,200 standard. Regular tax: taxable income $1,362,162.16, all gains — $98,900 at 0%, $514,800 at 15%, $748,462.16 at 20% = $226,912.43, plus NIIT $43,700 (3.8% × ($1,400,000 − $250,000)). AMT keeps the UNREDUCED-§68 figures: AMTI = the $1,360,000 taxable income without regard to §68 + the $10,000 SALT actually taken added back (§56(b)(1)) = $1,370,000; the exemption is FULLY phased out ($140,200 − 50% × ($1,370,000 − $1,000,000) < 0 → $0), so the taxable excess is $1,370,000: the $10,000 added-back SALT is ordinary excess at 26% = $2,600, and the $1,360,000 preferential part stacks on it — $88,900 at 0%, $514,800 at 15%, $756,300 at 20% = $228,480 — for a tentative minimum tax of $231,080. AMT owed = $231,080 − $226,912.43 = $4,167.57 (the NIIT is not part of the comparison), inside a federal tax of $226,912.43 + $43,700 + $4,167.57 = $274,780.",
     expected: {
       deductionTaken: "itemized",
       saltAllowed: 10000,
       saltCap: 10000,
-      ltcgTax: 225480,
-      amti: 1365000,
+      ltcgTax: 226912.43,
+      amti: 1370000,
       amtExemption: 0,
-      amtTentativeTax: 230080,
-      amtOwed: 4600,
-      federalTax: 273780,
+      amtTentativeTax: 231080,
+      amtOwed: 4167.57,
+      federalTax: 274780,
     },
     actual: () => {
       const r = priceYear(
@@ -18589,13 +18721,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-playground-parity",
     kind: "tax",
-    note: "T7 (g) — THE PLAYGROUND PRICES THE SAME AMT IDENTICALLY (the T7 (a) shape as Playground dials): the single-year Playground shares the year pricer, so 2026 MFJ, ages 60/49, a $1,400,000 stock sale at $0 basis, mortgage interest $30,000, SALT paid $40,400, charitable $5,000 returns the same AMTI ($1,365,000), exemption ($0), tentative tax ($230,080), AMT owed ($4,600) and federal tax ($273,780) as priceYear — field for field. A payload with no AMT exposure (the T7 (d) year) prices AMT owed $0 and the unadjusted $7,640 federal tax, exactly as before this build.",
+    note: "T7 (g) — THE PLAYGROUND PRICES THE SAME AMT IDENTICALLY (the T7 (a) shape as Playground dials, as re-derived for Build A's deduction trio): the single-year Playground shares the year pricer, so 2026 MFJ, ages 60/49, a $1,400,000 stock sale at $0 basis, mortgage interest $30,000, SALT paid $40,400, charitable $5,000 returns the same AMTI ($1,370,000), exemption ($0), tentative tax ($231,080), AMT owed ($4,167.57) and federal tax ($274,780) as priceYear — field for field. A payload with no AMT exposure (the T7 (d) year) prices AMT owed $0 and the unadjusted $7,640 federal tax, exactly as before this build.",
     expected: {
-      amti: 1365000,
+      amti: 1370000,
       amtExemption: 0,
-      amtTentativeTax: 230080,
-      amtOwed: 4600,
-      federalTax: 273780,
+      amtTentativeTax: 231080,
+      amtOwed: 4167.57,
+      federalTax: 274780,
       sameFederalAsPriceYear: 1,
       sameOwedAsPriceYear: 1,
       plainOwed: 0,
@@ -19355,6 +19487,1294 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
             : null,
         sentinelParsed: parseRothTaxReturn(sentinel).taxReturnInterestCents,
         blankParsed: parseRothTaxReturn(blankReturn).taxReturnInterestCents,
+      };
+    },
+  },
+  {
+    id: "t8-deduction-2026-constants",
+    kind: "tax",
+    note: "T8 (a) — THE TRIO'S CONSTANTS ARE LAW DATA (Build A, 2026 deduction trio; Pub. L. 119-21): the trio's first law year is 2026; the §170(b)(1)(I) floor rate is 0.5% of the contribution base; the §170(p) caps are $2,000 MFJ / $1,000 single / $1,000 head of household; the §68 reduction fraction is 2/37. The §68 threshold is NOT a constant here — it is read from the priced year's bracket row (the top of the 35% bracket): $768,700 MFJ in the 2026 row, $640,600 single.",
+    expected: {
+      firstYear: 2026,
+      floorRatePct: 0.5,
+      capMfj: 2000,
+      capSingle: 1000,
+      capHoh: 1000,
+      s68Numerator: 2,
+      s68Denominator: 37,
+      threshold37Mfj2026: 768700,
+      threshold37Single2026: 640600,
+    },
+    actual: () => {
+      const tops = TAX_LAW_2026.brackets;
+      return {
+        firstYear: DEDUCTION_2026.firstYear,
+        floorRatePct: DEDUCTION_2026.charitableFloorRatePct,
+        capMfj: DEDUCTION_2026.nonItemizerCharitableCap.mfj,
+        capSingle: DEDUCTION_2026.nonItemizerCharitableCap.single,
+        capHoh: DEDUCTION_2026.nonItemizerCharitableCap.hoh,
+        s68Numerator: DEDUCTION_2026.section68Numerator,
+        s68Denominator: DEDUCTION_2026.section68Denominator,
+        threshold37Mfj2026: tops.mfj[tops.mfj.length - 2] ?? null,
+        threshold37Single2026: tops.single[tops.single.length - 2] ?? null,
+      };
+    },
+  },
+  {
+    id: "t8-charitable-floor-itemizer",
+    kind: "tax",
+    note: "T8 (b) — THE §170(b)(1)(I) FLOOR, ACCEPTANCE PROBE (hand-derived from the statute; IRC §170(b)(1)(I) as added by Pub. L. 119-21, tax years beginning after 2025-12-31): 2026 MFJ, AGI $300,000 all ordinary, mortgage interest $30,000, charitable $10,000. The floor is 0.5% × $300,000 = $1,500, so charitable allowed is $10,000 − $1,500 = $8,500 and the itemized total is $30,000 + $8,500 = $38,500 (the $32,200 standard side, even carrying a $2,000 §170(p) candidate, loses). Taxable income $261,500; ordinary tax $2,480 + $9,120 + $24,332 + 24% × $50,100 = $47,956. No §68 (taxable income without §68 plus the itemized total is $300,000, under the $768,700 threshold) and no §170(p) (the itemized side won).",
+    expected: {
+      charitableAllowed: 8500,
+      itemizedDeduction: 38500,
+      deductionTaken: "itemized",
+      deductions: 38500,
+      taxableIncome: 261500,
+      federalTax: 47956,
+      section68Reduction: 0,
+      nonItemizerCharitable: 0,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 300000,
+          itemizedMortgageInterest: 30000,
+          itemizedCharitable: 10000,
+        }),
+      );
+      return {
+        charitableAllowed: r.itemizedCharitableAllowed,
+        itemizedDeduction: r.itemizedDeduction,
+        deductionTaken: r.deductionTaken,
+        deductions: r.deductions,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        section68Reduction: r.section68Reduction,
+        nonItemizerCharitable: r.nonItemizerCharitableDeduction,
+      };
+    },
+  },
+  {
+    id: "t8-charitable-below-floor",
+    kind: "tax",
+    note: "T8 (c) — GIVING BELOW THE FLOOR DEDUCTS NOTHING (boundary; hand-derived): 2026 MFJ, AGI $300,000 all ordinary, mortgage interest $40,000, charitable $1,000. The floor is 0.5% × $300,000 = $1,500 — MORE than the $1,000 given — so the charitable component is $0 (floored, never negative, and the $500 shortfall does not carry forward: there is no carryforward state anywhere in the pricer). The itemized total is the $40,000 of mortgage interest alone, which still beats the standard side ($32,200 + the $1,000 §170(p) candidate = $33,200). Taxable income $260,000; tax $2,480 + $9,120 + $24,332 + 24% × $48,600 = $47,596.",
+    expected: {
+      charitableAllowed: 0,
+      itemizedDeduction: 40000,
+      deductionTaken: "itemized",
+      taxableIncome: 260000,
+      federalTax: 47596,
+      nonItemizerCharitable: 0,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 300000,
+          itemizedMortgageInterest: 40000,
+          itemizedCharitable: 1000,
+        }),
+      );
+      return {
+        charitableAllowed: r.itemizedCharitableAllowed,
+        itemizedDeduction: r.itemizedDeduction,
+        deductionTaken: r.deductionTaken,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        nonItemizerCharitable: r.nonItemizerCharitableDeduction,
+      };
+    },
+  },
+  {
+    id: "t8-nonitemizer-charitable-probe",
+    kind: "tax",
+    note: "T8 (d) — §170(p), ACCEPTANCE PROBE (hand-derived; IRC §170(p), Pub. L. 119-21): 2026 MFJ, AGI $100,000 all ordinary, charitable $2,000, no other itemized components. The itemized total after the floor is $2,000 − 0.5% × $100,000 = $1,500, far under the standard side, so the standard side wins and §170(p) applies: the lesser of the $2,000 input and the $2,000 MFJ cap is $2,000, priced ABOVE THE LINE — AGI and MAGI fall to $98,000 — and the standard deduction $32,200 then applies, a $34,200 total deduction effect. Taxable income $65,800; tax $2,480 + 12% × $41,000 = $7,400. The floor never touches the §170(p) amount (the full $2,000 is deducted, not $1,500).",
+    expected: {
+      nonItemizerCharitable: 2000,
+      agi: 98000,
+      magi: 98000,
+      acaMagi: 98000,
+      deductions: 32200,
+      totalDeductionEffect: 34200,
+      itemizedDeduction: 1500,
+      deductionTaken: "standard",
+      taxableIncome: 65800,
+      federalTax: 7400,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({ otherOrdinary: 100000, itemizedCharitable: 2000 }),
+      );
+      return {
+        nonItemizerCharitable: r.nonItemizerCharitableDeduction,
+        agi: r.agi,
+        magi: r.magi,
+        acaMagi: r.acaMagi,
+        deductions: r.deductions,
+        totalDeductionEffect: 100000 - r.agi + r.deductions,
+        itemizedDeduction: r.itemizedDeduction,
+        deductionTaken: r.deductionTaken,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "t8-nonitemizer-cap-binding",
+    kind: "tax",
+    note: "T8 (e) — THE §170(p) CAP BINDS, PER FILING STATUS (hand-derived): (1) MFJ, AGI $100,000, charitable $5,000: the deduction is the $2,000 joint cap, not the $5,000 given — AGI $98,000, taxable income $65,800, tax $7,400 (the T8 (d) figures; the extra $3,000 of giving buys nothing on the standard side). (2) Single, AGI $50,000, charitable $3,000: the cap is $1,000 — AGI $49,000, standard deduction $16,100, taxable income $32,900, tax $1,240 + 12% × $20,500 = $3,700. (3) Head of household, AGI $60,000, charitable $1,500: the cap is $1,000 — AGI $59,000, standard deduction $24,150, taxable income $34,850, tax $1,770 + 12% × $17,150 = $3,828.",
+    expected: {
+      mfjDeduction: 2000,
+      mfjTaxable: 65800,
+      mfjTax: 7400,
+      singleDeduction: 1000,
+      singleAgi: 49000,
+      singleTaxable: 32900,
+      singleTax: 3700,
+      hohDeduction: 1000,
+      hohAgi: 59000,
+      hohTaxable: 34850,
+      hohTax: 3828,
+    },
+    actual: () => {
+      const mfj = priceYear(
+        basePrice({ otherOrdinary: 100000, itemizedCharitable: 5000 }),
+      );
+      const single = priceYear(
+        basePrice({
+          filingStatus: "single",
+          ageSpouse: null,
+          otherOrdinary: 50000,
+          itemizedCharitable: 3000,
+        }),
+      );
+      const hoh = priceYear(
+        basePrice({
+          filingStatus: "hoh",
+          ageSpouse: null,
+          otherOrdinary: 60000,
+          itemizedCharitable: 1500,
+        }),
+      );
+      return {
+        mfjDeduction: mfj.nonItemizerCharitableDeduction,
+        mfjTaxable: mfj.taxableIncome,
+        mfjTax: mfj.federalTax,
+        singleDeduction: single.nonItemizerCharitableDeduction,
+        singleAgi: single.agi,
+        singleTaxable: single.taxableIncome,
+        singleTax: single.federalTax,
+        hohDeduction: hoh.nonItemizerCharitableDeduction,
+        hohAgi: hoh.agi,
+        hohTaxable: hoh.taxableIncome,
+        hohTax: hoh.federalTax,
+      };
+    },
+  },
+  {
+    id: "t8-comparison-accounts-for-trio",
+    kind: "tax",
+    note: "T8 (f) — THE GREATER-OF COMPARISON RUNS ON POST-TRIO FIGURES (hand-derived): (1) THE FLIP: 2026 MFJ, AGI $100,000, mortgage interest $31,000, charitable $2,000. BEFORE the trio the itemized total would have been $33,000 and would have beaten the bare $32,200 standard deduction; AFTER the floor the charitable component is $1,500 and the itemized total is $32,500, while the standard side carries $32,200 + the $2,000 §170(p) deduction — the standard side wins, §170(p) applies above the line (AGI $98,000), taxable income $65,800, tax $7,400. (2) NO FLIP: mortgage interest $40,000 instead — the itemized total after the floor is $41,500 and wins; an itemizer gets NO §170(p) (AGI stays $100,000), taxable income $58,500, tax $2,480 + 12% × $33,700 = $6,524.",
+    expected: {
+      flipItemized: 32500,
+      flipTaken: "standard",
+      flipNonItemizer: 2000,
+      flipAgi: 98000,
+      flipTaxable: 65800,
+      flipTax: 7400,
+      noFlipItemized: 41500,
+      noFlipTaken: "itemized",
+      noFlipNonItemizer: 0,
+      noFlipAgi: 100000,
+      noFlipTaxable: 58500,
+      noFlipTax: 6524,
+    },
+    actual: () => {
+      const flip = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          itemizedMortgageInterest: 31000,
+          itemizedCharitable: 2000,
+        }),
+      );
+      const noFlip = priceYear(
+        basePrice({
+          otherOrdinary: 100000,
+          itemizedMortgageInterest: 40000,
+          itemizedCharitable: 2000,
+        }),
+      );
+      return {
+        flipItemized: flip.itemizedDeduction,
+        flipTaken: flip.deductionTaken,
+        flipNonItemizer: flip.nonItemizerCharitableDeduction,
+        flipAgi: flip.agi,
+        flipTaxable: flip.taxableIncome,
+        flipTax: flip.federalTax,
+        noFlipItemized: noFlip.itemizedDeduction,
+        noFlipTaken: noFlip.deductionTaken,
+        noFlipNonItemizer: noFlip.nonItemizerCharitableDeduction,
+        noFlipAgi: noFlip.agi,
+        noFlipTaxable: noFlip.taxableIncome,
+        noFlipTax: noFlip.federalTax,
+      };
+    },
+  },
+  {
+    id: "t8-section68-probe",
+    kind: "tax",
+    note: "T8 (g) — THE §68 LIMITATION, ACCEPTANCE PROBE (hand-derived from IRC §68(a) as reinstated by Pub. L. 119-21; the 2026 MFJ 37% threshold is $768,700, the top of the 35% bracket in the 2026 law row): 2026 MFJ, AGI $1,000,000 all ordinary, mortgage interest $100,000, nothing else. §68 applies AFTER the other limitations: the reduction is 2/37 × min($100,000, ($900,000 + $100,000) − $768,700 = $231,300) = 2/37 × $100,000 = $5,405.41, so the itemized total allowed is $94,594.59 and taxable income is $905,405.41. Federal tax by the 2026 brackets: the tax through $768,700 is $206,583.50 ($2,480 + $9,120 + $24,332 + $46,116 + $34,848 + $89,687.50) and the remaining $136,705.41 at 37% is $50,581.00 — total $257,164.50. (The audit probe this case is drawn from printed $257,164.41; the bracket arithmetic from the law row gives $257,164.50, a 9-cent slip in the probe, and this fixture pins the derived figure.) The AMT tentative computation keeps the UNREDUCED figures: AMTI is priced from the $900,000 taxable income without regard to §68 (no add-back — no SALT, standard side not taken), its tentative tax is under the regular tax, and AMT owed is $0.",
+    expected: {
+      section68Reduction: 5405.41,
+      itemizedDeduction: 94594.59,
+      deductionTaken: "itemized",
+      taxableIncome: 905405.41,
+      federalTax: 257164.5,
+      amti: 900000,
+      amtOwed: 0,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 1000000,
+          itemizedMortgageInterest: 100000,
+        }),
+      );
+      return {
+        section68Reduction: r.section68Reduction,
+        itemizedDeduction: r.itemizedDeduction,
+        deductionTaken: r.deductionTaken,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        amti: r.amti,
+        amtOwed: r.amtOwed,
+      };
+    },
+  },
+  {
+    id: "t8-section68-threshold-boundary",
+    kind: "tax",
+    note: "T8 (h) — §68 AT AND JUST OVER THE THRESHOLD (boundary; hand-derived): mortgage interest $50,000 in both years. (1) AGI exactly $768,700 (the 2026 MFJ threshold): taxable income without §68 is $718,700, and $718,700 + $50,000 = $768,700 exceeds the threshold by $0 — the reduction is $0, the itemized total is the full $50,000, taxable income $718,700, tax $116,896 (the tax through $512,450) + 35% × $206,250 = $189,083.50. (2) AGI $768,800 ($100 over): the excess is $100, the lesser figure is $100, and the reduction is 2/37 × $100 = $5.41 — the itemized total is $49,994.59, taxable income $718,805.41, tax $189,083.50 + 35% × $105.41 = $189,120.39. AMTI in the second year is the UNREDUCED $718,800 (taxable income without §68, no add-back), not $718,805.41.",
+    expected: {
+      atReduction: 0,
+      atItemized: 50000,
+      atTaxable: 718700,
+      atTax: 189083.5,
+      overReduction: 5.41,
+      overItemized: 49994.59,
+      overTaxable: 718805.41,
+      overTax: 189120.39,
+      overAmti: 718800,
+    },
+    actual: () => {
+      const at = priceYear(
+        basePrice({ otherOrdinary: 768700, itemizedMortgageInterest: 50000 }),
+      );
+      const over = priceYear(
+        basePrice({ otherOrdinary: 768800, itemizedMortgageInterest: 50000 }),
+      );
+      return {
+        atReduction: at.section68Reduction,
+        atItemized: at.itemizedDeduction,
+        atTaxable: at.taxableIncome,
+        atTax: at.federalTax,
+        overReduction: over.section68Reduction,
+        overItemized: over.itemizedDeduction,
+        overTaxable: over.taxableIncome,
+        overTax: over.federalTax,
+        overAmti: over.amti,
+      };
+    },
+  },
+  {
+    id: "t8-section68-after-floor",
+    kind: "tax",
+    note: "T8 (i) — §68 RUNS AFTER THE FLOOR, AND THE AMT KEEPS THE UNREDUCED-§68 FIGURES (hand-derived): 2026 MFJ, AGI $1,000,000 all ordinary, mortgage interest $50,000, charitable $20,000. Order matters: the floor first (0.5% × $1,000,000 = $5,000; charitable allowed $15,000), giving an otherwise-allowable itemized total of $65,000; §68 then takes 2/37 × min($65,000, ($935,000 + $65,000) − $768,700 = $231,300) = 2/37 × $65,000 = $3,513.51, leaving $61,486.49. Taxable income $938,513.51; tax $206,583.50 + 37% × $169,813.51 = $269,414.50. AMTI is priced from the taxable income WITHOUT §68 ($935,000; the floor still applies there — only §68 is carved out), no add-back applies, and AMT owed is $0.",
+    expected: {
+      charitableAllowed: 15000,
+      section68Reduction: 3513.51,
+      itemizedDeduction: 61486.49,
+      taxableIncome: 938513.51,
+      federalTax: 269414.5,
+      amti: 935000,
+      amtOwed: 0,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          otherOrdinary: 1000000,
+          itemizedMortgageInterest: 50000,
+          itemizedCharitable: 20000,
+        }),
+      );
+      return {
+        charitableAllowed: r.itemizedCharitableAllowed,
+        section68Reduction: r.section68Reduction,
+        itemizedDeduction: r.itemizedDeduction,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        amti: r.amti,
+        amtOwed: r.amtOwed,
+      };
+    },
+  },
+  {
+    id: "t8-trio-inert-2025",
+    kind: "tax",
+    note: "T8 (j) — ALL THREE RULES ARE INERT UNDER THE 2025 LAW ROW (hand-derived on the 2025 row: standard deduction $31,500 MFJ; brackets tops $23,850 / $96,950 / $206,700 / $394,600 / $501,050 / $751,600): the three acceptance-probe shapes priced at calendarYear 2025 price EXACTLY as before this build. (1) Floor shape (AGI $300,000, mortgage $30,000, charitable $10,000): no floor — charitable allowed $10,000, itemized $40,000, taxable income $260,000, tax $2,385 + $8,772 + $24,145 + 24% × $53,300 = $48,094. (2) §170(p) shape (AGI $100,000, charitable $2,000): no §170(p) — AGI stays $100,000, deductions $31,500, taxable income $68,500, tax $2,385 + 12% × $44,650 = $7,743. (3) §68 shape (AGI $1,000,000, mortgage $100,000): no §68 — itemized $100,000, taxable income $900,000, tax $202,154.50 (through $751,600) + 37% × $148,400 = $257,062.50. All three trio outputs are $0 in all three years.",
+    expected: {
+      floorCharitableAllowed: 10000,
+      floorItemized: 40000,
+      floorTaxable: 260000,
+      floorTax: 48094,
+      p170Deduction: 0,
+      p170Agi: 100000,
+      p170Taxable: 68500,
+      p170Tax: 7743,
+      s68Reduction: 0,
+      s68Itemized: 100000,
+      s68Taxable: 900000,
+      s68Tax: 257062.5,
+    },
+    actual: () => {
+      const floor = priceYear(
+        basePrice({
+          calendarYear: 2025,
+          otherOrdinary: 300000,
+          itemizedMortgageInterest: 30000,
+          itemizedCharitable: 10000,
+        }),
+      );
+      const p170 = priceYear(
+        basePrice({
+          calendarYear: 2025,
+          otherOrdinary: 100000,
+          itemizedCharitable: 2000,
+        }),
+      );
+      const s68 = priceYear(
+        basePrice({
+          calendarYear: 2025,
+          otherOrdinary: 1000000,
+          itemizedMortgageInterest: 100000,
+        }),
+      );
+      return {
+        floorCharitableAllowed: floor.itemizedCharitableAllowed,
+        floorItemized: floor.itemizedDeduction,
+        floorTaxable: floor.taxableIncome,
+        floorTax: floor.federalTax,
+        p170Deduction: p170.nonItemizerCharitableDeduction,
+        p170Agi: p170.agi,
+        p170Taxable: p170.taxableIncome,
+        p170Tax: p170.federalTax,
+        s68Reduction: s68.section68Reduction,
+        s68Itemized: s68.itemizedDeduction,
+        s68Taxable: s68.taxableIncome,
+        s68Tax: s68.federalTax,
+      };
+    },
+  },
+  {
+    id: "t8-trio-plan-march-and-contract",
+    kind: "tax",
+    note: "T8 (k) — THE TRIO FLOWS THROUGH THE PLAN MARCH, THE FUNDING ROWS, AND THE CONTRACT TEXT (hand-derived from T8 (d)): a two-year plan (2026–2027, ages 57–58, $100,000 of other ordinary income, $2,000 of charitable contributions entered, no balances, no spending, Do Nothing) prices the T8 (d) year twice — the 2027 year carries the 2026 law row forward, the trio is law-year data (2026+), and nothing in the year deflates — so each year carries the §170(p) deduction $2,000 on its detail, AGI $98,000, and federal tax $7,400; the lifetime federal tax is $14,800. The funding rows carry the same §170(p) figure in integer cents ($200,000) with a $0 §68 reduction. The contract's itemizedDeductionSemantics names all three rules, the statute sections, the 2/37 fraction, the above-the-line placement, the assumed married-filing-separately figure, and the cash-treatment simplification.",
+    expected: {
+      years: 2,
+      y1NonItemizer: 2000,
+      y1Agi: 98000,
+      y1Tax: 7400,
+      y2NonItemizer: 2000,
+      lifetimeFederal: 14800,
+      fundingNonItemizerCents: 200000,
+      fundingS68Cents: 0,
+      semanticsFloor: 1,
+      semantics170p: 1,
+      semantics68: 1,
+      semanticsFraction: 1,
+      semanticsAboveTheLine: 1,
+      semanticsAssumedMfs: 1,
+      semanticsCash: 1,
+    },
+    actual: () => {
+      const plan = simulateRothPlan(
+        basePlan({
+          endAgePrimary: 58,
+          otherOrdinaryAnnual: 100000,
+          itemizedCharitable: 2000,
+        }),
+        DO_NOTHING,
+      );
+      const funding = buildRothFunding(
+        basePlan({
+          endAgePrimary: 58,
+          otherOrdinaryAnnual: 100000,
+          itemizedCharitable: 2000,
+        }),
+        DO_NOTHING,
+      );
+      const s = ITEMIZED_DEDUCTION_SEMANTICS;
+      return {
+        years: plan.years.length,
+        y1NonItemizer: plan.years[0]?.detail.nonItemizerCharitableDeduction ?? null,
+        y1Agi: plan.years[0]?.detail.agi ?? null,
+        y1Tax: plan.years[0]?.federalTax ?? null,
+        y2NonItemizer: plan.years[1]?.detail.nonItemizerCharitableDeduction ?? null,
+        lifetimeFederal: plan.lifetimeFederalTax,
+        fundingNonItemizerCents: funding[0]?.nonItemizerCharitableDeductionCents ?? null,
+        fundingS68Cents: funding[0]?.section68ReductionCents ?? null,
+        semanticsFloor: s.includes("§170(b)(1)(I)") ? 1 : 0,
+        semantics170p: s.includes("§170(p)") ? 1 : 0,
+        semantics68: s.includes("§68") ? 1 : 0,
+        semanticsFraction: s.includes("2/37") ? 1 : 0,
+        semanticsAboveTheLine: s.includes("ABOVE THE LINE") ? 1 : 0,
+        semanticsAssumedMfs: s.includes("ASSUMED") ? 1 : 0,
+        semanticsCash: s.includes("cash contributions") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "salt-schedule-enacted-amounts",
+    kind: "tax",
+    note: "Build B (a) — THE SALT SCHEDULE IS ENACTED LAW, STATED IN FULL (IRC §164(b)(7), as amended by §70120 of Public Law 119-21): the applicable limitation is $40,000 for 2025 with a $500,000 phase-down threshold, and the statute applies 101% of the prior year's amount successively (rounded to cents) — limitations $40,400 / $40,804 / $41,212.04 / $41,624.16 and thresholds $505,000 / $510,050 / $515,150.50 / $520,302.01 for 2026–2029, the $10,000 floor and the 30% phase-down rate unchanged. For taxable years beginning after 2029 the entry is the $10,000 limitation with NO phase-down (rate 0, floor equal to the cap), dated 2030 — and a 2035 lookup resolves to that same post-2029 entry, still $10,000: the reversion is permanent, not a one-year dip.",
+    expected: {
+      cap2025: 40000,
+      start2025: 500000,
+      cap2026: 40400,
+      start2026: 505000,
+      cap2027: 40804,
+      start2027: 510050,
+      cap2028: 41212.04,
+      start2028: 515150.5,
+      cap2029: 41624.16,
+      start2029: 520302.01,
+      floor2029: 10000,
+      rate2029: 30,
+      cap2030: 10000,
+      rate2030: 0,
+      cap2035: 10000,
+      floor2035: 10000,
+      entryYear2035: 2030,
+    },
+    actual: () => {
+      const e25 = saltScheduleForYear(2025);
+      const e26 = saltScheduleForYear(2026);
+      const e27 = saltScheduleForYear(2027);
+      const e28 = saltScheduleForYear(2028);
+      const e29 = saltScheduleForYear(2029);
+      const e30 = saltScheduleForYear(2030);
+      const e35 = saltScheduleForYear(2035);
+      return {
+        cap2025: e25.cap,
+        start2025: e25.phaseOutStart,
+        cap2026: e26.cap,
+        start2026: e26.phaseOutStart,
+        cap2027: e27.cap,
+        start2027: e27.phaseOutStart,
+        cap2028: e28.cap,
+        start2028: e28.phaseOutStart,
+        cap2029: e29.cap,
+        start2029: e29.phaseOutStart,
+        floor2029: e29.capFloor,
+        rate2029: e29.phaseOutRatePct,
+        cap2030: e30.cap,
+        rate2030: e30.phaseOutRatePct,
+        cap2035: e35.cap,
+        floor2035: e35.capFloor,
+        entryYear2035: e35.entryYear,
+      };
+    },
+  },
+  {
+    id: "salt-schedule-2030-reversion-probes",
+    kind: "tax",
+    note: "Build B (b) — THE 2030 REVERSION, ACCEPTANCE PROBES (hand-derived from §164(b)(7): for taxable years beginning after 2029 the limitation is $10,000; priced at 0% inflation to isolate the SALT change against the engine's held-flat 2026 row — the standard deduction and brackets are the 2026 row's, carried forward). Probe 1: 2030 MFJ, ordinary AGI $180,000, SALT paid $40,000, nothing else — SALT allowed is $10,000 (not the $40,400 the 2026-row carry-forward allowed before this build), the $10,000 itemized total loses to the $32,200 standard deduction, taxable income is $147,800, and federal tax is $2,480 + $9,120 + 22% × $47,000 = $21,940. Probe 4: the same year with SALT paid $8,000 — under the limitation, so the whole $8,000 is allowed.",
+    expected: {
+      cap2030: 10000,
+      allowed2030: 10000,
+      taken2030: "standard",
+      deductions2030: 32200,
+      taxable2030: 147800,
+      tax2030: 21940,
+      allowed2030Small: 8000,
+    },
+    actual: () => {
+      const probe1 = priceYear(
+        basePrice({
+          calendarYear: 2030,
+          inflationPct: 0,
+          otherOrdinary: 180000,
+          itemizedSaltPaid: 40000,
+        }),
+      );
+      const probe4 = priceYear(
+        basePrice({
+          calendarYear: 2030,
+          inflationPct: 0,
+          otherOrdinary: 180000,
+          itemizedSaltPaid: 8000,
+        }),
+      );
+      return {
+        cap2030: probe1.itemizedSaltCap,
+        allowed2030: probe1.itemizedSaltAllowed,
+        taken2030: probe1.deductionTaken,
+        deductions2030: probe1.deductions,
+        taxable2030: probe1.taxableIncome,
+        tax2030: probe1.federalTax,
+        allowed2030Small: probe4.itemizedSaltAllowed,
+      };
+    },
+  },
+  {
+    id: "salt-schedule-2027-cap-probe",
+    kind: "tax",
+    note: "Build B (c) — THE 2027 LIMITATION, ACCEPTANCE PROBE (hand-derived from §164(b)(7): the 2027 limitation is 101% of 2026's $40,400 = $40,804, and its phase-down threshold is $510,050; priced at 0% inflation against the carried-forward 2026 row). 2027 MFJ, AGI $180,000 (under the threshold, so no phase-down), SALT paid $45,000: allowed is the full enacted cap, $40,804 — not $40,400. The $40,804 itemized total beats the $32,200 standard deduction; taxable income $139,196; federal tax $2,480 + $9,120 + 22% × $38,396 = $20,047.12.",
+    expected: {
+      cap2027: 40804,
+      allowed2027: 40804,
+      taken2027: "itemized",
+      taxable2027: 139196,
+      tax2027: 20047.12,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          calendarYear: 2027,
+          inflationPct: 0,
+          otherOrdinary: 180000,
+          itemizedSaltPaid: 45000,
+        }),
+      );
+      return {
+        cap2027: r.itemizedSaltCap,
+        allowed2027: r.itemizedSaltAllowed,
+        taken2027: r.deductionTaken,
+        taxable2027: r.taxableIncome,
+        tax2027: r.federalTax,
+      };
+    },
+  },
+  {
+    id: "salt-schedule-2028-2029-phase-down-probes",
+    kind: "tax",
+    note: "Build B (d) — THE PHASE-DOWN RUNS ON EACH YEAR'S OWN THRESHOLD (hand-derived from §164(b)(7); priced at 0% inflation). 2029 probe: SALT paid $50,000, modified AGI $600,000 — the enacted cap $41,624.16 is reduced by 30% × ($600,000 − $520,302.01) = $23,909.40, so the applied cap and the allowed amount are $17,714.76. 2028 cross-check: SALT paid $60,000, AGI $600,000 — cap $41,212.04 − 30% × ($600,000 − $515,150.50) = $41,212.04 − $25,454.85 = $15,757.19 allowed. (In both years the phased-down SALT total is below the $32,200 standard deduction, so the standard side wins; the allowed figures are the capped SALT amounts the year surfaces either way.)",
+    expected: {
+      cap2029: 17714.76,
+      allowed2029: 17714.76,
+      cap2028: 15757.19,
+      allowed2028: 15757.19,
+    },
+    actual: () => {
+      const y29 = priceYear(
+        basePrice({
+          calendarYear: 2029,
+          inflationPct: 0,
+          otherOrdinary: 600000,
+          itemizedSaltPaid: 50000,
+        }),
+      );
+      const y28 = priceYear(
+        basePrice({
+          calendarYear: 2028,
+          inflationPct: 0,
+          otherOrdinary: 600000,
+          itemizedSaltPaid: 60000,
+        }),
+      );
+      return {
+        cap2029: y29.itemizedSaltCap,
+        allowed2029: y29.itemizedSaltAllowed,
+        cap2028: y28.itemizedSaltCap,
+        allowed2028: y28.itemizedSaltAllowed,
+      };
+    },
+  },
+  {
+    id: "salt-schedule-post-2030-permanent",
+    kind: "tax",
+    note: "Build B (e) — THE $10,000 LIMITATION IS PERMANENT AFTER 2029 (hand-derived from §164(b)(7); priced at 0% inflation). 2035 MFJ, AGI $180,000, SALT paid $40,000: the cap is still $10,000 and $10,000 is allowed — the limitation never falls back to the 2026 row's $40,400 (or any higher figure) in any later year. 2035 at AGI $900,000 with $50,000 paid: still $10,000 — from 2030 there is no phase-down, so high income neither raises nor lowers the limitation. 2031 prices the same $10,000.",
+    expected: {
+      cap2035: 10000,
+      allowed2035: 10000,
+      cap2035High: 10000,
+      allowed2035High: 10000,
+      allowed2031: 10000,
+    },
+    actual: () => {
+      const y35 = priceYear(
+        basePrice({
+          calendarYear: 2035,
+          inflationPct: 0,
+          otherOrdinary: 180000,
+          itemizedSaltPaid: 40000,
+        }),
+      );
+      const y35High = priceYear(
+        basePrice({
+          calendarYear: 2035,
+          inflationPct: 0,
+          otherOrdinary: 900000,
+          itemizedSaltPaid: 50000,
+        }),
+      );
+      const y31 = priceYear(
+        basePrice({
+          calendarYear: 2031,
+          inflationPct: 0,
+          otherOrdinary: 180000,
+          itemizedSaltPaid: 40000,
+        }),
+      );
+      return {
+        cap2035: y35.itemizedSaltCap,
+        allowed2035: y35.itemizedSaltAllowed,
+        cap2035High: y35High.itemizedSaltCap,
+        allowed2035High: y35High.itemizedSaltAllowed,
+        allowed2031: y31.itemizedSaltAllowed,
+      };
+    },
+  },
+  {
+    id: "salt-schedule-contract-text",
+    kind: "tax",
+    note: "Build B (f) — THE CONTRACT PUBLISHES THE SCHEDULE AS ENACTED LAW: describeApi's itemizedDeductionSemantics must cite IRC §164(b)(7) and state the enacted amounts — the 2027–2029 limitations ($40,804 / $41,212.04 / $41,624.16), the 2028–2029 phase-down thresholds ($515,150.50 / $520,302.01), and the permanent $10,000 limitation for taxable years beginning after 2029 — so the published contract cannot silently revert to describing a two-row table with a future reversion.",
+    expected: { phrasesFound: 7 },
+    actual: () => {
+      const s = ITEMIZED_DEDUCTION_SEMANTICS;
+      const phrases = [
+        "§164(b)(7)",
+        "$40,804",
+        "$41,212.04",
+        "$41,624.16",
+        "$515,150.50",
+        "$520,302.01",
+        "taxable years beginning after 2029 the limitation is $10,000",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => s.includes(p)).length,
+      };
+    },
+  },
+  {
+    id: "build-c-aca-tables-and-scope",
+    kind: "tax",
+    note: "Build C (a) — THE 2027 TABLE IS PUBLISHED LAW, STATED IN FULL (Rev. Proc. 2026-26, Internal Revenue Bulletin 2026-31): six bands — under 133% → 2.15; 133–150% → 3.23 to 4.30; 150–200% → 4.30 to 6.78; 200–250% → 6.78 to 8.66; 250–300% → 8.66 to 10.22; 300–400% → 10.22. SCOPE, read off acaTableFor itself: a specific 2027 lookup returns that table; a specific 2028 or 2030 lookup returns the 2026 table (the 2027 partial row is NOT the fallback for 2028+); a PROJECTED lookup returns the 2026 table for 2027 and 2028 alike, and still returns the 2025 enhanced table for a projected 2025 year (projected pricing is bit-identical to before this build).",
+    expected: {
+      bands2027: 6,
+      b0Initial: 2.15,
+      b0Final: 2.15,
+      b1Initial: 3.23,
+      b1Final: 4.3,
+      b2Initial: 4.3,
+      b2Final: 6.78,
+      b3Initial: 6.78,
+      b3Final: 8.66,
+      b4Initial: 8.66,
+      b4Final: 10.22,
+      b5Initial: 10.22,
+      b5Final: 10.22,
+      b5UpTo: 400,
+      specific2028Is2026: 1,
+      specific2030Is2026: 1,
+      projected2027Is2026: 1,
+      projected2028Is2026: 1,
+      projected2025Is2025: 1,
+    },
+    actual: () => {
+      const t27 = acaTableFor(2027);
+      const eq = (a: unknown, b: unknown) =>
+        JSON.stringify(a) === JSON.stringify(b) ? 1 : 0;
+      return {
+        bands2027: t27.length,
+        b0Initial: t27[0]?.initialPct ?? null,
+        b0Final: t27[0]?.finalPct ?? null,
+        b1Initial: t27[1]?.initialPct ?? null,
+        b1Final: t27[1]?.finalPct ?? null,
+        b2Initial: t27[2]?.initialPct ?? null,
+        b2Final: t27[2]?.finalPct ?? null,
+        b3Initial: t27[3]?.initialPct ?? null,
+        b3Final: t27[3]?.finalPct ?? null,
+        b4Initial: t27[4]?.initialPct ?? null,
+        b4Final: t27[4]?.finalPct ?? null,
+        b5Initial: t27[5]?.initialPct ?? null,
+        b5Final: t27[5]?.finalPct ?? null,
+        b5UpTo: t27[5]?.upToPctFpl ?? null,
+        specific2028Is2026: eq(acaTableFor(2028), acaTableFor(2026)),
+        specific2030Is2026: eq(acaTableFor(2030), acaTableFor(2026)),
+        projected2027Is2026: eq(
+          acaTableFor(2027, { projected: true }),
+          acaTableFor(2026),
+        ),
+        projected2028Is2026: eq(
+          acaTableFor(2028, { projected: true }),
+          acaTableFor(2026),
+        ),
+        projected2025Is2025: eq(
+          acaTableFor(2025, { projected: true }),
+          acaTableFor(2025),
+        ),
+      };
+    },
+  },
+  {
+    id: "build-c-2026-133-boundary",
+    kind: "tax",
+    note: "Build C (b) — BAND EDGES ARE LOWER-INCLUSIVE AT 133%, 2026 ACCEPTANCE PROBES (hand-derived from Rev. Proc. 2025-25, §3.01: the first band is income LESS THAN 133% FPL at 2.10%, the second is AT LEAST 133% starting at 3.14%): household of 2, FPL $21,150 (2025 guidelines), benchmark $15,000. MAGI exactly $28,129.50 is exactly 133% FPL — the applicable percentage is the second band's INITIAL 3.14%, the expected contribution is 3.14% × $28,129.50 = $883.27, and the credit is $15,000 − $883.27 = $14,116.73. MAGI one cent below ($28,129.49) is still under 133% — 2.10%, contribution $590.72, credit $14,409.28. One cent above also prices 3.14% (the second band's floor). Before this build the at-edge case priced 2.10% and a $14,409.28 credit — the defect this case pins shut.",
+    expected: {
+      atPctFpl: 133,
+      atApplicable: 3.14,
+      atCredit: 14116.73,
+      belowApplicable: 2.1,
+      belowCredit: 14409.28,
+      aboveApplicable: 3.14,
+      aboveCredit: 14116.73,
+    },
+    actual: () => {
+      const at = acaCreditFor({
+        magi: 28129.5,
+        householdSize: 2,
+        coverageYear: 2026,
+        benchmarkAnnual: 15000,
+      });
+      const below = acaCreditFor({
+        magi: 28129.49,
+        householdSize: 2,
+        coverageYear: 2026,
+        benchmarkAnnual: 15000,
+      });
+      const above = acaCreditFor({
+        magi: 28129.51,
+        householdSize: 2,
+        coverageYear: 2026,
+        benchmarkAnnual: 15000,
+      });
+      return {
+        atPctFpl: at.pctFpl,
+        atApplicable: at.applicablePct,
+        atCredit: at.credit,
+        belowApplicable: below.applicablePct,
+        belowCredit: below.credit,
+        aboveApplicable: above.applicablePct,
+        aboveCredit: above.credit,
+      };
+    },
+  },
+  {
+    id: "build-c-2026-other-band-edges",
+    kind: "tax",
+    note: "Build C (b2) — LOWER-INCLUSIVE SELECTION AT EVERY OTHER 2026 EDGE (hand-derived from Rev. Proc. 2025-25; household of 2, FPL $21,150, benchmark $15,000): income exactly at an edge takes the band STARTING there, whose initial percentage equals the prior band's final at these continuous edges — exactly 150% (MAGI $31,725) → 4.19%, contribution $1,329.28, credit $13,670.72; exactly 200% ($42,300) → 6.60%, $2,791.80, $12,208.20; exactly 250% ($52,875) → 8.44%, $4,462.65, $10,537.35; exactly 300% ($63,450) → 9.96%, $6,319.62, $8,680.38. (The 400% edge is pinned by tax-aca-dollar-over-cliff: a credit pays at exactly 400% and is $0 one dollar above.)",
+    expected: {
+      app150: 4.19,
+      credit150: 13670.72,
+      app200: 6.6,
+      credit200: 12208.2,
+      app250: 8.44,
+      credit250: 10537.35,
+      app300: 9.96,
+      credit300: 8680.38,
+    },
+    actual: () => {
+      const at = (magi: number) =>
+        acaCreditFor({
+          magi,
+          householdSize: 2,
+          coverageYear: 2026,
+          benchmarkAnnual: 15000,
+        });
+      const e150 = at(31725);
+      const e200 = at(42300);
+      const e250 = at(52875);
+      const e300 = at(63450);
+      return {
+        app150: e150.applicablePct,
+        credit150: e150.credit,
+        app200: e200.applicablePct,
+        credit200: e200.credit,
+        app250: e250.applicablePct,
+        credit250: e250.credit,
+        app300: e300.applicablePct,
+        credit300: e300.credit,
+      };
+    },
+  },
+  {
+    id: "build-c-2027-acceptance-probes",
+    kind: "tax",
+    note: "Build C (c) — THE 2027 TABLE PRICES A SPECIFIC 2027 YEAR, ACCEPTANCE PROBES (hand-derived from Rev. Proc. 2026-26, IRB 2026-31; household of 2, FPL $21,640 on the 2026 guidelines): (1) MAGI $80,000 is 369.69% FPL, inside the flat 300–400% band — applicable 10.22%, contribution $8,176, credit on an $18,000 benchmark $9,824. (2) MAGI $37,870 is exactly 175% FPL, the midpoint of the 150–200% band — interpolated applicable (4.30 + 6.78) / 2 = 5.54%, contribution $2,098.00, credit on a $12,000 benchmark $9,902.00. (3) MAGI exactly 133% FPL ($28,781.20) takes the second band's initial 3.23% (lower-inclusive) — contribution $929.63, credit on a $15,000 benchmark $14,070.37 — while one cent below prices the first band's 2.15% and a $14,381.20 credit.",
+    expected: {
+      fpl: 21640,
+      pct1: 369.69,
+      app1: 10.22,
+      credit1: 9824,
+      app2: 5.54,
+      credit2: 9902,
+      appAt133: 3.23,
+      creditAt133: 14070.37,
+      appBelow133: 2.15,
+      creditBelow133: 14381.2,
+    },
+    actual: () => {
+      const p1 = acaCreditFor({
+        magi: 80000,
+        householdSize: 2,
+        coverageYear: 2027,
+        benchmarkAnnual: 18000,
+      });
+      const p2 = acaCreditFor({
+        magi: 37870,
+        householdSize: 2,
+        coverageYear: 2027,
+        benchmarkAnnual: 12000,
+      });
+      const at133 = acaCreditFor({
+        magi: 28781.2,
+        householdSize: 2,
+        coverageYear: 2027,
+        benchmarkAnnual: 15000,
+      });
+      const below133 = acaCreditFor({
+        magi: 28781.19,
+        householdSize: 2,
+        coverageYear: 2027,
+        benchmarkAnnual: 15000,
+      });
+      return {
+        fpl: p1.fpl,
+        pct1: p1.pctFpl,
+        app1: p1.applicablePct,
+        credit1: p1.credit,
+        app2: p2.applicablePct,
+        credit2: p2.credit,
+        appAt133: at133.applicablePct,
+        creditAt133: at133.credit,
+        appBelow133: below133.applicablePct,
+        creditBelow133: below133.credit,
+      };
+    },
+  },
+  {
+    id: "build-c-2027-other-band-edges",
+    kind: "tax",
+    note: "Build C (d) — LOWER-INCLUSIVE SELECTION AT EVERY OTHER 2027 EDGE (hand-derived from Rev. Proc. 2026-26; household of 2, FPL $21,640, benchmark $12,000): exactly 150% (MAGI $32,460) → the 150–200% band's initial 4.30%, contribution $1,395.78, credit $10,604.22; exactly 200% ($43,280) → 6.78%, $2,934.38, $9,065.62; exactly 250% ($54,100) → 8.66%, $4,685.06, $7,314.94; exactly 300% ($64,920) → 10.22%, $6,634.82, $5,365.18.",
+    expected: {
+      app150: 4.3,
+      credit150: 10604.22,
+      app200: 6.78,
+      credit200: 9065.62,
+      app250: 8.66,
+      credit250: 7314.94,
+      app300: 10.22,
+      credit300: 5365.18,
+    },
+    actual: () => {
+      const at = (magi: number) =>
+        acaCreditFor({
+          magi,
+          householdSize: 2,
+          coverageYear: 2027,
+          benchmarkAnnual: 12000,
+        });
+      const e150 = at(32460);
+      const e200 = at(43280);
+      const e250 = at(54100);
+      const e300 = at(64920);
+      return {
+        app150: e150.applicablePct,
+        credit150: e150.credit,
+        app200: e200.applicablePct,
+        credit200: e200.credit,
+        app250: e250.applicablePct,
+        credit250: e250.credit,
+        app300: e300.applicablePct,
+        credit300: e300.credit,
+      };
+    },
+  },
+  {
+    id: "build-c-projected-scope",
+    kind: "tax",
+    note: "Build C (e) — PROJECTED PRICING NEVER USES THE 2027 TABLE (hand-derived; every projected figure below prices the 2026 table's flat 300–400% percentage, 9.96%): (1) acaCreditFor in projected mode for coverage 2027, MAGI $80,000, household of 2, benchmark $18,000 → 9.96%, credit $10,032 — NOT the specific-2027 figure of $9,824 in build-c-2027-acceptance-probes. (2) A SPECIFIC coverage year after 2027 (2028, same inputs) also prices 9.96% / $10,032 — the 2027 table is not the 2028 fallback (its FPL is the same $21,640, by the newest-guideline-row fallback). (3) THE PLAN MARCH: one-year plans starting in 2027 (born 1970/1981, retire 57, other income $80,000, household of 2, couple benchmark $18,000) and in 2029 (born 1972/1983, same shape) each keep a $10,032 credit at 9.96% — a projected plan year in AND after 2027 prices on the 2026 percentages. (4) THE PLAYGROUND PROJECTION vs THE SINGLE-YEAR PRICER on the same $80,000 shape (household of 2, benchmark $18,000): the projected 2027 year keeps $10,032 at 9.96%, while the single-year pricer naming 2027 prices $9,824 at 10.22% — a $208 difference that is exactly the audit's 2027 counterexample delta.",
+    expected: {
+      projDirectApp: 9.96,
+      projDirectCredit: 10032,
+      specific2028App: 9.96,
+      specific2028Credit: 10032,
+      plan2027App: 9.96,
+      plan2027Credit: 10032,
+      plan2029App: 9.96,
+      plan2029Credit: 10032,
+      projPlayground2027App: 9.96,
+      projPlayground2027Credit: 10032,
+      single2027App: 10.22,
+      single2027Credit: 9824,
+      scopeDiff: 208,
+    },
+    actual: () => {
+      const projDirect = acaCreditFor({
+        magi: 80000,
+        householdSize: 2,
+        coverageYear: 2027,
+        benchmarkAnnual: 18000,
+        projected: true,
+      });
+      const specific2028 = acaCreditFor({
+        magi: 80000,
+        householdSize: 2,
+        coverageYear: 2028,
+        benchmarkAnnual: 18000,
+      });
+      const planShape = {
+        endAgePrimary: 57,
+        retirementAge: 57,
+        pretaxStart: 0,
+        otherOrdinaryAnnual: 80000,
+        acaHouseholdSize: 2,
+        acaHouseholdSizeAfter: 2,
+        acaBenchmarkCouple: 18000,
+        acaBenchmarkSingle: 18000,
+      };
+      const plan2027 = simulateRothPlan(
+        basePlan({
+          ...planShape,
+          startYear: 2027,
+          birthYearPrimary: 1970,
+          birthYearSpouse: 1981,
+        }),
+        DO_NOTHING,
+      );
+      const plan2029 = simulateRothPlan(
+        basePlan({
+          ...planShape,
+          startYear: 2029,
+          birthYearPrimary: 1972,
+          birthYearSpouse: 1983,
+        }),
+        DO_NOTHING,
+      );
+      const template = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 57,
+        ageSpouse: 46,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 80000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 18000,
+        stateRatePct: 0,
+      };
+      const proj = projectPlaygroundYears(template, {
+        toAge: 59,
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSizeAfter: null,
+        acaStepDownYear: null,
+        startTaxable: null,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat",
+        moneyOutKind: "conversion",
+        stopKind: "none",
+        stopAge: null,
+        stopFloor: null,
+      });
+      const proj2027 = proj.years.find((y) => y.calendarYear === 2027);
+      const single2027 = pricePlaygroundYear({
+        ...template,
+        taxYear: 2027,
+        agePrimary: 58,
+        ageSpouse: 47,
+      });
+      const projCredit = proj2027?.result.aca.credit ?? null;
+      const singleCredit = single2027.aca.credit;
+      return {
+        projDirectApp: projDirect.applicablePct,
+        projDirectCredit: projDirect.credit,
+        specific2028App: specific2028.applicablePct,
+        specific2028Credit: specific2028.credit,
+        plan2027App: plan2027.years[0]?.detail.aca.applicablePct ?? null,
+        plan2027Credit: plan2027.years[0]?.acaCreditKept ?? null,
+        plan2029App: plan2029.years[0]?.detail.aca.applicablePct ?? null,
+        plan2029Credit: plan2029.years[0]?.acaCreditKept ?? null,
+        projPlayground2027App: proj2027?.result.aca.applicablePct ?? null,
+        projPlayground2027Credit: projCredit,
+        single2027App: single2027.aca.applicablePct,
+        single2027Credit: singleCredit,
+        scopeDiff:
+          projCredit != null && singleCredit != null
+            ? Math.round((projCredit - singleCredit) * 100) / 100
+            : null,
+      };
+    },
+  },
+  {
+    id: "build-c-contract-text",
+    kind: "tax",
+    note: "Build C (f) — THE CONTRACT PUBLISHES BOTH CHANGES WITH THEIR CITATIONS: describeApi's acaSemantics must cite Rev. Proc. 2025-25 and Rev. Proc. 2026-26 (Internal Revenue Bulletin 2026-31), state the lower-inclusive band rule ('at least X% but less than Y%', 'LOWER-INCLUSIVE', the 133% examples at 3.14% for 2026 and 3.23% for 2027), state the 2027 required contribution percentage (10.22%), state the unchanged cliff (a credit pays at 'exactly 400%'), and state the scope limit in as many words — the 2027 table is 'NOT the fallback for 2028', projected pricing prices 'EVERY projected year' on the 2026 table, and projected years stay on the 'newest complete law row' — so the published contract cannot silently widen the 2027 table's reach.",
+    expected: { phrasesFound: 12 },
+    actual: () => {
+      const s = ACA_SEMANTICS;
+      const phrases = [
+        "Rev. Proc. 2025-25",
+        "Rev. Proc. 2026-26",
+        "Internal Revenue Bulletin 2026-31",
+        "LOWER-INCLUSIVE",
+        "at least X% but less than Y%",
+        "3.14% for 2026",
+        "3.23% for 2027",
+        "required contribution percentage for 2027 is 10.22%",
+        "exactly 400%",
+        "NOT the fallback for 2028",
+        "EVERY projected year",
+        "newest complete law row",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => s.includes(p)).length,
+      };
+    },
+  },
+  {
+    id: "build-e-irmaa-survivor-lookback-joint",
+    kind: "tax",
+    note: "BUILD E — ACCEPTANCE PROBE, SURVIVOR IRMAA GRADED ON THE LOOKBACK YEAR'S OWN FILING STATUS (SSA POMS HI 01101.010 / HI 01101.020; 20 CFR 418.1135: a premium year's IRMAA is determined from the return filed two years earlier, using the filing status on THAT return). Hand-derived from the 2026 IRMAA table (the row every year of this 0%-inflation plan prices under): joint tiers top out at $218,000 / $274,000 / $342,000 / $410,000 / $749,999, so MAGI $400,000 is joint tier 3; the single table's tier-3 top is $205,000 and its tier-4 top $499,999, so the same MAGI on the single table is tier 4. Joint tier-3 per-person annual surcharge, from the table: (Part B total $527.50 − standard $202.90 + Part D $60.40) × 12 = $385.00 × 12 = $4,620. The plan: couple born 1961 / 1962, $400,000/yr of other ordinary income (= spending, so no draws; MAGI is $400,000 every year), the spouse dies in 2028 (2028 still files jointly; 2029 on files single, one person on Medicare). Premium year 2030 reads the 2028 return — filed JOINTLY — so its tier is 3 and its charge is $4,620 for the one person on Medicare (the pre-fix engine graded the 2028 MAGI on the premium year's single status and charged tier 4, $6,355.20). Premium year 2029 likewise reads the 2027 joint return: tier 3, $4,620. The engine's own classifier cross-check: irmaaAnnualPerPerson(3, TAX_LAW_2026) must equal the charged $4,620.",
+    expected: {
+      tier2030: 3,
+      paid2030: 4620,
+      srcYear2030: 2028,
+      srcMagi2030: 400000,
+      srcStatus2030: "mfj",
+      persons2030: 1,
+      tier2029: 3,
+      paid2029: 4620,
+      srcStatus2029: "mfj",
+      jointTier3Annual: 4620,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1962,
+          endAgePrimary: 70,
+          retirementAge: 57,
+          windowStartAge: 57,
+          pretaxStart: 0,
+          taxableStart: 1000000,
+          otherOrdinaryAnnual: 400000,
+          annualSpending: 400000,
+          expectedReturnPct: 0,
+          inflationPct: 0,
+          survivorEnabled: true,
+          survivorWho: "spouse",
+          survivorDeathYear: 2028,
+        }),
+        DO_NOTHING,
+      );
+      const y29 = res.years.find((y) => y.year === 2029);
+      const y30 = res.years.find((y) => y.year === 2030);
+      return {
+        tier2030: y30?.detail.irmaa.paidTier ?? null,
+        paid2030: y30?.irmaaPaid ?? null,
+        srcYear2030: y30?.detail.irmaa.paidSourceYear ?? null,
+        srcMagi2030: y30?.detail.irmaa.paidSourceMagi ?? null,
+        srcStatus2030: y30?.detail.irmaa.paidSourceFilingStatus ?? null,
+        persons2030: y30?.detail.irmaa.personsOnMedicare ?? null,
+        tier2029: y29?.detail.irmaa.paidTier ?? null,
+        paid2029: y29?.irmaaPaid ?? null,
+        srcStatus2029: y29?.detail.irmaa.paidSourceFilingStatus ?? null,
+        jointTier3Annual: irmaaAnnualPerPerson(3, TAX_LAW_2026),
+      };
+    },
+  },
+  {
+    id: "build-e-irmaa-survivor-lookback-single",
+    kind: "tax",
+    note: "BUILD E — A SURVIVOR PREMIUM YEAR WHOSE LOOKBACK RETURN WAS FILED SINGLE TAKES THE SINGLE TABLE (same SSA rule and hand derivation as build-e-irmaa-survivor-lookback-joint): the same plan (couple born 1961 / 1962, $400,000/yr, spouse dies in 2028). Premium year 2031 reads the 2029 return — the first filed SINGLE — so the single table applies: $400,000 is single tier 4 (tier-3 top $205,000, tier-4 top $499,999), and the charge is the single tier-4 per-person figure from the 2026 table: (Part B total $649.20 − standard $202.90 + Part D $83.30) × 12 = $529.60 × 12 = $6,355.20 for the one person on Medicare — the same dollars the defect charged in 2030, here CORRECT because the lookback return itself was single. The death year itself (premium year 2028, still a joint filer year with both spouses on Medicare) reads the 2026 joint return: tier 3 × 2 people = $9,240.",
+    expected: {
+      tier2031: 4,
+      paid2031: 6355.2,
+      srcYear2031: 2029,
+      srcStatus2031: "single",
+      tier2028: 3,
+      paid2028: 9240,
+      srcStatus2028: "mfj",
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1962,
+          endAgePrimary: 70,
+          retirementAge: 57,
+          windowStartAge: 57,
+          pretaxStart: 0,
+          taxableStart: 1000000,
+          otherOrdinaryAnnual: 400000,
+          annualSpending: 400000,
+          expectedReturnPct: 0,
+          inflationPct: 0,
+          survivorEnabled: true,
+          survivorWho: "spouse",
+          survivorDeathYear: 2028,
+        }),
+        DO_NOTHING,
+      );
+      const y28 = res.years.find((y) => y.year === 2028);
+      const y31 = res.years.find((y) => y.year === 2031);
+      return {
+        tier2031: y31?.detail.irmaa.paidTier ?? null,
+        paid2031: y31?.irmaaPaid ?? null,
+        srcYear2031: y31?.detail.irmaa.paidSourceYear ?? null,
+        srcStatus2031: y31?.detail.irmaa.paidSourceFilingStatus ?? null,
+        tier2028: y28?.detail.irmaa.paidTier ?? null,
+        paid2028: y28?.irmaaPaid ?? null,
+        srcStatus2028: y28?.detail.irmaa.paidSourceFilingStatus ?? null,
+      };
+    },
+  },
+  {
+    id: "build-e-irmaa-no-death-unchanged",
+    kind: "tax",
+    note: "BUILD E — A NO-DEATH PLAN'S IRMAA FIGURES DO NOT MOVE (same hand derivation): the acceptance-probe plan with the survivor scenario OFF. Every lookback return was filed jointly and every premium year is a joint year, so the lookback-status rule grades exactly as the premium-year-status rule did: MAGI $400,000 is joint tier 3 in every premium year, two people on Medicare from 2027 on, so 2028–2031 each charge 2 × $4,620 = $9,240 and lifetime IRMAA is 4 × $9,240 = $36,960 (2026 and 2027 charge $0 — their lookback years predate the plan and no seed covers them). These are the pre-fix figures for this plan, pinned so the fix cannot move a plan whose filing status never changes.",
+    expected: {
+      tier2030: 3,
+      paid2028: 9240,
+      paid2029: 9240,
+      paid2030: 9240,
+      paid2031: 9240,
+      srcStatus2030: "mfj",
+      lifetimeIrmaa: 36960,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          birthYearPrimary: 1961,
+          birthYearSpouse: 1962,
+          endAgePrimary: 70,
+          retirementAge: 57,
+          windowStartAge: 57,
+          pretaxStart: 0,
+          taxableStart: 1000000,
+          otherOrdinaryAnnual: 400000,
+          annualSpending: 400000,
+          expectedReturnPct: 0,
+          inflationPct: 0,
+        }),
+        DO_NOTHING,
+      );
+      const at = (yr: number) => res.years.find((y) => y.year === yr);
+      return {
+        tier2030: at(2030)?.detail.irmaa.paidTier ?? null,
+        paid2028: at(2028)?.irmaaPaid ?? null,
+        paid2029: at(2029)?.irmaaPaid ?? null,
+        paid2030: at(2030)?.irmaaPaid ?? null,
+        paid2031: at(2031)?.irmaaPaid ?? null,
+        srcStatus2030: at(2030)?.detail.irmaa.paidSourceFilingStatus ?? null,
+        lifetimeIrmaa: res.lifetimeIrmaa,
+      };
+    },
+  },
+  {
+    id: "build-e-irmaa-work-year-lookback-near-65",
+    kind: "tax",
+    note: "BUILD E — A NEAR-65 RETIREMENT'S FIRST PREMIUM YEARS READ REAL WORK-YEAR LOOKBACKS (hand-derived). The work years: primary born 1964, spouse 1965, filing jointly, salary $300,000 at ages 62–64 (calendar 2026–2028), quit at 65. Each work year's MAGI, from the shared priceYear stack: taxable wages = salary $300,000 − §402(g) deferral $24,500 (2026 row) − own HSA $9,750 (family limit $8,750 + the age-55 catch-up $1,000; employer HSA $0) = $265,750 — the $8,000 age-50 catch-up is NOT subtracted because §414(v)(7) makes it Roth at these wages (Box-3 wages $290,250 over the $150,000 threshold), and the mega-backdoor is after-tax, so neither touches MAGI; MAGI = AGI = $265,750 (no other income, no tax-exempt interest). $265,750 on the joint table is tier 1 (top $274,000); the tier-1 per-person annual is (Part B $284.10 − $202.90 + Part D $14.50) × 12 = $95.70 × 12 = $1,148.40. The roll records all three work years in the rolled plan's lookback seed (status mfj, the status each was priced under). The rolled march starts in 2029: premium year 2029 (primary 65, spouse 64 — ONE person on Medicare) reads the 2027 work year: tier 1, $1,148.40. Premium year 2030 (both on Medicare) reads the 2028 work year: tier 1 × 2 = $2,296.80. Premium year 2031 reads the march's own 2029 (MAGI $0 — no retirement income entered): tier 0, $0. The CONTROL — the same rolled inputs with the seed stripped — prices 2029 and 2030 at $0 with a null paid tier: before this build the rolled march had no work-year lookbacks at all, so those are the dollars it missed.",
+    expected: {
+      lineMagi2026: 265750,
+      lineMagi2027: 265750,
+      lineMagi2028: 265750,
+      seedYears: "2026,2027,2028",
+      seedStatus: "mfj",
+      tier2029: 1,
+      paid2029: 1148.4,
+      srcYear2029: 2027,
+      srcStatus2029: "mfj",
+      paid2030: 2296.8,
+      tier2031: 0,
+      paid2031: 0,
+      controlTier2029: null,
+      controlPaid2030: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1964,
+        birthYearSpouse: 1965,
+        endAgePrimary: 67,
+        retirementAge: 65,
+        windowStartAge: 62,
+        windowStopAge: 74,
+        pretaxStart: 0,
+        taxableStart: 500000,
+        annualSpending: 100000,
+        expectedReturnPct: 0,
+        inflationPct: 0,
+        otherOrdinaryAnnual: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 300000, employer401k: 0, employerHsa: 0 },
+        65,
+      );
+      const res = simulateRothPlan(roll.rolledInputs, DO_NOTHING);
+      const control = simulateRothPlan(
+        { ...roll.rolledInputs, irmaaLookbackSeed: null },
+        DO_NOTHING,
+      );
+      const at = (yr: number) => res.years.find((y) => y.year === yr);
+      const seed = roll.rolledInputs.irmaaLookbackSeed ?? [];
+      return {
+        lineMagi2026: roll.lines[0]?.magi ?? null,
+        lineMagi2027: roll.lines[1]?.magi ?? null,
+        lineMagi2028: roll.lines[2]?.magi ?? null,
+        seedYears: seed.map((s) => s.year).join(","),
+        seedStatus: seed[0]?.filingStatus ?? null,
+        tier2029: at(2029)?.detail.irmaa.paidTier ?? null,
+        paid2029: at(2029)?.irmaaPaid ?? null,
+        srcYear2029: at(2029)?.detail.irmaa.paidSourceYear ?? null,
+        srcStatus2029: at(2029)?.detail.irmaa.paidSourceFilingStatus ?? null,
+        paid2030: at(2030)?.irmaaPaid ?? null,
+        tier2031: at(2031)?.detail.irmaa.paidTier ?? null,
+        paid2031: at(2031)?.irmaaPaid ?? null,
+        controlTier2029:
+          control.years.find((y) => y.year === 2029)?.detail.irmaa.paidTier ?? null,
+        controlPaid2030:
+          control.years.find((y) => y.year === 2030)?.irmaaPaid ?? null,
+      };
+    },
+  },
+  {
+    id: "build-e-contract-text",
+    kind: "tax",
+    note: "Build E — THE CONTRACT PUBLISHES THE LOOKBACK RULE AND THE SSA-44 SCOPE NOTE: describeApi's irmaaLookbackSemantics must cite SSA POMS HI 01101.010 and HI 01101.020 and 20 CFR 418.1135, state that the premium year's tier uses 'the filing status on THAT return' and is read from the table 'for the LOOKBACK year's recorded status', state the survivor consequence ('graded on the joint table'), name the surfaced lookback fields (paidSourceFilingStatus) and the work-year seed (irmaaLookbackSeed), and state the scope limit in as many words — the engine prices SSA's 'DEFAULT determination', a life-changing-event redetermination on 'Form SSA-44' is 'NOT modeled' — so the published contract cannot silently claim the redetermination the engine does not price.",
+    expected: { phrasesFound: 11 },
+    actual: () => {
+      const s = IRMAA_LOOKBACK_SEMANTICS;
+      const phrases = [
+        "HI 01101.010",
+        "HI 01101.020",
+        "20 CFR 418.1135",
+        "filing status on THAT return",
+        "for the LOOKBACK year's recorded status",
+        "graded on the joint table",
+        "paidSourceFilingStatus",
+        "irmaaLookbackSeed",
+        "DEFAULT determination",
+        "Form SSA-44",
+        "NOT modeled",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => s.includes(p)).length,
       };
     },
   },

@@ -286,6 +286,13 @@ export type WorkYearLine = {
   // Salary minus pre-tax deferral, pre-tax catch-up, and the
   // employee's own HSA — the wages the federal price runs on.
   taxableWages: number;
+  // The year's priced MAGI (the shared priceYear result's
+  // magi: AGI plus tax-exempt interest — $0 of the latter in
+  // a work year). Build E: the roll records it in the rolled
+  // plan's IRMAA lookback seed, so the retirement march's
+  // first premium years grade these work-year returns
+  // instead of pricing no lookback at all.
+  magi: number;
   federalTax: number;
   // State tax on the salary year, from the shared priceYear
   // path at the plan's state tax rate (0 at a 0% rate).
@@ -411,6 +418,7 @@ export function priceOneWorkYear(
     salary: job.salary,
     stack,
     taxableWages,
+    magi: priced.magi,
     federalTax: priced.federalTax,
     stateTax: priced.stateTax,
     ficaWages,
@@ -655,6 +663,23 @@ export function rollWorkYears(
   };
   const rolledInputs: RothPlanInputs = {
     ...plan,
+    // IRMAA LOOKBACK SEED (Build E): the work years this roll
+    // just priced, recorded with the filing status each was
+    // priced under — the plan's own status, the only status
+    // the roll prices (the roll models no survivor change
+    // during the work years) — so the rolled march, which
+    // starts at the quit age and never prices these years
+    // itself, grades its first premium years from these real
+    // work-year returns (SSA's two-year lookback) instead of
+    // finding no lookback at all. A quit age of 65 is the
+    // case that bites: without the seed, premium years 65
+    // and 66 would price $0 of IRMAA whatever the salary
+    // years' MAGI was.
+    irmaaLookbackSeed: lines.map((l) => ({
+      year: l.calendarYear,
+      magi: l.magi,
+      filingStatus: plan.filingStatus,
+    })),
     startYear: plan.birthYearPrimary + Math.floor(quitAge),
     retirementAge: Math.floor(quitAge),
     windowStartAge: Math.floor(quitAge),

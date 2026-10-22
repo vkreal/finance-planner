@@ -14,7 +14,7 @@
 // formula → taxable income after the year's deduction — the
 // greater of the standard deduction (with age-65+ add-ons)
 // and the household's itemized total (its SALT component
-// capped at the year's §164(b)(6) cap), plus the OBBBA senior
+// capped at the year's §164(b)(7) cap), plus the OBBBA senior
 // deduction on top of either side → federal tax with
 // long-term gains stacked on top of ordinary income → NIIT →
 // IRMAA tier from MAGI (the surcharge PAID in a year is set by
@@ -35,6 +35,8 @@
 // past the row it prices under — see deflationFactor.
 
 import {
+DEDUCTION_2026,
+SALT_SCHEDULE_FIRST_YEAR,
 SENIOR_DEDUCTION,
 SS_THRESHOLDS,
 acaTableFor,
@@ -42,6 +44,7 @@ fplFor,
 jointDivisor,
 lawForYear,
 rmdAgeForBirthYear,
+saltScheduleForYear,
 uniformDivisor,
 type FilingStatus,
 type YearLaw,
@@ -154,7 +157,7 @@ export type PriceYearInput = {
   // before this build, bit-identical): the household's
   // itemized components for the year, kept SEPARATE — never
   // one lump — because the SALT component is capped on its
-  // own (IRC §164(b)(6), the year's law row) and the T7 AMT
+  // own (IRC §164(b)(7), the year's law row) and the T7 AMT
   // build needs to know which dollars are SALT to add them
   // back. Each priced year takes the GREATER of its standard
   // deduction (base + age-65+ add-ons) and the itemized
@@ -273,7 +276,7 @@ export type PriceYearResult = {
   standardDeduction: number;
   seniorDeduction: number;
   // Itemized deduction (T5): the year's itemized total AFTER
-  // the §164(b)(6) cap on its SALT component ($0 when no
+  // the §164(b)(7) cap on its SALT component ($0 when no
   // itemized inputs are entered), the SALT amount allowed
   // after that cap, the cap itself as it applied to this
   // year (the law row's cap after its modified-AGI
@@ -286,6 +289,23 @@ export type PriceYearResult = {
   itemizedDeduction: number;
   itemizedSaltAllowed: number;
   itemizedSaltCap: number;
+  // 2026 deduction trio (Pub. L. 119-21; law years 2026+
+  // only — all three are $0 under the 2025 law row):
+  // the charitable amount allowed inside the itemized
+  // total after the §170(b)(1)(I) floor (the entered
+  // charitable input minus 0.5% of AGI, floored at $0;
+  // equal to the entered input whenever the floor does
+  // not apply), the §68 reduction taken off the
+  // otherwise-allowable itemized total (already reflected
+  // in itemizedDeduction above), and the §170(p)
+  // non-itemizer charitable deduction actually applied —
+  // $0 unless the standard side won, in which case it has
+  // ALREADY reduced agi / magi / acaMagi above (it is an
+  // above-the-line deduction), so it is NOT also inside
+  // `deductions` below.
+  itemizedCharitableAllowed: number;
+  section68Reduction: number;
+  nonItemizerCharitableDeduction: number;
   deductionTaken: "standard" | "itemized";
   deductions: number;
   taxableIncome: number;
@@ -881,7 +901,7 @@ export function educationCreditsFor(args: {
      back the adjustments this engine has the quantities
      for (§56(b)(1)): the state-and-local-tax deduction
      ACTUALLY TAKEN — the year's itemized SALT after the
-     §164(b)(6) cap — in a year the itemized side won, and
+     §164(b)(7) cap — in a year the itemized side won, and
      the STANDARD DEDUCTION (base + age-65+ add-ons) in a
      year the standard side won. The OBBBA §224 senior
      deduction is NOT added back: §56(b)(1) does not list
@@ -967,7 +987,7 @@ export function amtFor(args: {
   // is never added back.
   standardDeduction: number;
   // The SALT amount actually deducted (after the
-  // §164(b)(6) cap) — the add-back in an itemized year.
+  // §164(b)(7) cap) — the add-back in an itemized year.
   itemizedSaltAllowed: number;
   // The preferential dollars (long-term gains + qualified
   // dividends) inside the year's regular taxable income —
@@ -1053,21 +1073,39 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     input.otherOrdinary + input.rmd + input.conversion + input.extraPreTaxDraw + gainsStack + interestIncome + ordinaryDividends - capitalLossAllowance;
   const provisional = agiExclSs + input.taxExemptInterest + 0.5 * input.ssBenefits;
   const ssTaxable = ssTaxableAmount(input.ssBenefits, provisional, fs, defl);
-  const agi = agiExclSs + ssTaxable;
-  const magi = agi + input.taxExemptInterest;
-  const acaMagi = magi + (input.ssBenefits - ssTaxable);
+  // AGI before the §170(p) non-itemizer charitable
+  // deduction (2026 deduction trio): that deduction is
+  // above the line, so when the standard side wins it
+  // reduces AGI — and therefore MAGI and ACA MAGI — in
+  // the deduction step below, which reassigns these three.
+  // Until then (and whenever the itemized side wins) they
+  // are the pre-§170(p) figures every AGI-driven step that
+  // runs before the deduction choice (the §224 phase-out,
+  // the SALT phase-down, the charitable floor, the §68
+  // threshold) is specified against.
+  let agi = agiExclSs + ssTaxable;
+  let magi = agi + input.taxExemptInterest;
+  let acaMagi = magi + (input.ssBenefits - ssTaxable);
 
   const count65 =
     (input.agePrimary >= 65 ? 1 : 0) +
     (fs === "mfj" && input.ageSpouse != null && input.ageSpouse >= 65 ? 1 : 0);
   const standardDeduction =
     law.standardDeduction[fs] + law.age65Addon[fs] * count65;
-  let seniorDeduction = 0;
-  if (
-    input.calendarYear >= SENIOR_DEDUCTION.firstYear &&
-    input.calendarYear <= SENIOR_DEDUCTION.lastYear &&
-    count65 > 0
-  ) {
+  // The §224 senior deduction as a function of the AGI its
+  // phase-out runs on: the deduction step below prices it
+  // on the pre-§170(p) AGI for the itemized side and on the
+  // post-§170(p) AGI for the standard side (the side that
+  // actually files), because §170(p) is above the line and
+  // the AGI the return reports is the reduced one.
+  const seniorFor = (agiForPhaseOut: number): number => {
+    if (
+      input.calendarYear < SENIOR_DEDUCTION.firstYear ||
+      input.calendarYear > SENIOR_DEDUCTION.lastYear ||
+      count65 === 0
+    ) {
+      return 0;
+    }
     // §224 MAGI adds back only foreign-income exclusions — NOT
     // tax-exempt interest — so the phase-out runs on AGI.
     // The §224 dollar figures are statutory (not indexed), so —
@@ -1077,55 +1115,194 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     // base law year and earlier, so 2025–2026 pricing is
     // unchanged). Deflating only one of the two would distort
     // the phase-out.
-    const excess = Math.max(0, agi - SENIOR_DEDUCTION.phaseOutStart[fs] * defl);
+    const excess = Math.max(0, agiForPhaseOut - SENIOR_DEDUCTION.phaseOutStart[fs] * defl);
     const perPerson = Math.max(
       0,
       SENIOR_DEDUCTION.amountPerPerson * defl - SENIOR_DEDUCTION.phaseOutRate * excess,
     );
-    seniorDeduction = perPerson * count65;
-  }
+    return perPerson * count65;
+  };
+  let seniorDeduction = seniorFor(agi);
   // Itemized vs standard (T5; IRC §63): the year's deduction
   // is the GREATER of the standard side above (base + age-65+
   // add-ons — the add-ons belong to the standard deduction
   // only, §63(f), and never enter the itemized total) and the
   // household's itemized total, whose state-and-local-taxes
-  // component is capped at the year's §164(b)(6) cap. The
-  // cap is dated law-row data: the row's cap reduced by its
-  // phase-out rate × the modified AGI above the row's
-  // phase-out start, floored at the row's floor. §164(b)(6)
-  // modified AGI adds back only the §§911 / 931 / 933
-  // foreign-income exclusions (none modeled) — tax-exempt
-  // interest is NOT added back — so the phase-down runs on
-  // AGI, exactly as the §224 phase-out above does. The cap's
-  // dollar figures are statutory (not inflation-indexed), so
-  // — like the §86 thresholds, the NIIT threshold, and the
-  // senior-deduction figures — they deflate by `defl` into
-  // today's dollars; in the row's own year defl is 1 and the
-  // published figures apply exactly. The OBBBA senior
-  // deduction is then added on top of WHICHEVER side wins:
-  // §224 allows it whether or not the filer itemizes (the
-  // law table's own note has always stated this; until this
-  // build the engine modeled standard-deduction filers
-  // only, so the distinction never priced). With no itemized
-  // inputs the itemized total is $0, the standard side wins,
-  // and every figure is bit-identical to before this build.
+  // component is capped at the year's §164(b)(7) cap. The
+  // cap is dated law the pricer consults BY CALENDAR YEAR
+  // (Build B; SALT_SCHEDULE in taxLaw.ts): for every year
+  // from 2025 on, the applicable limitation and phase-down
+  // threshold are the schedule entry ENACTED for that year
+  // — $40,000 / $500,000 in 2025, rising 1% a year through
+  // $41,624.16 / $520,302.01 in 2029, then $10,000 with no
+  // phase-down for taxable years beginning after 2029,
+  // permanently — never the 2026 law row's figures carried
+  // forward. (Years before 2025 keep the law-row path
+  // below, unchanged.) The applied cap is the entry's cap
+  // reduced by its phase-down rate × the modified AGI above
+  // the entry's phase-down start, floored at the entry's
+  // floor. §164(b)(7) modified AGI adds back only the
+  // §§911 / 931 / 933 foreign-income exclusions (none
+  // modeled) — tax-exempt interest is NOT added back — so
+  // the phase-down runs on AGI, exactly as the §224
+  // phase-out above does. The cap's dollar figures are
+  // statutory (not inflation-indexed), so — like the §86
+  // thresholds, the NIIT threshold, and the senior-
+  // deduction figures — they deflate into today's dollars
+  // for each year the priced year runs past the schedule
+  // entry it prices under; in an entry's own year the
+  // factor is 1 and the enacted figures apply exactly
+  // (for 2025 and 2026 that factor equals the old law-row
+  // `defl`, so those years price bit-identically). The
+  // OBBBA senior deduction is then added on top of
+  // WHICHEVER side wins: §224 allows it whether or not the
+  // filer itemizes (the law table's own note has always
+  // stated this; until this build the engine modeled
+  // standard-deduction filers only, so the distinction
+  // never priced). With no itemized inputs the itemized
+  // total is $0, the standard side wins, and every figure
+  // is bit-identical to before this build.
   const saltEntered = Math.max(0, input.itemizedSaltPaid ?? 0);
-  const saltCapApplied = Math.max(
-    law.saltCapFloor * defl,
-    law.saltCap * defl -
-      (law.saltPhaseOutRatePct / 100) *
-        Math.max(0, agi - law.saltPhaseOutStart * defl),
-  );
+  let saltCapApplied: number;
+  if (input.calendarYear >= SALT_SCHEDULE_FIRST_YEAR) {
+    const salt = saltScheduleForYear(input.calendarYear);
+    const saltDefl = deflationFactor(
+      input.calendarYear,
+      salt.entryYear,
+      input.inflationPct,
+    );
+    saltCapApplied = Math.max(
+      salt.capFloor * saltDefl,
+      salt.cap * saltDefl -
+        (salt.phaseOutRatePct / 100) *
+          Math.max(0, agi - salt.phaseOutStart * saltDefl),
+    );
+  } else {
+    saltCapApplied = Math.max(
+      law.saltCapFloor * defl,
+      law.saltCap * defl -
+        (law.saltPhaseOutRatePct / 100) *
+          Math.max(0, agi - law.saltPhaseOutStart * defl),
+    );
+  }
   const itemizedSaltAllowed = Math.min(saltEntered, saltCapApplied);
-  const itemizedDeduction =
+  /* ---- 2026 deduction trio (Pub. L. 119-21; DEDUCTION_2026
+     in taxLaw.ts) — law years 2026 and later ONLY: a year
+     priced under the 2025 law row (calendarYear 2025) takes
+     none of the three and prices exactly as before this
+     build. The three run in statutory order inside the
+     deduction choice:
+     1. The §170(b)(1)(I) charitable FLOOR for itemizers:
+        the charitable component of the itemized total is
+        the entered input reduced by 0.5% of the
+        contribution base — the engine's AGI (the pre-§170(p)
+        figure above; the engine models no NOL carryback).
+        The floor applies to the engine's ONE aggregate
+        charitable input. Floor-disallowed amounts do NOT
+        carry forward (no state carries them).
+     2. The §68 limitation, applied AFTER every other
+        limitation (the SALT cap above, the floor, the
+        mortgage rules — home mortgage interest is NOT
+        exempt): the otherwise-allowable itemized total is
+        reduced by 2/37 of the lesser of (a) that total or
+        (b) the amount by which (taxable income determined
+        without regard to §68, increased by the itemized
+        total) exceeds the dollar threshold where the 37%
+        bracket begins for this filing status and law year
+        — the top of the year's 35% bracket in the law row.
+        The REDUCED total is the itemized side of the
+        greater-of comparison. The AMT step below keeps
+        using the UNREDUCED figures (it is priced on the
+        taxable income determined without regard to §68).
+     3. The §170(p) non-itemizer charitable deduction: the
+        standard side carries the standard deduction PLUS a
+        deduction for the charitable input (treated as cash
+        contributions — the engine's single input carries no
+        cash/property split) capped per filing status. The
+        floor NEVER applies to it. PLACEMENT (a judgment
+        call, named in the API contract): §170(p) is priced
+        ABOVE THE LINE — when the standard side wins it
+        reduces AGI, and therefore MAGI and ACA MAGI,
+        before taxable income is struck; the alternative
+        placement (an addition to the standard deduction,
+        below the line) would leave AGI and MAGI unchanged
+        and price the same taxable income in a year with no
+        AGI-driven step in play.
+     The comparison therefore weighs TOTAL deduction
+     effect: (standard + §170(p) + the §224 senior deduction
+     priced on the reduced AGI) against (the §68-reduced
+     itemized total + the senior deduction priced on the
+     unreduced AGI). The senior deduction itself is never
+     part of either side — §224 allows it on top of
+     whichever side wins, exactly as before — it enters the
+     comparison only because its phase-out runs on the AGI
+     each side would report. ---- */
+  const deductionTrioApplies = input.calendarYear >= DEDUCTION_2026.firstYear;
+  const charitableEntered = Math.max(0, input.itemizedCharitable ?? 0);
+  const charitableFloor =
+    deductionTrioApplies
+      ? (DEDUCTION_2026.charitableFloorRatePct / 100) * agi
+      : 0;
+  const itemizedCharitableAllowed = Math.max(
+    0,
+    charitableEntered - charitableFloor,
+  );
+  const itemizedBefore68 =
     Math.max(0, input.itemizedMortgageInterest ?? 0) +
     itemizedSaltAllowed +
-    Math.max(0, input.itemizedCharitable ?? 0) +
+    itemizedCharitableAllowed +
     Math.max(0, input.itemizedOther ?? 0);
+  const taxableWithout68 = Math.max(
+    0,
+    agi - itemizedBefore68 - seniorDeduction,
+  );
+  let section68Reduction = 0;
+  if (deductionTrioApplies && itemizedBefore68 > 0) {
+    const tops = law.brackets[fs];
+    const threshold37 = tops[tops.length - 2] ?? Infinity;
+    const excess68 = Math.max(
+      0,
+      taxableWithout68 + itemizedBefore68 - threshold37,
+    );
+    section68Reduction =
+      (DEDUCTION_2026.section68Numerator /
+        DEDUCTION_2026.section68Denominator) *
+      Math.min(itemizedBefore68, excess68);
+  }
+  const itemizedDeduction = itemizedBefore68 - section68Reduction;
+  const section170pCandidate = deductionTrioApplies
+    ? Math.min(
+        charitableEntered,
+        DEDUCTION_2026.nonItemizerCharitableCap[fs],
+      )
+    : 0;
+  const seniorOnStandardSide = seniorFor(agi - section170pCandidate);
+  const standardEffect =
+    standardDeduction + section170pCandidate + seniorOnStandardSide;
+  const itemizedEffect = itemizedDeduction + seniorDeduction;
   const deductionTaken: "standard" | "itemized" =
-    itemizedDeduction > standardDeduction ? "itemized" : "standard";
-  const deductions =
-    Math.max(standardDeduction, itemizedDeduction) + seniorDeduction;
+    itemizedEffect > standardEffect ? "itemized" : "standard";
+  let nonItemizerCharitableDeduction = 0;
+  let deductions: number;
+  if (deductionTaken === "itemized") {
+    deductions = itemizedDeduction + seniorDeduction;
+  } else {
+    // The standard side won: §170(p) applies above the
+    // line — AGI, MAGI, and ACA MAGI fall by the deduction
+    // (the §86 taxable-benefits amount above was struck on
+    // the pre-§170(p) figures and is not re-struck), the
+    // senior deduction is the one priced on the reduced
+    // AGI, and `deductions` carries the standard side
+    // only: the §170(p) amount is in the AGI, not in
+    // deductions, so taxable income below still foots as
+    // AGI − deductions.
+    nonItemizerCharitableDeduction = section170pCandidate;
+    agi -= nonItemizerCharitableDeduction;
+    magi -= nonItemizerCharitableDeduction;
+    acaMagi -= nonItemizerCharitableDeduction;
+    seniorDeduction = seniorOnStandardSide;
+    deductions = standardDeduction + seniorDeduction;
+  }
   const taxableIncome = Math.max(0, agi - deductions);
 
   const gainsInTi = Math.min(gainsStack, taxableIncome);
@@ -1221,12 +1398,22 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // amount is $0 and the federal tax below is the pre-T7
   // sum term for term — bit-identical for every year with
   // no AMT exposure.
+  // The AMT tentative computation keeps using the
+  // UNREDUCED figures (2026 deduction trio): in an
+  // itemized year it is priced on the taxable income
+  // determined WITHOUT regard to §68 (taxableWithout68
+  // above) and the gains inside that figure, so the §68
+  // reduction moves the regular tax only, never the
+  // tentative minimum tax. In a standard year there is no
+  // §68 figure and the priced taxable income is used as-is.
+  const taxableForAmt =
+    deductionTaken === "itemized" ? taxableWithout68 : taxableIncome;
   const amt = amtFor({
-    taxableIncome,
+    taxableIncome: taxableForAmt,
     deductionTaken,
     standardDeduction,
     itemizedSaltAllowed,
-    gainsInTaxableIncome: gainsInTi,
+    gainsInTaxableIncome: Math.min(gainsStack, taxableForAmt),
     regularTax: regularTaxAfterCredits,
     filingStatus: fs,
     law,
@@ -1271,6 +1458,9 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     itemizedDeduction: r2(itemizedDeduction),
     itemizedSaltAllowed: r2(itemizedSaltAllowed),
     itemizedSaltCap: r2(saltCapApplied),
+    itemizedCharitableAllowed: r2(itemizedCharitableAllowed),
+    section68Reduction: r2(section68Reduction),
+    nonItemizerCharitableDeduction: r2(nonItemizerCharitableDeduction),
     deductionTaken,
     deductions: r2(deductions),
     taxableIncome: r2(taxableIncome),
@@ -1322,6 +1512,14 @@ export function acaCreditFor(args: {
   householdSize: number;
   coverageYear: number;
   benchmarkAnnual: number;
+  // Build C scope: projected pricing (the plan march, the
+  // Playground projection) passes projected: true and prices
+  // every projected year on the 2026 applicable-percentage
+  // table — see acaTableFor in taxLaw.ts. Absent / false is
+  // the single-year (specific coverage year) pricing, the
+  // only mode in which the 2027 table (Rev. Proc. 2026-26)
+  // prices, and only for coverage year 2027 exactly.
+  projected?: boolean;
 }): AcaCreditResult {
   // Coverage-year credits use the PRIOR year's poverty guidelines.
   const fpl = fplFor(args.householdSize, args.coverageYear - 1);
@@ -1336,13 +1534,27 @@ export function acaCreditFor(args: {
   if (overCliff || pctFpl < 100) {
     return { credit: 0, pctFpl: r2(pctFpl), applicablePct: 0, fpl, cliff, overCliff };
   }
-  const bands = acaTableFor(args.coverageYear);
+  const bands = acaTableFor(args.coverageYear, {
+    projected: args.projected ?? false,
+  });
   const lows = [0, 133, 150, 200, 250, 300];
   let applicablePct = bands[bands.length - 1]?.finalPct ?? 9.96;
   for (let i = 0; i < bands.length; i++) {
     const band = bands[i];
     if (!band) continue;
-    if (pctFpl <= band.upToPctFpl || i === bands.length - 1) {
+    // LOWER-INCLUSIVE band edges (Build C; Rev. Proc.
+    // 2025-25 §3.01 / Rev. Proc. 2026-26: each band is "at
+    // least X% but less than Y%"): income exactly at a
+    // band's lower edge takes that band's INITIAL
+    // percentage, so a band matches only BELOW its top
+    // edge — pctFpl < upToPctFpl, never <=. (Before this
+    // fix, exactly 133% FPL matched the first band and
+    // priced its 2.10% final percentage instead of the
+    // second band's 3.14% initial percentage for 2026.)
+    // The last band also takes its top edge (exactly
+    // 400% still pays a credit; the cliff is the separate
+    // overCliff test above) and, in 2025, everything above.
+    if (pctFpl < band.upToPctFpl || i === bands.length - 1) {
       const lo = lows[i] ?? 0;
       const span = band.upToPctFpl - lo;
       const frac = span > 0 ? Math.min(1, Math.max(0, (pctFpl - lo) / span)) : 0;
@@ -1818,6 +2030,21 @@ function clampTierLedgerToBalance(
   }
 }
 
+// One priced year in the IRMAA lookback record (Build E):
+// the year's MAGI together with the filing status that
+// year's tax return was filed under. SSA determines a
+// premium year's IRMAA from the return filed two years
+// earlier, using the filing status on THAT return (SSA
+// POMS HI 01101.010 / HI 01101.020; 20 CFR 418.1135), so
+// the lookback record carries the status alongside the
+// MAGI — a MAGI alone cannot be graded once a household's
+// filing status changes (a spouse's death, above all).
+export type IrmaaLookbackSeedEntry = {
+  year: number;
+  magi: number;
+  filingStatus: FilingStatus;
+};
+
 export type RothPlanInputs = {
   startYear: number;
   birthYearPrimary: number;
@@ -2140,6 +2367,23 @@ export type RothPlanInputs = {
   // figure, a fill, or a score. Absent / null = no floor, and
   // the search behaves exactly as before.
   claimAgeFloor?: number | null;
+  // IRMAA LOOKBACK SEED (Build E): priced MAGIs for years
+  // BEFORE the march's first year, each with the filing
+  // status that year's return was filed under — in practice
+  // the work years the work-years roll priced before the
+  // quit age (rollWorkYears in workYears.ts builds this from
+  // its own priced lines), whose rolled plan starts at the
+  // quit age and therefore never marches through those years
+  // itself. The march seeds its IRMAA lookback map with
+  // these entries, so a premium year in the march's first
+  // two years can read a real work-year lookback instead of
+  // pricing $0. A year the march prices itself supersedes a
+  // seed entry for the same calendar year (the march's own
+  // record is written as the year settles). Optional so
+  // every pre-existing constructor keeps its meaning: absent
+  // / null / empty = no seed, and the march prices
+  // bit-identically to before.
+  irmaaLookbackSeed?: readonly IrmaaLookbackSeedEntry[] | null;
   // Gift what-if seams — set ONLY by the gift comparison model
   // (server/src/giftModel.ts), never by the saved plan, a
   // scenario, or any main Plan / Optimize / Compare / Work
@@ -2352,7 +2596,7 @@ export type RothYearDetail = {
   waTaxableGains: number;
   // Itemized-vs-standard surfacing (T5; display only, like
   // everything in this detail): the year's itemized total
-  // after the §164(b)(6) SALT cap, the SALT amount allowed
+  // after the §164(b)(7) SALT cap, the SALT amount allowed
   // after that cap, and which side of the greater-of
   // comparison the year's deduction took — so a year shows
   // WHICH deduction won, and by how much (itemizedDeduction
@@ -2361,6 +2605,18 @@ export type RothYearDetail = {
   itemizedDeduction: number;
   itemizedSaltAllowed: number;
   deductionTaken: "standard" | "itemized";
+  // 2026 deduction trio surfacing (display only, like
+  // everything in this detail): the charitable amount
+  // allowed inside the itemized total after the
+  // §170(b)(1)(I) floor, the §68 reduction taken off the
+  // itemized total, and the §170(p) non-itemizer
+  // charitable deduction applied above the line (already
+  // inside this year's agi / magi; NOT inside deductions).
+  // All $0 in every year priced under the 2025 law row and
+  // in every year with no charitable input.
+  itemizedCharitableAllowed: number;
+  section68Reduction: number;
+  nonItemizerCharitableDeduction: number;
   // Education credits (T6; display only, like everything
   // in this detail): the year's §25A credits under the
   // winning allocation — the tentative AOTC after its
@@ -2460,6 +2716,15 @@ export type RothYearDetail = {
     paidTier: number | null;
     paidSourceYear: number | null;
     paidSourceMagi: number | null;
+    // The filing status recorded for the lookback year —
+    // the status THAT year's return was filed under, which
+    // is the table the paid tier was graded on (Build E;
+    // SSA POMS HI 01101.010 / HI 01101.020). It differs
+    // from this premium year's own filing status exactly
+    // in the survivor window: the two premium years after
+    // a death still read joint returns. Null whenever
+    // paidTier is null (no lookback recorded).
+    paidSourceFilingStatus: FilingStatus | null;
     personsOnMedicare: number;
   };
   // ACA for the year (priced figures only when `priced`).
@@ -2736,7 +3001,13 @@ export type RothPlanResult = {
   // years' tax bills directly — so only the refundable
   // portion needs its own lifetime line for the score
   // identity to credit. $0 for any plan with no entered
-  // education expenses.
+  // education expenses. Every dollar on this line also lands
+  // in a balance (Build D): a year's refundable portion is
+  // deposited into the taxable pool at 100% basis at the
+  // start of the FOLLOWING year (the return is filed the
+  // next spring), and a FINAL year's portion is added to the
+  // ending taxable balance — so the ending balances carry
+  // the full lifetime figure the score credits.
   lifetimeEducationRefundable: number;
   // Lifetime AMT (T7): the sum of the years' AMT owed.
   // Unlike the refundable education credit above, this
@@ -2917,7 +3188,28 @@ export function simulateRothPlan(
   let roth = inputs.rothStart;
   let taxable = inputs.taxableStart;
   let hsa = inputs.hsaStart;
-  const magiByYear = new Map<number, number>();
+  // IRMAA LOOKBACK RECORD (Build E): each priced year's
+  // MAGI together with the filing status that year was
+  // priced under (its effective status — the plan's own
+  // status, or "single" in a survivor year). A premium
+  // year's surcharge is graded from the entry for year − 2
+  // on THAT entry's status (SSA POMS HI 01101.010 /
+  // HI 01101.020; 20 CFR 418.1135), never on the premium
+  // year's own status. Seeded with the plan's
+  // irmaaLookbackSeed — the work years priced before the
+  // march starts (the work-years roll) — so the march's
+  // first premium years read real work-year lookbacks; a
+  // year the march prices itself overwrites any seed entry
+  // for the same year as it settles (see the record write
+  // at the end of the year loop).
+  const lookbackByYear = new Map<number, IrmaaLookbackSeedEntry>();
+  for (const seed of inputs.irmaaLookbackSeed ?? []) {
+    lookbackByYear.set(seed.year, {
+      year: seed.year,
+      magi: seed.magi,
+      filingStatus: seed.filingStatus,
+    });
+  }
   // RETURN FLOOR (round-5 fix 3): the deterministic factor is
   // floored at 0 exactly like the return-series factor below
   // (a −100% year wipes a balance; worse is impossible). Before
@@ -3025,6 +3317,20 @@ export function simulateRothPlan(
   let lifetimeIrmaa = 0;
   let lifetimeAcaKept = 0;
   let lifetimeEducationRefundable = 0;
+  // EDUCATION REFUND DEPOSIT (Build D): the refundable AOTC
+  // portion a year prices is cash the household receives when
+  // that year's return is filed — the FOLLOWING spring. The
+  // march carries it here, undeposited, and lands it in the
+  // taxable pool at the start of the next simulated year (see
+  // the deposit at the top of the year loop), at 100% basis,
+  // so from that year on it funds spending and taxes and grows
+  // like any other taxable dollar. Before this build the
+  // credit was scored (it reduces net cost in
+  // lifetimeEducationRefundable) but never deposited, so the
+  // score counted a dollar no balance ever received. $0 in
+  // every year of a plan with no refundable credit, so such
+  // plans price bit-identically to before.
+  let pendingEduRefund = 0;
   let lifetimeAmt = 0;
   let lifetimeSsCollected = 0;
   let lifetimeUnpaidTax = 0;
@@ -3371,6 +3677,33 @@ export function simulateRothPlan(
       strategy.guardrail && yearCeilings?.bracketTopPct != null
         ? yearCeilings.bracketTopPct
         : null;
+    // EDUCATION REFUND DEPOSIT (Build D): last year's
+    // refundable AOTC portion lands in the taxable pool at
+    // the START of this year — the prior year's return is
+    // filed this spring — before this year's yields, fill,
+    // and settlement run, so it funds this year's spending
+    // and taxes and grows with the pool. It arrives at 100%
+    // basis: on the drift path the basis dollars rise
+    // one-for-one (the single-pool basisIn treatment every
+    // after-tax inflow gets); with basis tiers it merges
+    // into the ledger's inflow tier at 100% basis, like
+    // every after-tax inflow (buyIntoTiers). The spend-from-
+    // cash sleeve does not claim it — the sleeve is the
+    // starting pool's cash sub-ledger, and inflows (surplus
+    // sweeps included) never raise it. A $0 pending deposit
+    // moves nothing.
+    if (pendingEduRefund > 0) {
+      taxable += pendingEduRefund;
+      if (driftOn) {
+        if (tiersActive && tierState) {
+          buyIntoTiers(tierState, pendingEduRefund);
+          taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
+        } else {
+          taxableBasisDollars += pendingEduRefund;
+        }
+      }
+      pendingEduRefund = 0;
+    }
     // Gift what-if outflow (gift comparison runs only): the
     // gifted shares leave the Taxable bucket at the start of
     // the gift year — before any of this year's pricing — so
@@ -3573,12 +3906,24 @@ export function simulateRothPlan(
         (spouseAge != null && spouseAge >= spouseAcaEndAge ? 1 : 0);
     let irmaaPaid = 0;
     let irmaaPaidTier: number | null = null;
-    const magiTwoYearsAgo = magiByYear.get(year - 2);
-    if (personsOnMedicare > 0 && magiTwoYearsAgo != null) {
+    // The lookback entry for this premium year: the MAGI
+    // priced two years ago AND the filing status that
+    // year's return was filed under (Build E). The tier is
+    // graded on the LOOKBACK year's status — a joint return
+    // is graded on the joint table even when the premium
+    // year is a survivor year filed single (SSA POMS
+    // HI 01101.010 / HI 01101.020; 20 CFR 418.1135). The
+    // tier table and premium amounts remain the PREMIUM
+    // year's law row, exactly as before. This prices SSA's
+    // default determination; a life-changing-event
+    // redetermination (Form SSA-44, e.g. after a spouse's
+    // death) is not modeled.
+    const lookbackEntry = lookbackByYear.get(year - 2);
+    if (personsOnMedicare > 0 && lookbackEntry != null) {
       const law = lawForYear(year);
       const tier = irmaaTierFor(
-        magiTwoYearsAgo,
-        effFilingStatus,
+        lookbackEntry.magi,
+        lookbackEntry.filingStatus,
         law,
         year,
         inputs.inflationPct,
@@ -5071,6 +5416,11 @@ export function simulateRothPlan(
         householdSize,
         coverageYear: year,
         benchmarkAnnual: benchmark,
+        // Build C scope: the plan march is PROJECTED
+        // pricing — every projected year prices on the
+        // 2026 applicable-percentage table, never the
+        // 2027 partial row (see acaTableFor in taxLaw.ts).
+        projected: true,
       });
       acaCreditKept = acaResult.credit;
       acaPriced = true;
@@ -5155,7 +5505,16 @@ export function simulateRothPlan(
       );
     }
 
-    magiByYear.set(year, priced.magi);
+    // Record this priced year in the IRMAA lookback record
+    // with the status it was priced under (Build E), so the
+    // premium year two years later grades it on its own
+    // table. This write also covers the pre-retirement
+    // (work) years the march itself prices.
+    lookbackByYear.set(year, {
+      year,
+      magi: priced.magi,
+      filingStatus: effFilingStatus,
+    });
 
     // Grow every bucket at the plan's blended real return — or,
     // when a return series is supplied, at that year's series
@@ -5326,6 +5685,23 @@ export function simulateRothPlan(
     lifetimeIrmaa += irmaaPaid;
     lifetimeAcaKept += acaCreditKept;
     lifetimeEducationRefundable += priced.educationRefundable;
+    // EDUCATION REFUND DEPOSIT (Build D): this year's
+    // refundable credit is next year's deposit (the start-of-
+    // year deposit at the top of the loop) — EXCEPT in the
+    // plan's final year, where no following year exists
+    // inside the plan: there it is added to the ending
+    // taxable balance directly, after growth, as the
+    // undeposited dollars themselves (the return is filed
+    // after the plan ends), so the year's row, the plan's
+    // endingTaxable, and the ending wealth all carry it and
+    // the score and the balances agree in every case.
+    if (priced.educationRefundable > 0) {
+      if (age >= inputs.endAgePrimary) {
+        taxable += priced.educationRefundable;
+      } else {
+        pendingEduRefund = priced.educationRefundable;
+      }
+    }
     lifetimeAmt += priced.amtOwed;
     lifetimeSsCollected += ssBenefits;
     lifetimeUnpaidTax += unpaidTaxYear;
@@ -5522,6 +5898,9 @@ export function simulateRothPlan(
       itemizedDeduction: priced.itemizedDeduction,
       itemizedSaltAllowed: priced.itemizedSaltAllowed,
       deductionTaken: priced.deductionTaken,
+      itemizedCharitableAllowed: priced.itemizedCharitableAllowed,
+      section68Reduction: priced.section68Reduction,
+      nonItemizerCharitableDeduction: priced.nonItemizerCharitableDeduction,
       educationAotc: priced.educationAotc,
       educationLlc: priced.educationLlc,
       educationChoice: priced.educationChoice,
@@ -5571,7 +5950,11 @@ export function simulateRothPlan(
         paidTier: irmaaPaidTier,
         paidSourceYear: irmaaPaidTier != null ? year - 2 : null,
         paidSourceMagi:
-          irmaaPaidTier != null && magiTwoYearsAgo != null ? r2(magiTwoYearsAgo) : null,
+          irmaaPaidTier != null && lookbackEntry != null ? r2(lookbackEntry.magi) : null,
+        paidSourceFilingStatus:
+          irmaaPaidTier != null && lookbackEntry != null
+            ? lookbackEntry.filingStatus
+            : null,
         personsOnMedicare,
       },
       aca: {

@@ -576,6 +576,11 @@ export function Playground() {
   const [pgProjAcaSizeAfter, setPgProjAcaSizeAfter] = useState("");
   const [pgProjAcaStepYear, setPgProjAcaStepYear] = useState("");
   const [pgProjSelectedYear, setPgProjSelectedYear] = useState<number | null>(null);
+  // Balances chart: the calendar year whose end-of-year balances
+  // are shown as numbers below the chart (set by clicking a year
+  // in the balances chart; independent of pgProjSelectedYear,
+  // which loads a year into the single-year view).
+  const [pgBalSelectedYear, setPgBalSelectedYear] = useState<number | null>(null);
   const [pgProjTemplate, setPgProjTemplate] =
     useState<PlaygroundYearInputs | null>(null);
   /* Fold state for the playground's five input sections —
@@ -2988,6 +2993,33 @@ export function Playground() {
                                 : r.conversion;
                     const stackTotal = (r: PlaygroundYearResult) =>
                       segDefs.reduce((a, d) => a + segAmount(r, d.key), 0);
+                    // Income-chart display window (trim): the income
+                    // chart draws only through ONE year past the last
+                    // year with any income activity, so a run whose
+                    // income ends mid-window (on the user's current
+                    // template the pre-tax money runs out at 75 and
+                    // every later year is $0) doesn't trail a long
+                    // flat zero tail across the card — the drop to
+                    // zero stays visible, then the chart stops. The
+                    // walk itself is untouched: yMax, the legend, and
+                    // the balances chart below all still span the
+                    // full window to the to-age, and a run whose
+                    // income reaches the to-age displays the full
+                    // span exactly as before (no trim, no caption).
+                    const yearHasIncome = (r: PlaygroundYearResult) =>
+                      stackTotal(r) !== 0 || r.ltcgPriced !== 0 || r.magi !== 0;
+                    let lastActiveIdx = -1;
+                    proj.years.forEach((y, i) => {
+                      if (yearHasIncome(y.result)) lastActiveIdx = i;
+                    });
+                    const dispN =
+                      lastActiveIdx >= 0 && lastActiveIdx < n - 1
+                        ? Math.min(n, lastActiveIdx + 2)
+                        : n;
+                    const dispYears = proj.years.slice(0, dispN);
+                    const incomeTrimmed = dispN < n;
+                    const lastActiveYear =
+                      lastActiveIdx >= 0 ? proj.years[lastActiveIdx] : undefined;
                     const yMax = Math.max(
                       1,
                       ...proj.years.map((y) =>
@@ -2998,7 +3030,7 @@ export function Playground() {
                         ),
                       ),
                     );
-                    const magiPoints = proj.years
+                    const magiPoints = dispYears
                       .map(
                         (y, i) =>
                           `${i + 0.5},${100 - (y.result.magi / yMax) * 100}`,
@@ -3008,13 +3040,13 @@ export function Playground() {
                     // carry a hard cliff (ACA applies, a cliff
                     // figure, coverage 2026+).
                     const cliffRuns: { x1: number; y1: number; x2: number; y2: number }[] = [];
-                    proj.years.forEach((y, i) => {
+                    dispYears.forEach((y, i) => {
                       const cliff =
                         y.calendarYear >= 2026 && y.result.aca.applies
                           ? y.result.aca.cliff
                           : null;
                       if (cliff == null) return;
-                      const prev = i > 0 ? proj.years[i - 1] : undefined;
+                      const prev = i > 0 ? dispYears[i - 1] : undefined;
                       const prevCliff =
                         prev != null &&
                         prev.calendarYear >= 2026 &&
@@ -3067,19 +3099,50 @@ export function Playground() {
                       return c[c.length - 1]?.hi ?? 0;
                     };
                     const balMax = Math.max(1, ...balCum.map((c) => c[c.length - 1]?.hi ?? 0));
+                    // Y axis: round the top up to a nice step so the
+                    // dollar scale and gridlines land on round figures.
+                    // The series itself is unchanged — only the axis
+                    // ceiling moves (to the next nice value at or above
+                    // the true maximum).
+                    const balTickStep = (() => {
+                      const rough = balMax / 5;
+                      const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+                      const norm = rough / mag;
+                      const mult = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+                      return mult * mag;
+                    })();
+                    const balYMax = Math.max(balTickStep, Math.ceil(balMax / balTickStep) * balTickStep);
+                    const balTicks: number[] = [];
+                    for (let v = 0; v <= balYMax + balTickStep / 1000; v += balTickStep) {
+                      balTicks.push(Math.round(v * 100) / 100);
+                    }
+                    const fmtBalAxis = (v: number): string => {
+                      if (v === 0) return "$0";
+                      if (Math.abs(v) >= 1_000_000) {
+                        const m = v / 1_000_000;
+                        return `$${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+                      }
+                      if (Math.abs(v) >= 1_000) return `$${Math.round(v / 1_000)}k`;
+                      return `$${Math.round(v)}`;
+                    };
                     const balX = (i: number) =>
                       balPoints.length > 1 ? (i / (balPoints.length - 1)) * 100 : 50;
-                    const balY = (v: number) => 100 - (v / balMax) * 100;
+                    const balY = (v: number) => 100 - (v / balYMax) * 100;
+                    const balFirstYear = proj.years[0]?.calendarYear ?? 0;
+                    const balEndingTotal = balTotalAt(balCum.length - 1);
+                    const balSelected = pgBalSelectedYear != null
+                      ? proj.years.find((y) => y.calendarYear === pgBalSelectedYear) ?? null
+                      : null;
                     return (
                       <>
                         <div className="mt-4" aria-label="Projected income by year chart">
                           <h4 className="text-sm font-semibold">
-                            Income stack by year — ages {proj.years[0]?.agePrimary} to{" "}
-                            {proj.years[n - 1]?.agePrimary}
+                            Income stack by year — ages {dispYears[0]?.agePrimary} to{" "}
+                            {dispYears[dispN - 1]?.agePrimary}
                           </h4>
                           <div className="relative mt-2 h-56">
                             <div className="absolute inset-0 flex items-end gap-[2px]">
-                              {proj.years.map((y) => {
+                              {dispYears.map((y) => {
                                 let cum = 0;
                                 const segs = segDefs
                                   .map((d) => {
@@ -3118,7 +3181,7 @@ export function Playground() {
                             </div>
                             <svg
                               className="pointer-events-none absolute inset-0 h-full w-full"
-                              viewBox={`0 0 ${n} 100`}
+                              viewBox={`0 0 ${dispN} 100`}
                               preserveAspectRatio="none"
                               aria-hidden="true"
                             >
@@ -3145,7 +3208,7 @@ export function Playground() {
                             </svg>
                           </div>
                           <div className="mt-1 flex gap-[2px]" aria-hidden="true">
-                            {proj.years.map((y) => {
+                            {dispYears.map((y) => {
                               const labelSelected =
                                 pgProjSelectedYear === y.calendarYear;
                               return (
@@ -3155,8 +3218,8 @@ export function Playground() {
                                 >
                                   {labelSelected ||
                                   y.agePrimary % 5 === 0 ||
-                                  y.agePrimary === proj.years[0]?.agePrimary ||
-                                  y.agePrimary === proj.years[n - 1]?.agePrimary
+                                  y.agePrimary === dispYears[0]?.agePrimary ||
+                                  y.agePrimary === dispYears[dispN - 1]?.agePrimary
                                     ? y.agePrimary
                                     : ""}
                                 </span>
@@ -3191,6 +3254,16 @@ export function Playground() {
                               </span>
                             )}
                           </p>
+                          {incomeTrimmed && lastActiveYear != null && (
+                            <p className="mt-1 text-xs text-[var(--dim)]" role="note">
+                              No income after {lastActiveYear.calendarYear} (age{" "}
+                              {lastActiveYear.agePrimary}), so this chart stops
+                              one year past it. The projection still runs to{" "}
+                              {proj.years[n - 1]?.calendarYear} (age{" "}
+                              {proj.years[n - 1]?.agePrimary}) — the balances
+                              chart below covers the full span.
+                            </p>
+                          )}
                           {pgProjSelectedYear != null && (
                             <p className="mt-1 text-xs text-[var(--dim)]" role="note">
                               Showing {pgProjSelectedYear} in the single-year
@@ -3201,6 +3274,9 @@ export function Playground() {
                         </div>
                         <div className="mt-5" aria-label="Projected balances chart">
                           <h4 className="text-sm font-semibold">Balances by year</h4>
+                          <p className="mt-1 text-sm text-[var(--text)]">
+                            Spending and taxes are not taken out of these balances.
+                          </p>
                           <p className="mt-1 text-xs text-[var(--dim)]">
                             Each balance grows at the expected return after the
                             year&rsquo;s money moves: the pre-tax balance falls
@@ -3209,34 +3285,136 @@ export function Playground() {
                             (a draw leaves instead). Taxes are not taken out
                             of any balance here.
                           </p>
-                          <svg
-                            className="mt-2 h-44 w-full"
-                            viewBox="0 0 100 100"
-                            preserveAspectRatio="none"
-                            role="img"
-                            aria-label={`Stacked balances from ${fmtDollars(balTotalAt(0))} at age ${proj.years[0]?.agePrimary} to ${fmtDollars(balTotalAt(balCum.length - 1))} after age ${proj.years[n - 1]?.agePrimary}`}
-                          >
-                            {balLayers.map((l, li) => {
-                              const top = balCum
-                                .map((c, i) => `${balX(i)},${balY(c[li]?.hi ?? 0)}`)
-                                .join(" ");
-                              const bottom = balCum
-                                .map((c, i) => `${balX(i)},${balY(c[li]?.lo ?? 0)}`)
-                                .reverse()
-                                .join(" ");
-                              return (
-                                <polygon
-                                  key={l.key}
-                                  points={`${top} ${bottom}`}
-                                  fill={l.color}
-                                  fillOpacity={0.75}
-                                  stroke={l.color}
-                                  strokeWidth={0.4}
-                                />
-                              );
-                            })}
-                          </svg>
-                          <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                          <div className="mt-3 flex gap-2">
+                            {/* Y axis — dollar scale */}
+                            <div className="relative h-56 w-14 shrink-0" aria-hidden="true">
+                              {balTicks.map((t) => (
+                                <span
+                                  key={t}
+                                  className="tnum absolute right-1 text-[11px] whitespace-nowrap text-[var(--dim)]"
+                                  style={{ top: `${balY(t)}%`, transform: "translateY(-50%)" }}
+                                >
+                                  {fmtBalAxis(t)}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="relative h-56">
+                                {/* Horizontal gridlines */}
+                                <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+                                  {balTicks.map((t) => (
+                                    <span
+                                      key={t}
+                                      className="absolute right-0 left-0 border-t border-[var(--border)]"
+                                      style={{ top: `${balY(t)}%`, opacity: t === 0 ? 0 : 0.55 }}
+                                    />
+                                  ))}
+                                </div>
+                                <svg
+                                  className="absolute inset-0 h-full w-full"
+                                  viewBox="0 0 100 100"
+                                  preserveAspectRatio="none"
+                                  role="img"
+                                  aria-label={`Stacked balances from ${fmtDollars(balTotalAt(0))} at age ${proj.years[0]?.agePrimary} to ${fmtDollars(balTotalAt(balCum.length - 1))} after age ${proj.years[n - 1]?.agePrimary}`}
+                                >
+                                  {balLayers.map((l, li) => {
+                                    const top = balCum
+                                      .map((c, i) => `${balX(i)},${balY(c[li]?.hi ?? 0)}`)
+                                      .join(" ");
+                                    const bottom = balCum
+                                      .map((c, i) => `${balX(i)},${balY(c[li]?.lo ?? 0)}`)
+                                      .reverse()
+                                      .join(" ");
+                                    return (
+                                      <polygon
+                                        key={l.key}
+                                        points={`${top} ${bottom}`}
+                                        fill={l.color}
+                                        fillOpacity={0.75}
+                                        stroke={l.color}
+                                        strokeWidth={0.4}
+                                      />
+                                    );
+                                  })}
+                                </svg>
+                                {/* Click a year — one column per projected year */}
+                                <div className="absolute inset-0 flex">
+                                  {proj.years.map((y) => {
+                                    const isSel = pgBalSelectedYear === y.calendarYear;
+                                    const end = y.endBalances;
+                                    const endTotal = (end.pretax ?? 0) + (end.taxable ?? 0) + end.roth;
+                                    return (
+                                      <button
+                                        key={y.calendarYear}
+                                        type="button"
+                                        aria-label={`Show balances for ${y.calendarYear} — Pre-tax ${fmtDollars(end.pretax ?? 0)}, Taxable ${fmtDollars(end.taxable ?? 0)}, Roth ${fmtDollars(end.roth)}, total ${fmtDollars(endTotal)}`}
+                                        aria-pressed={isSel}
+                                        className={`h-full min-w-0 flex-1 rounded-sm hover:bg-[var(--accent-soft)] ${isSel ? "ring-2 ring-[var(--accent)] ring-inset" : ""}`}
+                                        onClick={() => setPgBalSelectedYear(y.calendarYear)}
+                                      />
+                                    );
+                                  })}
+                                </div>
+                                {/* Ending total at the right edge of the stack */}
+                                <span
+                                  className="tnum pointer-events-none absolute rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-semibold whitespace-nowrap text-[var(--text)]"
+                                  style={{ right: 4, top: `${balY(balEndingTotal)}%`, transform: "translateY(-50%)" }}
+                                >
+                                  Total {fmtDollars(balEndingTotal)}
+                                </span>
+                              </div>
+                              {/* X axis — year labels every 5 years */}
+                              <div className="mt-1 flex" aria-hidden="true">
+                                {proj.years.map((y) => {
+                                  const show = balFirstYear !== 0 && (y.calendarYear - balFirstYear) % 5 === 0;
+                                  const isSel = pgBalSelectedYear === y.calendarYear;
+                                  return (
+                                    <span
+                                      key={y.calendarYear}
+                                      className={`min-w-0 flex-1 text-center whitespace-nowrap ${isSel ? "text-[11px] font-bold text-[var(--text)]" : "text-[10px] text-[var(--dim)]"}`}
+                                    >
+                                      {show || isSel ? y.calendarYear : ""}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                          <p className="mt-1 text-xs text-[var(--dim)]">
+                            Click a year in the chart to see its balances.
+                          </p>
+                          {balSelected != null && (
+                            <div
+                              className="mt-2 rounded border border-[var(--border)] bg-[var(--bg)] px-3 py-2"
+                              role="region"
+                              aria-label={`Balances for ${balSelected.calendarYear}`}
+                            >
+                              <p className="text-xs font-semibold">
+                                {balSelected.calendarYear} — end of year
+                              </p>
+                              <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                                <span>
+                                  <span className="text-[var(--dim)]">Pre-tax </span>
+                                  <span className="font-medium">{fmtDollars(balSelected.endBalances.pretax ?? 0)}</span>
+                                </span>
+                                <span>
+                                  <span className="text-[var(--dim)]">Taxable </span>
+                                  <span className="font-medium">{fmtDollars(balSelected.endBalances.taxable ?? 0)}</span>
+                                </span>
+                                <span>
+                                  <span className="text-[var(--dim)]">Roth </span>
+                                  <span className="font-medium">{fmtDollars(balSelected.endBalances.roth)}</span>
+                                </span>
+                                <span>
+                                  <span className="text-[var(--dim)]">Total </span>
+                                  <span className="font-semibold">
+                                    {fmtDollars((balSelected.endBalances.pretax ?? 0) + (balSelected.endBalances.taxable ?? 0) + balSelected.endBalances.roth)}
+                                  </span>
+                                </span>
+                              </p>
+                            </div>
+                          )}
+                          <p className="tnum mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
                             {balLayers.map((l) => {
                               const firstBal = balPoints[0];
                               const lastBal = balPoints[balPoints.length - 1];
@@ -3256,6 +3434,12 @@ export function Playground() {
                                 </span>
                               );
                             })}
+                            <span className="inline-flex items-center gap-1.5">
+                              Total{" "}
+                              <span className="font-medium text-[var(--text)]">
+                                {fmtDollars(balTotalAt(0))} → {fmtDollars(balEndingTotal)}
+                              </span>
+                            </span>
                           </p>
                         </div>
                       </>
@@ -3398,7 +3582,6 @@ export function Playground() {
                 })();
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
-                    <h3 className="text-sm font-semibold">Income stack</h3>
                     <p className="mt-1 text-xs text-[var(--dim)]">
                       On a taxable-income axis. The hatched start of the bar is
                       the {fmtDollars(deductions)} of deductions sheltering the
@@ -3938,6 +4121,18 @@ export function Playground() {
                             ? `more than the standard deduction — used (state & local taxes allowed: ${fmtDollars(pg.itemizedSaltAllowed)})`
                             : "less than the standard deduction — standard used",
                         )}
+                      {pg.section68Reduction > 0 &&
+                        stackRow(
+                          "§68 limitation (2026 law)",
+                          fmtDollars(pg.section68Reduction),
+                          "already taken off the itemized deductions above",
+                        )}
+                      {pg.nonItemizerCharitableDeduction > 0 &&
+                        stackRow(
+                          "Charitable deduction (§170(p))",
+                          fmtDollars(pg.nonItemizerCharitableDeduction),
+                          "already taken off AGI above — not in the deductions",
+                        )}
                       {pg.seniorDeduction > 0 &&
                         stackRow("Senior deduction (65+)", fmtDollars(pg.seniorDeduction))}
                       {stackRow("Taxable income", fmtDollars(pg.taxableIncome))}
@@ -3956,6 +4151,10 @@ export function Playground() {
                   <p className="tnum text-base font-medium">
                     {takeawayParts.join(" · ")}
                   </p>
+
+                  <div className="mt-3">
+                    <h3 className="text-sm font-semibold">Income stack</h3>
+                  </div>
 
                   {stackChart}
 
