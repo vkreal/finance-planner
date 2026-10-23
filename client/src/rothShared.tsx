@@ -249,6 +249,21 @@ export function InfoNote({
   // the value is entered and shown in dollars (grouped). On blur
   // the typed text is rewritten to the canonical grouped form, so
   // what is saved and reloaded displays exactly what was entered.
+/* Visible marker shown beside a field's label when the field's
+   current value differs from the saved record. Shared by the
+   three field renderers below and by hand-rendered controls in
+   the Roth Conversion view, so a changed field reads the same
+   way everywhere. Presentation only — it never touches the
+   field's value or behaviour. */
+export function ChangedMark() {
+  return (
+    <span className="ml-2 inline-flex shrink-0 items-center gap-1 align-middle text-xs font-medium text-[var(--accent)]">
+      <span aria-hidden="true">●</span>
+      Changed
+    </span>
+  );
+}
+
 export const moneyField = (
   label: string,
   value: string,
@@ -256,6 +271,9 @@ export const moneyField = (
   opts?: {
     hint?: string;
     ariaLabel?: string;
+    // When true, the label carries the "Changed" marker — the
+    // field's current value differs from the saved record.
+    changed?: boolean;
     // Identity override: when set, this string — never the displayed
     // label — generates the input's id, its label's htmlFor, its
     // aria-label, and the info note's name. For scratch copies of a
@@ -285,10 +303,12 @@ export const moneyField = (
           ariaLabel={`About ${idText}`}
           align={opts.infoAlign ?? "left"}
         />
+        {opts?.changed && <ChangedMark />}
       </div>
     ) : (
       <label className={labelCls} htmlFor={fieldId}>
         {label}
+        {opts?.changed && <ChangedMark />}
       </label>
     )}
     <div className="relative">
@@ -333,6 +353,9 @@ export const numField = (
     disabled?: boolean;
     info?: string;
     infoAlign?: "left" | "right";
+    // When true, the label carries the "Changed" marker — the
+    // field's current value differs from the saved record.
+    changed?: boolean;
   },
 ) => {
   const idText = opts?.idLabel ?? label;
@@ -352,10 +375,12 @@ export const numField = (
           ariaLabel={`About ${idText}`}
           align={opts.infoAlign ?? "left"}
         />
+        {opts?.changed && <ChangedMark />}
       </div>
     ) : (
       <label className={labelCls} htmlFor={fieldId}>
         {label}
+        {opts?.changed && <ChangedMark />}
       </label>
     )}
     <input
@@ -388,6 +413,9 @@ export const pctField = (
     idLabel?: string;
     info?: string;
     infoAlign?: "left" | "right";
+    // When true, the label carries the "Changed" marker — the
+    // field's current value differs from the saved record.
+    changed?: boolean;
   },
 ) => {
   const idText = opts?.idLabel ?? label;
@@ -407,10 +435,12 @@ export const pctField = (
           ariaLabel={`About ${idText}`}
           align={opts.infoAlign ?? "left"}
         />
+        {opts?.changed && <ChangedMark />}
       </div>
     ) : (
       <label className={labelCls} htmlFor={fieldId}>
         {label}
+        {opts?.changed && <ChangedMark />}
       </label>
     )}
     <div className="relative">

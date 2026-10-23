@@ -13,6 +13,7 @@ import {
 Bar,
 BarChart,
 CartesianGrid,
+LabelList,
 Legend,
 ResponsiveContainer,
 Tooltip,
@@ -989,6 +990,200 @@ function ExplorerModal({
         </div>
       </div>
     </div>
+  );
+}
+
+/* ---------------- spending (month) view chart ---------------- */
+
+type SpendingMonthRow = Dash["history"][number];
+
+type SpendingChartDatum = {
+  name: string;
+  monthStr: string;
+  trueCost: number;
+  cashOut: number;
+  trueCostCents: number;
+  cashOutCents: number;
+};
+
+/* Grouped bar chart for the Month-mode Quick view: one pair of bars
+   per recorded month — the month's True cost (smoothed) beside its
+   Cash out, in chronological order. Fed from getDashboard's own
+   history: the caller passes exactly the trailing window the
+   averages strip averages (the last trailingMonthsCovered history
+   entries — the same per-month eff() figures the tiles show), so
+   the bars and the strip are the same numbers and can never
+   disagree, and a pair appears automatically when a new month is
+   recorded. Every bar carries its dollar value above it; the two
+   series sit on staggered label shelves coloured to match their
+   bars so neighbouring labels never collide, and the legend names
+   the series. No recorded months renders a plain empty state. */
+function SpendingTrueCostChart({ months }: { months: SpendingMonthRow[] }) {
+  const chartData: SpendingChartDatum[] = months.map((m) => ({
+    name: shortMonthLabel(m.month),
+    monthStr: m.month,
+    trueCost: m.smoothedCents / 100,
+    cashOut: m.cashOutCents / 100,
+    trueCostCents: m.smoothedCents,
+    cashOutCents: m.cashOutCents,
+  }));
+
+  return (
+    <section
+      aria-label="True cost vs Cash out by month"
+      className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
+    >
+      <h3 className="display text-lg font-semibold">True cost vs Cash out</h3>
+      <p className="mt-0.5 text-sm text-[var(--dim)]">
+        One pair of bars per recorded month — each month&rsquo;s True cost
+        (smoothed) beside its Cash out, from the same figures as the tiles
+        and the average above.
+      </p>
+      {chartData.length === 0 ? (
+        <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
+          No months recorded yet — once a month is recorded, its True cost
+          and Cash out appear here as a pair of bars.
+        </p>
+      ) : (
+        <>
+          {/* Screen-reader / text fallback carrying the exact figures. */}
+          <ul className="sr-only">
+            {chartData.map((d) => (
+              <li key={d.monthStr}>
+                {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}`}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 max-w-full overflow-x-auto">
+            <div
+              className="h-[300px]"
+              style={{ minWidth: `${chartData.length * 108}px` }}
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={chartData}
+                  margin={{ top: 36, right: 8, bottom: 4, left: 4 }}
+                  barCategoryGap="22%"
+                  barGap={3}
+                >
+                  <CartesianGrid
+                    stroke="var(--border)"
+                    strokeDasharray="3 3"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="name"
+                    tickLine={false}
+                    axisLine={{ stroke: "var(--border)" }}
+                    interval={0}
+                    tick={{ fill: "var(--text)", fontSize: 12 }}
+                  />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    width={64}
+                    tick={{ fill: "var(--dim)", fontSize: 12 }}
+                    tickFormatter={(value: number) =>
+                      value >= 1000
+                        ? `$${Number((value / 1000).toFixed(1)).toLocaleString("en-US")}k`
+                        : `$${value.toLocaleString("en-US")}`
+                    }
+                  />
+                  <Tooltip
+                    cursor={{ fill: "var(--surface-alt)", opacity: 0.5 }}
+                    content={(tooltipProps: {
+                      active?: boolean;
+                      label?: string;
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      payload?: any[];
+                    }) => {
+                      if (!tooltipProps.active) return null;
+                      const datum = (tooltipProps.payload?.[0]?.payload ??
+                        chartData.find(
+                          (d) => d.name === tooltipProps.label,
+                        )) as SpendingChartDatum | undefined;
+                      if (!datum) return null;
+                      return (
+                        <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm shadow-lg">
+                          <p className="font-semibold">{datum.name}</p>
+                          <p className="tnum mt-0.5 text-[var(--text)]">
+                            True cost {fmt(datum.trueCostCents)} · Cash out{" "}
+                            {fmt(datum.cashOutCents)}
+                          </p>
+                        </div>
+                      );
+                    }}
+                  />
+                  <Legend
+                    formatter={(value: string) => (
+                      <span style={{ color: "var(--text)" }}>{value}</span>
+                    )}
+                  />
+                  <Bar
+                    dataKey="trueCost"
+                    name="True cost"
+                    fill="var(--accent)"
+                    radius={[3, 3, 0, 0]}
+                  >
+                    {/* True cost labels are end-anchored to the bar's
+                        right edge (extending left over the pair's open
+                        space) instead of centred: the Cash out bar
+                        paints after this one, so a centred label on a
+                        short True cost bar beside a taller Cash out
+                        bar would run underneath it and lose its tail. */}
+                    <LabelList
+                      dataKey="trueCost"
+                      position="top"
+                      offset={16}
+                      content={(labelProps) => {
+                        const vb = labelProps.viewBox;
+                        if (!vb || !("x" in vb)) return null;
+                        const v =
+                          typeof labelProps.value === "number"
+                            ? labelProps.value
+                            : Number(labelProps.value ?? 0);
+                        return (
+                          <text
+                            x={(vb.x ?? 0) + (vb.width ?? 0) + 2}
+                            y={(vb.y ?? 0) - (labelProps.offset ?? 16)}
+                            textAnchor="end"
+                            fill="var(--accent)"
+                            fontSize={11}
+                            fontWeight={600}
+                          >
+                            {fmt(Math.round(v * 100))}
+                          </text>
+                        );
+                      }}
+                    />
+                  </Bar>
+                  <Bar
+                    dataKey="cashOut"
+                    name="Cash out"
+                    fill="var(--warn)"
+                    radius={[3, 3, 0, 0]}
+                  >
+                    <LabelList
+                      dataKey="cashOut"
+                      position="top"
+                      offset={3}
+                      formatter={(value: number) =>
+                        fmt(Math.round(value * 100))
+                      }
+                      style={{
+                        fill: "var(--warn)",
+                        fontSize: 11,
+                        fontWeight: 600,
+                      }}
+                    />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -2498,6 +2693,19 @@ export function App() {
                       {fmt(data.avgCashOutCents)}
                     </p>
                   )}
+                  {/* True cost vs Cash out bars: the last
+                      trailingMonthsCovered history entries are exactly
+                      the months the averages strip above averages (the
+                      history's final entry is the viewed month), so
+                      the chart and the strip show the same figures.
+                      slice from the end keeps that true for any
+                      covered count, including 0 (no recorded months —
+                      the chart renders its empty state). */}
+                  <SpendingTrueCostChart
+                    months={data.history.slice(
+                      data.history.length - data.trailingMonthsCovered,
+                    )}
+                  />
                   <p className="tnum mt-3 text-sm leading-relaxed text-[var(--dim)]">
                     Cash out {fmt(data.cashOutCents)} = Total monthly{" "}
                     {fmt(data.monthlyBillsTotalCents)} + Yearly &amp; periodic

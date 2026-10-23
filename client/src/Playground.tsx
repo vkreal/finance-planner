@@ -645,6 +645,53 @@ export function Playground() {
       {pgOpenSections[id] && children}
     </section>
   );
+  /* Super-group folds — this build's light grouping. The five
+     single-year section cards above sit under one named group
+     ("Single-year dials") and the Projection card under another
+     ("Projection dials"), so the dials for the two different
+     prices never read as one wall and the projection's dials
+     are visibly separate from the single-year income dials.
+     Session-only — like pgProjHowOpen above — and both groups
+     start OPEN; the individual sections inside keep their own
+     remembered folds exactly as before, and nothing is removed
+     or hidden by default. Grouping is visual only: the pricing
+     below reads the dial state, never the group state, so a
+     value typed in a folded group prices exactly as if the
+     group were open, and the Hold/target behaviour is untouched. */
+  const [pgGroupOpen, setPgGroupOpen] = useState({
+    single: true,
+    projection: true,
+  });
+  const togglePgGroup = (id: "single" | "projection") =>
+    setPgGroupOpen((p) => ({ ...p, [id]: !p[id] }));
+  // One super-group header: a real button carrying
+  // aria-expanded and the app's ▾/▸ disclosure glyph, with a
+  // one-line blurb naming what the group holds. The header row
+  // itself is not a card — the section cards inside the group
+  // keep the card treatment.
+  const pgGroupHeader = (
+    id: "single" | "projection",
+    title: string,
+    blurb: string,
+  ) => (
+    <h3 className="mt-6">
+      <button
+        type="button"
+        aria-expanded={pgGroupOpen[id]}
+        aria-label={`${title} group`}
+        className="flex w-full items-start justify-between gap-3 text-left"
+        onClick={() => togglePgGroup(id)}
+      >
+        <span>
+          <span className="block text-base font-semibold">{title}</span>
+          <span className="mt-0.5 block text-sm text-[var(--dim)]">{blurb}</span>
+        </span>
+        <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
+          {pgGroupOpen[id] ? "▾" : "▸"}
+        </span>
+      </button>
+    </h3>
+  );
   /* Remembered form state — hydration + save. On load, a
      stored form (the playground field of the Roth UI-state
      blob) is applied to the dials once; from then on the form
@@ -1949,6 +1996,184 @@ export function Playground() {
     ].join(" · ");
   })();
 
+  /* -------- Plain-English summary lines --------
+     Two sentences at the top of the view, assembled live from
+     the current dial values — household-neutral: every clause
+     is generated from the values actually present (the filing
+     status and ages as typed, the priced result's own fields),
+     and a clause with no value behind it is simply left out,
+     so the sentences are correct for any household's inputs.
+     Display ONLY: sentence one reads playgroundResult's own
+     fields (the same figures the readout and the play strip
+     print — the total tax at the same displayed rounding the
+     strip's sale figure uses, round(federal) + round(state));
+     sentence two reads the projection's setup dials and,
+     while the panel is open and priced, pgProjection's own
+     ending balances. Nothing here prices anything, writes
+     anything, or touches the Hold/target state. */
+  const pgJoinBits = (bits: string[]): string => {
+    if (bits.length === 0) return "";
+    if (bits.length === 1) return bits[0] ?? "";
+    if (bits.length === 2) return `${bits[0] ?? ""} and ${bits[1] ?? ""}`;
+    return `${bits.slice(0, -1).join(", ")} and ${bits[bits.length - 1] ?? ""}`;
+  };
+  const pgFilingPhrase =
+    pgFiling === "mfj"
+      ? "filing jointly"
+      : pgFiling === "single"
+        ? "filing single"
+        : "filing head of household";
+  const pgAgePhrase =
+    pgFiling === "mfj" && pgAgePNum != null && pgAgeSNum != null
+      ? `at ages ${pgAgePNum} and ${pgAgeSNum}`
+      : pgAgePNum != null
+        ? `at age ${pgAgePNum}`
+        : "";
+  const pgPlainYearSentence = ((): string => {
+    const pg = playgroundResult;
+    if (pg == null) {
+      // No priced year yet (no age typed): the sentence names
+      // what the dials already hold, read the way buildPgInputs
+      // reads them, and says plainly what is missing.
+      const bits: string[] = [];
+      const dialMoney = (s: string) => Math.max(0, parseDollars(s) ?? 0);
+      if (dialMoney(pgInterest) > 0) bits.push(`interest of ${fmtDollars(dialMoney(pgInterest))}`);
+      if (dialMoney(pgOrdDiv) > 0) bits.push(`dividends of ${fmtDollars(dialMoney(pgOrdDiv))}`);
+      const otherDial = parseDollars(pgOther) ?? 0;
+      if (otherDial !== 0) bits.push(`other income of ${fmtDollars(otherDial)}`);
+      const ssDial =
+        dialMoney(pgSsP) + (pgFiling === "mfj" ? dialMoney(pgSsS) : 0);
+      if (ssDial > 0) bits.push(`Social Security of ${fmtDollars(ssDial)}`);
+      if (dialMoney(pgConversion) > 0) bits.push(`pre-tax money out of ${fmtDollars(dialMoney(pgConversion))}`);
+      if (dialMoney(pgSold) > 0) bits.push(`a stock sale of ${fmtDollars(dialMoney(pgSold))}`);
+      if (bits.length === 0) {
+        return `For ${pgTaxYearNum}, ${pgFilingPhrase}, nothing is typed yet — type the year's income and your age for that year, and this line will describe the priced year in plain terms.`;
+      }
+      return `For ${pgTaxYearNum}, ${pgFilingPhrase}, the dials so far hold ${pgJoinBits(bits)} — enter your age for that year, and this line will describe the priced year's tax in plain terms.`;
+    }
+    // The income bits use the readout stack's own conventions
+    // (non-qualified dividends, TAXABLE Social Security), so
+    // the listed bits foot exactly to the AGI they sit beside:
+    // interest + non-qualified dividends + other income +
+    // taxable SS + RMD + pre-tax money out + gains priced −
+    // the capital-loss allowance. Tax-exempt interest is not
+    // listed — it is not in AGI (the MAGI clause below is its
+    // figure).
+    const incomeBits: string[] = [];
+    if (pg.interest > 0) incomeBits.push(`interest ${fmtDollars(pg.interest)}`);
+    if (pg.ordinaryDividends > 0) {
+      incomeBits.push(
+        pg.qualifiedDividends > 0
+          ? `dividends ${fmtDollars(pg.nonQualifiedDividends)} non-qualified (of ${fmtDollars(pg.ordinaryDividends)} total)`
+          : `dividends ${fmtDollars(pg.ordinaryDividends)}`,
+      );
+    }
+    if (pg.otherOrdinary !== 0) incomeBits.push(`other income ${fmtDollars(pg.otherOrdinary)}`);
+    if (pg.ssTaxable > 0) incomeBits.push(`taxable Social Security ${fmtDollars(pg.ssTaxable)}`);
+    else if (pg.ssBenefits > 0) incomeBits.push(`Social Security received, none of it taxable`);
+    if (pg.rmdPriced && pg.rmd > 0) incomeBits.push(`an RMD of ${fmtDollars(pg.rmd)}`);
+    if (pg.conversion > 0) incomeBits.push(`pre-tax money out ${fmtDollars(pg.conversion)}`);
+    if (pg.ltcgPriced > 0) incomeBits.push(`long-term gains and qualified dividends ${fmtDollars(pg.ltcgPriced)}`);
+    if (pg.capitalLossAllowance > 0) incomeBits.push(`less the capital-loss allowance ${fmtDollars(pg.capitalLossAllowance)}`);
+    const clauses: string[] = [
+      `In ${pgTaxYearNum}, ${pgFilingPhrase}${pgAgePhrase !== "" ? ` ${pgAgePhrase}` : ""}, adjusted gross income is ${fmtDollars(pg.agi)}${incomeBits.length > 0 ? ` (${pgJoinBits(incomeBits)})` : " — no income typed yet"}`,
+      `taxable income is ${fmtDollars(pg.taxableIncome)}`,
+    ];
+    if (pg.conversion > 0) {
+      if (pg.landingBracketPct != null) {
+        clauses.push(
+          `the pre-tax money out lands in the ${pg.landingBracketPct}% bracket${pg.landingExactlyFilled ? ", filled exactly" : pg.landingRoomLeft != null ? ` with ${fmtDollars(pg.landingRoomLeft)} of room left in it` : ""}`,
+        );
+      } else {
+        clauses.push("the pre-tax money out is fully sheltered by deductions");
+      }
+    }
+    clauses.push(`MAGI is ${fmtDollars(pg.magi)}`);
+    if (pg.aca.everyoneOnMedicare) {
+      clauses.push("everyone in the household is on Medicare, so there is no ACA credit");
+    } else if (
+      pg.aca.applies &&
+      pg.aca.cliff != null &&
+      pg.aca.positionDollars != null
+    ) {
+      const pos = pg.aca.positionDollars;
+      clauses.push(
+        `${pg.acaMagi !== pg.magi ? `ACA household income is ${fmtDollars(pg.acaMagi)}, ` : ""}${pos >= 0 ? `${fmtDollars(pos)} under` : `${fmtDollars(-pos)} over`} the ACA cliff`,
+      );
+    }
+    if (pg.irmaa.applies) {
+      clauses.push(`which sets IRMAA Tier ${pg.irmaa.tier} for ${pg.irmaa.premiumYear}`);
+    }
+    const totalTaxDisplayed =
+      Math.round(pg.federalTax) + Math.round(pg.stateTax);
+    clauses.push(
+      pg.stateTax > 0
+        ? `the year's total tax is ${fmtDollars(totalTaxDisplayed)} (federal ${fmtDollars(pg.federalTax)} and state ${fmtDollars(pg.stateTax)})`
+        : `the year's total tax is ${fmtDollars(totalTaxDisplayed)}, all federal`,
+    );
+    return `${clauses.join(", ")}.`;
+  })();
+  const pgPlainProjSentence = ((): string => {
+    const toAge = parseIntField(pgProjToAge) ?? 95;
+    const fromAge = parseIntField(pgProjFromAge);
+    const template = pgProjTemplate;
+    const baseYear = template?.taxYear ?? pgTaxYearNum;
+    const baseAge = template?.agePrimary ?? pgAgePNum;
+    const windowPhrase =
+      baseAge != null
+        ? `from age ${fromAge ?? baseAge} to age ${toAge}`
+        : `to age ${toAge}`;
+    const subject =
+      template != null
+        ? `The projection repeats the captured ${baseYear} template year (age ${baseAge ?? "—"}) ${windowPhrase}`
+        : baseAge != null
+          ? `The projection will repeat the ${baseYear} year (age ${baseAge}) ${windowPhrase}`
+          : `The projection will repeat this year ${windowPhrase} once an age is entered`;
+    const clauses: string[] = [
+      pgProjDrawMode === "replace"
+        ? pgProjMoneyOutKind === "conversion"
+          ? "with Social Security and RMDs replacing part of the pre-tax money out as they arrive, and what is converted landing in Roth"
+          : "with Social Security and RMDs replacing part of the pre-tax money out as they arrive, and the money out leaving as spending"
+        : pgProjMoneyOutKind === "conversion"
+          ? "with the pre-tax money out repeating as entered each year and landing in Roth"
+          : "with the pre-tax money out repeating as entered each year and leaving as spending",
+    ];
+    if (pgProjStopKind === "age") {
+      const stopAge = parseIntField(pgProjStopValue);
+      if (stopAge != null) clauses.push(`the money out stops after age ${stopAge}`);
+    } else if (pgProjStopKind === "floor") {
+      const stopFloor = parseDollars(pgProjStopValue);
+      if (stopFloor != null) {
+        clauses.push(
+          `the money out stops at a pre-tax floor of ${fmtDollars(Math.max(0, stopFloor))}`,
+        );
+      }
+    }
+    const returnRaw = parseNum(pgProjReturnPct);
+    clauses.push(
+      returnRaw != null
+        ? `balances grow at ${pgProjReturnPct.trim()}% a year`
+        : pgPrefillSource != null
+          ? `balances grow at the plan's expected return of ${pgPrefillSource.expectedReturnPct}% a year`
+          : "balances grow at the expected return",
+    );
+    if (template != null && !pgProjTemplateIsCurrent) {
+      clauses.push(
+        "it runs from that captured template, not from the year the dials above now show",
+      );
+    }
+    if (pgProjection != null) {
+      const end = pgProjection.endBalances;
+      const endTotal = (end.pretax ?? 0) + (end.taxable ?? 0) + end.roth;
+      clauses.push(
+        `and the balances end at ${fmtDollars(endTotal)} after ${pgProjection.years.length} projected years (spending and taxes are not taken out of them)`,
+      );
+    } else if (!pgProjOpen) {
+      clauses.push("open the Projection group below to run it");
+    }
+    return `${subject}, ${clauses.join(", ")}.`;
+  })();
+
   return (
     <div>
         <section className={sectionCls} aria-label="Playground">
@@ -1969,12 +2194,40 @@ export function Playground() {
               the start, bracket-band shading behind, and the
               10/12/22/24 tops as tick marks from the same model;
               no legend and no in-bar labels (the full chart
-              below keeps all of that). */}
+              below keeps all of that). The pinned figures are
+              the single-year answer the dials below drive — the
+              year's tax and its headline figures: total federal
+              tax, the total tax when a state tax prices (the
+              same displayed rounding the sale figure uses,
+              round(federal) + round(state)), MAGI, taxable
+              income, the bracket landing, and the ACA / IRMAA /
+              sale statuses — so cause and effect stay in view
+              together while the dials scroll. */}
           {(() => {
             const pg = playgroundResult;
             const stripYearNum =
               parseIntField(pgYear) ?? new Date().getFullYear();
             const statuses: { key: string; text: string; warn: boolean }[] = [];
+            if (pg != null && pg.conversion > 0) {
+              // The bracket landing, in the readout takeaway's
+              // own terms — read off the priced result, like
+              // every other figure in this strip.
+              statuses.push(
+                pg.landingBracketPct != null
+                  ? {
+                      key: "landing",
+                      text: pg.landingExactlyFilled
+                        ? `Fills the ${pg.landingBracketPct}% bracket exactly`
+                        : `Lands in the ${pg.landingBracketPct}% bracket`,
+                      warn: false,
+                    }
+                  : {
+                      key: "landing",
+                      text: "Pre-tax money out fully sheltered by deductions",
+                      warn: false,
+                    },
+              );
+            }
             if (
               pg != null &&
               pg.aca.applies &&
@@ -2142,6 +2395,21 @@ export function Playground() {
                       {fmtDollars(pg?.federalTax ?? 0)}
                     </span>
                   </span>
+                  {pg != null && pg.stateTax > 0 && (
+                    <span className="contents">
+                      <span aria-hidden="true" className="text-[var(--dim)]">
+                        ·
+                      </span>
+                      <span>
+                        Total tax{" "}
+                        <span className="font-bold text-[var(--accent)]">
+                          {fmtDollars(
+                            Math.round(pg.federalTax) + Math.round(pg.stateTax),
+                          )}
+                        </span>
+                      </span>
+                    </span>
+                  )}
                   <span aria-hidden="true" className="text-[var(--dim)]">
                     ·
                   </span>
@@ -2155,6 +2423,14 @@ export function Playground() {
                       />
                     )}
                   </span>
+                  {pg != null && (
+                    <span className="contents">
+                      <span aria-hidden="true" className="text-[var(--dim)]">
+                        ·
+                      </span>
+                      <span>Taxable income {fmtDollars(pg.taxableIncome)}</span>
+                    </span>
+                  )}
                   {statuses.map((s) => (
                     <span key={s.key} className="contents">
                       <span aria-hidden="true" className="text-[var(--dim)]">
@@ -2208,6 +2484,19 @@ export function Playground() {
             back — and your plan is never touched. “Reset playground” wipes the
             form back to blank.
           </p>
+          {/* Plain-English summary — the two sentences composed
+              above (pgPlainYearSentence / pgPlainProjSentence),
+              updated live from the dials on every render: one
+              for the single-year picture, one for what the
+              dials grow into in the projection. */}
+          <div aria-label="Playground summary in plain English" className="mt-3 max-w-3xl">
+            <p className="text-base leading-relaxed font-medium text-[var(--text)]">
+              {pgPlainYearSentence}
+            </p>
+            <p className="mt-1 text-base leading-relaxed text-[var(--text)]">
+              {pgPlainProjSentence}
+            </p>
+          </div>
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -2306,6 +2595,9 @@ export function Playground() {
             )}
           </div>
 
+          {pgGroupHeader("single", "Single-year dials", "One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below.")}
+          {pgGroupOpen.single && (
+            <>
           {pgSectionCard("year", "The year", pgYearSummary, (
             <>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -2719,7 +3011,11 @@ export function Playground() {
             </div>
           </div>
           ))}
+            </>
+          )}
 
+          {pgGroupHeader("projection", "Projection dials", "A separate what-if — the captured template year repeated year by year. These dials drive only the projection; they never change the single-year price.")}
+          {pgGroupOpen.projection && (
           <section className={sectionCls} aria-label="Projection">
             <h3>
               <button
@@ -3448,6 +3744,7 @@ export function Playground() {
               </>
             )}
           </section>
+          )}
 
           {playgroundResult == null && (
             <p className="mt-4 text-sm text-[var(--dim)]" role="note">
