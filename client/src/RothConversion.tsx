@@ -16,6 +16,7 @@ import { api, type ApiResponse } from "./api";
 import {
 ceilChipActiveCls,
 ceilChipCls,
+ChangedMark,
 FILING_LABELS,
 fmtCents,
 fmtCompactDollars,
@@ -306,6 +307,13 @@ export function RothConversion() {
   const [init, setInit] = useState(false);
   const [confirmResetBalances, setConfirmResetBalances] = useState(false);
   const [confirmResetPlan, setConfirmResetPlan] = useState(false);
+  const [confirmBackToSaved, setConfirmBackToSaved] = useState(false);
+  // Set by "Back to saved": the restore writes the saved
+  // record's values into the form, and the autosave that state
+  // change would normally schedule is skipped once — restoring
+  // the saved values must not write anything. The next genuine
+  // edit autosaves as usual.
+  const suppressNextAutosaveRef = useRef(false);
   const [scenarioMsg, setScenarioMsg] = useState("");
   // The plan record's write revision (API follow-on 1): the CAS
   // base the next saveRothInputs autosave passes. Kept beside
@@ -716,13 +724,13 @@ export function RothConversion() {
   // results workspace the segmented control shows. Display only —
   // persisted server-side (getRothUiState / setRothUiState) so it
   // survives reloads and devices. The local defaults match the
-  // server's first-use defaults: only "Your money" open, year
-  // table collapsed, Plan workspace.
+  // server's first-use defaults: the everyday sections open,
+  // "Advanced" closed, year table collapsed, Plan workspace.
   const [openSections, setOpenSections] = useState<Record<RothSectionId, boolean>>({
-    household: false,
+    household: true,
     money: true,
-    income: false,
-    aca: false,
+    income: true,
+    aca: true,
     advanced: false,
   });
   const [yearTableOpen, setYearTableOpen] = useState(false);
@@ -741,6 +749,16 @@ export function RothConversion() {
   // never saved).
   const [detailYear, setDetailYear] = useState<number | null>(null);
   const [resultsMode, setResultsMode] = useState<RothResultsMode>("plan");
+  /* Plan-first face (display only — never saved, never priced):
+     which of the view's three faces is showing. "plan" is the
+     default screen: the saved plan itself (summary line, what-if
+     question buttons, ending figures, plan chart, year-by-year
+     table). "change" is the guided change path — five plain
+     questions writing the same fields the full form edits.
+     "settings" is the full folded form ("All settings") plus the
+     results workspaces, exactly as the view worked before. A
+     fresh visit always opens on "plan". */
+  const [face, setFace] = useState<"plan" | "change" | "settings">("plan");
   /* Pretax Spending (proof) scratch overrides — this tab only.
      Blank = the plan's own value; a typed value replaces that
      one input in the proof run in memory. These states are
@@ -1816,6 +1834,13 @@ export function RothConversion() {
 
   useEffect(() => {
     if (!init) return;
+    if (suppressNextAutosaveRef.current) {
+      // A "Back to saved" restore just landed: the form now
+      // holds the saved record's values, so there is nothing
+      // to write. Skip exactly this one scheduled save.
+      suppressNextAutosaveRef.current = false;
+      return;
+    }
     pendingSave.current = buildInputsPayload();
     if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(firePendingSave, 700);
@@ -3529,6 +3554,411 @@ export function RothConversion() {
     inflation, stateRate, heirRate, ceilingsSummary,
   ]);
 
+  /* -------- Changed-from-saved markers + Back to saved --------
+     Presentation only. The baseline is the saved record exactly
+     as the init effect resolves it (snapshot-followed balances
+     resolved from the latest snapshot, the Retirement-derived
+     seeds filled in for a record that leaves them blank), so a
+     field reads "changed" precisely when its current typed value
+     differs from what is saved. Comparisons are semantic (parsed
+     money / numbers), never raw-string, so typing grouping
+     commas does not flicker the marker. The autosave persists
+     edits as before; once the saved record catches up, the
+     markers clear on their own. */
+  const resolvedSavedInputs = (): Parameters<typeof applyInputs>[0] | null => {
+    if (!data || !ret) return null;
+    const s = data.saved;
+    const snap = data.snapshot;
+    const retSaved = ret.saved;
+    const seedRetAge = retSaved?.retirementAge ?? SEED_RETIREMENT_AGE_FALLBACK;
+    const seedReturn =
+      retSaved?.expectedReturnPct ?? blendedExpected(retSaved?.stocksPct ?? STOCKS_PCT_DEFAULT);
+    const seedSpendingCents = ret.defaultSpendingAnnualCents;
+    const src: Parameters<typeof applyInputs>[0] = s ?? seedRothInputs({
+      annualSpendingCents: seedSpendingCents,
+      retirementAge: seedRetAge,
+      expectedReturnPct: seedReturn,
+    });
+    const wifeSavedCents = src.pretaxSpouseCents ?? null;
+    const primaryEffectiveCents =
+      src.pretaxCents ??
+      (snap?.pretaxCents != null
+        ? Math.max(0, snap.pretaxCents - (wifeSavedCents ?? 0))
+        : null);
+    return {
+      ...src,
+      pretaxCents: primaryEffectiveCents,
+      pretaxSpouseCents: wifeSavedCents,
+      rothCents: src.rothCents ?? snap?.rothCents ?? null,
+      taxableCents: src.taxableCents ?? taxableSnapshotCents(snap),
+      hsaCents: src.hsaCents ?? snap?.hsaCents ?? null,
+      annualSpendingCents: src.annualSpendingCents ?? seedSpendingCents,
+      retirementAge: src.retirementAge ?? seedRetAge,
+      expectedReturnPct: src.expectedReturnPct ?? seedReturn,
+    };
+  };
+  const savedResolved = resolvedSavedInputs();
+  const moneyChanged = (cur: string, savedCents: number | null | undefined): boolean =>
+    savedResolved != null && parseMoney(cur) !== (savedCents ?? null);
+  const numChanged = (cur: string, saved: number | null | undefined): boolean =>
+    savedResolved != null && parseNum(cur) !== (saved ?? null);
+  const intChanged = (cur: string, saved: number | null | undefined): boolean =>
+    savedResolved != null && parseIntField(cur) !== (saved ?? null);
+  const boolChanged = (cur: boolean, saved: boolean | null | undefined, dflt: boolean): boolean =>
+    savedResolved != null && cur !== (saved ?? dflt);
+  // Editor-list comparisons: the parsed list against the saved
+  // list. Rows that are present but still incomplete parse to
+  // null (they price as "no list"), which differs from any
+  // saved list — and from a saved no-list state the typed rows
+  // themselves are the change.
+  const tiersChanged =
+    savedResolved != null &&
+    (JSON.stringify(tiersFromRows(basisTiers)) !==
+      JSON.stringify(
+        (savedResolved.taxableTiers ?? null) == null
+          ? null
+          : (savedResolved.taxableTiers ?? []).map((t) => ({
+              sharePct: Math.min(100, Math.max(0, t.sharePct)),
+              basisPct: Math.min(100, Math.max(0, t.basisPct)),
+            })),
+      ) ||
+      (basisTiers.length > 0 && tiersFromRows(basisTiers) == null));
+  const eduChanged =
+    savedResolved != null &&
+    (JSON.stringify(studentsFromRows(eduStudents)) !==
+      JSON.stringify(savedResolved.educationStudents ?? null) ||
+      (eduStudents.length > 0 && studentsFromRows(eduStudents) == null));
+  const changedFields = {
+    filingStatus: savedResolved != null && filingStatus !== (savedResolved.filingStatus ?? "mfj"),
+    birthYearP: intChanged(birthYearP, savedResolved?.birthYearPrimary),
+    birthYearS: intChanged(birthYearS, savedResolved?.birthYearSpouse),
+    retirementAge: intChanged(retirementAge, savedResolved?.retirementAge),
+    endAge: intChanged(endAge, savedResolved?.endAge),
+    winStart: intChanged(winStart, savedResolved?.windowStartAge),
+    winStop: intChanged(winStop, savedResolved?.windowStopAge),
+    convertedAlready: moneyChanged(convertedAlready, savedResolved?.convertedAlreadyCents),
+    collegeFromYear: intChanged(collegeFromYear, savedResolved?.collegeFallFromYear),
+    collegeThroughYear: intChanged(collegeThroughYear, savedResolved?.collegeFallThroughYear),
+    soleBeneficiary: boolChanged(soleBeneficiary, savedResolved?.spouseSoleBeneficiary, true),
+    survivorOn: boolChanged(survivorOn, savedResolved?.survivorEnabled, false),
+    survivorWho: savedResolved != null && survivorWho !== (savedResolved.survivorWho ?? "primary"),
+    survivorDeathYear: intChanged(survivorDeathYear, savedResolved?.survivorDeathYear),
+    pretax: moneyChanged(pretax, savedResolved?.pretaxCents),
+    pretaxSpouse: moneyChanged(pretaxSpouse, savedResolved?.pretaxSpouseCents),
+    rothBal: moneyChanged(rothBal, savedResolved?.rothCents),
+    taxableBal: moneyChanged(taxableBal, savedResolved?.taxableCents),
+    taxableExclude: moneyChanged(taxableExclude, savedResolved?.taxableExcludeCents),
+    hsaBal: moneyChanged(hsaBal, savedResolved?.hsaCents),
+    basisPct: numChanged(basisPct, savedResolved?.taxableBasisPct),
+    divYieldPct: numChanged(divYieldPct, savedResolved?.taxableDividendYieldPct),
+    intYieldPct: numChanged(intYieldPct, savedResolved?.taxableInterestYieldPct),
+    basisTiers: tiersChanged,
+    spending: moneyChanged(spending, savedResolved?.annualSpendingCents),
+    payTaxFrom: savedResolved != null && payTaxFrom !== (savedResolved.payTaxFrom ?? "taxable"),
+    protectMin: moneyChanged(protectMin, savedResolved?.protectMinTaxableCents),
+    preservePretax: moneyChanged(preservePretax, savedResolved?.preservePretaxCents),
+    preserveExitRate: numChanged(preserveExitRate, savedResolved?.preserveExitRatePct),
+    drawOrder:
+      savedResolved != null &&
+      drawOrder !== drawOrderKey(drawOrderFromKey(savedResolved.drawOrder ?? null)),
+    drawOrderSwitchAge: intChanged(drawOrderSwitchAge, savedResolved?.drawOrderSwitchAge),
+    drawOrderAfter:
+      savedResolved != null &&
+      drawOrderAfter !==
+        (savedResolved.drawOrderAfter != null &&
+        DRAW_ORDER_OPTIONS.some((o) => o.key === savedResolved.drawOrderAfter)
+          ? savedResolved.drawOrderAfter
+          : DEFAULT_DRAW_ORDER_KEY),
+    ssP:
+      moneyChanged(ssP, ssPrimaryNoBenefit ? null : savedResolved?.ssPrimaryAnnualCents) ||
+      boolChanged(ssPrimaryNoBenefit, savedResolved?.ssPrimaryNoBenefit, false),
+    ssPAge: intChanged(ssPAge, savedResolved?.ssPrimaryStartAge),
+    ssS:
+      moneyChanged(ssS, ssSpouseNoBenefit ? null : savedResolved?.ssSpouseAnnualCents) ||
+      boolChanged(ssSpouseNoBenefit, savedResolved?.ssSpouseNoBenefit, false),
+    ssSAge: intChanged(ssSAge, savedResolved?.ssSpouseStartAge),
+    claimAgeFloor: intChanged(claimAgeFloor, savedResolved?.claimAgeFloor),
+    otherOrd: moneyChanged(otherOrd, savedResolved?.otherOrdinaryCents),
+    taxExempt: moneyChanged(taxExempt, savedResolved?.taxExemptInterestCents),
+    taxReturnInterest: moneyChanged(taxReturnInterest, data?.taxReturn.taxReturnInterestCents),
+    taxReturnQualDiv: moneyChanged(taxReturnQualDiv, data?.taxReturn.taxReturnQualifiedDividendsCents),
+    taxReturnOrdDiv: moneyChanged(taxReturnOrdDiv, data?.taxReturn.taxReturnOrdinaryDividendsCents),
+    acaSize: intChanged(acaSize, savedResolved?.acaHouseholdSize),
+    acaSizeAfter: intChanged(acaSizeAfter, savedResolved?.acaHouseholdSizeAfter),
+    acaStepYear: intChanged(acaStepYear, savedResolved?.acaStepDownYear),
+    benchCouple: moneyChanged(benchCouple, savedResolved?.acaBenchmarkCoupleCents),
+    benchSingle: moneyChanged(benchSingle, savedResolved?.acaBenchmarkSingleCents),
+    benchFamily: moneyChanged(benchFamily, savedResolved?.acaBenchmarkFamilyCents),
+    acaSpouseEndAge: intChanged(acaSpouseEndAge, savedResolved?.acaSpouseEndAge),
+    ceilBracket:
+      savedResolved != null &&
+      ceilBracket !==
+        (savedResolved.ceilings?.bracketTopPct === 10 ||
+        savedResolved.ceilings?.bracketTopPct === 12 ||
+        savedResolved.ceilings?.bracketTopPct === 22 ||
+        savedResolved.ceilings?.bracketTopPct === 24
+          ? String(savedResolved.ceilings.bracketTopPct)
+          : ""),
+    ceilIrmaa:
+      savedResolved != null &&
+      ceilIrmaa !==
+        (savedResolved.ceilings?.irmaaTierCap != null &&
+        savedResolved.ceilings.irmaaTierCap >= 0 &&
+        savedResolved.ceilings.irmaaTierCap <= 5
+          ? String(savedResolved.ceilings.irmaaTierCap)
+          : ""),
+    ceilLtcg: boolChanged(ceilLtcg, savedResolved?.ceilings?.ltcgZeroCap, false),
+    ceilAca: boolChanged(ceilAca, savedResolved?.ceilings?.acaCliffCap, false),
+    ceilAcaFamilyOnly: boolChanged(ceilAcaFamilyOnly, savedResolved?.ceilings?.acaCliffCapFamilyOnly, false),
+    magiCap: moneyChanged(magiCap, savedResolved?.ceilings?.magiCapCents),
+    cliffBuffer: moneyChanged(cliffBuffer, savedResolved?.ceilings?.acaCliffBufferCents),
+    guardrailOn: savedResolved != null && (guardrailOn ?? false) !== (savedResolved.optimizerGuardrail ?? false),
+    bunchingOn: savedResolved != null && (bunchingOn ?? false) !== (savedResolved.optimizerBunching ?? false),
+    gainsHarvestOn: savedResolved != null && (gainsHarvestOn ?? false) !== (savedResolved.gainsHarvest ?? false),
+    expectedPct: numChanged(expectedPct, savedResolved?.expectedReturnPct),
+    inflation: numChanged(inflation, savedResolved?.inflationPct),
+    residenceState:
+      savedResolved != null &&
+      residenceState !== (savedResolved.residenceState === "WA" ? "WA" : "other"),
+    stateRate: numChanged(stateRate, savedResolved?.stateRatePct),
+    carryInSt: moneyChanged(carryInSt, savedResolved?.capitalLossCarryInStCents),
+    carryInLt: moneyChanged(carryInLt, savedResolved?.capitalLossCarryInLtCents),
+    itemizedMortgage: moneyChanged(itemizedMortgage, savedResolved?.itemizedMortgageInterestCents),
+    itemizedSalt: moneyChanged(itemizedSalt, savedResolved?.itemizedSaltPaidCents),
+    itemizedCharitable: moneyChanged(itemizedCharitable, savedResolved?.itemizedCharitableCents),
+    itemizedOther: moneyChanged(itemizedOther, savedResolved?.itemizedOtherCents),
+    eduStudents: eduChanged,
+    heirRate: numChanged(heirRate, savedResolved?.heirRatePct),
+  };
+  const changedCount = Object.values(changedFields).filter(Boolean).length;
+  const sectionChangedCount = (keys: (keyof typeof changedFields)[]): number =>
+    keys.filter((k) => changedFields[k]).length;
+  // Restore the working form to the saved record's values.
+  // Presentation/state only: any queued autosave of the edited
+  // form is dropped and the restore itself schedules no save —
+  // nothing is written.
+  const backToSaved = () => {
+    const resolved = resolvedSavedInputs();
+    setConfirmBackToSaved(false);
+    if (!resolved) return;
+    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    pendingSave.current = null;
+    suppressNextAutosaveRef.current = true;
+    applyInputs(resolved);
+    const s = data?.saved;
+    setBalanceOverrides({
+      pretax: s?.pretaxCents != null,
+      pretaxSpouse: s?.pretaxSpouseCents != null,
+      roth: s?.rothCents != null,
+      taxable: s?.taxableCents != null,
+      hsa: s?.hsaCents != null,
+    });
+  };
+
+  /* -------- Plain-English summary line --------
+     One sentence at the top of the view, assembled live from
+     whatever values are currently in the fields — household-
+     neutral (every clause is generated from the field values
+     themselves, and a clause with no value behind it is simply
+     left out). Display only: it reads the same state the
+     fields edit and never touches pricing. */
+  const plainSummary = ((): string => {
+    const parts: string[] = [];
+    const retire = parseIntField(retirementAge);
+    if (retire != null) parts.push(`Retire at ${retire}`);
+    const spendD = parseDollars(spending);
+    if (spendD != null) parts.push(`spend ${fmtDollars(spendD)}/yr`);
+    parts.push(
+      `draw ${drawOrderLabel(drawOrderFromKey(drawOrder)).toLowerCase()} first`,
+    );
+    const fillParts: string[] = [];
+    if (ceilBracket !== "") fillParts.push(`the top of the ${ceilBracket}% bracket`);
+    if (ceilIrmaa !== "") fillParts.push(`IRMAA Tier ${ceilIrmaa}`);
+    if (ceilLtcg) fillParts.push("the top of the 0% capital-gains space");
+    if (ceilAca) fillParts.push("the ACA cliff");
+    if (parseDollars(magiCap) != null) fillParts.push(`a MAGI cap of ${fmtDollars(parseDollars(magiCap)!)}`);
+    if (fillParts.length > 0) parts.push(`fill up to ${fillParts.join(" and ")}`);
+    else parts.push("no conversions (no ceiling set)");
+    parts.push(
+      payTaxFrom === "taxable"
+        ? "taxes paid from taxable"
+        : "taxes withheld from the conversion",
+    );
+    if (ssPrimaryNoBenefit && ssSpouseNoBenefit) {
+      parts.push("no Social Security benefit");
+    } else if (ssPrimaryNoBenefit) {
+      const a = parseIntField(ssSAge);
+      parts.push(a != null ? `spouse Social Security at ${a}` : "Social Security not set");
+    } else if (ssSpouseNoBenefit) {
+      const a = parseIntField(ssPAge);
+      parts.push(a != null ? `Social Security at ${a}` : "Social Security not set");
+    } else {
+      const aP = parseIntField(ssPAge);
+      const aS = parseIntField(ssSAge);
+      if (aP != null && aS != null && aP !== aS)
+        parts.push(`Social Security at ${aP} and ${aS}`);
+      else if (aP != null) parts.push(`Social Security at ${aP}`);
+      else if (aS != null) parts.push(`spouse Social Security at ${aS}`);
+    }
+    if (survivorOn) {
+      parts.push(
+        `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"}${survivorDeathYear ? ` in ${survivorDeathYear}` : ""}`,
+      );
+    }
+    return parts.join(" · ");
+  })();
+
+  /* -------- What-if question buttons (plan face) --------
+     Plain-language questions derived from the SAVED plan's own
+     values. Each button prices the saved plan with exactly one
+     change through the existing scenario comparison
+     (runRothCompare — the same action the Strategy Lab prices
+     through): the request's base is the plan payload, its
+     baseline row is the plan itself (an empty patch), and the
+     question rides as one scenario patch. The comparison is
+     compute-only — a what-if never saves anything, never
+     touches the working form, and its figures are the compare's
+     own, to the cent. The result keeps a fingerprint of the
+     request it was priced from, so a later edit to the plan
+     marks the shown figures as priced on the earlier plan
+     instead of letting them pose as current. */
+  type WhatIfDef = {
+    id: string;
+    label: string;
+    overrides: LabRequest["scenarios"][number]["overrides"];
+  };
+  const whatIfDefs: WhatIfDef[] = (() => {
+    const defs: WhatIfDef[] = [];
+    const sv = savedResolved;
+    if (!sv) return defs;
+    const retAge = sv.retirementAge ?? null;
+    if (retAge != null && retAge > 30) {
+      const overrides: WhatIfDef["overrides"] = { retirementAge: retAge - 1 };
+      // The conversion window normally starts when work stops:
+      // when the saved window starts at the retirement age, the
+      // earlier retirement moves the window with it.
+      if ((sv.windowStartAge ?? null) === retAge)
+        overrides.windowStartAge = retAge - 1;
+      defs.push({
+        id: "retire-earlier",
+        label: `Retire a year earlier — at ${retAge - 1}`,
+        overrides,
+      });
+    }
+    if (sv.annualSpendingCents != null) {
+      defs.push({
+        id: "spend-more",
+        label: "Spend $10,000 more a year",
+        overrides: { annualSpendingCents: sv.annualSpendingCents + 1_000_000 },
+      });
+    }
+    const curBracket = sv.ceilings?.bracketTopPct ?? null;
+    const bracketTarget = curBracket == null || curBracket < 22 ? 22 : curBracket === 22 ? 24 : 22;
+    if (bracketTarget !== curBracket) {
+      const c = sv.ceilings;
+      defs.push({
+        id: "bracket",
+        label: `Convert up to the ${bracketTarget}% bracket`,
+        overrides: {
+          ceilings: {
+            bracketTopPct: bracketTarget,
+            irmaaTierCap: c?.irmaaTierCap ?? null,
+            ltcgZeroCap: c?.ltcgZeroCap ?? false,
+            acaCliffCap: c?.acaCliffCap ?? false,
+            acaCliffCapFamilyOnly: c?.acaCliffCapFamilyOnly ?? false,
+            magiCapCents: c?.magiCapCents ?? null,
+            acaCliffBufferCents: c?.acaCliffBufferCents ?? null,
+          },
+        },
+      });
+    }
+    const ssAge = sv.ssPrimaryStartAge ?? null;
+    if (ssAge != null && ssAge < 70 && sv.ssPrimaryNoBenefit !== true) {
+      defs.push({
+        id: "ss-later",
+        label: `Start Social Security a year later — at ${ssAge + 1}`,
+        // The amount is deliberately left out of the patch: the
+        // comparison derives the benefit that age actually pays
+        // from the saved plan's own anchor, exactly as it does
+        // for a claim-age patch in the Strategy Lab.
+        overrides: { ssPrimaryStartAge: ssAge + 1 },
+      });
+    }
+    if (
+      sv.acaStepDownYear != null &&
+      sv.acaHouseholdSizeAfter != null &&
+      sv.acaHouseholdSize != null &&
+      sv.acaHouseholdSizeAfter < sv.acaHouseholdSize
+    ) {
+      defs.push({
+        id: "step-down-sooner",
+        label: `Household steps down a year sooner — in ${sv.acaStepDownYear - 1}`,
+        overrides: { acaStepDownYear: sv.acaStepDownYear - 1 },
+      });
+    }
+    return defs;
+  })();
+  const buildWhatIfRequest = (def: WhatIfDef): LabRequest => ({
+    ...buildSavePayload(),
+    baselineName: "Your saved plan",
+    scenarios: [
+      { name: "Your saved plan", overrides: {} },
+      { name: def.label, overrides: def.overrides },
+    ],
+    fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
+  });
+  const [whatIfResult, setWhatIfResult] = useState<{
+    label: string;
+    wealthCents: number;
+    netCostCents: number;
+    deltaWealthCents: number;
+    deltaNetCostCents: number;
+    fingerprint: string;
+  } | null>(null);
+  const [whatIfError, setWhatIfError] = useState("");
+  const runWhatIfMut = useMutation({
+    mutationFn: (input: LabRequest) => api.runRothCompare(input),
+    onSuccess: (res, vars) => {
+      if (!res.ok) {
+        setWhatIfError(res.reason);
+        return;
+      }
+      const base = res.scenarios.find((r) => r.name === res.baselineName);
+      const scen = res.scenarios.find((r) => r.name !== res.baselineName);
+      if (!base || !scen) {
+        setWhatIfError("That question could not be priced — try again.");
+        return;
+      }
+      setWhatIfError("");
+      setWhatIfResult({
+        label: scen.name,
+        wealthCents: scen.endingAfterTaxWealthCents,
+        netCostCents: scen.netCostCents,
+        deltaWealthCents:
+          scen.endingAfterTaxWealthCents - base.endingAfterTaxWealthCents,
+        deltaNetCostCents: scen.deltaNetCostCents,
+        fingerprint: JSON.stringify(vars),
+      });
+    },
+    onError: () => setWhatIfError("That question could not be priced — try again."),
+  });
+  const runWhatIf = (def: WhatIfDef) => {
+    setWhatIfError("");
+    runWhatIfMut.mutate(buildWhatIfRequest(def));
+  };
+  // The fingerprint of the what-if request the CURRENT plan
+  // would build for the answered question — when it no longer
+  // matches the stored fingerprint, the plan changed after the
+  // answer was priced.
+  const whatIfStale =
+    whatIfResult != null &&
+    (() => {
+      const def = whatIfDefs.find((d) => d.label === whatIfResult.label);
+      return def
+        ? JSON.stringify(buildWhatIfRequest(def)) !== whatIfResult.fingerprint
+        : true;
+    })();
+
   // Years where someone is on the ACA marketplace but no benchmark
   // premium has been entered, so the credit cannot be priced.
   // Counted only from the retirement-age year onward — before
@@ -3756,6 +4186,16 @@ export function RothConversion() {
     </span>
   );
 
+  /* Plan-first faces: the workspace the results area presents.
+     On the plan face the Plan workspace always shows (the saved
+     plan is the screen, whatever workspace was last open in All
+     settings); on the change face no workspace takeaway shows;
+     in All settings the stored workspace choice rules, exactly
+     as before. */
+  const effMode: RothResultsMode | "change" =
+    face === "plan" ? "plan" : face === "change" ? "change" : resultsMode;
+  const showPlanWorkspace = effMode === "plan";
+
   /* -------- One-line takeaway (Plan summary) --------
      A single quiet sentence under the Results workspace tab bar,
      mirroring the Retirement view's plan summary. Assembled ONLY
@@ -3781,7 +4221,7 @@ export function RothConversion() {
       if (diff < 0) return `${fmtDollars(Math.abs(diff))} more than Do Nothing (${fmtDollars(dnNet)})`;
       return `the same lifetime net cost as Do Nothing (${fmtDollars(dnNet)})`;
     };
-    if (resultsMode === "optimize") {
+    if (effMode === "optimize") {
       if (!optResult?.ok || !optResult.winner || !optResult.doNothing || !planInputs) return null;
       if (winnerDegenerate) return "No conversion beats Do Nothing on these inputs";
       const winner = optResult.winner;
@@ -3805,7 +4245,7 @@ export function RothConversion() {
       }
       return `Best of ${optResult.candidatesTested} tested: ${winner.name} (${winner.windowLabel})${claimClause} — lifetime net cost ${fmtDollars(winner.netCost)}, lifetime Social Security collected ${fmtDollars(winner.ssCollected)}, ${savingClause(winner.netCost, dnNet)} → ${endingClause}.`;
     }
-    if (resultsMode === "proof") {
+    if (effMode === "proof") {
       if (!planInputs || !proofInputs || !proofStats) return null;
       if (proofStats.startingPretax <= 0) return "Pretax Spending (not saved): no pre-tax balance is priced yet.";
       const payFromClause =
@@ -3816,7 +4256,7 @@ export function RothConversion() {
         ? `Pretax Spending (not saved — your plan still ends at age ${planInputs.endAgePrimary}): pre-tax empties during ${proofStats.firstZero.year}, age ${proofStats.firstZero.agePrimary}, starting from ${fmtDollars(proofStats.startingPretax)} at ${fmtDollars(proofInputs.annualSpending)}/yr of spending, ${payFromClause}.`
         : `Pretax Spending (not saved — your plan still ends at age ${planInputs.endAgePrimary}): pre-tax still holds ${fmtDollars(proofStats.last?.pretaxEnd ?? 0)} at age ${PROOF_END_AGE}, starting from ${fmtDollars(proofStats.startingPretax)} at ${fmtDollars(proofInputs.annualSpending)}/yr of spending, ${payFromClause}.`;
     }
-    if (resultsMode !== "plan") return null;
+    if (effMode !== "plan") return null;
     if (!planInputs || !mainResult) return null;
     const startingPretax = planInputs.pretaxStart + (planInputs.pretaxSpouseStart ?? 0);
     if (startingPretax === 0) {
@@ -4532,6 +4972,9 @@ export function RothConversion() {
     soleBeneficiary ? "spouse is sole beneficiary" : null,
     retirementAge ? `retire at ${retirementAge}` : null,
     endAge ? `plan to age ${endAge}` : null,
+    parseDollars(spending) != null
+      ? `spending ${fmtDollars(parseDollars(spending)!)}/yr`
+      : "spending not entered",
     winStart || winStop ? `convert ${winStart || "—"} → ${winStop || "—"}` : null,
     survivorOn
       ? `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"} in ${survivorDeathYear || "—"}`
@@ -4598,8 +5041,7 @@ export function RothConversion() {
     (allBalancesFollow
       ? "Balances follow Net Worth"
       : `Pre-tax — You ${moneySummaryText(pretax)} · Pre-tax — wife ${moneySummaryText(pretaxSpouse)} · Roth ${moneySummaryText(rothBal)} · Taxable ${moneySummaryText(taxableBal)} · HSA ${moneySummaryText(hsaBal)}`) +
-    exclusionSummary +
-    drawOrderSwitchSummary;
+    exclusionSummary;
   const ssSummaryText = (amt: string, age: string, who: string, declared: boolean): string => {
     if (declared) return `${who} SS — no benefit`;
     const d = parseDollars(amt);
@@ -4609,9 +5051,6 @@ export function RothConversion() {
   const incomeSummary = [
     ssSummaryText(ssP, ssPAge, "Your", ssPrimaryNoBenefit),
     ssSummaryText(ssS, ssSAge, "Spouse", ssSpouseNoBenefit),
-    parseDollars(spending) != null
-      ? `spending ${fmtDollars(parseDollars(spending)!)}/yr`
-      : "spending not entered",
   ].join(" · ");
   const acaSummary = [
     `Household of ${acaSize || "—"}`,
@@ -4888,6 +5327,93 @@ export function RothConversion() {
   const matchedScenarioSet = new Set(matchedScenarios);
   const matchedNames = matchedScenarios.map((sc) => sc.name);
 
+  /* -------- Guided change path ("Change the plan") --------
+     Five plain questions whose answers are the SAME working
+     fields the full form edits — the retirement age, the yearly
+     spending, the two Social Security start ages, the draw
+     strategy (draw order + fill ceilings + pay-tax-from), and
+     the special items (survivor scenario, college years,
+     already-converted). Nothing here has its own state: every
+     control reads and writes the form's state, so answers are
+     prefilled from the saved record, autosave persists them
+     exactly like a form edit, and the Changed markers and Back
+     to saved behave identically. */
+  const guidedPretaxFirstKey =
+    DRAW_ORDER_OPTIONS.find((o) => drawOrderFromKey(o.key)[0] === "pretax")?.key ??
+    DEFAULT_DRAW_ORDER_KEY;
+  const guidedTaxableFirstKey =
+    DRAW_ORDER_OPTIONS.find((o) => drawOrderFromKey(o.key)[0] === "taxable")?.key ??
+    DEFAULT_DRAW_ORDER_KEY;
+  const GUIDED_NO_CONVERSIONS: FillCeilings = {
+    bracketTopPct: null,
+    irmaaTierCap: null,
+    ltcgZeroCap: false,
+    acaCliffCap: false,
+    acaCliffCapFamilyOnly: false,
+    magiCap: null,
+    acaCliffBuffer: null,
+  };
+  type GuidedStrategy = {
+    id: string;
+    label: string;
+    drawKey: string;
+    ceilings: FillCeilings;
+  };
+  const guidedStrategies: GuidedStrategy[] = [
+    {
+      id: "guided-cliff",
+      label: "Spend pre-tax first, and convert up to the ACA cliff",
+      drawKey: guidedPretaxFirstKey,
+      ceilings:
+        CEILING_PRESETS.find((p) => p.name === "Under the ACA cliff")?.fields ??
+        GUIDED_NO_CONVERSIONS,
+    },
+    {
+      id: "guided-fill12",
+      label: "Spend pre-tax first, and convert up to the top of the 12% bracket",
+      drawKey: guidedPretaxFirstKey,
+      ceilings:
+        CEILING_PRESETS.find((p) => p.name === "Fill 12%")?.fields ??
+        GUIDED_NO_CONVERSIONS,
+    },
+    {
+      id: "guided-fill22",
+      label: "Spend pre-tax first, and convert up to the top of the 22% bracket",
+      drawKey: guidedPretaxFirstKey,
+      ceilings:
+        CEILING_PRESETS.find((p) => p.name === "Fill 22%")?.fields ??
+        GUIDED_NO_CONVERSIONS,
+    },
+    {
+      id: "guided-none",
+      label: "Spend taxable first, and make no conversions",
+      drawKey: guidedTaxableFirstKey,
+      ceilings: GUIDED_NO_CONVERSIONS,
+    },
+  ];
+  const guidedStrategyMatches = (g: GuidedStrategy): boolean =>
+    drawOrder === g.drawKey &&
+    payTaxFrom === "taxable" &&
+    ceilingsMatchPreset(ceilings, g.ceilings);
+  const guidedCurrentStrategy =
+    guidedStrategies.find((g) => guidedStrategyMatches(g)) ?? null;
+  const guidedCurrentDescription = `Draw order ${drawOrderLabel(drawOrderFromKey(drawOrder))} · fill conversions to ${ceilingsSummary} · taxes paid from ${payTaxFrom === "taxable" ? "the taxable account" : "the conversion"}`;
+  const applyGuidedStrategy = (g: GuidedStrategy) => {
+    setDrawOrder(g.drawKey);
+    applyCeilingPreset(g.ceilings);
+    setPayTaxFrom("taxable");
+  };
+  const guidedStrategyChanged =
+    changedFields.drawOrder ||
+    changedFields.payTaxFrom ||
+    changedFields.ceilBracket ||
+    changedFields.ceilIrmaa ||
+    changedFields.ceilLtcg ||
+    changedFields.ceilAca ||
+    changedFields.ceilAcaFamilyOnly ||
+    changedFields.magiCap ||
+    changedFields.cliffBuffer;
+
   return (
     <div>
       <h1 className="pt-5 text-xl font-semibold">Roth Conversion</h1>
@@ -4899,7 +5425,94 @@ export function RothConversion() {
         on the marketplace.
       </p>
 
+      <div
+        role="group"
+        aria-label="Roth Conversion view"
+        className="mt-4 inline-flex max-w-full flex-wrap gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-1"
+      >
+        {(
+          [
+            { id: "plan", label: "Your plan" },
+            { id: "change", label: "Change the plan" },
+            { id: "settings", label: "All settings" },
+          ] as const
+        ).map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            aria-label={f.label}
+            aria-pressed={face === f.id}
+            className={
+              face === f.id
+                ? "rounded-[calc(var(--radius)-2px)] bg-[var(--accent)] px-3.5 py-1.5 text-sm font-medium text-white sm:px-5"
+                : "rounded-[calc(var(--radius)-2px)] px-3.5 py-1.5 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] sm:px-5"
+            }
+            onClick={() => setFace(f.id)}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       {init && (
+        <p
+          aria-label="Plan summary in plain English"
+          className="mt-3 max-w-3xl text-base leading-relaxed font-medium text-[var(--text)]"
+        >
+          {plainSummary}
+        </p>
+      )}
+
+      {init && (
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          {!confirmBackToSaved ? (
+            <>
+              <button
+                type="button"
+                aria-label="Back to saved"
+                className="px-1 py-2 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:opacity-50"
+                disabled={changedCount === 0}
+                onClick={() => {
+                  if (changedCount > 0) setConfirmBackToSaved(true);
+                }}
+              >
+                Back to saved
+              </button>
+              <span className="text-xs text-[var(--dim)]" aria-live="polite">
+                {changedCount === 0
+                  ? "Every field matches the saved plan."
+                  : `${changedCount} field${changedCount === 1 ? "" : "s"} changed from the saved plan — marked “Changed” below.`}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-sm text-[var(--bad)]">
+                Go back to the saved plan? The {changedCount} changed field
+                {changedCount === 1 ? "" : "s"} will return to the saved values —
+                nothing is written.
+              </span>
+              <button
+                type="button"
+                aria-label="Back to saved"
+                className="rounded-[var(--radius)] bg-[var(--bad)] px-4 py-2 text-sm font-medium text-white"
+                onClick={backToSaved}
+              >
+                Back to saved
+              </button>
+              <button
+                type="button"
+                aria-label="Cancel back to saved"
+                className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)]"
+                onClick={() => setConfirmBackToSaved(false)}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {init && face === "settings" && (
         <section
           aria-label="What's missing"
           className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
@@ -4929,7 +5542,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {snap && !snap.hasAnySplit && (
+      {face === "settings" && snap && !snap.hasAnySplit && (
         <div
           role="note"
           className="mt-4 rounded-[var(--radius)] border border-[var(--bad)] bg-[var(--bad-soft)] px-4 py-3 text-sm text-[var(--bad)]"
@@ -4940,7 +5553,7 @@ export function RothConversion() {
           totals fill any balance you haven't saved yourself.
         </div>
       )}
-      {snap && snap.hasAnySplit && missingSplitBuckets.length > 0 && (
+      {face === "settings" && snap && snap.hasAnySplit && missingSplitBuckets.length > 0 && (
         <div
           role="note"
           className="mt-4 rounded-[var(--radius)] border border-[var(--bad)] bg-[var(--bad-soft)] px-4 py-3 text-sm text-[var(--bad)]"
@@ -4950,154 +5563,236 @@ export function RothConversion() {
           in Net Worth or entered.
         </div>
       )}
-      {!snap && (
+      {face === "settings" && !snap && (
         <p className="mt-3 text-sm text-[var(--dim)]">
           No Net Worth snapshot yet — enter the starting balances manually below.
         </p>
       )}
 
-      <p className="mt-4 text-sm text-[var(--dim)]">
-        {matchedScenarios.length > 0
-          ? `Plan matches: ${matchedNames.join(", ")}`
-          : "Current plan isn't a saved strategy."}
-      </p>
+      {face === "settings" && (
+        <p className="mt-4 text-sm text-[var(--dim)]">
+          {matchedScenarios.length > 0
+            ? `Plan matches: ${matchedNames.join(", ")}`
+            : "Current plan isn't a saved strategy."}
+        </p>
+      )}
 
-      {rothSection("household", "Household", householdSummary, (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div>
-            <label className={labelCls} htmlFor="roth-filing">
-              Filing status
-            </label>
-            <select
-              id="roth-filing"
-              aria-label="Filing status"
-              className={inputCls}
-              value={filingStatus}
-              onChange={(e) => setFilingStatus(e.target.value as FilingStatus)}
-            >
-              {(Object.keys(FILING_LABELS) as FilingStatus[]).map((k) => (
-                <option key={k} value={k}>
-                  {FILING_LABELS[k]}
-                </option>
-              ))}
-            </select>
+      {face === "change" && (
+        <section className={sectionCls} aria-label="Change the plan">
+          <h2 className="text-base font-semibold">Change the plan</h2>
+          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+            Five plain questions. Your answers are filled in from your saved
+            plan, and changing one saves it automatically — these are the same
+            fields the full form under All settings edits, so anything you
+            change here shows there too, marked “Changed” until it saves.
+          </p>
+
+          <h3 className="mt-5 text-sm font-semibold">1. When do you stop work?</h3>
+          <div className="mt-2 max-w-xs">
+            {numField("Retirement age", retirementAge, setRetirementAge, {
+              idLabel: "Change the plan — retirement age",
+              changed: changedFields.retirementAge,
+            })}
           </div>
-          {numField("Your birth year", birthYearP, setBirthYearP)}
-          {numField("Spouse birth year", birthYearS, setBirthYearS)}
-          {numField("Retirement age", retirementAge, setRetirementAge)}
-          {numField("Plan end age", endAge, setEndAge, {
-            hint: "Your age in the final year priced.",
-          })}
-          {numField("Convert from age", winStart, setWinStart)}
-          {numField("Convert until age", winStop, setWinStop, {
-            hint: `RMDs begin at ${parseIntField(birthYearP) != null ? rmdAgeForBirthYear(parseIntField(birthYearP)!) : 75} for the birth year entered, so the seeded window stops the year before.`,
-          })}
-          {moneyField("Already converted this year", convertedAlready, setConvertedAlready, {
-            hint: "Already converted some this calendar year? Enter it — the first year's fill tops it up instead of starting over.",
-          })}
-          {numField("College years — first fall (optional)", collegeFromYear, setCollegeFromYear)}
-          {numField("College years — last fall (optional)", collegeThroughYear, setCollegeThroughYear, {
-            hint: "Fall years college starts and ends (a Sep-2027 start is fall 2027; 4 years = falls 2027–2030). Drives only the FAFSA watch-out — a conversion counts as FAFSA income two years later. Leave blank if no college in the household.",
-          })}
-          <div className="col-span-2 flex items-start gap-2 pt-6 sm:col-span-2">
-            <input
-              id="roth-sole"
-              type="checkbox"
-              aria-label="Spouse is sole beneficiary of the pre-tax accounts"
-              className="mt-1 h-4 w-4"
-              checked={soleBeneficiary}
-              onChange={(e) => setSoleBeneficiary(e.target.checked)}
-            />
-            <label htmlFor="roth-sole" className="text-sm">
-              Spouse is sole beneficiary of the pre-tax accounts — with a spouse more
-              than 10 years younger, RMDs use the Joint Life table — larger divisors,
-              smaller RMDs.
-            </label>
+
+          <h3 className="mt-5 text-sm font-semibold">2. How much do you spend in a year?</h3>
+          <div className="mt-2 max-w-xs">
+            {moneyField("Yearly spending", spending, setSpending, {
+              idLabel: "Change the plan — yearly spending",
+              changed: changedFields.spending,
+            })}
           </div>
-          <div className="col-span-2 border-t border-[var(--border)] pt-3 sm:col-span-4">
-            <div className="flex items-start gap-2">
+
+          <h3 className="mt-5 text-sm font-semibold">3. When does Social Security start?</h3>
+          <div className="mt-2 grid max-w-xl grid-cols-2 gap-3">
+            {numField("Your Social Security start age", ssPAge, setSsPAge, {
+              idLabel: "Change the plan — your Social Security start age",
+              disabled: ssPrimaryNoBenefit,
+              hint: ssPrimaryNoBenefit
+                ? "Marked as no benefit in All settings — priced as $0."
+                : undefined,
+              changed: changedFields.ssPAge,
+            })}
+            {filingStatus !== "single" &&
+              numField("Spouse Social Security start age", ssSAge, setSsSAge, {
+                idLabel: "Change the plan — spouse Social Security start age",
+                disabled: ssSpouseNoBenefit,
+                hint: ssSpouseNoBenefit
+                  ? "Marked as no benefit in All settings — priced as $0."
+                  : undefined,
+                changed: changedFields.ssSAge,
+              })}
+          </div>
+
+          <h3 className="mt-5 text-sm font-semibold">
+            4. How should the money come out?
+            {guidedStrategyChanged && <ChangedMark />}
+          </h3>
+          <div className="mt-2 flex flex-col gap-2" role="radiogroup" aria-label="How the money comes out">
+            <label className="flex items-start gap-2 text-sm">
               <input
-                id="roth-survivor"
-                type="checkbox"
-                aria-label="Model one spouse dying"
-                className="mt-1 h-4 w-4"
-                checked={survivorOn}
-                onChange={(e) => setSurvivorOn(e.target.checked)}
+                type="radio"
+                name="guided-strategy"
+                aria-label="Keep my current way"
+                className="mt-1 h-4 w-4 shrink-0"
+                checked={guidedCurrentStrategy == null}
+                onChange={() => {
+                  // Keeping the current way changes nothing.
+                }}
               />
-              <label htmlFor="roth-survivor" className="text-sm">
-                <strong>Model one spouse dying</strong> — the widow&rsquo;s penalty.
-                From the year after the death, the survivor files single (single
-                brackets, deduction, IRMAA and capital-gains thresholds), keeps only
-                the larger Social Security benefit, and inherits the combined pre-tax
-                balance on their own RMD clock. The death year still files jointly,
-                with both benefits. Off by default.
+              <span>
+                <strong>Keep my current way</strong>
+                <span className="block text-[var(--dim)]">{guidedCurrentDescription}</span>
+              </span>
+            </label>
+            {guidedStrategies.map((g) => (
+              <label key={g.id} className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="guided-strategy"
+                  aria-label={g.label}
+                  className="mt-1 h-4 w-4 shrink-0"
+                  checked={guidedCurrentStrategy?.id === g.id}
+                  onChange={() => applyGuidedStrategy(g)}
+                />
+                <span>{g.label}</span>
               </label>
-            </div>
-            {survivorOn && (
-              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div>
-                  <label className={labelCls} htmlFor="roth-survivor-who">
-                    Who dies
-                  </label>
-                  <select
-                    id="roth-survivor-who"
-                    aria-label="Who dies"
-                    className={inputCls}
-                    value={survivorWho}
-                    onChange={(e) =>
-                      setSurvivorWho(e.target.value as "primary" | "spouse")
-                    }
-                  >
-                    <option value="primary">You</option>
-                    <option value="spouse">Spouse</option>
-                  </select>
-                </div>
-                {numField("Year of death (calendar year)", survivorDeathYear, setSurvivorDeathYear, {
-                  hint:
-                    parseIntField(birthYearP) != null && parseIntField(survivorDeathYear) != null
-                      ? `You would be ${parseIntField(survivorDeathYear)! - parseIntField(birthYearP)!} that year${parseIntField(birthYearS) != null ? `, your spouse ${parseIntField(survivorDeathYear)! - parseIntField(birthYearS)!}` : ""}. The scenario prices only when a year is entered.`
-                      : "Entered as a calendar year. The scenario prices only when a year is entered.",
-                })}
-              </div>
-            )}
+            ))}
           </div>
-        </div>
-      ))}
+          <p className={hintCls}>
+            A choice sets the draw order, the conversion fill, and paying the
+            tax from the taxable account — the same three settings All settings
+            edits. Fine-tuning (a different tax source, a draw-order switch, a
+            custom ceiling) lives there.
+          </p>
 
-      {rothSection("money", "Your money", moneySummary, (
+          <h3 className="mt-5 text-sm font-semibold">5. Anything special?</h3>
+          <div className="mt-2 flex items-start gap-2">
+            <input
+              id="guided-survivor"
+              type="checkbox"
+              aria-label="Model one spouse dying"
+              className="mt-1 h-4 w-4"
+              checked={survivorOn}
+              onChange={(e) => setSurvivorOn(e.target.checked)}
+            />
+            <label htmlFor="guided-survivor" className="text-sm">
+              <strong>Model one spouse dying</strong> — the survivor files
+              single, keeps only the larger Social Security benefit, and
+              inherits the combined pre-tax balance.
+              {changedFields.survivorOn && <ChangedMark />}
+            </label>
+          </div>
+          {survivorOn && (
+            <div className="mt-3 grid max-w-xl grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls} htmlFor="guided-survivor-who">
+                  Who dies
+                  {changedFields.survivorWho && <ChangedMark />}
+                </label>
+                <select
+                  id="guided-survivor-who"
+                  aria-label="Who dies"
+                  className={inputCls}
+                  value={survivorWho}
+                  onChange={(e) =>
+                    setSurvivorWho(e.target.value as "primary" | "spouse")
+                  }
+                >
+                  <option value="primary">You</option>
+                  <option value="spouse">Spouse</option>
+                </select>
+              </div>
+              {numField("Year of death (calendar year)", survivorDeathYear, setSurvivorDeathYear, {
+                idLabel: "Change the plan — year of death",
+                changed: changedFields.survivorDeathYear,
+              })}
+            </div>
+          )}
+          <div className="mt-3 grid max-w-xl grid-cols-2 gap-3">
+            {numField("College years — first fall", collegeFromYear, setCollegeFromYear, {
+              idLabel: "Change the plan — college first fall",
+              hint: "Leave blank if no college in the household.",
+              changed: changedFields.collegeFromYear,
+            })}
+            {numField("College years — last fall", collegeThroughYear, setCollegeThroughYear, {
+              idLabel: "Change the plan — college last fall",
+              changed: changedFields.collegeThroughYear,
+            })}
+            {moneyField("Already converted this year", convertedAlready, setConvertedAlready, {
+              idLabel: "Change the plan — already converted this year",
+              hint: "Conversions already made this calendar year — the first year's fill tops them up instead of starting over.",
+              changed: changedFields.convertedAlready,
+            })}
+          </div>
+
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              aria-label="Done — back to your plan"
+              className="rounded-[var(--radius)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white"
+              onClick={() => setFace("plan")}
+            >
+              Done — back to your plan
+            </button>
+            <button
+              type="button"
+              aria-label="Open All settings instead"
+              className="px-1 py-2 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+              onClick={() => setFace("settings")}
+            >
+              Open All settings instead
+            </button>
+          </div>
+        </section>
+      )}
+
+      {face === "settings" && (
+        <>
+      {rothSection("money", "Your money", moneySummary + (sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"]) > 0 ? ` · ${sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"])} changed` : ""), (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {moneyField("Pre-tax — You", pretax, setPretax, {
             hint: "Traditional IRA / 401(k) money. From Net Worth, the Pre-tax bucket lands here unless the spouse field below splits it.",
             onEdit: () =>
               setBalanceOverrides((o) => (o.pretax ? o : { ...o, pretax: true })),
+            changed: changedFields.pretax,
           })}
-          {moneyField("Pre-tax — wife", pretaxSpouse, handleWifePretaxEdit, {
-            hint: "The spouse's own pre-tax accounts. Blank prices as $0.",
-          })}
+          {filingStatus !== "single" &&
+            moneyField("Pre-tax — wife", pretaxSpouse, handleWifePretaxEdit, {
+              hint: "The spouse's own pre-tax accounts. Blank prices as $0.",
+              changed: changedFields.pretaxSpouse,
+            })}
           {moneyField("Roth", rothBal, setRothBal, {
             onEdit: () =>
               setBalanceOverrides((o) => (o.roth ? o : { ...o, roth: true })),
+            changed: changedFields.rothBal,
           })}
           {moneyField("Taxable (brokerage / bank)", taxableBal, setTaxableBal, {
             onEdit: () =>
               setBalanceOverrides((o) => (o.taxable ? o : { ...o, taxable: true })),
+            changed: changedFields.taxableBal,
           })}
           {moneyField("Exclude from plan", taxableExclude, setTaxableExclude, {
             hint: "Part of the taxable pool (Taxable plus Cash) the plan leaves out of its calculations entirely — not spent, not sold, not counted in ending wealth. It stays in Net Worth in full. Blank = nothing excluded.",
+            changed: changedFields.taxableExclude,
           })}
           {moneyField("HSA", hsaBal, setHsaBal, {
             onEdit: () =>
               setBalanceOverrides((o) => (o.hsa ? o : { ...o, hsa: true })),
+            changed: changedFields.hsaBal,
           })}
           {pctField("Taxable cost basis", basisPct, setBasisPct, {
             hint: "Starting share of the taxable balance that is already-taxed basis. The plan tracks that basis in dollars from there: it does not grow as the account grows, and each withdrawal from Taxable carries its share of basis out with it. Blank = 100% (no capital gains priced on taxable withdrawals).",
+            changed: changedFields.basisPct,
           })}
           {pctField("Taxable dividend yield", divYieldPct, setDivYieldPct, {
             hint: "Share of the taxable balance paid out as dividends each year. That income is taxed on the capital-gains stack and counts toward MAGI every year, whether anything is sold or not. It is part of the expected return above, not extra growth, and it is treated as reinvested — it adds to the taxable basis. Blank = no dividend income is modelled.",
+            changed: changedFields.divYieldPct,
           })}
           {pctField("Taxable interest yield", intYieldPct, setIntYieldPct, {
             hint: "Share of the taxable balance paid out as interest each year. That income is taxed as ordinary income and counts toward MAGI every year, whether anything is sold or not. It is part of the expected return above, not extra growth, and it is treated as reinvested — it adds to the taxable basis. Blank = no interest income is modelled.",
+            changed: changedFields.intYieldPct,
           })}
         </div>
         {(parseMoney(taxableExclude) ?? 0) > 0 && !balanceOverrides.taxable && (
@@ -5123,8 +5818,24 @@ export function RothConversion() {
             Worth.
           </p>
         )}
+        {basisTiers.length === 0 ? (
+          <div className="mt-4">
+            <button
+              type="button"
+              className="px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+              onClick={() =>
+                setBasisTiers((rows) => [...rows, { share: "", basis: "" }])
+              }
+            >
+              Split the taxable pool into basis tiers
+            </button>
+            <span className="ml-2 text-xs text-[var(--dim)]">
+              Optional — the pool otherwise prices as one pool at the basis % above.
+            </span>
+          </div>
+        ) : (
         <div className="mt-4">
-          <span className={labelCls}>Taxable basis tiers</span>
+          <span className={labelCls}>Taxable basis tiers{changedFields.basisTiers && <ChangedMark />}</span>
           <p className={hintCls}>
             Optional: split the taxable pool (the Taxable balance, cash
             included) into lots — each lot&rsquo;s share of the pool and that
@@ -5190,6 +5901,7 @@ export function RothConversion() {
             </p>
           )}
         </div>
+        )}
         <p className="mt-3 text-sm text-[var(--dim)]">
           Each pre-tax balance prices on its owner&rsquo;s clock: your RMDs use
           the Joint Life table while both spouses are alive (spouse sole
@@ -5241,10 +5953,131 @@ export function RothConversion() {
             </>
           )}
         </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        </>
+      ), planTotalHeader)}
+
+      {rothSection("household", "Spending & timing", householdSummary + drawOrderSwitchSummary + (sectionChangedCount(["filingStatus", "birthYearP", "birthYearS", "retirementAge", "endAge", "winStart", "winStop", "convertedAlready", "collegeFromYear", "collegeThroughYear", "soleBeneficiary", "survivorOn", "survivorWho", "survivorDeathYear", "spending", "payTaxFrom", "protectMin", "preservePretax", "preserveExitRate", "drawOrder", "drawOrderSwitchAge", "drawOrderAfter"]) > 0 ? ` · ${sectionChangedCount(["filingStatus", "birthYearP", "birthYearS", "retirementAge", "endAge", "winStart", "winStop", "convertedAlready", "collegeFromYear", "collegeThroughYear", "soleBeneficiary", "survivorOn", "survivorWho", "survivorDeathYear", "spending", "payTaxFrom", "protectMin", "preservePretax", "preserveExitRate", "drawOrder", "drawOrderSwitchAge", "drawOrderAfter"])} changed` : ""), (
+        <>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div>
+            <label className={labelCls} htmlFor="roth-filing">
+              Filing status
+              {changedFields.filingStatus && <ChangedMark />}
+            </label>
+            <select
+              id="roth-filing"
+              aria-label="Filing status"
+              className={inputCls}
+              value={filingStatus}
+              onChange={(e) => setFilingStatus(e.target.value as FilingStatus)}
+            >
+              {(Object.keys(FILING_LABELS) as FilingStatus[]).map((k) => (
+                <option key={k} value={k}>
+                  {FILING_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </div>
+          {numField("Your birth year", birthYearP, setBirthYearP, { changed: changedFields.birthYearP })}
+          {filingStatus !== "single" &&
+            numField("Spouse birth year", birthYearS, setBirthYearS, { changed: changedFields.birthYearS })}
+          {numField("Retirement age", retirementAge, setRetirementAge, { changed: changedFields.retirementAge })}
+          {numField("Plan end age", endAge, setEndAge, {
+            hint: "Your age in the final year priced.",
+            changed: changedFields.endAge,
+          })}
+          {numField("Convert from age", winStart, setWinStart, { changed: changedFields.winStart })}
+          {numField("Convert until age", winStop, setWinStop, {
+            hint: `RMDs begin at ${parseIntField(birthYearP) != null ? rmdAgeForBirthYear(parseIntField(birthYearP)!) : 75} for the birth year entered, so the seeded window stops the year before.`,
+            changed: changedFields.winStop,
+          })}
+          {moneyField("Already converted this year", convertedAlready, setConvertedAlready, {
+            hint: "Already converted some this calendar year? Enter it — the first year's fill tops it up instead of starting over.",
+            changed: changedFields.convertedAlready,
+          })}
+          {moneyField("Annual spending", spending, setSpending, {
+            hint: "Seeded from the Retirement calculator's spending figure.",
+            changed: changedFields.spending,
+          })}
+          {numField("College years — first fall (optional)", collegeFromYear, setCollegeFromYear, { changed: changedFields.collegeFromYear })}
+          {numField("College years — last fall (optional)", collegeThroughYear, setCollegeThroughYear, {
+            hint: "Fall years college starts and ends (a Sep-2027 start is fall 2027; 4 years = falls 2027–2030). Drives only the FAFSA watch-out — a conversion counts as FAFSA income two years later. Leave blank if no college in the household.",
+            changed: changedFields.collegeThroughYear,
+          })}
+          {filingStatus !== "single" && (
+          <div className="col-span-2 flex items-start gap-2 pt-6 sm:col-span-2">
+            <input
+              id="roth-sole"
+              type="checkbox"
+              aria-label="Spouse is sole beneficiary of the pre-tax accounts"
+              className="mt-1 h-4 w-4"
+              checked={soleBeneficiary}
+              onChange={(e) => setSoleBeneficiary(e.target.checked)}
+            />
+            <label htmlFor="roth-sole" className="text-sm">
+              Spouse is sole beneficiary of the pre-tax accounts — with a spouse more
+              than 10 years younger, RMDs use the Joint Life table — larger divisors,
+              smaller RMDs.
+              {changedFields.soleBeneficiary && <ChangedMark />}
+            </label>
+          </div>
+          )}
+          <div className="col-span-2 border-t border-[var(--border)] pt-3 sm:col-span-4">
+            <div className="flex items-start gap-2">
+              <input
+                id="roth-survivor"
+                type="checkbox"
+                aria-label="Model one spouse dying"
+                className="mt-1 h-4 w-4"
+                checked={survivorOn}
+                onChange={(e) => setSurvivorOn(e.target.checked)}
+              />
+              <label htmlFor="roth-survivor" className="text-sm">
+                <strong>Model one spouse dying</strong> — the widow&rsquo;s penalty.
+                From the year after the death, the survivor files single (single
+                brackets, deduction, IRMAA and capital-gains thresholds), keeps only
+                the larger Social Security benefit, and inherits the combined pre-tax
+                balance on their own RMD clock. The death year still files jointly,
+                with both benefits. Off by default.
+                {changedFields.survivorOn && <ChangedMark />}
+              </label>
+            </div>
+            {survivorOn && (
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div>
+                  <label className={labelCls} htmlFor="roth-survivor-who">
+                    Who dies
+                    {changedFields.survivorWho && <ChangedMark />}
+                  </label>
+                  <select
+                    id="roth-survivor-who"
+                    aria-label="Who dies"
+                    className={inputCls}
+                    value={survivorWho}
+                    onChange={(e) =>
+                      setSurvivorWho(e.target.value as "primary" | "spouse")
+                    }
+                  >
+                    <option value="primary">You</option>
+                    <option value="spouse">Spouse</option>
+                  </select>
+                </div>
+                {numField("Year of death (calendar year)", survivorDeathYear, setSurvivorDeathYear, {
+                  hint:
+                    parseIntField(birthYearP) != null && parseIntField(survivorDeathYear) != null
+                      ? `You would be ${parseIntField(survivorDeathYear)! - parseIntField(birthYearP)!} that year${parseIntField(birthYearS) != null ? `, your spouse ${parseIntField(survivorDeathYear)! - parseIntField(birthYearS)!}` : ""}. The scenario prices only when a year is entered.`
+                      : "Entered as a calendar year. The scenario prices only when a year is entered.",
+                  changed: changedFields.survivorDeathYear,
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             <div>
               <label className={labelCls} htmlFor="roth-payfrom">
                 Pay conversion tax from
+                {changedFields.payTaxFrom && <ChangedMark />}
               </label>
               <select
                 id="roth-payfrom"
@@ -5263,16 +6096,20 @@ export function RothConversion() {
             </div>
             {moneyField("Protect-minimum taxable", protectMin, setProtectMin, {
               hint: "When tax is paid from Taxable, the sale for the year's tax bill stops at this much left in Taxable. Not a guaranteed minimum: spending draws and any tax the conversion can't absorb can still take Taxable below it, and sales sell the highest-basis money (cash) first — it does not set cash aside.",
+              changed: changedFields.protectMin,
             })}
             {moneyField("Pre-tax to preserve (never convert)", preservePretax, setPreservePretax, {
               hint: "Conversions stop at this combined pre-tax balance. RMDs and spending still draw from it, and growth above it stays convertible. Blank = no reserve.",
+              changed: changedFields.preservePretax,
             })}
             {pctField("Expected tax on the preserved amount", preserveExitRate, setPreserveExitRate, {
               hint: "The rate the preserved amount is expected to leave at — 0% if it is earmarked for charity or deductible medical costs. Blank = the heir rate.",
+              changed: changedFields.preserveExitRate,
             })}
             <div>
               <label className={labelCls} htmlFor="roth-draworder">
                 Spending draw order
+                {changedFields.drawOrder && <ChangedMark />}
               </label>
               <select
                 id="roth-draworder"
@@ -5297,10 +6134,13 @@ export function RothConversion() {
             {numField("Switch draw order at age", drawOrderSwitchAge, setDrawOrderSwitchAge, {
               info: "From the year you reach this age, spending draws follow the second order below instead of the order above. The switch year itself already uses the new order. Leave the age blank for no switch — one order at every age.",
               hint: "Blank = no switch. The order below applies only while an age is entered here.",
+              changed: changedFields.drawOrderSwitchAge,
             })}
+            {parseIntField(drawOrderSwitchAge) != null && (
             <div>
               <label className={labelCls} htmlFor="roth-draworder-after">
                 Draw order after the switch
+                {changedFields.drawOrderAfter && <ChangedMark />}
               </label>
               <select
                 id="roth-draworder-after"
@@ -5320,11 +6160,12 @@ export function RothConversion() {
                 switch age above is blank.
               </p>
             </div>
+            )}
           </div>
         </>
-      ), planTotalHeader)}
+      ))}
 
-      {rothSection("income", "Income", incomeSummary, (
+      {rothSection("income", "Social Security", incomeSummary + (sectionChangedCount(["ssP", "ssPAge", "ssS", "ssSAge", "claimAgeFloor"]) > 0 ? ` · ${sectionChangedCount(["ssP", "ssPAge", "ssS", "ssSAge", "claimAgeFloor"])} changed` : ""), (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="col-span-2">
             <div className="grid grid-cols-2 gap-3">
@@ -5333,9 +6174,11 @@ export function RothConversion() {
                 hint: ssPrimaryNoBenefit
                   ? undefined
                   : "Your ssa.gov annual figure. Needs a start age too — with the age blank, $0 is priced.",
+                changed: changedFields.ssP,
               })}
               {numField("Your SS start age", ssPAge, setSsPAge, {
                 disabled: ssPrimaryNoBenefit,
+                changed: changedFields.ssPAge,
               })}
             </div>
             <div className="mt-2 flex items-start gap-2">
@@ -5357,6 +6200,7 @@ export function RothConversion() {
               </p>
             )}
           </div>
+          {filingStatus !== "single" && (
           <div className="col-span-2">
             <div className="grid grid-cols-2 gap-3">
               {moneyField("Spouse Social Security / yr", ssS, handleSsSChange, {
@@ -5364,9 +6208,11 @@ export function RothConversion() {
                 hint: ssSpouseNoBenefit
                   ? undefined
                   : "Blank = $0 priced until you enter an ssa.gov figure. Needs a start age too — with the age blank, $0 is priced.",
+                changed: changedFields.ssS,
               })}
               {numField("Spouse SS start age", ssSAge, setSsSAge, {
                 disabled: ssSpouseNoBenefit,
+                changed: changedFields.ssSAge,
               })}
             </div>
             <div className="mt-2 flex items-start gap-2">
@@ -5388,58 +6234,78 @@ export function RothConversion() {
               </p>
             )}
           </div>
-          {moneyField("Annual spending", spending, setSpending, {
-            hint: "Seeded from the Retirement calculator's spending figure.",
+          )}
+          {numField("Earliest claiming age to consider", claimAgeFloor, setClaimAgeFloor, {
+            hint: "For the optimizer: the winning strategy must claim Social Security at this age or later (62–70). Younger ages are still priced and shown in the results, marked as below this floor. Blank = no floor.",
+            changed: changedFields.claimAgeFloor,
           })}
-          {moneyField("Other ordinary income / yr", otherOrd, setOtherOrd)}
-          {moneyField("Tax-exempt interest / yr", taxExempt, setTaxExempt, {
-            hint: "Counts toward provisional income and MAGI, though it is not itself taxed.",
-          })}
-          {moneyField("Taxable interest — Form 1040 line 2b", taxReturnInterest, setTaxReturnInterest, {
-            hint: "From your most recent tax return. Prefill only — see the note below.",
-          })}
-          {moneyField("Qualified dividends — Form 1040 line 3a", taxReturnQualDiv, setTaxReturnQualDiv, {
-            hint: "From your most recent tax return. Prefill only — see the note below.",
-          })}
-          {moneyField("Ordinary dividends — Form 1040 line 3b", taxReturnOrdDiv, setTaxReturnOrdDiv, {
-            hint: "The total, including the line 3a qualified part. Prefill only — see the note below.",
-          })}
-          <p className="col-span-2 text-xs text-[var(--dim)] sm:col-span-4">
+        </div>
+      ))}
+
+      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSizeAfter", "acaStepYear", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSizeAfter", "acaStepYear", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"])} changed` : ""), (
+        <>
+          <p className="text-sm text-[var(--dim)]">
+            From the retirement year, while anyone in the household is under 65, the household is priced as on the marketplace, and ACA MAGI sets the premium credit. Above 400% of the poverty line the credit is $0 — the whole year's credit is lost.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {numField("Household size", acaSize, setAcaSize, { changed: changedFields.acaSize })}
+            {numField("Step-down year", acaStepYear, setAcaStepYear, {
+              hint: "The year the household size drops (e.g. when a dependent leaves the return). Blank = no step-down.",
+              changed: changedFields.acaStepYear,
+            })}
+            {parseIntField(acaStepYear) != null &&
+              numField("Household size after step-down", acaSizeAfter, setAcaSizeAfter, {
+                hint: "Applies from the step-down year on. Hidden until a step-down year is entered — the value stays saved and prices exactly as before once a year is set.",
+                changed: changedFields.acaSizeAfter,
+              })}
+            {moneyField("ACA benchmark premium — couple / yr", benchCouple, setBenchCouple, {
+              hint: "Second-lowest-cost Silver for the years you are both on the marketplace. Blank = the credit is not priced yet.",
+              changed: changedFields.benchCouple,
+            })}
+            {filingStatus !== "single" &&
+              moneyField("ACA benchmark premium — one spouse / yr", benchSingle, setBenchSingle, {
+                hint: "For the years only one spouse is on the marketplace (after the other turns 65). Blank = the credit is not priced yet.",
+                changed: changedFields.benchSingle,
+              })}
+            {(parseIntField(acaSize) ?? 0) >= 3 &&
+              moneyField("ACA benchmark premium — family / yr", benchFamily, setBenchFamily, {
+                info: "The 2nd-lowest-cost Silver premium for a household of 3 or more. It is used for the years you are both on the marketplace in a household of 3 or more; years with only one spouse on the marketplace use the one-spouse figure. If left blank, the couple figure is used for those years instead.",
+                hint: "For the years you are both on the marketplace and the household is 3 or more. Blank = the couple figure is used for those years instead.",
+                changed: changedFields.benchFamily,
+              })}
+            {filingStatus !== "single" &&
+              numField("Spouse stays on the marketplace until age", acaSpouseEndAge, setAcaSpouseEndAge, {
+                info: "The age your spouse leaves the marketplace for Medicare. Blank = 65. Set it higher to model her staying on marketplace coverage longer — her premium credit and the 400% cliff keep applying in those years.",
+                hint: "Blank = 65.",
+                changed: changedFields.acaSpouseEndAge,
+              })}
+            {moneyField("Other ordinary income / yr", otherOrd, setOtherOrd, {
+              changed: changedFields.otherOrd,
+            })}
+            {moneyField("Tax-exempt interest / yr", taxExempt, setTaxExempt, {
+              hint: "Counts toward provisional income and MAGI, though it is not itself taxed.",
+              changed: changedFields.taxExempt,
+            })}
+            {moneyField("Taxable interest — Form 1040 line 2b", taxReturnInterest, setTaxReturnInterest, {
+              hint: "From your most recent tax return. Prefill only — see the note below.",
+              changed: changedFields.taxReturnInterest,
+            })}
+            {moneyField("Qualified dividends — Form 1040 line 3a", taxReturnQualDiv, setTaxReturnQualDiv, {
+              hint: "From your most recent tax return. Prefill only — see the note below.",
+              changed: changedFields.taxReturnQualDiv,
+            })}
+            {moneyField("Ordinary dividends — Form 1040 line 3b", taxReturnOrdDiv, setTaxReturnOrdDiv, {
+              hint: "The total, including the line 3a qualified part. Prefill only — see the note below.",
+              changed: changedFields.taxReturnOrdDiv,
+            })}
+          </div>
+          <p className="mt-3 text-xs text-[var(--dim)]">
             The three Form 1040 lines above are your most recent tax return&rsquo;s
             actuals. They are used for one thing only: the Playground&rsquo;s
             &ldquo;Start from my numbers&rdquo; fills its Interest and Dividends
             fields from them. This plan does not price them — it models interest
             and dividends from the yield fields under Your money.
           </p>
-        </div>
-      ))}
-
-      {rothSection("aca", "ACA coverage", acaSummary, (
-        <>
-          <p className="text-sm text-[var(--dim)]">
-            From the retirement year, while anyone in the household is under 65, the household is priced as on the marketplace, and ACA MAGI sets the premium credit. Above 400% of the poverty line the credit is $0 — the whole year's credit is lost.
-          </p>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {numField("Household size", acaSize, setAcaSize)}
-            {numField("Household size after step-down", acaSizeAfter, setAcaSizeAfter)}
-            {numField("Step-down year", acaStepYear, setAcaStepYear, {
-              hint: "The year the household size drops (e.g. when a dependent leaves the return). Blank = no step-down.",
-            })}
-            {moneyField("ACA benchmark premium — couple / yr", benchCouple, setBenchCouple, {
-              hint: "Second-lowest-cost Silver for the years you are both on the marketplace. Blank = the credit is not priced yet.",
-            })}
-            {moneyField("ACA benchmark premium — one spouse / yr", benchSingle, setBenchSingle, {
-              hint: "For the years only one spouse is on the marketplace (after the other turns 65). Blank = the credit is not priced yet.",
-            })}
-            {moneyField("ACA benchmark premium — family / yr", benchFamily, setBenchFamily, {
-              info: "The 2nd-lowest-cost Silver premium for a household of 3 or more. It is used for the years you are both on the marketplace in a household of 3 or more; years with only one spouse on the marketplace use the one-spouse figure. If left blank, the couple figure is used for those years instead.",
-              hint: "For the years you are both on the marketplace and the household is 3 or more. Blank = the couple figure is used for those years instead.",
-            })}
-            {numField("Spouse stays on the marketplace until age", acaSpouseEndAge, setAcaSpouseEndAge, {
-              info: "The age your spouse leaves the marketplace for Medicare. Blank = 65. Set it higher to model her staying on marketplace coverage longer — her premium credit and the 400% cliff keep applying in those years.",
-              hint: "Blank = 65.",
-            })}
-          </div>
           {parseIntField(acaStepYear) == null && (
             <p className={hintCls}>
               No step-down year is set, so the household size stays{" "}
@@ -5451,7 +6317,7 @@ export function RothConversion() {
         </>
       ))}
 
-      {rothSection("advanced", "Advanced", advancedSummary, (
+      {rothSection("advanced", "Advanced", advancedSummary + (sectionChangedCount(["ceilBracket", "ceilIrmaa", "ceilLtcg", "ceilAca", "ceilAcaFamilyOnly", "magiCap", "cliffBuffer", "guardrailOn", "bunchingOn", "gainsHarvestOn", "expectedPct", "inflation", "residenceState", "stateRate", "carryInSt", "carryInLt", "itemizedMortgage", "itemizedSalt", "itemizedCharitable", "itemizedOther", "eduStudents", "heirRate"]) > 0 ? ` · ${sectionChangedCount(["ceilBracket", "ceilIrmaa", "ceilLtcg", "ceilAca", "ceilAcaFamilyOnly", "magiCap", "cliffBuffer", "guardrailOn", "bunchingOn", "gainsHarvestOn", "expectedPct", "inflation", "residenceState", "stateRate", "carryInSt", "carryInLt", "itemizedMortgage", "itemizedSalt", "itemizedCharitable", "itemizedOther", "eduStudents", "heirRate"])} changed` : ""), (
         <>
           <p className="text-sm text-[var(--dim)]">
             Each year in the window, the plan converts just enough to reach the{" "}
@@ -5503,6 +6369,7 @@ export function RothConversion() {
             <div>
               <label className={labelCls} htmlFor="roth-ceil-bracket">
                 Fill to top of bracket
+                {changedFields.ceilBracket && <ChangedMark />}
               </label>
               <select
                 id="roth-ceil-bracket"
@@ -5521,6 +6388,7 @@ export function RothConversion() {
             <div>
               <label className={labelCls} htmlFor="roth-ceil-irmaa">
                 Cap MAGI at IRMAA tier
+                {changedFields.ceilIrmaa && <ChangedMark />}
               </label>
               <select
                 id="roth-ceil-irmaa"
@@ -5549,6 +6417,7 @@ export function RothConversion() {
               />
               <label htmlFor="roth-ceil-ltcg" className="text-sm">
                 Stay inside the 0% capital-gains space
+                {changedFields.ceilLtcg && <ChangedMark />}
               </label>
             </div>
             <div className="flex items-start gap-2 pt-7">
@@ -5562,8 +6431,10 @@ export function RothConversion() {
               />
               <label htmlFor="roth-ceil-aca" className="text-sm">
                 Stay at or under 400% FPL (keep the ACA credit)
+                {changedFields.ceilAca && <ChangedMark />}
               </label>
             </div>
+            {ceilAca && (
             <div className="flex items-start gap-2 pt-7">
               <input
                 id="roth-ceil-aca-family-only"
@@ -5571,7 +6442,6 @@ export function RothConversion() {
                 aria-label="Only until the household steps down"
                 className="mt-1 h-4 w-4"
                 checked={ceilAcaFamilyOnly}
-                disabled={!ceilAca}
                 onChange={(e) => setCeilAcaFamilyOnly(e.target.checked)}
               />
               <label htmlFor="roth-ceil-aca-family-only" className="text-sm">
@@ -5579,20 +6449,23 @@ export function RothConversion() {
                 year the plan stops defending the cliff and those years
                 price undefended. The credit in those years is still
                 worked out on the stepped-down household.
+                {changedFields.ceilAcaFamilyOnly && <ChangedMark />}
               </label>
             </div>
-            {moneyField("Cliff safety buffer", cliffBuffer, setCliffBuffer, {
-              hint: ceilAca
-                ? "Aim this far below the cliff, so a late-year surprise — a December fund payout, a bigger dividend than expected — can't push income $1 over the line and wipe out the whole year's credit. Blank = aim at the cliff itself."
-                : "Only applies while “Stay at or under 400% FPL” is on — the value stays saved and applies when the cliff cap is on.",
-              disabled: !ceilAca,
-            })}
+            )}
+            {ceilAca &&
+              moneyField("Cliff safety buffer", cliffBuffer, setCliffBuffer, {
+                hint: "Aim this far below the cliff, so a late-year surprise — a December fund payout, a bigger dividend than expected — can't push income $1 over the line and wipe out the whole year's credit. Blank = aim at the cliff itself.",
+                changed: changedFields.cliffBuffer,
+              })}
             {moneyField("Custom MAGI cap", magiCap, setMagiCap, {
               hint: "Blank = no custom cap.",
+              changed: changedFields.magiCap,
             })}
           </div>
           )}
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {ceilBracket !== "" && (
             <div className="flex items-start gap-2 pt-7">
               <input
                 id="roth-guardrail"
@@ -5600,15 +6473,16 @@ export function RothConversion() {
                 aria-label="Marginal-rate guardrail"
                 className="mt-1 h-4 w-4"
                 checked={guardrailOn ?? false}
-                disabled={ceilBracket === ""}
                 onChange={(e) => setGuardrailOn(e.target.checked)}
               />
               <label htmlFor="roth-guardrail" className="text-sm">
                 Marginal-rate guardrail — stop each year's fill at the first $100 step
                 taxed above the bracket rate (pauses in the Social Security torpedo
                 zone; resumes once benefits are fully taxed). Needs a bracket ceiling.
+                {changedFields.guardrailOn && <ChangedMark />}
               </label>
             </div>
+            )}
             <div className="flex items-start gap-2 pt-7">
               <input
                 id="roth-bunching"
@@ -5622,6 +6496,7 @@ export function RothConversion() {
                 ACA bunching — in marketplace years, alternate a big conversion year
                 with a $0 year: the big year gives up that year's premium credit so
                 the $0 year keeps it in full.
+                {changedFields.bunchingOn && <ChangedMark />}
               </label>
             </div>
             <div className="flex items-start gap-2 pt-7">
@@ -5635,24 +6510,25 @@ export function RothConversion() {
               />
               <label htmlFor="roth-gains-harvest" className="text-sm">
                 Harvest gains into the 0% bracket each year
+                {changedFields.gainsHarvestOn && <ChangedMark />}
               </label>
               <InfoNote
                 text="Sell and rebuy investments to use up the year's 0% capital-gains space, raising their cost basis so the gain is never taxed. Stops at the ACA cliff when the cliff cap is on."
                 ariaLabel="About gain harvesting"
               />
             </div>
-            {numField("Earliest claiming age to consider", claimAgeFloor, setClaimAgeFloor, {
-              hint: "For the optimizer: the winning strategy must claim Social Security at this age or later (62–70). Younger ages are still priced and shown in the results, marked as below this floor. Blank = no floor.",
-            })}
             {pctField("Expected return", expectedPct, setExpectedPct, {
               hint: "One blended real return for every bucket, from the Retirement calculator. A single steady path — no market ups and downs.",
+              changed: changedFields.expectedPct,
             })}
             {pctField("Inflation", inflation, setInflation, {
               hint: "Figures the law does not index (Social Security thresholds, NIIT) shrink by this rate each year in today's dollars; indexed figures stay constant. The top IRMAA tier is frozen only until 2028.",
+              changed: changedFields.inflation,
             })}
             <div>
               <label className={labelCls} htmlFor="roth-residence-state">
                 State of residence
+                {changedFields.residenceState && <ChangedMark />}
               </label>
               <select
                 id="roth-residence-state"
@@ -5678,27 +6554,55 @@ export function RothConversion() {
                 residenceState === "WA"
                   ? "Ignored for Washington — the excise prices the state tax instead."
                   : "One flat rate on taxable income.",
+              changed: changedFields.stateRate,
             })}
             {moneyField("Capital-loss carryforward — short-term", carryInSt, setCarryInSt, {
               hint: "Unused net short-term capital losses banked before the plan starts. They offset later gains first, then up to $3,000 a year against other income, and keep carrying forward. Blank = none.",
+              changed: changedFields.carryInSt,
             })}
             {moneyField("Capital-loss carryforward — long-term", carryInLt, setCarryInLt, {
               hint: "Unused net long-term capital losses banked before the plan starts. Short-term and long-term are tracked separately, the way the IRS worksheet does it. Blank = none.",
+              changed: changedFields.carryInLt,
             })}
             {moneyField("Mortgage interest", itemizedMortgage, setItemizedMortgage, {
               hint: "Itemized deductions: the household's annual mortgage interest. Each priced year takes the greater of the itemized total and that year's standard deduction. Blank = $0.",
+              changed: changedFields.itemizedMortgage,
             })}
             {moneyField("State and local taxes paid", itemizedSalt, setItemizedSalt, {
               hint: "Itemized deductions: state and local taxes PAID for the year (property tax, state income or sales tax). This component is capped on its own at the year's SALT cap ($40,000 in the 2025 table, $40,400 in the 2026 table, reduced for very high incomes) before the itemized total is compared with the standard deduction. Blank = $0.",
+              changed: changedFields.itemizedSalt,
             })}
             {moneyField("Charitable contributions", itemizedCharitable, setItemizedCharitable, {
               hint: "Itemized deductions: charitable contributions for the year. This same figure is the one charitable input the Washington capital-gains layer also reads for its charitable deduction — there is no second charitable figure. Blank = $0.",
+              changed: changedFields.itemizedCharitable,
             })}
             {moneyField("Other itemized deductions", itemizedOther, setItemizedOther, {
               hint: "Itemized deductions: any other itemized amounts not covered by the three fields above. The four components stay separate so the SALT cap applies to that component alone. Blank = $0.",
+              changed: changedFields.itemizedOther,
             })}
+            {eduStudents.length === 0 ? (
             <div className="col-span-2 sm:col-span-4">
               <span className={labelCls}>Education expenses — for education credits</span>
+              <p className={hintCls}>
+                No students entered — no education credits price. Expenses are
+                never guessed from 529 balances or the college years.
+              </p>
+              <button
+                type="button"
+                className="mt-2 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+                onClick={() =>
+                  setEduStudents((rows) => [
+                    ...rows,
+                    { year: "", expenses: "", aotcEligible: true },
+                  ])
+                }
+              >
+                Add a student
+              </button>
+            </div>
+            ) : (
+            <div className="col-span-2 sm:col-span-4">
+              <span className={labelCls}>Education expenses — for education credits{changedFields.eduStudents && <ChangedMark />}</span>
               <p className={hintCls}>
                 Optional: one row per student per year — that student&rsquo;s
                 qualified education expenses for that calendar year, and
@@ -5781,8 +6685,10 @@ export function RothConversion() {
                 </p>
               )}
             </div>
+            )}
             {pctField("Heir rate", heirRate, setHeirRate, {
               hint: "Rate applied to leftover pre-tax money in the ending after-tax wealth figure — heirs are taxed when they withdraw it.",
+              changed: changedFields.heirRate,
             })}
           </div>
         </>
@@ -5876,7 +6782,137 @@ export function RothConversion() {
           The reset did not go through — your plan was not changed. Try again.
         </p>
       )}
+        </>
+      )}
 
+      {face === "plan" && (
+        <section className={sectionCls} aria-label="What-if questions">
+          <h2 className="text-base font-semibold">What if…</h2>
+          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+            One change at a time, priced from your saved plan through the
+            scenario comparison. Asking a question changes nothing and saves
+            nothing — it just shows how the ending moves.
+          </p>
+          {whatIfDefs.length === 0 ? (
+            <p className="mt-3 text-sm text-[var(--dim)]">
+              No questions yet — the plan needs a retirement age and yearly
+              spending first. Add them under Change the plan.
+            </p>
+          ) : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {whatIfDefs.map((def) => (
+                <button
+                  key={def.id}
+                  type="button"
+                  aria-label={def.label}
+                  className={ceilChipCls}
+                  disabled={runWhatIfMut.isPending}
+                  onClick={() => runWhatIf(def)}
+                >
+                  {def.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {runWhatIfMut.isPending && (
+            <p className="mt-3 text-sm text-[var(--dim)]" aria-live="polite">
+              Pricing that question…
+            </p>
+          )}
+          {whatIfError && (
+            <p className="mt-3 text-sm text-[var(--bad)]" role="alert">
+              {whatIfError}
+            </p>
+          )}
+          {whatIfResult && (
+            <div
+              className="mt-4 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-4 py-3"
+              aria-live="polite"
+            >
+              <p className="text-sm text-[var(--dim)]">{whatIfResult.label}</p>
+              <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-[var(--dim)]">Ending wealth (after-tax)</dt>
+                  <dd className="tnum text-lg font-semibold">
+                    {fmtCents(whatIfResult.wealthCents)}{" "}
+                    <span className="text-sm font-normal text-[var(--dim)]">
+                      {whatIfResult.deltaWealthCents === 0
+                        ? "— the same as your saved plan"
+                        : `${whatIfResult.deltaWealthCents > 0 ? "+" : ""}${fmtCents(whatIfResult.deltaWealthCents)} vs your saved plan`}
+                    </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--dim)]">Lifetime net cost</dt>
+                  <dd className="tnum text-lg font-semibold">
+                    {fmtCents(whatIfResult.netCostCents)}{" "}
+                    <span className="text-sm font-normal text-[var(--dim)]">
+                      {whatIfResult.deltaNetCostCents === 0
+                        ? "— the same as your saved plan"
+                        : `${whatIfResult.deltaNetCostCents > 0 ? "+" : ""}${fmtCents(whatIfResult.deltaNetCostCents)} vs your saved plan`}
+                    </span>
+                  </dd>
+                </div>
+              </dl>
+              <p className="mt-2 text-xs text-[var(--dim)]">
+                Priced from your saved plan with just that one change — nothing
+                was saved.
+                {whatIfStale
+                  ? " Your plan has changed since this answer was priced — ask the question again for current figures."
+                  : ""}
+              </p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {face === "plan" && planInputs && mainResult && (
+        <section className={sectionCls} aria-label="Ending figures">
+          <h2 className="text-base font-semibold">Where the plan ends</h2>
+          {(() => {
+            const bd = netCostBreakdown(mainResult, planInputs.heirRatePct, bdOpts);
+            const figures: { label: string; value: number }[] = [
+              { label: "Ending wealth (after-tax)", value: mainResult.endingAfterTaxWealth },
+              { label: "Lifetime net cost", value: bd.netCost },
+              { label: "Ending pre-tax", value: mainResult.endingPretax },
+              { label: "ACA premium credit kept", value: mainResult.lifetimeAcaKept },
+            ];
+            return (
+              <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+                {figures.map((f) => (
+                  <div key={f.label}>
+                    <dt className="text-sm text-[var(--dim)]">{f.label}</dt>
+                    <dd className="tnum mt-0.5 text-xl font-semibold">
+                      {fmtCents(Math.round(f.value * 100))}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            );
+          })()}
+        </section>
+      )}
+
+      {face === "plan" && !planInputs && init && (
+        <section className={sectionCls} aria-label="Plan not priced yet">
+          <p className="text-sm">
+            The plan isn&rsquo;t pricing yet — it needs a birth year, annual
+            spending, a retirement age, an expected return, and an end age
+            after the current age.{" "}
+            <button
+              type="button"
+              aria-label="Change the plan to fill in the missing inputs"
+              className="font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)]"
+              onClick={() => setFace("change")}
+            >
+              Change the plan
+            </button>{" "}
+            to fill them in, or open All settings.
+          </p>
+        </section>
+      )}
+
+      {face === "settings" && (
       <div
         role="group"
         aria-label="Results workspace"
@@ -5899,6 +6935,7 @@ export function RothConversion() {
           </button>
         ))}
       </div>
+      )}
 
       {takeawayText && (
         <p
@@ -5909,7 +6946,7 @@ export function RothConversion() {
         </p>
       )}
 
-      {resultsMode === "thisYear" && (
+      {face === "settings" && resultsMode === "thisYear" && (
         <section className={sectionCls} aria-label={`This year — ${startYear}`}>
           <h2 className="text-base font-semibold">This year — {startYear}</h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -5963,7 +7000,7 @@ export function RothConversion() {
               hint: "Year to date. Counts toward MAGI and provisional income, though it is not itself taxed.",
             })}
             {moneyField(`Already converted in ${startYear}`, execAlready, setExecAlready, {
-              hint: `Conversions already made in ${startYear}, year to date. Not the plan's 'Already converted this year' (Household) — that one belongs to the plan window's first year; this one is priced only here.`,
+              hint: `Conversions already made in ${startYear}, year to date. Not the plan's 'Already converted this year' (Spending & timing) — that one belongs to the plan window's first year; this one is priced only here.`,
             })}
           </div>
           <p className="mt-3 text-sm text-[var(--dim)]">
@@ -6122,7 +7159,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "yearFunding" && (
+      {face === "settings" && resultsMode === "yearFunding" && (
         <section className={sectionCls} aria-label="Year funding">
           <h2 className="text-base font-semibold">Year funding</h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -6355,7 +7392,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "proof" && (
+      {face === "settings" && resultsMode === "proof" && (
         <section className={sectionCls} aria-label="Pretax Spending — pre-tax to age 110">
           <h2 className="text-base font-semibold">Pretax Spending — how long the pre-tax money lasts</h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -6749,7 +7786,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "workYears" && (
+      {face === "settings" && resultsMode === "workYears" && (
         <section className={sectionCls} aria-label="Work years">
           <h2 className="text-base font-semibold">Work years</h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -7043,7 +8080,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "gift" && (
+      {face === "settings" && resultsMode === "gift" && (
         <section className={sectionCls} aria-label="Gift stock">
           <h2 className="text-base font-semibold">Gift stock to a child</h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -7383,7 +8420,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "plan" && planInputs && (
+      {showPlanWorkspace && planInputs && (
         <div
           aria-label="What the results are calculated with"
           className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
@@ -7419,7 +8456,7 @@ export function RothConversion() {
         </div>
       )}
 
-      {resultsMode === "plan" && planInputs && acaNotPricedYears.length > 0 && (
+      {showPlanWorkspace && planInputs && acaNotPricedYears.length > 0 && (
         <div
           role="note"
           className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm"
@@ -7435,7 +8472,7 @@ export function RothConversion() {
         </div>
       )}
 
-      {resultsMode === "plan" && planInputs && reserveSet && reserveBindYears.length > 0 && (
+      {showPlanWorkspace && planInputs && reserveSet && reserveBindYears.length > 0 && (
         <div
           role="note"
           className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm"
@@ -7453,11 +8490,11 @@ export function RothConversion() {
         </div>
       )}
 
-      {resultsMode === "plan" && planInputs && allWarnings.length > 0 && (
+      {showPlanWorkspace && planInputs && allWarnings.length > 0 && (
         <WatchOutsPanel warnings={allWarnings} open={watchOutsOpen} onToggle={toggleWatchOuts} />
       )}
 
-      {resultsMode === "optimize" && planInputs && (
+      {face === "settings" && resultsMode === "optimize" && planInputs && (
         <section className={sectionCls} aria-label="Lifetime-tax optimizer">
           <h2 className="text-base font-semibold">Lifetime-tax optimizer</h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -8121,7 +9158,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "plan" && planInputs && mainResult && (
+      {showPlanWorkspace && planInputs && mainResult && (
         <section className={sectionCls} aria-label="Balances over time chart">
           <h2 className="text-base font-semibold">Balances by bucket — your fill settings</h2>
           <div className="mt-3 h-72 w-full">
@@ -8154,7 +9191,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "plan" && planInputs && mainResult && (ceilings.irmaaTierCap != null || ceilings.acaCliffCap || ceilings.magiCap != null) && (
+      {showPlanWorkspace && planInputs && mainResult && (ceilings.irmaaTierCap != null || ceilings.acaCliffCap || ceilings.magiCap != null) && (
         <section className={sectionCls} aria-label="MAGI versus ceilings chart">
           <h2 className="text-base font-semibold">MAGI vs the ceilings switched on</h2>
           <div className="mt-3 h-64 w-full">
@@ -8242,7 +9279,7 @@ export function RothConversion() {
           (detail.aca.cliff) drawn only for marketplace years
           (acaActive with a priced cliff). Picking a bar opens that
           year's "Show the math" panel under the table below. */}
-      {resultsMode === "plan" && planInputs && mainResult && (() => {
+      {showPlanWorkspace && planInputs && mainResult && (() => {
         const planYears = mainResult.years;
         const segDefs = [
           { key: "interest", label: "Interest", color: "#2563eb", amount: (y: RothYear) => y.detail.interestIncome },
@@ -8439,7 +9476,7 @@ export function RothConversion() {
         );
       })()}
 
-      {resultsMode === "plan" && planInputs && mainResult && (
+      {showPlanWorkspace && planInputs && mainResult && (
         <section className={sectionCls} aria-label="Year by year">
           <button
             type="button"
@@ -8578,7 +9615,7 @@ export function RothConversion() {
         </section>
       )}
 
-      {resultsMode === "compare" && (
+      {face === "settings" && resultsMode === "compare" && (
         <section className={sectionCls} aria-label="Strategy Lab">
           <h2 className="text-base font-semibold">Strategy Lab</h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -9440,7 +10477,7 @@ export function RothConversion() {
             balance prices on its owner&rsquo;s clock.
           </li>
           <li>
-            Survivor scenario (when switched on in Household; the year of death is
+            Survivor scenario (when switched on in Spending &amp; timing; the year of death is
             entered as a calendar year): the death year still files jointly and
             receives both Social Security benefits. From the next year the
             survivor files as a single filer — single brackets, standard

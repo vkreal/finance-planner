@@ -10,8 +10,10 @@ import { z } from "@hatch/space-sdk";
    in settings under one JSON blob
    ("roth_ui_state_v1") so it survives reloads, new sessions,
    and devices, exactly like the other section collapse flags.
-   First use (no stored blob): only "Your money" is open, the
-   year table is collapsed, and the results workspace is Plan.
+   First use (no stored blob): the everyday sections ("Your
+   money", "Spending & timing", "Social Security", "Taxes &
+   ACA") are open and "Advanced" is closed, the year table is
+   collapsed, and the results workspace is Plan.
    A stored blob written before the workspace mode existed
    parses with the Plan default. This state never touches the
    saved Roth inputs record, the scenarios, or any amount.
@@ -528,7 +530,7 @@ export const rothUiStateResponse = z.object({
 });
 function defaultRothUiState(): RothUiState {
   return {
-    open: { household: false, money: true, income: false, aca: false, advanced: false },
+    open: { household: true, money: true, income: true, aca: true, advanced: false },
     yearTableOpen: false,
     mode: "plan",
     labDials: blankLabDials(),

@@ -9105,10 +9105,10 @@ export const Actions = {
   // sections are open, whether the Year-by-year table is
   // expanded, and which results workspace is showing — plus
   // the Playground view's remembered form state. Display and
-  // form state only — defaults (no stored blob) are "Your
-  // money" open, every other section closed, the year table
-  // collapsed, the Plan workspace, and a fresh Playground
-  // form. The response carries the blob's current write
+  // form state only — defaults (no stored blob) are the
+  // everyday sections open and "Advanced" closed, the year
+  // table collapsed, the Plan workspace, and a fresh
+  // Playground form. The response carries the blob's current write
   // revision, which writers pass back as baseRevision when
   // they save (see setRothUiState).
   getRothUiState: defineAction({
