@@ -20,9 +20,12 @@
 // deterministic whenever they run.
 
 import {
+cashOutDayError,
 createSpendingCore,
+daysInMonthOf,
 monthlyBillUpdateOutcome,
 monthlyBillUpdateSet,
+sortCashOutItems,
 versionInEffect,
 yearSummaryFloorMonth,
 type CoreBillVersion,
@@ -102,6 +105,7 @@ import {
 ROTH_UI_STATE_KEY,
 applyRothUiWrite,
 commitGuardedRothUiWrite,
+commitInsertOnlyRothUiWrite,
 parseRothUiState,
 type RothUiState,
 } from "./rothUiStateCore";
@@ -4823,6 +4827,51 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       };
     },
   },
+  {
+    id: "sp-cash-out-item-day-roundtrip-and-sort",
+    kind: "spending",
+    note: "Cash-out item day (hand-derived): four November 2026 items are entered OUT of day order — id 1 on day 20 ($100.00), id 2 on day 3 ($200.00), id 3 on day 14 ($300.00), id 4 on day 14 ($400.00) — in the stored row shape the add writer writes (month + day). An edit (the update writer's write) moves id 1 to day 1. The read order (sortCashOutItems, the comparator loadAll returns) is then day ascending with entry order breaking the day-14 tie: ids 1, 2, 3, 4 on days 1, 3, 14, 14, and the mid-month day 14 round-trips unchanged on id 3. The day never touches the total: the items still sum to $1,000.00. Month lengths are leap-aware: Feb 2024 has 29 days (day 29 valid), Feb 2026 has 28 (day 29 refused), November has 30 (day 31 refused, day 30 valid), January has 31.",
+    expected: {
+      firstId: 1, firstDay: 1,
+      secondId: 2, secondDay: 3,
+      thirdId: 3, thirdDay: 14,
+      fourthId: 4, fourthDay: 14,
+      midMonthDay: 14,
+      itemsTotal: 100000,
+      daysFebLeap: 29, daysFebPlain: 28, daysNov: 30, daysJan: 31,
+      febLeap29Ok: 1, febPlain29Bad: 1, nov31Bad: 1, nov30Ok: 1,
+    },
+    actual: () => {
+      // The stored rows, in entry order, exactly as entered.
+      const stored = [
+        { id: 1, month: "2026-11", day: 20, amountCents: 10000 },
+        { id: 2, month: "2026-11", day: 3, amountCents: 20000 },
+        { id: 3, month: "2026-11", day: 14, amountCents: 30000 },
+        { id: 4, month: "2026-11", day: 14, amountCents: 40000 },
+      ];
+      // The edit: id 1's day is rewritten 20 → 1 (the update
+      // writer's set carries the day like every other field).
+      const edited = stored.map((r) => (r.id === 1 ? { ...r, day: 1 } : r));
+      const sorted = sortCashOutItems(edited);
+      const at = (i: number) => sorted[i] ?? { id: -1, day: -1, amountCents: 0 };
+      return {
+        firstId: at(0).id, firstDay: at(0).day,
+        secondId: at(1).id, secondDay: at(1).day,
+        thirdId: at(2).id, thirdDay: at(2).day,
+        fourthId: at(3).id, fourthDay: at(3).day,
+        midMonthDay: sorted.find((r) => r.id === 3)?.day ?? -1,
+        itemsTotal: sorted.reduce((s, r) => s + r.amountCents, 0),
+        daysFebLeap: daysInMonthOf("2024-02"),
+        daysFebPlain: daysInMonthOf("2026-02"),
+        daysNov: daysInMonthOf("2026-11"),
+        daysJan: daysInMonthOf("2026-01"),
+        febLeap29Ok: cashOutDayError("2024-02", 29) == null ? 1 : 0,
+        febPlain29Bad: cashOutDayError("2026-02", 29) != null ? 1 : 0,
+        nov31Bad: cashOutDayError("2026-11", 31) != null ? 1 : 0,
+        nov30Ok: cashOutDayError("2026-11", 30) == null ? 1 : 0,
+      };
+    },
+  },
 ];
 
 /* ------------------------- The runner ------------------------- */
@@ -4904,7 +4953,15 @@ export function runExtendedTeethCheck(): {
    (e) the ceilCustomOpen field (the Custom… ceiling panel's
        persisted open flag): a blob written before the field
        existed parses it false, a write setting it true
-       round-trips, and an unrelated field write preserves it.
+       round-trips, and an unrelated field write preserves it;
+   (f) the first-write race (state audit fix 1): two writers
+       that both read an absent row and compose at base 0 meet
+       the insert-only commit gate — the first establishes
+       revision 1, the second affects 0 rows and is refused
+       with the winner's blob;
+   (g) the labBaselineName normalization (state audit fix 3):
+       an accepted "" is stored as null and reads back null,
+       while a nonempty name round-trips exactly.
    Expected values follow from the contract itself (revision
    arithmetic and field preservation), not from app output. */
 
@@ -5112,6 +5169,87 @@ const uiCasCases: {
         failures.push(`legacy blob at base 0: expected 1 affected row, got ${legacy.affectedRows}`);
       else if (legacy.revision !== 1)
         failures.push(`legacy blob commit revision: expected 1, got ${legacy.revision}`);
+      return failures;
+    },
+  },
+  {
+    id: "ui-first-write-insert-only-second-writer-refused",
+    note: "State audit fix 1, the first-write race: two writers both read an ABSENT row (no stored blob) and both compose a first write at baseRevision 0 through applyRothUiWrite — writer A (mode compare) and writer B (yearTableOpen true) both pass the read-time decision at revision 1, which is exactly the simultaneity window. The commits go through the insert-only gate (commitInsertOnlyRothUiWrite, the mirror of the handler's INSERT … ON CONFLICT DO NOTHING): A's commit against the still-absent row affects 1 row and establishes revision 1; B's commit, evaluated against the row as it stands at commit time (A's blob), affects 0 rows, carries no raw form to persist, and its refusal state is A's current blob (revision 1, mode compare, yearTableOpen still false) — B's change is NOT silently written over A's. The stored blob afterwards is byte-identical to A's raw. A base > 0 against the absent row is refused by the decision itself (control, pre-existing behaviour).",
+    run: () => {
+      const failures: string[] = [];
+      const a = applyRothUiWrite(undefined, 0, (s) => {
+        s.mode = "compare";
+      });
+      const b = applyRothUiWrite(undefined, 0, (s) => {
+        s.yearTableOpen = true;
+      });
+      if (a.status !== "ok" || b.status !== "ok") {
+        failures.push("both racing first writes must pass the read-time decision at base 0");
+        return failures;
+      }
+      if (a.revision !== 1 || b.revision !== 1)
+        failures.push("both racing first writes compose revision 1");
+      const aCommit = commitInsertOnlyRothUiWrite(undefined, a);
+      if (aCommit.affectedRows !== 1) {
+        failures.push(`writer A: expected 1 affected row, got ${aCommit.affectedRows}`);
+        return failures;
+      }
+      const storedAfterA = aCommit.raw;
+      const bCommit = commitInsertOnlyRothUiWrite(storedAfterA, b);
+      if (bCommit.affectedRows !== 0) {
+        failures.push(`writer B: expected 0 affected rows, got ${bCommit.affectedRows}`);
+        return failures;
+      }
+      if ("raw" in bCommit)
+        failures.push("writer B: a refused insert-only commit must not carry a raw form to persist");
+      if (bCommit.revision !== 1)
+        failures.push(`writer B conflict revision: expected 1, got ${bCommit.revision}`);
+      if (bCommit.state.mode !== "compare")
+        failures.push(`writer B conflict state must carry writer A's stored values, got mode ${bCommit.state.mode}`);
+      if (bCommit.state.yearTableOpen !== false)
+        failures.push("writer B conflict state must not carry the refused write's yearTableOpen");
+      const after = parseRothUiState(storedAfterA);
+      if (storedAfterA !== a.raw || after.revision !== 1 || after.mode !== "compare" || after.yearTableOpen !== false)
+        failures.push("the stored blob changed under writer B's refused first write");
+      const futureBase = applyRothUiWrite(undefined, 3, () => {});
+      if (futureBase.status !== "conflict")
+        failures.push("control: a base > 0 against an absent row must be refused by the decision");
+      return failures;
+    },
+  },
+  {
+    id: "ui-lab-baseline-name-empty-normalizes-to-null",
+    note: "State audit fix 3, the labBaselineName round-trip: the writer accepts \"\" (a cleared name) but normalizes it at write — a write setting labBaselineName \"\" (through applyRothUiWrite, the handler's exact write path) stores JSON null for the key, and the stored blob reads back labBaselineName null, so schema, writer, reader, and stored form agree. A nonempty name (\"Retire at 65\") round-trips exactly, byte-for-byte. A pre-existing stored \"\" (written before the normalization) still reads as null, exactly as it did before the fix.",
+    run: () => {
+      const failures: string[] = [];
+      const cleared = applyRothUiWrite(undefined, 0, (s) => {
+        s.labBaselineName = "";
+      });
+      if (cleared.status !== "ok") {
+        failures.push(`clearing write: expected ok, got ${cleared.status}`);
+        return failures;
+      }
+      const storedObj = JSON.parse(cleared.raw) as Record<string, unknown>;
+      if (storedObj.labBaselineName !== null)
+        failures.push(`stored form: expected labBaselineName null, got ${JSON.stringify(storedObj.labBaselineName)}`);
+      if (parseRothUiState(cleared.raw).labBaselineName !== null)
+        failures.push("read back: expected labBaselineName null after an empty-string write");
+      const named = applyRothUiWrite(cleared.raw, cleared.revision, (s) => {
+        s.labBaselineName = "Retire at 65";
+      });
+      if (named.status !== "ok") {
+        failures.push(`naming write: expected ok, got ${named.status}`);
+        return failures;
+      }
+      const namedObj = JSON.parse(named.raw) as Record<string, unknown>;
+      if (namedObj.labBaselineName !== "Retire at 65")
+        failures.push(`stored form: expected the nonempty name stored exactly, got ${JSON.stringify(namedObj.labBaselineName)}`);
+      if (parseRothUiState(named.raw).labBaselineName !== "Retire at 65")
+        failures.push("read back: expected the nonempty name to round-trip exactly");
+      const legacyObj = JSON.parse(named.raw) as Record<string, unknown>;
+      legacyObj.labBaselineName = "";
+      if (parseRothUiState(JSON.stringify(legacyObj)).labBaselineName !== null)
+        failures.push("a pre-existing stored empty string must still read as null");
       return failures;
     },
   },
@@ -5397,7 +5535,8 @@ export function runRothUiStateFixtures(): {
    finding F3), run by the runAccuracySelfCheck "roth-cas"
    suite. They exercise the exact functions the handlers run —
    parseRothBlobRevision / rothBlobRevisionOf (the read paths),
-   decideRothBlobWrite (saveRothInputs' fast-path check),
+   decideRothBlobWriteChecked (saveRothInputs' strict
+   fast-path decision — baseRevision required),
    withRothBlobRevision (its stamp), splitRothBlob / joinRothBlob
    with the third segment (the scenario writers' and reset's
    stamp), and commitGuardedRothBlobWrite /
@@ -5484,16 +5623,16 @@ const rothCasCases: {
   },
   {
     id: "roth-cas-legacy-first-write-establishes-revision-1",
-    note: "The first write against a legacy revision-less blob — at base 0, or with no base at all (the legacy unchecked path) — is allowed, and stamping it stores revision 1 with the inputs and scenarios segments byte-identical. No backfill write is needed: the blob gains its revision key only when a write lands.",
+    note: "The first write against a legacy revision-less blob at base 0 is allowed, and stamping it stores revision 1 with the inputs and scenarios segments byte-identical. No backfill write is needed: the blob gains its revision key only when a write lands. (A missing base is NOT an establishing write — saveRothInputs' strict decision refuses it; see roth-cas-missing-base-refused-record-untouched.)",
     run: () => {
       const failures: string[] = [];
       const stored = casBlob();
-      const atBase0 = decideRothBlobWrite(0, 0);
+      const atBase0 = decideRothBlobWriteChecked(
+        rothBlobRevisionState(JSON.parse(stored) as unknown),
+        0,
+      );
       if (!atBase0.allowed || atBase0.nextRevision !== 1)
         failures.push("base 0 against a legacy blob must be allowed and store revision 1");
-      const unchecked = decideRothBlobWrite(0, undefined);
-      if (!unchecked.allowed || unchecked.nextRevision !== 1)
-        failures.push("no base against a legacy blob must be allowed and store revision 1");
       const stamped = JSON.stringify(
         withRothBlobRevision(JSON.parse(stored) as Record<string, unknown>, 1),
       );
@@ -5588,16 +5727,34 @@ const rothCasCases: {
     },
   },
   {
-    id: "roth-cas-unchecked-write-still-bumps",
-    note: "A write with no baseRevision (the legacy / dictated-write path) is always allowed and still bumps the revision — 2 to 3, and 0 to 1 on a fresh record — so CAS writers that read afterwards see the write.",
+    id: "roth-cas-missing-base-refused-record-untouched",
+    note: "State audit fix 2: saveRothInputs REQUIRES baseRevision. Its strict decision (decideRothBlobWriteChecked — the exact function the handler runs on its decrypted read, before composing or encrypting anything) refuses a call with NO baseRevision: against a stored revision-2 record (content marker birthYear 1990) the refusal carries storedRevision 2 and the stored blob afterwards is byte-identical; against an ABSENT row a missing base is likewise refused (it is not a first write — nothing is established). Controls: base 0 against the absent row IS the first-ever creation and is allowed (stores revision 1 through the insert-only plan), and a matching base against the stored record is allowed (2 → 3). The lenient shared decision (decideRothBlobWrite) still allows a missing base — that primitive now serves only the Retirement records; saveRothInputs never calls it directly.",
     run: () => {
       const failures: string[] = [];
-      const atTwo = decideRothBlobWrite(2, undefined);
-      if (!atTwo.allowed || atTwo.nextRevision !== 3)
-        failures.push("unchecked write at stored 2 must store revision 3");
-      const atZero = decideRothBlobWrite(0, undefined);
-      if (!atZero.allowed || atZero.nextRevision !== 1)
-        failures.push("unchecked write at stored 0 must store revision 1");
+      const stored = casBlob(2, 1990);
+      const storedState = rothBlobRevisionState(JSON.parse(stored) as unknown);
+      const noBase = decideRothBlobWriteChecked(storedState, undefined);
+      if (noBase.allowed)
+        failures.push("a saveRothInputs call with no baseRevision must be refused");
+      else if (noBase.storedRevision !== 2)
+        failures.push(`missing-base refusal must carry the stored revision 2, got ${noBase.storedRevision}`);
+      if (stored !== casBlob(2, 1990) || parseRothBlobRevision(stored) !== 2)
+        failures.push("the stored record changed under a missing-base refusal");
+      const absentState = rothBlobRevisionState(null);
+      const noBaseAbsent = decideRothBlobWriteChecked(absentState, undefined);
+      if (noBaseAbsent.allowed)
+        failures.push("a missing base against an absent row must be refused, not treated as a first write");
+      const firstEver = decideRothBlobWriteChecked(absentState, 0);
+      if (!firstEver.allowed || firstEver.nextRevision !== 1)
+        failures.push("control: base 0 against an absent row must establish revision 1");
+      if (rothFirstWritePlan(false, 0) !== "insert-only")
+        failures.push("control: the first-ever creation must plan insert-only");
+      const matching = decideRothBlobWriteChecked(storedState, 2);
+      if (!matching.allowed || matching.nextRevision !== 3)
+        failures.push("control: a matching base must be allowed and store revision 3");
+      const lenient = decideRothBlobWrite(2, undefined);
+      if (!lenient.allowed)
+        failures.push("the shared lenient decision must keep its semantics for the Retirement records");
       return failures;
     },
   },
@@ -5717,21 +5874,21 @@ const rothCasCases: {
   },
   {
     id: "roth-cas-first-write-plan-table",
-    note: "Pin rothFirstWritePlan's table: (no row, base 0) → insert-only; (no row, no base) → legacy-upsert; (no row, base 3) → refused; (row, base 0 / base 3 / no base) → guarded-update. Plus the two-racer sequence at the decision level: both racers plan insert-only; the winner's commit establishes revision 1; the loser's post-collision checked decision against the winner's state at base 0 is refused, carrying storedRevision 1. The DB-level race is exercised by live probe in the review passes, not by this harness (it cannot import actions.ts); and within the existing-row path a no-base write still takes the legacy upsert exactly as before — the plan names the path family, it does not change legacy behaviour.",
+    note: "Pin rothFirstWritePlan's table (state audit fix 2 — the plan has no legacy-upsert outcome): (no row, base 0) → insert-only; (no row, no base) → refused; (no row, base 3) → refused; (row, base 0 / base 3) → guarded-update; (row, no base) → refused. Plus the two-racer sequence at the decision level: both racers plan insert-only; the winner's commit establishes revision 1; the loser's post-collision checked decision against the winner's state at base 0 is refused, carrying storedRevision 1. The DB-level race is exercised by live probe in the review passes, not by this harness (it cannot import actions.ts).",
     run: () => {
       const failures: string[] = [];
       if (rothFirstWritePlan(false, 0) !== "insert-only")
         failures.push("(no row, base 0) must plan insert-only");
-      if (rothFirstWritePlan(false, undefined) !== "legacy-upsert")
-        failures.push("(no row, no base) must plan legacy-upsert");
+      if (rothFirstWritePlan(false, undefined) !== "refused")
+        failures.push("(no row, no base) must plan refused");
       if (rothFirstWritePlan(false, 3) !== "refused")
         failures.push("(no row, base 3) must plan refused");
       if (rothFirstWritePlan(true, 0) !== "guarded-update")
         failures.push("(row, base 0) must plan guarded-update");
       if (rothFirstWritePlan(true, 3) !== "guarded-update")
         failures.push("(row, base 3) must plan guarded-update");
-      if (rothFirstWritePlan(true, undefined) !== "guarded-update")
-        failures.push("(row, no base) must plan guarded-update");
+      if (rothFirstWritePlan(true, undefined) !== "refused")
+        failures.push("(row, no base) must plan refused");
       const winnerState = rothBlobRevisionState(JSON.parse(casBlob(1)) as unknown);
       const loser = decideRothBlobWriteChecked(winnerState, 0);
       if (loser.allowed)
@@ -5764,7 +5921,7 @@ const rothCasCases: {
   },
   {
     id: "roth-cas-invalid-stored-revision-checked-refused",
-    note: "For each stored revision shape \"12\" (string), 12.5 (fractional), -3 (negative): rothBlobRevisionState → { revision: 0, present: true, valid: false }; the lenient reads still yield 0 (parseRothBlobRevision and rothBlobRevisionOf) and the document still parses; the strict decision refuses a checked write at base 0; an unchecked write (no base) is allowed and stamps nextRevision 1. Controls: key absent → { 0, false, true } and a checked base-0 write is allowed (nextRevision 1); key present and valid (7) → { 7, true, true }, base 7 allowed → 8, base 0 refused (ordinary CAS unchanged).",
+    note: "For each stored revision shape \"12\" (string), 12.5 (fractional), -3 (negative): rothBlobRevisionState → { revision: 0, present: true, valid: false }; the lenient reads still yield 0 (parseRothBlobRevision and rothBlobRevisionOf) and the document still parses; the strict decision refuses a checked write at base 0; a missing base is likewise refused (state audit fix 2 — the strict decision requires a base on every call). Controls: key absent → { 0, false, true } and a checked base-0 write is allowed (nextRevision 1); key present and valid (7) → { 7, true, true }, base 7 allowed → 8, base 0 refused (ordinary CAS unchanged).",
     run: () => {
       const failures: string[] = [];
       for (const bad of ['"12"', "12.5", "-3"]) {
@@ -5781,8 +5938,8 @@ const rothCasCases: {
         if (checked.allowed)
           failures.push(`revision ${bad}: checked write at base 0 must be refused`);
         const unchecked = decideRothBlobWriteChecked(state, undefined);
-        if (!unchecked.allowed || unchecked.nextRevision !== 1)
-          failures.push(`revision ${bad}: unchecked write must be allowed and stamp 1`);
+        if (unchecked.allowed)
+          failures.push(`revision ${bad}: a missing base must be refused by the strict decision`);
       }
       const absentState = rothBlobRevisionState(JSON.parse(casBlob()) as unknown);
       if (absentState.revision !== 0 || absentState.present || !absentState.valid)

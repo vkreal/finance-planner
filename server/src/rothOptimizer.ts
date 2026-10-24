@@ -2589,11 +2589,13 @@ export type PlaygroundYearInputs = {
   // (the enhanced-credit years have none under either rule).
   // Build C adds a SECOND sanctioned difference, on the
   // applicable-percentage table alone: under "newest" the
-  // year is PROJECTED pricing and prices on the 2026 table
-  // for every projected year (acaCreditFor's projected
-  // mode), while under "lookback" a specific coverage year
-  // prices its own table — including the 2027 table
-  // (Rev. Proc. 2026-26) for coverage year 2027 exactly.
+  // year is PROJECTED pricing (acaCreditFor's projected
+  // mode) — a projected coverage year 2027 prices on the
+  // 2027 table, projected years after 2027 on the 2026
+  // table (engine-audit round-2 fix) — while under
+  // "lookback" a specific coverage year prices its own
+  // table — including the 2027 table (Rev. Proc. 2026-26)
+  // for coverage year 2027 exactly.
   acaConvention?: "lookback" | "newest";
 };
 
@@ -2661,8 +2663,9 @@ export type PlaygroundYearResult = {
   // inside the itemized total after the §170(b)(1)(I)
   // floor, the §68 reduction taken off the itemized
   // total, and the §170(p) non-itemizer charitable
-  // deduction applied above the line (already inside agi
-  // / magi / acaMagi above; NOT inside deductions below).
+  // deduction applied below the line (§63(b)(4): inside
+  // deductions below as part of the standard side; agi /
+  // magi / acaMagi above are NOT reduced by it).
   // All $0 under the 2025 law row.
   itemizedCharitableAllowed: number;
   section68Reduction: number;
@@ -3005,13 +3008,11 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // convention. The applicable-percentage table no longer
   // rides this coverage-year value (Build C): acaCreditFor
   // is told explicitly whether this is projected pricing
-  // (acaProjected below), and in projected mode it prices
-  // the 2026 table whatever this value is — before Build C
-  // the table fell back to 2026 for every year past 2026,
-  // so the coverage-year shift was table-inert; with the
-  // 2027 partial row published it would otherwise have
-  // leaked the 2027 percentages into projected 2026 and
-  // 2027 years. Pre-2026 years keep the real coverage year:
+  // (acaProjected below), and in projected mode the table
+  // follows the coverage year this value names: a coverage
+  // year of 2027 prices on the 2027 table (the engine-audit
+  // round-2 fix), later coverage years on the 2026 table.
+  // Pre-2026 years keep the real coverage year:
   // the enhanced-credit schedule has no cliff to re-price.
   const newestGuidelineYear = Math.max(
     ...Object.keys(FPL_GUIDELINES).map(Number),
@@ -3376,11 +3377,13 @@ export function playgroundSaleAfterTax(
      is on Medicare (the pricer's own applicability rule);
    · every projected year prices its ACA cliff on the PLAN
      convention — the newest poverty-guideline row, in
-     today's dollars (acaConvention "newest" above) — and,
-     since Build C, its applicable percentage on the 2026
-     table for every projected year, while the single-year
-     pricer prices a specific 2027 coverage year on the
-     published 2027 table. Those are the sanctioned
+     today's dollars (acaConvention "newest" above) — and
+     its applicable percentage on the projected-mode table
+     for its coverage year (the 2027 table for a projected
+     coverage year 2027, the 2026 table for projected years
+     after 2027), while the single-year pricer prices a
+     specific 2027 coverage year on the published 2027
+     table. Those are the sanctioned
      differences from the single-year pricer, which applies
      the statutory lookback to its named year; with the
      template's own switches aligned, a projected year
@@ -4368,7 +4371,9 @@ export type RothFundingRow = {
   // the itemized total after the §170(b)(1)(I) floor, the
   // §68 reduction taken off the itemized total, and the
   // §170(p) non-itemizer charitable deduction applied
-  // above the line (inside magiCents / acaMagiCents; it is
+  // below the line (§63(b)(4): inside the deductions
+  // figure; magiCents / acaMagiCents are NOT reduced by
+  // it; it is
   // not a funding source or need and never enters the
   // cash identity). All 0 under the 2025 law row.
   itemizedCharitableAllowedCents: number;

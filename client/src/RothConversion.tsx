@@ -3808,14 +3808,55 @@ export function RothConversion() {
     return parts.join(" · ");
   })();
 
+  /* -------- The saved plan as a pricing payload (plan face) --------
+     The plan face's ending figures and its what-if questions
+     price the SAVED RECORD itself — this payload — never the
+     working form. The form is a typed copy of the record and
+     can drift from it (a field the form parses or clamps
+     differently, a balance the snapshot has since moved), and
+     when it does, form-priced figures quietly stop being the
+     plan's figures. Building the payload straight from the
+     record removes the whole class: balances ride exactly as
+     saved (a null balance keeps its follow-the-snapshot
+     meaning, and the server resolves it from the latest
+     snapshot exactly as it prices the record anywhere else),
+     and the only fills are the same Retirement-derived seeds
+     resolvedSavedInputs applies to a record that leaves
+     spending, retirement age, or expected return blank. The
+     ending strip and every what-if baseline price THIS
+     payload through runRothCompare, so the strip, the
+     baselines the what-if deltas are measured against, and
+     the saved plan's own numbers are one number by
+     construction. */
+  const buildSavedPlanPayload = (): PlanPayload | null => {
+    if (!data || !ret) return null;
+    const retSaved = ret.saved;
+    const seedRetAge = retSaved?.retirementAge ?? SEED_RETIREMENT_AGE_FALLBACK;
+    const seedReturn =
+      retSaved?.expectedReturnPct ?? blendedExpected(retSaved?.stocksPct ?? STOCKS_PCT_DEFAULT);
+    const seedSpendingCents = ret.defaultSpendingAnnualCents;
+    const base: PlanPayload = data.saved
+      ? { ...data.saved }
+      : seedRothInputs({
+          annualSpendingCents: seedSpendingCents,
+          retirementAge: seedRetAge,
+          expectedReturnPct: seedReturn,
+        });
+    if (base.annualSpendingCents == null) base.annualSpendingCents = seedSpendingCents;
+    if (base.retirementAge == null) base.retirementAge = seedRetAge;
+    if (base.expectedReturnPct == null) base.expectedReturnPct = seedReturn;
+    return base;
+  };
+
   /* -------- What-if question buttons (plan face) --------
      Plain-language questions derived from the SAVED plan's own
      values. Each button prices the saved plan with exactly one
      change through the existing scenario comparison
      (runRothCompare — the same action the Strategy Lab prices
-     through): the request's base is the plan payload, its
-     baseline row is the plan itself (an empty patch), and the
-     question rides as one scenario patch. The comparison is
+     through): the request's base is the saved record as a
+     payload (buildSavedPlanPayload), its baseline row is the
+     plan itself (an empty patch), and the question rides as
+     one scenario patch. The comparison is
      compute-only — a what-if never saves anything, never
      touches the working form, and its figures are the compare's
      own, to the cent. The result keeps a fingerprint of the
@@ -3899,7 +3940,14 @@ export function RothConversion() {
     return defs;
   })();
   const buildWhatIfRequest = (def: WhatIfDef): LabRequest => ({
-    ...buildSavePayload(),
+    // The base is the SAVED RECORD as a payload (see
+    // buildSavedPlanPayload), not the working form: the
+    // question is "what if the saved plan changed this one
+    // way", so the baseline row is the saved plan itself and
+    // the deltas measure from the plan's real figures. The
+    // form payload remains only as a fallback for the
+    // (unreachable while questions exist) no-record case.
+    ...(buildSavedPlanPayload() ?? buildSavePayload()),
     baselineName: "Your saved plan",
     scenarios: [
       { name: "Your saved plan", overrides: {} },
@@ -3916,9 +3964,16 @@ export function RothConversion() {
     fingerprint: string;
   } | null>(null);
   const [whatIfError, setWhatIfError] = useState("");
+  // The question currently being priced, then the one whose
+  // answer is on screen: its button stays lit (the same
+  // active-chip treatment the ceiling presets use) so the
+  // answer card below is never ambiguous about which
+  // question it belongs to.
+  const [pendingWhatIfId, setPendingWhatIfId] = useState<string | null>(null);
   const runWhatIfMut = useMutation({
     mutationFn: (input: LabRequest) => api.runRothCompare(input),
     onSuccess: (res, vars) => {
+      setPendingWhatIfId(null);
       if (!res.ok) {
         setWhatIfError(res.reason);
         return;
@@ -3940,10 +3995,14 @@ export function RothConversion() {
         fingerprint: JSON.stringify(vars),
       });
     },
-    onError: () => setWhatIfError("That question could not be priced — try again."),
+    onError: () => {
+      setPendingWhatIfId(null);
+      setWhatIfError("That question could not be priced — try again.");
+    },
   });
   const runWhatIf = (def: WhatIfDef) => {
     setWhatIfError("");
+    setPendingWhatIfId(def.id);
     runWhatIfMut.mutate(buildWhatIfRequest(def));
   };
   // The fingerprint of the what-if request the CURRENT plan
@@ -3958,6 +4017,39 @@ export function RothConversion() {
         ? JSON.stringify(buildWhatIfRequest(def)) !== whatIfResult.fingerprint
         : true;
     })();
+
+  /* -------- Ending strip: the saved plan, priced --------
+     A baseline-only compare over the saved-plan payload: the
+     strip's four figures are that run's baseline row, in
+     cents — the same row every what-if answer measures its
+     deltas against, priced by the same action from the same
+     payload, so the strip and the what-if baselines cannot
+     drift apart. The query key carries the payload AND the
+     snapshot it resolves against, so a saved edit or a new
+     Net Worth snapshot reprices the strip; nothing here reads
+     the working form. */
+  const savedPlanPayload = buildSavedPlanPayload();
+  const savedStripQ = useQuery({
+    queryKey: [
+      "rothSavedStrip",
+      savedPlanPayload ? JSON.stringify(savedPlanPayload) : null,
+      data?.snapshot ? JSON.stringify(data.snapshot) : null,
+    ],
+    enabled: face === "plan" && savedPlanPayload != null,
+    queryFn: () =>
+      api.runRothCompare({
+        ...(savedPlanPayload as PlanPayload),
+        baselineName: "Your saved plan",
+        scenarios: [{ name: "Your saved plan", overrides: {} }],
+      }),
+  });
+  const savedStripData = savedStripQ.data;
+  const savedStripRow =
+    savedStripData?.ok === true
+      ? (savedStripData.scenarios.find(
+          (r) => r.name === savedStripData.baselineName,
+        ) ?? null)
+      : null;
 
   // Years where someone is on the ACA marketplace but no benchmark
   // premium has been entered, so the credit cannot be priced.
@@ -6800,18 +6892,31 @@ export function RothConversion() {
             </p>
           ) : (
             <div className="mt-3 flex flex-wrap gap-2">
-              {whatIfDefs.map((def) => (
-                <button
-                  key={def.id}
-                  type="button"
-                  aria-label={def.label}
-                  className={ceilChipCls}
-                  disabled={runWhatIfMut.isPending}
-                  onClick={() => runWhatIf(def)}
-                >
-                  {def.label}
-                </button>
-              ))}
+              {whatIfDefs.map((def) => {
+                // Lit while its own pricing is in flight, and
+                // stays lit while its answer is the one on
+                // screen — the answer card names the question
+                // in text too, but the eye lands on the button
+                // row first.
+                const active =
+                  pendingWhatIfId === def.id ||
+                  (pendingWhatIfId == null &&
+                    whatIfResult != null &&
+                    whatIfResult.label === def.label);
+                return (
+                  <button
+                    key={def.id}
+                    type="button"
+                    aria-label={def.label}
+                    aria-pressed={active}
+                    className={active ? ceilChipActiveCls : ceilChipCls}
+                    disabled={runWhatIfMut.isPending}
+                    onClick={() => runWhatIf(def)}
+                  >
+                    {def.label}
+                  </button>
+                );
+              })}
             </div>
           )}
           {runWhatIfMut.isPending && (
@@ -6832,7 +6937,7 @@ export function RothConversion() {
               <p className="text-sm text-[var(--dim)]">{whatIfResult.label}</p>
               <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-2 text-sm sm:grid-cols-2">
                 <div>
-                  <dt className="text-[var(--dim)]">Ending wealth (after-tax)</dt>
+                  <dt className="text-[var(--dim)]">Ending wealth with this change (after-tax)</dt>
                   <dd className="tnum text-lg font-semibold">
                     {fmtCents(whatIfResult.wealthCents)}{" "}
                     <span className="text-sm font-normal text-[var(--dim)]">
@@ -6843,7 +6948,7 @@ export function RothConversion() {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-[var(--dim)]">Lifetime net cost</dt>
+                  <dt className="text-[var(--dim)]">Lifetime net cost with this change</dt>
                   <dd className="tnum text-lg font-semibold">
                     {fmtCents(whatIfResult.netCostCents)}{" "}
                     <span className="text-sm font-normal text-[var(--dim)]">
@@ -6866,30 +6971,48 @@ export function RothConversion() {
         </section>
       )}
 
-      {face === "plan" && planInputs && mainResult && (
+      {face === "plan" && savedPlanPayload && (
         <section className={sectionCls} aria-label="Ending figures">
-          <h2 className="text-base font-semibold">Where the plan ends</h2>
-          {(() => {
-            const bd = netCostBreakdown(mainResult, planInputs.heirRatePct, bdOpts);
-            const figures: { label: string; value: number }[] = [
-              { label: "Ending wealth (after-tax)", value: mainResult.endingAfterTaxWealth },
-              { label: "Lifetime net cost", value: bd.netCost },
-              { label: "Ending pre-tax", value: mainResult.endingPretax },
-              { label: "ACA premium credit kept", value: mainResult.lifetimeAcaKept },
-            ];
-            return (
-              <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-                {figures.map((f) => (
-                  <div key={f.label}>
-                    <dt className="text-sm text-[var(--dim)]">{f.label}</dt>
-                    <dd className="tnum mt-0.5 text-xl font-semibold">
-                      {fmtCents(Math.round(f.value * 100))}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            );
-          })()}
+          <h2 className="text-base font-semibold">Where your saved plan ends</h2>
+          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+            Priced from your saved record — the same baseline the what-if
+            answers above are measured against.
+          </p>
+          {savedStripRow ? (
+            <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+              {[
+                {
+                  label: "Ending wealth (after-tax)",
+                  value: savedStripRow.endingAfterTaxWealthCents,
+                },
+                { label: "Lifetime net cost", value: savedStripRow.netCostCents },
+                { label: "Ending pre-tax", value: savedStripRow.endingPretaxCents },
+                {
+                  label: "ACA premium credit kept",
+                  value: savedStripRow.acaCreditCents,
+                },
+              ].map((f) => (
+                <div key={f.label}>
+                  <dt className="text-sm text-[var(--dim)]">{f.label}</dt>
+                  <dd className="tnum mt-0.5 text-xl font-semibold">
+                    {fmtCents(f.value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : savedStripQ.isPending || savedStripQ.isFetching ? (
+            <p className="mt-3 text-sm text-[var(--dim)]" aria-live="polite">
+              Pricing your saved plan…
+            </p>
+          ) : (
+            <p className="mt-3 text-sm text-[var(--dim)]" role="status">
+              Your saved plan couldn&rsquo;t be priced just now
+              {savedStripData && !savedStripData.ok
+                ? ` — ${savedStripData.reason}`
+                : ""}
+              . Open All settings to check the plan&rsquo;s inputs.
+            </p>
+          )}
         </section>
       )}
 

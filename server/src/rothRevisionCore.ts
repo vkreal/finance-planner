@@ -24,9 +24,13 @@ import { z } from "@hatch/space-sdk";
    when the stored revision has moved past that base (a
    concurrent save from another tab or device landed first), so
    an older in-flight save can never silently clobber newer
-   values. A write with no baseRevision keeps the legacy
-   unchecked behaviour (the path chat-driven / dictated writes
-   take); either way, an accepted write stores revision + 1.
+   values. That lenient decision is the shared primitive (the
+   Retirement records below still use it directly); the Roth
+   plan record's own writer, saveRothInputs, goes through the
+   STRICT decision (decideRothBlobWriteChecked), which requires
+   a baseRevision on every call — a missing or stale base is
+   refused, and there is no unchecked path into this record.
+   Either way, an accepted write stores revision + 1.
 
    The commit is atomic, not just checked — but the UI-state
    blob's SQL guard cannot be copied verbatim: that blob is
@@ -127,16 +131,20 @@ export const saveRothInputsOkResponse = z.object({
   revision: z.number().int().nonnegative(),
 });
 
-/* The CAS decision for one write, given the stored revision
-   and the writer's base revision — semantics IDENTICAL to
-   decideRothUiWrite in rothUiStateCore.ts: a writer that
-   supplies no base keeps the legacy unchecked path and is
-   always allowed; a supplied base must match the stored
-   revision exactly; anything else (stale OR from a "future"
-   revision, including a positive base against an absent row,
-   which reads as revision 0) means a newer write landed first
-   and this write must not clobber it. Either way an accepted
-   write stores storedRevision + 1. */
+/* The lenient CAS decision for one write, given the stored
+   revision and the writer's base revision — semantics
+   IDENTICAL to decideRothUiWrite in rothUiStateCore.ts: a
+   writer that supplies no base keeps the legacy unchecked
+   path and is always allowed; a supplied base must match the
+   stored revision exactly; anything else (stale OR from a
+   "future" revision, including a positive base against an
+   absent row, which reads as revision 0) means a newer write
+   landed first and this write must not clobber it. Either way
+   an accepted write stores storedRevision + 1. saveRothInputs
+   does NOT call this directly: it calls the strict
+   decideRothBlobWriteChecked below, which refuses a missing
+   base. This lenient form remains the shared primitive the
+   Retirement records' writers use. */
 export type RothBlobCasDecision =
   | { allowed: true; nextRevision: number }
   | { allowed: false; storedRevision: number };
@@ -418,22 +426,37 @@ export function rothBlobRevisionStateOfPlain(
   }
 }
 
-/* The strict CAS decision: a supplied baseRevision against a
+/* The strict CAS decision — saveRothInputs' decision, and
+   only saveRothInputs': baseRevision is REQUIRED. A missing
+   base is refused (the handler returns its conflict shape and
+   storage is untouched — the legacy unchecked upsert this
+   action used to take is gone); a supplied base against a
    present-but-invalid stored revision is refused; otherwise
-   exactly decideRothBlobWrite(stored.revision, baseRevision). */
+   exactly decideRothBlobWrite(stored.revision, baseRevision).
+   First-ever record creation still works: base 0 against an
+   absent row (revision state {0, absent, valid}) is allowed
+   and stores revision 1 through the insert-only plan below. */
 export function decideRothBlobWriteChecked(
   stored: RothBlobRevisionState,
   baseRevision: number | undefined,
 ): RothBlobCasDecision {
-  if (baseRevision !== undefined && stored.present && !stored.valid) {
+  if (baseRevision === undefined) {
+    return { allowed: false, storedRevision: stored.revision };
+  }
+  if (stored.present && !stored.valid) {
     return { allowed: false, storedRevision: stored.revision };
   }
   return decideRothBlobWrite(stored.revision, baseRevision);
 }
 
-/* The first-write plan for a Roth blob write. */
+/* The first-write plan for a saveRothInputs write, evaluated
+   only after the strict decision above has allowed the write
+   (so a base is always present here): an existing row commits
+   through the guarded update; an absent row at base 0 commits
+   insert-only; anything else is refused. There is no
+   legacy-upsert outcome — a missing base never reaches this
+   plan, and the plan itself names it refused. */
 export type RothFirstWritePlan =
-  | "legacy-upsert"
   | "insert-only"
   | "guarded-update"
   | "refused";
@@ -442,8 +465,8 @@ export function rothFirstWritePlan(
   hasStoredRow: boolean,
   baseRevision: number | undefined,
 ): RothFirstWritePlan {
+  if (baseRevision === undefined) return "refused";
   if (hasStoredRow) return "guarded-update";
-  if (baseRevision === undefined) return "legacy-upsert";
   if (baseRevision === 0) return "insert-only";
   return "refused";
 }

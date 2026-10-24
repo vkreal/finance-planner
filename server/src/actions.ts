@@ -123,6 +123,7 @@ IRMAA_TIER_CAP_SEMANTICS,
 ITEMIZED_DEDUCTION_SEMANTICS,
 LAW_YEAR_SEMANTICS,
 LOSS_CARRYFORWARD_SEMANTICS,
+RMD_AGE_SEMANTICS,
 PLAYGROUND_YEAR_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_COMPARE_EXAMPLE,
@@ -225,6 +226,7 @@ seedRothRecord,
 } from "./rothSeed";
 import {
 annualCentsForValues,
+cashOutDayError,
 createSpendingCore,
 dueMonthsFor,
 earliestYearlyVersion,
@@ -236,6 +238,7 @@ monthlyBillUpdateSet,
 monthsBetween,
 paymentsPerYear,
 shiftMonth,
+sortCashOutItems,
 versionInEffect,
 yearSummaryFloorMonth,
 yearlyVersionInEffect
@@ -589,14 +592,39 @@ const cashOutItemOut = z.object({
   description: z.string(),
   amountCents: z.number(),
   note: z.string().nullable(),
+  // Day of the month the cash went out (1–31, validated against
+  // the month's real length by the writers). Display/order only.
+  day: z.number(),
 });
 
-const cashOutItemInput = z.object({
+/* The day rule for cash-out item writers: the day must be a real
+   day of the item's month (31/30/29/28 by month and leap year).
+   cashOutDayError (spendingCore) is the one implementation; the
+   same check rides both the add and the update input shapes. */
+function refineCashOutDay(
+  val: { month: string; day: number },
+  ctx: z.RefinementCtx,
+): void {
+  const err = cashOutDayError(val.month, val.day);
+  if (err) {
+    ctx.addIssue({ code: "custom", path: ["day"], message: err });
+  }
+}
+
+const cashOutItemFields = {
   month: z.string().regex(monthRe),
   description: z.string().min(1).max(200),
   amountCents: z.number().int().nonnegative(),
   note: z.string().max(1000).nullable().default(null),
-});
+  // New items default to day 1 when no day is supplied.
+  day: z.number().int().min(1).max(31).default(1),
+};
+
+const cashOutItemInput = z.object(cashOutItemFields).superRefine(refineCashOutDay);
+
+const cashOutItemUpdateInput = z
+  .object({ ...cashOutItemFields, id: z.number().int().positive() })
+  .superRefine(refineCashOutDay);
 
 const billVersionOut = z.object({
   id: z.number(),
@@ -691,7 +719,11 @@ async function loadAll(ctx: Ctx) {
   const rawCashOutItems = await db
     .select()
     .from(schema.monthlyCashOutItems)
-    .orderBy(asc(schema.monthlyCashOutItems.month), asc(schema.monthlyCashOutItems.id));
+    .orderBy(
+      asc(schema.monthlyCashOutItems.month),
+      asc(schema.monthlyCashOutItems.day),
+      asc(schema.monthlyCashOutItems.id),
+    );
   const settingRows = await db.select().from(schema.settings);
 
   // Decrypt every row; any legacy plaintext field is encrypted and
@@ -837,7 +869,10 @@ async function loadAll(ctx: Ctx) {
       settingsMap.set(r.key, r.value);
     }
   }
-  return { db, key, txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems, settingsMap };
+  // The decrypted rows ride in the SQL order above; re-sort through
+  // the shared comparator (spendingCore) so the within-month day
+  // order has exactly one implementation.
+  return { db, key, txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems: sortCashOutItems(cashOutItems), settingsMap };
 }
 
 function yearlyOutFor(
@@ -1486,6 +1521,7 @@ async function buildBackupPayload(
       description: o.description,
       amountCents: o.amountCents,
       note: o.note ?? null,
+      day: o.day,
       createdAt: backupTsToMs(o.createdAt),
     })),
     nwAccounts: nwAccountsExport,
@@ -2560,7 +2596,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 29;
+export const API_CONTRACT_VERSION = 33;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3002,35 +3038,43 @@ async function readRothBlob(
   }
 }
 
-/* The encrypted-blob records' two commit paths (API
+/* The encrypted-blob records' commit paths (API
    follow-on 1 — see rothRevisionCore.ts for the contract).
-   upsertRothBlobValue is the Roth record's legacy unconditional
-   write, used when a writer supplied no baseRevision (or no
-   row exists yet to guard against). commitSettingsValueGuarded
-   is the atomic CAS commit, generalized by settings key (F23)
-   so the Roth record and both Retirement records share the ONE
-   statement: ONE UPDATE whose WHERE clause requires the row
-   for `settingsKey` to still hold the raw value the writer
-   read, branched on the affected-row count — true means
-   exactly 1 row committed; false means a concurrent write
-   landed between the read and this commit and storage is
-   untouched by this invocation. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function upsertRothBlobValue(db: any, enc: string): Promise<void> {
-  await db
-    .insert(schema.settings)
-    .values({ key: ROTH_INPUTS_KEY, value: enc })
-    .onConflictDoUpdate({
-      target: schema.settings.key,
-      set: { value: enc },
-    });
-}
-
+   insertRothBlobValueIfAbsent is the Roth record's insert-only
+   first write; commitSettingsValueGuarded is the atomic CAS
+   commit, generalized by settings key (F23) so the Roth record
+   and both Retirement records share the ONE statement: ONE
+   UPDATE whose WHERE clause requires the row for
+   `settingsKey` to still hold the raw value the writer read,
+   branched on the affected-row count — true means exactly 1
+   row committed; false means a concurrent write landed
+   between the read and this commit and storage is untouched
+   by this invocation. There is no unconditional upsert of the
+   Roth record: saveRothInputs requires a CAS base on every
+   call (decideRothBlobWriteChecked). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function insertRothBlobValueIfAbsent(db: any, enc: string): Promise<boolean> {
   const rows = await db
     .insert(schema.settings)
     .values({ key: ROTH_INPUTS_KEY, value: enc })
+    .onConflictDoNothing()
+    .returning({ key: schema.settings.key });
+  return rows.length === 1;
+}
+
+/* The Roth UI-state blob's insert-only first write (state
+   audit fix 1): INSERT … ON CONFLICT DO NOTHING against the
+   UI-state key, branched on the returned row count — true
+   means this invocation established the row; false means a
+   concurrent first write landed first and this invocation
+   wrote nothing. Mirrors insertRothBlobValueIfAbsent and the
+   testable mirror commitInsertOnlyRothUiWrite in
+   rothUiStateCore.ts. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function insertRothUiStateValueIfAbsent(db: any, raw: string): Promise<boolean> {
+  const rows = await db
+    .insert(schema.settings)
+    .values({ key: ROTH_UI_STATE_KEY, value: raw })
     .onConflictDoNothing()
     .returning({ key: schema.settings.key });
   return rows.length === 1;
@@ -3602,8 +3646,9 @@ const playgroundYearOut = z.object({
   // 2026 deduction trio: the charitable amount allowed
   // inside the itemized total after the §170(b)(1)(I)
   // floor, the §68 reduction, and the §170(p) non-itemizer
-  // charitable deduction applied above the line (inside
-  // agi / magi / acaMagi above; NOT inside deductions).
+  // charitable deduction applied below the line
+  // (§63(b)(4): inside deductions as part of the standard
+  // side; agi / magi / acaMagi are NOT reduced by it).
   // All $0 under the 2025 law row.
   itemizedCharitableAllowed: z.number(),
   section68Reduction: z.number(),
@@ -3807,8 +3852,9 @@ const planYearRowOut = z.object({
   // in this row): the charitable amount allowed inside the
   // itemized total after the §170(b)(1)(I) floor, the §68
   // reduction, and the §170(p) non-itemizer charitable
-  // deduction applied above the line (inside the row's
-  // magi / acaMagi; NOT inside deductions). All $0 in
+  // deduction applied below the line (§63(b)(4): inside
+  // deductions as part of the standard side; the row's
+  // magi / acaMagi are NOT reduced by it). All $0 in
   // every year priced under the 2025 law row.
   itemizedCharitableAllowed: z.number(),
   section68Reduction: z.number(),
@@ -4128,8 +4174,10 @@ const fundingRowOut = z.object({
   // figure in this row): the charitable amount allowed
   // inside the itemized total after the §170(b)(1)(I)
   // floor, the §68 reduction, and the §170(p) non-itemizer
-  // charitable deduction applied above the line (inside
-  // magiCents / acaMagiCents; never a funding source or
+  // charitable deduction applied below the line
+  // (§63(b)(4): inside the deductions figure; the row's
+  // magiCents / acaMagiCents are NOT reduced by it; never
+  // a funding source or
   // need). All 0 under the 2025 law row.
   itemizedCharitableAllowedCents: z.number(),
   section68ReductionCents: z.number(),
@@ -4520,6 +4568,15 @@ function checkCashOutItems(data: SpendingDataSubset): IntegrityCheck {
         detail: `has an invalid stored amount (${it.amountCents} cents).`,
       });
     }
+    if (monthRe.test(it.month)) {
+      const dayErr = cashOutDayError(it.month, it.day);
+      if (dayErr) {
+        violations.push({
+          record: `Cash-out item "${it.description}" (${it.month})`,
+          detail: `has an invalid stored day (${it.day}) — ${dayErr}`,
+        });
+      }
+    }
   }
   for (const s of data.summaries) {
     months.add(s.month);
@@ -4904,7 +4961,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   resetRothPlanner: "Reset the Roth plan record (plan inputs plus the execution-year, gift, MC-volatility, and tax-return blocks) to the seeded fresh-user defaults; saved scenarios pass through untouched. The reset commits against the record it read, retrying against the freshest record a bounded number of times if another save lands first; if it keeps losing that race it is refused with the current record — the same conflict shape saveRothInputs returns — instead of overwriting the newer save.",
   getRothUiState: "Read the Roth view's UI state (open sections, year table, workspace mode) plus the Playground form's remembered dial state, with the blob's current write revision.",
   setRothUiState: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current blob and its revision instead of overwriting it.",
-  saveRothInputs: "Save the Roth plan record (inputs plus execution-year, MC-volatility, gift, and tax-return blocks). Writers are strict: a complete record is required. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current record and its revision instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. " + SAVE_FLATTENING_SENTENCE + " " + CONVERTED_ALREADY_DISTINCTION_SENTENCE,
+  saveRothInputs: "Save the Roth plan record (inputs plus execution-year, MC-volatility, gift, and tax-return blocks). Writers are strict: a complete record is required, and baseRevision is required on every call. Revision-checked (CAS): a write whose baseRevision is missing, or no longer matches the stored revision, is refused with the current record and its revision instead of overwriting it — there is no unchecked write path — and every accepted write bumps the revision and returns it. " + SAVE_FLATTENING_SENTENCE + " " + CONVERTED_ALREADY_DISTINCTION_SENTENCE,
   saveRothScenario: "Save the given plan inputs as a new named Roth scenario (complete record required).",
   updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
   deleteRothScenario: "Delete a saved Roth scenario by name.",
@@ -4958,6 +5015,7 @@ const describeApiResponse = z.object({
   backupAuthenticitySemantics: z.string(),
   scoreIdentities: z.string(),
   lawYearSemantics: z.string(),
+  rmdAgeSemantics: z.string(),
   acaSemantics: z.string(),
   stateSemantics: z.string(),
   lossCarryforwardSemantics: z.string(),
@@ -5170,6 +5228,7 @@ export const Actions = {
         backupAuthenticitySemantics: BACKUP_AUTHENTICITY_SEMANTICS,
         scoreIdentities: SCORE_IDENTITIES,
         lawYearSemantics: LAW_YEAR_SEMANTICS,
+        rmdAgeSemantics: RMD_AGE_SEMANTICS,
         acaSemantics: ACA_SEMANTICS,
         stateSemantics: STATE_SEMANTICS,
         lossCarryforwardSemantics: LOSS_CARRYFORWARD_SEMANTICS,
@@ -5318,6 +5377,21 @@ export const Actions = {
           yearlyLumpsCents: z.number(),
           oneOffTotalCents: z.number(),
           hasOneOff: z.boolean(),
+        }),
+      ),
+      // Months AFTER the viewed month that already carry entered
+      // figures — cash-out items, a directly entered month total, or
+      // recorded transactions — each with that month's own effective
+      // figures from the same eff() computation every other month
+      // uses. The Month-mode chart appends these past the viewed
+      // month so figures entered ahead of time are visible; no other
+      // surface reads this list, and the trailing averages above are
+      // computed without it.
+      enteredAheadMonths: z.array(
+        z.object({
+          month: z.string(),
+          smoothedCents: z.number(),
+          cashOutCents: z.number(),
         }),
       ),
       oneOffs: z.array(oneOffOut),
@@ -5514,6 +5588,22 @@ export const Actions = {
           hasOneOff: ooTotal !== 0,
         });
       }
+
+      // Months after the viewed month that already carry entered
+      // figures (an entered total, cash-out items, or any recorded
+      // transaction), with that month's own effective figures.
+      const enteredAheadMonths = [
+        ...new Set([
+          ...[...summaryByMonth.keys()].filter((m) => m > month),
+          ...[...itemsByMonth.keys()].filter((m) => m > month),
+          ...[...byMonth.keys()].filter((m) => m > month),
+        ]),
+      ]
+        .sort()
+        .map((m) => {
+          const e = eff(m);
+          return { month: m, smoothedCents: e.smoothed, cashOutCents: e.cashOut };
+        });
 
       // ---- Forecast: the viewed month and the next 2 ----
       // Computed by the shared spending core (see spendingCore.ts):
@@ -5746,6 +5836,7 @@ export const Actions = {
             description: it.description,
             amountCents: it.amountCents,
             note: it.note ?? null,
+            day: it.day,
           })),
         cashOutItemsTotalCents: itemsByMonth.get(month)?.total ?? 0,
         cashOutItemsCount: itemsByMonth.get(month)?.count ?? 0,
@@ -5774,6 +5865,7 @@ export const Actions = {
                   description: it.description,
                   amountCents: it.amountCents,
                   note: it.note ?? null,
+                  day: it.day,
                 })),
             };
           }),
@@ -5817,6 +5909,7 @@ export const Actions = {
         monthTransactions,
         categories,
         history,
+        enteredAheadMonths,
         oneOffs: monthOneOffs,
         oneOffsTotalCents,
         smoothedExcludingOneOffsCents,
@@ -7017,6 +7110,7 @@ export const Actions = {
           description: await encryptStr(key, args.description),
           amountCents: await encryptNum(key, args.amountCents),
           note: await encryptNullable(key, args.note),
+          day: args.day,
         })
         .returning({ id: schema.monthlyCashOutItems.id });
       if (!row) throw new Error("insert failed");
@@ -7027,7 +7121,7 @@ export const Actions = {
 
   updateCashOutItem: defineAction({
     privileged: [privileged.ensureEncryptionKey],
-    request: cashOutItemInput.extend({ id: z.number().int().positive() }),
+    request: cashOutItemUpdateInput,
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
@@ -7040,6 +7134,7 @@ export const Actions = {
           description: await encryptStr(key, args.description),
           amountCents: await encryptNum(key, args.amountCents),
           note: await encryptNullable(key, args.note),
+          day: args.day,
         })
         .where(eq(schema.monthlyCashOutItems.id, args.id))
         .returning({ id: schema.monthlyCashOutItems.id });
@@ -7930,6 +8025,7 @@ export const Actions = {
             description: await encryptStr(key, it.description),
             amountCents: await encryptNum(key, it.amountCents),
             note: null,
+            day: 1,
           });
         }
       }
@@ -9134,8 +9230,9 @@ export const Actions = {
   // and its revision, and storage is left untouched; the
   // writer re-merges against the current blob and retries at
   // the fresh revision. A write with no baseRevision keeps the
-  // legacy unchecked behaviour. Either way, an accepted write
-  // bumps the revision by one and returns it.
+  // legacy unchecked behaviour against an EXISTING row. Either
+  // way, an accepted write bumps the revision by one and
+  // returns it.
   // The CAS commit is atomic, not just checked: against an
   // existing row it is a single UPDATE whose predicate requires
   // the revision inside the stored blob to still equal
@@ -9144,6 +9241,12 @@ export const Actions = {
   // revision N before either commits cannot both succeed; the
   // second's UPDATE matches 0 rows and it is refused with the
   // re-read current blob, exactly like a sequential conflict.
+  // A first write (no stored row) commits INSERT-ONLY, never
+  // an unconditional upsert (state audit fix 1): two
+  // invocations that both read "no row" at baseRevision 0
+  // cannot both succeed — the second's insert conflicts, it
+  // writes nothing, and it is refused with the re-read current
+  // blob, exactly like a sequential conflict.
   setRothUiState: defineAction({
     request: z.object({
       section: z.enum(ROTH_SECTION_IDS).optional(),
@@ -9208,13 +9311,38 @@ export const Actions = {
           state: result.state,
         };
       }
-      if (args.baseRevision === undefined || storedRaw === undefined) {
-        // Legacy unchecked write (no baseRevision), or the first
-        // write establishing the row: unconditional upsert, as
-        // before. A CAS base > 0 against an absent row never
-        // reaches here — applyRothUiWrite already refused it
-        // above, carrying the lenient-parsed default state at
-        // revision 0, and nothing was written.
+      if (storedRaw === undefined) {
+        // First write establishing the row: INSERT-ONLY (state
+        // audit fix 1), mirroring the plan record's first-write
+        // pattern (insertRothBlobValueIfAbsent). A CAS base > 0
+        // against an absent row never reaches here —
+        // applyRothUiWrite already refused it above, carrying
+        // the lenient-parsed default state at revision 0, and
+        // nothing was written. If the insert conflicts, a
+        // concurrent first write landed between this
+        // invocation's read and its commit: this invocation
+        // wrote nothing, so re-read the current blob and return
+        // the conflict response, exactly like a sequential
+        // conflict.
+        const inserted = await insertRothUiStateValueIfAbsent(db, result.raw);
+        if (inserted) {
+          ctx.invalidateQueries();
+          return { ok: true as const, revision: result.revision };
+        }
+        const currentRows = await db.select().from(schema.settings);
+        const current = parseRothUiState(
+          currentRows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value,
+        );
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: current.revision,
+          state: current,
+        };
+      }
+      if (args.baseRevision === undefined) {
+        // Legacy unchecked write (no baseRevision) against an
+        // existing row: unconditional upsert, as before.
         await db
           .insert(schema.settings)
           .values({ key: ROTH_UI_STATE_KEY, value: result.raw })
@@ -9280,6 +9408,14 @@ export const Actions = {
     // so do the tax-return actuals (rothTaxReturnFields).
     // baseRevision (API follow-on 1) is the CAS base: the
     // revision the writer's copy of the record was read at.
+    // It is REQUIRED on every call (state audit fix 2): the
+    // strict decision (decideRothBlobWriteChecked) refuses a
+    // missing or stale base with the conflict response, and
+    // the legacy unconditional-upsert branch is deleted. The
+    // field stays optional in this transport schema only so an
+    // omitted base reaches that decision and returns the
+    // structured conflict instead of a bare validation error;
+    // contractually (see describeApi) it is not optional.
     request: z.object({
       ...rothInputFields,
       ...rothExecutionFields,
@@ -9325,13 +9461,16 @@ export const Actions = {
         taxReturnOrdinaryDividendsCents: args.taxReturnOrdinaryDividendsCents,
       };
       const blob = await readRothBlob(db, key);
-      // Fast-path CAS check on the decrypted read: a writer
-      // whose base is already stale (or from a "future"
+      // Fast-path CAS check on the decrypted read (the strict
+      // decision — baseRevision is required): a writer whose
+      // base is MISSING, already stale (or from a "future"
       // revision, or positive against an absent row, which
       // reads as revision 0) is refused WITHOUT composing or
       // encrypting anything, carrying the current record exactly
       // as loadRothPlannerResponse returns it. Storage is
-      // untouched.
+      // untouched. First-ever creation is the base-0 case
+      // against an absent row, allowed here and committed
+      // insert-only below.
       const decision = decideRothBlobWriteChecked(blob.revisionState, baseRevision);
       if (!decision.allowed) {
         const record = await loadRothPlannerResponse(ctx);
@@ -9367,19 +9506,14 @@ export const Actions = {
           record,
         };
       }
-      if (baseRevision === undefined) {
-        // Legacy unchecked write (no baseRevision): unconditional
-        // upsert, exactly as before — except the write still bumps
-        // the revision and returns it. This covers the legacy
-        // first write (plan "legacy-upsert") and the no-base
-        // existing-row case. A CAS base > 0 against an absent row
-        // never reaches here: the decision above already refused
-        // it (absent reads as revision 0).
-        await upsertRothBlobValue(db, enc);
-        ctx.invalidateQueries();
-        return { ok: true as const, revision: nextRevision };
-      }
-      if (blob.storedRaw === undefined) {
+      if (plan === "refused" || blob.storedRaw === undefined) {
+        // Unreachable while the strict decision above and the
+        // plan agree (a missing base, a positive base against
+        // an absent row, and an invalid stored revision are all
+        // refused by the decision before anything is composed).
+        // Kept as a refuse-only backstop: there is NO unchecked
+        // commit path in this handler — every route from here
+        // is insert-only or the guarded update below.
         const record = await loadRothPlannerResponse(ctx);
         return {
           ok: false as const,
@@ -11868,6 +12002,7 @@ export const Actions = {
           description: await encryptStr(key, o.description),
           amountCents: await encryptNum(key, o.amountCents),
           note: await encryptNullable(key, o.note),
+          day: o.day,
           createdAt: backupMsToDate(o.createdAt),
         });
       }

@@ -13,6 +13,7 @@ import {
 Bar,
 BarChart,
 CartesianGrid,
+Cell,
 LabelList,
 Legend,
 ResponsiveContainer,
@@ -155,6 +156,16 @@ function monthLabel(month: string): string {
   const y = month.slice(0, 4);
   const m = Number(month.slice(5, 7));
   return `${MONTH_NAMES[m - 1] ?? ""} ${y}`;
+}
+
+/* Days in the month named by a YYYY-MM key, leap-year aware —
+   the client mirror of the server's day rule (spendingCore's
+   daysInMonthOf), used for the cash-out item form's inline
+   day error. */
+function daysInMonthOf(month: string): number {
+  const y = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  return new Date(y, m, 0).getDate();
 }
 
 function shiftMonth(month: string, delta: number): string {
@@ -996,10 +1007,12 @@ function ExplorerModal({
 /* ---------------- spending (month) view chart ---------------- */
 
 type SpendingMonthRow = Dash["history"][number];
+type SpendingAheadRow = Dash["enteredAheadMonths"][number];
 
 type SpendingChartDatum = {
   name: string;
   monthStr: string;
+  estimate: boolean;
   trueCost: number;
   cashOut: number;
   trueCostCents: number;
@@ -1014,19 +1027,52 @@ type SpendingChartDatum = {
    entries — the same per-month eff() figures the tiles show), so
    the bars and the strip are the same numbers and can never
    disagree, and a pair appears automatically when a new month is
-   recorded. Every bar carries its dollar value above it; the two
-   series sit on staggered label shelves coloured to match their
-   bars so neighbouring labels never collide, and the legend names
-   the series. No recorded months renders a plain empty state. */
-function SpendingTrueCostChart({ months }: { months: SpendingMonthRow[] }) {
-  const chartData: SpendingChartDatum[] = months.map((m) => ({
-    name: shortMonthLabel(m.month),
-    monthStr: m.month,
-    trueCost: m.smoothedCents / 100,
-    cashOut: m.cashOutCents / 100,
-    trueCostCents: m.smoothedCents,
-    cashOutCents: m.cashOutCents,
-  }));
+   recorded. Past the viewed month, the series continues with any
+   later month that already has entered figures (getDashboard's
+   enteredAheadMonths — cash-out items, an entered month total, or
+   recorded payments, each priced by the same eff() computation);
+   a month later than the current calendar month is an ESTIMATE:
+   its bars render muted and outlined, its axis label gains
+   "(est.)", and it turns into a normal pair on its own once its
+   month arrives. Every bar carries its dollar value above it; the
+   two series sit on staggered label shelves coloured to match
+   their bars so neighbouring labels never collide, and the legend
+   names the series. No recorded months renders a plain empty
+   state. */
+function SpendingTrueCostChart({
+  months,
+  aheadMonths,
+}: {
+  months: SpendingMonthRow[];
+  aheadMonths: SpendingAheadRow[];
+}) {
+  const thisMonth = currentMonth();
+  const chartData: SpendingChartDatum[] = [
+    ...months.map((m) => ({
+      name: shortMonthLabel(m.month),
+      monthStr: m.month,
+      estimate: false,
+      trueCost: m.smoothedCents / 100,
+      cashOut: m.cashOutCents / 100,
+      trueCostCents: m.smoothedCents,
+      cashOutCents: m.cashOutCents,
+    })),
+    ...aheadMonths.map((m) => {
+      const estimate = m.month > thisMonth;
+      return {
+        name: estimate
+          ? `${shortMonthLabel(m.month)} (est.)`
+          : shortMonthLabel(m.month),
+        monthStr: m.month,
+        estimate,
+        trueCost: m.smoothedCents / 100,
+        cashOut: m.cashOutCents / 100,
+        trueCostCents: m.smoothedCents,
+        cashOutCents: m.cashOutCents,
+      };
+    }),
+  ];
+  const hasEstimate = chartData.some((d) => d.estimate);
 
   return (
     <section
@@ -1038,6 +1084,8 @@ function SpendingTrueCostChart({ months }: { months: SpendingMonthRow[] }) {
         One pair of bars per recorded month — each month&rsquo;s True cost
         (smoothed) beside its Cash out, from the same figures as the tiles
         and the average above.
+        {hasEstimate &&
+          " An (est.) pair is figures entered ahead of time and may be revised."}
       </p>
       {chartData.length === 0 ? (
         <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
@@ -1050,14 +1098,16 @@ function SpendingTrueCostChart({ months }: { months: SpendingMonthRow[] }) {
           <ul className="sr-only">
             {chartData.map((d) => (
               <li key={d.monthStr}>
-                {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}`}
+                {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
               </li>
             ))}
           </ul>
           <div className="mt-3 max-w-full overflow-x-auto">
             <div
               className="h-[300px]"
-              style={{ minWidth: `${chartData.length * 108}px` }}
+              style={{
+                minWidth: `${chartData.length * (hasEstimate ? 128 : 108)}px`,
+              }}
             >
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
@@ -1125,12 +1175,32 @@ function SpendingTrueCostChart({ months }: { months: SpendingMonthRow[] }) {
                     fill="var(--accent)"
                     radius={[3, 3, 0, 0]}
                   >
+                    {chartData.map((d) => (
+                      <Cell
+                        key={d.monthStr}
+                        fill="var(--accent)"
+                        fillOpacity={d.estimate ? 0.3 : 1}
+                        stroke={d.estimate ? "var(--accent)" : "none"}
+                        strokeWidth={d.estimate ? 1.5 : 0}
+                        strokeDasharray={d.estimate ? "4 2" : undefined}
+                      />
+                    ))}
                     {/* True cost labels are end-anchored to the bar's
                         right edge (extending left over the pair's open
                         space) instead of centred: the Cash out bar
                         paints after this one, so a centred label on a
                         short True cost bar beside a taller Cash out
-                        bar would run underneath it and lose its tail. */}
+                        bar would run underneath it and lose its tail.
+                        Value labels are ALWAYS one solid, full-contrast
+                        rendering — the estimate treatment (muted fill,
+                        dashed outline) is for the bars only and must
+                        never reach a label, so the text below pins
+                        fillOpacity / opacity to 1 and stroke off. The
+                        anchor sits a few px inside the bar's right
+                        edge so the label's last digit always clears
+                        the neighbouring Cash out bar's outline —
+                        on an (est.) pair that outline is dashed and
+                        the old +2 anchor let it touch the digit. */}
                     <LabelList
                       dataKey="trueCost"
                       position="top"
@@ -1144,10 +1214,15 @@ function SpendingTrueCostChart({ months }: { months: SpendingMonthRow[] }) {
                             : Number(labelProps.value ?? 0);
                         return (
                           <text
-                            x={(vb.x ?? 0) + (vb.width ?? 0) + 2}
+                            x={(vb.x ?? 0) + (vb.width ?? 0) - 4}
                             y={(vb.y ?? 0) - (labelProps.offset ?? 16)}
                             textAnchor="end"
                             fill="var(--accent)"
+                            fillOpacity={1}
+                            opacity={1}
+                            stroke="none"
+                            strokeWidth={0}
+                            strokeDasharray="none"
                             fontSize={11}
                             fontWeight={600}
                           >
@@ -1163,15 +1238,50 @@ function SpendingTrueCostChart({ months }: { months: SpendingMonthRow[] }) {
                     fill="var(--warn)"
                     radius={[3, 3, 0, 0]}
                   >
+                    {chartData.map((d) => (
+                      <Cell
+                        key={d.monthStr}
+                        fill="var(--warn)"
+                        fillOpacity={d.estimate ? 0.3 : 1}
+                        stroke={d.estimate ? "var(--warn)" : "none"}
+                        strokeWidth={d.estimate ? 1.5 : 0}
+                        strokeDasharray={d.estimate ? "4 2" : undefined}
+                      />
+                    ))}
+                    {/* Recharts' default LabelList rendering spreads
+                        each bar entry's own SVG props onto its label
+                        (LabelList → Label via filterProps(entry)), so
+                        an estimate bar's Cell — fillOpacity 0.3, a
+                        coloured stroke, strokeWidth 1.5 and
+                        strokeDasharray "4 2" — would otherwise be
+                        inherited by the label text itself, giving it a
+                        dashed, doubled, unreadable outline. These
+                        explicit props are spread AFTER the entry in
+                        LabelList, so they override that inheritance
+                        for every label: one solid, full-contrast
+                        rendering, identical for recorded and (est.)
+                        months. The bars keep their estimate treatment
+                        via the Cells above; only the labels are pinned
+                        clean. */}
                     <LabelList
                       dataKey="cashOut"
                       position="top"
                       offset={3}
+                      fillOpacity={1}
+                      opacity={1}
+                      stroke="none"
+                      strokeWidth={0}
+                      strokeDasharray="none"
                       formatter={(value: number) =>
                         fmt(Math.round(value * 100))
                       }
                       style={{
                         fill: "var(--warn)",
+                        fillOpacity: 1,
+                        opacity: 1,
+                        stroke: "none",
+                        strokeWidth: 0,
+                        strokeDasharray: "none",
                         fontSize: 11,
                         fontWeight: 600,
                       }}
@@ -1441,6 +1551,7 @@ export function App() {
   const [showItemForm, setShowItemForm] = useState(false);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [iMonth, setIMonth] = useState(currentMonth());
+  const [iDay, setIDay] = useState("1");
   const [iDesc, setIDesc] = useState("");
   const [iDollars, setIDollars] = useState("");
   const [iNote, setINote] = useState("");
@@ -1939,6 +2050,7 @@ export function App() {
   function resetItemForm() {
     setShowItemForm(false);
     setEditingItemId(null);
+    setIDay("1");
     setIDesc("");
     setIDollars("");
     setINote("");
@@ -1956,6 +2068,7 @@ export function App() {
     setEditingItemId(it.id);
     setShowItemForm(true);
     setIMonth(it.month);
+    setIDay(String(it.day));
     setIDesc(it.description);
     setIDollars(String(it.amountCents / 100));
     setINote(it.note ?? "");
@@ -1970,6 +2083,14 @@ export function App() {
       setItemError("Pick the month this item belongs to.");
       return;
     }
+    const dayNum = Number(iDay);
+    const maxDay = daysInMonthOf(iMonth);
+    if (!Number.isInteger(dayNum) || dayNum < 1 || dayNum > maxDay) {
+      setItemError(
+        `Enter the day the cash went out — a whole number from 1 to ${maxDay} for that month.`,
+      );
+      return;
+    }
     if (!iDesc.trim()) {
       setItemError("Give the item a short description, e.g. Groceries.");
       return;
@@ -1980,6 +2101,7 @@ export function App() {
     }
     const input = {
       month: iMonth,
+      day: dayNum,
       description: iDesc.trim(),
       amountCents: cents,
       note: iNote.trim() ? iNote.trim() : null,
@@ -2700,11 +2822,17 @@ export function App() {
                       the chart and the strip show the same figures.
                       slice from the end keeps that true for any
                       covered count, including 0 (no recorded months —
-                      the chart renders its empty state). */}
+                      the chart renders its empty state). The chart —
+                      and only the chart — then continues past the
+                      viewed month with enteredAheadMonths: later
+                      months that already have entered figures, each
+                      with its own dashboard figures; the strip, tiles
+                      and everything else stay on the viewed month. */}
                   <SpendingTrueCostChart
                     months={data.history.slice(
                       data.history.length - data.trailingMonthsCovered,
                     )}
+                    aheadMonths={data.enteredAheadMonths}
                   />
                   <p className="tnum mt-3 text-sm leading-relaxed text-[var(--dim)]">
                     Cash out {fmt(data.cashOutCents)} = Total monthly{" "}
@@ -3570,6 +3698,15 @@ export function App() {
                       <input id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
                     </div>
                   </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="ci-day" className={labelCls}>Day</label>
+                      <input id="ci-day" type="text" inputMode="numeric" required className={inputCls} value={iDay} onChange={(e) => setIDay(e.target.value)} />
+                      <p className="mt-1 text-sm text-[var(--dim)]">
+                        The day of {monthLabel(iMonth || month)} the cash went out.
+                      </p>
+                    </div>
+                  </div>
                   <div>
                     <label htmlFor="ci-desc" className={labelCls}>Description</label>
                     <input id="ci-desc" type="text" required className={inputCls} value={iDesc} onChange={(e) => setIDesc(e.target.value)} placeholder="e.g. Groceries" />
@@ -3669,11 +3806,16 @@ export function App() {
                               <ul className="divide-y divide-[var(--border)]">
                                 {cm.items.map((it) => (
                                   <li key={it.id} className="flex items-start justify-between gap-3 py-2">
-                                    <div className="min-w-0">
-                                      <p className="text-base">{it.description}</p>
-                                      {it.note && (
-                                        <p className="text-xs text-[var(--dim)]">{it.note}</p>
-                                      )}
+                                    <div className="flex min-w-0 items-start gap-3">
+                                      <span className="tnum w-6 shrink-0 pt-0.5 text-right text-sm text-[var(--dim)]" aria-label={`Day ${it.day}`}>
+                                        {it.day}
+                                      </span>
+                                      <div className="min-w-0">
+                                        <p className="text-base">{it.description}</p>
+                                        {it.note && (
+                                          <p className="text-xs text-[var(--dim)]">{it.note}</p>
+                                        )}
+                                      </div>
                                     </div>
                                     <div className="flex shrink-0 items-center gap-1">
                                       <span className="tnum text-base font-medium">{fmt(it.amountCents)}</span>
@@ -5340,6 +5482,9 @@ function ImportPanel({
       for (const it of p.items) {
         await api.addCashOutItem({
           month: p.month,
+          // The proposal row carries the export's own date, so
+          // the item keeps the day the cash actually went out.
+          day: Number(it.date.slice(8, 10)) || 1,
           description: it.description,
           amountCents: it.amountCents,
           note: null,

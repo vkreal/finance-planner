@@ -299,10 +299,12 @@ export type PriceYearResult = {
   // otherwise-allowable itemized total (already reflected
   // in itemizedDeduction above), and the §170(p)
   // non-itemizer charitable deduction actually applied —
-  // $0 unless the standard side won, in which case it has
-  // ALREADY reduced agi / magi / acaMagi above (it is an
-  // above-the-line deduction), so it is NOT also inside
-  // `deductions` below.
+  // $0 unless the standard side won, in which case it sits
+  // BELOW the line (§63(b)(4): a deduction FROM AGI in
+  // determining taxable income for a non-itemizer; §62 does
+  // not list it, so it is never an AGI adjustment): agi /
+  // magi / acaMagi are NOT reduced by it, and it IS inside
+  // `deductions` below as part of the standard side's total.
   itemizedCharitableAllowed: number;
   section68Reduction: number;
   nonItemizerCharitableDeduction: number;
@@ -1073,19 +1075,19 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     input.otherOrdinary + input.rmd + input.conversion + input.extraPreTaxDraw + gainsStack + interestIncome + ordinaryDividends - capitalLossAllowance;
   const provisional = agiExclSs + input.taxExemptInterest + 0.5 * input.ssBenefits;
   const ssTaxable = ssTaxableAmount(input.ssBenefits, provisional, fs, defl);
-  // AGI before the §170(p) non-itemizer charitable
-  // deduction (2026 deduction trio): that deduction is
-  // above the line, so when the standard side wins it
-  // reduces AGI — and therefore MAGI and ACA MAGI — in
-  // the deduction step below, which reassigns these three.
-  // Until then (and whenever the itemized side wins) they
-  // are the pre-§170(p) figures every AGI-driven step that
-  // runs before the deduction choice (the §224 phase-out,
-  // the SALT phase-down, the charitable floor, the §68
-  // threshold) is specified against.
-  let agi = agiExclSs + ssTaxable;
-  let magi = agi + input.taxExemptInterest;
-  let acaMagi = magi + (input.ssBenefits - ssTaxable);
+  // AGI is FINAL when struck here: the §170(p)
+  // non-itemizer charitable deduction (2026 deduction
+  // trio) is below the line — §63(b)(4) subtracts it from
+  // AGI in determining taxable income, and §62 does not
+  // list it — so it never reduces AGI, MAGI, or ACA MAGI.
+  // Every AGI-driven step (the §224 phase-out, the SALT
+  // phase-down, the charitable floor, the §68 threshold,
+  // the education phase-outs, the ACA credit) prices on
+  // these figures; the deduction step below applies
+  // §170(p) inside `deductions` only.
+  const agi = agiExclSs + ssTaxable;
+  const magi = agi + input.taxExemptInterest;
+  const acaMagi = magi + (input.ssBenefits - ssTaxable);
 
   const count65 =
     (input.agePrimary >= 65 ? 1 : 0) +
@@ -1094,10 +1096,9 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     law.standardDeduction[fs] + law.age65Addon[fs] * count65;
   // The §224 senior deduction as a function of the AGI its
   // phase-out runs on: the deduction step below prices it
-  // on the pre-§170(p) AGI for the itemized side and on the
-  // post-§170(p) AGI for the standard side (the side that
-  // actually files), because §170(p) is above the line and
-  // the AGI the return reports is the reduced one.
+  // on the year's AGI — the same figure for both sides —
+  // because §170(p) is below the line (§63(b)(4)) and never
+  // reduces the AGI the §224 phase-out runs on.
   const seniorFor = (agiForPhaseOut: number): number => {
     if (
       input.calendarYear < SENIOR_DEDUCTION.firstYear ||
@@ -1195,8 +1196,8 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
      1. The §170(b)(1)(I) charitable FLOOR for itemizers:
         the charitable component of the itemized total is
         the entered input reduced by 0.5% of the
-        contribution base — the engine's AGI (the pre-§170(p)
-        figure above; the engine models no NOL carryback).
+        contribution base — the engine's AGI (the engine
+        models no NOL carryback).
         The floor applies to the engine's ONE aggregate
         charitable input. Floor-disallowed amounts do NOT
         carry forward (no state carries them).
@@ -1219,24 +1220,25 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
         deduction for the charitable input (treated as cash
         contributions — the engine's single input carries no
         cash/property split) capped per filing status. The
-        floor NEVER applies to it. PLACEMENT (a judgment
-        call, named in the API contract): §170(p) is priced
-        ABOVE THE LINE — when the standard side wins it
-        reduces AGI, and therefore MAGI and ACA MAGI,
-        before taxable income is struck; the alternative
-        placement (an addition to the standard deduction,
-        below the line) would leave AGI and MAGI unchanged
-        and price the same taxable income in a year with no
-        AGI-driven step in play.
+        floor NEVER applies to it. PLACEMENT: §170(p) sits in
+        §63(b)(4) — a deduction FROM adjusted gross income in
+        determining taxable income for a non-itemizer — and
+        §62 does not list it, so it is BELOW THE LINE, never
+        an AGI adjustment: when the standard side wins it is
+        part of `deductions` (below), and AGI, MAGI, and ACA
+        MAGI are NOT reduced by it. (The trio's original
+        build priced it above the line as a flagged judgment
+        call; the engine-audit round-2 fix corrected the
+        placement to the statute.)
      The comparison therefore weighs TOTAL deduction
-     effect: (standard + §170(p) + the §224 senior deduction
-     priced on the reduced AGI) against (the §68-reduced
-     itemized total + the senior deduction priced on the
-     unreduced AGI). The senior deduction itself is never
-     part of either side — §224 allows it on top of
-     whichever side wins, exactly as before — it enters the
-     comparison only because its phase-out runs on the AGI
-     each side would report. ---- */
+     effect: (standard + §170(p) + the §224 senior
+     deduction, the senior deduction priced on the year's
+     AGI) against (the §68-reduced itemized total + the
+     same senior deduction). The senior deduction itself
+     is never part of either side — §224 allows it on top
+     of whichever side wins, exactly as before — it enters
+     the comparison only so the greater-of choice weighs
+     each side's full effect on taxable income. ---- */
   const deductionTrioApplies = input.calendarYear >= DEDUCTION_2026.firstYear;
   const charitableEntered = Math.max(0, input.itemizedCharitable ?? 0);
   const charitableFloor =
@@ -1276,9 +1278,11 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
         DEDUCTION_2026.nonItemizerCharitableCap[fs],
       )
     : 0;
-  const seniorOnStandardSide = seniorFor(agi - section170pCandidate);
+  // The §224 senior deduction is priced on the TRUE AGI on
+  // both sides: §170(p) is below the line and never touches
+  // the AGI its phase-out runs on.
   const standardEffect =
-    standardDeduction + section170pCandidate + seniorOnStandardSide;
+    standardDeduction + section170pCandidate + seniorDeduction;
   const itemizedEffect = itemizedDeduction + seniorDeduction;
   const deductionTaken: "standard" | "itemized" =
     itemizedEffect > standardEffect ? "itemized" : "standard";
@@ -1287,21 +1291,17 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   if (deductionTaken === "itemized") {
     deductions = itemizedDeduction + seniorDeduction;
   } else {
-    // The standard side won: §170(p) applies above the
-    // line — AGI, MAGI, and ACA MAGI fall by the deduction
-    // (the §86 taxable-benefits amount above was struck on
-    // the pre-§170(p) figures and is not re-struck), the
-    // senior deduction is the one priced on the reduced
-    // AGI, and `deductions` carries the standard side
-    // only: the §170(p) amount is in the AGI, not in
-    // deductions, so taxable income below still foots as
-    // AGI − deductions.
+    // The standard side won: §170(p) applies BELOW the
+    // line (§63(b)(4)) — AGI, MAGI, and ACA MAGI keep the
+    // true figures struck above (the §86 taxable-benefits
+    // amount is unaffected by §170(p) either way), and
+    // `deductions` carries the standard deduction PLUS
+    // the §170(p) amount PLUS the §224 senior deduction
+    // (priced on the true AGI), so taxable income below
+    // still foots as AGI − deductions.
     nonItemizerCharitableDeduction = section170pCandidate;
-    agi -= nonItemizerCharitableDeduction;
-    magi -= nonItemizerCharitableDeduction;
-    acaMagi -= nonItemizerCharitableDeduction;
-    seniorDeduction = seniorOnStandardSide;
-    deductions = standardDeduction + seniorDeduction;
+    deductions =
+      standardDeduction + section170pCandidate + seniorDeduction;
   }
   const taxableIncome = Math.max(0, agi - deductions);
 
@@ -1512,13 +1512,17 @@ export function acaCreditFor(args: {
   householdSize: number;
   coverageYear: number;
   benchmarkAnnual: number;
-  // Build C scope: projected pricing (the plan march, the
-  // Playground projection) passes projected: true and prices
-  // every projected year on the 2026 applicable-percentage
-  // table — see acaTableFor in taxLaw.ts. Absent / false is
-  // the single-year (specific coverage year) pricing, the
-  // only mode in which the 2027 table (Rev. Proc. 2026-26)
-  // prices, and only for coverage year 2027 exactly.
+  // Build C scope, as corrected by the engine-audit round-2
+  // fix: projected pricing (the plan march, the Playground
+  // projection) passes projected: true; a projected coverage
+  // year 2027 prices on the 2027 applicable-percentage table
+  // (Rev. Proc. 2026-26, published law for that year), while
+  // projected years after 2027 price on the 2026 table and
+  // never fall back to the 2027 percentages — see
+  // acaTableFor in taxLaw.ts. Absent / false is the
+  // single-year (specific coverage year) pricing, in which
+  // the 2027 table likewise prices for coverage year 2027
+  // exactly.
   projected?: boolean;
 }): AcaCreditResult {
   // Coverage-year credits use the PRIOR year's poverty guidelines.
@@ -2610,8 +2614,9 @@ export type RothYearDetail = {
   // allowed inside the itemized total after the
   // §170(b)(1)(I) floor, the §68 reduction taken off the
   // itemized total, and the §170(p) non-itemizer
-  // charitable deduction applied above the line (already
-  // inside this year's agi / magi; NOT inside deductions).
+  // charitable deduction applied below the line (§63(b)(4):
+  // inside this year's deductions as part of the standard
+  // side; NOT inside agi / magi / acaMagi).
   // All $0 in every year priced under the 2025 law row and
   // in every year with no charitable input.
   itemizedCharitableAllowed: number;
@@ -5416,10 +5421,11 @@ export function simulateRothPlan(
         householdSize,
         coverageYear: year,
         benchmarkAnnual: benchmark,
-        // Build C scope: the plan march is PROJECTED
-        // pricing — every projected year prices on the
-        // 2026 applicable-percentage table, never the
-        // 2027 partial row (see acaTableFor in taxLaw.ts).
+        // Build C scope, as corrected by the engine-audit
+        // round-2 fix: the plan march is PROJECTED pricing —
+        // a projected 2027 prices on the 2027 row, projected
+        // 2028+ on the 2026 row, never the 2027 percentages
+        // (see acaTableFor in taxLaw.ts).
         projected: true,
       });
       acaCreditKept = acaResult.credit;

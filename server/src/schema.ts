@@ -197,6 +197,13 @@ export const monthlyCashOutItems = sqliteTable("monthly_cash_out_items", {
   // returns the month to its entered total / transactions as before.
   amountCents: text("amount_cents").notNull(),
   note: text("note"),
+  // Day of the month (1–31) the cash went out; the item's full
+  // date is its month plus this day. Validated against the
+  // month's real length (leap-year aware) by the writers.
+  // Display/order only — it never affects any total. Existing
+  // rows were backfilled to 1 by the 0024 migration, the value
+  // the column also defaults to for any row written without one.
+  day: integer("day").notNull().default(1),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),
