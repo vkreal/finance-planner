@@ -3810,6 +3810,93 @@ export function solvePlaygroundBracketFill(
   return r2(loCents / 100);
 }
 
+/* ACA-cliff fill solve for the Playground's ACA cliff chip and
+   its cliff − buffer guide (ACA BUFFER GUIDE build). Returns
+   the pre-tax money out (to the cent) that lands the year's
+   ACA MAGI exactly on a target line — the 400%-of-FPL cliff
+   the engine reports for the typed year + household size,
+   LESS `bufferDollars` (default 0: the plain cliff fill the
+   chip has always solved; a positive buffer aims that far
+   under the cliff, the December safety cushion). The buffer
+   is a GUIDE for choosing the conversion dial only: it is
+   not an input to pricePlaygroundYear and never enters any
+   priced figure — for any fixed conversion the year prices
+   bit-identically with any buffer. Returns null when the
+   priced year has no hard cliff to aim at (the ACA block
+   does not apply — everyone on Medicare — no household size
+   typed, or a coverage year before 2026, whose enhanced
+   credit has no cliff by design: acaCreditFor's hasCliff
+   rule). The cliff the engine reports already carries the
+   §36B guideline lookback (acaCreditFor reads the prior
+   year's guideline row for the coverage year), so the target
+   is the engine's own line, not a recomputation. The solve
+   iterates against the engine rather than subtracting
+   displayed figures, so every MAGI component the engine
+   counts is in the answer — interest, ordinary and qualified
+   dividends, other ordinary income, tax-exempt interest, the
+   stock sale's gain, the year's RMD, and Social Security at
+   the amount the engine counts toward ACA MAGI as the draw
+   rises. ACA MAGI is non-decreasing in the pre-tax amount,
+   so a cent-level binary search over engine pricings finds
+   the largest amount whose ACA MAGI is at or under the
+   target — in the ordinary slope-1 case that amount prices
+   ACA MAGI exactly on the target. Honest edges, mirroring
+   solvePlaygroundBracketFill: other income alone already at
+   or past the target (with a buffer, already past
+   cliff − buffer at $0 of conversion) → $0, never negative
+   (nothing can pull it back); a typed balance whose maximum
+   drawable amount (balance − RMD) cannot reach the target →
+   that maximum. A buffer at or above the cliff makes the
+   target ≤ $0 of MAGI, which $0 of conversion already meets
+   or exceeds, so the answer is $0 by the same edge. */
+export function solvePlaygroundAcaCliffFill(
+  inp: PlaygroundYearInputs,
+  bufferDollars = 0,
+): number | null {
+  if (inp.taxYear < 2026) return null;
+  const buffer = Math.max(0, bufferDollars);
+  const zero = pricePlaygroundYear({ ...inp, conversion: 0 });
+  const cliff = zero.aca.cliff;
+  if (!zero.aca.applies || cliff == null) return null;
+  const target = cliff - buffer;
+  const pastTarget = (conversion: number): boolean =>
+    pricePlaygroundYear({ ...inp, conversion }).acaMagi > target + 1e-9;
+  if (zero.acaMagi >= target - 1e-9) return 0;
+  // Cap: never set more than can actually come out of a typed
+  // balance (the RMD comes out first). If even the cap does
+  // not reach the target, the cap is the answer.
+  let capCents: number | null = null;
+  if (inp.pretaxBalance != null) {
+    capCents = Math.max(0, Math.round((inp.pretaxBalance - zero.rmd) * 100));
+    if (!pastTarget(capCents / 100)) return r2(capCents / 100);
+  }
+  // Upper bound (cents) past the target: grow from the
+  // slope-1 estimate until the engine says it crosses.
+  let hiCents = Math.max(100, Math.round((target - zero.acaMagi) * 100));
+  if (capCents != null) hiCents = Math.min(hiCents, capCents);
+  while (!pastTarget(hiCents / 100)) {
+    hiCents = hiCents * 2 + 100;
+    if (capCents != null && hiCents >= capCents) {
+      hiCents = capCents;
+      break;
+    }
+    if (hiCents > 1_000_000_000) break; // $10M — far past any cliff
+  }
+  // Binary search: the largest cent amount whose ACA MAGI is
+  // not past the target.
+  let loCents = 0;
+  let hi = hiCents;
+  while (loCents < hi) {
+    const mid = Math.floor((loCents + hi + 1) / 2);
+    if (!pastTarget(mid / 100)) {
+      loCents = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return r2(loCents / 100);
+}
+
 /* ---------------- Engine access (shared helpers) ----------------
    The engine-access build exposes the shipped engine through
    server actions (runPlaygroundYear / runPlanYearDetail in

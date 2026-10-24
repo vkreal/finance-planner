@@ -49,6 +49,7 @@ type NwImportSettingsBlob,
 } from "./nwImportCore";
 import { looksLikeOfx, parseOfx } from "./ofxCore";
 import { Explainer } from "./Explainer";
+import { usePersistedFold } from "./foldState";
 import { TrendBlock } from "./YearBlocks";
 
 type NwData = ApiResponse<typeof api, "getNetWorth">;
@@ -2837,7 +2838,9 @@ export function NetWorthView() {
     snapshot: NwSnapshot;
   } | null>(null);
   const [showNwExplorer, setShowNwExplorer] = useState(false);
-  const [showNwImport, setShowNwImport] = useState(false);
+  /* The balance-import panel's open/closed state persists in
+     the generic fold store, so it comes back as left. */
+  const [showNwImport, setShowNwImport] = usePersistedFold("nw.import");
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountType, setNewAccountType] =

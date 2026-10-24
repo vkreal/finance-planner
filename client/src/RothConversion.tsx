@@ -745,8 +745,9 @@ export function RothConversion() {
   // mode; the open/closed choice persists in the Roth UI state.
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
   // "Show the math" drill-down: the year whose engine detail
-  // panel is open under the year-by-year table (display only —
-  // never saved).
+  // panel is open under the year-by-year table (display only).
+  // The expanded year persists in the Roth UI state like the
+  // view's other folds, so the drill-down comes back as left.
   const [detailYear, setDetailYear] = useState<number | null>(null);
   const [resultsMode, setResultsMode] = useState<RothResultsMode>("plan");
   /* Plan-first face (display only — never saved, never priced):
@@ -838,6 +839,11 @@ export function RothConversion() {
     setYearTableOpen(uiq.data.yearTableOpen);
     setWatchOutsOpen(uiq.data.watchOutsOpen !== false);
     setAssumptionsOpen(uiq.data.assumptionsOpen === true);
+    setWyHowOpen(uiq.data.wyHowOpen === true);
+    setGiftHowOpen(uiq.data.giftHowOpen === true);
+    setOptHowOpen(uiq.data.optHowOpen === true);
+    setExecDetailOpen(uiq.data.execDetailOpen === true);
+    setDetailYear(uiq.data.detailYear ?? null);
     // The Custom… ceiling panel's persisted open flag ORs with
     // the saved-record auto-open in the hydration effect below:
     // either one opens the panel on load, and a close the user
@@ -922,6 +928,47 @@ export function RothConversion() {
     const next = !assumptionsOpen;
     setAssumptionsOpen(next);
     saveUiState.mutate({ assumptionsOpen: next });
+  };
+  // The workspaces' "More" how-it-is-priced expanders and the
+  // execution year's "Show the math" expander: each persists
+  // in the Roth UI state like the folds above, so it comes
+  // back open or closed exactly as left.
+  const toggleWyHow = () => {
+    const next = !wyHowOpen;
+    setWyHowOpen(next);
+    saveUiState.mutate({ wyHowOpen: next });
+  };
+  const toggleGiftHow = () => {
+    const next = !giftHowOpen;
+    setGiftHowOpen(next);
+    saveUiState.mutate({ giftHowOpen: next });
+  };
+  const toggleOptHow = () => {
+    const next = !optHowOpen;
+    setOptHowOpen(next);
+    saveUiState.mutate({ optHowOpen: next });
+  };
+  const toggleExecDetail = () => {
+    const next = !execDetailOpen;
+    setExecDetailOpen(next);
+    saveUiState.mutate({ execDetailOpen: next });
+  };
+  const closeExecDetail = () => {
+    setExecDetailOpen(false);
+    saveUiState.mutate({ execDetailOpen: false });
+  };
+  const openDetailYear = (yr: number) => {
+    setDetailYear(yr);
+    saveUiState.mutate({ detailYear: yr });
+  };
+  const toggleDetailYear = (yr: number) => {
+    const next = detailYear === yr ? null : yr;
+    setDetailYear(next);
+    saveUiState.mutate({ detailYear: next });
+  };
+  const closeDetailYear = () => {
+    setDetailYear(null);
+    saveUiState.mutate({ detailYear: null });
   };
   // Switching workspaces only changes which results section
   // renders — inputs, the optimizer's last result, the scenario
@@ -7270,12 +7317,12 @@ export function RothConversion() {
                     aria-label={`Show the math for ${startYear}`}
                     aria-expanded={execDetailOpen}
                     className="mt-3 font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)]"
-                    onClick={() => setExecDetailOpen((o) => !o)}
+                    onClick={toggleExecDetail}
                   >
                     {execDetailOpen ? "Hide the math" : "Show the math"} for {startYear}
                   </button>
                   {execDetailOpen &&
-                    renderYearDetail(ey, () => setExecDetailOpen(false))}
+                    renderYearDetail(ey, closeExecDetail)}
                 </div>
               );
             })()}
@@ -8143,7 +8190,7 @@ export function RothConversion() {
               aria-label="More about how work years are priced"
               aria-expanded={wyHowOpen}
               className="mt-1 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
-              onClick={() => setWyHowOpen((o) => !o)}
+              onClick={toggleWyHow}
             >
               {wyHowOpen ? "Less" : "More"}
             </button>
@@ -8497,7 +8544,7 @@ export function RothConversion() {
               aria-label="More about how the gift comparison is priced"
               aria-expanded={giftHowOpen}
               className="mt-1 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
-              onClick={() => setGiftHowOpen((o) => !o)}
+              onClick={toggleGiftHow}
             >
               {giftHowOpen ? "Less" : "More"}
             </button>
@@ -8647,7 +8694,7 @@ export function RothConversion() {
             aria-expanded={optHowOpen}
             aria-label="How the search works"
             className="mt-2 text-sm font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)]"
-            onClick={() => setOptHowOpen((o) => !o)}
+            onClick={toggleOptHow}
           >
             How the search works
           </button>
@@ -9459,7 +9506,7 @@ export function RothConversion() {
           planYears.some((y) => d.amount(y) !== 0),
         );
         const openYearFromChart = (yr: number) => {
-          setDetailYear(yr);
+          openDetailYear(yr);
           if (!yearTableOpen) {
             setYearTableOpen(true);
             saveUiState.mutate({ yearTableOpen: true });
@@ -9652,7 +9699,7 @@ export function RothConversion() {
                         aria-label={`Show the math for ${y.year}`}
                         aria-expanded={detailYear === y.year}
                         className="font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)]"
-                        onClick={() => setDetailYear(detailYear === y.year ? null : y.year)}
+                        onClick={() => toggleDetailYear(y.year)}
                       >
                         {y.year} ({y.agePrimary}
                         {y.ageSpouse != null ? `/${y.ageSpouse}` : ""})
@@ -9732,7 +9779,7 @@ export function RothConversion() {
                 Select a year in the table to see how that year&rsquo;s numbers were
                 built — the engine&rsquo;s own figures, line by line.
               </p>
-              {detailRow && renderYearDetail(detailRow, () => setDetailYear(null))}
+              {detailRow && renderYearDetail(detailRow, closeDetailYear)}
             </>
           )}
         </section>

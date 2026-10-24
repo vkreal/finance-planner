@@ -94,6 +94,7 @@ runRothMonteCarloCheck,
 runRothMonteCarloStats,
 scoreAllCandidates,
 solvePlaygroundBracketFill,
+solvePlaygroundAcaCliffFill,
 splitRothBlob,
 ssAnnualAtClaimAge,
 ssBenefitFactor,
@@ -6573,6 +6574,113 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         landingBracketPct: r.landingBracketPct,
         landingRoomLeft: r.landingRoomLeft,
         exceedsBalance: r.conversionExceedsBalance ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "playground-aca-buffer-fill",
+    kind: "tax",
+    note: "Playground ACA buffer fill (hand-derived; ACA buffer guide build): 2026 MFJ, ages 55/44, neither on Medicare, household size 2, benchmark $20,000, ONLY interest $10,000 typed. The engine's cliff carries the §36B lookback to the 2025 guidelines: FPL for 2 is $15,650 + $5,500 = $21,150, so the cliff is $84,600. With a $5,000 buffer the fill aims at $79,600: the fill is $79,600 − $10,000 = $69,600, and pricing it lands ACA MAGI exactly on $79,600 — cliff − buffer to the dollar — with the priced position exactly the buffer ($5,000 of room to the cliff). Federal tax at the landing: taxable income $79,600 − $32,200 standard deduction = $47,400, tax $2,480 + 12% × $22,600 = $5,192 (no NIIT at this MAGI). The same solve with NO buffer is the plain cliff fill the ACA chip has always made: $74,600, landing ACA MAGI exactly on the $84,600 cliff — the buffer changes only the target, never the pricing. Solved by solvePlaygroundAcaCliffFill through pricePlaygroundYear — the same function the fill control calls.",
+    expected: {
+      cliff: 84600,
+      fillBuffer: 69600,
+      acaMagiAtBufferFill: 79600,
+      positionAtBufferFill: 5000,
+      federalTaxAtBufferFill: 5192,
+      fillNoBuffer: 74600,
+      acaMagiAtNoBufferFill: 84600,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 10000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 20000,
+        stateRatePct: 0,
+      };
+      const fillBuffer = solvePlaygroundAcaCliffFill(inp, 5000);
+      const atBuffer = pricePlaygroundYear({
+        ...inp,
+        conversion: fillBuffer ?? -1,
+      });
+      const fillNoBuffer = solvePlaygroundAcaCliffFill(inp, 0);
+      const atNoBuffer = pricePlaygroundYear({
+        ...inp,
+        conversion: fillNoBuffer ?? -1,
+      });
+      return {
+        cliff: atBuffer.aca.cliff,
+        fillBuffer,
+        acaMagiAtBufferFill: atBuffer.acaMagi,
+        positionAtBufferFill: atBuffer.aca.positionDollars,
+        federalTaxAtBufferFill: atBuffer.federalTax,
+        fillNoBuffer,
+        acaMagiAtNoBufferFill: atNoBuffer.acaMagi,
+      };
+    },
+  },
+  {
+    id: "playground-aca-buffer-fill-overshoot",
+    kind: "tax",
+    note: "Playground ACA buffer fill, the zero-conversion overshoot (hand-derived; ACA buffer guide build): the same 2026 MFJ household-of-2 year as playground-aca-buffer-fill but with interest $90,000 typed — other income alone prices ACA MAGI at $90,000, already past the $79,600 cliff − buffer line (and past the $84,600 cliff itself) with no conversion at all. The buffer fill must set the conversion to $0 — never negative — and the priced year stays $10,400 over the cliff − buffer line, which is what the play strip's over-the-line readout reports (line − ACA MAGI = −$10,400).",
+    expected: {
+      zeroAcaMagi: 90000,
+      fillBuffer: 0,
+      acaMagiAtFill: 90000,
+      overLineBy: 10400,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 55,
+        ageSpouse: 44,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 90000,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 20000,
+        stateRatePct: 0,
+      };
+      const zero = pricePlaygroundYear(inp);
+      const fillBuffer = solvePlaygroundAcaCliffFill(inp, 5000);
+      const atFill = pricePlaygroundYear({
+        ...inp,
+        conversion: fillBuffer ?? -1,
+      });
+      const cliff = zero.aca.cliff ?? 0;
+      return {
+        zeroAcaMagi: zero.acaMagi,
+        fillBuffer,
+        acaMagiAtFill: atFill.acaMagi,
+        overLineBy: atFill.acaMagi - (cliff - 5000),
       };
     },
   },

@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
+import { usePersistedFold } from "./foldState";
 
 /* Blocks dissolved out of the former Year Summary view:
    - YearInSpendingBlock: the old page's Spending section, now a
@@ -55,12 +56,15 @@ const btnGhost =
    behind a quiet local "More" toggle: the endpoints sentence
    stays visible; the remainder renders verbatim in place when
    expanded, so first + " " + rest is byte-identical to the
-   note as previously printed in full. Local state only — the
-   visible first part is a dynamic string, so the server-persisted
-   Explainer does not fit here. The toggle is a real button with
-   aria-expanded / aria-controls, styled like the Explainer's. */
+   note as previously printed in full. The visible first part
+   is a dynamic string, so the server-persisted Explainer does
+   not fit here; the open/closed state itself persists in the
+   generic fold store ("nw.trendAnchor") instead, so the note
+   comes back expanded or collapsed exactly as left. The
+   toggle is a real button with aria-expanded / aria-controls,
+   styled like the Explainer's. */
 function AnchorNote({ first, rest }: { first: string; rest: string }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = usePersistedFold("nw.trendAnchor");
   const rawId = useId();
   const regionId = `ys-anchor-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
   return (
@@ -76,7 +80,7 @@ function AnchorNote({ first, rest }: { first: string; rest: string }) {
         }
         aria-expanded={open}
         aria-controls={regionId}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
         className="font-medium whitespace-nowrap text-[var(--accent)] underline underline-offset-2"
       >
         {open ? "Less" : "More"}

@@ -57,6 +57,11 @@ ofxAccountKey,
 parseOfx,
 } from "./ofxCore";
 import { Explainer } from "./Explainer";
+import {
+  useFoldStateMap,
+  usePersistedFold,
+  useSetFold,
+} from "./foldState";
 import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
 import { RothConversion } from "./RothConversion";
@@ -160,12 +165,29 @@ function monthLabel(month: string): string {
 
 /* Days in the month named by a YYYY-MM key, leap-year aware —
    the client mirror of the server's day rule (spendingCore's
-   daysInMonthOf), used for the cash-out item form's inline
-   day error. */
+   daysInMonthOf), used as the cash-out item form's date
+   validation backstop. */
 function daysInMonthOf(month: string): number {
   const y = Number(month.slice(0, 4));
   const m = Number(month.slice(5, 7));
   return new Date(y, m, 0).getDate();
+}
+
+/* English ordinal for a day of the month: 1st, 2nd, 3rd, 4th, …,
+   11th, 12th, 13th, …, 21st, 22nd, 23rd, …, 31st. */
+function ordinalDay(day: number): string {
+  const mod100 = day % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${day}th`;
+  switch (day % 10) {
+    case 1:
+      return `${day}st`;
+    case 2:
+      return `${day}nd`;
+    case 3:
+      return `${day}rd`;
+    default:
+      return `${day}th`;
+  }
 }
 
 function shiftMonth(month: string, delta: number): string {
@@ -1544,14 +1566,30 @@ export function App() {
   const [summaryError, setSummaryError] = useState("");
 
   /* cash-out items state: per-month line items that roll up to the
-     month's cash out. Expansion is view-only local state. */
-  const [expandedCashOutMonths, setExpandedCashOutMonths] = useState<
-    Set<string>
-  >(new Set());
+     month's cash out. Each month's expanded/collapsed state ("Hide
+     items / Show items") persists server-side in the generic fold
+     store (id "spending.cashout.<month>"), so a month left expanded
+     comes back expanded after a reload or in a new session; a
+     month never toggled has no entry and stays collapsed, exactly
+     as before. The session override map keeps a toggle (and the
+     auto-expansion when an item is added or edited) instant; the
+     stored value lands a moment later and agrees with it. */
+  const foldMap = useFoldStateMap();
+  const setFold = useSetFold();
+  const [cashOutFoldOverrides, setCashOutFoldOverrides] = useState<
+    Record<string, boolean>
+  >({});
+  const cashOutMonthExpanded = (m: string): boolean =>
+    cashOutFoldOverrides[m] ??
+    foldMap.data?.open[`spending.cashout.${m}`] ??
+    false;
+  const setCashOutMonthExpanded = (m: string, next: boolean) => {
+    setCashOutFoldOverrides((prev) => ({ ...prev, [m]: next }));
+    setFold.mutate({ id: `spending.cashout.${m}`, open: next });
+  };
   const [showItemForm, setShowItemForm] = useState(false);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
-  const [iMonth, setIMonth] = useState(currentMonth());
-  const [iDay, setIDay] = useState("1");
+  const [iDate, setIDate] = useState(() => `${currentMonth()}-01`);
   const [iDesc, setIDesc] = useState("");
   const [iDollars, setIDollars] = useState("");
   const [iNote, setINote] = useState("");
@@ -1578,7 +1616,9 @@ export function App() {
   const [oNote, setONote] = useState("");
   const [oneOffError, setOneOffError] = useState("");
 
-  const [showImport, setShowImport] = useState(false);
+  /* The statement import panel's open/closed state persists in
+     the generic fold store, like the cash-out months above. */
+  const [showImport, setShowImport] = usePersistedFold("spending.import");
   const [showExplorer, setShowExplorer] = useState(false);
   const [explorerGroupBy, setExplorerGroupBy] =
     useState<ExplorerGroupBy>("category");
@@ -1754,7 +1794,7 @@ export function App() {
     onSuccess: (_r, input) => {
       invalidate();
       resetItemForm();
-      setExpandedCashOutMonths((prev) => new Set(prev).add(input.month));
+      setCashOutMonthExpanded(input.month, true);
     },
     onError: (e) => setItemError(String(e)),
   });
@@ -1764,7 +1804,7 @@ export function App() {
     onSuccess: (_r, input) => {
       invalidate();
       resetItemForm();
-      setExpandedCashOutMonths((prev) => new Set(prev).add(input.month));
+      setCashOutMonthExpanded(input.month, true);
     },
     onError: (e) => setItemError(String(e)),
   });
@@ -2050,7 +2090,7 @@ export function App() {
   function resetItemForm() {
     setShowItemForm(false);
     setEditingItemId(null);
-    setIDay("1");
+    setIDate(`${currentMonth()}-01`);
     setIDesc("");
     setIDollars("");
     setINote("");
@@ -2059,36 +2099,39 @@ export function App() {
 
   function openNewItem(forMonth: string) {
     resetItemForm();
-    setIMonth(forMonth);
+    setIDate(`${forMonth}-01`);
     setShowItemForm(true);
-    setExpandedCashOutMonths((prev) => new Set(prev).add(forMonth));
+    setCashOutMonthExpanded(forMonth, true);
   }
 
   function openEditItem(it: CashOutItem) {
     setEditingItemId(it.id);
     setShowItemForm(true);
-    setIMonth(it.month);
-    setIDay(String(it.day));
+    setIDate(`${it.month}-${String(it.day).padStart(2, "0")}`);
     setIDesc(it.description);
     setIDollars(String(it.amountCents / 100));
     setINote(it.note ?? "");
     setItemError("");
-    setExpandedCashOutMonths((prev) => new Set(prev).add(it.month));
+    setCashOutMonthExpanded(it.month, true);
   }
 
   function submitItem(e: FormEvent) {
     e.preventDefault();
     const cents = parseDollars(iDollars);
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(iMonth)) {
-      setItemError("Pick the month this item belongs to.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iDate)) {
+      setItemError("Pick the date the cash went out.");
       return;
     }
-    const dayNum = Number(iDay);
-    const maxDay = daysInMonthOf(iMonth);
-    if (!Number.isInteger(dayNum) || dayNum < 1 || dayNum > maxDay) {
-      setItemError(
-        `Enter the day the cash went out — a whole number from 1 to ${maxDay} for that month.`,
-      );
+    const itemMonth = iDate.slice(0, 7);
+    const dayNum = Number(iDate.slice(8, 10));
+    const maxDay = daysInMonthOf(itemMonth);
+    if (
+      !/^\d{4}-(0[1-9]|1[0-2])$/.test(itemMonth) ||
+      !Number.isInteger(dayNum) ||
+      dayNum < 1 ||
+      dayNum > maxDay
+    ) {
+      setItemError("Pick a valid date the cash went out.");
       return;
     }
     if (!iDesc.trim()) {
@@ -2100,7 +2143,7 @@ export function App() {
       return;
     }
     const input = {
-      month: iMonth,
+      month: itemMonth,
       day: dayNum,
       description: iDesc.trim(),
       amountCents: cents,
@@ -2111,12 +2154,7 @@ export function App() {
   }
 
   function toggleCashOutMonth(m: string) {
-    setExpandedCashOutMonths((prev) => {
-      const next = new Set(prev);
-      if (next.has(m)) next.delete(m);
-      else next.add(m);
-      return next;
-    });
+    setCashOutMonthExpanded(m, !cashOutMonthExpanded(m));
   }
 
   function resetBillForm() {
@@ -3690,21 +3728,12 @@ export function App() {
                   </h3>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label htmlFor="ci-month" className={labelCls}>Month</label>
-                      <input id="ci-month" type="month" required className={inputCls} value={iMonth} onChange={(e) => setIMonth(e.target.value)} />
+                      <label htmlFor="ci-date" className={labelCls}>Date cash went out</label>
+                      <input id="ci-date" type="date" required className={inputCls} value={iDate} onChange={(e) => setIDate(e.target.value)} />
                     </div>
                     <div>
                       <label htmlFor="ci-amount" className={labelCls}>Amount ($)</label>
                       <input id="ci-amount" type="text" inputMode="decimal" required placeholder="0.00" className={inputCls} value={iDollars} onChange={(e) => setIDollars(e.target.value)} />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label htmlFor="ci-day" className={labelCls}>Day</label>
-                      <input id="ci-day" type="text" inputMode="numeric" required className={inputCls} value={iDay} onChange={(e) => setIDay(e.target.value)} />
-                      <p className="mt-1 text-sm text-[var(--dim)]">
-                        The day of {monthLabel(iMonth || month)} the cash went out.
-                      </p>
                     </div>
                   </div>
                   <div>
@@ -3716,7 +3745,7 @@ export function App() {
                     <input id="ci-note" type="text" className={inputCls} value={iNote} onChange={(e) => setINote(e.target.value)} placeholder="Any detail worth remembering" />
                   </div>
                   <p className="text-sm text-[var(--dim)]">
-                    Items roll up: the sum of {monthLabel(iMonth || month)}'s
+                    Items roll up: the sum of {monthLabel(iDate.slice(0, 7) || month)}'s
                     items becomes that month's cash out everywhere — Quick
                     view, true cost, and the explorer.
                   </p>
@@ -3743,7 +3772,7 @@ export function App() {
               {data.cashOutMonths.length > 0 && (
                 <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
                   {[...data.cashOutMonths].reverse().map((cm) => {
-                    const expanded = expandedCashOutMonths.has(cm.month);
+                    const expanded = cashOutMonthExpanded(cm.month);
                     const hasBoth =
                       cm.enteredCashOutCents != null && cm.itemsCount > 0;
                     return (
@@ -3806,16 +3835,16 @@ export function App() {
                               <ul className="divide-y divide-[var(--border)]">
                                 {cm.items.map((it) => (
                                   <li key={it.id} className="flex items-start justify-between gap-3 py-2">
-                                    <div className="flex min-w-0 items-start gap-3">
-                                      <span className="tnum w-6 shrink-0 pt-0.5 text-right text-sm text-[var(--dim)]" aria-label={`Day ${it.day}`}>
-                                        {it.day}
-                                      </span>
-                                      <div className="min-w-0">
-                                        <p className="text-base">{it.description}</p>
-                                        {it.note && (
-                                          <p className="text-xs text-[var(--dim)]">{it.note}</p>
-                                        )}
-                                      </div>
+                                    <div className="min-w-0">
+                                      <p className="text-base">
+                                        {it.description}{" "}
+                                        <span className="text-sm text-[var(--dim)] opacity-40">
+                                          · paid on the {ordinalDay(it.day)}
+                                        </span>
+                                      </p>
+                                      {it.note && (
+                                        <p className="text-xs text-[var(--dim)]">{it.note}</p>
+                                      )}
                                     </div>
                                     <div className="flex shrink-0 items-center gap-1">
                                       <span className="tnum text-base font-medium">{fmt(it.amountCents)}</span>
@@ -4832,7 +4861,9 @@ function ReserveSettings({
   data: Dash;
   onSaved: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  /* The settings fold's open/closed state persists in the
+     generic fold store, so it comes back as the user left it. */
+  const [open, setOpen] = usePersistedFold("spending.reserve");
   const [opening, setOpening] = useState("");
   const [start, setStart] = useState("");
   const [msg, setMsg] = useState("");
