@@ -311,8 +311,8 @@ export type WorkYearLine = {
   payrollAdditionalMedicare: number;
   // Salary − federal − state − FICA − the plan's annual
   // spending − the employee's own contributions (deferral +
-  // catch-up + mega + own HSA). Banked into Taxable at year
-  // end.
+  // catch-up + mega + own HSA) + the year's refundable §25A
+  // education credit. Banked into Taxable at year end.
   surplus: number;
   // The part of a NEGATIVE surplus the Taxable balance could
   // not absorb (round-7 fix 1.1): the roll floors the balance
@@ -385,12 +385,14 @@ export function priceOneWorkYear(
     // students price their §25A credits in the work year
     // exactly as in any priced year — the nonrefundable
     // portion is inside priced.federalTax, so the surplus
-    // below already reflects it. The refundable portion is
-    // NOT added to the surplus: the surplus is salary minus
-    // priced taxes and spending, and the refundable credit
-    // is returned money the roll-forward does not spend —
-    // the same conservative treatment the work-year surplus
-    // gives every other refundable figure (it adds none).
+    // below already reflects it. The refundable portion IS
+    // added to the surplus below (engine-audit round-2
+    // fix): it is cash the household actually receives, and
+    // the retirement march (Build D) deposits the same
+    // credit into Taxable — leaving it out of the work-year
+    // surplus made the refund vanish from the balance sheet
+    // entirely. It lands in Taxable through the existing
+    // roll-forward, banked at year end like any surplus.
     educationStudents: (plan.educationStudents ?? []).filter(
       (e) => e.year === calendarYear,
     ),
@@ -410,7 +412,11 @@ export function priceOneWorkYear(
       priced.stateTax -
       fica -
       plan.annualSpending -
-      ownContributions,
+      ownContributions +
+      // The year's refundable §25A credit (priced.education-
+      // Refundable): cash back to the household, banked into
+      // Taxable by the roll-forward below.
+      priced.educationRefundable,
   );
   return {
     age,

@@ -753,21 +753,23 @@ export function fplFor(householdSize: number, guidelineYear: number): number {
    prices a credit above 400% FPL for 2025 coverage.
    Above 400% FPL there is NO credit for 2026+ (the enhanced
    credits expired Dec 31, 2025) — the cliff the engine prices.
-   2027 TABLE SCOPE (Build C): the 2027 row (Rev. Proc.
+   2027 TABLE SCOPE (Build C, as corrected by the
+   engine-audit round-2 fix): the 2027 row (Rev. Proc.
    2026-26, Internal Revenue Bulletin 2026-31) is a PARTIAL
    law row — it publishes only the §36B applicable
-   percentages, not a complete 2027 law table. It therefore
-   prices coverage year 2027 ONLY where a specific coverage
-   year is priced (the single-year pricer: acaCreditFor's
-   default mode, and pricePlaygroundYear under its statutory
-   "lookback" convention). It is NOT the fallback for 2028
-   or later — a specific year after 2027 falls back to the
-   2026 row, the newest COMPLETE law row — and projected
-   years never use it at all: the plan march
-   (simulateRothPlan) and the Playground projection
-   (acaConvention "newest") price EVERY projected year on
-   the 2026 row, via acaTableFor's projected mode, until
-   the full 2027 law build lands a complete 2027 row. */
+   percentages, not a complete 2027 law table. It prices
+   coverage year 2027 wherever a 2027 coverage year is
+   priced: where a specific coverage year is priced (the
+   single-year pricer: acaCreditFor's default mode, and
+   pricePlaygroundYear under its statutory "lookback"
+   convention) AND in projected pricing for coverage year
+   2027 itself (the plan march and the Playground
+   projection price a projected 2027 on the 2027 row —
+   that table is published law for that year). It is NOT
+   the fallback for 2028 or later — a coverage year after
+   2027, specific or projected, falls back to the 2026
+   row, the newest COMPLETE law row, and never to the
+   2027 percentages. */
 export type AcaBand = { upToPctFpl: number; initialPct: number; finalPct: number };
 export const ACA_TABLES: Record<number, AcaBand[]> = {
   2025: [
@@ -808,19 +810,22 @@ export const ACA_TABLES: Record<number, AcaBand[]> = {
    law row, and deliberately NOT the 2027 partial row, so
    2028+ never falls back to 2027 percentages. Projected
    mode — a year inside a multi-year projection (the plan
-   march, the Playground projection): EVERY projected year
-   prices on the 2026 row, including a projected 2027, for
-   the same reason — projected years stay on the newest
-   complete law row until the full 2027 law build. */
+   march, the Playground projection): a projected coverage
+   year 2027 prices on the 2027 row (published law for
+   that year); projected years after 2027 price on the
+   2026 row and NEVER fall back to the 2027 percentages;
+   projected years at or before 2026 price exactly as in
+   specific mode. */
 export function acaTableFor(
   coverageYear: number,
   opts?: { projected?: boolean },
 ): AcaBand[] {
   if (opts?.projected) {
-    // A projected year prices exactly as it priced before
-    // the 2027 partial row existed: its own row at or
-    // before 2026 (the 2025 enhanced schedule included),
-    // and the 2026 row for every year after 2026.
+    // Engine-audit round-2 fix: a projected 2027 prices on
+    // the 2027 row; projected 2028+ keep the 2026 row (the
+    // 2027 percentages are never a later year's fallback);
+    // projected years at or before 2026 are unchanged.
+    if (coverageYear === 2027) return ACA_TABLES[2027] ?? [];
     const own = coverageYear <= 2026 ? ACA_TABLES[coverageYear] : undefined;
     return own ?? ACA_TABLES[2026] ?? [];
   }

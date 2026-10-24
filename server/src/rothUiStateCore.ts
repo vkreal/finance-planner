@@ -29,8 +29,11 @@ import { z } from "@hatch/space-sdk";
    never silently clobber newer field values. The refused
    writer re-merges against the current blob the refusal
    carries and retries at the fresh revision. A write with no
-   baseRevision keeps the legacy unchecked behaviour; either
-   way, an accepted write stores revision + 1. */
+   baseRevision keeps the legacy unchecked behaviour against
+   an EXISTING row; a first write (no stored row) is always
+   insert-only, so two racing first writes cannot both land —
+   the loser is refused with the winner's blob. Either way, an
+   accepted write stores revision + 1. */
 export const ROTH_UI_STATE_KEY = "roth_ui_state_v1";
 export const ROTH_SECTION_IDS = ["household", "money", "income", "aca", "advanced"] as const;
 export type RothSectionId = (typeof ROTH_SECTION_IDS)[number];
@@ -777,6 +780,17 @@ export function decideRothUiWrite(
   return { allowed: true, nextRevision: storedRevision + 1 };
 }
 
+/* Write-time normalization for labBaselineName: the request
+   schema accepts "" (a cleared name), the reader has always
+   read "" back as null, so the stored form is canonicalized
+   to null at write time — schema, writer, reader, and stored
+   form agree, and a nonempty name round-trips exactly. A blob
+   stored before this normalization that carries "" still
+   parses as null, exactly as it always has. */
+export function normalizeRothUiStateForWrite(state: RothUiState): void {
+  if (state.labBaselineName === "") state.labBaselineName = null;
+}
+
 export type RothUiWriteResult =
   | { status: "ok"; revision: number; state: RothUiState; raw: string }
   | { status: "conflict"; revision: number; state: RothUiState };
@@ -801,6 +815,7 @@ export function applyRothUiWrite(
     return { status: "conflict", revision: state.revision, state };
   }
   mutate(state);
+  normalizeRothUiStateForWrite(state);
   state.revision = decision.nextRevision;
   return {
     status: "ok",
@@ -891,11 +906,54 @@ export function commitGuardedRothUiWrite(
   // consult veto a verdict it does not own.
   const state = parseRothUiState(currentStoredRaw);
   mutate(state);
+  normalizeRothUiStateForWrite(state);
   state.revision = state.revision + 1;
   return {
     affectedRows: 1,
     revision: state.revision,
     state,
     raw: JSON.stringify(state),
+  };
+}
+
+/* ---------------- Insert-only first-write commit ----------------
+   The first write of the blob (no stored row when the writer
+   read) commits INSERT-ONLY — the same pattern the Roth plan
+   record's first write uses (insertRothBlobValueIfAbsent in
+   actions.ts) — never an unconditional upsert. Two writers
+   can both read "no row" and both pass applyRothUiWrite's
+   decision at baseRevision 0; the insert-only commit is what
+   stops the second from silently overwriting the first: the
+   row's existence at commit time is the sole gate. The loser
+   is refused with the CURRENT blob re-read after the failed
+   insert (the winner's state and revision), exactly like a
+   sequential conflict.
+
+   commitInsertOnlyRothUiWrite is that commit's testable
+   mirror, the analogue of commitGuardedRothUiWrite above:
+   evaluated against the stored value AS IT STANDS AT COMMIT
+   TIME — a row present → affectedRows 0, no raw form to
+   persist, and the current blob carried for the refusal; no
+   row → the candidate the writer composed affects exactly
+   1 row. In production the handler performs the same gate
+   atomically with INSERT … ON CONFLICT DO NOTHING and
+   branches on the returned row count. */
+export type RothUiInsertOnlyCommitResult =
+  | { affectedRows: 1; revision: number; state: RothUiState; raw: string }
+  | { affectedRows: 0; revision: number; state: RothUiState };
+
+export function commitInsertOnlyRothUiWrite(
+  currentStoredRaw: string | undefined,
+  candidate: { revision: number; state: RothUiState; raw: string },
+): RothUiInsertOnlyCommitResult {
+  if (currentStoredRaw !== undefined) {
+    const current = parseRothUiState(currentStoredRaw);
+    return { affectedRows: 0, revision: current.revision, state: current };
+  }
+  return {
+    affectedRows: 1,
+    revision: candidate.revision,
+    state: candidate.state,
+    raw: candidate.raw,
   };
 }

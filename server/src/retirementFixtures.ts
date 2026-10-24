@@ -2,6 +2,23 @@
 // simulation engines (server/src/retirementEngines.ts), plus the
 // Trinity-style external benchmark anchor.
 //
+// HONESTY LABELING (fixture-honesty repair, 2026-10-23): the
+// HISTORICAL and MONTE CARLO groups in this file are REGRESSION
+// SNAPSHOTS — expected values pinned from the verified
+// implementation (October 2026) under the maintenance rule
+// below. They are NOT independent accuracy evidence: no
+// independent reimplementation of the historical or Monte
+// Carlo engines exists to re-derive their success rates,
+// median endings, or percentile figures, and the seeded Monte
+// Carlo stream is not independently replayable outside this
+// implementation. Their job is drift detection — any figure
+// that moves fails loudly and is a finding until the
+// maintenance rule's independent recomputation is done. The
+// projection and solver groups share the same pinned-from-
+// implementation provenance unless a case's note shows its
+// own derivation; only the Trinity-style external benchmark
+// anchor is an externally sourced expectation.
+//
 // MAINTENANCE RULE — read before touching the engines, the dataset,
 // or the defaults:
 //   Any future change to the engines (retirementEngines.ts), the
@@ -195,6 +212,9 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 2400000, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"endingCents":841795873},
   },
+  // ---- Historical group: REGRESSION SNAPSHOTS pinned from the
+  // verified implementation under the maintenance rule above —
+  // drift detection, not independent accuracy evidence. ----
   {
     id: "hist-constant-base",
     kind: "historical",
@@ -265,6 +285,10 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 65, retirementAge: 65, endAge: 80, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"successRate":100,"medianEndingCents":227280066,"worstEndingCents":25100267,"worstStartYear":1969,"runCount":84},
   },
+  // ---- Monte Carlo group: REGRESSION SNAPSHOTS pinned from the
+  // verified implementation under the maintenance rule above —
+  // the seeded stream is not independently replayable, so these
+  // are drift detection, not independent accuracy evidence. ----
   {
     id: "mc-constant-base",
     kind: "montecarlo",

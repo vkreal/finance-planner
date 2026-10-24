@@ -34,6 +34,7 @@ import {
 parseRothBlobRevision,
 withRothBlobRevision,
 } from "./rothRevisionCore";
+import { daysInMonthOf } from "./spendingCore";
 
 export const BACKUP_FORMAT = "monthly-spending-tracker-backup";
 export const BACKUP_SCHEMA_VERSION = 1;
@@ -125,6 +126,12 @@ export const backupMonthlyCashOutItem = z.object({
   description: z.string(),
   amountCents: z.number().int(),
   note: z.string().nullable(),
+  // Added with the cash-out day: backups from before it have no
+  // such field, so a missing value restores as day 1 — the same
+  // default the migration backfilled every existing row with.
+  // A PRESENT value is validated in preflight against the
+  // item's month length, never defaulted or coerced.
+  day: z.number().int().default(1),
   createdAt: z.number(),
 });
 export const backupNwAccount = z.object({
@@ -431,6 +438,15 @@ export function preflightRestoreBackup(
     if (!isBackupMonth(it.month)) {
       return refuse(
         `Backup rejected: monthly cash-out item ${it.id} has an invalid month "${it.month}" — not a real month (YYYY-MM).`,
+      );
+    }
+    if (
+      !Number.isInteger(it.day) ||
+      it.day < 1 ||
+      it.day > daysInMonthOf(it.month)
+    ) {
+      return refuse(
+        `Backup rejected: monthly cash-out item ${it.id} has an invalid day "${it.day}" — not a day of ${it.month}.`,
       );
     }
   }

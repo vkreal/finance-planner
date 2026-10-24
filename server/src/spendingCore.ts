@@ -205,6 +205,55 @@ export function monthsBetween(a: string, b: string): number {
   return (by - ay) * 12 + (bm - am);
 }
 
+/* ---------------- Cash-out item day ----------------
+   A cash-out item's full date is its month (YYYY-MM) plus a
+   day-of-month. The day is display/order only: it never feeds
+   any total (the month's items sum is its cash out regardless
+   of the days). These helpers are the ONE implementation of
+   the day rule — the writers (actions.ts), the restore
+   preflight (restoreCore.ts imports the length helper), and
+   the accuracy fixtures all go through them, and the client
+   mirrors the same rule for its inline form error. */
+
+/* Number of days in the month named by a YYYY-MM key,
+   leap-year aware (Feb 2024 → 29, Feb 2026 → 28). */
+export function daysInMonthOf(month: string): number {
+  const y = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/* The plain validation message for a (month, day) pair, or null
+   when the day is a real day of that month. A non-integer or
+   out-of-range day gets the month-specific bound so the message
+   the form shows and the message the writer refuses with are
+   the same words. */
+export function cashOutDayError(month: string, day: number): string | null {
+  if (!coreMonthRe.test(month)) return null;
+  const max = daysInMonthOf(month);
+  if (!Number.isInteger(day) || day < 1 || day > max) {
+    return `Enter the day the cash went out — a whole number from 1 to ${max} for that month.`;
+  }
+  return null;
+}
+
+export type CoreCashOutItemOrder = { month: string; day: number; id: number };
+
+/* Cash-out item order: by month, then by day ascending within
+   the month, with entry order (id) breaking day ties. */
+export function compareCashOutItems(
+  a: CoreCashOutItemOrder,
+  b: CoreCashOutItemOrder,
+): number {
+  if (a.month !== b.month) return a.month < b.month ? -1 : 1;
+  if (a.day !== b.day) return a.day - b.day;
+  return a.id - b.id;
+}
+
+export function sortCashOutItems<T extends CoreCashOutItemOrder>(items: T[]): T[] {
+  return [...items].sort(compareCashOutItems);
+}
+
 const coreMonthRe = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export type MonthAgg = {
