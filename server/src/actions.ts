@@ -87,6 +87,11 @@ setRothUiStateResponse,
 type SetRothUiStateResponse,
 } from "./rothUiStateCore";
 import {
+applyUiFoldSet,
+parseUiFoldState,
+UI_FOLD_STATE_KEY,
+} from "./uiFoldCore";
+import {
 appendRetirementScenario,
 composeRetirementBaselineBlob,
 composeRetirementInputsBlob,
@@ -2596,7 +2601,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 33;
+export const API_CONTRACT_VERSION = 35;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -4938,6 +4943,8 @@ const ACTION_PURPOSES: Record<string, string> = {
   setYearInSpendingCollapsedAll: "Persist the Year in spending section's collapsed/expanded state.",
   getExplainerState: "Read the explainer panel's expanded state.",
   setExplainerExpanded: "Persist the explainer panel's expanded state.",
+  getUiFoldState: "Read the generic fold state: the open/closed map for the Spending and Net Worth collapsible pieces not owned by a more specific store (per-month cash-out item lists, the import panels, the reserve settings fold, the Trend anchor note). Only folds left open are carried; an absent id is that fold's default (closed).",
+  setUiFoldState: "Persist one generic fold's open/closed state (see getUiFoldState). Display-only; setting a fold closed removes its entry, since every fold in this store defaults to closed.",
   setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
   setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist.",
   deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist.",
@@ -7609,6 +7616,66 @@ export const Actions = {
     },
   }),
 
+  // ---- Generic fold ("collapsed / expanded") UI state ----
+  // The collapsible pieces of the Spending and Net Worth views
+  // that no more specific store owns: the per-month cash-out
+  // item lists ("spending.cashout.<month>"), the statement
+  // import panels ("spending.import" / "nw.import"), the
+  // reserve settings fold ("spending.reserve"), and the Net
+  // Worth Trend anchor note's "More" expander
+  // ("nw.trendAnchor"). Open/closed is display-only UI state,
+  // persisted server-side in settings under ONE JSON blob
+  // ("ui_fold_state_v1": a map of fold id -> true), following
+  // the explainer-state pattern above, so each fold comes back
+  // exactly as the user left it after a reload, in a new
+  // session, and on another device; the packaged build runs
+  // these same actions against its browser-side store. Every
+  // fold in this store defaults to closed, so only folds left
+  // open carry an entry. The parse/set logic lives in
+  // uiFoldCore.ts, where the accuracy fixtures pin it. No
+  // amount, version, or total is ever touched by these actions.
+  getUiFoldState: defineAction({
+    request: z.object({}),
+    response: z.object({
+      open: z.record(z.string(), z.boolean()),
+    }),
+    async handler(ctx): Promise<{ open: Record<string, boolean> }> {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.settings);
+      return {
+        open: parseUiFoldState(
+          rows.find((r) => r.key === UI_FOLD_STATE_KEY)?.value,
+        ),
+      };
+    },
+  }),
+
+  setUiFoldState: defineAction({
+    request: z.object({
+      id: z.string().min(1).max(80),
+      open: z.boolean(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.settings);
+      const value = applyUiFoldSet(
+        rows.find((r) => r.key === UI_FOLD_STATE_KEY)?.value,
+        args.id,
+        args.open,
+      );
+      await db
+        .insert(schema.settings)
+        .values({ key: UI_FOLD_STATE_KEY, value })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value },
+        });
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
   // Toggle a smoothed bill's "Keep the lights on" check. Label only —
   // no amount, frequency, version, or total is touched.
   setYearlyKeepLightsOn: defineAction({
@@ -9260,6 +9327,11 @@ export const Actions = {
       watchOutsOpen: z.boolean().optional(),
       assumptionsOpen: z.boolean().optional(),
       ceilCustomOpen: z.boolean().optional(),
+      wyHowOpen: z.boolean().optional(),
+      giftHowOpen: z.boolean().optional(),
+      optHowOpen: z.boolean().optional(),
+      execDetailOpen: z.boolean().optional(),
+      detailYear: z.number().int().min(1900).max(2200).nullable().optional(),
       baseRevision: z.number().int().nonnegative().optional(),
     }),
     response: setRothUiStateResponse,
@@ -9300,6 +9372,21 @@ export const Actions = {
           }
           if (args.ceilCustomOpen !== undefined) {
             state.ceilCustomOpen = args.ceilCustomOpen;
+          }
+          if (args.wyHowOpen !== undefined) {
+            state.wyHowOpen = args.wyHowOpen;
+          }
+          if (args.giftHowOpen !== undefined) {
+            state.giftHowOpen = args.giftHowOpen;
+          }
+          if (args.optHowOpen !== undefined) {
+            state.optHowOpen = args.optHowOpen;
+          }
+          if (args.execDetailOpen !== undefined) {
+            state.execDetailOpen = args.execDetailOpen;
+          }
+          if (args.detailYear !== undefined) {
+            state.detailYear = args.detailYear;
           }
         },
       );

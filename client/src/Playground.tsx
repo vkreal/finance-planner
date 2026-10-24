@@ -34,7 +34,7 @@ import { irmaaTierUpTo, simulateRothPlan } from "@space/server/taxEngine";
 import { taxReturnPrefillDollars } from "@space/server/taxReturnCore";
 import { lawForYear, TAX_LAW_YEARS } from "@space/server/taxLaw";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
-import { compareStrategyFromSaved, parsePlaygroundPaste, planInputsFromSaved, pricePlaygroundYear, projectPlaygroundYears, solvePlaygroundBracketFill, type PlaygroundProjection, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
+import { compareStrategyFromSaved, parsePlaygroundPaste, planInputsFromSaved, pricePlaygroundYear, projectPlaygroundYears, solvePlaygroundAcaCliffFill, solvePlaygroundBracketFill, type PlaygroundProjection, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
 
 /* The Playground view — one standalone year priced from typed
    dials through the shared engine (pricePlaygroundYear in
@@ -267,81 +267,6 @@ function pgSaleLeftoverSegment(
    effect re-solves for whichever target is recorded. */
 type PgHeldTarget = number | "aca";
 
-/* ACA-cliff fill solve for the Playground's ACA cliff chip —
-   presentation/client ONLY, exactly like the bracket-fill
-   chips: it reprices candidate pre-tax amounts through the
-   shared engine (pricePlaygroundYear — the same code the
-   readout prices and the fixtures pin) and never computes tax
-   itself. Returns the pre-tax money out (to the cent) that
-   lands the year's ACA MAGI exactly on the 400%-of-FPL cliff
-   the engine reports for the typed year + household size, or
-   null when the priced year has no hard cliff to aim at (the
-   ACA block does not apply — everyone on Medicare — no
-   household size typed, or a coverage year before 2026, whose
-   enhanced credit has no cliff by design: acaCreditFor's
-   hasCliff rule). The solve iterates against the engine
-   rather than subtracting displayed figures, so every MAGI
-   component the engine counts is in the answer — interest,
-   ordinary and qualified dividends, other ordinary income,
-   tax-exempt interest, the stock sale's gain, the year's RMD,
-   and Social Security at the amount the engine counts toward
-   ACA MAGI as the draw rises. ACA MAGI is non-decreasing in
-   the pre-tax amount, so a cent-level binary search over
-   engine pricings finds the largest amount whose ACA MAGI is
-   at or under the cliff — in the ordinary slope-1 case that
-   amount prices ACA MAGI exactly on the cliff. Honest edges,
-   mirroring solvePlaygroundBracketFill: other income alone
-   already past the cliff → $0 (nothing can pull it back); a
-   typed balance whose maximum drawable amount (balance −
-   RMD) cannot reach the cliff → that maximum. */
-function solvePlaygroundAcaCliffFill(
-  inp: PlaygroundYearInputs,
-): number | null {
-  if (inp.taxYear < 2026) return null;
-  const zero = pricePlaygroundYear({ ...inp, conversion: 0 });
-  const cliff = zero.aca.cliff;
-  if (!zero.aca.applies || cliff == null) return null;
-  const pastCliff = (conversion: number): boolean =>
-    pricePlaygroundYear({ ...inp, conversion }).acaMagi > cliff + 1e-9;
-  if (zero.acaMagi >= cliff - 1e-9) return 0;
-  // Cap: never set more than can actually come out of a typed
-  // balance (the RMD comes out first). If even the cap does
-  // not reach the cliff, the cap is the answer.
-  let capCents: number | null = null;
-  if (inp.pretaxBalance != null) {
-    capCents = Math.max(0, Math.round((inp.pretaxBalance - zero.rmd) * 100));
-    if (!pastCliff(capCents / 100)) return Math.round(capCents) / 100;
-  }
-  // Upper bound (cents) past the cliff: grow from the slope-1
-  // estimate until the engine says it crosses.
-  let hiCents = Math.max(
-    100,
-    Math.round((cliff - zero.acaMagi) * 100),
-  );
-  if (capCents != null) hiCents = Math.min(hiCents, capCents);
-  while (!pastCliff(hiCents / 100)) {
-    hiCents = hiCents * 2 + 100;
-    if (capCents != null && hiCents >= capCents) {
-      hiCents = capCents;
-      break;
-    }
-    if (hiCents > 1_000_000_000) break; // $10M — far past any cliff
-  }
-  // Binary search: the largest cent amount whose ACA MAGI is
-  // not past the cliff.
-  let loCents = 0;
-  let hi = hiCents;
-  while (loCents < hi) {
-    const mid = Math.floor((loCents + hi + 1) / 2);
-    if (!pastCliff(mid / 100)) {
-      loCents = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return Math.round(loCents) / 100;
-}
-
 /* The remembered Playground form state, in the exact shape
    the UI-state store carries it (getRothUiState's playground
    field) — the form's dials in their own typed-string units. */
@@ -466,6 +391,16 @@ export function Playground() {
   const [pgPretax, setPgPretax] = useState("");
   const [pgAcaSize, setPgAcaSize] = useState("");
   const [pgBenchmark, setPgBenchmark] = useState("");
+  /* ACA cliff buffer — the "Buffer below the ACA cliff"
+     guide dial (ACA buffer guide build): how far under the
+     400%-of-FPL cliff the cliff − buffer fill aims, and the
+     line the play strip's landing readout measures MAGI
+     against. Defaults to $5,000 (the December cushion) and
+     is remembered with the rest of the form like every other
+     dial. A GUIDE value only: it is never an input to
+     buildPgInputs, so it never enters pricing — for any
+     fixed set of dials the year prices exactly as before. */
+  const [pgAcaBuffer, setPgAcaBuffer] = useState("5000");
   /* Benchmark source record — remembered with the rest of the
      form, like every other playground dial: what the most
      recent "Start from my numbers" prefill loaded into the
@@ -550,10 +485,12 @@ export function Playground() {
      chart at its original year. */
   const [pgProjOpen, setPgProjOpen] = useState(false);
   // The Projection panel's "More" expander for its longer
-  // methodology — session-only, like the Roth view's How
-  // toggles: the panel's always-visible intro is a short lead
-  // (what the panel is, plus the ACA-convention disclosure),
-  // and the mechanics live behind this toggle.
+  // methodology: the panel's always-visible intro is a short
+  // lead (what the panel is, plus the ACA-convention
+  // disclosure), and the mechanics live behind this toggle.
+  // The open/closed choice is remembered with the rest of the
+  // form (projHowOpen), like the Roth view's How toggles, so
+  // it comes back as the user left it.
   const [pgProjHowOpen, setPgProjHowOpen] = useState(false);
   const [pgProjToAge, setPgProjToAge] = useState("95");
   // Projection from age (start-age control): blank = the
@@ -651,10 +588,11 @@ export function Playground() {
      ("Projection dials"), so the dials for the two different
      prices never read as one wall and the projection's dials
      are visibly separate from the single-year income dials.
-     Session-only — like pgProjHowOpen above — and both groups
-     start OPEN; the individual sections inside keep their own
-     remembered folds exactly as before, and nothing is removed
-     or hidden by default. Grouping is visual only: the pricing
+     Both groups start OPEN, and their open/closed choices are
+     remembered with the rest of the form (groupOpen), like
+     pgProjHowOpen above; the individual sections inside keep
+     their own remembered folds exactly as before, and nothing
+     is removed or hidden by default. Grouping is visual only: the pricing
      below reads the dial state, never the group state, so a
      value typed in a folded group prices exactly as if the
      group were open, and the Hold/target behaviour is untouched. */
@@ -765,6 +703,7 @@ export function Playground() {
     setPgPretax(s.pretaxBalance);
     setPgAcaSize(s.acaHouseholdSize);
     setPgBenchmark(s.acaBenchmark);
+    setPgAcaBuffer(s.acaBuffer);
     setPgBenchmarkLoaded(s.benchmarkSource);
     setPgStateRate(s.stateRate);
     setPgResidence(s.residenceState === "WA" ? "WA" : "other");
@@ -797,6 +736,8 @@ export function Playground() {
       s.projTemplate != null ? projTemplateFromStored(s.projTemplate) : null,
     );
     setPgOpenSections(s.openSections);
+    setPgProjHowOpen(s.projHowOpen);
+    setPgGroupOpen(s.groupOpen);
   };
   useEffect(() => {
     if (!pgUiQ.data || pgInit) return;
@@ -837,6 +778,7 @@ export function Playground() {
     pretaxBalance: pgPretax,
     acaHouseholdSize: pgAcaSize,
     acaBenchmark: pgBenchmark,
+    acaBuffer: pgAcaBuffer,
     benchmarkSource: pgBenchmarkLoaded,
     stateRate: pgStateRate,
     residenceState: pgResidence,
@@ -868,6 +810,8 @@ export function Playground() {
     projTemplate:
       pgProjTemplate != null ? projTemplateToStored(pgProjTemplate) : null,
     openSections: pgOpenSections,
+    projHowOpen: pgProjHowOpen,
+    groupOpen: pgGroupOpen,
   };
   const pgFormJson = JSON.stringify(pgFormSnapshot);
   pgFormJsonRef.current = pgFormJson;
@@ -1181,6 +1125,7 @@ export function Playground() {
     setPgPretax("");
     setPgAcaSize("");
     setPgBenchmark("");
+    setPgAcaBuffer("5000");
     setPgBenchmarkLoaded(null);
     setPgStateRate("0");
     setPgResidence("other");
@@ -1233,6 +1178,7 @@ export function Playground() {
       pretaxBalance: "",
       acaHouseholdSize: "",
       acaBenchmark: "",
+      acaBuffer: "5000",
       benchmarkSource: null,
       stateRate: "0",
       residenceState: "other",
@@ -1263,6 +1209,8 @@ export function Playground() {
       projSelectedYear: null,
       projTemplate: null,
       openSections: PG_SECTIONS_OPEN,
+      projHowOpen: false,
+      groupOpen: { single: true, projection: true },
     };
     pgForceWholesaleRef.current = false;
     pgSavedJsonRef.current = JSON.stringify(fresh);
@@ -1402,6 +1350,31 @@ export function Playground() {
     const fill = solvePlaygroundAcaCliffFill(buildPgInputs(0));
     if (fill == null) return;
     setPgHeldTarget("aca");
+    setPgConversion(fmtMoneyInput(fill));
+  };
+
+  /* The buffer guide (ACA buffer guide build): the typed
+     buffer read as dollars — blank or negative reads as $0,
+     like the money dials' clamp at buildPgInputs. It feeds
+     ONLY the fill below and the play strip's landing readout;
+     it is never an input to pricing. */
+  const pgAcaBufferDollars = Math.max(0, parseDollars(pgAcaBuffer) ?? 0);
+  // "Fill conversion to cliff − buffer": the ACA cliff chip's
+  // own solve aimed at cliff − buffer instead of the cliff —
+  // it sets the conversion dial so the year's priced ACA MAGI
+  // lands exactly on that line (verified against the engine
+  // by the tax suite's playground-aca-buffer-fill fixtures).
+  // When the year's other income already puts MAGI past the
+  // line at $0 of conversion, the solve returns $0 — the dial
+  // is set to $0, never negative, and the strip's readout
+  // shows the year over the line. Unlike the cliff chip this
+  // does NOT record a held target: Hold's "aca" target is the
+  // cliff itself, and a held year re-solves to the cliff, so
+  // the buffer fill stays a one-tap guide.
+  const applyPgAcaBufferFill = () => {
+    if (pgAgePNum == null || pgAgePNum <= 0) return;
+    const fill = solvePlaygroundAcaCliffFill(buildPgInputs(0), pgAcaBufferDollars);
+    if (fill == null) return;
     setPgConversion(fmtMoneyInput(fill));
   };
 
@@ -1935,6 +1908,7 @@ export function Playground() {
     setPgPretax("");
     setPgAcaSize("");
     setPgBenchmark("");
+    setPgAcaBuffer("5000");
     setPgBenchmarkLoaded(null);
     setPgStateRate("0");
     setPgResidence("other");
@@ -2427,6 +2401,40 @@ export function Playground() {
                   key: "aca",
                   text: `ACA cliff: ${fmtDollars(pg.aca.positionDollars)} of room`,
                   warn: false,
+                });
+              }
+            }
+            if (pg != null && pgAcaHasHardCliff && pg.aca.cliff != null) {
+              // The buffer guide's landing readout (ACA
+              // buffer guide build): where the priced ACA
+              // MAGI landed against the cliff − buffer line —
+              // display arithmetic ONLY, off the same priced
+              // result and the typed buffer dial, in the
+              // strip's one-line style. Shown whenever the
+              // year has a hard cliff (ACA in play); a year
+              // with no ACA — everyone on Medicare, no
+              // household size, or a pre-2026 coverage year —
+              // has no line and shows nothing, exactly like
+              // the buffer dial and its fill in ACA & state.
+              const line = pg.aca.cliff - pgAcaBufferDollars;
+              const diff = line - pg.acaMagi;
+              if (Math.abs(diff) < 0.5) {
+                statuses.push({
+                  key: "acaBuffer",
+                  text: `MAGI ${fmtDollars(pg.acaMagi)} — right at cliff − buffer`,
+                  warn: false,
+                });
+              } else if (diff > 0) {
+                statuses.push({
+                  key: "acaBuffer",
+                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(diff)} under the cliff − buffer line`,
+                  warn: false,
+                });
+              } else {
+                statuses.push({
+                  key: "acaBuffer",
+                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(-diff)} over the cliff − buffer line`,
+                  warn: true,
                 });
               }
             }
@@ -3204,6 +3212,23 @@ export function Playground() {
                 </p>
               )}
             </div>
+            {pgAcaHasHardCliff && (
+              <div>
+                {moneyField("Buffer below the ACA cliff", pgAcaBuffer, setPgAcaBuffer, {
+                  hint: "A safety cushion under the cliff — a guide for sizing the pre-tax money out, never part of the pricing.",
+                  info: "How far below the 400% poverty-line cliff you aim ACA MAGI, to leave room for year-end income landing higher than expected. It only helps choose the pre-tax money out amount — the tax and credit price exactly as before for whatever amount is dialed.",
+                })}
+                <button
+                  type="button"
+                  aria-label="Fill conversion to cliff minus buffer"
+                  className="mt-1 text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--text)] disabled:opacity-60"
+                  disabled={pgAgePNum == null || pgAgePNum <= 0}
+                  onClick={applyPgAcaBufferFill}
+                >
+                  Fill conversion to cliff − buffer
+                </button>
+              </div>
+            )}
             <div>
               <label
                 className="block text-sm font-medium text-[var(--text)]"

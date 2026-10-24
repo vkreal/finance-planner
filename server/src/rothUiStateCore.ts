@@ -190,6 +190,14 @@ export const playgroundFormState = z.object({
   pretaxBalance: z.string().max(64),
   acaHouseholdSize: z.string().max(12),
   acaBenchmark: z.string().max(64),
+  // ACA cliff buffer (ACA buffer guide build): the Playground
+  // One year face's "Buffer below the ACA cliff" guide dial,
+  // as a typed string like every money dial here. It is a
+  // guide value only — it helps choose the conversion dial
+  // (the cliff − buffer fill) and never enters pricing. A
+  // blob written before this field existed parses it at the
+  // $5,000 default (the December cushion).
+  acaBuffer: z.string().max(64),
   benchmarkSource: z
     .object({
       kind: z.enum(["family", "couple", "couple-fallback", "single"]),
@@ -234,6 +242,12 @@ export const playgroundFormState = z.object({
   // (project to 95, repeat draw, conversions, no stop rule,
   // every override blank = follow the template / the plan).
   projOpen: z.boolean(),
+  // The Projection panel's "More" methodology expander
+  // (collapse-persistence build): remembered with the rest of
+  // the form like projOpen, so the expander comes back as the
+  // user left it. A blob written before this field existed
+  // parses it false (collapsed — its long-standing default).
+  projHowOpen: z.boolean(),
   projToAge: z.string().max(12),
   // Projection from age (start-age control build): the
   // projection panel's own start-age dial, in the form's
@@ -273,6 +287,16 @@ export const playgroundFormState = z.object({
     stock: z.boolean(),
     aca: z.boolean(),
   }),
+  // The two super-group folds ("Single-year dials" /
+  // "Projection dials") that group the section cards
+  // (collapse-persistence build): remembered with the rest of
+  // the form, both OPEN by default — a blob written before
+  // this field existed parses both open, exactly the groups'
+  // long-standing first-open behaviour.
+  groupOpen: z.object({
+    single: z.boolean(),
+    projection: z.boolean(),
+  }),
 });
 export type PlaygroundFormState = z.infer<typeof playgroundFormState>;
 const PG_SECTION_IDS = ["year", "income", "conversion", "stock", "aca"] as const;
@@ -300,6 +324,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     pretaxBalance: "",
     acaHouseholdSize: "",
     acaBenchmark: "",
+    acaBuffer: "5000",
     benchmarkSource: null,
     stateRate: "0",
     residenceState: "other",
@@ -312,6 +337,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     holdOn: false,
     heldTarget: null,
     projOpen: false,
+    projHowOpen: false,
     projToAge: "95",
     projFromAge: "",
     projTaxableStart: "",
@@ -330,6 +356,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     projSelectedYear: null,
     projTemplate: null,
     openSections: { year: true, income: true, conversion: true, stock: true, aca: true },
+    groupOpen: { single: true, projection: true },
   };
 }
 function parsePgBenchmarkSource(
@@ -476,6 +503,24 @@ function parsePgOpenSections(
   }
   return out;
 }
+/* Lenient read of the super-group folds, field by field like
+   parsePgOpenSections: each group defaults OPEN, and only a
+   stored boolean overrides it, so a missing or malformed
+   groupOpen (or one malformed side of it) opens the groups
+   exactly as the view always has. */
+function parsePgGroupOpen(
+  v: unknown,
+): PlaygroundFormState["groupOpen"] {
+  const out: PlaygroundFormState["groupOpen"] = {
+    single: true,
+    projection: true,
+  };
+  if (v == null || typeof v !== "object" || Array.isArray(v)) return out;
+  const o = v as Record<string, unknown>;
+  if (typeof o.single === "boolean") out.single = o.single;
+  if (typeof o.projection === "boolean") out.projection = o.projection;
+  return out;
+}
 export type RothUiState = {
   open: Record<RothSectionId, boolean>;
   yearTableOpen: boolean;
@@ -507,6 +552,23 @@ export type RothUiState = {
   // preset opens the panel), and a close the user chooses
   // persists here as false.
   ceilCustomOpen: boolean;
+  // The three workspaces' "More" how-it-is-priced expanders
+  // (Work years, Gift stock, Optimize) and the execution
+  // year's "Show the math" expander (collapse-persistence
+  // build): each defaults false (collapsed — the views'
+  // long-standing first-open behaviour), and a blob written
+  // before these fields existed parses them false.
+  wyHowOpen: boolean;
+  giftHowOpen: boolean;
+  optHowOpen: boolean;
+  execDetailOpen: boolean;
+  // The year-by-year table's expanded detail year ("Show the
+  // math" drill-down): the calendar year whose engine detail
+  // panel is open under the table, or null when none is
+  // (collapse-persistence build). Default null; a blob
+  // written before this field existed parses it null, and a
+  // malformed value (non-integer, out of range) reads as null.
+  detailYear: number | null;
   // The blob's write revision (CAS — see the header comment).
   // 0 for a blob written before revisions existed; every
   // accepted write stores the previous revision + 1.
@@ -529,6 +591,11 @@ export const rothUiStateResponse = z.object({
   watchOutsOpen: z.boolean(),
   assumptionsOpen: z.boolean(),
   ceilCustomOpen: z.boolean(),
+  wyHowOpen: z.boolean(),
+  giftHowOpen: z.boolean(),
+  optHowOpen: z.boolean(),
+  execDetailOpen: z.boolean(),
+  detailYear: z.number().int().min(1900).max(2200).nullable(),
   revision: z.number().int().nonnegative(),
 });
 function defaultRothUiState(): RothUiState {
@@ -543,6 +610,11 @@ function defaultRothUiState(): RothUiState {
     watchOutsOpen: true,
     assumptionsOpen: false,
     ceilCustomOpen: false,
+    wyHowOpen: false,
+    giftHowOpen: false,
+    optHowOpen: false,
+    execDetailOpen: false,
+    detailYear: null,
     revision: 0,
   };
 }
@@ -563,6 +635,11 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
       watchOutsOpen?: unknown;
       assumptionsOpen?: unknown;
       ceilCustomOpen?: unknown;
+      wyHowOpen?: unknown;
+      giftHowOpen?: unknown;
+      optHowOpen?: unknown;
+      execDetailOpen?: unknown;
+      detailYear?: unknown;
       revision?: unknown;
     };
     if (p.open != null && typeof p.open === "object" && !Array.isArray(p.open)) {
@@ -647,6 +724,7 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         pretaxBalance: str(g.pretaxBalance, ""),
         acaHouseholdSize: str(g.acaHouseholdSize, ""),
         acaBenchmark: str(g.acaBenchmark, ""),
+        acaBuffer: str(g.acaBuffer, "5000"),
         benchmarkSource: parsePgBenchmarkSource(g.benchmarkSource),
         stateRate: str(g.stateRate, "0"),
         residenceState: g.residenceState === "WA" ? "WA" : "other",
@@ -677,6 +755,7 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
           typeof g.soleBeneficiary === "boolean" ? g.soleBeneficiary : true,
         holdOn: typeof g.holdOn === "boolean" ? g.holdOn : false,
         projOpen: typeof g.projOpen === "boolean" ? g.projOpen : false,
+        projHowOpen: typeof g.projHowOpen === "boolean" ? g.projHowOpen : false,
         projToAge: str(g.projToAge, "95"),
         projFromAge: str(g.projFromAge, ""),
         projTaxableStart: str(g.projTaxableStart, ""),
@@ -717,6 +796,7 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
               ? g.heldTarget
               : null,
         openSections: parsePgOpenSections(g.openSections),
+        groupOpen: parsePgGroupOpen(g.groupOpen),
       };
     }
     if (typeof p.labBaselineName === "string" && p.labBaselineName !== "") {
@@ -726,6 +806,18 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
     if (typeof p.watchOutsOpen === "boolean") out.watchOutsOpen = p.watchOutsOpen;
     if (typeof p.assumptionsOpen === "boolean") out.assumptionsOpen = p.assumptionsOpen;
     if (typeof p.ceilCustomOpen === "boolean") out.ceilCustomOpen = p.ceilCustomOpen;
+    if (typeof p.wyHowOpen === "boolean") out.wyHowOpen = p.wyHowOpen;
+    if (typeof p.giftHowOpen === "boolean") out.giftHowOpen = p.giftHowOpen;
+    if (typeof p.optHowOpen === "boolean") out.optHowOpen = p.optHowOpen;
+    if (typeof p.execDetailOpen === "boolean") out.execDetailOpen = p.execDetailOpen;
+    if (
+      typeof p.detailYear === "number" &&
+      Number.isInteger(p.detailYear) &&
+      p.detailYear >= 1900 &&
+      p.detailYear <= 2200
+    ) {
+      out.detailYear = p.detailYear;
+    }
     // Lenient revision read: only a non-negative integer
     // counts; a missing, fractional, negative, or non-numeric
     // revision reads as 0, exactly like a legacy blob written

@@ -110,6 +110,10 @@ parseRothUiState,
 type RothUiState,
 } from "./rothUiStateCore";
 import {
+applyUiFoldSet,
+parseUiFoldState,
+} from "./uiFoldCore";
+import {
 appendRetirementScenario,
 commitGuardedRothBlobWrite,
 composeRetirementBaselineBlob,
@@ -4961,7 +4965,25 @@ export function runExtendedTeethCheck(): {
        with the winner's blob;
    (g) the labBaselineName normalization (state audit fix 3):
        an accepted "" is stored as null and reads back null,
-       while a nonempty name round-trips exactly.
+       while a nonempty name round-trips exactly;
+   (h) the collapse-persistence fields: the Roth view's How
+       expanders (wyHowOpen / giftHowOpen / optHowOpen), the
+       execution "Show the math" expander (execDetailOpen),
+       the year-table detail year (detailYear), and the
+       Playground's projHowOpen / groupOpen folds — legacy
+       blobs parse them at their defaults, writes round-trip,
+       and unrelated writes preserve them;
+   (i) the generic fold store (server/src/uiFoldCore.ts — the
+       parse/set path the getUiFoldState / setUiFoldState
+       handlers run): an absent blob reads as no folds open, a
+       set-open round-trips, a set-closed removes the entry
+       (every fold there defaults closed), unrelated ids are
+       preserved, and malformed stored values read leniently;
+   (j) the Playground's acaBuffer guide dial (ACA buffer
+       guide build): a legacy blob without the key parses it
+       at the $5,000 default, a typed value round-trips, an
+       unrelated write preserves it, and a malformed value
+       falls back to the default.
    Expected values follow from the contract itself (revision
    arithmetic and field preservation), not from app output. */
 
@@ -5486,6 +5508,195 @@ const uiCasCases: {
         failures.push("stored blob: the retired chartMode key must drop out on write");
       if (parseRothUiState(res.raw).playground.conversion !== "999")
         failures.push("stored blob: expected the unrelated field write to land (conversion 999)");
+      return failures;
+    },
+  },
+  {
+    id: "ui-roth-how-and-detail-folds-persist",
+    note: "The Roth fold fields (collapse-persistence build): a legacy blob without the keys parses wyHowOpen / giftHowOpen / optHowOpen / execDetailOpen false and detailYear null (their long-standing first-open defaults); a write setting them round-trips through applyRothUiWrite and parse, including detailYear clearing back to null; an unrelated field write preserves them all; and a malformed detailYear (a string, or an out-of-range year) reads leniently as null rather than opening a detail panel for a year that was never chosen.",
+    run: () => {
+      const failures: string[] = [];
+      const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete legacyObj.wyHowOpen;
+      delete legacyObj.giftHowOpen;
+      delete legacyObj.optHowOpen;
+      delete legacyObj.execDetailOpen;
+      delete legacyObj.detailYear;
+      const raw = JSON.stringify(legacyObj);
+      const legacyParsed = parseRothUiState(raw);
+      if (legacyParsed.wyHowOpen !== false) failures.push("legacy blob: expected wyHowOpen false");
+      if (legacyParsed.giftHowOpen !== false) failures.push("legacy blob: expected giftHowOpen false");
+      if (legacyParsed.optHowOpen !== false) failures.push("legacy blob: expected optHowOpen false");
+      if (legacyParsed.execDetailOpen !== false) failures.push("legacy blob: expected execDetailOpen false");
+      if (legacyParsed.detailYear !== null) failures.push("legacy blob: expected detailYear null");
+      const res = applyRothUiWrite(raw, 0, (s) => {
+        s.wyHowOpen = true;
+        s.giftHowOpen = true;
+        s.optHowOpen = true;
+        s.execDetailOpen = true;
+        s.detailYear = 2031;
+      });
+      if (res.status !== "ok") {
+        failures.push(`write: expected ok, got ${res.status}`);
+        return failures;
+      }
+      const stored = parseRothUiState(res.raw);
+      if (stored.wyHowOpen !== true) failures.push("stored blob: expected wyHowOpen true");
+      if (stored.giftHowOpen !== true) failures.push("stored blob: expected giftHowOpen true");
+      if (stored.optHowOpen !== true) failures.push("stored blob: expected optHowOpen true");
+      if (stored.execDetailOpen !== true) failures.push("stored blob: expected execDetailOpen true");
+      if (stored.detailYear !== 2031) failures.push(`stored blob: expected detailYear 2031, got ${stored.detailYear}`);
+      const res2 = applyRothUiWrite(res.raw, res.revision, (s) => {
+        s.yearTableOpen = true;
+      });
+      if (res2.status !== "ok") {
+        failures.push(`unrelated write: expected ok, got ${res2.status}`);
+        return failures;
+      }
+      const after = parseRothUiState(res2.raw);
+      if (after.wyHowOpen !== true || after.giftHowOpen !== true || after.optHowOpen !== true || after.execDetailOpen !== true)
+        failures.push("unrelated write must preserve the four How/detail expander flags");
+      if (after.detailYear !== 2031) failures.push("unrelated write must preserve detailYear");
+      const res3 = applyRothUiWrite(res2.raw, res2.revision, (s) => {
+        s.detailYear = null;
+        s.wyHowOpen = false;
+      });
+      if (res3.status !== "ok") {
+        failures.push(`clearing write: expected ok, got ${res3.status}`);
+        return failures;
+      }
+      const cleared = parseRothUiState(res3.raw);
+      if (cleared.detailYear !== null) failures.push("clearing detailYear must round-trip as null");
+      if (cleared.wyHowOpen !== false) failures.push("closing wyHowOpen must round-trip as false");
+      if (cleared.giftHowOpen !== true) failures.push("clearing one fold must not disturb another (giftHowOpen)");
+      for (const bad of ["2031", 1800, 2031.5]) {
+        const badObj = JSON.parse(res.raw) as Record<string, unknown>;
+        badObj.detailYear = bad;
+        if (parseRothUiState(JSON.stringify(badObj)).detailYear !== null)
+          failures.push(`malformed detailYear ${JSON.stringify(bad)}: expected null`);
+      }
+      return failures;
+    },
+  },
+  {
+    id: "ui-pg-fold-state-persists",
+    note: "The Playground fold fields (collapse-persistence build): a legacy blob without the keys parses projHowOpen false and groupOpen both true (the projection More expander collapsed, the super-groups open — their long-standing first-open defaults); a write storing projHowOpen true and groupOpen.single false round-trips through applyRothUiWrite and parse; an unrelated field write preserves them; and a malformed groupOpen (a non-boolean side, or a non-object value) falls back per-field to open rather than folding a group the user never folded.",
+    run: () => {
+      const failures: string[] = [];
+      const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete (legacyObj.playground as Record<string, unknown>).projHowOpen;
+      delete (legacyObj.playground as Record<string, unknown>).groupOpen;
+      const raw = JSON.stringify(legacyObj);
+      const legacyParsed = parseRothUiState(raw).playground;
+      if (legacyParsed.projHowOpen !== false) failures.push("legacy blob: expected projHowOpen false");
+      if (legacyParsed.groupOpen.single !== true || legacyParsed.groupOpen.projection !== true)
+        failures.push("legacy blob: expected groupOpen both true");
+      const res = applyRothUiWrite(raw, 0, (s) => {
+        s.playground.projHowOpen = true;
+        s.playground.groupOpen = { single: false, projection: true };
+      });
+      if (res.status !== "ok") {
+        failures.push(`write: expected ok, got ${res.status}`);
+        return failures;
+      }
+      const stored = parseRothUiState(res.raw).playground;
+      if (stored.projHowOpen !== true) failures.push("stored blob: expected projHowOpen true");
+      if (stored.groupOpen.single !== false) failures.push("stored blob: expected groupOpen.single false");
+      if (stored.groupOpen.projection !== true) failures.push("stored blob: expected groupOpen.projection true");
+      const res2 = applyRothUiWrite(res.raw, res.revision, (s) => {
+        s.playground.conversion = "999";
+      });
+      if (res2.status !== "ok") {
+        failures.push(`unrelated write: expected ok, got ${res2.status}`);
+        return failures;
+      }
+      const after = parseRothUiState(res2.raw).playground;
+      if (after.projHowOpen !== true) failures.push("unrelated write must preserve projHowOpen");
+      if (after.groupOpen.single !== false || after.groupOpen.projection !== true)
+        failures.push("unrelated write must preserve groupOpen");
+      const badSide = JSON.parse(res.raw) as Record<string, unknown>;
+      (badSide.playground as Record<string, unknown>).groupOpen = { single: "no", projection: false };
+      const badSideParsed = parseRothUiState(JSON.stringify(badSide)).playground.groupOpen;
+      if (badSideParsed.single !== true) failures.push("malformed groupOpen.single: expected the open default");
+      if (badSideParsed.projection !== false) failures.push("well-formed groupOpen.projection must survive a malformed sibling");
+      const badWhole = JSON.parse(res.raw) as Record<string, unknown>;
+      (badWhole.playground as Record<string, unknown>).groupOpen = "closed";
+      const badWholeParsed = parseRothUiState(JSON.stringify(badWhole)).playground.groupOpen;
+      if (badWholeParsed.single !== true || badWholeParsed.projection !== true)
+        failures.push("malformed groupOpen (non-object): expected both groups open");
+      return failures;
+    },
+  },
+  {
+    id: "ui-pg-aca-buffer-persists",
+    note: "The Playground ACA buffer dial (ACA buffer guide build): a legacy blob written before the field existed parses acaBuffer at the $5,000 default (\"5000\" — Kyle's December cushion, the fresh-form default); a write storing a typed buffer (\"7500\") round-trips through applyRothUiWrite and parse; an unrelated field write preserves it; and a malformed stored value (a number instead of a string) falls back to the $5,000 default rather than breaking the form. The buffer is a guide value only — this fixture pins its storage, and the tax suite's playground-aca-buffer-fill fixtures pin that it never enters pricing.",
+    run: () => {
+      const failures: string[] = [];
+      const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete (legacyObj.playground as Record<string, unknown>).acaBuffer;
+      const raw = JSON.stringify(legacyObj);
+      const legacyParsed = parseRothUiState(raw).playground;
+      if (legacyParsed.acaBuffer !== "5000")
+        failures.push(`legacy blob: expected acaBuffer "5000", got ${JSON.stringify(legacyParsed.acaBuffer)}`);
+      const res = applyRothUiWrite(raw, 0, (s) => {
+        s.playground.acaBuffer = "7500";
+      });
+      if (res.status !== "ok") {
+        failures.push(`write: expected ok, got ${res.status}`);
+        return failures;
+      }
+      const stored = parseRothUiState(res.raw).playground;
+      if (stored.acaBuffer !== "7500")
+        failures.push(`stored blob: expected acaBuffer "7500", got ${JSON.stringify(stored.acaBuffer)}`);
+      const res2 = applyRothUiWrite(res.raw, res.revision, (s) => {
+        s.playground.conversion = "999";
+      });
+      if (res2.status !== "ok") {
+        failures.push(`unrelated write: expected ok, got ${res2.status}`);
+        return failures;
+      }
+      const after = parseRothUiState(res2.raw).playground;
+      if (after.acaBuffer !== "7500") failures.push("unrelated write must preserve acaBuffer");
+      const bad = JSON.parse(res.raw) as Record<string, unknown>;
+      (bad.playground as Record<string, unknown>).acaBuffer = 7500;
+      const badParsed = parseRothUiState(JSON.stringify(bad)).playground;
+      if (badParsed.acaBuffer !== "5000")
+        failures.push(`malformed acaBuffer (number): expected the "5000" default, got ${JSON.stringify(badParsed.acaBuffer)}`);
+      return failures;
+    },
+  },
+  {
+    id: "ui-fold-map-persists",
+    note: "The generic fold store (uiFoldCore — the exact parse/set path getUiFoldState / setUiFoldState run): an absent blob reads as an empty map (every fold at its closed default); setting a fold open round-trips through applyUiFoldSet and parse; setting it closed again removes the entry rather than storing false; a write for one id preserves the others (per-month cash-out ids included); and malformed stored values — an unparseable blob, a non-object blob, non-true values — read leniently as only the true entries, never a crash.",
+    run: () => {
+      const failures: string[] = [];
+      if (Object.keys(parseUiFoldState(undefined)).length !== 0)
+        failures.push("absent blob: expected an empty fold map");
+      const raw1 = applyUiFoldSet(undefined, "spending.cashout.2026-11", true);
+      const after1 = parseUiFoldState(raw1);
+      if (after1["spending.cashout.2026-11"] !== true)
+        failures.push("set open: expected the cash-out month fold stored true");
+      const raw2 = applyUiFoldSet(raw1, "nw.import", true);
+      const after2 = parseUiFoldState(raw2);
+      if (after2["nw.import"] !== true) failures.push("second write: expected nw.import true");
+      if (after2["spending.cashout.2026-11"] !== true)
+        failures.push("second write must preserve the first fold's entry");
+      const raw3 = applyUiFoldSet(raw2, "spending.cashout.2026-11", false);
+      const after3 = parseUiFoldState(raw3);
+      if ("spending.cashout.2026-11" in after3)
+        failures.push("set closed: expected the entry removed (the fold defaults closed)");
+      if (after3["nw.import"] !== true)
+        failures.push("set closed on one fold must preserve the others");
+      if (Object.keys(parseUiFoldState("not json")).length !== 0)
+        failures.push("unparseable blob: expected an empty fold map");
+      if (Object.keys(parseUiFoldState("[1,2]")).length !== 0)
+        failures.push("non-object blob: expected an empty fold map");
+      const mixed = parseUiFoldState(
+        JSON.stringify({ "a.fold": true, "b.fold": false, "c.fold": "yes", "d.fold": 1 }),
+      );
+      if (mixed["a.fold"] !== true) failures.push("mixed blob: the true entry must survive");
+      if ("b.fold" in mixed || "c.fold" in mixed || "d.fold" in mixed)
+        failures.push("mixed blob: only exactly-true entries may survive");
       return failures;
     },
   },
