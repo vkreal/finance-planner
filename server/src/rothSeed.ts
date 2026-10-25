@@ -108,8 +108,11 @@ export type RothSeedInputs = {
   claimAgeFloor: null;
   spouseSoleBeneficiary: boolean;
   acaHouseholdSize: number;
-  acaHouseholdSizeAfter: number;
-  acaStepDownYear: null;
+  // The household schedule seeds blank (null = no steps —
+  // the initial size governs every year), like every
+  // optional pricing input the seed does not presume; the
+  // seed never invents a household's steps.
+  acaHouseholdSchedule: null;
   collegeFallFromYear: null;
   collegeFallThroughYear: null;
   acaBenchmarkCoupleCents: null;
@@ -207,8 +210,7 @@ export function seedRothInputs(derived: {
     claimAgeFloor: null,
     spouseSoleBeneficiary: true,
     acaHouseholdSize: 2,
-    acaHouseholdSizeAfter: 2,
-    acaStepDownYear: null,
+    acaHouseholdSchedule: null,
     collegeFallFromYear: null,
     collegeFallThroughYear: null,
     acaBenchmarkCoupleCents: null,

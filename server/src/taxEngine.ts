@@ -35,6 +35,7 @@
 // past the row it prices under — see deflationFactor.
 
 import {
+CHARITABLE_CEILING,
 DEDUCTION_2026,
 SALT_SCHEDULE_FIRST_YEAR,
 SENIOR_DEDUCTION,
@@ -311,6 +312,20 @@ export type PriceYearResult = {
   deductionTaken: "standard" | "itemized";
   deductions: number;
   taxableIncome: number;
+  // The year's taxable income computed WITHOUT the
+  // §1211(b) capital-loss allowance the caller passed —
+  // the Capital Loss Carryover Worksheet's utilization
+  // base: agi − deductions + the allowance, floored at
+  // $0, struck from the UNFLOORED taxable income so a
+  // year whose taxable income is $0 only because the
+  // allowance (or the deductions) drove it below zero
+  // still reads the true figure the allowance had to
+  // offset. The plan march's loss ledger reconciles its
+  // carry-out against this figure (see applyLossLedger):
+  // only the part of the claimed allowance up to this
+  // amount is treated as used. Equals taxableIncome
+  // whenever no allowance was passed.
+  taxableIncomeBeforeLossAllowance: number;
   ordinaryTax: number;
   ltcgTax: number;
   niit: number;
@@ -356,7 +371,8 @@ export type PriceYearResult = {
   // the year's alternative minimum taxable income (regular
   // taxable income plus the core-scope add-backs — the SALT
   // deduction actually taken in an itemized year, the
-  // standard deduction in a standard year), the §55(d)
+  // standard deduction in a standard year, and the §224
+  // senior deduction in either year), the §55(d)
   // exemption after its phase-out, the tentative minimum
   // tax (the 26% / 28% rates with the preferential 0% /
   // 15% / 20% rates preserved on the gains stack), and the
@@ -604,10 +620,20 @@ export function waCapitalGainsTax(args: {
         short-term activity of its own, so the short-term
         column is the carryover standing alone as a loss —
         nets against a surviving net long-term gain.
-     3. If a net loss remains, the year's allowance is taken
-        from the short-term remainder first, then the
-        long-term remainder.
-     4. What survives carries out, character intact.
+     3. If a net loss remains, the year's allowance is
+        CLAIMED against ordinary income in full (it prices
+        the year's AGI and tax), but only the part of it
+        that actually offset the year's taxable income —
+        the worksheet's utilization limit: the allowance
+        capped at the year's taxable income computed
+        without the allowance — is treated as USED and
+        consumed, from the short-term remainder first,
+        then the long-term remainder. The unused part of
+        the allowance is not consumed: a year with no
+        taxable income for the allowance to offset burns
+        none of the carryforward.
+     4. What survives — including every unused allowance
+        dollar — carries out, character intact.
 
    This transform is the single place those rules live: the
    plan march routes every pricing of a ledger year through
@@ -633,8 +659,20 @@ export type LossLedgerYearResult = {
   netResult: number;
   // The §1211(b) allowance priced this year: the part of
   // the year's net capital loss that offsets ordinary
-  // income (≤ the cap, ≤ the loss).
+  // income (≤ the cap, ≤ the loss). This is the amount
+  // CLAIMED on the year's return — it prices the year's
+  // AGI and tax in full, whether or not the year's
+  // taxable income could absorb it.
   allowance: number;
+  // The part of the claimed allowance the year's taxable
+  // income actually absorbed (the Capital Loss Carryover
+  // Worksheet's utilization limit): the only part consumed
+  // from the carryforward. Equals `allowance` whenever the
+  // year's taxable income before the allowance covers the
+  // allowance; $0 in a year with no taxable income for the
+  // allowance to offset; in between, exactly the absorbed
+  // part. The unused remainder carries forward.
+  allowanceUsed: number;
   // The part of the carry-in consumed against this year's
   // own gains (as opposed to consumed by the allowance or
   // carried out) — the absorption a gains year performs.
@@ -665,6 +703,22 @@ export function applyLossLedger(
   // but the transform is stated for any signed value.
   ownLongTermResult: number,
   filingStatus: FilingStatus,
+  // The year's taxable income computed WITHOUT the §1211(b)
+  // allowance (the worksheet's utilization base — see
+  // PriceYearResult.taxableIncomeBeforeLossAllowance). The
+  // allowance is CLAIMED on the year's return in full
+  // (`allowance` above is the priced figure either way), but
+  // the worksheet treats only the part of it that actually
+  // offset taxable income as USED: the used part is the
+  // allowance capped at this figure (floored at $0), and
+  // only the used part is consumed from the carryforward —
+  // the unused part carries forward with the rest. A caller
+  // pricing a trial year whose carry-out is never read (the
+  // march's trial pricings, the optimizer's execution-year
+  // re-solves) passes Infinity: utilization is reconciled
+  // once, at year end, against the year's final priced
+  // taxable income.
+  taxableIncomeBeforeAllowance: number,
 ): LossLedgerYearResult {
   const stIn = Math.max(0, carryIn.st);
   const ltIn = Math.max(0, carryIn.lt);
@@ -687,21 +741,34 @@ export function applyLossLedger(
     totalLoss > 0
       ? Math.min(capitalLossAllowanceCap(filingStatus), totalLoss)
       : 0;
-  // The allowance is consumed from the short-term remainder
+  // Worksheet utilization (the round-3 audit fix): the
+  // claimed allowance reduces the carryforward only by the
+  // part that actually offset the year's taxable income.
+  // A year with no taxable income before the allowance uses
+  // none of it — the whole loss carries forward, however
+  // many such years run in a row — and a year that absorbs
+  // only part of the allowance consumes exactly that part.
+  const allowanceUsed = Math.min(
+    allowance,
+    Math.max(0, taxableIncomeBeforeAllowance),
+  );
+  // The used part is consumed from the short-term remainder
   // first (the worksheet's ordering), the balance from the
-  // long-term remainder.
-  const stConsumedByAllowance = Math.min(allowance, remainingStLoss);
-  const ltConsumedByAllowance = allowance - stConsumedByAllowance;
+  // long-term remainder; the unused part is not consumed
+  // at all and carries out with the rest.
+  const stConsumedByAllowance = Math.min(allowanceUsed, remainingStLoss);
+  const ltConsumedByAllowance = allowanceUsed - stConsumedByAllowance;
   const carryOut: LossCarryforward = {
     st: r2(remainingStLoss - stConsumedByAllowance),
     lt: r2(remainingLtLoss - ltConsumedByAllowance),
   };
   const absorbedByGains = r2(
-    Math.max(0, stIn + ltIn - carryOut.st - carryOut.lt - allowance),
+    Math.max(0, stIn + ltIn - carryOut.st - carryOut.lt - allowanceUsed),
   );
   return {
     netResult: r2(totalLoss > 0 ? -totalLoss : pricedGain),
     allowance: r2(allowance),
+    allowanceUsed: r2(allowanceUsed),
     absorbedByGains,
     carryOut,
   };
@@ -901,14 +968,20 @@ export function educationCreditsFor(args: {
      (Form 6251 line 1 starts from the Form 1040 taxable
      income, floored at $0 as the 1040 floors it) and adds
      back the adjustments this engine has the quantities
-     for (§56(b)(1)): the state-and-local-tax deduction
-     ACTUALLY TAKEN — the year's itemized SALT after the
-     §164(b)(7) cap — in a year the itemized side won, and
-     the STANDARD DEDUCTION (base + age-65+ add-ons) in a
-     year the standard side won. The OBBBA §224 senior
-     deduction is NOT added back: §56(b)(1) does not list
-     it and Form 6251 has no line for it, so it stays
-     deducted in AMTI exactly as in taxable income.
+     for: the state-and-local-tax deduction ACTUALLY
+     TAKEN — the year's itemized SALT after the
+     §164(b)(7) cap (§56(b)(1)) — in a year the itemized
+     side won, and the STANDARD DEDUCTION (base + age-65+
+     add-ons, §56(b)(1)) in a year the standard side won.
+     The OBBBA §224 senior deduction is added back in
+     BOTH branches: the 2025 Form 6251 instructions place
+     the add-back in §56(b)(5)(D), the standard-deduction
+     disallowance family — §224 is claimable whether or
+     not the filer itemizes and is disallowed for AMT
+     either way, so the year's priced §224 amount joins
+     whichever add-back applies. (An earlier build read
+     §56(b)(1) alone and did not add it back; the
+     instructions' §56(b)(5)(D) placement governs.)
      Mortgage interest and charitable contributions are
      not adjustments either (acquisition-debt interest
      and charitable gifts are deductible under both
@@ -928,8 +1001,16 @@ export function educationCreditsFor(args: {
      year's taxable income, capped at the excess — under
      the capital-gain worksheet treatment: the same 0% /
      15% / 20% staircase as the regular tax, stacked on
-     top of the non-preferential excess against the
-     year's own LTCG thresholds. Preferential rates are
+     the year's REGULAR-TAX ordinary stack against the
+     year's own LTCG thresholds — Form 6251 Part III
+     (lines 20 / 27) imports the stack amounts from the
+     regular-tax Qualified Dividends and Capital Gain
+     Tax Worksheet, so the thresholds are consumed by
+     the regular ordinary taxable income (taxable income
+     minus the gains inside it), NOT by the ordinary
+     portion of the AMT excess; the AMT excess still
+     controls the total amount subject to tentative tax.
+     Preferential rates are
      preserved, as the statute requires — a gains-heavy
      year is not re-taxed at 26% / 28%. (With preferential
      rates at or below 20% < 26%, this sum never exceeds
@@ -985,17 +1066,32 @@ export function amtFor(args: {
   deductionTaken: "standard" | "itemized";
   // The standard deduction (base + age-65+ add-ons) —
   // the add-back in a standard-deduction year. The §224
-  // senior deduction is never part of this figure and
-  // is never added back.
+  // senior deduction is never part of this figure; it
+  // arrives separately (seniorDeduction below) and is
+  // added back in BOTH branches.
   standardDeduction: number;
   // The SALT amount actually deducted (after the
   // §164(b)(7) cap) — the add-back in an itemized year.
   itemizedSaltAllowed: number;
+  // The year's priced §224 senior deduction amount —
+  // added back in both branches (§56(b)(5)(D): §224 is
+  // claimable whether or not the filer itemizes and is
+  // disallowed for AMT either way).
+  seniorDeduction: number;
   // The preferential dollars (long-term gains + qualified
   // dividends) inside the year's regular taxable income —
   // the part of the taxable excess the capital-gain
   // worksheet treatment prices at 0% / 15% / 20%.
   gainsInTaxableIncome: number;
+  // The year's regular-tax ordinary stack: regular
+  // taxable income minus the preferential dollars inside
+  // it (priceYear's ordinaryTi). Form 6251 Part III
+  // (lines 20 / 27) imports the capital-gain stack
+  // amounts from the regular-tax Qualified Dividends and
+  // Capital Gain Tax Worksheet, so the 0% / 15% / 20%
+  // thresholds stack on THIS figure — not on the
+  // ordinary portion of the AMT taxable excess.
+  ordinaryStack: number;
   // The year's regular income tax for the §55 comparison:
   // ordinary + capital-gains tax after nonrefundable
   // credits, BEFORE the NIIT (Form 6251's line-11 side).
@@ -1006,9 +1102,10 @@ export function amtFor(args: {
   const law = args.law;
   const fs = args.filingStatus;
   const addback =
-    args.deductionTaken === "standard"
+    (args.deductionTaken === "standard"
       ? Math.max(0, args.standardDeduction)
-      : Math.max(0, args.itemizedSaltAllowed);
+      : Math.max(0, args.itemizedSaltAllowed)) +
+    Math.max(0, args.seniorDeduction);
   const amti = Math.max(0, args.taxableIncome) + addback;
   const phaseOutExcess = Math.max(0, amti - law.amtPhaseOutStart[fs]);
   const exemption = Math.max(
@@ -1027,15 +1124,25 @@ export function amtFor(args: {
     (law.amtRateLowPct / 100) * atLow +
     (law.amtRateHighPct / 100) * (ordinaryExcess - atLow);
   // The capital-gain worksheet treatment on the
-  // preferential part: the engine's own regular-tax
-  // staircase (0% to the year's zero top, 15% to the 20%
-  // floor, 20% above), stacked on the non-preferential
-  // excess exactly as the regular gains stack on
-  // ordinary taxable income in priceYear.
-  const zeroSpace = Math.max(0, law.ltcgZeroTop[fs] - ordinaryExcess);
+  // preferential part (Form 6251 Part III): the engine's
+  // own regular-tax staircase (0% to the year's zero
+  // top, 15% to the 20% floor, 20% above), stacked on
+  // the REGULAR-TAX ordinary stack (args.ordinaryStack)
+  // — Part III lines 20 / 27 import the stack amounts
+  // from the regular-tax Qualified Dividends and Capital
+  // Gain Tax Worksheet, so the thresholds are consumed by
+  // the regular ordinary taxable income, NOT by the
+  // ordinary portion of the AMT excess (ordinaryExcess).
+  // The excess still caps the preferential amount priced
+  // (pref above); only the threshold allocation follows
+  // the regular stack.
+  const zeroSpace = Math.max(0, law.ltcgZeroTop[fs] - args.ordinaryStack);
   const at0 = Math.min(pref, zeroSpace);
   const afterZero = pref - at0;
-  const twentySpace = Math.max(0, law.ltcg20Floor[fs] - ordinaryExcess - at0);
+  const twentySpace = Math.max(
+    0,
+    law.ltcg20Floor[fs] - args.ordinaryStack - at0,
+  );
   const at15 = Math.min(afterZero, twentySpace);
   const at20 = afterZero - at15;
   tentative += 0.15 * at15 + 0.2 * at20;
@@ -1245,9 +1352,30 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     deductionTrioApplies
       ? (DEDUCTION_2026.charitableFloorRatePct / 100) * agi
       : 0;
-  const itemizedCharitableAllowed = Math.max(
-    0,
-    charitableEntered - charitableFloor,
+  /* §170(b)(1)(G) percentage CEILING (engine-audit round-2
+     Finding 4 fix): the charitable component of the itemized
+     total may not exceed 60% of the contribution base (the
+     year's AGI). The engine's single aggregate input is
+     treated as cash contributions to public charities (the
+     documented simplification — no cash/property split), so
+     the 60% cash ceiling applies to the whole input. The
+     60% limit is in effect for every law year this engine
+     holds, so — unlike the trio's floor — the ceiling is
+     NOT gated on the 2026 law row. ORDERING: the floor is
+     applied to the entered input first and the ceiling then
+     caps the after-floor amount, so the final component
+     never exceeds 60% of AGI. The excess over the ceiling
+     does NOT carry forward: no §170(d)(1) carryforward
+     ledger exists anywhere in the engine (floor-disallowed
+     amounts likewise do not carry), so the cap errs
+     conservative. The ceiling applies only here — the
+     §170(p) candidate below keeps its own per-status caps
+     and the Washington excise keeps pricing from the raw
+     input. §68 still applies after this ceiling, exactly as
+     after every other limitation. */
+  const itemizedCharitableAllowed = Math.min(
+    Math.max(0, charitableEntered - charitableFloor),
+    (CHARITABLE_CEILING.ratePct / 100) * agi,
   );
   const itemizedBefore68 =
     Math.max(0, input.itemizedMortgageInterest ?? 0) +
@@ -1406,6 +1534,13 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // reduction moves the regular tax only, never the
   // tentative minimum tax. In a standard year there is no
   // §68 figure and the priced taxable income is used as-is.
+  // The §224 senior deduction amount is passed for the
+  // §56(b)(5)(D) add-back inside amtFor, and the regular
+  // ordinary stack (ordinaryTi — regular taxable income
+  // minus the gains inside it) is passed because Form
+  // 6251 Part III stacks the preferential staircase on
+  // the regular-tax worksheet's stack, not on the AMT
+  // excess's ordinary portion.
   const taxableForAmt =
     deductionTaken === "itemized" ? taxableWithout68 : taxableIncome;
   const amt = amtFor({
@@ -1413,7 +1548,9 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     deductionTaken,
     standardDeduction,
     itemizedSaltAllowed,
+    seniorDeduction,
     gainsInTaxableIncome: Math.min(gainsStack, taxableForAmt),
+    ordinaryStack: ordinaryTi,
     regularTax: regularTaxAfterCredits,
     filingStatus: fs,
     law,
@@ -1464,6 +1601,9 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     deductionTaken,
     deductions: r2(deductions),
     taxableIncome: r2(taxableIncome),
+    taxableIncomeBeforeLossAllowance: r2(
+      Math.max(0, agi - deductions + capitalLossAllowance),
+    ),
     ordinaryTax: r2(ordinaryTax),
     ltcgTax: r2(ltcgTax),
     niit: r2(niit),
@@ -1631,7 +1771,7 @@ export type FillCeilings = {
   acaCliffCap: boolean; // keep MAGI at or below 400% FPL
   // Era-aware cliff cap: when true (and acaCliffCap is on), the
   // cliff cap defends the line only in years BEFORE the plan's
-  // acaStepDownYear; from that year on the cap is off for the
+  // first household-schedule step year; from that year on the cap is off for the
   // year and the year prices undefended. A modifier of
   // acaCliffCap, never a ceiling in its own right — it is
   // deliberately NOT part of ceilingsActive below. Absent on a
@@ -2049,6 +2189,132 @@ export type IrmaaLookbackSeedEntry = {
   filingStatus: FilingStatus;
 };
 
+/* ---------------- ACA household schedule ----------------
+   The household's marketplace size over time (MULTI-STEP ACA
+   HOUSEHOLD SCHEDULE build): an ordered list of steps, each
+   { fromYear, householdSize } — from fromYear on, the ACA
+   household size is that step's size, until a later step
+   replaces it. The size governing a plan year is the LAST
+   step whose fromYear is at or before the year; years before
+   the first step (and every year of a plan with no steps)
+   are governed by the plan's initial acaHouseholdSize. Steps
+   are stored sorted ascending by fromYear with one size per
+   year (resolveAcaHouseholdSchedule below is the one
+   sanitizer every reader runs). Sizes are generic person
+   counts 1–20; any number of steps is supported.
+
+   This schedule REPLACES the single step-down the engine
+   priced before (acaStepDownYear + acaHouseholdSizeAfter).
+   Migration: a record written before this build, carrying
+   the old pair, resolves to a ONE-ENTRY schedule — the
+   initial size until the step year, the after size from the
+   step year — which prices bit-identically to the old pair
+   in every year (the migration-equivalence fixture in
+   taxFixtures.ts pins it to the cent). */
+export type AcaHouseholdStep = {
+  fromYear: number;
+  householdSize: number;
+};
+
+// The size governing one plan year (see the schedule note
+// above): the last step in force, else the initial size.
+// Deliberately independent of survivor state — the march's
+// survivor rule (household of 1 after a death) applies on
+// top of this, exactly as it applied on top of the old
+// step-down.
+export function acaHouseholdSizeForYear(
+  initialSize: number,
+  schedule: readonly AcaHouseholdStep[] | null | undefined,
+  year: number,
+): number {
+  let size = initialSize;
+  if (schedule) {
+    for (const step of schedule) {
+      if (year >= step.fromYear) size = step.householdSize;
+    }
+  }
+  return size;
+}
+
+// The first year the household steps away from its initial
+// size — the schedule's first step year, or null when there
+// are no steps. The era-aware cliff cap keys on this year
+// exactly as it keyed on the old single step-down year: the
+// cap defends the cliff only in years BEFORE it (the years
+// governed by the initial size) and is off from it on, in
+// every later step's years too — so a migrated one-entry
+// schedule keeps the old behavior bit-identically, and the
+// ACA credit is never touched by the gate: it always reads
+// the year's governing size.
+export function acaFirstStepYear(
+  schedule: readonly AcaHouseholdStep[] | null | undefined,
+): number | null {
+  return schedule != null && schedule.length > 0
+    ? (schedule[0]?.fromYear ?? null)
+    : null;
+}
+
+const ACA_SCHEDULE_MAX_STEPS = 40;
+function acaStepYearOk(v: number | null | undefined): v is number {
+  return (
+    typeof v === "number" &&
+    Number.isInteger(v) &&
+    v >= 1900 &&
+    v <= 2200
+  );
+}
+function acaStepSizeOk(v: number | null | undefined): v is number {
+  return (
+    typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 20
+  );
+}
+
+/* The ONE resolver every reader of a saved-shape record runs
+   to get the schedule the engine prices: it sanitizes the
+   record's acaHouseholdSchedule (well-formed entries only —
+   an integer year 1900–2200 and an integer size 1–20 —
+   sorted ascending by year, a later entry winning a repeated
+   year, capped at 40 steps) and, when the record carries NO
+   usable schedule (a record written before this build),
+   synthesizes the one-entry migration schedule from the
+   legacy pair (acaStepDownYear / acaHouseholdSizeAfter, the
+   after size falling back to the initial size, then to 1 —
+   the same fallbacks planInputsFromSaved applied to the old
+   pair). No schedule and no legacy step year = null = the
+   initial size governs every year. */
+export function resolveAcaHouseholdSchedule(src: {
+  acaHouseholdSchedule?: readonly AcaHouseholdStep[] | null;
+  acaHouseholdSizeAfter?: number | null;
+  acaStepDownYear?: number | null;
+  acaHouseholdSize?: number | null;
+}): AcaHouseholdStep[] | null {
+  const raw = src.acaHouseholdSchedule;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const byYear = new Map<number, number>();
+    for (const entry of raw) {
+      if (entry == null || typeof entry !== "object") continue;
+      if (!acaStepYearOk(entry.fromYear) || !acaStepSizeOk(entry.householdSize))
+        continue;
+      byYear.set(entry.fromYear, entry.householdSize);
+    }
+    if (byYear.size > 0) {
+      return [...byYear.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .slice(0, ACA_SCHEDULE_MAX_STEPS)
+        .map(([fromYear, householdSize]) => ({ fromYear, householdSize }));
+    }
+  }
+  if (acaStepYearOk(src.acaStepDownYear)) {
+    const size = acaStepSizeOk(src.acaHouseholdSizeAfter)
+      ? src.acaHouseholdSizeAfter
+      : acaStepSizeOk(src.acaHouseholdSize)
+        ? src.acaHouseholdSize
+        : 1;
+    return [{ fromYear: src.acaStepDownYear, householdSize: size }];
+  }
+  return null;
+}
+
 export type RothPlanInputs = {
   startYear: number;
   birthYearPrimary: number;
@@ -2250,8 +2516,12 @@ export type RothPlanInputs = {
   drawOrderAfter?: DrawOrder | null;
   spouseSoleBeneficiary: boolean;
   acaHouseholdSize: number;
-  acaHouseholdSizeAfter: number;
-  acaStepDownYear: number | null;
+  // The household schedule (see the ACA household schedule
+  // note above): the steps away from acaHouseholdSize over
+  // time. Null = no steps — the initial size governs every
+  // year, exactly the pre-schedule behavior of a record with
+  // no step-down year.
+  acaHouseholdSchedule: AcaHouseholdStep[] | null;
   acaBenchmarkCouple: number | null;
   acaBenchmarkSingle: number | null;
   // Family benchmark (household of 3 or more). Optional so
@@ -3441,10 +3711,17 @@ export function simulateRothPlan(
       grossGains: number,
     ): { ltcg: number; capitalLossAllowance?: number; waGainsBase?: number } => {
       if (!ledgerOn) return { ltcg: grossGains };
+      // A trial pricing reads only the netted result and
+      // the CLAIMED allowance from the transform — never
+      // its carry-out — so utilization is passed as
+      // unbounded here; the year's carry-out is reconciled
+      // once, at year end (ledFinal below), against the
+      // final priced year's taxable income.
       const led = applyLossLedger(
         { st: carryInSt, lt: carryInLt },
         grossGains,
         effFilingStatus,
+        Number.POSITIVE_INFINITY,
       );
       return {
         ltcg: led.netResult,
@@ -3558,9 +3835,11 @@ export function simulateRothPlan(
     const acaActive = primaryOnAca || spouseOnAca;
     const householdSize = isSurvivorYear
       ? 1
-      : inputs.acaStepDownYear != null && year >= inputs.acaStepDownYear
-        ? inputs.acaHouseholdSizeAfter
-        : inputs.acaHouseholdSize;
+      : acaHouseholdSizeForYear(
+          inputs.acaHouseholdSize,
+          inputs.acaHouseholdSchedule,
+          year,
+        );
     // Benchmark selection keys on WHO is on the marketplace
     // that year, not on household size alone: the FAMILY
     // benchmark applies only when BOTH spouses are on ACA in
@@ -3622,29 +3901,33 @@ export function simulateRothPlan(
     // ERA-AWARE ACA CLIFF CAP (acaCliffCapFamilyOnly): when the
     // strategy carries both the cliff cap and the family-only
     // flag, the cap defends the cliff only in years BEFORE the
-    // plan's household step-down year. From that year on, the
-    // cliff cap is switched off for the year — no conversion
+    // plan's first household-schedule step year. From that year
+    // on, the cliff cap is switched off for the year — no conversion
     // limiting and no pre-tax draw shrinking for the cliff — and
     // every consumer of yearCeilings below (the fill, the capped
     // draw, the ceiling-convergence re-solve, the cliff draw
     // convergence, the harvest limits, the year's cap records)
     // sees the cap as off, so the year prices undefended. The
-    // ACA CREDIT is untouched: it reads householdSize (already
-    // stepped down from the step-down year) and the final priced
+    // gate keys on the FIRST step year only, however many steps
+    // follow: once the household has stepped away from its
+    // initial size the cap stays off through every later step.
+    // The ACA CREDIT is untouched: it reads householdSize (the
+    // year's governing schedule size) and the final priced
     // ACA MAGI, never this flag. With the flag off, or with no
-    // step-down year set, yearCeilings is exactly what it was
+    // schedule steps set, yearCeilings is exactly what it was
     // before this build and the year prices bit-identically.
     // Bunching composes naturally: it may already have stripped
     // the cap for its alternating year, and a bunching $0 year
-    // stays $0 — post-step-down years are uncapped regardless
+    // stays $0 — post-first-step years are uncapped regardless
     // of the bunching counter. No survivor special-casing: the
-    // gate keys on the step-down year only.
+    // gate keys on the first step year only.
     let eraCliffOff = false;
+    const firstStepYear = acaFirstStepYear(inputs.acaHouseholdSchedule);
     if (
       yearCeilings?.acaCliffCap === true &&
       yearCeilings.acaCliffCapFamilyOnly === true &&
-      inputs.acaStepDownYear != null &&
-      year >= inputs.acaStepDownYear
+      firstStepYear != null &&
+      year >= firstStepYear
     ) {
       eraCliffOff = true;
       yearCeilings = { ...yearCeilings, acaCliffCap: false };
@@ -3662,7 +3945,7 @@ export function simulateRothPlan(
     // floored at 0. Because it derives from yearCeilings (the
     // era-adjusted ceilings), the buffer applies in exactly
     // the years the cliff cap itself applies: before the
-    // step-down in a family-only plan, never after it, and
+    // first schedule step in a family-only plan, never after it, and
     // never when the cap is off. With the buffer unset it
     // equals acaCliffDollars, so every consumer below prices
     // bit-identically to before. NOT a pricing input: the ACA
@@ -5394,12 +5677,21 @@ export function simulateRothPlan(
     // the kept pricing priced exactly this total, so this
     // outcome is the priced year's own residue: its
     // allowance is the allowance the year priced, and its
-    // carry-out becomes the next year's carry-in.
+    // carry-out becomes the next year's carry-in. The
+    // utilization reconciliation happens HERE, the one place
+    // the year's final taxable income is known: the kept
+    // pricing's taxable income without the allowance
+    // (priced.taxableIncomeBeforeLossAllowance) caps how
+    // much of the claimed allowance the carry-out gives up
+    // (the Capital Loss Carryover Worksheet's limit) — the
+    // claimed allowance itself, and so the year's AGI and
+    // tax, are exactly as priced either way.
     const ledFinal = ledgerOn
       ? applyLossLedger(
           { st: carryInSt, lt: carryInLt },
           realizedGains + injectedLtcg + gainsHarvested,
           effFilingStatus,
+          priced.taxableIncomeBeforeLossAllowance,
         )
       : null;
     if (ledFinal) {

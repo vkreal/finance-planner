@@ -98,6 +98,36 @@ export function mergeBackupListings(
   return out;
 }
 
+/** A listed backup plus which folder the listing resolved it to.
+ *  "own" = this space's own backups folder (deletable from here);
+ *  "legacy" = the file exists ONLY in the legacy shared folder,
+ *  which is read-only — it can be restored but never deleted from
+ *  here. When a name exists in both folders the per-space copy
+ *  wins, so its source is "own". */
+export interface BackupListEntry extends BackupFileEntry {
+  source: "own" | "legacy";
+}
+
+/**
+ * The same union listing as mergeBackupListings, with each
+ * entry's source attached, so the Backups panel can tell the
+ * user up front which backups it can actually delete instead of
+ * offering a Delete button that can only refuse.
+ */
+export function mergeBackupListingsWithSource(
+  own: BackupFileEntry[],
+  legacy: BackupFileEntry[],
+): BackupListEntry[] {
+  const byName = new Map<string, BackupListEntry>();
+  for (const f of legacy)
+    if (isBackupFilename(f.name)) byName.set(f.name, { ...f, source: "legacy" });
+  for (const f of own)
+    if (isBackupFilename(f.name)) byName.set(f.name, { ...f, source: "own" });
+  const out = [...byName.values()];
+  out.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+  return out;
+}
+
 /**
  * Which copy a read (restore / list detail) resolves to for a
  * filename: the per-space copy when it exists, else the legacy

@@ -51,6 +51,7 @@ type RothData,
 // server/src/taxLaw.ts. The client runs the same code the fixtures
 // pin, so what is priced here is what is tested there.
 import {
+acaHouseholdSizeForYear,
 DEFAULT_DRAW_ORDER_KEY,
 DRAW_ORDER_OPTIONS,
 ROTH_COMPARE_STRATEGIES,
@@ -69,6 +70,8 @@ import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEng
 import { fafsaReportableAssets, netCostBreakdown, priceExecutionYear, ROTH_MC_CHECK_SEED, ssAnnualAtClaimAge } from "@space/server/rothOptimizer";
 import { giftAgeGuardMessage } from "@space/server/giftModel";
 import { seedRothInputs, SEED_RETIREMENT_AGE_FALLBACK } from "@space/server/rothSeed";
+import { FoldChevron } from "./FoldChevron";
+import { usePersistedFold } from "./foldState";
 
 // SavePayload is the plan record's writer (saveRothInputs) — the
 // only payload that carries the execution-year fields. PlanPayload
@@ -161,6 +164,55 @@ function studentsFromRows(
   return students;
 }
 
+// ACA household-schedule rows (MULTI-STEP ACA HOUSEHOLD
+// SCHEDULE build): the form's editable form of the plan's
+// acaHouseholdSchedule — one row per step, the calendar year
+// the step takes effect and the household size from that
+// year on, both plain typed fields like every other dial.
+// acaStepsFromRows mirrors studentsFromRows: no rows (or any
+// half-filled row) reads as null = "no steps apply yet", so
+// a half-edited step list never reaches the record
+// half-formed, and the editor shows why the steps are not
+// applying yet whenever rows exist but this returns null.
+// Complete rows are clamped to the schedule's own ranges
+// (year 1900–2200, size 1–20), sorted by year, and a repeated
+// year keeps the LAST row for it — the saved shape's rules,
+// applied at the same boundary the student rows use.
+type AcaStepRow = { fromYear: string; householdSize: string };
+function acaStepsFromRows(
+  rows: AcaStepRow[],
+): { fromYear: number; householdSize: number }[] | null {
+  if (rows.length === 0) return null;
+  const steps: { fromYear: number; householdSize: number }[] = [];
+  for (const r of rows) {
+    const y = parseIntField(r.fromYear);
+    const s = parseIntField(r.householdSize);
+    if (y == null || s == null) return null;
+    steps.push({
+      fromYear: Math.min(2200, Math.max(1900, y)),
+      householdSize: Math.min(20, Math.max(1, s)),
+    });
+  }
+  steps.sort((a, b) => a.fromYear - b.fromYear);
+  const out: { fromYear: number; householdSize: number }[] = [];
+  for (const s of steps) {
+    if (out.length > 0 && out[out.length - 1]!.fromYear === s.fromYear) {
+      out[out.length - 1] = s;
+    } else {
+      out.push(s);
+    }
+  }
+  return out;
+}
+function acaStepRowsFrom(
+  schedule: { fromYear: number; householdSize: number }[] | null | undefined,
+): AcaStepRow[] {
+  return (schedule ?? []).map((s) => ({
+    fromYear: String(s.fromYear),
+    householdSize: String(s.householdSize),
+  }));
+}
+
 // Named conversion-ceiling presets: pure presentation over the
 // saved ceiling fields. Each preset is one exact field
 // combination (in the engine's FillCeilings terms — magiCap in
@@ -231,8 +283,8 @@ const ROTH_MODE_OPTIONS_SHOWN = ROTH_MODE_OPTIONS.filter(
 );
 /* Watch-outs panel (Plan workspace) — collapsible, following the
    Playground collapsible-sections pattern: the heading itself is a
-   toggle button carrying aria-expanded and the app's ▾/▸ disclosure
-   glyph, and the heading stays visible when folded. The heading
+   toggle button carrying aria-expanded and the app's shared chip
+   chevron (FoldChevron), and the heading stays visible when folded. The heading
    always shows the warning count ("Watch-outs (2)") so a folded
    panel still signals what is inside it, and the heading text is
    red so the panel reads as a warning at a glance; the items
@@ -269,9 +321,7 @@ function WatchOutsPanel({
           onClick={onToggle}
         >
           <span className="text-[var(--bad)]">Watch-outs ({warnings.length})</span>
-          <span aria-hidden="true" className="shrink-0 text-[var(--dim)]">
-            {open ? "▾" : "▸"}
-          </span>
+          <FoldChevron open={open} />
         </button>
       </h2>
       {open && (
@@ -478,8 +528,7 @@ export function RothConversion() {
   const [collegeFromYear, setCollegeFromYear] = useState("");
   const [collegeThroughYear, setCollegeThroughYear] = useState("");
   const [acaSize, setAcaSize] = useState("3");
-  const [acaSizeAfter, setAcaSizeAfter] = useState("2");
-  const [acaStepYear, setAcaStepYear] = useState("");
+  const [acaSteps, setAcaSteps] = useState<AcaStepRow[]>([]);
   const [benchCouple, setBenchCouple] = useState("");
   const [benchSingle, setBenchSingle] = useState("");
   const [benchFamily, setBenchFamily] = useState("");
@@ -638,8 +687,7 @@ export function RothConversion() {
   const [labDialBenchFamily, setLabDialBenchFamily] = useState("");
   const [labDialBenchCouple, setLabDialBenchCouple] = useState("");
   const [labDialBenchSingle, setLabDialBenchSingle] = useState("");
-  const [labDialAcaSizeAfter, setLabDialAcaSizeAfter] = useState("");
-  const [labDialStepYear, setLabDialStepYear] = useState("");
+  const [labDialAcaSteps, setLabDialAcaSteps] = useState<AcaStepRow[]>([]);
   const [labDialReturn, setLabDialReturn] = useState("");
   const [labDialInflation, setLabDialInflation] = useState("");
   const [labDialHeir, setLabDialHeir] = useState("");
@@ -744,6 +792,24 @@ export function RothConversion() {
   // Assumptions & limits expander: closed by default in every
   // mode; the open/closed choice persists in the Roth UI state.
   const [assumptionsOpen, setAssumptionsOpen] = useState(false);
+  /* Plan face "What if…" section fold, in the generic
+     server-side fold store (foldState.ts) like the Spending
+     section folds and the Playground "Start from a known point"
+     fold — the choice survives reloads and new sessions, no
+     localStorage. This section DEFAULTS TO EXPANDED, the
+     opposite of every other fold in that store: the store only
+     carries folds left in their non-default state (a stored
+     entry reads true, and closing a default-closed fold just
+     removes its entry), so this hook stores the inverse flag —
+     an entry under "roth.whatIfFolded" means the user left the
+     section folded shut; no entry means expanded, its default.
+     Display only: folding hides the section's body, and the
+     what-if selection and any showing answer are left exactly
+     as they were — re-expanding shows them unchanged. */
+  const [whatIfFolded, setWhatIfFolded] = usePersistedFold(
+    "roth.whatIfFolded",
+  );
+  const whatIfOpen = !whatIfFolded;
   // "Show the math" drill-down: the year whose engine detail
   // panel is open under the year-by-year table (display only).
   // The expanded year persists in the Roth UI state like the
@@ -888,8 +954,7 @@ export function RothConversion() {
     setLabDialBenchFamily(d.acaBenchmarkFamilyCents == null ? "" : fmtMoneyInput(d.acaBenchmarkFamilyCents / 100));
     setLabDialBenchCouple(d.acaBenchmarkCoupleCents == null ? "" : fmtMoneyInput(d.acaBenchmarkCoupleCents / 100));
     setLabDialBenchSingle(d.acaBenchmarkSingleCents == null ? "" : fmtMoneyInput(d.acaBenchmarkSingleCents / 100));
-    setLabDialAcaSizeAfter(d.acaHouseholdSizeAfter == null ? "" : String(d.acaHouseholdSizeAfter));
-    setLabDialStepYear(d.acaStepDownYear == null ? "" : String(d.acaStepDownYear));
+    setLabDialAcaSteps(acaStepRowsFrom(d.acaHouseholdSchedule));
     setLabDialReturn(d.expectedReturnPct == null ? "" : String(d.expectedReturnPct));
     setLabDialInflation(d.inflationPct == null ? "" : String(d.inflationPct));
     setLabDialHeir(d.heirRatePct == null ? "" : String(d.heirRatePct));
@@ -1027,8 +1092,7 @@ export function RothConversion() {
     drawOrderAfter?: string | null;
     spouseSoleBeneficiary: boolean | null;
     acaHouseholdSize: number | null;
-    acaHouseholdSizeAfter: number | null;
-    acaStepDownYear: number | null;
+    acaHouseholdSchedule: { fromYear: number; householdSize: number }[] | null;
     collegeFallFromYear?: number | null;
     collegeFallThroughYear?: number | null;
     acaBenchmarkCoupleCents: number | null;
@@ -1154,8 +1218,7 @@ export function RothConversion() {
     );
     setSoleBeneficiary(src.spouseSoleBeneficiary ?? true);
     setAcaSize(num(src.acaHouseholdSize));
-    setAcaSizeAfter(num(src.acaHouseholdSizeAfter));
-    setAcaStepYear(num(src.acaStepDownYear));
+    setAcaSteps(acaStepRowsFrom(src.acaHouseholdSchedule));
     setCollegeFromYear(num(src.collegeFallFromYear ?? null));
     setCollegeThroughYear(num(src.collegeFallThroughYear ?? null));
     setBenchCouple(money(src.acaBenchmarkCoupleCents));
@@ -1250,8 +1313,7 @@ export function RothConversion() {
       { label: "draw order", value: drawOrderLabel(drawOrderFromKey(null)) },
       { label: "spouse sole beneficiary", value: "yes" },
       { label: "ACA household size", value: "5" },
-      { label: "ACA household size after step-down", value: "2" },
-      { label: "ACA step-down year", value: "blank" },
+      { label: "ACA household steps", value: "none" },
       { label: "ACA benchmark premiums", value: "blank/blank/blank" },
       { label: "inflation", value: String(SEED_INFLATION) },
       { label: "state rate", value: "0" },
@@ -1661,14 +1723,7 @@ export function RothConversion() {
         const n = parseIntField(acaSize);
         return n == null ? null : Math.min(20, Math.max(1, n));
       })(),
-      acaHouseholdSizeAfter: (() => {
-        const n = parseIntField(acaSizeAfter);
-        return n == null ? null : Math.min(20, Math.max(1, n));
-      })(),
-      acaStepDownYear: (() => {
-        const n = parseIntField(acaStepYear);
-        return n == null ? null : Math.min(2200, Math.max(1900, n));
-      })(),
+      acaHouseholdSchedule: acaStepsFromRows(acaSteps),
       collegeFallFromYear: (() => {
         const n = parseIntField(collegeFromYear);
         return n == null ? null : Math.min(2200, Math.max(1900, n));
@@ -1901,7 +1956,7 @@ export function RothConversion() {
     preservePretax, preserveExitRate, claimAgeFloor,
     jobSalary, jobEmployer401k, jobEmployerHsa,
     drawOrder, drawOrderSwitchAge, drawOrderAfter,
-    soleBeneficiary, acaSize, acaSizeAfter, acaStepYear, collegeFromYear, collegeThroughYear, benchCouple, benchSingle, benchFamily,
+    soleBeneficiary, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple, benchSingle, benchFamily,
     inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, ceilBracket, ceilIrmaa, ceilLtcg, ceilAca, ceilAcaFamilyOnly, magiCap, cliffBuffer,
     guardrailOn, bunchingOn, gainsHarvestOn,
     balanceOverrides,
@@ -1994,8 +2049,7 @@ export function RothConversion() {
       benchFamily: labDialBenchFamily,
       benchCouple: labDialBenchCouple,
       benchSingle: labDialBenchSingle,
-      acaSizeAfter: labDialAcaSizeAfter,
-      stepYear: labDialStepYear,
+      acaSteps: labDialAcaSteps,
       expReturn: labDialReturn,
       inflation: labDialInflation,
       heirRate: labDialHeir,
@@ -2025,10 +2079,6 @@ export function RothConversion() {
       const n = parseIntField(s);
       return n == null ? null : Math.min(80, Math.max(55, n));
     };
-    const count = (s: string): number | null => {
-      const n = parseIntField(s);
-      return n == null ? null : Math.min(20, Math.max(1, n));
-    };
     return {
       basisPct: pct(raw.basis),
       spendingCents: parseMoney(raw.spending),
@@ -2041,8 +2091,7 @@ export function RothConversion() {
       acaBenchmarkFamilyCents: parseMoney(raw.benchFamily),
       acaBenchmarkCoupleCents: parseMoney(raw.benchCouple),
       acaBenchmarkSingleCents: parseMoney(raw.benchSingle),
-      acaHouseholdSizeAfter: count(raw.acaSizeAfter),
-      acaStepDownYear: year(raw.stepYear),
+      acaHouseholdSchedule: acaStepsFromRows(raw.acaSteps),
       expectedReturnPct: parseNum(raw.expReturn),
       inflationPct: parseNum(raw.inflation),
       heirRatePct: pct(raw.heirRate),
@@ -2068,8 +2117,7 @@ export function RothConversion() {
     "acaBenchmarkFamilyCents",
     "acaBenchmarkCoupleCents",
     "acaBenchmarkSingleCents",
-    "acaHouseholdSizeAfter",
-    "acaStepDownYear",
+    "acaHouseholdSchedule",
     "expectedReturnPct",
     "inflationPct",
     "heirRatePct",
@@ -2093,8 +2141,7 @@ export function RothConversion() {
     setLabDialBenchFamily("");
     setLabDialBenchCouple("");
     setLabDialBenchSingle("");
-    setLabDialAcaSizeAfter("");
-    setLabDialStepYear("");
+    setLabDialAcaSteps([]);
     setLabDialReturn("");
     setLabDialInflation("");
     setLabDialHeir("");
@@ -2118,8 +2165,7 @@ export function RothConversion() {
         acaBenchmarkFamilyCents: null,
         acaBenchmarkCoupleCents: null,
         acaBenchmarkSingleCents: null,
-        acaHouseholdSizeAfter: null,
-        acaStepDownYear: null,
+        acaHouseholdSchedule: null,
         expectedReturnPct: null,
         inflationPct: null,
         heirRatePct: null,
@@ -2478,8 +2524,18 @@ export function RothConversion() {
       ),
       spouseSoleBeneficiary: sc.spouseSoleBeneficiary ?? true,
       acaHouseholdSize: clampCount(sc.acaHouseholdSize ?? null),
-      acaHouseholdSizeAfter: clampCount(sc.acaHouseholdSizeAfter ?? null),
-      acaStepDownYear: clampYear2200(sc.acaStepDownYear ?? null),
+      acaHouseholdSchedule:
+        sc.acaHouseholdSchedule == null
+          ? null
+          : sc.acaHouseholdSchedule
+              .map((s) => ({
+                fromYear: clampYear2200(s.fromYear),
+                householdSize: clampCount(s.householdSize),
+              }))
+              .filter(
+                (s): s is { fromYear: number; householdSize: number } =>
+                  s.fromYear != null && s.householdSize != null,
+              ),
       collegeFallFromYear: clampYear2200(sc.collegeFallFromYear ?? null),
       collegeFallThroughYear: clampYear2200(sc.collegeFallThroughYear ?? null),
       acaBenchmarkCoupleCents: sc.acaBenchmarkCoupleCents ?? null,
@@ -2675,7 +2731,7 @@ export function RothConversion() {
     labInit, labDialBasis, labDialSpending, labDialSsP, labDialSsS,
     labDialSurvivor, labDialSurvivorWho, labDialSurvivorYear,
     labDialAcaEndAge, labDialBenchFamily, labDialBenchCouple, labDialBenchSingle,
-    labDialAcaSizeAfter, labDialStepYear, labDialReturn, labDialInflation,
+    labDialAcaSteps, labDialReturn, labDialInflation,
     labDialHeir, labDialStateRate, labDialWinStart, labDialWinStop,
     labDialPreserve, labDialPretax, labDialTaxable, labDialRoth,
   ]);
@@ -3180,8 +3236,7 @@ export function RothConversion() {
           : null,
       spouseSoleBeneficiary: soleBeneficiary,
       acaHouseholdSize: parseIntField(acaSize) ?? 1,
-      acaHouseholdSizeAfter: parseIntField(acaSizeAfter) ?? parseIntField(acaSize) ?? 1,
-      acaStepDownYear: parseIntField(acaStepYear),
+      acaHouseholdSchedule: acaStepsFromRows(acaSteps),
       collegeFallFromYear: parseIntField(collegeFromYear),
       collegeFallThroughYear: parseIntField(collegeThroughYear),
       acaBenchmarkCouple: parseDollars(benchCouple),
@@ -3220,7 +3275,7 @@ export function RothConversion() {
     survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude,
     hsaBal, basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS,
     ssSAge, ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom,
-    protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, acaSize, acaSizeAfter, acaStepYear, collegeFromYear, collegeThroughYear, benchCouple,
+    protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple,
     benchSingle, benchFamily, acaSpouseEndAge, inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, balanceOverrides, data,
   ]);
 
@@ -3578,8 +3633,12 @@ export function RothConversion() {
           : drawOrderLabel(drawOrderFromKey(drawOrder)),
       "spouse sole beneficiary": soleBeneficiary ? "yes" : "no",
       "ACA household size": acaSize,
-      "ACA household size after step-down": acaSizeAfter,
-      "ACA step-down year": acaStepYear === "" ? "blank" : acaStepYear,
+      "ACA household steps":
+        acaSteps.length === 0
+          ? "none"
+          : acaSteps
+              .map((r) => `${r.householdSize || "?"} from ${r.fromYear || "?"}`)
+              .join(", "),
       "ACA benchmark premiums": `${parseMoney(benchCouple) ?? "blank"}/${parseMoney(benchSingle) ?? "blank"}/${parseMoney(benchFamily) ?? "blank"}`,
       inflation: inflation,
       "state rate": stateRate,
@@ -3597,7 +3656,7 @@ export function RothConversion() {
     ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd,
     taxExempt, convertedAlready, winStart, winStop, payTaxFrom, protectMin,
     preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter,
-    soleBeneficiary, acaSize, acaSizeAfter, acaStepYear, benchCouple, benchSingle, benchFamily,
+    soleBeneficiary, acaSize, acaSteps, benchCouple, benchSingle, benchFamily,
     inflation, stateRate, heirRate, ceilingsSummary,
   ]);
 
@@ -3675,6 +3734,11 @@ export function RothConversion() {
     (JSON.stringify(studentsFromRows(eduStudents)) !==
       JSON.stringify(savedResolved.educationStudents ?? null) ||
       (eduStudents.length > 0 && studentsFromRows(eduStudents) == null));
+  const acaStepsChanged =
+    savedResolved != null &&
+    (JSON.stringify(acaStepsFromRows(acaSteps)) !==
+      JSON.stringify(savedResolved.acaHouseholdSchedule ?? null) ||
+      (acaSteps.length > 0 && acaStepsFromRows(acaSteps) == null));
   const changedFields = {
     filingStatus: savedResolved != null && filingStatus !== (savedResolved.filingStatus ?? "mfj"),
     birthYearP: intChanged(birthYearP, savedResolved?.birthYearPrimary),
@@ -3731,8 +3795,7 @@ export function RothConversion() {
     taxReturnQualDiv: moneyChanged(taxReturnQualDiv, data?.taxReturn.taxReturnQualifiedDividendsCents),
     taxReturnOrdDiv: moneyChanged(taxReturnOrdDiv, data?.taxReturn.taxReturnOrdinaryDividendsCents),
     acaSize: intChanged(acaSize, savedResolved?.acaHouseholdSize),
-    acaSizeAfter: intChanged(acaSizeAfter, savedResolved?.acaHouseholdSizeAfter),
-    acaStepYear: intChanged(acaStepYear, savedResolved?.acaStepDownYear),
+    acaSteps: acaStepsChanged,
     benchCouple: moneyChanged(benchCouple, savedResolved?.acaBenchmarkCoupleCents),
     benchSingle: moneyChanged(benchSingle, savedResolved?.acaBenchmarkSingleCents),
     benchFamily: moneyChanged(benchFamily, savedResolved?.acaBenchmarkFamilyCents),
@@ -3972,16 +4035,22 @@ export function RothConversion() {
         overrides: { ssPrimaryStartAge: ssAge + 1 },
       });
     }
+    const sched = sv.acaHouseholdSchedule;
     if (
-      sv.acaStepDownYear != null &&
-      sv.acaHouseholdSizeAfter != null &&
+      sched != null &&
+      sched.length > 0 &&
       sv.acaHouseholdSize != null &&
-      sv.acaHouseholdSizeAfter < sv.acaHouseholdSize
+      sched[sched.length - 1]!.householdSize < sv.acaHouseholdSize &&
+      sched[0]!.fromYear > 1900
     ) {
       defs.push({
         id: "step-down-sooner",
-        label: `Household steps down a year sooner — in ${sv.acaStepDownYear - 1}`,
-        overrides: { acaStepDownYear: sv.acaStepDownYear - 1 },
+        label: `Household steps down a year sooner — in ${sched[0]!.fromYear - 1}`,
+        overrides: {
+          acaHouseholdSchedule: sched.map((s, i) =>
+            i === 0 ? { ...s, fromYear: s.fromYear - 1 } : s,
+          ),
+        },
       });
     }
     return defs;
@@ -4051,6 +4120,16 @@ export function RothConversion() {
     setWhatIfError("");
     setPendingWhatIfId(def.id);
     runWhatIfMut.mutate(buildWhatIfRequest(def));
+  };
+  // Turn a what-if off: drop the answer on screen (and any
+  // error) so the face shows the saved plan only. A what-if
+  // never saved anything, so clearing it writes nothing —
+  // it is the chip-toggle-off and the "Back to saved" exit
+  // from a priced question.
+  const clearWhatIf = () => {
+    setWhatIfError("");
+    setPendingWhatIfId(null);
+    setWhatIfResult(null);
   };
   // The fingerprint of the what-if request the CURRENT plan
   // would build for the answered question — when it no longer
@@ -4213,9 +4292,11 @@ export function RothConversion() {
       const law = lawForYear(y.year);
       const size = y.isSurvivorYear
         ? 1
-        : planInputs.acaStepDownYear != null && y.year >= planInputs.acaStepDownYear
-          ? planInputs.acaHouseholdSizeAfter
-          : planInputs.acaHouseholdSize;
+        : acaHouseholdSizeForYear(
+            planInputs.acaHouseholdSize,
+            planInputs.acaHouseholdSchedule,
+            y.year,
+          );
       const row: Record<string, number | null> = { year: y.year, MAGI: Math.round(y.magi) };
       if (ceilings.irmaaTierCap != null) {
         // The cap line is the SAME top-of-tier boundary the
@@ -4250,12 +4331,12 @@ export function RothConversion() {
 
   /* ---------------- render ---------------- */
   if (rq.isLoading || retq.isLoading || uiq.isLoading) {
-    return <p className="pt-6 text-[var(--dim)]">Loading the Roth Conversion planner…</p>;
+    return <p className="pt-6 text-[var(--dim)]">Loading the Tax Plan planner…</p>;
   }
   if (rq.isError || retq.isError || !data || !ret) {
     return (
       <p className="pt-6 text-[var(--bad)]">
-        The Roth Conversion planner could not load. Reload the page to try again.
+        The Tax Plan planner could not load. Reload the page to try again.
       </p>
     );
   }
@@ -4306,6 +4387,27 @@ export function RothConversion() {
     : undefined;
   const reserveSet = (planInputs?.preservePretax ?? 0) > 0;
   const reserveExitPct = planInputs?.preserveExitRatePct ?? planInputs?.heirRatePct ?? 0;
+
+  // Starting-balance segments for the "Calculated with" strip's
+  // stacked bar (2026-10-25: the strip's first paragraph became a
+  // bar plus a one-line rules summary, replacing the text wall).
+  // The values are the exact planInputs figures the strip's text
+  // rendered before — the compare-pricing fold included (Taxable
+  // at its folded figure, a what-if variant's values when one is
+  // active) — and the segment colors follow Net Worth's Current
+  // buckets bar, with the wife's pre-tax in a lighter shade of the
+  // same pre-tax rose. A $0 segment draws no slice but stays in
+  // the legend below the bar, as the old text showed it.
+  const calcStartSegs = planInputs
+    ? [
+        { key: "pretax-you", label: "Pre-tax — You", color: "#e11d48", dollars: planInputs.pretaxStart },
+        { key: "pretax-wife", label: "Pre-tax — wife", color: "#fb7185", dollars: planInputs.pretaxSpouseStart ?? 0 },
+        { key: "roth", label: "Roth", color: "#f59e0b", dollars: planInputs.rothStart },
+        { key: "taxable", label: "Taxable", color: "#3b82f6", dollars: planInputs.taxableStart },
+        { key: "hsa", label: "HSA", color: "#14b8a6", dollars: planInputs.hsaStart },
+      ]
+    : [];
+  const calcStartTotal = calcStartSegs.reduce((sum, s) => sum + s.dollars, 0);
 
   // The two winner badges of the merged Strategy Lab table
   // (see the Lab table below): "Lowest tax" on every folded
@@ -4445,7 +4547,7 @@ export function RothConversion() {
             : uniformOutcome === "aca-inactive-only-ceiling"
               ? "the only ceiling switched on — the ACA limit — never applied in the window years"
               : uniformOutcome === "era-cliff-off"
-                ? "the ACA cliff cap stops applying once the household steps down, and every window year is past the step-down year"
+                ? "the ACA cliff cap stops applying once the household steps down, and every window year is at or past the household schedule's first step year"
               : uniformOutcome === "pretax-empty"
                 ? "the pre-tax balance was already gone by the window years"
                 : uniformOutcome === "reserve-floor"
@@ -4945,7 +5047,7 @@ export function RothConversion() {
                       {detailRow.detail.fill.outcome === "aca-inactive-only-ceiling" &&
                         "the only ceiling switched on is the ACA cliff, and nobody is on the marketplace this year, so there is no cliff to fill under."}
                       {detailRow.detail.fill.outcome === "era-cliff-off" &&
-                        "the only ceiling switched on is the ACA cliff, and this plan defends it only until the household steps down — this year is at or past the step-down year, so the cap is off and the year prices undefended."}
+                        "the only ceiling switched on is the ACA cliff, and this plan defends it only until the household steps down — this year is at or past the household schedule's first step year, so the cap is off and the year prices undefended."}
                       {detailRow.detail.fill.outcome === "no-room-under-ceilings" &&
                         "the year's other income already fills the space under the switched-on ceilings, so no conversion fits."}
                       {detailRow.detail.fill.outcome === "reserve-floor" &&
@@ -5193,9 +5295,11 @@ export function RothConversion() {
   ].join(" · ");
   const acaSummary = [
     `Household of ${acaSize || "—"}`,
-    acaStepYear
-      ? `→ ${acaSizeAfter || "—"} from ${acaStepYear}`
-      : "no step-down year set",
+    acaSteps.length > 0
+      ? acaSteps
+          .map((r) => `→ ${r.householdSize || "—"} from ${r.fromYear || "—"}`)
+          .join(" ")
+      : "no household steps set",
     benchCouple || benchSingle || benchFamily
       ? `ACA benchmarks ${moneySummaryText(benchCouple)} / ${moneySummaryText(benchSingle)}${benchFamily ? ` / family ${moneySummaryText(benchFamily)}` : ""}`
       : "ACA benchmark premiums not entered",
@@ -5430,9 +5534,7 @@ export function RothConversion() {
           <span className="mt-0.5 block text-sm text-[var(--dim)]">{summary}</span>
           {headerExtra}
         </span>
-        <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
-          {openSections[id] ? "▾" : "▸"}
-        </span>
+        <FoldChevron open={!!openSections[id]} className="mt-0.5" />
       </button>
       {openSections[id] && <div className="mt-3">{children}</div>}
     </section>
@@ -5555,7 +5657,7 @@ export function RothConversion() {
 
   return (
     <div>
-      <h1 className="pt-5 text-xl font-semibold">Roth Conversion</h1>
+      <h1 className="pt-5 text-xl font-semibold">Tax Plan</h1>
       <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
         Plans year-by-year Roth conversions in the lower-income years after
         retirement, before RMDs begin. Every year is priced with the real rules —
@@ -5566,7 +5668,7 @@ export function RothConversion() {
 
       <div
         role="group"
-        aria-label="Roth Conversion view"
+        aria-label="Tax Plan view"
         className="mt-4 inline-flex max-w-full flex-wrap gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-1"
       >
         {(
@@ -5610,16 +5712,27 @@ export function RothConversion() {
                 type="button"
                 aria-label="Back to saved"
                 className="px-1 py-2 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:opacity-50"
-                disabled={changedCount === 0}
+                disabled={changedCount === 0 && whatIfResult == null}
                 onClick={() => {
-                  if (changedCount > 0) setConfirmBackToSaved(true);
+                  if (changedCount > 0) {
+                    setConfirmBackToSaved(true);
+                  } else if (whatIfResult != null) {
+                    // No field has drifted, but a what-if answer
+                    // is on screen: Back to saved clears it and
+                    // returns the face to the saved plan only.
+                    // The answer was never saved, so no
+                    // confirmation is needed to drop it.
+                    clearWhatIf();
+                  }
                 }}
               >
                 Back to saved
               </button>
               <span className="text-xs text-[var(--dim)]" aria-live="polite">
                 {changedCount === 0
-                  ? "Every field matches the saved plan."
+                  ? whatIfResult != null
+                    ? "Every field matches the saved plan. A what-if answer is showing — Back to saved clears it."
+                    : "Every field matches the saved plan."
                   : `${changedCount} field${changedCount === 1 ? "" : "s"} changed from the saved plan — marked “Changed” below.`}
               </span>
             </>
@@ -5634,7 +5747,10 @@ export function RothConversion() {
                 type="button"
                 aria-label="Back to saved"
                 className="rounded-[var(--radius)] bg-[var(--bad)] px-4 py-2 text-sm font-medium text-white"
-                onClick={backToSaved}
+                onClick={() => {
+                  backToSaved();
+                  clearWhatIf();
+                }}
               >
                 Back to saved
               </button>
@@ -5946,7 +6062,7 @@ export function RothConversion() {
               ),
             )}
             . Net Worth still shows the full pool. This applies only in the
-            Roth Conversion view — Net Worth, Retirement, and the other views
+            Tax Plan view — Net Worth, Retirement, and the other views
             are unaffected.
           </p>
         )}
@@ -6381,22 +6497,72 @@ export function RothConversion() {
         </div>
       ))}
 
-      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSizeAfter", "acaStepYear", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSizeAfter", "acaStepYear", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"])} changed` : ""), (
+      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"])} changed` : ""), (
         <>
           <p className="text-sm text-[var(--dim)]">
             From the retirement year, while anyone in the household is under 65, the household is priced as on the marketplace, and ACA MAGI sets the premium credit. Above 400% of the poverty line the credit is $0 — the whole year's credit is lost.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {numField("Household size", acaSize, setAcaSize, { changed: changedFields.acaSize })}
-            {numField("Step-down year", acaStepYear, setAcaStepYear, {
-              hint: "The year the household size drops (e.g. when a dependent leaves the return). Blank = no step-down.",
-              changed: changedFields.acaStepYear,
-            })}
-            {parseIntField(acaStepYear) != null &&
-              numField("Household size after step-down", acaSizeAfter, setAcaSizeAfter, {
-                hint: "Applies from the step-down year on. Hidden until a step-down year is entered — the value stays saved and prices exactly as before once a year is set.",
-                changed: changedFields.acaSizeAfter,
-              })}
+            <div className="col-span-2 sm:col-span-3">
+              <span className={labelCls}>Household steps{changedFields.acaSteps && <ChangedMark />}</span>
+              <p className={hintCls}>
+                Optional: one row per change in the household size — the year
+                the size changes (e.g. when a dependent leaves the return) and
+                the size from that year on. Each year&rsquo;s poverty-line
+                cliff and benchmark follow the size in force that year. Leave
+                empty for no steps — the household size above then applies to
+                every year.
+              </p>
+              {acaSteps.map((row, i) => (
+                <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
+                  <div className="w-32">
+                    {numField(`Step ${i + 1} from year`, row.fromYear, (v) =>
+                      setAcaSteps((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, fromYear: v } : r)),
+                      ),
+                    )}
+                  </div>
+                  <div className="w-32">
+                    {numField(`Step ${i + 1} household size`, row.householdSize, (v) =>
+                      setAcaSteps((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, householdSize: v } : r)),
+                      ),
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove household step ${i + 1}`}
+                    className="px-2 py-2 text-base text-[var(--dim)] hover:text-[var(--bad)]"
+                    onClick={() =>
+                      setAcaSteps((rows) => rows.filter((_, j) => j !== i))
+                    }
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {acaSteps.length < 40 && (
+                <button
+                  type="button"
+                  className="mt-2 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+                  onClick={() =>
+                    setAcaSteps((rows) => [
+                      ...rows,
+                      { fromYear: "", householdSize: "" },
+                    ])
+                  }
+                >
+                  Add a step
+                </button>
+              )}
+              {acaSteps.length > 0 && acaStepsFromRows(acaSteps) == null && (
+                <p className="mt-2 text-sm text-[var(--bad)]">
+                  Fill in the year and the household size on every step row.
+                  Until every row is complete, no steps apply.
+                </p>
+              )}
+            </div>
             {moneyField("ACA benchmark premium — couple / yr", benchCouple, setBenchCouple, {
               hint: "Second-lowest-cost Silver for the years you are both on the marketplace. Blank = the credit is not priced yet.",
               changed: changedFields.benchCouple,
@@ -6445,11 +6611,11 @@ export function RothConversion() {
             fields from them. This plan does not price them — it models interest
             and dividends from the yield fields under Your money.
           </p>
-          {parseIntField(acaStepYear) == null && (
+          {acaSteps.length === 0 && (
             <p className={hintCls}>
-              No step-down year is set, so the household size stays{" "}
+              No household steps are set, so the household size stays{" "}
               {parseIntField(acaSize) ?? "as entered"} for every year, including the
-              spouse-only years. Set the step-down year for when a child leaves the
+              spouse-only years. Add a step for when a child leaves the
               tax household.
             </p>
           )}
@@ -6584,10 +6750,11 @@ export function RothConversion() {
                 onChange={(e) => setCeilAcaFamilyOnly(e.target.checked)}
               />
               <label htmlFor="roth-ceil-aca-family-only" className="text-sm">
-                Only until the household steps down — after the step-down
-                year the plan stops defending the cliff and those years
-                price undefended. The credit in those years is still
-                worked out on the stepped-down household.
+                Only until the household steps down — after the first
+                step year in the household schedule the plan stops
+                defending the cliff and those years price undefended.
+                The credit in those years is still worked out on the
+                year&rsquo;s governing household size.
                 {changedFields.ceilAcaFamilyOnly && <ChangedMark />}
               </label>
             </div>
@@ -6926,7 +7093,20 @@ export function RothConversion() {
 
       {face === "plan" && (
         <section className={sectionCls} aria-label="What-if questions">
-          <h2 className="text-base font-semibold">What if…</h2>
+          <h2 className="text-base font-semibold">
+            <button
+              type="button"
+              aria-expanded={whatIfOpen}
+              aria-controls="roth-what-if-panel"
+              className="flex w-full items-center justify-between gap-3 text-left"
+              onClick={() => setWhatIfFolded(whatIfOpen)}
+            >
+              <span>What if…</span>
+              <FoldChevron open={whatIfOpen} />
+            </button>
+          </h2>
+          {whatIfOpen && (
+            <div id="roth-what-if-panel">
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
             One change at a time, priced from your saved plan through the
             scenario comparison. Asking a question changes nothing and saves
@@ -6958,7 +7138,21 @@ export function RothConversion() {
                     aria-pressed={active}
                     className={active ? ceilChipActiveCls : ceilChipCls}
                     disabled={runWhatIfMut.isPending}
-                    onClick={() => runWhatIf(def)}
+                    onClick={() => {
+                      // Clicking the lit chip again turns the
+                      // question off: its answer clears and the
+                      // face returns to the saved plan only.
+                      // Clicking any other chip prices that one.
+                      if (
+                        pendingWhatIfId == null &&
+                        whatIfResult != null &&
+                        whatIfResult.label === def.label
+                      ) {
+                        clearWhatIf();
+                      } else {
+                        runWhatIf(def);
+                      }
+                    }}
                   >
                     {def.label}
                   </button>
@@ -7013,6 +7207,8 @@ export function RothConversion() {
                   ? " Your plan has changed since this answer was priced — ask the question again for current figures."
                   : ""}
               </p>
+            </div>
+          )}
             </div>
           )}
         </section>
@@ -7255,7 +7451,7 @@ export function RothConversion() {
                       {er.fillOutcome === "aca-inactive-only-ceiling"
                         ? `The only ceiling switched on is the ACA limit, and nobody is on the marketplace in ${startYear}, so it sets no fill target this year.`
                         : er.fillOutcome === "era-cliff-off"
-                          ? `The only ceiling switched on is the ACA limit, and this plan defends it only until the household steps down — ${startYear} is at or past the step-down year, so it sets no fill target this year.`
+                          ? `The only ceiling switched on is the ACA limit, and this plan defends it only until the household steps down — ${startYear} is at or past the household schedule's first step year, so it sets no fill target this year.`
                         : er.fillOutcome === "reserve-floor"
                           ? `The pre-tax balance is already at the preserved reserve (${fmtDollars(planInputs.preservePretax ?? 0)}), so the reserve leaves no room to convert in ${startYear}.`
                           : er.ytdConverted > 0
@@ -8595,16 +8791,73 @@ export function RothConversion() {
           aria-label="What the results are calculated with"
           className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
         >
-          <p className="tnum text-sm">
-            <strong>Calculated with:</strong> Pre-tax — You {fmtDollars(planInputs.pretaxStart)} ·
-            Pre-tax — wife {fmtDollars(planInputs.pretaxSpouseStart ?? 0)} ·
-            Roth {fmtDollars(planInputs.rothStart)} · Taxable {fmtDollars(planInputs.taxableStart)}
-            {!balanceOverrides.taxable && (parseDollars(taxableExclude) ?? 0) > 0
-              ? ` (after excluding ${fmtDollars(Math.max(0, parseDollars(taxableExclude) ?? 0))} from the plan)`
-              : ""}{" "}
-            ·
-            HSA {fmtDollars(planInputs.hsaStart)} · Spending {fmtDollars(planInputs.annualSpending)}/yr ·
-            Convert ages {planInputs.windowStartAge} → {planInputs.windowStopAge} · Fill to:{" "}
+          <p className="text-sm">
+            <strong>Calculated with:</strong>
+          </p>
+          <div
+            className="mt-2 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
+            role="img"
+            aria-label={`Starting balances: ${calcStartSegs
+              .map(
+                (s) =>
+                  `${s.label} ${fmtDollars(s.dollars)}, ${calcStartTotal > 0 ? ((s.dollars / calcStartTotal) * 100).toFixed(1) : "0.0"} percent`,
+              )
+              .join("; ")}`}
+          >
+            {calcStartSegs
+              .filter((s) => s.dollars > 0)
+              .map((s) => (
+                <div
+                  key={s.key}
+                  className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
+                  style={{
+                    width: `${calcStartTotal > 0 ? (s.dollars / calcStartTotal) * 100 : 0}%`,
+                    background: s.color,
+                  }}
+                >
+                  {calcStartTotal > 0 && (s.dollars / calcStartTotal) * 100 >= 7 && (
+                    <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
+                      {s.label}
+                    </span>
+                  )}
+                </div>
+              ))}
+          </div>
+          <ul className="mt-2 flex flex-wrap gap-x-5 gap-y-1.5">
+            {calcStartSegs.map((s) => (
+              <li
+                key={s.key}
+                className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+              >
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+                  style={{ background: s.color }}
+                />
+                <span className="font-medium">{s.label}</span>
+                <span>{fmtDollars(s.dollars)}</span>
+                <span className="text-[var(--dim)]">
+                  ·{" "}
+                  {calcStartTotal > 0
+                    ? ((s.dollars / calcStartTotal) * 100).toFixed(1)
+                    : "0.0"}
+                  %
+                </span>
+                {s.key === "taxable" &&
+                !balanceOverrides.taxable &&
+                (parseDollars(taxableExclude) ?? 0) > 0 ? (
+                  <span className="text-[var(--dim)]">
+                    (after excluding{" "}
+                    {fmtDollars(Math.max(0, parseDollars(taxableExclude) ?? 0))}{" "}
+                    from the plan)
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          <p className="tnum mt-2 text-sm">
+            Spending {fmtDollars(planInputs.annualSpending)}/yr · Convert ages{" "}
+            {planInputs.windowStartAge} → {planInputs.windowStopAge} · Fill to:{" "}
             {ceilingsSummary} · Draw order {drawOrderLabel(planInputs.drawOrder)}
             {planInputs.drawOrderSwitchAge != null && planInputs.drawOrderAfter != null
               ? `, then ${drawOrderLabel(planInputs.drawOrderAfter)} from ${planInputs.drawOrderSwitchAge}`
@@ -9659,9 +9912,7 @@ export function RothConversion() {
               <span className="block text-base font-semibold">Year by year — your fill settings</span>
               <span className="tnum mt-0.5 block text-sm text-[var(--dim)]">{yearTableSummary}</span>
             </span>
-            <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
-              {yearTableOpen ? "▾" : "▸"}
-            </span>
+            <FoldChevron open={yearTableOpen} className="mt-0.5" />
           </button>
           {yearTableOpen && (
             <>
@@ -9814,9 +10065,7 @@ export function RothConversion() {
                 </span>
               )}
             </span>
-            <span aria-hidden="true" className="shrink-0 text-[var(--dim)]">
-              {labDialsOpen ? "▾" : "▸"}
-            </span>
+            <FoldChevron open={labDialsOpen} />
           </button>
           {labDialsOpen && (
           <div id="lab-dials-body">
@@ -9908,12 +10157,64 @@ export function RothConversion() {
             {moneyField("ACA benchmark — one spouse / yr", labDialBenchSingle, setLabDialBenchSingle, {
               idLabel: "ACA benchmark — one spouse / yr — debate dial",
             })}
-            {numField("Household size after step-down", labDialAcaSizeAfter, setLabDialAcaSizeAfter, {
-              idLabel: "Household size after step-down — debate dial",
-            })}
-            {numField("Step-down year", labDialStepYear, setLabDialStepYear, {
-              idLabel: "Step-down year — debate dial",
-            })}
+            <div className="col-span-2 sm:col-span-3">
+              <span className={labelCls}>Household schedule — debate dial</span>
+              <p className={hintCls}>
+                Optional: rows here replace each row&rsquo;s whole household
+                schedule for the debate (the year each size takes effect and
+                the size). No rows = each row keeps its own schedule.
+              </p>
+              {labDialAcaSteps.map((row, i) => (
+                <div key={i} className="mt-2 flex flex-wrap items-end gap-2">
+                  <div className="w-32">
+                    {numField(`Dial step ${i + 1} from year`, row.fromYear, (v) =>
+                      setLabDialAcaSteps((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, fromYear: v } : r)),
+                      ),
+                      { idLabel: `Dial step ${i + 1} from year — debate dial` },
+                    )}
+                  </div>
+                  <div className="w-32">
+                    {numField(`Dial step ${i + 1} household size`, row.householdSize, (v) =>
+                      setLabDialAcaSteps((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, householdSize: v } : r)),
+                      ),
+                      { idLabel: `Dial step ${i + 1} household size — debate dial` },
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove dial household step ${i + 1}`}
+                    className="px-2 py-2 text-base text-[var(--dim)] hover:text-[var(--bad)]"
+                    onClick={() =>
+                      setLabDialAcaSteps((rows) => rows.filter((_, j) => j !== i))
+                    }
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {labDialAcaSteps.length < 40 && (
+                <button
+                  type="button"
+                  className="mt-2 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
+                  onClick={() =>
+                    setLabDialAcaSteps((rows) => [
+                      ...rows,
+                      { fromYear: "", householdSize: "" },
+                    ])
+                  }
+                >
+                  Add a step
+                </button>
+              )}
+              {labDialAcaSteps.length > 0 && acaStepsFromRows(labDialAcaSteps) == null && (
+                <p className="mt-2 text-sm text-[var(--bad)]">
+                  Fill in the year and the household size on every dial step
+                  row. Until every row is complete, the dial does not apply.
+                </p>
+              )}
+            </div>
           </div>
           </div>
 
@@ -10439,8 +10740,9 @@ export function RothConversion() {
                         />
                         <label htmlFor="lab-ed-aca-family-only" className="text-sm">
                           Only until the household steps down — after the
-                          step-down year this strategy stops defending the
-                          cliff and those years price undefended.
+                          first step year in the household schedule this
+                          strategy stops defending the cliff and those
+                          years price undefended.
                         </label>
                       </div>
                       {moneyField("Cliff safety buffer for this strategy", edCliffBuffer, setEdCliffBuffer, {
@@ -10596,9 +10898,7 @@ export function RothConversion() {
           onClick={toggleAssumptions}
         >
           <span className="block text-base font-semibold">Assumptions & limits — read before relying on a number</span>
-          <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
-            {assumptionsOpen ? "▾" : "▸"}
-          </span>
+          <FoldChevron open={assumptionsOpen} className="mt-0.5" />
         </button>
         {assumptionsOpen && (
         <>

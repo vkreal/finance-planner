@@ -570,6 +570,60 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     solverEngine: "historical", solverTargetPct: 95,
     expected: {"solvedSpendingCents":8190000,"successRate":96.6,"medianEndingCents":650861099,"solvedPercent":null},
   },
+  // ---- Prompt 13 guardrails fixes (contract v40): the two
+  // equality rails, genuine crossings past the tolerance, and
+  // the solver's inclusive endpoint. The equality expectations
+  // are the audit's hand-derived rule-correct figures (the
+  // documented rule is strict: at a rail, neither adjustment
+  // fires); the genuine-crossing and solver expectations are
+  // hand-derived in each case's note and were reproduced by
+  // direct engine runs on the fixed code. ----
+  {
+    id: "proj-guardrails-equality-cut-no-fire",
+    kind: "projection",
+    note: "Prompt 13 Defect 1, Case A (equality at the CUT rail, hand-derived): $1,200,000 portfolio, $200,000/yr spending, retire at 60, 0% returns, default 120/80/10 guardrails. The initial rate is 200000/1200000 = 16⅔%; at age 61 the balance is exactly $1,000,000, so the current 20% rate is mathematically EQUAL to 120% of the initial rate — the strict rule fires NO cut, so age-61 spending stays $200,000 and the plan ends at $800,000. Before the tolerance fix the raw float rail (120/100)×initial evaluated to 0.19999999999999998 < 0.2 and the engine cut to $180,000 (ending $820,000).",
+    input: { portfolioCents: 120000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":80000000,"grossByAgeCents":[{"age":61,"cents":20000000}]},
+  },
+  {
+    id: "proj-guardrails-equality-raise-no-fire",
+    kind: "projection",
+    note: "Prompt 13 Defect 1, Case B (equality at the RAISE rail, hand-derived): $1,000,000 portfolio, $200,000/yr spending, retire at 60, default guardrails, initial rate 20%. The audit's return path (+56.25% then 0%) is reproduced at the step that matters by a uniform +56.25% expected return: after age 60 the balance is exactly $1,250,000 (800,000 × 1.5625), so the age-61 rate 200000/1250000 = 16% is mathematically EQUAL to 80% of the initial rate — the strict rule fires NO raise, so age-61 spending stays $200,000. (The second year's return differs from the audit path, so the ending — (1,250,000 − 200,000) × 1.5625 = $1,640,625 — reflects the uniform return; the pinned age-61 gross is the audit's discriminating figure.) Before the fix the raw float rail (80/100)×0.2 evaluated to 0.16000000000000003 > 0.16 and the engine raised to $220,000.",
+    input: { portfolioCents: 100000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 56.25, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":164062500,"grossByAgeCents":[{"age":61,"cents":20000000}]},
+  },
+  {
+    id: "proj-guardrails-genuine-cut-compounds",
+    kind: "projection",
+    note: "Prompt 13 companion pin: a rate genuinely past the cut rail by far more than the 1e-9 tolerance still fires exactly ONE adjustment per year, compounding on the adjusted level (hand-derived): $1,000,000 portfolio, $50,000/yr spending (5% initial rate; cut rail 6%), −50% returns every year. Age 60: no adjustment (rate = initial), balance (1,000,000 − 50,000) × 0.5 = $475,000. Age 61: rate 50,000/475,000 = 10.53% > 6% → cut 10% to $45,000; balance (475,000 − 45,000) × 0.5 = $215,000. Age 62: rate 45,000/215,000 = 20.93% > 6% → cut 10% again, applied to $45,000 (not reset to $50,000) = $40,500; ending (215,000 − 40,500) × 0.5 = $87,250.",
+    input: { portfolioCents: 100000000, spendingCents: 5000000, currentAge: 60, retirementAge: 60, endAge: 63, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: -50, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":8725000,"grossByAgeCents":[{"age":61,"cents":4500000},{"age":62,"cents":4050000}]},
+  },
+  {
+    id: "proj-guardrails-genuine-raise-fires",
+    kind: "projection",
+    note: "Prompt 13 companion pin: a rate genuinely past the raise rail by far more than the tolerance still fires (hand-derived): $1,000,000 portfolio, $200,000/yr spending (20% initial rate; raise rail 16%), +100% returns every year. Age 60: no adjustment, balance (1,000,000 − 200,000) × 2 = $1,600,000. Age 61: rate 200,000/1,600,000 = 12.5% < 16% by 3.5 points → raise 10% to $220,000; ending (1,600,000 − 220,000) × 2 = $2,760,000.",
+    input: { portfolioCents: 100000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 100, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":276000000,"grossByAgeCents":[{"age":61,"cents":22000000}]},
+  },
+  {
+    id: "solver-guardrails-one-year-fully-funded",
+    kind: "solver",
+    note: "Prompt 13 Defect 2, one-year case (the audit's reproduction, hand-derived): $1,000 portfolio, retire at 60, end at 61, no extra income, 0% return / 0% volatility, Monte Carlo engine (seed 12345, 1,000 identical zero-volatility runs), 100% never-short target. A $1,000 withdrawal from a $1,000 portfolio is fully funded (the portfolio ends at $0 but no year is short), so the guardrails maximum is $1,000 with a $0 median ending. Before the inclusive-endpoint fix the scan bound subtracted one cent and never tested the $1,000 step, solving to $900 (the Constant solver's control figure was $1,000 all along).",
+    input: { portfolioCents: 100000, spendingCents: 100000, currentAge: 60, retirementAge: 60, endAge: 61, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    mcSeed: 12345,
+    solverEngine: "montecarlo", solverTargetPct: 100,
+    expected: {"solvedSpendingCents":100000,"successRate":100,"medianEndingCents":0,"solvedPercent":null},
+  },
+  {
+    id: "solver-guardrails-income-only-five-year",
+    kind: "solver",
+    note: "Prompt 13 Defect 2, income-only case (the audit's reproduction, hand-derived): $0 portfolio, $100/yr extra income from age 60, retirement ages 60–64 (end age 65), 0% return / 0% volatility, Monte Carlo engine (seed 12345), 100% target. The $100 income funds $100 of spending every year with no portfolio draw (each year's net withdrawal is $0), so the guardrails maximum is $100 with a $0 median ending. Before the fix the scan bound was floor((0 + 10000 − 1) / 10000) = 0 steps and the solver reported $0.",
+    input: { portfolioCents: 0, spendingCents: 10000, currentAge: 60, retirementAge: 60, endAge: 65, stocksPct: 75, extraIncomeCents: 10000, extraIncomeStartAge: 60, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    mcSeed: 12345,
+    solverEngine: "montecarlo", solverTargetPct: 100,
+    expected: {"solvedSpendingCents":10000,"successRate":100,"medianEndingCents":0,"solvedPercent":null},
+  },
 ];
 
 export type FixtureCaseResult = {

@@ -25,6 +25,7 @@ export const privileged = definePrivilegedContracts({
           name: z.string(),
           sizeBytes: z.number(),
           modifiedMs: z.number(),
+          source: z.enum(["own", "legacy"]),
         }),
       ),
     }),

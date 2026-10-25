@@ -154,6 +154,7 @@ BALANCE_SEMANTICS,
 CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
 EDUCATION_CREDIT_SEMANTICS,
+GUARDRAILS_SEMANTICS,
 LAW_YEAR_SEMANTICS,
 PLAYGROUND_YEAR_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
@@ -4076,7 +4077,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         seed.preservePretaxCents === 25000000,
         seed.heirRatePct === 24,
         seed.acaHouseholdSize === 2,
-        seed.acaHouseholdSizeAfter === 2,
+        seed.acaHouseholdSchedule === null,
         seed.spouseSoleBeneficiary === true,
       ];
       return {
@@ -4209,6 +4210,28 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       ];
       return {
         phrasesFound: phrases.filter((p) => UNPAID_TAX_SEMANTICS.includes(p))
+          .length,
+      };
+    },
+  },
+  {
+    id: "api-guardrails-semantics",
+    kind: "apicontract",
+    note: "Guardrails semantics (Prompt 13 fix, contract v40): describeApi publishes GUARDRAILS_SEMANTICS verbatim (the handler returns this exact constant), and it must state the shipped behaviour — the strict rail rule ('strictly above guardrailsCutPct', 'strictly below guardrailsRaisePct', a rate exactly AT a rail fires neither), the numerical tolerance ('relative tolerance of 1e-9') with its IEEE-754 rationale specimens (the cut product '0.19999999999999998' and the raise product '0.16000000000000003'), the shared-comparison guarantee ('one shared helper', so simulator and solver cannot disagree), and the solver endpoint ('INCLUSIVE of its proven ceiling', feasibility 'decided by runNeverRunsOut'). The behaviour itself is pinned by the retirement suite's Prompt 13 fixtures; this fixture pins only that the published text cannot silently lose the tolerance or the inclusive endpoint.",
+    expected: { phrasesFound: 8 },
+    actual: () => {
+      const phrases = [
+        "strictly above guardrailsCutPct",
+        "strictly below guardrailsRaisePct",
+        "relative tolerance of 1e-9",
+        "0.19999999999999998",
+        "0.16000000000000003",
+        "one shared helper",
+        "INCLUSIVE of its proven ceiling",
+        "decided by runNeverRunsOut",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => GUARDRAILS_SEMANTICS.includes(p))
           .length,
       };
     },
@@ -4600,8 +4623,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         drawOrder: DEFAULT_DRAW_ORDER,
         spouseSoleBeneficiary: true,
         acaHouseholdSize: 2,
-        acaHouseholdSizeAfter: 2,
-        acaStepDownYear: null,
+        acaHouseholdSchedule: null,
         acaBenchmarkCouple: null,
         acaBenchmarkSingle: null,
         inflationPct: 2.5,

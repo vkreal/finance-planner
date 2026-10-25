@@ -34,12 +34,13 @@ BACKUP_KEEP_NEWEST,
 chooseBackupFilename,
 isBackupFilename,
 legacyBackupsDir,
-mergeBackupListings,
+mergeBackupListingsWithSource,
 perSpaceBackupsDir,
 planDeleteAllBackups,
 planDeleteBackup,
 planPruneBackups,
 type BackupFileEntry,
+type BackupListEntry,
 } from "./backupCore";
 
 export const privileged = definePrivilegedContracts({
@@ -55,6 +56,10 @@ export const privileged = definePrivilegedContracts({
           name: z.string(),
           sizeBytes: z.number(),
           modifiedMs: z.number(),
+          // Which folder the listing resolved this backup to:
+          // "own" (deletable from the app) or "legacy" (exists
+          // only in the read-only legacy shared folder).
+          source: z.enum(["own", "legacy"]),
         }),
       ),
     }),
@@ -163,10 +168,12 @@ function legacyBackupFiles(spaceDir: string): BackupFileEntry[] {
 /**
  * The listing a space sees: its own backups unioned with the
  * legacy folder's, per-space copy winning any duplicate name
- * (backupCore.mergeBackupListings).
+ * (backupCore.mergeBackupListingsWithSource). Each entry carries
+ * its source so the client can mark legacy-only backups as
+ * read-only instead of offering a Delete that must refuse.
  */
-function listBackupFiles(spaceDir: string): BackupFileEntry[] {
-  return mergeBackupListings(
+function listBackupFiles(spaceDir: string): BackupListEntry[] {
+  return mergeBackupListingsWithSource(
     ownBackupFiles(spaceDir),
     legacyBackupFiles(spaceDir),
   );

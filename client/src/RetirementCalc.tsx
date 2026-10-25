@@ -16,6 +16,8 @@ YAxis,
 } from "recharts";
 import { api, type ApiResponse } from "./api";
 import { Explainer } from "./Explainer";
+import { FoldChevron } from "./FoldChevron";
+import { usePersistedFold } from "./foldState";
 import {
 HISTORICAL,
 HISTORICAL_SOURCE_NAME,
@@ -383,6 +385,23 @@ export function RetirementCalc() {
   const data: CalcData | undefined = q.data;
 
   const [tab, setTab] = useState<Tab>("projection");
+  /* Plan-inputs form fold: the whole inputs panel collapses
+     behind the chip chevron on its top row, so it can be hidden
+     once set. Persisted in the generic fold store (server-backed,
+     no localStorage) following the app's pattern for a fold that
+     DEFAULTS TO EXPANDED — the store only carries folds left in
+     their non-default state, so this stores the inverse flag: an
+     entry under "retirement.inputsFolded" means the user left the
+     form folded shut; no entry means expanded, its default. The
+     top row (Reset / plan status / Save controls) stays visible
+     as the fold's header either way; the results below the form
+     are outside the fold and keep recalculating exactly as
+     before. Display only — no field, save, or figure reads this
+     flag. */
+  const [inputsFolded, setInputsFolded] = usePersistedFold(
+    "retirement.inputsFolded",
+  );
+  const inputsOpen = !inputsFolded;
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -1810,7 +1829,7 @@ export function RetirementCalc() {
   const spendingShortLine = spendingEqualsTrailing ? (
     <>
       From your {spendingMonthsPhrase} of spending (True cost).{" "}
-      {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Roth view models that tax year by year."}
+      {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Tax Plan view models that tax year by year."}
     </>
   ) : (
     <>
@@ -1819,7 +1838,7 @@ export function RetirementCalc() {
         ? `${fmt(trailingMonthlyCents)}/mo`
         : fmt(trailingSpendingCents)}
       {". "}
-      {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Roth view models that tax year by year."}
+      {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Tax Plan view models that tax year by year."}
     </>
   );
   const spendingMore = spendingEqualsTrailing ? (
@@ -2310,10 +2329,13 @@ export function RetirementCalc() {
         </p>
       )}
 
-      {/* inputs: plan controls and the baseline note stay
-          above the groups, always visible; the fields below
-          are grouped You / Money / Assumptions — display
-          only, every field keeps its control and behavior. */}
+      {/* inputs: the top row (Reset / plan status / Save
+          controls) is the fold header and stays visible
+          whether the form is open or hidden; everything
+          under it — the autosave note, the baseline notes,
+          and the fields grouped You / Money / Assumptions —
+          hides when folded. Display only, every field keeps
+          its control and behavior exactly as before. */}
       <section
         aria-label="Retirement inputs"
         className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
@@ -2392,7 +2414,19 @@ export function RetirementCalc() {
           {data.scenarios.length >= 3 && (
             <span className="text-xs text-[var(--dim)]">Maximum 3 scenarios saved — delete one below to save another.</span>
           )}
+          <button
+            type="button"
+            aria-label={inputsOpen ? "Hide plan inputs" : "Show plan inputs"}
+            aria-expanded={inputsOpen}
+            aria-controls="retirement-inputs-panel"
+            onClick={() => setInputsFolded(inputsOpen)}
+            className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+          >
+            <FoldChevron open={inputsOpen} />
+          </button>
         </div>
+        {inputsOpen && (
+          <div id="retirement-inputs-panel">
         <p className="mt-3 text-xs text-[var(--dim)]" aria-live="polite">
           {save.isPending ? "Saving…" : init ? "Inputs save automatically, and the results below recalculate as you type." : ""}
           {!inputs && " Check the inputs below — the plan needs a portfolio, spending, and an end age after the current age."}
@@ -2708,6 +2742,8 @@ export function RetirementCalc() {
             </div>
           )}
         </div>
+          </div>
+        )}
       </section>
 
       {/* Calculated-with strip: the results below always declare

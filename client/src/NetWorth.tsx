@@ -2876,7 +2876,10 @@ export function NetWorthView() {
         return;
       }
       setBackupError("");
-      setBackupNotice("");
+      // Show the server's confirmation ("Deleted <name>.") — a
+      // delete that silently clears feedback reads as "nothing
+      // happened" when the row's disappearance is missed.
+      setBackupNotice(r.reason);
       invalidateBackups();
     },
     onError: (e) => setBackupError(String(e)),
@@ -2889,7 +2892,7 @@ export function NetWorthView() {
         return;
       }
       setBackupError("");
-      setBackupNotice("");
+      setBackupNotice(r.reason);
       setConfirmDeleteAllBackups(false);
       invalidateBackups();
     },
@@ -3068,7 +3071,6 @@ export function NetWorthView() {
     historyCollapsed,
   } = model;
   const activeAccounts = accounts.filter((a) => !a.archived);
-  const hasPropertyAccounts = accounts.some((a) => a.propertyKind !== "none");
   const latestPropertyNet = latest
     ? propertyNetForSnapshot(latest, kindById)
     : null;
@@ -3194,26 +3196,18 @@ export function NetWorthView() {
   const ytdCents = ytdBaseline ? latestTotal - ytdBaseline.totalCents : 0;
   const ytdPct =
     ytdBaseline && ytdBaseline.totalCents !== 0 ? ytdCents / ytdBaseline.totalCents : 0;
-  const kpis: { label: string; value: string; sub: string; tone: number | null }[] = [
-    {
-      label: "Net worth",
-      value: fmt(latestTotal),
-      sub: latest ? `as of ${fmtDateLong(latest.date)}` : "",
-      tone: null,
-    },
-    {
-      label: "Since last snapshot",
-      value: prev ? fmtSigned(sinceLastCents) : "—",
-      sub: prev ? `${fmtPct(sinceLastPct)} · vs ${fmtDateShort(prev.date)}` : "Only one snapshot so far",
-      tone: sinceLastCents,
-    },
-    {
-      label: "Year to date",
-      value: ytdBaseline ? fmtSigned(ytdCents) : "—",
-      sub: ytdBaseline ? `${fmtPct(ytdPct)} · vs ${fmtDateShort(ytdBaseline.date)}` : "",
-      tone: ytdCents,
-    },
-  ];
+  // Combined stat strip values — same dashboard figures as the
+  // former three KPI cards, no recomputation changes. The latest
+  // snapshot date is shown only in the strip (the page header no
+  // longer repeats it).
+  const sinceLastToneCls =
+    sinceLastCents > 0
+      ? "text-[var(--accent)]"
+      : sinceLastCents < 0
+        ? "text-[var(--bad)]"
+        : "";
+  const ytdToneCls =
+    ytdCents > 0 ? "text-[var(--accent)]" : ytdCents < 0 ? "text-[var(--bad)]" : "";
 
   /* ----- net worth target (follows the include-property toggle
      because every snapshot totalCents already does) ----- */
@@ -3552,10 +3546,11 @@ export function NetWorthView() {
       <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="display text-3xl font-semibold">Net Worth</h2>
-          <p className="mt-0.5 text-sm text-[var(--dim)]">
-            {latest ? `as of ${fmtDateLong(latest.date)}` : "No snapshots yet"}
-            {latest?.note ? ` · ${latest.note}` : ""}
-          </p>
+          {!latest ? (
+            <p className="mt-0.5 text-sm text-[var(--dim)]">No snapshots yet</p>
+          ) : latest.note ? (
+            <p className="mt-0.5 text-sm text-[var(--dim)]">{latest.note}</p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -3662,35 +3657,37 @@ export function NetWorthView() {
         />
       )}
 
-      {/* property include toggle */}
-      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3 sm:px-4">
-        <label
-          htmlFor="nw-include-property"
-          className="flex cursor-pointer items-center gap-2.5 text-base font-medium text-[var(--text)]"
-        >
-          <input
-            id="nw-include-property"
-            type="checkbox"
-            role="switch"
-            aria-label="Include house & mortgage"
-            className="h-5 w-5 shrink-0 accent-[var(--accent)]"
-            checked={includeProperty}
-            disabled={setIncludeProperty.isPending}
-            onChange={(e) => setIncludeProperty.mutate(e.target.checked)}
-          />
-          Include house &amp; mortgage
-        </label>
-        <p className="text-sm text-[var(--dim)]">
-          {includeProperty
-            ? latestPropertyNet != null
-              ? `On — property net ${fmt(latestPropertyNet)} is counted in totals and charts, outside the tax buckets.`
-              : "On — property assets add and property liabilities subtract in totals and charts, outside the tax buckets."
-            : hasPropertyAccounts
-              ? `Off — property accounts are excluded from totals, buckets, and charts${latestPropertyNet != null ? ` (latest property net ${fmt(latestPropertyNet)} not counted)` : ""}.`
-              : "Off — property accounts (a house, its mortgage) stay out of totals, buckets, and charts until you turn this on."}
-        </p>
+      {/* property include toggle — slim one-line row */}
+      <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 sm:px-4">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <label
+            htmlFor="nw-include-property"
+            className="flex cursor-pointer items-center gap-2.5 text-base font-medium whitespace-nowrap text-[var(--text)]"
+          >
+            <input
+              id="nw-include-property"
+              type="checkbox"
+              role="switch"
+              aria-label="Include house & mortgage"
+              className="h-5 w-5 shrink-0 accent-[var(--accent)]"
+              checked={includeProperty}
+              disabled={setIncludeProperty.isPending}
+              onChange={(e) => setIncludeProperty.mutate(e.target.checked)}
+            />
+            Include house &amp; mortgage
+          </label>
+          <span className="text-sm whitespace-nowrap text-[var(--dim)]">
+            {latestPropertyNet != null
+              ? includeProperty
+                ? `· property net ${fmt(latestPropertyNet)} counted`
+                : `· property net ${fmt(latestPropertyNet)} not counted`
+              : includeProperty
+                ? "· property counted"
+                : "· property not counted"}
+          </span>
+        </div>
         {propertyAccountsWithoutValue.length > 0 && latest && (
-          <p className="w-full text-sm text-[var(--warn)]">
+          <p className="mt-1.5 w-full text-sm text-[var(--warn)]">
             {propertyAccountsWithoutValue.map((a) => a.name).join(", ")}{" "}
             {propertyAccountsWithoutValue.length === 1 ? "has" : "have"} no
             recorded value in any snapshot yet, so there is nothing for this
@@ -3706,33 +3703,59 @@ export function NetWorthView() {
         )}
       </div>
 
-      {/* KPI row */}
-      <div className="mt-4 grid grid-cols-2 gap-2.5 lg:grid-cols-3 sm:gap-3">
-        {kpis.map((k) => (
-          <div
-            key={k.label}
-            className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4"
-          >
+      {/* combined stat strip — one full-width strip: prominent
+          net worth with its date, plus the two deltas as compact
+          lines beside it on wide screens and below it on phones */}
+      <section
+        aria-label="Net worth summary"
+        className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
+          <div className="min-w-0">
             <p className="text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase">
-              {k.label}
+              Net worth
             </p>
-            <p
-              className={`tnum display mt-1.5 text-xl font-semibold whitespace-nowrap sm:text-2xl ${
-                k.tone == null
-                  ? ""
-                  : k.tone > 0
-                    ? "text-[var(--accent)]"
-                    : k.tone < 0
-                      ? "text-[var(--bad)]"
-                      : ""
-              }`}
-            >
-              {k.value}
+            <p className="tnum display mt-1.5 text-3xl font-semibold whitespace-nowrap sm:text-4xl">
+              {fmt(latestTotal)}
             </p>
-            <p className="tnum mt-1 text-xs whitespace-nowrap text-[var(--dim)]">{k.sub}</p>
+            <p className="tnum mt-1 text-sm whitespace-nowrap text-[var(--dim)]">
+              {latest ? `as of ${fmtDateLong(latest.date)}` : ""}
+            </p>
           </div>
-        ))}
-      </div>
+          <div className="flex min-w-0 flex-col gap-2 sm:items-end">
+            <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm sm:justify-end">
+              <span className="text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase">
+                Since last snapshot
+              </span>
+              <span
+                className={`display text-lg leading-tight font-semibold whitespace-nowrap sm:text-xl ${sinceLastToneCls}`}
+              >
+                {prev ? fmtSigned(sinceLastCents) : "—"}
+              </span>
+              <span className="whitespace-nowrap text-[var(--dim)]">
+                {prev
+                  ? `${fmtPct(sinceLastPct)} · since ${fmtDateLong(prev.date)}`
+                  : "Only one snapshot so far"}
+              </span>
+            </p>
+            <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm sm:justify-end">
+              <span className="text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase">
+                Year to date
+              </span>
+              <span
+                className={`display text-lg leading-tight font-semibold whitespace-nowrap sm:text-xl ${ytdToneCls}`}
+              >
+                {ytdBaseline ? fmtSigned(ytdCents) : "—"}
+              </span>
+              {ytdBaseline && (
+                <span className="whitespace-nowrap text-[var(--dim)]">
+                  {`${fmtPct(ytdPct)} · vs ${fmtDateLong(ytdBaseline.date)}`}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+      </section>
 
       {/* current bucket mix — one stacked bar from the latest
           snapshot's bucket subtotals */}
@@ -5363,7 +5386,10 @@ export function NetWorthView() {
         >
           <p>
             Encrypted backup files stored outside this app. Deleting here
-            removes the actual file.
+            removes the actual file. A backup marked “Legacy folder” sits
+            in the old shared backups folder, which is read-only from
+            here — it can still be restored, but it can't be deleted from
+            this panel.
           </p>
         </Explainer>
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -5421,19 +5447,31 @@ export function NetWorthView() {
                         {fmtBytes(b.sizeBytes)}
                       </span>
                     </span>
-                    <button
-                      type="button"
-                      aria-label={`Delete ${b.name}`}
-                      className="shrink-0 rounded-[var(--radius)] border border-[var(--bad)] px-3 py-1.5 text-sm font-medium text-[var(--bad)] disabled:opacity-50"
-                      disabled={deleteBackup.isPending || deleteAllBackups.isPending || createBackup.isPending}
-                      onClick={() => deleteBackup.mutate(b.name)}
-                    >
-                      Delete
-                    </button>
+                    {b.source === "legacy" ? (
+                      <span
+                        className="shrink-0 text-xs text-[var(--dim)]"
+                        title="Stored in the old shared backups folder, which is read-only — this backup can be restored, but it can't be deleted from here."
+                      >
+                        Legacy folder — read-only
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label={`Delete ${b.name}`}
+                        className="shrink-0 rounded-[var(--radius)] border border-[var(--bad)] px-3 py-1.5 text-sm font-medium text-[var(--bad)] disabled:opacity-50"
+                        disabled={deleteBackup.isPending || deleteAllBackups.isPending || createBackup.isPending}
+                        onClick={() => deleteBackup.mutate(b.name)}
+                      >
+                        Delete
+                      </button>
+                    )}
                   </li>
                 );
               })}
             </ul>
+            {(backupsQuery.data?.backups ?? []).some(
+              (b) => b.source === "own",
+            ) && (
             <div className="mt-3 border-t border-[var(--border)] pt-3">
               {!confirmDeleteAllBackups ? (
                 <button
@@ -5448,8 +5486,17 @@ export function NetWorthView() {
               ) : (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm text-[var(--bad)]">
-                    Delete all {(backupsQuery.data?.backups ?? []).length}{" "}
+                    Delete all{" "}
+                    {
+                      (backupsQuery.data?.backups ?? []).filter(
+                        (b) => b.source === "own",
+                      ).length
+                    }{" "}
                     backups? This cannot be undone.
+                    {(backupsQuery.data?.backups ?? []).some(
+                      (b) => b.source === "legacy",
+                    ) &&
+                      " Legacy-folder backups stay — that folder is read-only."}
                   </span>
                   <button
                     type="button"
@@ -5473,6 +5520,7 @@ export function NetWorthView() {
                 </div>
               )}
             </div>
+            )}
           </>
         )}
         {backupError && (
