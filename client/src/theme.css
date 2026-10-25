@@ -61,6 +61,33 @@
   }
 }
 
+/* Shared dropdown caret for every <select> in the app
+   (2026-10-25: the native caret sat ~4px from the field's right
+   edge). The native arrow is replaced with the same crisp drawn
+   chevron used elsewhere (an SVG background — a vector stroke,
+   not a font glyph), inset 12px from the right edge to match the
+   fields' horizontal padding rhythm, and every select gets 32px
+   of right padding so the selected value's text can never run
+   underneath the caret. One shared rule, so all selects match;
+   behavior and values are untouched. This rule is unlayered, so
+   its padding-right wins over the Tailwind px-* utilities the
+   selects carry (their left padding is unaffected). */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 6 8 10.5 12.5 6' stroke='%236b7a70' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px;
+  padding-right: 32px;
+}
+
+@media (prefers-color-scheme: dark) {
+  select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 6 8 10.5 12.5 6' stroke='%239aa695' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+}
+
 .display {
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
 }

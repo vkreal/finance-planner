@@ -223,18 +223,11 @@ export function YearInSpendingBlock({
     <section
       id="section-year-in-spending"
       aria-label="Year in spending"
-      className="mt-8 scroll-mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
+      className="mt-8 scroll-mt-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="display text-xl font-semibold">Year in spending</h2>
         <div className="flex flex-wrap items-center gap-2">
-          <YearPicker
-            id="year-in-spending-year"
-            ariaLabel="Select year for Year in spending"
-            selectedYear={selectedYear}
-            options={yearOptions}
-            onChange={setSelectedYear}
-          />
           <button
             type="button"
             className={btnGhost}
@@ -244,6 +237,13 @@ export function YearInSpendingBlock({
           >
             {collapsed ? "Expand all" : "Collapse all"}
           </button>
+          <YearPicker
+            id="year-in-spending-year"
+            ariaLabel="Select year for Year in spending"
+            selectedYear={selectedYear}
+            options={yearOptions}
+            onChange={setSelectedYear}
+          />
         </div>
       </div>
 

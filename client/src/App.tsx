@@ -8,7 +8,13 @@ type FormEvent,
 type ReactNode,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
+import {
+  PERMANENT_ACTION_STATUSES,
+  SafeAreaTopScrim,
+  SpaceActionError,
+  actionRetryDelay,
+  shouldRetryAction,
+} from "@hatch/space-sdk/client";
 import {
 Bar,
 BarChart,
@@ -56,7 +62,7 @@ ofxAccountDisplay,
 ofxAccountKey,
 parseOfx,
 } from "./ofxCore";
-import { Explainer } from "./Explainer";
+import { Explainer, ExplainerInfoTip, ExplainerToggle } from "./Explainer";
 import {
   useFoldStateMap,
   usePersistedFold,
@@ -67,6 +73,7 @@ import { RetirementCalc } from "./RetirementCalc";
 import { RothConversion } from "./RothConversion";
 import { Playground } from "./Playground";
 import { YearInSpendingBlock } from "./YearBlocks";
+import { FoldChevron } from "./FoldChevron";
 
 type Dash = ApiResponse<typeof api, "getDashboard">;
 type Txn = Dash["monthTransactions"][number];
@@ -221,12 +228,18 @@ function currentMonth(): string {
 /* One Quick view tile: label + value (children) plus an info badge
    inset inside the tile's top-right corner. The badge toggles a
    plain-words tooltip on tap/click; hovering or focusing the tile
-   shows it too. Tapping outside or pressing Escape closes a toggled
-   tooltip. The label reserves right padding so it never runs under
-   the badge. Tiles are compact: height fits the label + value. */
+   shows it too — the tooltip carries the tile's definition, which
+   no longer prints on the tile's face. Tapping outside or pressing
+   Escape closes a toggled tooltip. The label reserves right padding
+   so it never runs under the badge. Tiles are compact: height fits
+   the label + value. When the tile has a details target, the whole
+   tile is the tap/click target: an invisible button stretched over
+   the tile (named "Details for <label>", exactly like the old
+   "Details ↓" row it replaces) handles the click and the keyboard,
+   while the ⓘ badge sits above it and never triggers the details
+   action. */
 function QuickTile({
   label,
-  caption,
   tip,
   tipId,
   panelCls,
@@ -238,7 +251,6 @@ function QuickTile({
   children,
 }: {
   label: string;
-  caption: string;
   tip: string;
   tipId: string;
   panelCls: string;
@@ -272,38 +284,36 @@ function QuickTile({
   return (
     <div
       ref={ref}
-      className={`relative flex flex-col rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4 ${className}`}
+      className={`relative flex flex-col rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4 ${onDetails ? "hover:border-[var(--accent)]" : ""} ${className}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <p className="pr-6 text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase">
-        {label}
-      </p>
-      <p className="mt-1 text-[11px] leading-snug text-[var(--dim)]">
-        {caption}
-      </p>
-      {children}
       {onDetails && (
-        <div className="mt-auto pt-2">
-          <button
-            type="button"
-            aria-label={`Details for ${label}`}
-            onClick={onDetails}
-            className="text-xs font-medium text-[var(--dim)] underline-offset-2 hover:text-[var(--accent)] hover:underline focus-visible:text-[var(--accent)] focus-visible:underline"
-          >
-            Details ↓
-          </button>
-        </div>
+        <button
+          type="button"
+          aria-label={`Details for ${label}`}
+          onClick={onDetails}
+          className="absolute inset-0 z-0 cursor-pointer rounded-[var(--radius)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        />
       )}
+      <div className="pointer-events-none relative z-10 flex flex-col">
+        <p className="pr-6 text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase">
+          {label}
+        </p>
+        {children}
+      </div>
       <button
         type="button"
         aria-label={`How ${label} is calculated`}
         aria-expanded={open}
         aria-controls={tipId}
-        onClick={onToggle}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
         onFocus={() => setHovered(true)}
         onBlur={() => setHovered(false)}
-        className="absolute top-2 right-2 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+        className="absolute top-2 right-2 z-20 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
       >
         <svg
           width="12"
@@ -441,6 +451,36 @@ function QuickViewReturnLink({ onReturn }: { onReturn: () => void }) {
   );
 }
 
+/* Chip chevron expand/collapse affordance for the two bills
+   rosters' section headers. The visible control is the shared
+   FoldChevron chip (crisp SVG chevron that rotates with state);
+   the accessible name stays "Show bills" / "Hide bills", and the caller
+   keeps aria-expanded / aria-controls wired to the same persisted
+   fold state as before. The button box stays a comfortable 36px
+   tap target around the 28px chip. */
+function BillsFoldChevron({
+  open,
+  controlsId,
+  onToggle,
+}: {
+  open: boolean;
+  controlsId: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={open ? "Hide bills" : "Show bills"}
+      aria-expanded={open}
+      aria-controls={controlsId}
+      onClick={onToggle}
+      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+    >
+      <FoldChevron open={open} />
+    </button>
+  );
+}
+
 const inputCls =
   "w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-base text-[var(--text)]";
 const labelCls = "block text-sm font-medium text-[var(--text)] mb-1";
@@ -448,6 +488,14 @@ const btnPrimary =
   "rounded-[var(--radius)] bg-[var(--accent)] px-4 py-2 text-base font-medium text-white disabled:opacity-50";
 const btnGhost =
   "rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-medium text-[var(--text)]";
+/* Compact Add button for the Spending sections' standard header
+   rows: a small OUTLINE style — accent border and accent text on a
+   transparent ground, so no filled teal block appears in any section
+   header. Still a clear ≥36px touch target (min-h-9). One style for
+   every section header's Add control; filled teal (btnPrimary) is
+   reserved for submit/primary buttons inside dialogs and forms. */
+const btnAdd =
+  "inline-flex min-h-9 items-center justify-center rounded-[var(--radius)] border border-[var(--accent)] bg-transparent px-3 py-1.5 text-sm font-semibold text-[var(--accent)] disabled:opacity-50";
 
 // Category field for the bill forms: a select that ALWAYS lists every
 // preset (plus any custom categories already in use), with a
@@ -914,6 +962,7 @@ function ExplorerModal({
               </button>
             </div>
           </div>
+          <p className="mt-2 text-xs text-[var(--dim)]">The first 36 months of the range are shown and exported.</p>
           {rangeInvalid && (
             <p className="mt-2 text-sm text-[var(--bad)]">From month must be on or before To month.</p>
           )}
@@ -1045,11 +1094,12 @@ type SpendingChartDatum = {
    per recorded month — the month's True cost (smoothed) beside its
    Cash out, in chronological order. Fed from getDashboard's own
    history: the caller passes exactly the trailing window the
-   averages strip averages (the last trailingMonthsCovered history
+   averages line averages (the last trailingMonthsCovered history
    entries — the same per-month eff() figures the tiles show), so
-   the bars and the strip are the same numbers and can never
-   disagree, and a pair appears automatically when a new month is
-   recorded. Past the viewed month, the series continues with any
+   the bars and the line are the same numbers and can never
+   disagree (the line's figures are the means of exactly these
+   months' bars), and a pair appears automatically when a new
+   month is recorded. Past the viewed month, the series continues with any
    later month that already has entered figures (getDashboard's
    enteredAheadMonths — cash-out items, an entered month total, or
    recorded payments, each priced by the same eff() computation);
@@ -1064,9 +1114,19 @@ type SpendingChartDatum = {
 function SpendingTrueCostChart({
   months,
   aheadMonths,
+  averageLine,
 }: {
   months: SpendingMonthRow[];
   aheadMonths: SpendingAheadRow[];
+  // The Quick view averages line ("Average month · … — True cost
+  // … · Cash out …"), composed by the caller from the dashboard's
+  // own averages over exactly the recorded `months` above; null
+  // when fewer than 2 months are covered. Rendered as a quiet
+  // summary line inside this card, under the subheading — it
+  // used to be a standalone highlighted banner between the tiles
+  // and this card (moved here by request, 2026-10-25: right
+  // numbers, wrong place).
+  averageLine: string | null;
 }) {
   const thisMonth = currentMonth();
   const chartData: SpendingChartDatum[] = [
@@ -1103,12 +1163,12 @@ function SpendingTrueCostChart({
     >
       <h3 className="display text-lg font-semibold">True cost vs Cash out</h3>
       <p className="mt-0.5 text-sm text-[var(--dim)]">
-        One pair of bars per recorded month — each month&rsquo;s True cost
-        (smoothed) beside its Cash out, from the same figures as the tiles
-        and the average above.
-        {hasEstimate &&
-          " An (est.) pair is figures entered ahead of time and may be revised."}
+        One pair of bars per recorded month; an (est.) pair is entered
+        ahead and may be revised.
       </p>
+      {averageLine != null && (
+        <p className="tnum mt-1.5 text-sm text-[var(--dim)]">{averageLine}</p>
+      )}
       {chartData.length === 0 ? (
         <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
           No months recorded yet — once a month is recorded, its True cost
@@ -1499,6 +1559,29 @@ function YearTrueCostChart({
 
 /* ---------------- app ---------------- */
 
+/* Retry policy for the Spending view's read-only loads (the month
+   dashboard and the year view). The shared query client's default
+   only retries failures the server explicitly marks retry-safe —
+   caution that exists because an action invoked through useQuery
+   can write. These two actions never write, so a transient failure
+   (a 500, a dropped connection, a session credential the SDK could
+   not refresh) is safe to retry a few times; permanent client
+   errors (400/401/403/404/…) are not. Without this, one such hiccup
+   landed on the "Something went wrong loading this month" screen
+   for good — the server and the data were fine on re-check, but the
+   screen offered no working way to try again short of reloading
+   the whole app. */
+function retryReadOnlyLoad(failureCount: number, error: Error): boolean {
+  if (shouldRetryAction(failureCount, error)) return true;
+  if (
+    error instanceof SpaceActionError &&
+    PERMANENT_ACTION_STATUSES.has(error.status)
+  ) {
+    return false;
+  }
+  return failureCount < 3;
+}
+
 export function App() {
   const queryClient = useQueryClient();
   const [month, setMonth] = useState(currentMonth());
@@ -1517,11 +1600,15 @@ export function App() {
   const dash = useQuery({
     queryKey: ["dashboard", month],
     queryFn: () => api.getDashboard({ month }),
+    retry: retryReadOnlyLoad,
+    retryDelay: actionRetryDelay,
   });
   const yearView = useQuery({
     queryKey: ["yearview", viewYear],
     queryFn: () => api.getYearView({ year: viewYear }),
     enabled: quickMode === "year",
+    retry: retryReadOnlyLoad,
+    retryDelay: actionRetryDelay,
   });
 
   const invalidate = () => {
@@ -1619,6 +1706,32 @@ export function App() {
   /* The statement import panel's open/closed state persists in
      the generic fold store, like the cash-out months above. */
   const [showImport, setShowImport] = usePersistedFold("spending.import");
+  /* The True cost "Heads up" notice's details fold: one line by
+     default, the full explanation one tap away. Its open/closed
+     state persists in the generic fold store like the app's
+     other folds, default collapsed. */
+  const [headsUpOpen, setHeadsUpOpen] = usePersistedFold(
+    "spending.trueCostHeadsUp",
+  );
+  /* The Monthly bills roster's open/closed state: the roster is
+     reference data the user doesn't need on screen all the time, so
+     it sits behind this persisted fold — DEFAULT COLLAPSED when no
+     saved state exists (usePersistedFold's default), and whatever
+     state it is left in persists across sessions like the app's
+     other section folds. The section header (title, total, More
+     explainer, Add button) stays visible either way. */
+  const [monthlyBillsOpen, setMonthlyBillsOpen] = usePersistedFold(
+    "spending.monthlyBills",
+  );
+  /* The Yearly & periodic roster's open/closed state: same treatment
+     as Monthly bills — the roster is reference data, so it sits behind
+     this persisted fold, DEFAULT COLLAPSED when no saved state exists,
+     persisting across sessions. The section header (title, compact
+     yearly total + set-aside, More explainer, Add button) stays
+     visible either way. */
+  const [yearlyBillsOpen, setYearlyBillsOpen] = usePersistedFold(
+    "spending.yearlyBills",
+  );
   const [showExplorer, setShowExplorer] = useState(false);
   const [explorerGroupBy, setExplorerGroupBy] =
     useState<ExplorerGroupBy>("category");
@@ -1658,11 +1771,21 @@ export function App() {
   }
 
   function scrollToSection(id: string) {
-    if (id === "section-monthly-bills" && data?.monthlyBillsCollapsedAll) {
-      setMonthlyBillsCollapsedAll.mutate({ collapsed: false });
+    if (id === "section-monthly-bills") {
+      /* The roster fold opens (persisted) as part of the scroll, so
+         the tile tap never lands on a collapsed section. */
+      if (!monthlyBillsOpen) setMonthlyBillsOpen(true);
+      if (data?.monthlyBillsCollapsedAll) {
+        setMonthlyBillsCollapsedAll.mutate({ collapsed: false });
+      }
     }
-    if (id === "section-yearly-expenses" && data?.yearlyBillsCollapsedAll) {
-      setYearlyBillsCollapsedAll.mutate({ collapsed: false });
+    if (id === "section-yearly-expenses") {
+      /* The roster fold opens (persisted) as part of the scroll, so
+         the tile tap never lands on a collapsed section. */
+      if (!yearlyBillsOpen) setYearlyBillsOpen(true);
+      if (data?.yearlyBillsCollapsedAll) {
+        setYearlyBillsCollapsedAll.mutate({ collapsed: false });
+      }
     }
     document
       .getElementById(id)
@@ -1729,6 +1852,9 @@ export function App() {
     onSuccess: () => {
       invalidate();
       resetYearlyForm();
+      /* Reveal the new entry: if the roster fold was collapsed, open
+         it (persisted) so the bill just added is visible. */
+      setYearlyBillsOpen(true);
     },
     onError: (e) => setYearlyError(String(e)),
   });
@@ -1818,6 +1944,9 @@ export function App() {
     onSuccess: () => {
       invalidate();
       resetBillForm();
+      /* Reveal the new entry: if the roster fold was collapsed, open
+         it (persisted) so the bill just added is visible. */
+      setMonthlyBillsOpen(true);
     },
     onError: (e) => setBillError(String(e)),
   });
@@ -2294,16 +2423,21 @@ export function App() {
   const showDivergence = divergenceBig && data.trailingMonthsCovered >= 12;
   const showProvisional = divergenceBig && data.trailingMonthsCovered < 12;
 
-  /* ---- Quick view averages strip (Month mode footer) ----
-     One highlighted line under the six tiles, reading the
-     dashboard's OWN averages: True cost is avgSmoothedCents and
-     Cash out is avgCashOutCents, both averaged by getDashboard
-     over the trailing window trailingMonthsCovered names (up to
-     12 months ending at the viewed month, from the first month
-     with data). The window label is reconstructed from that same
-     count, so it names exactly the months averaged. Hidden when
-     fewer than 2 months are covered — an average of one month is
-     just the month. */
+  /* ---- Quick view averages line (Month mode) ----
+     One quiet line inside the "True cost vs Cash out" chart
+     card, under its subheading, reading the dashboard's OWN
+     averages: True cost is avgSmoothedCents and Cash out is
+     avgCashOutCents, both averaged by getDashboard over the
+     trailing window trailingMonthsCovered names (up to 12
+     months ending at the viewed month, from the first month
+     with data). The window label is reconstructed from that
+     same count, so it names exactly the months averaged. Hidden
+     when fewer than 2 months are covered — an average of one
+     month is just the month. (It rendered as a standalone
+     highlighted banner between the tiles and the chart card
+     until 2026-10-25, when it was judged the right numbers in
+     the wrong place and it moved into the card, un-highlighted,
+     with its wording and figures unchanged.) */
   const showAvgStrip = data != null && data.trailingMonthsCovered >= 2;
   const avgWindowLabel = (() => {
     if (data == null || data.trailingMonthsCovered < 1) return "";
@@ -2328,8 +2462,8 @@ export function App() {
   /* One month's six Quick view tiles — the exact tiles Month mode
      shows, reused for every month panel in Year mode. `idPrefix`
      keeps tooltip ids/keys unique per panel; `withNav` adds the
-     Month-mode extras (YTD sub-lines and Details ↓ links), which the
-     year panels omit to stay clean. */
+     Month-mode extras (YTD sub-lines and whole-tile details
+     targets), which the year panels omit to stay clean. */
   function renderMonthTiles(opts: {
     idPrefix: string;
     trueCostCents: number;
@@ -2348,9 +2482,8 @@ export function App() {
       <>
         <QuickTile
           label="True cost"
-          caption="Real monthly cost — yearly & periodic bills spread evenly"
           tipId={`qtip-${key("true-cost")}`}
-          tip="What the month really cost. The month's base (the entered total, the itemized total, or the spending recorded that month), minus any yearly/periodic lump sums that base includes, plus the monthly set-aside for yearly & periodic bills — so big yearly bills are spread evenly instead of spiking one month."
+          tip="Real monthly cost — yearly & periodic bills spread evenly. What the month really cost. The month's base (the entered total, the itemized total, or the spending recorded that month), minus any yearly/periodic lump sums that base includes, plus the monthly set-aside for yearly & periodic bills — so big yearly bills are spread evenly instead of spiking one month."
           panelCls="left-0"
           open={openTip === key("true-cost")}
           onToggle={() =>
@@ -2368,9 +2501,8 @@ export function App() {
         </QuickTile>
         <QuickTile
           label="Cash out"
-          caption="Money that actually went out this month"
           tipId={`qtip-${key("cash-out")}`}
-          tip="All the money that actually left this month. If the month is itemized, that's the items added up; otherwise if you entered a monthly total, that's the number; otherwise it's the month's checking transactions added up. Paying off a credit card isn't counted twice. A charge paid by credit card lands here in the month the card payment leaves the bank, which can be the month after the charge."
+          tip="Money that actually went out this month — all the money that actually left this month. If the month is itemized, that's the items added up; otherwise if you entered a monthly total, that's the number; otherwise it's the month's checking transactions added up. Paying off a credit card isn't counted twice. A charge paid by credit card lands here in the month the card payment leaves the bank, which can be the month after the charge."
           panelCls="right-0 sm:right-auto sm:left-0"
           open={openTip === key("cash-out")}
           onToggle={() =>
@@ -2388,9 +2520,8 @@ export function App() {
         </QuickTile>
         <QuickTile
           label="Total monthly"
-          caption="Your recurring monthly bills"
           tipId={`qtip-${key("total-monthly")}`}
-          tip="All your monthly bills for this month added together (the Monthly bills list)."
+          tip="Your recurring monthly bills — all your monthly bills for this month added together (the Monthly bills list)."
           panelCls="left-0 sm:left-auto sm:right-0"
           open={openTip === key("total-monthly")}
           onToggle={() =>
@@ -2413,9 +2544,8 @@ export function App() {
         </QuickTile>
         <QuickTile
           label="Everything else"
-          caption="Cash out − monthly bills − yearly & periodic bills paid this month"
           tipId={`qtip-${key("everything-else")}`}
-          tip="Cash out minus Total monthly (the monthly bills) minus the yearly & periodic bills paid this month. What's left is everything that isn't a bill — day-to-day spending like groceries, eating out, and shopping, plus anything else that left the account, such as transfers or card payments. It can be negative mid-month, when the recorded cash out so far is still below the month's bills and yearly payments."
+          tip="Cash out − monthly bills − yearly & periodic bills paid this month. Cash out minus Total monthly (the monthly bills) minus the yearly & periodic bills paid this month. What's left is everything that isn't a bill — day-to-day spending like groceries, eating out, and shopping, plus anything else that left the account, such as transfers or card payments. It can be negative: negative for now means this month's recorded cash out is still below its bills and yearly payments — it can be negative mid-month, when the recorded cash out so far is still below the month's bills and yearly payments."
           panelCls="right-0 sm:right-auto sm:left-0"
           open={openTip === key("everything-else")}
           onToggle={() =>
@@ -2439,18 +2569,11 @@ export function App() {
                 : `incl. ${fmt(opts.oneOffsTotalCents)} one-offs (${opts.oneOffsCount})`}
             </p>
           )}
-          {opts.everythingElseCents < 0 && (
-            <p className="mt-1.5 text-xs leading-snug text-[var(--dim)]">
-              Negative for now — this month&rsquo;s recorded cash out is
-              still below its bills and yearly payments.
-            </p>
-          )}
         </QuickTile>
         <QuickTile
           label="Keep the lights on"
-          caption="Bare-minimum bills to keep things running"
           tipId={`qtip-${key("lights-on")}`}
-          tip="The bills you checked as essential: checked monthly bills plus the set-asides of checked yearly/periodic bills. The must-pay floor for the month."
+          tip="Bare-minimum bills to keep things running. The bills you checked as essential: checked monthly bills plus the set-asides of checked yearly/periodic bills. The must-pay floor for the month."
           panelCls="left-0"
           open={openTip === key("lights-on")}
           onToggle={() =>
@@ -2468,9 +2591,8 @@ export function App() {
         </QuickTile>
         <QuickTile
           label="Yearly & periodic expenses"
-          caption="Yearly & periodic bills actually paid this month"
           tipId={`qtip-${key("yearly-paid-out")}`}
-          tip="Yearly & periodic bills you entered as paid — the lump sums that went out, in the month the money left your bank account. A bill isn't always paid in its due month, and if it was charged to a credit card, it counts in the month the card payment left your account — enter that date when you record it."
+          tip="Yearly & periodic bills actually paid this month. Yearly & periodic bills you entered as paid — the lump sums that went out, in the month the money left your bank account. A bill isn't always paid in its due month, and if it was charged to a credit card, it counts in the month the card payment left your account — enter that date when you record it."
           panelCls="right-0"
           open={openTip === key("yearly-paid-out")}
           onToggle={() =>
@@ -2554,12 +2676,12 @@ export function App() {
       </button>
       <button
         type="button"
-        aria-label="Roth Conversion view"
+        aria-label="Tax Plan view"
         aria-pressed={topView === "roth"}
         onClick={() => setTopView("roth")}
         className={`px-4 py-2 text-sm font-medium ${topView === "roth" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
       >
-        Roth Conversion
+        Tax Plan
       </button>
       <button
         type="button"
@@ -2732,25 +2854,40 @@ export function App() {
 
         {dash.isPending && <p className="py-10 text-center text-[var(--dim)]">Loading…</p>}
         {dash.error && (
-          <p className="py-10 text-center text-[var(--bad)]">
-            Something went wrong loading this month. Try again.
-          </p>
+          <div className="py-10 text-center">
+            <p className="text-[var(--bad)]">
+              Something went wrong loading this month.
+            </p>
+            <p className="mx-auto mt-2 max-w-md text-sm break-words text-[var(--dim)]">
+              {dash.error instanceof Error
+                ? dash.error.message
+                : String(dash.error)}
+            </p>
+            <button
+              type="button"
+              className={`${btnGhost} mt-4`}
+              disabled={dash.isFetching}
+              onClick={() => void dash.refetch()}
+            >
+              Try again
+            </button>
+          </div>
         )}
 
         {data && (
           <>
-            {/* slice & dice entry */}
+            {/* slice & dice entry — slim one-line row */}
             <section aria-label="Explore the data" className="mt-5">
               <button
                 type="button"
-                className="flex w-full items-center justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 text-left hover:border-[var(--accent)] sm:p-5"
+                className="flex w-full items-center justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-left text-sm text-[var(--dim)] hover:border-[var(--accent)] hover:text-[var(--text)] sm:px-4"
                 onClick={() => openExplorer("category")}
               >
-                <span>
-                  <span className="display block text-lg font-semibold">Slice &amp; dice</span>
-                  <span className="mt-0.5 block text-sm text-[var(--dim)]">Explore the data — group by category, bill, paid from, keep the lights on, or month over any date range (the first 36 months of the range, shown and exported), and download as CSV.</span>
+                <span className="min-w-0 truncate whitespace-nowrap">
+                  <span className="font-medium text-[var(--text)]">Slice &amp; dice</span>
+                  {" — explore data, download CSV"}
                 </span>
-                <span aria-hidden="true" className="shrink-0 text-xl text-[var(--accent)]">→</span>
+                <span aria-hidden="true" className="shrink-0 text-[var(--accent)]">→</span>
               </button>
             </section>
 
@@ -2817,7 +2954,16 @@ export function App() {
                 <p className="mt-1.5 text-sm text-[var(--dim)]">Loading year…</p>
               )}
               {inYearMode && yearView.error && (
-                <p className="mt-1.5 text-sm text-[var(--bad)]">Something went wrong loading this year. Try again.</p>
+                <p className="mt-1.5 text-sm text-[var(--bad)]">
+                  Something went wrong loading this year.{" "}
+                  <button
+                    type="button"
+                    className="font-medium text-[var(--accent)] underline underline-offset-2"
+                    onClick={() => void yearView.refetch()}
+                  >
+                    Try again
+                  </button>
+                </p>
               )}
               {inYearMode && yv && yv.hasAnyData && (
                 <p className="tnum mt-1.5 text-sm text-[var(--dim)]">
@@ -2846,59 +2992,33 @@ export function App() {
                       ytd: data.ytd,
                     })}
                   </div>
-                  {showAvgStrip && (
-                    <p className="tnum mt-3 rounded-[var(--radius)] border-l-4 border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-2 text-sm leading-relaxed font-medium text-[var(--text)]">
-                      Average month · {avgWindowLabel} — True cost{" "}
-                      {fmt(data.avgSmoothedCents)} · Cash out{" "}
-                      {fmt(data.avgCashOutCents)}
-                    </p>
-                  )}
                   {/* True cost vs Cash out bars: the last
                       trailingMonthsCovered history entries are exactly
-                      the months the averages strip above averages (the
+                      the months the averages line averages (the
                       history's final entry is the viewed month), so
-                      the chart and the strip show the same figures.
+                      the chart and the line show the same figures.
                       slice from the end keeps that true for any
                       covered count, including 0 (no recorded months —
                       the chart renders its empty state). The chart —
                       and only the chart — then continues past the
                       viewed month with enteredAheadMonths: later
                       months that already have entered figures, each
-                      with its own dashboard figures; the strip, tiles
-                      and everything else stay on the viewed month. */}
+                      with its own dashboard figures; the line, tiles
+                      and everything else stay on the viewed month.
+                      The averages line itself renders inside the
+                      chart card, under its subheading (see
+                      averageLine on SpendingTrueCostChart). */}
                   <SpendingTrueCostChart
                     months={data.history.slice(
                       data.history.length - data.trailingMonthsCovered,
                     )}
                     aheadMonths={data.enteredAheadMonths}
+                    averageLine={
+                      showAvgStrip
+                        ? `Average month · ${avgWindowLabel} — True cost ${fmt(data.avgSmoothedCents)} · Cash out ${fmt(data.avgCashOutCents)}`
+                        : null
+                    }
                   />
-                  <p className="tnum mt-3 text-sm leading-relaxed text-[var(--dim)]">
-                    Cash out {fmt(data.cashOutCents)} = Total monthly{" "}
-                    {fmt(data.monthlyBillsTotalCents)} + Yearly &amp; periodic
-                    expenses {fmt(data.yearlyPaidOutCents)} + Everything else{" "}
-                    {fmt(
-                      data.cashOutCents -
-                        data.monthlyBillsTotalCents -
-                        data.yearlyPaidOutCents,
-                    )}
-                  </p>
-                  {data.cashOutCents -
-                    data.monthlyBillsTotalCents -
-                    data.yearlyPaidOutCents <
-                    0 && (
-                    <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
-                      Everything else is negative this month because the
-                      recorded cash out is still below the month&rsquo;s
-                      bills and yearly payments — it settles as more of the
-                      month&rsquo;s spending is recorded.
-                    </p>
-                  )}
-                  <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
-                    Amounts are recorded in the month the money leaves the
-                    bank account. For a credit card, that&rsquo;s the month
-                    the card payment leaves the bank — which can be the month
-                    after the charge.
-                  </p>
                 </>
               )}
               {inYearMode && yv && !yv.hasAnyData && (
@@ -2990,15 +3110,96 @@ export function App() {
               <p className="display tnum mt-1 text-5xl font-semibold">
                 {fmt(data.smoothedCents)}
               </p>
+              {/* The section's one explainer door: the definition
+                  sentence that used to print here now lives in the
+                  True cost tile's ⓘ, so only the "More" link remains
+                  under the number. Its expanded text carries both
+                  this explainer's original paragraph and the full
+                  text of the former footer "How this math works"
+                  explainer, folded in here so the method is explained
+                  in exactly one place. */}
               <Explainer
                 id="spending.trueCost"
                 label="True cost"
                 className="mt-1"
-                summary="Your true monthly cost, with yearly and periodic bills spread evenly."
+                summary=""
               >
                 <p>
                   Smoothed spend: yearly and periodic bills spread evenly,
                   so a month with a big bill doesn't look worse than it is.
+                </p>
+                <p>
+                  Record each amount in the month the money{" "}
+                  <strong>leaves the bank account</strong>. A bill paid
+                  straight from checking is recorded in the month it leaves
+                  checking. A credit-card charge is recorded with the date
+                  the card payment leaves the bank — not the date of the
+                  charge — so a charge made one month can be recorded the
+                  next, when it's paid. That card payment counts as cash
+                  out, and the charge is never counted as spending a second
+                  time, so nothing is double-counted.
+                </p>
+                <p>
+                  Transfers to savings or between your own accounts are cash
+                  out, not spending. Refunds are entered as negative
+                  spending, so a returned purchase nets out.
+                </p>
+                <p>
+                  A smoothed bill is subtracted in the month its payment
+                  leaves the bank account, and the set-aside — the sum of the monthly
+                  amounts of the bills in effect that month, each
+                  bill's annualised amount divided by 12 and rounded
+                  per bill — is added back every month.
+                  That's what smooths it.
+                </p>
+                <p>
+                  Periodic bills work the same way: enter the amount per
+                  bill and it's spread over its period. Water at $200
+                  every other month counts as $100 a month; a garbage bill
+                  at $300 every 3 months (quarterly, 4×/yr) also counts as
+                  $100 a month — per bill ÷ 3 — and a $600 bill
+                  every 6 months also counts as $100 a month. In the month
+                  you pay one, the full payment is subtracted as a lump
+                  and the monthly set-aside is added, so that month nets
+                  to the monthly share; in the other months there's no
+                  payment, just the set-aside.
+                </p>
+                <p>
+                  Prefer one number a month? Enter the month's total cash
+                  out instead of individual transactions. For a month with
+                  an entered total, smoothed spend = entered cash out −
+                  smoothed bills that left checking that month + the
+                  set-aside. The entered total replaces that month's
+                  transactions — the two are never added together.
+                </p>
+                <p>
+                  Monthly bills (mortgage, utilities…) are already inside
+                  the cash out. They're listed only to show what the cash
+                  out is made of — they are never added to spending or
+                  cash out a second time.
+                </p>
+                <p>
+                  Every bill has one category — Insurance, Taxes, Housing,
+                  or your own name — and, separately, a “Keep the lights
+                  on” check for the essential, must-pay ones. The two are
+                  independent: a bill can be Insurance and checked, or
+                  Insurance and unchecked. The By category breakdown adds
+                  up, per category, the monthly bills (at the amount in
+                  effect that month) plus the smoothed bills' monthly
+                  set-aside. The Keep the lights on total adds up only the
+                  checked bills the same way — that's your essential
+                  must-pay floor for the month. Both are labels and
+                  subtotals only — neither ever changes any amount.
+                  Categories and the Keep-the-lights-on check apply to
+                  every month, past and present — changing one regroups
+                  past months and past floor totals. Amounts never change.
+                </p>
+                <p>
+                  Large one-offs work the same way: the amount was already
+                  part of that month's spending, so a one-off note only
+                  explains it. “Smoothed spend excluding one-offs” subtracts
+                  them once to show the underlying regular spend — the
+                  one-offs themselves are never added anywhere.
                 </p>
               </Explainer>
               {data.isSummaryMonth || data.isItemsMonth ? (
@@ -3079,117 +3280,62 @@ export function App() {
               </div>
               {(data.isSummaryMonth || data.isItemsMonth) &&
                 data.transactionCountThisMonth > 0 && (
-                <p className="mt-3 rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-sm leading-relaxed">
-                  <strong>
-                    Heads up — this month uses your{" "}
-                    {data.isItemsMonth ? "cash-out items" : "entered total"}.
-                  </strong>{" "}
-                  {data.isItemsMonth ? (
-                    <>
-                      The items for {monthLabel(month)} add up to{" "}
-                      {fmt(data.cashOutItemsTotalCents)}
-                    </>
-                  ) : (
-                    <>
-                      You entered a cash-out total of{" "}
-                      {fmt(data.enteredCashOutCents ?? 0)} for {monthLabel(month)}
-                    </>
+                <div className="mt-3 rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-sm leading-relaxed">
+                  <p className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <span>
+                      <strong>Heads up</strong> — this month uses your{" "}
+                      {data.isItemsMonth ? "cash-out items" : "entered total"};
+                      transactions aren't double-counted.
+                    </span>
+                    <button
+                      type="button"
+                      aria-expanded={headsUpOpen}
+                      aria-controls="true-cost-heads-up-details"
+                      aria-label={
+                        headsUpOpen
+                          ? "Hide details about this month's cash-out basis"
+                          : "Show details about this month's cash-out basis"
+                      }
+                      onClick={() => setHeadsUpOpen(!headsUpOpen)}
+                      className="shrink-0 font-medium whitespace-nowrap underline underline-offset-2"
+                    >
+                      {headsUpOpen ? "Less" : "Details"}
+                    </button>
+                  </p>
+                  {headsUpOpen && (
+                    <p id="true-cost-heads-up-details" className="mt-2">
+                      <strong>
+                        Heads up — this month uses your{" "}
+                        {data.isItemsMonth ? "cash-out items" : "entered total"}.
+                      </strong>{" "}
+                      {data.isItemsMonth ? (
+                        <>
+                          The items for {monthLabel(month)} add up to{" "}
+                          {fmt(data.cashOutItemsTotalCents)}
+                        </>
+                      ) : (
+                        <>
+                          You entered a cash-out total of{" "}
+                          {fmt(data.enteredCashOutCents ?? 0)} for {monthLabel(month)}
+                        </>
+                      )}
+                      , and this month also has {data.transactionCountThisMonth}{" "}
+                      transaction{data.transactionCountThisMonth === 1 ? "" : "s"}{" "}
+                      (spending {fmt(data.transactionIncurredCents)}, checking
+                      cash out {fmt(data.transactionCashOutCents)}). To avoid
+                      double-counting, that total is the month's number
+                      and the transactions are <strong>not</strong> added on top
+                      of it. The one exception: smoothed bills (yearly or
+                      periodic) recorded as paid from checking (
+                      {fmt(data.yearlyLumpsCheckingCents)}) are still subtracted
+                      in the formula above, so they aren't counted twice.
+                      {data.isItemsMonth
+                        ? " Delete the items below if you'd rather use the month's entered total or its transactions."
+                        : " Delete the entered total below if you'd rather use the transactions."}
+                    </p>
                   )}
-                  , and this month also has {data.transactionCountThisMonth}{" "}
-                  transaction{data.transactionCountThisMonth === 1 ? "" : "s"}{" "}
-                  (spending {fmt(data.transactionIncurredCents)}, checking
-                  cash out {fmt(data.transactionCashOutCents)}). To avoid
-                  double-counting, that total is the month's number
-                  and the transactions are <strong>not</strong> added on top
-                  of it. The one exception: smoothed bills (yearly or
-                  periodic) recorded as paid from checking (
-                  {fmt(data.yearlyLumpsCheckingCents)}) are still subtracted
-                  in the formula above, so they aren't counted twice.
-                  {data.isItemsMonth
-                    ? " Delete the items below if you'd rather use the month's entered total or its transactions."
-                    : " Delete the entered total below if you'd rather use the transactions."}
-                </p>
+                </div>
               )}
-              <Explainer
-                id="spending.howMathWorks"
-                label="How this math works"
-                className="mt-3"
-                summary="How this math works: amounts are recorded in the month the money leaves the bank, and smoothed bills are spread evenly — nothing is double-counted."
-              >
-                  <p>
-                    Record each amount in the month the money{" "}
-                    <strong>leaves the bank account</strong>. A bill paid
-                    straight from checking is recorded in the month it leaves
-                    checking. A credit-card charge is recorded with the date
-                    the card payment leaves the bank — not the date of the
-                    charge — so a charge made one month can be recorded the
-                    next, when it's paid. That card payment counts as cash
-                    out, and the charge is never counted as spending a second
-                    time, so nothing is double-counted.
-                  </p>
-                  <p>
-                    Transfers to savings or between your own accounts are cash
-                    out, not spending. Refunds are entered as negative
-                    spending, so a returned purchase nets out.
-                  </p>
-                  <p>
-                    A smoothed bill is subtracted in the month its payment
-                    leaves the bank account, and the set-aside — the sum of the monthly
-                    amounts of the bills in effect that month, each
-                    bill's annualised amount divided by 12 and rounded
-                    per bill — is added back every month.
-                    That's what smooths it.
-                  </p>
-                  <p>
-                    Periodic bills work the same way: enter the amount per
-                    bill and it's spread over its period. Water at $200
-                    every other month counts as $100 a month; a garbage bill
-                    at $300 every 3 months (quarterly, 4×/yr) also counts as
-                    $100 a month — per bill ÷ 3 — and a $600 bill
-                    every 6 months also counts as $100 a month. In the month
-                    you pay one, the full payment is subtracted as a lump
-                    and the monthly set-aside is added, so that month nets
-                    to the monthly share; in the other months there's no
-                    payment, just the set-aside.
-                  </p>
-                  <p>
-                    Prefer one number a month? Enter the month's total cash
-                    out instead of individual transactions. For a month with
-                    an entered total, smoothed spend = entered cash out −
-                    smoothed bills that left checking that month + the
-                    set-aside. The entered total replaces that month's
-                    transactions — the two are never added together.
-                  </p>
-                  <p>
-                    Monthly bills (mortgage, utilities…) are already inside
-                    the cash out. They're listed only to show what the cash
-                    out is made of — they are never added to spending or
-                    cash out a second time.
-                  </p>
-                  <p>
-                    Every bill has one category — Insurance, Taxes, Housing,
-                    or your own name — and, separately, a “Keep the lights
-                    on” check for the essential, must-pay ones. The two are
-                    independent: a bill can be Insurance and checked, or
-                    Insurance and unchecked. The By category breakdown adds
-                    up, per category, the monthly bills (at the amount in
-                    effect that month) plus the smoothed bills' monthly
-                    set-aside. The Keep the lights on total adds up only the
-                    checked bills the same way — that's your essential
-                    must-pay floor for the month. Both are labels and
-                    subtotals only — neither ever changes any amount.
-                    Categories and the Keep-the-lights-on check apply to
-                    every month, past and present — changing one regroups
-                    past months and past floor totals. Amounts never change.
-                  </p>
-                  <p>
-                    Large one-offs work the same way: the amount was already
-                    part of that month's spending, so a one-off note only
-                    explains it. “Smoothed spend excluding one-offs” subtracts
-                    them once to show the underlying regular spend — the
-                    one-offs themselves are never added anywhere.
-                  </p>
-              </Explainer>
             </section>
 
             {actionMsg && (
@@ -3357,9 +3503,6 @@ export function App() {
 
             {/* keep the lights on — essential must-pay floor (checked bills only) */}
             <section id="section-keep-lights-on" aria-label="Keep the lights on total" className={`mt-4 scroll-mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${highlightCls("section-keep-lights-on")}`}>
-              <div className="mb-2 flex justify-end">
-                <QuickViewReturnLink onReturn={scrollToQuickView} />
-              </div>
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="display text-lg font-semibold">
                   Keep the lights on — {monthLabel(month)}
@@ -3440,13 +3583,17 @@ export function App() {
                 <h2 className="display text-lg font-semibold">
                   Large one-offs — {monthLabel(month)}
                 </h2>
-                <button type="button" className={btnPrimary} onClick={openNewOneOff}>
-                  + Add one-off
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" className={btnAdd} onClick={openNewOneOff}>
+                    + Add one-off
+                  </button>
+                  <ExplainerToggle id="spending.largeOneOffs" label="Large one-offs" />
+                </div>
               </div>
               <Explainer
                 id="spending.largeOneOffs"
                 label="Large one-offs"
+                hideToggle
                 className="mt-1"
                 summary="Big one-time costs that explain a spike — already included in spending, never added a second time."
               >
@@ -3642,9 +3789,6 @@ export function App() {
 
             {/* monthly cash out — one number per month */}
             <section id="section-cash-out" aria-label="Monthly cash out" className={`mt-6 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-cash-out")}`}>
-              <div className="mb-2 flex justify-end">
-                <QuickViewReturnLink onReturn={scrollToQuickView} />
-              </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="display text-xl font-semibold">Monthly cash out</h2>
                 <div className="flex flex-wrap items-center gap-2">
@@ -3657,7 +3801,7 @@ export function App() {
                   </button>
                   <button
                     type="button"
-                    className={btnPrimary}
+                    className={btnAdd}
                     onClick={() =>
                       openSummaryForm(
                         month,
@@ -3667,11 +3811,13 @@ export function App() {
                   >
                     {data.isSummaryMonth ? "Edit this month's total" : "+ Enter a month's total"}
                   </button>
+                  <ExplainerToggle id="spending.cashOut" label="Monthly cash out" />
                 </div>
               </div>
               <Explainer
                 id="spending.cashOut"
                 label="Monthly cash out"
+                hideToggle
                 className="mt-1"
                 summary="One number per month — everything that left checking; if a month has both a total and items, the items win."
               >
@@ -3878,35 +4024,17 @@ export function App() {
 
             {/* monthly bills — breakdown of cash out, never added again */}
             <section id="section-monthly-bills" aria-label="Monthly bills" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-monthly-bills")}`}>
-              <div className="mb-2 flex justify-end">
-                <QuickViewReturnLink onReturn={scrollToQuickView} />
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="display text-xl font-semibold">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                <h2 className="display min-w-0 text-xl font-semibold">
                   Monthly bills
                   <span className="tnum ml-2 text-base font-normal text-[var(--dim)]">
                     {fmt(data.monthlyBillsTotalCents)}/mo
                   </span>
                 </h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  {data.monthlyBills.length > 0 && (
-                    <button
-                      type="button"
-                      className={btnGhost}
-                      aria-expanded={!data.monthlyBillsCollapsedAll}
-                      aria-controls="monthly-bills-list"
-                      onClick={() =>
-                        setMonthlyBillsCollapsedAll.mutate({
-                          collapsed: !data.monthlyBillsCollapsedAll,
-                        })
-                      }
-                    >
-                      {data.monthlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
-                    </button>
-                  )}
+                <div className="ml-auto flex flex-nowrap items-center gap-2">
                   <button
                     type="button"
-                    className={btnPrimary}
+                    className={btnAdd}
                     onClick={() => {
                       resetBillForm();
                       setShowBillForm(true);
@@ -3914,29 +4042,33 @@ export function App() {
                   >
                     + Add monthly bill
                   </button>
+                  {/* No summary sentence on the face: the "already included
+                      in cash out, never added a second time" point lives in
+                      the info tooltip in this header row's control cluster,
+                      whose full text is the former "More" text, verbatim. */}
+                  <ExplainerInfoTip id="spending.monthlyBills" label="Monthly bills">
+                    <p>
+                      Your regular monthly bills — mortgage, utilities, and so on.{" "}
+                      <strong className="text-[var(--text)]">
+                        These are already included in the month's cash out.
+                      </strong>{" "}
+                      This list only breaks down what the cash out is made of; it
+                      is never added to spending or cash out a second time.
+                      A bill paid by credit card lands in cash out in the month
+                      the card payment leaves the bank, which can be the month
+                      after the charge.
+                      Amounts below are the ones in effect for {monthLabel(month)};
+                      when a bill's price changes, the new amount applies from
+                      that month on and earlier months keep their old amount.
+                    </p>
+                  </ExplainerInfoTip>
+                  <BillsFoldChevron
+                    open={monthlyBillsOpen}
+                    controlsId="monthly-bills-roster"
+                    onToggle={() => setMonthlyBillsOpen(!monthlyBillsOpen)}
+                  />
                 </div>
               </div>
-              <Explainer
-                id="spending.monthlyBills"
-                label="Monthly bills"
-                className="mt-1"
-                summary="Your regular monthly bills — already included in cash out, never added a second time."
-              >
-                <p>
-                  Your regular monthly bills — mortgage, utilities, and so on.{" "}
-                  <strong className="text-[var(--text)]">
-                    These are already included in the month's cash out.
-                  </strong>{" "}
-                  This list only breaks down what the cash out is made of; it
-                  is never added to spending or cash out a second time.
-                  A bill paid by credit card lands in cash out in the month
-                  the card payment leaves the bank, which can be the month
-                  after the charge.
-                  Amounts below are the ones in effect for {monthLabel(month)};
-                  when a bill's price changes, the new amount applies from
-                  that month on and earlier months keep their old amount.
-                </p>
-              </Explainer>
 
               {showBillForm && (
                 <form onSubmit={submitBill} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -4014,12 +4146,30 @@ export function App() {
                   explanation only.
                 </p>
               )}
-              {data.monthlyBills.length > 0 && (
-                <>
-                  <ul id="monthly-bills-list" className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+              {monthlyBillsOpen && data.monthlyBills.length > 0 && (
+                <div id="monthly-bills-roster">
+                  {/* "Expand all" lives inside the fold with the roster:
+                      it expands the individual bill rows, so it only
+                      means anything while the roster is open. */}
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      className={btnGhost}
+                      aria-expanded={!data.monthlyBillsCollapsedAll}
+                      aria-controls="monthly-bills-list"
+                      onClick={() =>
+                        setMonthlyBillsCollapsedAll.mutate({
+                          collapsed: !data.monthlyBillsCollapsedAll,
+                        })
+                      }
+                    >
+                      {data.monthlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
+                    </button>
+                  </div>
+                  <ul id="monthly-bills-list" className="mt-2 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
                     {data.monthlyBills.map((b) => (
-                      <li key={b.id} className="p-3">
-                        <div className="flex items-start justify-between gap-3">
+                      <li key={b.id} className="px-3 py-2">
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
                           <div className="min-w-0">
                             <p className="truncate text-base font-medium">{b.name}</p>
                             {!data.monthlyBillsCollapsedAll && (
@@ -4189,23 +4339,34 @@ export function App() {
                       which is why the two figures differ.
                     </p>
                   </dl>
-                </>
+                </div>
               )}
             </section>
 
             {/* transactions */}
             <section aria-label="Transactions" className="mt-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="display text-xl font-semibold">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                <h2 className="display min-w-0 text-xl font-semibold">
                   Transactions — {monthLabel(month)}
                 </h2>
-                <div className="flex gap-2">
+                <div className="ml-auto flex flex-nowrap items-center gap-2">
                   <button type="button" className={btnGhost} onClick={() => setShowImport(!showImport)} aria-expanded={showImport}>
                     Import
                   </button>
-                  <button type="button" className={btnPrimary} onClick={() => openNewTxn()}>
+                  <button type="button" className={btnAdd} onClick={() => openNewTxn()}>
                     + Add
                   </button>
+                  <ExplainerInfoTip id="spending.transactions" label="Transactions">
+                    <p>
+                      Transactions are records of money that actually left an account — typed in by hand or imported from a file.
+                    </p>
+                    <p>
+                      Their main job is yearly and periodic bills. True cost spreads those bills evenly across the year, so each month carries a smooth monthly share instead of one big lump. When a bill is actually paid, the transaction is the record of that payout, and True cost uses it to swap the real payment out and keep the smooth share in — no lump, and no double count. Example: Property Tax is $4,422.12 paid in October; its smooth share is $737.02 a month.
+                    </p>
+                    <p>
+                      If a month has a cash-out items list, the items are that month's Cash out total and transactions are not added on top. If a month has no items and no typed-in total, Cash out is counted from its transactions instead.
+                    </p>
+                  </ExplainerInfoTip>
                 </div>
               </div>
 
@@ -4318,19 +4479,17 @@ export function App() {
               )}
               <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] empty:hidden">
                 {data.monthTransactions.map((t) => (
-                  <li key={t.id} className="flex items-start justify-between gap-3 p-3">
-                    <div className="min-w-0">
-                      <p className="truncate text-base font-medium">{t.description}</p>
-                      <p className="text-xs text-[var(--dim)]">
-                        {t.date.slice(5)} · {t.accountName} · {t.category}
-                        {t.kind === "card_payment" && " · Card payment — cash out only"}
-                        {t.kind === "transfer" && " · Transfer — not spending"}
-                        {t.yearlyExpenseId != null &&
-                          ` · Smoothed bill: ${yearlyNameById.get(t.yearlyExpenseId) ?? ""}`}
-                        {t.amountCents < 0 && t.kind === "spending" && " · Refund / credit"}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
+                  <li key={t.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2">
+                    <span className="min-w-0 text-base font-medium">{t.description}</span>
+                    <span className="text-xs whitespace-nowrap text-[var(--dim)]">
+                      {t.date.slice(5)} · {t.accountName} · {t.category}
+                      {t.kind === "card_payment" && " · Card payment — cash out only"}
+                      {t.kind === "transfer" && " · Transfer — not spending"}
+                      {t.yearlyExpenseId != null &&
+                        ` · Smoothed bill: ${yearlyNameById.get(t.yearlyExpenseId) ?? ""}`}
+                      {t.amountCents < 0 && t.kind === "spending" && " · Refund / credit"}
+                    </span>
+                    <span className="ml-auto flex shrink-0 items-center gap-1">
                       <span className={`tnum text-base font-medium ${t.kind !== "spending" ? "text-[var(--dim)]" : ""}`}>
                         {fmt(t.amountCents)}
                       </span>
@@ -4340,7 +4499,7 @@ export function App() {
                       <button type="button" aria-label={`Delete ${t.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteTxn.mutate(t.id)}>
                         ✕
                       </button>
-                    </div>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -4348,30 +4507,17 @@ export function App() {
 
             {/* yearly & periodic (smoothed) bills */}
             <section id="section-yearly-expenses" aria-label="Yearly & periodic expenses" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-yearly-expenses")}`}>
-              <div className="mb-2 flex justify-end">
-                <QuickViewReturnLink onReturn={scrollToQuickView} />
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="display text-xl font-semibold">Yearly &amp; periodic expenses</h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  {data.yearly.length > 0 && (
-                    <button
-                      type="button"
-                      className={btnGhost}
-                      aria-expanded={!data.yearlyBillsCollapsedAll}
-                      aria-controls="yearly-bills-list"
-                      onClick={() =>
-                        setYearlyBillsCollapsedAll.mutate({
-                          collapsed: !data.yearlyBillsCollapsedAll,
-                        })
-                      }
-                    >
-                      {data.yearlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
-                    </button>
-                  )}
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                <h2 className="display min-w-0 text-xl font-semibold">
+                  Yearly &amp; periodic expenses
+                  <span className="tnum ml-2 text-base font-normal text-[var(--dim)]">
+                    {fmt(data.totalAnnualCents)}/yr · set aside {fmt(data.accrualCents)}/mo
+                  </span>
+                </h2>
+                <div className="ml-auto flex flex-nowrap items-center gap-2">
                   <button
                     type="button"
-                    className={btnPrimary}
+                    className={btnAdd}
                     onClick={() => {
                       resetYearlyForm();
                       setShowYearlyForm(true);
@@ -4379,35 +4525,36 @@ export function App() {
                   >
                     + Add smoothed bill
                   </button>
+                  {/* No summary sentence on the face: the key figures now
+                      live in the header above, and the spread-evenly method
+                      plus the future-bill $0 rule live in the info tooltip
+                      in the header row's control cluster, whose full text
+                      is the former "More" text, verbatim. */}
+                  <ExplainerInfoTip id="spending.yearlyPeriodic" label="Yearly & periodic expenses">
+                    <p>
+                      Bills that don't land monthly, spread evenly so they don't
+                      ambush one month. The bills in effect for{" "}
+                      {monthLabel(month)} total {fmt(data.totalAnnualCents)} a
+                      year → set aside {fmt(data.accrualCents)} a month for{" "}
+                      {monthLabel(month)} — the sum of each in-effect bill's
+                      monthly amount, each rounded per bill, so it matches the
+                      set-asides on the bill cards below exactly. When a bill is paid, record
+                      it here so the actual can be checked against what you
+                      expected. Amounts below are the ones in effect for{" "}
+                      {monthLabel(month)}; when a bill's price or frequency
+                      changes, the new version applies from that month on and
+                      earlier months keep their old set-aside. A bill whose
+                      start month is in the future counts $0 in earlier months.
+                      Payments already recorded never change.
+                    </p>
+                  </ExplainerInfoTip>
+                  <BillsFoldChevron
+                    open={yearlyBillsOpen}
+                    controlsId="yearly-bills-roster"
+                    onToggle={() => setYearlyBillsOpen(!yearlyBillsOpen)}
+                  />
                 </div>
               </div>
-              <Explainer
-                id="spending.yearlyPeriodic"
-                label="Yearly & periodic expenses"
-                className="mt-1"
-                summary={
-                  <>
-                    Bills that don't land monthly, spread evenly — {fmt(data.totalAnnualCents)} a year in effect this month → set aside {fmt(data.accrualCents)} a month (the sum of each in-effect bill's monthly amount); a bill starting in the future counts $0 in earlier months.
-                  </>
-                }
-              >
-                <p>
-                  Bills that don't land monthly, spread evenly so they don't
-                  ambush one month. The bills in effect for{" "}
-                  {monthLabel(month)} total {fmt(data.totalAnnualCents)} a
-                  year → set aside {fmt(data.accrualCents)} a month for{" "}
-                  {monthLabel(month)} — the sum of each in-effect bill's
-                  monthly amount, each rounded per bill, so it matches the
-                  set-asides on the bill cards below exactly. When a bill is paid, record
-                  it here so the actual can be checked against what you
-                  expected. Amounts below are the ones in effect for{" "}
-                  {monthLabel(month)}; when a bill's price or frequency
-                  changes, the new version applies from that month on and
-                  earlier months keep their old set-aside. A bill whose
-                  start month is in the future counts $0 in earlier months.
-                  Payments already recorded never change.
-                </p>
-              </Explainer>
 
               {showYearlyForm && (
                 <form onSubmit={submitYearly} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -4543,14 +4690,42 @@ export function App() {
                   spread evenly instead of ambushing one month.
                 </p>
               )}
-              <ul id="yearly-bills-list" className="mt-3 space-y-3">
-                {data.yearly.map((y) => (
-                  <li key={y.id} className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-base font-semibold">{y.name}</p>
+              {yearlyBillsOpen && (
+                <div id="yearly-bills-roster">
+                  {/* The fold's top row: "Adjust reserve starting point"
+                      on the left (it acts on this roster's reserve) and
+                      "Expand all" on the right — it expands the
+                      individual bill cards, so it only means anything
+                      while the roster is open. When the reserve form is
+                      open it takes the full row (basis-full) and
+                      Expand all wraps beneath it. */}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <ReserveSettings data={data} onSaved={invalidate} />
+                    {data.yearly.length > 0 && (
+                      <button
+                        type="button"
+                        className={`${btnGhost} ml-auto`}
+                        aria-expanded={!data.yearlyBillsCollapsedAll}
+                        aria-controls="yearly-bills-list"
+                        onClick={() =>
+                          setYearlyBillsCollapsedAll.mutate({
+                            collapsed: !data.yearlyBillsCollapsedAll,
+                          })
+                        }
+                      >
+                        {data.yearlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
+                      </button>
+                    )}
+                  </div>
+                  {data.yearly.length > 0 && (
+                  <ul id="yearly-bills-list" className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+                    {data.yearly.map((y) => (
+                  <li key={y.id} className="px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        <span className="text-base font-semibold">{y.name}</span>
                         {y.inEffectForMonth === false ? (
-                          <p className="tnum text-sm text-[var(--dim)]">
+                          <span className="tnum text-sm text-[var(--dim)]">
                             {(() => {
                               const latestAnnual = y.latestExpectedCents * paymentsPerYearFor(y.latestFrequency);
                               const latestMonthly = Math.round(latestAnnual / 12);
@@ -4569,9 +4744,9 @@ export function App() {
                                 </>
                               );
                             })()}
-                          </p>
+                          </span>
                         ) : y.frequency !== "yearly" ? (
-                          <p className="tnum text-sm text-[var(--dim)]">
+                          <span className="tnum text-sm text-[var(--dim)]">
                             {fmt(y.expectedCents)}/bill · {freqPhrase(y.frequency)} ·{" "}
                             {fmt(y.annualCents)}/yr · {fmt(y.monthlyAccrualCents)}/mo set aside
                             {y.dueMonths.length > 0
@@ -4579,18 +4754,18 @@ export function App() {
                               : ""}
                             {" · paid by "}
                             {y.paidByName}
-                          </p>
+                          </span>
                         ) : (
-                          <p className="tnum text-sm text-[var(--dim)]">
+                          <span className="tnum text-sm text-[var(--dim)]">
                             {fmt(y.expectedCents)}/yr · {fmt(y.monthlyAccrualCents)}/mo
                             {y.dueMonth ? ` · due ${MONTH_NAMES[y.dueMonth - 1] ?? ""}` : ""}
                             {" · paid by "}
                             {y.paidByName}
-                          </p>
+                          </span>
                         )}
                       </div>
                       {!data.yearlyBillsCollapsedAll && (
-                        <div className="flex shrink-0 gap-1">
+                        <div className="ml-auto flex shrink-0 gap-1">
                           <button type="button" aria-label={`Edit ${y.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditYearly(y)}>
                             Edit
                           </button>
@@ -4801,10 +4976,11 @@ export function App() {
                       </>
                     )}
                   </li>
-                ))}
-              </ul>
-
-              <ReserveSettings data={data} onSaved={invalidate} />
+                    ))}
+                  </ul>
+                  )}
+                </div>
+              )}
             </section>
 
             {/* year in spending — the dissolved Year Summary view's
@@ -4884,7 +5060,7 @@ function ReserveSettings({
     return (
       <button
         type="button"
-        className="mt-4 text-sm font-medium text-[var(--accent)] underline"
+        className="inline-flex min-h-9 items-center text-sm font-medium text-[var(--accent)] underline"
         onClick={() => {
           setOpening(String(data.openingReserveCents / 100));
           setStart(data.reserveStartMonth ?? "");
@@ -4898,7 +5074,7 @@ function ReserveSettings({
   }
   return (
     <form
-      className="mt-4 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4"
+      className="w-full basis-full space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4"
       onSubmit={(e) => {
         e.preventDefault();
         save.mutate();

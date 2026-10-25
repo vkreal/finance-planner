@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
+import { usePersistedFold } from "./foldState";
+import { FoldChevron } from "./FoldChevron";
 import {
 ceilChipActiveCls,
 ceilChipCls,
@@ -30,7 +32,7 @@ type RothData,
 // accuracy self-check fixtures) — see server/src/taxEngine.ts and
 // server/src/taxLaw.ts. The client runs the same code the fixtures
 // pin, so what is priced here is what is tested there.
-import { irmaaTierUpTo, simulateRothPlan } from "@space/server/taxEngine";
+import { acaHouseholdSizeForYear, irmaaTierUpTo, simulateRothPlan } from "@space/server/taxEngine";
 import { taxReturnPrefillDollars } from "@space/server/taxReturnCore";
 import { lawForYear, TAX_LAW_YEARS } from "@space/server/taxLaw";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
@@ -545,7 +547,7 @@ export function Playground() {
   // px-4 py-4 padding; its mt-4 is the consistent gap between
   // cards). The heading sits at the top of the card with the
   // title itself a real button carrying aria-expanded and the
-  // app's ▾/▸ disclosure glyph; folding hides the whole card
+  // app's shared chip chevron (FoldChevron); folding hides the whole card
   // body and the heading row stays visible inside the card,
   // folded or open. Like the Roth view's rothSection, the header
   // button also carries the section's live one-line summary
@@ -574,9 +576,7 @@ export function Playground() {
               {summary}
             </span>
           </span>
-          <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
-            {pgOpenSections[id] ? "▾" : "▸"}
-          </span>
+          <FoldChevron open={!!pgOpenSections[id]} className="mt-0.5" />
         </button>
       </h3>
       {pgOpenSections[id] && children}
@@ -603,10 +603,16 @@ export function Playground() {
   const togglePgGroup = (id: "single" | "projection") =>
     setPgGroupOpen((p) => ({ ...p, [id]: !p[id] }));
   // One super-group header: a real button carrying
-  // aria-expanded and the app's ▾/▸ disclosure glyph, with a
+  // aria-expanded and the app's shared chip chevron (FoldChevron), with a
   // one-line blurb naming what the group holds. The header row
   // itself is not a card — the section cards inside the group
-  // keep the card treatment.
+  // keep the card treatment. The button carries pr-1 (4px of
+  // right padding) so the chip's right edge lands exactly where
+  // the view's other bare fold toggles put theirs: the paste
+  // and known-point headers centre the same 28px chip inside a
+  // 36px tap-target button, which insets the chip 4px from the
+  // shared right edge — without this padding the group chip sat
+  // flush with that edge, 4px to the right of theirs.
   const pgGroupHeader = (
     id: "single" | "projection",
     title: string,
@@ -617,16 +623,14 @@ export function Playground() {
         type="button"
         aria-expanded={pgGroupOpen[id]}
         aria-label={`${title} group`}
-        className="flex w-full items-start justify-between gap-3 text-left"
+        className="flex w-full items-start justify-between gap-3 pr-1 text-left"
         onClick={() => togglePgGroup(id)}
       >
         <span>
           <span className="block text-base font-semibold">{title}</span>
           <span className="mt-0.5 block text-sm text-[var(--dim)]">{blurb}</span>
         </span>
-        <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
-          {pgGroupOpen[id] ? "▾" : "▸"}
-        </span>
+        <FoldChevron open={!!pgGroupOpen[id]} className="mt-0.5" />
       </button>
     </h3>
   );
@@ -646,6 +650,33 @@ export function Playground() {
      One year leaves it open, exactly as the group fold left
      it — the face switch itself writes no dial. */
   const [pgFace, setPgFace] = useState<"year" | "projection">("year");
+  /* The "Start from a known point" preset cards' fold, in the
+     generic server-side fold store (foldState.ts) like the
+     Spending section folds — the choice survives reloads and
+     new sessions, no localStorage. This section DEFAULTS TO
+     EXPANDED, the opposite of every other fold in that store:
+     the store only carries folds left in their non-default
+     state (a stored entry reads true, and closing a default-
+     closed fold just removes its entry), so this hook stores
+     the inverse flag — an entry under
+     "playground.knownPointsFolded" means the user left the
+     section folded shut; no entry means expanded, its default.
+     Display only: the loaders below read the dial and plan
+     state, never this flag. */
+  const [knownPointsFolded, setKnownPointsFolded] = usePersistedFold(
+    "playground.knownPointsFolded",
+  );
+  const knownPointsOpen = !knownPointsFolded;
+  /* The "Load inputs from a paste" fold, in the same generic
+     server-side fold store: an occasional-use tool, so it
+     DEFAULTS TO COLLAPSED (the store's own default — no entry
+     means shut) and the stored choice survives reloads like
+     every other fold. Display only: the paste parsing and the
+     Load inputs button behave exactly as before, whenever the
+     section is open. */
+  const [pasteOpen, setPasteOpen] = usePersistedFold(
+    "playground.pasteInputs",
+  );
   // The year chosen on the "A year from my saved plan" preset
   // card (a calendar year from the saved plan's priced years);
   // null until the priced years land, then the first year is
@@ -1531,11 +1562,27 @@ export function Playground() {
           ? src.ssSpouseAnnual
           : templateSsS,
     );
-    const stepYear = intOr(pgProjAcaStepYear, src?.acaStepDownYear ?? null);
-    const sizeAfter = intOr(
-      pgProjAcaSizeAfter,
-      src != null ? src.acaHouseholdSizeAfter : null,
-    );
+    // Household-schedule dials (MULTI-STEP ACA HOUSEHOLD
+    // SCHEDULE build): with BOTH dials blank the projection
+    // runs the plan's own schedule verbatim — every step, not
+    // just the first. Typing in either dial turns the pair
+    // into a single-step override for the debate: the typed
+    // value wins and the blank one falls back to the plan
+    // schedule's FIRST step (year or size), exactly as the
+    // old two-dial pair resolved against the old single step.
+    const planSchedule = src?.acaHouseholdSchedule ?? null;
+    const dialStepYear = intOr(pgProjAcaStepYear, null);
+    const dialSizeAfter = intOr(pgProjAcaSizeAfter, null);
+    const projSchedule =
+      dialStepYear == null && dialSizeAfter == null
+        ? planSchedule
+        : (() => {
+            const y = dialStepYear ?? planSchedule?.[0]?.fromYear ?? null;
+            const s2 = dialSizeAfter ?? planSchedule?.[0]?.householdSize ?? null;
+            return y != null && s2 != null
+              ? [{ fromYear: y, householdSize: s2 }]
+              : planSchedule;
+          })();
     const returnRaw = parseNum(pgProjReturnPct);
     const returnPct =
       returnRaw != null
@@ -1554,8 +1601,7 @@ export function Playground() {
       ssSpouseClaimAge: intOr(pgProjSsSClaimAge, src?.ssSpouseStartAge ?? null),
       ssPrimaryAnnual: ssPAnnual,
       ssSpouseAnnual: ssSAnnual,
-      acaHouseholdSizeAfter: stepYear != null ? sizeAfter : null,
-      acaStepDownYear: stepYear,
+      acaHouseholdSchedule: projSchedule,
       startTaxable: moneyOr(pgProjTaxableStart, src != null ? src.taxableStart : null),
       startRoth: moneyOr(pgProjRothStart, src != null ? src.rothStart : 0) ?? 0,
       returnPct,
@@ -1662,10 +1708,11 @@ export function Playground() {
         ? fmtMoneyInput(pgPrefillSource.ssSpouseNoBenefit ? 0 : pgPrefillSource.ssSpouseAnnual)
         : "0",
     );
-    const size =
-      pgPrefillSource.acaStepDownYear != null && taxYear >= pgPrefillSource.acaStepDownYear
-        ? pgPrefillSource.acaHouseholdSizeAfter
-        : pgPrefillSource.acaHouseholdSize;
+    const size = acaHouseholdSizeForYear(
+      pgPrefillSource.acaHouseholdSize,
+      pgPrefillSource.acaHouseholdSchedule,
+      taxYear,
+    );
     setPgAcaSize(String(size));
     // Benchmark pick keys on who is on the marketplace in the
     // chosen year (by the ages just derived), mirroring the
@@ -2200,7 +2247,14 @@ export function Playground() {
     return fmtDollars(Math.max(0, p ?? 0) + Math.max(0, s ?? 0));
   })();
   const pgIncomeSummary = `Interest ${pgMoneySummary(pgInterest)} · Dividends ${pgMoneySummary(pgOrdDiv)} (qualified ${pgMoneySummary(pgQualDiv)}) · SS ${pgSsSummary}`;
-  const pgConversionSummary = `Money out ${pgMoneySummary(pgConversion)} · balance ${pgMoneySummary(pgPretax)}`;
+  /* While Hold is engaged on the ACA cliff fill target, the
+     card header's subline names the hold (2026-10-25), in
+     the same muted summary text — no badge or chip. Display
+     only: it reads pgHoldActive / pgHeldTarget exactly as the
+     hold captions do, so toggling Hold off — or typing in the
+     conversion dial, which releases the hold via its onEdit —
+     removes the text, and no figure changes in any state. */
+  const pgConversionSummary = `Money out ${pgMoneySummary(pgConversion)} · balance ${pgMoneySummary(pgPretax)}${pgHoldActive && pgHeldTarget === "aca" ? " · Hold the ACA cliff" : ""}`;
   const pgStockSummary = ((): string => {
     const sold = Math.max(0, parseDollars(pgSold) ?? 0);
     if (sold <= 0) return "None";
@@ -2751,49 +2805,74 @@ export function Playground() {
             )}
           </div>
 
-          <div className="mt-3 max-w-3xl">
-            <label
-              className="block text-sm font-medium text-[var(--text)]"
-              htmlFor="roth-pg-paste"
-            >
-              Load inputs from a paste
-            </label>
-            <p className={hintCls}>
-              Paste the inputs block from a priced answer and every dial
-              below fills at once — the same as typing them.
-            </p>
-            <textarea
-              id="roth-pg-paste"
-              aria-label="Load inputs paste box"
-              className={`${inputCls} mt-2 font-mono text-xs`}
-              rows={3}
-              value={pgPasteText}
-              onChange={(e) => {
-                setPgPasteText(e.target.value);
-                setPgPasteLoaded(false);
-              }}
-              placeholder='{"kind":"playground-year","version":1,…}'
-            />
-            <div className="mt-2 flex flex-wrap items-center gap-3">
+          {/* Load inputs from a paste — an occasional-use tool,
+              folded by default (see pasteOpen above): the heading
+              row carries the shared fold toggle at its right end,
+              and the fold covers the helper line, the textarea,
+              and the Load inputs button. The "Start from my
+              numbers" button and "Reset playground" link above
+              stay outside the fold, always visible. */}
+          <div className="mt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label
+                className="block text-sm font-medium text-[var(--text)]"
+                htmlFor="roth-pg-paste"
+              >
+                Load inputs from a paste
+              </label>
               <button
                 type="button"
-                aria-label="Load inputs"
-                className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-                disabled={pgPasteText.trim() === ""}
-                onClick={applyPgPaste}
+                aria-label={
+                  pasteOpen ? "Hide paste loader" : "Show paste loader"
+                }
+                aria-expanded={pasteOpen}
+                aria-controls="playground-paste-inputs"
+                onClick={() => setPasteOpen(!pasteOpen)}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
               >
-                Load inputs
+                <FoldChevron open={pasteOpen} />
               </button>
-              {pgPasteLoaded && !pgPasteError && (
-                <span className="text-sm text-[var(--dim)]" role="note">
-                  Loaded — the dials below now hold the pasted inputs.
-                </span>
-              )}
             </div>
-            {pgPasteError && (
-              <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
-                {pgPasteError}
-              </p>
+            {pasteOpen && (
+              <div id="playground-paste-inputs" className="max-w-3xl">
+                <p className={hintCls}>
+                  Paste the inputs block from a priced answer and every dial
+                  below fills at once — the same as typing them.
+                </p>
+                <textarea
+                  id="roth-pg-paste"
+                  aria-label="Load inputs paste box"
+                  className={`${inputCls} mt-2 font-mono text-xs`}
+                  rows={3}
+                  value={pgPasteText}
+                  onChange={(e) => {
+                    setPgPasteText(e.target.value);
+                    setPgPasteLoaded(false);
+                  }}
+                  placeholder='{"kind":"playground-year","version":1,…}'
+                />
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    aria-label="Load inputs"
+                    className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                    disabled={pgPasteText.trim() === ""}
+                    onClick={applyPgPaste}
+                  >
+                    Load inputs
+                  </button>
+                  {pgPasteLoaded && !pgPasteError && (
+                    <span className="text-sm text-[var(--dim)]" role="note">
+                      Loaded — the dials below now hold the pasted inputs.
+                    </span>
+                  )}
+                </div>
+                {pgPasteError && (
+                  <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+                    {pgPasteError}
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
@@ -2802,11 +2881,32 @@ export function Playground() {
               sets dials only; nothing here writes the saved
               plan record. Shown on both faces: the dials are
               shared, so a starting point is useful from either
-              tool. */}
+              tool. The section folds behind the same chevron
+              toggle the Spending section folds use (see
+              knownPointsFolded above): expanded by default, and
+              folded shut it leaves only this header row. */}
           <div className="mt-4">
-            <p className="text-sm font-medium text-[var(--text)]">
-              Start from a known point
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium text-[var(--text)]">
+                Start from a known point
+              </p>
+              <button
+                type="button"
+                aria-label={
+                  knownPointsOpen
+                    ? "Hide starting points"
+                    : "Show starting points"
+                }
+                aria-expanded={knownPointsOpen}
+                aria-controls="playground-known-points"
+                onClick={() => setKnownPointsFolded(knownPointsOpen)}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+              >
+                <FoldChevron open={knownPointsOpen} />
+              </button>
+            </div>
+            {knownPointsOpen && (
+              <div id="playground-known-points">
             <div className="mt-2 grid gap-2 sm:grid-cols-3">
               <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
                 <p className="text-sm font-semibold">My 2026 as filed</p>
@@ -2902,6 +3002,8 @@ export function Playground() {
               <p className="mt-2 text-sm text-[var(--dim)]" role="note">
                 {pgPresetNote}
               </p>
+            )}
+              </div>
             )}
           </div>
 
@@ -3365,9 +3467,7 @@ export function Playground() {
                     {pgProjSummary}
                   </span>
                 </span>
-                <span aria-hidden="true" className="mt-1 shrink-0 text-[var(--dim)]">
-                  {pgProjOpen ? "▾" : "▸"}
-                </span>
+                <FoldChevron open={pgProjOpen} className="mt-0.5" />
               </button>
             </h3>
             {pgProjOpen && (
@@ -3589,13 +3689,14 @@ export function Playground() {
                   })}
                   {numField("ACA household size after step-down", pgProjAcaSizeAfter, setPgProjAcaSizeAfter, {
                     idLabel: "Projection ACA household size after",
-                    hint: "The household size from the step-down year on.",
+                    hint: "The household size from the step-down year on. Typing in either of these two fields turns them into a single-step override of your plan's household schedule.",
                   })}
                   {numField("ACA step-down year", pgProjAcaStepYear, setPgProjAcaStepYear, {
                     idLabel: "Projection ACA step-down year",
                     hint:
-                      pgPrefillSource?.acaStepDownYear != null
-                        ? `Blank uses your plan's step-down year (${pgPrefillSource.acaStepDownYear}).`
+                      pgPrefillSource?.acaHouseholdSchedule != null &&
+                      pgPrefillSource.acaHouseholdSchedule.length > 0
+                        ? `Blank uses your plan's household schedule (first step ${pgPrefillSource.acaHouseholdSchedule[0]?.fromYear}).`
                         : "Blank = no step-down.",
                   })}
                 </div>
@@ -5126,8 +5227,7 @@ type PgPrefillSource = {
   ssSpouseStartAge: number | null;
   ssSpouseNoBenefit: boolean;
   acaHouseholdSize: number;
-  acaHouseholdSizeAfter: number;
-  acaStepDownYear: number | null;
+  acaHouseholdSchedule: { fromYear: number; householdSize: number }[] | null;
   acaBenchmarkCouple: number | null;
   acaBenchmarkSingle: number | null;
   acaBenchmarkFamily: number | null;
@@ -5217,10 +5317,7 @@ function pgPrefillSourceFrom(
     ssSpouseStartAge: s ? s.ssSpouseStartAge : null,
     ssSpouseNoBenefit: s ? s.ssSpouseNoBenefit === true : false,
     acaHouseholdSize: s ? (s.acaHouseholdSize ?? 1) : 5,
-    acaHouseholdSizeAfter: s
-      ? (s.acaHouseholdSizeAfter ?? s.acaHouseholdSize ?? 1)
-      : 2,
-    acaStepDownYear: s ? s.acaStepDownYear : null,
+    acaHouseholdSchedule: s ? (s.acaHouseholdSchedule ?? null) : null,
     acaBenchmarkCouple:
       s?.acaBenchmarkCoupleCents == null
         ? null

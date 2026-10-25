@@ -68,8 +68,26 @@ export const rothLabDials = z.object({
   acaBenchmarkFamilyCents: z.number().int().nullable(),
   acaBenchmarkCoupleCents: z.number().int().nullable(),
   acaBenchmarkSingleCents: z.number().int().nullable(),
-  acaHouseholdSizeAfter: z.number().int().min(1).max(20).nullable(),
-  acaStepDownYear: z.number().int().min(1900).max(2200).nullable(),
+  // The household-schedule dial (MULTI-STEP ACA HOUSEHOLD
+  // SCHEDULE build): the whole schedule as one dial, replacing
+  // the old size-after / step-year dial pair — a set dial
+  // replaces the plan's schedule wholesale at pricing time,
+  // exactly as the old pair replaced its two fields. Entries
+  // are the schedule's own shape (integer year 1900–2200,
+  // integer size 1–20); the parse below keeps the well-formed
+  // entries and sorts them, like every lenient read here. A
+  // UI-state blob written before this build has no such key,
+  // which parses to null — no override — exactly like a dial
+  // left blank (its legacy pair keys are no longer read).
+  acaHouseholdSchedule: z
+    .array(
+      z.object({
+        fromYear: z.number().int().min(1900).max(2200),
+        householdSize: z.number().int().min(1).max(20),
+      }),
+    )
+    .max(40)
+    .nullable(),
   expectedReturnPct: z.number().nullable(),
   inflationPct: z.number().nullable(),
   heirRatePct: z.number().min(0).max(100).nullable(),
@@ -94,8 +112,7 @@ const blankLabDials = (): RothLabDials => ({
   acaBenchmarkFamilyCents: null,
   acaBenchmarkCoupleCents: null,
   acaBenchmarkSingleCents: null,
-  acaHouseholdSizeAfter: null,
-  acaStepDownYear: null,
+  acaHouseholdSchedule: null,
   expectedReturnPct: null,
   inflationPct: null,
   heirRatePct: null,
@@ -672,8 +689,39 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         acaBenchmarkFamilyCents: num(d.acaBenchmarkFamilyCents),
         acaBenchmarkCoupleCents: num(d.acaBenchmarkCoupleCents),
         acaBenchmarkSingleCents: num(d.acaBenchmarkSingleCents),
-        acaHouseholdSizeAfter: num(d.acaHouseholdSizeAfter),
-        acaStepDownYear: num(d.acaStepDownYear),
+        // The schedule dial, read leniently like every field
+        // here: keep the well-formed entries of a stored array
+        // (integer year 1900–2200, integer size 1–20), sorted
+        // ascending with a repeated year deduped last-wins —
+        // the same sanitization the plan record's resolver
+        // applies; anything else reads as null = no override.
+        acaHouseholdSchedule: ((): RothLabDials["acaHouseholdSchedule"] => {
+          if (!Array.isArray(d.acaHouseholdSchedule)) return null;
+          const byYear = new Map<number, number>();
+          for (const rawEntry of d.acaHouseholdSchedule as unknown[]) {
+            if (rawEntry == null || typeof rawEntry !== "object") continue;
+            const e = rawEntry as Record<string, unknown>;
+            const fromYear = num(e.fromYear);
+            const householdSize = num(e.householdSize);
+            if (
+              fromYear == null ||
+              !Number.isInteger(fromYear) ||
+              fromYear < 1900 ||
+              fromYear > 2200 ||
+              householdSize == null ||
+              !Number.isInteger(householdSize) ||
+              householdSize < 1 ||
+              householdSize > 20
+            )
+              continue;
+            byYear.set(fromYear, householdSize);
+          }
+          if (byYear.size === 0) return null;
+          return [...byYear.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .slice(0, 40)
+            .map(([fromYear, householdSize]) => ({ fromYear, householdSize }));
+        })(),
         expectedReturnPct: num(d.expectedReturnPct),
         inflationPct: num(d.inflationPct),
         heirRatePct: num(d.heirRatePct),

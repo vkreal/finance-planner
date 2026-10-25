@@ -56,6 +56,8 @@ ALL_DRAW_ORDERS,
 DEFAULT_DRAW_ORDER,
 NO_CEILINGS,
 acaCreditFor,
+acaFirstStepYear,
+acaHouseholdSizeForYear,
 applyLossLedger,
 ceilingsActive,
 drawOrderFromKey,
@@ -66,8 +68,10 @@ effectiveSsSpouseAnnual,
 fillConversion,
 irmaaAnnualPerPerson,
 priceYear,
+resolveAcaHouseholdSchedule,
 rmdForYear,
 simulateRothPlan,
+type AcaHouseholdStep,
 type DrawOrder,
 type EducationStudent,
 type FilingStatus,
@@ -1708,13 +1712,31 @@ export function countCeilingViolations(
     }
     if (c.magiCap != null && y.magi > c.magiCap + 0.01) violations++;
     if (c.acaCliffCap && !spec.bunching && y.acaActive) {
-      const size = y.isSurvivorYear
-        ? 1
-        : inputs.acaStepDownYear != null && y.year >= inputs.acaStepDownYear
-          ? inputs.acaHouseholdSizeAfter
-          : inputs.acaHouseholdSize;
-      const cliff = 4 * fplFor(size, y.year - 1);
-      if (y.acaMagi > cliff + 0.01) violations++;
+      /* ERA-AWARE GATE (Prompt 14 Finding 2 fix): with the
+         family-only flag on, simulateRothPlan strips the cliff
+         cap from the first household-schedule step year on
+         (taxEngine.ts, eraCliffOff) — those years are
+         DELIBERATELY uncapped, so this audit must not count
+         them as violations. The gate mirrors the simulator's
+         exactly: family-only flag set, a first step year
+         exists, and the priced year is at or after it.
+         Pre-step years are still checked exactly as before. */
+      const firstStepYear = acaFirstStepYear(inputs.acaHouseholdSchedule);
+      const eraCliffOff =
+        c.acaCliffCapFamilyOnly === true &&
+        firstStepYear != null &&
+        y.year >= firstStepYear;
+      if (!eraCliffOff) {
+        const size = y.isSurvivorYear
+          ? 1
+          : acaHouseholdSizeForYear(
+              inputs.acaHouseholdSize,
+              inputs.acaHouseholdSchedule,
+              y.year,
+            );
+        const cliff = 4 * fplFor(size, y.year - 1);
+        if (y.acaMagi > cliff + 0.01) violations++;
+      }
     }
   }
   return violations;
@@ -1934,8 +1956,17 @@ export type RothSavedLike = {
   drawOrderAfter?: string | null;
   spouseSoleBeneficiary: boolean | null;
   acaHouseholdSize: number | null;
-  acaHouseholdSizeAfter: number | null;
-  acaStepDownYear: number | null;
+  // The household schedule (MULTI-STEP ACA HOUSEHOLD SCHEDULE
+  // build): the ordered steps away from acaHouseholdSize.
+  // Null = no steps. The two legacy keys below it are OPTIONAL
+  // and read ONLY by planInputsFromSaved's migration fallback
+  // (resolveAcaHouseholdSchedule): a record written before
+  // this build carries the pair instead of a schedule, and
+  // resolves to the one-entry schedule that prices
+  // bit-identically. No writer writes them any more.
+  acaHouseholdSchedule: AcaHouseholdStep[] | null;
+  acaHouseholdSizeAfter?: number | null;
+  acaStepDownYear?: number | null;
   acaBenchmarkCoupleCents: number | null;
   acaBenchmarkSingleCents: number | null;
   // Family benchmark (household of 3+). Optional: a saved
@@ -2254,7 +2285,18 @@ function executionLedgerFields(
   const st = Math.max(0, plan.capitalLossCarryInSt ?? 0);
   const lt = Math.max(0, plan.capitalLossCarryInLt ?? 0);
   if (st <= 0 && lt <= 0) return { ltcg: y.detail.ltcg };
-  const led = applyLossLedger({ st, lt }, y.detail.ltcg, y.filingStatus);
+  // Only the netted result and the CLAIMED allowance are
+  // read here — never the carry-out (the one-year sim that
+  // priced this year reconciled its own carry-out against
+  // its final taxable income) — so utilization is passed
+  // as unbounded, exactly as the march's trial pricings
+  // pass it.
+  const led = applyLossLedger(
+    { st, lt },
+    y.detail.ltcg,
+    y.filingStatus,
+    Number.POSITIVE_INFINITY,
+  );
   return {
     ltcg: led.netResult,
     capitalLossAllowance: led.allowance,
@@ -2353,18 +2395,19 @@ export function priceExecutionYear(
   };
   const pretaxPriced = execInputs.pretaxStart + (execInputs.pretaxSpouseStart ?? 0);
   // Era-aware cliff cap: when the execution year is at or past
-  // the plan's household step-down year and the family-only
+  // the plan's first household-schedule step year and the family-only
   // flag is on, the cliff cap is off for this year. The sim's
   // own per-year gate would strip it anyway; stripping once
   // here keeps the fill-target re-solve below (which works
   // from the ceilings directly) pricing the same undefended
   // year the sim priced.
+  const execFirstStepYear = acaFirstStepYear(plan.acaHouseholdSchedule);
   const eraCeilings: FillCeilings | null =
     ceilings != null &&
     ceilings.acaCliffCap &&
     ceilings.acaCliffCapFamilyOnly &&
-    plan.acaStepDownYear != null &&
-    currentYear >= plan.acaStepDownYear
+    execFirstStepYear != null &&
+    currentYear >= execFirstStepYear
       ? { ...ceilings, acaCliffCap: false }
       : ceilings;
   const result = simulateRothPlan(execInputs, {
@@ -3459,11 +3502,11 @@ export type PlaygroundProjectionOptions = {
   // template year's typed amount.
   ssPrimaryAnnual: number | null;
   ssSpouseAnnual: number | null;
-  // ACA step-down: from acaStepDownYear (a calendar year) on,
-  // the household size is acaHouseholdSizeAfter. Either null
-  // = no step-down.
-  acaHouseholdSizeAfter: number | null;
-  acaStepDownYear: number | null;
+  // ACA household schedule: the steps away from the template
+  // year's household size, as (fromYear → householdSize)
+  // entries. Null = no steps — the template size governs
+  // every projected year.
+  acaHouseholdSchedule: AcaHouseholdStep[] | null;
   // Starting balances: taxable is null when none was entered
   // (sales then repeat unscaled and no taxable balance is
   // tracked); Roth starts at the entered figure ($0 default).
@@ -3652,11 +3695,11 @@ export function projectPlaygroundYears(
     const householdSize =
       template.acaHouseholdSize == null
         ? null
-        : opts.acaStepDownYear != null &&
-            opts.acaHouseholdSizeAfter != null &&
-            calendarYear >= opts.acaStepDownYear
-          ? opts.acaHouseholdSizeAfter
-          : template.acaHouseholdSize;
+        : acaHouseholdSizeForYear(
+            template.acaHouseholdSize,
+            opts.acaHouseholdSchedule,
+            calendarYear,
+          );
     const inputs: PlaygroundYearInputs = {
       ...template,
       taxYear: calendarYear,
@@ -4701,9 +4744,14 @@ export function planInputsFromSaved(
       saved.drawOrderAfter != null ? drawOrderFromKey(saved.drawOrderAfter) : null,
     spouseSoleBeneficiary: saved.spouseSoleBeneficiary ?? true,
     acaHouseholdSize: saved.acaHouseholdSize ?? 1,
-    acaHouseholdSizeAfter:
-      saved.acaHouseholdSizeAfter ?? saved.acaHouseholdSize ?? 1,
-    acaStepDownYear: saved.acaStepDownYear,
+    // Household schedule passthrough (MULTI-STEP ACA HOUSEHOLD
+    // SCHEDULE build): the saved schedule, resolved through
+    // the one sanitizer — which also synthesizes the
+    // one-entry migration schedule from a pre-build record's
+    // legacy step-down pair, so an untouched legacy record
+    // prices bit-identically. Absent / null / empty = no
+    // steps: the initial size governs every year.
+    acaHouseholdSchedule: resolveAcaHouseholdSchedule(saved),
     acaBenchmarkCouple:
       saved.acaBenchmarkCoupleCents == null ? null : saved.acaBenchmarkCoupleCents / 100,
     acaBenchmarkSingle:
@@ -4939,7 +4987,28 @@ export function buildCompareScenario(
   overrides: RothCompareOverrides,
   startYear: number,
 ): RothCompareScenarioBuilt | null {
-  const merged: RothCompareBaseSaved = { ...base };
+  /* CANONICALIZE THE BASE (Prompt 14 Finding 1 fix): resolve the
+     base's ACA household schedule ONCE and write the resolved
+     schedule back onto the base copy, deleting the legacy pair
+     (acaStepDownYear / acaHouseholdSizeAfter). The resolver
+     synthesizes exactly the schedule a legacy base prices with
+     today, so a base WITHOUT a schedule override prices
+     bit-identically to before this fix. What changes is an
+     explicit clearing override — acaHouseholdSchedule: null (or
+     an empty list) in the scenario patch: before this fix the
+     merged shape still carried the legacy pair, the resolver
+     fell through to it and resurrected the step the override
+     meant to clear (a $36,528.03 lifetime-credit delta in the
+     reviewer's repro on a raw legacy base); with the legacy
+     pair gone from the canonical base, the resolver has nothing
+     to fall through to and the clear truly clears. The app's
+     record path migrates records before compare, so this was a
+     latent trap in the pure functions, not a live mispricing. */
+  const canonicalBase: RothCompareBaseSaved = { ...base };
+  canonicalBase.acaHouseholdSchedule = resolveAcaHouseholdSchedule(base);
+  delete canonicalBase.acaStepDownYear;
+  delete canonicalBase.acaHouseholdSizeAfter;
+  const merged: RothCompareBaseSaved = { ...canonicalBase };
   for (const k of Object.keys(overrides) as (keyof RothCompareOverrides)[]) {
     if (overrides[k] !== undefined) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

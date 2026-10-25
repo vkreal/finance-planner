@@ -29,11 +29,12 @@
 import {
   BACKUP_KEEP_NEWEST,
   chooseBackupFilename,
-  mergeBackupListings,
+  mergeBackupListingsWithSource,
   planDeleteAllBackups,
   planDeleteBackup,
   planPruneBackups,
   type BackupFileEntry,
+  type BackupListEntry,
 } from "../../server/src/backupCore";
 import {
   BACKUPS_KEY,
@@ -141,7 +142,7 @@ async function ensureRsaKeyPair(
 export interface LocalPrivilegedHandlers {
   ensureEncryptionKey(args: { spaceDir: string }): { keyBase64: string };
   listBackups(args: { spaceDir: string }): {
-    backups: BackupFileEntry[];
+    backups: BackupListEntry[];
   };
   deleteBackup(args: { spaceDir: string; filename: string }): {
     ok: boolean;
@@ -181,7 +182,10 @@ export function createLocalPrivileged(store: KeyValueStore): LocalPrivilegedHand
     },
 
     listBackups() {
-      return { backups: mergeBackupListings(ownFiles(readVault(store)), []) };
+      // No legacy folder in the packaged build: every entry is "own".
+      return {
+        backups: mergeBackupListingsWithSource(ownFiles(readVault(store)), []),
+      };
     },
 
     deleteBackup(args) {

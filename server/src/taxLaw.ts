@@ -625,6 +625,38 @@ export function saltScheduleForYear(
   };
 }
 
+/* -------- Charitable percentage ceiling (IRC
+   §170(b)(1)(G)) --------
+   The deduction for CASH contributions to public charities
+   may not exceed 60% of the contribution base (AGI; the
+   engine models no NOL carryback). The 60% figure has been
+   in effect for every law year this engine holds (enacted
+   for 2018–2025 by the TCJA and made permanent by Pub. L.
+   119-21), so the ceiling applies in EVERY priced year —
+   unlike the 2026 deduction trio below, it is not gated on
+   the 2026 law row. The engine's ONE aggregate charitable
+   input carries no cash/property split and is documented
+   throughout as treated as cash contributions, so the 60%
+   cash ceiling applies to the whole input. ORDERING (the
+   engine-audit round-2 settlement noted both orders; this
+   is the order implemented): the §170(b)(1)(I) floor (2026
+   and later) is applied to the entered input FIRST, and the
+   60% ceiling then caps the after-floor amount — the final
+   charitable component of the itemized total therefore
+   never exceeds 60% of AGI. The excess over the ceiling is
+   NOT deducted and does NOT carry forward: the engine
+   keeps no §170(d)(1) carryforward ledger (the
+   floor-disallowed amounts likewise do not carry), so the
+   cap errs conservative — it can overstate a later year's
+   tax, never understate the current year's. The ceiling
+   applies ONLY to the itemized charitable component: the
+   §170(p) non-itemizer deduction keeps its own per-status
+   caps, and the Washington excise's charitable deduction
+   keeps pricing from the raw input. */
+export const CHARITABLE_CEILING = {
+  ratePct: 60,
+};
+
 /* -------- 2026 deduction trio (Pub. L. 119-21, tax years
    beginning after December 31, 2025) --------
    Three deduction rules the year pricer (priceYear in

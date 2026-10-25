@@ -63,6 +63,58 @@ export const GUARDRAILS_CUT_DEFAULT = 120;
 export const GUARDRAILS_RAISE_DEFAULT = 80;
 export const GUARDRAILS_ADJUSTMENT_DEFAULT = 10;
 
+// Guardrails rail tolerance (Prompt 13 fix, contract v40): the
+// documented rule is STRICT — a cut fires only when the current
+// withdrawal rate is strictly above the cut rail, a raise only
+// when it is strictly below the raise rail, and a rate exactly
+// AT a rail fires neither. The rails are computed as
+// (pct / 100) * initialRate in IEEE-754 floating point, and at
+// exact mathematical equality that product can land about one
+// ulp on the wrong side of the current rate — verified:
+// (120 / 100) * (200000 / 1200000) = 0.19999999999999998 < 0.2
+// (a spurious cut) and (80 / 100) * 0.2 = 0.16000000000000003
+// > 0.16 (a spurious raise). The comparisons therefore treat a
+// rate within this RELATIVE tolerance of a rail as AT the rail.
+// The representation error in the rail products is at most a
+// few ulps (~1e-15 relative); 1e-9 is roughly a million times
+// that error, yet far smaller than any economically
+// distinguishable rate difference — so every rate past a rail
+// by more than the tolerance fires exactly as before, in size,
+// in count (at most one adjustment per year), and in
+// compounding. The same tolerance is published in describeApi's
+// guardrailsSemantics convention (apiContractCore.ts).
+export const GUARDRAILS_RATE_REL_TOLERANCE = 1e-9;
+
+// The ONE guardrails comparison, shared by simulateDetailed and
+// runNeverRunsOut so the simulator and the max-spending solver
+// can never disagree at a rail: returns the year's spending
+// level after at most one tolerance-aware rail adjustment.
+function guardrailsAdjustedSpending(
+  currentSpending: number,
+  bal: number,
+  initialRate: number,
+  inputs: SimInputs,
+): number {
+  if (bal <= 0 || initialRate <= 0) return currentSpending;
+  const curRate = currentSpending / bal;
+  const adj = inputs.guardrailsAdjustmentPct / 100;
+  const cutThreshold = (inputs.guardrailsCutPct / 100) * initialRate;
+  const raiseThreshold = (inputs.guardrailsRaisePct / 100) * initialRate;
+  if (
+    curRate - cutThreshold >
+    Math.abs(cutThreshold) * GUARDRAILS_RATE_REL_TOLERANCE
+  ) {
+    return Math.round(currentSpending * (1 - adj));
+  }
+  if (
+    raiseThreshold - curRate >
+    Math.abs(raiseThreshold) * GUARDRAILS_RATE_REL_TOLERANCE
+  ) {
+    return Math.round(currentSpending * (1 + adj));
+  }
+  return currentSpending;
+}
+
 // Phased knobs: spending stays flat until the step-down start age
 // (75), then declines by the step-down percent (1%) a year. These
 // defaults apply whenever a stored plan / scenario predates the
@@ -220,13 +272,18 @@ export type SimInputs = {
 //   withdrawal rate is fixed at retirement start (base spending ÷
 //   the portfolio at that moment). Each retired year, before
 //   withdrawing, the current withdrawal rate (current spending ÷
-//   current balance) is compared against the user's knobs: above
-//   guardrailsCutPct % of the initial rate spending is cut by
-//   guardrailsAdjustmentPct %, below guardrailsRaisePct % it is
-//   raised by the same % — at most one adjustment per year, and
-//   the adjusted level carries into following years. At the
-//   professional defaults (120 / 80 / 10) this is exactly the
-//   original fixed 1.2× / 0.8× band with ±10% steps.
+//   current balance) is compared against the user's knobs:
+//   STRICTLY above guardrailsCutPct % of the initial rate spending
+//   is cut by guardrailsAdjustmentPct %, STRICTLY below
+//   guardrailsRaisePct % it is raised by the same % — a rate
+//   exactly at a rail fires neither, with the comparisons
+//   carrying the documented relative tolerance
+//   GUARDRAILS_RATE_REL_TOLERANCE so IEEE-754 rounding of the
+//   rail products cannot fire an adjustment at exact equality —
+//   at most one adjustment per year, and the adjusted level
+//   carries into following years. At the professional defaults
+//   (120 / 80 / 10) this is exactly the original fixed 1.2× /
+//   0.8× band with ±10% steps.
 // - phased: the annual spending input scaled by the step-down
 //   factor for the year (see phasedGrossCents): full spending
 //   through phaseStartAge, then a decline of phaseDeclinePct %
@@ -263,15 +320,12 @@ export function simulateDetailed(inputs: SimInputs, returns: number[]): SimDetai
           initialRate = bal > 0 ? inputs.spendingCents / bal : 0;
           currentSpending = inputs.spendingCents;
         }
-        if (bal > 0 && initialRate > 0) {
-          const curRate = currentSpending / bal;
-          const adj = inputs.guardrailsAdjustmentPct / 100;
-          if (curRate > (inputs.guardrailsCutPct / 100) * initialRate) {
-            currentSpending = Math.round(currentSpending * (1 - adj));
-          } else if (curRate < (inputs.guardrailsRaisePct / 100) * initialRate) {
-            currentSpending = Math.round(currentSpending * (1 + adj));
-          }
-        }
+        currentSpending = guardrailsAdjustedSpending(
+          currentSpending,
+          bal,
+          initialRate,
+          inputs,
+        );
         gross = currentSpending;
       } else if (inputs.strategy === "phased") {
         gross = phasedGrossCents(inputs, age);
@@ -332,15 +386,12 @@ export function runNeverRunsOut(inputs: SimInputs, returns: number[]): boolean {
           initialRate = bal > 0 ? inputs.spendingCents / bal : 0;
           currentSpending = inputs.spendingCents;
         }
-        if (bal > 0 && initialRate > 0) {
-          const curRate = currentSpending / bal;
-          const adj = inputs.guardrailsAdjustmentPct / 100;
-          if (curRate > (inputs.guardrailsCutPct / 100) * initialRate) {
-            currentSpending = Math.round(currentSpending * (1 - adj));
-          } else if (curRate < (inputs.guardrailsRaisePct / 100) * initialRate) {
-            currentSpending = Math.round(currentSpending * (1 + adj));
-          }
-        }
+        currentSpending = guardrailsAdjustedSpending(
+          currentSpending,
+          bal,
+          initialRate,
+          inputs,
+        );
         gross = currentSpending;
       } else if (inputs.strategy === "phased") {
         gross = phasedGrossCents(inputs, age);
@@ -680,11 +731,16 @@ export function runMonteCarlo(
    guardrail level is still the base spending itself (the initial
    rate equals the current rate, so no adjustment can fire), and
    that year's net withdrawal is the base spending minus at most
-   the extra income, so a spending at or above the best run's
-   balance at retirement plus the extra income empties every run
-   in year one — and with the balance at 0 the guardrail level
-   stays frozen at the base spending, so the net stays
-   non-negative in every later year too and no run can revive.
+   the extra income, so a spending strictly above the best run's
+   balance at retirement plus the extra income fails every run in
+   year one — its net withdrawal exceeds every run's balance.
+   The spending exactly AT that ceiling is different: its
+   first-year net withdrawal exactly equals the best run's
+   balance, an exactly funded withdrawal is not short, and a
+   plan whose later years are covered by the income can succeed
+   there — so the scan INCLUDES the ceiling step and lets
+   runNeverRunsOut decide it, like every other step (Prompt 13
+   fix, contract v40).
    Note the ceiling must use the income amount itself, not the
    income active in the first retired year: an income that starts
    later and exceeds the spending revives a zeroed balance once it
@@ -827,14 +883,21 @@ function solveGuardrailsScan(
       approximate,
     };
   }
-  // Proven ceiling (see the solver note above): no spending at or
-  // above the best balance at retirement plus the extra income can
-  // succeed. The income term is the eventual income — the amount
-  // itself whenever it has a start age — NOT just the income
-  // active in the first retired year: a later-starting income
-  // larger than the spending revives a zeroed balance, so a
-  // first-year-income ceiling would cut the scan short and
-  // understate the maximum.
+  // Proven ceiling (see the solver note above): no spending
+  // strictly above the best balance at retirement plus the extra
+  // income can succeed, but the spending exactly AT that ceiling
+  // can — its first-year net withdrawal exactly equals the best
+  // run's retirement balance, and an exactly funded withdrawal
+  // is not short — so the scan bound is INCLUSIVE of the ceiling
+  // step (Prompt 13 fix, contract v40; the bound previously
+  // subtracted one cent and never tested that step).
+  // Feasibility of the endpoint, like every scanned step, is
+  // decided by runNeverRunsOut. The income term is the eventual
+  // income — the amount itself whenever it has a start age —
+  // NOT just the income active in the first retired year: a
+  // later-starting income larger than the spending revives a
+  // zeroed balance, so a first-year-income ceiling would cut
+  // the scan short and understate the maximum.
   const preYears = Math.max(
     0,
     Math.min(planYears, base.retirementAge - base.currentAge),
@@ -852,7 +915,7 @@ function solveGuardrailsScan(
   }
   const scanSteps = Math.min(
     capSteps,
-    Math.max(0, Math.floor((maxRetBal + eventualIncome - 1) / STEP)),
+    Math.max(0, Math.floor((maxRetBal + eventualIncome) / STEP)),
   );
   let best = 0;
   for (let k = 1; k <= scanSteps; k++) {
