@@ -950,6 +950,32 @@ export type DecemberCaseResult = {
   repaymentExposure: number;
   federalTaxAtHeadline: number;
   totalTaxAtHeadline: number;
+  // Projected-tax-bill readouts (contract v50): the same
+  // priced year at the headline draw, read straight off the
+  // engine result — no new pricing. totalIncomeAtHeadline
+  // is the year's AGI (the total income the return strikes
+  // before deductions; the December assembly nets its
+  // above-the-line reducers into income itself, so AGI is
+  // the year's total-income figure on this construction),
+  // taxableIncomeAtHeadline its taxable income, and
+  // stateTaxAtHeadline the state component inside
+  // totalTaxAtHeadline ($0 at a 0% flat rate; the
+  // Washington excise when residence prices it).
+  totalIncomeAtHeadline: number;
+  taxableIncomeAtHeadline: number;
+  stateTaxAtHeadline: number;
+  // The filing settlement at the headline draw, in core so
+  // no client ever does this arithmetic: total tax, less
+  // the part of the final credit not already advanced
+  // (creditStillDue), plus any excess advance credit to
+  // repay (excessAptcRepayment) — equivalently totalTax −
+  // creditAtHeadline + APTC taken whenever the credit is
+  // priced. An unpriced credit (either field null) counts
+  // as $0 on both sides, so the net is then the total tax
+  // alone. Negative = a net refund at filing. The figure is
+  // BEFORE withholding and estimated payments, which the
+  // console does not track.
+  netSettleAtHeadline: number;
 };
 
 export type DecemberProjectionResult = {
@@ -1112,6 +1138,14 @@ export function computeDecemberProjection(
       state.taxYear >= 2026 && finalCredit != null
         ? r2(Math.max(0, finalCredit - state.aptcTaken))
         : null;
+    // The projected tax bill's net (contract v50): the
+    // filing settlement for this case at the headline
+    // draw — see the field's note on DecemberCaseResult.
+    const netSettleAtHeadline = r2(
+      atHeadline.totalTax -
+        (creditStillDue ?? 0) +
+        (excessAptcRepayment ?? 0),
+    );
     return {
       kind,
       nonDrawAcaMagi: zero.acaMagi,
@@ -1130,6 +1164,10 @@ export function computeDecemberProjection(
       repaymentExposure: excessAptcRepayment ?? 0,
       federalTaxAtHeadline: atHeadline.federalTax,
       totalTaxAtHeadline: atHeadline.totalTax,
+      totalIncomeAtHeadline: atHeadline.agi,
+      taxableIncomeAtHeadline: atHeadline.taxableIncome,
+      stateTaxAtHeadline: atHeadline.stateTax,
+      netSettleAtHeadline,
     };
   });
 
@@ -2594,6 +2632,93 @@ export function runDecemberFixtures(): {
     if (roundTripped.legacyRocSplitUnconfirmed || roundTripped.legacyJanPaidSplitUnconfirmed) {
       fail("a save → load round trip should clear both character flags");
     }
+  });
+
+  run("dec-tax-bill-headline-case", (fail) => {
+    // Projected tax bill (contract v50): the round-3/4
+    // standing reproduction — primary 60, spouse 75 (on
+    // Medicare), balances $10,000 / $246,000, posted
+    // ordinary income $75,000, household of 2, benchmark
+    // $20,000, APTC taken $12,000, buffer $5,000, and the
+    // primary IS the spouse's sole beneficiary (true), so
+    // her RMD prices on the Joint table: $246,000 / 28.3 =
+    // $8,692.58. Non-draw MAGI is $75,000 + $8,692.58 =
+    // $83,692.58 — already past the $79,600 target (cliff
+    // $84,600 − buffer), so the headline draw is $0 and
+    // every bill figure below is priced at that $0 draw
+    // (solver-independent, hence exact): AGI $83,692.58
+    // less $39,850 of deductions ($32,200 standard +
+    // $1,650 age-65+ add-on for the spouse + the $6,000
+    // §224 senior deduction) = taxable income $43,842.58,
+    // federal tax $2,480 + 12% × $19,042.58 = $4,765.11.
+    // Final credit $20,000 − 9.96% × $83,692.58 =
+    // $11,664.22; the $12,000 taken exceeds it, so
+    // creditStillDue is $0, the repayment is $335.78, and
+    // the net to settle is $4,765.11 − $0 + $335.78 =
+    // $5,100.89.
+    const s = base();
+    s.agePrimary = 60;
+    s.ageSpouse = 75;
+    s.onMedicareSpouse = true;
+    s.spouseSoleBeneficiary = true;
+    s.primarySoleBeneficiaryOfSpouse = true;
+    s.pretaxBalancePrimary = 10000;
+    s.pretaxBalanceSpouse = 246000;
+    s.pretaxBalance = 256000;
+    s.ytdOtherOrdinary = 75000;
+    const r = computeDecemberProjection(s);
+    if (r.headlineDraw !== 0) fail(`headline should be $0, got ${r.headlineDraw}`);
+    const likely = r.cases[1]!;
+    exact(fail, "total income at headline", likely.totalIncomeAtHeadline, 83692.58);
+    exact(fail, "MAGI at headline", likely.magiAtHeadline, 83692.58);
+    exact(fail, "taxable income at headline", likely.taxableIncomeAtHeadline, 43842.58);
+    exact(fail, "federal tax at headline", likely.federalTaxAtHeadline, 4765.11);
+    exact(fail, "state tax at headline", likely.stateTaxAtHeadline, 0);
+    exact(fail, "total tax at headline", likely.totalTaxAtHeadline, 4765.11);
+    exact(fail, "final credit at headline", likely.creditAtHeadline, 11664.22);
+    exact(fail, "credit still due at headline", likely.creditStillDue, 0);
+    exact(fail, "excess repayment at headline", likely.excessAptcRepayment, 335.78);
+    exact(fail, "net settle at headline", likely.netSettleAtHeadline, 5100.89);
+    // All ranges are $0, so the low and high cases carry
+    // the same bill and the same net.
+    for (const c of [r.cases[0]!, r.cases[2]!]) {
+      exact(fail, `${c.kind} net settle`, c.netSettleAtHeadline, 5100.89);
+      exact(fail, `${c.kind} total income`, c.totalIncomeAtHeadline, 83692.58);
+    }
+    // A state rate prices the state line off the same
+    // taxable income: 5% × $43,842.58 = $2,192.13, total
+    // tax $6,957.24, net $6,957.24 + $335.78 = $7,293.02.
+    const withState = { ...s, stateRatePct: 5 };
+    const ws = computeDecemberProjection(withState).cases[1]!;
+    exact(fail, "state tax at 5%", ws.stateTaxAtHeadline, 2192.13);
+    exact(fail, "federal tax unchanged at 5% state", ws.federalTaxAtHeadline, 4765.11);
+    exact(fail, "total tax at 5% state", ws.totalTaxAtHeadline, 6957.24);
+    exact(fail, "net settle at 5% state", ws.netSettleAtHeadline, 7293.02);
+  });
+
+  run("dec-tax-bill-no-aptc", (fail) => {
+    // The same household with NO advance credit taken:
+    // the full final credit is still due at filing, so
+    // the net to settle is the total tax less the whole
+    // credit — $4,765.11 − $11,664.22 = −$6,899.11 (a net
+    // refund at filing, before withholding).
+    const s = base();
+    s.agePrimary = 60;
+    s.ageSpouse = 75;
+    s.onMedicareSpouse = true;
+    s.spouseSoleBeneficiary = true;
+    s.primarySoleBeneficiaryOfSpouse = true;
+    s.pretaxBalancePrimary = 10000;
+    s.pretaxBalanceSpouse = 246000;
+    s.pretaxBalance = 256000;
+    s.ytdOtherOrdinary = 75000;
+    s.aptcTaken = 0;
+    const likely = computeDecemberProjection(s).cases[1]!;
+    exact(fail, "final credit", likely.creditAtHeadline, 11664.22);
+    exact(fail, "credit still due is the full credit", likely.creditStillDue, 11664.22);
+    exact(fail, "excess repayment", likely.excessAptcRepayment, 0);
+    exact(fail, "total tax", likely.totalTaxAtHeadline, 4765.11);
+    exact(fail, "net settle = total tax − full credit", likely.netSettleAtHeadline, -6899.11);
   });
 
 
