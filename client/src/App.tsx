@@ -72,6 +72,7 @@ import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
 import { RothConversion } from "./RothConversion";
 import { Playground } from "./Playground";
+import { December } from "./December";
 import { YearInSpendingBlock } from "./YearBlocks";
 import { FoldChevron } from "./FoldChevron";
 
@@ -225,19 +226,22 @@ function currentMonth(): string {
 
 /* ---------------- small pieces ---------------- */
 
-/* One Quick view tile: label + value (children) plus an info badge
-   inset inside the tile's top-right corner. The badge toggles a
-   plain-words tooltip on tap/click; hovering or focusing the tile
-   shows it too — the tooltip carries the tile's definition, which
-   no longer prints on the tile's face. Tapping outside or pressing
-   Escape closes a toggled tooltip. The label reserves right padding
-   so it never runs under the badge. Tiles are compact: height fits
-   the label + value. When the tile has a details target, the whole
-   tile is the tap/click target: an invisible button stretched over
-   the tile (named "Details for <label>", exactly like the old
-   "Details ↓" row it replaces) handles the click and the keyboard,
-   while the ⓘ badge sits above it and never triggers the details
-   action. */
+/* One Quick view cell: label + value (children) plus an info badge
+   inset inside the cell's top-right corner. Cells are borderless —
+   they sit inside one card per group (see renderMonthTiles) and
+   are divided from their neighbours by hairlines carried in the
+   className each caller passes. The badge toggles a plain-words
+   tooltip on tap/click; hovering or focusing the cell shows it
+   too — the tooltip carries the cell's definition, which does not
+   print on the cell's face. Tapping outside or pressing Escape
+   closes a toggled tooltip. The label reserves right padding so
+   it never runs under the badge. Cells are compact: height fits
+   the label + value. When the cell has a details target, the
+   whole cell is the tap/click target: an invisible button
+   stretched over the cell (named "Details for <label>", exactly
+   like the old "Details ↓" row it replaces) handles the click
+   and the keyboard, while the ⓘ badge sits above it and never
+   triggers the details action. */
 function QuickTile({
   label,
   tip,
@@ -284,7 +288,7 @@ function QuickTile({
   return (
     <div
       ref={ref}
-      className={`relative flex flex-col rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4 ${onDetails ? "hover:border-[var(--accent)]" : ""} ${className}`}
+      className={`relative flex flex-col p-3.5 sm:p-4 ${className}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -293,7 +297,7 @@ function QuickTile({
           type="button"
           aria-label={`Details for ${label}`}
           onClick={onDetails}
-          className="absolute inset-0 z-0 cursor-pointer rounded-[var(--radius)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+          className="absolute inset-0 z-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
         />
       )}
       <div className="pointer-events-none relative z-10 flex flex-col">
@@ -1593,7 +1597,7 @@ export function App() {
   /* Top-level view switch: "spending" is the whole existing dashboard;
      "networth" is its own self-contained view — while it is active
      none of the spending sections render. In-session only. */
-  const [topView, setTopView] = useState<"spending" | "networth" | "retirement" | "roth" | "playground">("spending");
+  const [topView, setTopView] = useState<"spending" | "networth" | "retirement" | "roth" | "playground" | "december">("spending");
   const [viewYear, setViewYear] = useState<number>(() =>
     Number(currentMonth().slice(0, 4)),
   );
@@ -2483,16 +2487,26 @@ export function App() {
       "text-xs font-medium tracking-wide text-[var(--dim)] uppercase";
     return (
       <>
-        {/* Grouped by kind (2026-10-25, option A): the first four
-            tiles describe the viewed period, under its caption;
-            the last two are standing roster rates that do not
-            change with the period, under their own. The tiles
-            themselves are unchanged — same figures, YTD lines,
-            tips, and order within each group. */}
-        <div>
-          <p className={captionCls}>{opts.periodCaption}</p>
-          <div className="mt-1.5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+        {/* Grouped by kind, one card per group (2026-10-25,
+            option C, replacing the option-A captioned tile grids):
+            the first four stats describe the viewed period, inside
+            one card captioned by the caller — "This month" in
+            Month mode, "This year" in Year mode, since the view
+            header already names the specific month/year; the
+            last two are standing roster rates that do not change
+            with the period, inside their own "Standing rates"
+            card. Inside
+            each card the stats are borderless cells divided by
+            hairlines, stretching to fill the card's full width —
+            the period cells sit in one row on desktop and wrap
+            2×2 on phone width, so no cell is stranded and no slot
+            is left dead. The cells themselves are unchanged — same
+            figures, YTD lines, tips, and order within each group. */}
+        <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+          <p className={`${captionCls} px-3.5 pt-3.5 sm:px-4 sm:pt-4`}>{opts.periodCaption}</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4">
             <QuickTile
+              className="border-r border-b border-[var(--border)] sm:border-b-0"
               label="True cost"
               tipId={`qtip-${key("true-cost")}`}
               tip="Real monthly cost — yearly & periodic bills spread evenly. What the month really cost. The month's base (the entered total, the itemized total, or the spending recorded that month), minus any yearly/periodic lump sums that base includes, plus the monthly set-aside for yearly & periodic bills — so big yearly bills are spread evenly instead of spiking one month."
@@ -2512,6 +2526,7 @@ export function App() {
               )}
             </QuickTile>
             <QuickTile
+              className="border-b border-[var(--border)] sm:border-r sm:border-b-0"
               label="Cash out"
               tipId={`qtip-${key("cash-out")}`}
               tip="Money that actually went out this month — all the money that actually left this month. If the month is itemized, that's the items added up; otherwise if you entered a monthly total, that's the number; otherwise it's the month's checking transactions added up. Paying off a credit card isn't counted twice. A charge paid by credit card lands here in the month the card payment leaves the bank, which can be the month after the charge."
@@ -2531,6 +2546,7 @@ export function App() {
               )}
             </QuickTile>
             <QuickTile
+              className="border-r border-[var(--border)]"
               label="Everything else"
               tipId={`qtip-${key("everything-else")}`}
               tip="Cash out − monthly bills − yearly & periodic bills paid this month. Cash out minus Total monthly (the monthly bills) minus the yearly & periodic bills paid this month. What's left is everything that isn't a bill — day-to-day spending like groceries, eating out, and shopping, plus anything else that left the account, such as transfers or card payments. It can be negative: negative for now means this month's recorded cash out is still below its bills and yearly payments — it can be negative mid-month, when the recorded cash out so far is still below the month's bills and yearly payments."
@@ -2562,7 +2578,7 @@ export function App() {
               label="Yearly & periodic expenses"
               tipId={`qtip-${key("yearly-paid-out")}`}
               tip="Yearly & periodic bills actually paid this month. Yearly & periodic bills you entered as paid — the lump sums that went out, in the month the money left your bank account. A bill isn't always paid in its due month, and if it was charged to a credit card, it counts in the month the card payment left your account — enter that date when you record it."
-              panelCls="right-0 sm:right-auto sm:left-0"
+              panelCls="right-0"
               open={openTip === key("yearly-paid-out")}
               onToggle={() =>
                 setOpenTip(
@@ -2581,10 +2597,11 @@ export function App() {
             </QuickTile>
           </div>
         </div>
-        <div className="mt-3.5">
-          <p className={captionCls}>Standing rates</p>
-          <div className="mt-1.5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+        <div className="mt-3.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
+          <p className={`${captionCls} px-3.5 pt-3.5 sm:px-4 sm:pt-4`}>Standing rates</p>
+          <div className="grid grid-cols-2">
             <QuickTile
+              className="border-r border-[var(--border)]"
               label="Total monthly"
               tipId={`qtip-${key("total-monthly")}`}
               tip="Your recurring monthly bills — all your monthly bills for this month added together (the Monthly bills list)."
@@ -2711,6 +2728,15 @@ export function App() {
       >
         Playground
       </button>
+      <button
+        type="button"
+        aria-label="December view"
+        aria-pressed={topView === "december"}
+        onClick={() => setTopView("december")}
+        className={`px-4 py-2 text-sm font-medium ${topView === "december" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+      >
+        December
+      </button>
     </div>
   );
 
@@ -2770,6 +2796,18 @@ export function App() {
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
           <Playground />
+        </main>
+      </div>
+    );
+  }
+
+  if (topView === "december") {
+    return (
+      <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
+        <SafeAreaTopScrim backgroundColor="var(--bg)" />
+        <main className="mx-auto w-full max-w-5xl px-4 pb-16">
+          {topBar}
+          <December />
         </main>
       </div>
     );
@@ -2996,7 +3034,7 @@ export function App() {
                   <div className="mt-2.5">
                     {renderMonthTiles({
                       idPrefix: "month",
-                      periodCaption: monthLabel(month),
+                      periodCaption: "This month",
                       trueCostCents: data.smoothedCents,
                       cashOutCents: data.cashOutCents,
                       totalMonthlyCents: data.monthlyBillsTotalCents,
@@ -3094,7 +3132,7 @@ export function App() {
                         <div className="mt-2.5">
                           {renderMonthTiles({
                             idPrefix: m.month,
-                            periodCaption: monthLabel(m.month),
+                            periodCaption: "This year",
                             trueCostCents: m.trueCostCents,
                             cashOutCents: m.cashOutCents,
                             totalMonthlyCents: m.totalMonthlyCents,
@@ -4528,14 +4566,25 @@ export function App() {
 
             {/* yearly & periodic (smoothed) bills */}
             <section id="section-yearly-expenses" aria-label="Yearly & periodic expenses" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-yearly-expenses")}`}>
-              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                <h2 className="display min-w-0 text-xl font-semibold">
+              {/* Header follows the settled single-row pattern (same as
+                  Monthly bills above): title + summary on the left,
+                  control cluster on the right, fold toggle last. The
+                  row never wraps — the long summary wraps within the
+                  left side instead, so the cluster stays on the title
+                  row at every width. */}
+              <div className="flex flex-nowrap items-center justify-between gap-x-3">
+                <h2 className="display min-w-0 flex-1 text-xl font-semibold">
                   Yearly &amp; periodic expenses
-                  <span className="tnum ml-2 text-base font-normal text-[var(--dim)]">
+                  {/* inline-block: a line-break opportunity before the
+                      summary (and wrapping inside it), so at narrow
+                      widths the summary wraps within the left side
+                      instead of running underneath the cluster. On one
+                      line it renders exactly as the inline span did. */}
+                  <span className="tnum ml-2 inline-block text-base font-normal text-[var(--dim)]">
                     {fmt(data.totalAnnualCents)}/yr · set aside {fmt(data.accrualCents)}/mo
                   </span>
                 </h2>
-                <div className="ml-auto flex flex-nowrap items-center gap-2">
+                <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
                   <button
                     type="button"
                     className={btnAdd}

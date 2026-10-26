@@ -2,6 +2,10 @@
 
 Core tracker data is user-entered via the app's own actions (no external source).
 
+## December projection console (added Oct 2026)
+
+Also user-entered only: year-to-date actuals, low / likely / high ranges for income still to come, ACA household / benchmark / advance-credit figures, and a strays checklist, saved as one settings blob (`december_projection_v1`) that rides the ordinary backup export / restore settings array. Pricing reuses the shipped single-year engine (`pricePlaygroundYear`) and its ACA-cliff solver (`solvePlaygroundAcaCliffFill`) from `server/src/rothOptimizer.ts` — no new tax math and no external source. On a first open the year block is preseeded from the saved Tax Plan record where available. Fixtures: the `december` suite of `runAccuracySelfCheck` (`runDecemberFixtures` in `server/src/decemberCore.ts`).
+
 ## Sample household (build-time, synthetic)
 
 The fresh-install sample data seeded by `seedExamples` / `seedNetWorth` (and loaded automatically by the packaged GitHub Pages build) is a fully synthetic sample household, invented for demonstration — no real household's figures. Twelve months ending in the current month: a monthly-bill roster (with one mid-year amount change), smoothed yearly/periodic bills whose recorded payments, entered cash-out totals, and "everything else" remainders agree by construction, two one-offs, an itemized current month, and Net Worth snapshots with tax-bucket splits, a house/mortgage pair, a custodial account, and a $3.5M target. Net Worth totals (property/custodial excluded) run $2,610,000 → $3,062,500, the totals the packaged harness/probe pin.
