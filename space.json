@@ -1,7 +1,7 @@
 {
   "entry": "client/dist/index.html",
   "managedCronJobs": [],
-  "name": "Finance Planner",
+  "name": "Mo Money",
   "platformVersion": 25,
   "runtime": "typescript",
   "slug": "monthly-spending-tracker"

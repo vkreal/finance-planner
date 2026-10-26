@@ -2785,11 +2785,16 @@ export function RetirementCalc() {
         </div>
       )}
 
-      {/* tabs */}
+      {/* tabs — Option C (underline text tabs): all four modes in one
+          row, active mode bold with a teal underline, inactive modes
+          quiet muted text, hairline divider under the row. Visual
+          only — selected-mode state, persistence, and calculations
+          are unchanged. To revert to the segmented pill, restyle
+          this group container and its buttons only. */}
       <div
         role="group"
         aria-label="Calculator engine"
-        className="mt-4 inline-flex flex-wrap rounded-[var(--radius)] border border-[var(--border)]"
+        className="mt-4 flex w-full flex-nowrap items-end border-b border-[var(--border)]"
       >
         {(
           [
@@ -2798,7 +2803,7 @@ export function RetirementCalc() {
             ["montecarlo", "Monte Carlo", monteCarloAtRisk],
             ["maxspending", "Max Spending", maxSpendingAtRisk],
           ] as [Tab, string, boolean][]
-        ).map(([t, label, atRisk], i, arr) => {
+        ).map(([t, label, atRisk]) => {
           const selected = tab === t;
           const tip = atRisk ? tabTips[t] : null;
           const tipOpen = tip != null && tipTab === t;
@@ -2825,8 +2830,14 @@ export function RetirementCalc() {
             onKeyDown={(e) => {
               if (e.key === "Escape") setTipTab(null);
             }}
-            className={`relative inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium ${i === 0 ? "rounded-l-[var(--radius)]" : ""} ${i === arr.length - 1 ? "rounded-r-[var(--radius)]" : ""} ${selected ? "bg-[var(--accent)] text-white" : "bg-[var(--surface)] text-[var(--text)] hover:text-[var(--accent)]"}`}
+            className={`relative inline-flex min-w-0 flex-1 items-center justify-center gap-1 px-1 py-2.5 text-[13px] whitespace-nowrap sm:flex-none sm:justify-start sm:gap-1.5 sm:px-3.5 sm:text-sm ${selected ? "font-semibold text-[var(--text)]" : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"}`}
           >
+            {selected && (
+              <span
+                aria-hidden="true"
+                className="absolute right-1 -bottom-px left-1 h-[2px] bg-[var(--accent)] sm:right-2 sm:left-2"
+              />
+            )}
             <span
               data-at-risk-label={atRisk ? t : undefined}
               style={atRisk && !selected ? { color: "var(--bad)" } : undefined}
