@@ -5,6 +5,10 @@ import {
   type PlaygroundYearInputs,
 } from "./rothOptimizer";
 import type { FilingStatus } from "./taxEngine";
+import {
+  decideRothBlobWrite,
+  parseRothBlobRevision,
+} from "./rothRevisionCore";
 
 /* ---------------- December projection console ----------------
    A December year-end projection for a household managing MAGI
@@ -97,10 +101,31 @@ export const decemberState = z.object({
   // ACA block.
   acaHouseholdSize: z.number().int().min(1).max(20).nullable(),
   acaBenchmarkAnnual: z.number().finite().min(0).nullable(),
+  // The premium of the plan the household is actually
+  // enrolled in (annual). Null = blank = NO enrollment-
+  // premium cap (the pre-fix behaviour); when entered, each
+  // case's final allowable credit is capped at this premium
+  // (Form 8962's lesser-of) before any coverage-month
+  // reduction.
+  acaEnrollmentPremiumAnnual: z.number().finite().min(0).nullable(),
   aptcTaken: z.number().finite().min(0),
   bufferDollars: z.number().finite().min(0),
   // Pricing context (the same dials the Playground carries).
+  // pretaxBalance is the LEGACY combined balance: readers
+  // migrate it losslessly into the primary's split balance
+  // (below) when a blob carries no split, and writers keep
+  // it as the split's sum, so old and new blobs both read.
   pretaxBalance: z.number().finite().min(0).nullable(),
+  // Per-owner prior-Dec-31 pre-tax balances (December fix):
+  // each owner's RMD is computed on their own clock from
+  // their own balance. Null = not entered for that owner.
+  pretaxBalancePrimary: z.number().finite().min(0).nullable(),
+  pretaxBalanceSpouse: z.number().finite().min(0).nullable(),
+  // The part of this year's RMD already received (and
+  // already inside the year-to-date income above): netted
+  // from the computed RMD, floored at $0, so a paid RMD is
+  // never counted twice.
+  rmdAlreadyReceived: z.number().finite().min(0),
   spouseSoleBeneficiary: z.boolean(),
   stateRatePct: z.number().finite().min(0).max(100),
   residenceState: z.enum(["WA", "other"]),
@@ -121,9 +146,21 @@ export const decemberState = z.object({
   // a blob saved before they existed reads them at the inert
   // default and rides the same backup / restore settings blob.
   strayJanPaid: decemberStray,
+  // The qualified-dividends PORTION of the January-paid
+  // stray's total (mirrors the year-to-date dividend pair:
+  // a portion of the total, never an amount on top of it;
+  // the assembly clamps it to the stray's total).
+  strayJanPaidQualifiedAmount: z.number().finite().min(0),
   strayDivInt: decemberStray,
   strayPlannedSales: decemberStray,
+  // Return of capital, split by tax character (December
+  // fix): strayROC is the CAPITAL part (income over basis —
+  // a capital gain, the pre-fix routing, so a legacy blob's
+  // amount keeps its meaning), and strayROCOrdinary is the
+  // part reclassified as an ordinary dividend, which rides
+  // the ordinary-dividends total instead of the gains stack.
   strayROC: decemberStray,
+  strayROCOrdinary: decemberStray,
   strayAgiReducers: decemberStray,
   strayCoverage: decemberStray,
   strayTradeDate: decemberStray,
@@ -153,9 +190,13 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     remOtherOrdinary: rangeDefault(),
     acaHouseholdSize: null,
     acaBenchmarkAnnual: null,
+    acaEnrollmentPremiumAnnual: null,
     aptcTaken: 0,
     bufferDollars: 5000,
     pretaxBalance: null,
+    pretaxBalancePrimary: null,
+    pretaxBalanceSpouse: null,
+    rmdAlreadyReceived: 0,
     spouseSoleBeneficiary: true,
     stateRatePct: 0,
     residenceState: "other",
@@ -171,9 +212,11 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     strayLossHarvest: strayDefault(),
     strayCutoff: strayDefault(),
     strayJanPaid: strayDefault(),
+    strayJanPaidQualifiedAmount: 0,
     strayDivInt: strayDefault(),
     strayPlannedSales: strayDefault(),
     strayROC: strayDefault(),
+    strayROCOrdinary: strayDefault(),
     strayAgiReducers: strayDefault(),
     strayCoverage: strayDefault(),
     strayTradeDate: strayDefault(),
@@ -263,13 +306,51 @@ export function parseDecemberState(
   } else {
     nonNeg("acaBenchmarkAnnual", (n) => (out.acaBenchmarkAnnual = n));
   }
+  if (p.acaEnrollmentPremiumAnnual === null) {
+    out.acaEnrollmentPremiumAnnual = null;
+  } else {
+    nonNeg(
+      "acaEnrollmentPremiumAnnual",
+      (n) => (out.acaEnrollmentPremiumAnnual = n),
+    );
+  }
   nonNeg("aptcTaken", (n) => (out.aptcTaken = n));
   nonNeg("bufferDollars", (n) => (out.bufferDollars = n));
-  if (p.pretaxBalance === null) {
-    out.pretaxBalance = null;
-  } else {
-    nonNeg("pretaxBalance", (n) => (out.pretaxBalance = n));
+  // Pre-tax balances, split by owner (December fix). A blob
+  // carrying either split field reads the split as written;
+  // a blob carrying ONLY the legacy combined pretaxBalance
+  // migrates it losslessly into the primary's split balance
+  // (the spouse's defaults to not-entered), so a pre-split
+  // blob prices its RMD exactly as it did — on the primary's
+  // clock, over the whole combined balance. When a split is
+  // present, the legacy combined field is re-derived as the
+  // split's sum, keeping the two views of the money in step.
+  const nullableNonNeg = (
+    key: string,
+  ): { seen: boolean; value: number | null } => {
+    if (!(key in p)) return { seen: false, value: null };
+    if (p[key] === null) return { seen: true, value: null };
+    const n = num(p[key]);
+    return n != null && n >= 0
+      ? { seen: true, value: n }
+      : { seen: false, value: null };
+  };
+  const splitPrimary = nullableNonNeg("pretaxBalancePrimary");
+  const splitSpouse = nullableNonNeg("pretaxBalanceSpouse");
+  if (splitPrimary.seen) out.pretaxBalancePrimary = splitPrimary.value;
+  if (splitSpouse.seen) out.pretaxBalanceSpouse = splitSpouse.value;
+  const legacyPretax = nullableNonNeg("pretaxBalance");
+  if (legacyPretax.seen) out.pretaxBalance = legacyPretax.value;
+  if (!splitPrimary.seen && !splitSpouse.seen && legacyPretax.seen) {
+    out.pretaxBalancePrimary = legacyPretax.value;
   }
+  if (splitPrimary.seen || splitSpouse.seen) {
+    out.pretaxBalance =
+      out.pretaxBalancePrimary == null && out.pretaxBalanceSpouse == null
+        ? null
+        : r2((out.pretaxBalancePrimary ?? 0) + (out.pretaxBalanceSpouse ?? 0));
+  }
+  nonNeg("rmdAlreadyReceived", (n) => (out.rmdAlreadyReceived = n));
   if (typeof p.spouseSoleBeneficiary === "boolean") {
     out.spouseSoleBeneficiary = p.spouseSoleBeneficiary;
   }
@@ -290,9 +371,14 @@ export function parseDecemberState(
   stray("strayLossHarvest", (s) => (out.strayLossHarvest = s));
   stray("strayCutoff", (s) => (out.strayCutoff = s));
   stray("strayJanPaid", (s) => (out.strayJanPaid = s));
+  nonNeg(
+    "strayJanPaidQualifiedAmount",
+    (n) => (out.strayJanPaidQualifiedAmount = n),
+  );
   stray("strayDivInt", (s) => (out.strayDivInt = s));
   stray("strayPlannedSales", (s) => (out.strayPlannedSales = s));
   stray("strayROC", (s) => (out.strayROC = s));
+  stray("strayROCOrdinary", (s) => (out.strayROCOrdinary = s));
   stray("strayAgiReducers", (s) => (out.strayAgiReducers = s));
   stray("strayCoverage", (s) => (out.strayCoverage = s));
   stray("strayTradeDate", (s) => (out.strayTradeDate = s));
@@ -306,30 +392,114 @@ function r2(n: number): number {
 const strayAmount = (s: DecemberStray): number =>
   s.status === "amount" ? Math.max(0, s.amount) : 0;
 
+/* The K-1 stray is the ONE signed stray (December fix): a
+   currently deductible K-1 loss is negative income and
+   reduces other ordinary income dollar-for-dollar. Every
+   other stray keeps the non-negative strayAmount above —
+   the loss-harvest and AGI-reducer strays are SUBTRACTED
+   dials (positive by design), and the capital-distribution,
+   planned-sales, return-of-capital, January-paid, dividend/
+   interest, tax-exempt, severance, and dependent strays are
+   non-negative amounts by their nature. */
+const straySignedAmount = (s: DecemberStray): number =>
+  s.status === "amount" ? s.amount : 0;
+
+/* Which benchmark tier a first-open prefill should seed,
+   mirroring the long-horizon engine's selection (taxEngine's
+   march): the tier keys on WHO is on the marketplace, never
+   on household size alone. Both spouses on ACA → the family
+   tier at household size 3+, the couple tier below that.
+   Exactly one spouse on ACA → the single tier at ANY
+   household size (a spouse-only year in a household of 5 is
+   not a family marketplace year). Nobody on ACA → no tier
+   (nothing to seed). Pure, so the fixtures pin the exact
+   function the view's prefill runs. */
+export type DecemberBenchmarkTier = "single" | "couple" | "family";
+export function decemberBenchmarkTier(args: {
+  filingStatus: DecemberState["filingStatus"];
+  householdSize: number | null;
+  onMedicarePrimary: boolean;
+  onMedicareSpouse: boolean;
+}): DecemberBenchmarkTier | null {
+  if (args.householdSize == null) return null;
+  const primaryOnAca = !args.onMedicarePrimary;
+  const spouseOnAca =
+    args.filingStatus === "mfj" && !args.onMedicareSpouse;
+  if (primaryOnAca && spouseOnAca) {
+    return args.householdSize >= 3 ? "family" : "couple";
+  }
+  if (primaryOnAca || spouseOnAca) return "single";
+  return null;
+}
+
+/* ---------------- Save revision / CAS ----------------
+   The December blob carries a write revision as a top-level
+   `revision` key beside the state fields — the Roth
+   records' pattern (rothRevisionCore): a blob written
+   before revisions existed reads as revision 0, writers
+   pass the revision their copy was read at (baseRevision),
+   and a write whose base no longer matches is refused with
+   the current state instead of overwriting it. The revision
+   never enters the DecemberState the parser returns (the
+   parser reads its fixed field set and ignores the key),
+   and the blob rides backup / restore as one settings value
+   exactly as before. These are the exact functions the
+   get / save actions run, so the fixtures pin the contract
+   the handlers enforce. */
+export function parseDecemberRevision(raw: string | undefined): number {
+  return parseRothBlobRevision(raw);
+}
+
+export function decideDecemberWrite(
+  storedRevision: number,
+  baseRevision: number,
+): { allowed: true; nextRevision: number } | { allowed: false; storedRevision: number } {
+  return decideRothBlobWrite(storedRevision, baseRevision);
+}
+
+export function serializeDecemberState(
+  state: DecemberState,
+  revision: number,
+): string {
+  return JSON.stringify({ ...state, revision });
+}
+
 /* Assemble ONE case's single-year engine dials at a given
    pre-tax draw. The year's income is: year-to-date actuals +
    this case's remaining-income ranges + the stray amounts
    (which apply in every case — they are amounts the household
    has identified, on top of the ranges). The capital result
    (actuals + expected distributions + the capital-gain stray,
-   plus forecast gains on planned sales and any return of
-   capital that is income — over basis or reclassified — less
-   any harvested loss) rides the engine's stock-sale dials:
+   plus forecast gains on planned sales and the CAPITAL part
+   of return of capital — income over basis — less any
+   harvested loss) rides the engine's stock-sale dials:
    a net gain is sold $gain with $0 basis; a net loss is sold
    $0 with basis $loss, so the engine prices the loss (and its
    §1211(b) allowance) exactly as it prices a Playground sale.
+   Return of capital reclassified as an ordinary dividend
+   rides the dividends total instead (its actual character).
    The settled-review additions flow the same way: a fund
    dividend declared in October–December and paid in January
    is deemed received December 31 (§852(b)(7)), so it rides
-   the dividends total; money-market dividends from a cash
-   sleeve and savings-bond interest ride interest; and the
-   AGI reducers that actually work (deductible HSA
-   contributions, pre-tax deferrals not already reflected in
-   the wages above) subtract from other ordinary income — an
-   assembly of the engine's existing dials, never new tax
-   math. The coverage-month stray carries NO income: it
-   reduces the case's final allowable credit instead (see
-   computeDecemberProjection), because eligibility is monthly. */
+   the dividends total, with its qualified portion riding
+   the qualified-dividends subset like the year-to-date
+   pair; money-market dividends from a cash sleeve and
+   savings-bond interest ride interest; and the AGI reducers
+   that actually work (deductible HSA contributions, pre-tax
+   deferrals not already reflected in the wages above)
+   subtract from other ordinary income — an assembly of the
+   engine's existing dials, never new tax math. The K-1
+   stray is signed (a deductible loss reduces ordinary
+   income). A filing dependent's income does NOT join the
+   parents' income at all: it rides the engine's ACA-only
+   dependentMagiForAca channel, into the §36B household
+   MAGI and nowhere else. The pre-tax balances go in split
+   by owner, with the already-received RMD amount, so each
+   owner's RMD prices on their own clock and a paid RMD is
+   netted, never double-counted. The coverage-month stray
+   carries NO income: it reduces the case's final allowable
+   credit instead (see computeDecemberProjection), because
+   eligibility is monthly. */
 export function decemberCaseInputs(
   state: DecemberState,
   kind: DecemberCaseKind,
@@ -347,11 +517,21 @@ export function decemberCaseInputs(
   const otherOrdinary = r2(
     state.ytdOtherOrdinary +
       state.remOtherOrdinary[kind] +
-      strayAmount(state.strayK1) +
-      strayAmount(state.straySeverance) +
-      strayAmount(state.strayDependent) -
+      straySignedAmount(state.strayK1) +
+      strayAmount(state.straySeverance) -
       strayAmount(state.strayAgiReducers),
   );
+  const janPaid = strayAmount(state.strayJanPaid);
+  // The qualified portion of the January-paid total: a
+  // portion of that total (validated ≤ the total here, the
+  // same clamp the year-to-date pair's split applies), never
+  // an amount on top of it.
+  const janPaidQualified =
+    janPaid > 0
+      ? Math.min(janPaid, Math.max(0, state.strayJanPaidQualifiedAmount))
+      : 0;
+  const hasSplitBalance =
+    state.pretaxBalancePrimary != null || state.pretaxBalanceSpouse != null;
   return {
     taxYear: state.taxYear,
     filingStatus: state.filingStatus as FilingStatus,
@@ -365,7 +545,8 @@ export function decemberCaseInputs(
     ordinaryDividends: r2(
       state.ytdOrdinaryDividends +
         state.remOrdinaryDividends[kind] +
-        strayAmount(state.strayJanPaid),
+        janPaid +
+        strayAmount(state.strayROCOrdinary),
     ),
     otherOrdinary,
     taxExemptInterest: r2(state.ytdTaxExemptInterest + strayAmount(state.strayTaxExempt)),
@@ -374,8 +555,23 @@ export function decemberCaseInputs(
     conversion: Math.max(0, draw),
     stockSold: totalGain > 0 ? totalGain : 0,
     stockBasis: totalGain < 0 ? -totalGain : 0,
-    qualifiedDividends: r2(state.ytdQualifiedDividends + state.remQualifiedDividends[kind]),
-    pretaxBalance: state.pretaxBalance,
+    qualifiedDividends: r2(
+      state.ytdQualifiedDividends +
+        state.remQualifiedDividends[kind] +
+        janPaidQualified,
+    ),
+    // Split by owner when a split was entered (the primary's
+    // balance on the primary dial, the spouse's on the
+    // spouse dial); the legacy combined balance alone keeps
+    // the pre-split single-balance pricing.
+    pretaxBalance: hasSplitBalance
+      ? state.pretaxBalancePrimary
+      : state.pretaxBalance,
+    pretaxBalanceSpouse: hasSplitBalance
+      ? state.pretaxBalanceSpouse
+      : undefined,
+    rmdAlreadyReceived: state.rmdAlreadyReceived,
+    dependentMagiForAca: strayAmount(state.strayDependent),
     spouseSoleBeneficiary: state.spouseSoleBeneficiary,
     acaHouseholdSize: state.acaHouseholdSize,
     acaBenchmarkAnnual: state.acaBenchmarkAnnual,
@@ -495,7 +691,15 @@ export function computeDecemberProjection(
   const zeroInputs = DECEMBER_CASE_KINDS.map((k) => decemberCaseInputs(state, k, 0));
   const zeroResults = zeroInputs.map((inp) => pricePlaygroundYear(inp));
   const likelyZero = zeroResults[1]!;
-  const cliff = likelyZero.aca.cliff;
+  // The cliff this console aims at: the engine reports a
+  // 400%-of-FPL figure for every ACA year, but before 2026
+  // that figure is NOT a cliff — the enhanced-credit years
+  // price no cutoff (overCliff can never trigger and the
+  // solver returns null) — so a pre-2026 year is a no-cliff
+  // year here: no target, no headline draw, and the per-case
+  // cliff fields read null exactly as they do when nobody
+  // is on the marketplace.
+  const cliff = state.taxYear >= 2026 ? likelyZero.aca.cliff : null;
   const targetMagi = cliff == null ? null : r2(cliff - state.bufferDollars);
 
   // The headline: the likely case's maximum safe draw at
@@ -513,16 +717,27 @@ export function computeDecemberProjection(
       decemberCaseInputs(state, kind, drawForPricing),
     );
     const overAtHeadline = cliff != null && atHeadline.aca.overCliff;
-    // The final allowable credit: the engine's credit less
-    // any coverage-month reduction (a member ineligible in a
-    // month shrinks that month's credit whatever the annual
-    // MAGI says). Over the cliff the allowable credit is $0
-    // by law, benchmark entered or not.
+    // The final allowable credit: the engine's benchmark-
+    // based credit, capped FIRST at the enrollment premium
+    // when one was entered (Form 8962's lesser-of: the
+    // credit never exceeds the premium of the plan actually
+    // enrolled in), then less any coverage-month reduction
+    // (a member ineligible in a month shrinks that month's
+    // credit whatever the annual MAGI says). Over the cliff
+    // the allowable credit is $0 by law, benchmark entered
+    // or not.
+    const benchmarkCredit = atHeadline.aca.credit;
+    const cappedCredit =
+      benchmarkCredit == null
+        ? null
+        : state.acaEnrollmentPremiumAnnual == null
+          ? benchmarkCredit
+          : Math.min(benchmarkCredit, state.acaEnrollmentPremiumAnnual);
     const finalCredit: number | null = overAtHeadline
       ? 0
-      : atHeadline.aca.credit == null
+      : cappedCredit == null
         ? null
-        : r2(Math.max(0, atHeadline.aca.credit - coverageReduction));
+        : r2(Math.max(0, cappedCredit - coverageReduction));
     // Post-2025 reconciliation (P.L. 119-21 §71305): no
     // repayment caps — every excess APTC dollar is repaid,
     // under the cliff as well as over it.
@@ -563,7 +778,7 @@ export function computeDecemberProjection(
     headlineText = !likelyZero.aca.applies
       ? "No ACA cliff applies this year — everyone in the household is on Medicare, so there is no premium credit to protect and no cliff-sized draw to compute."
       : state.taxYear < 2026
-        ? "This tax year has no ACA cliff — the enhanced-credit years price no 400%-of-poverty-line cutoff, so there is no cliff-sized draw to compute."
+        ? "No ACA cliff this year — the draw is not cliff-constrained."
         : "No ACA cliff to aim at — enter the ACA household size for the year to size the December draw.";
   } else if (zeroDrawOverCliff) {
     headlineText = `No December draw is safe this year: income already posted puts MAGI at ${fmt(likelyCase.nonDrawAcaMagi)}, over the ${fmt(cliff)} cliff before any draw — no draw can fix that year. The credit is lost in the likely case and the advance credit taken (${fmt(state.aptcTaken)}) is repaid.`;
@@ -627,6 +842,20 @@ export function runDecemberFixtures(): {
     }
     results.push({ id, kind: "december", pass: failures.length === 0, failures });
   };
+  // Assertion discipline (December-fix fixture hygiene):
+  // `exact` is the default — every solver-independent figure
+  // must match to the cent. `near` (±$0.02) is reserved for
+  // figures that come OUT of the cliff solver's cent-by-cent
+  // search (the headline draw, each case's own max draw, and
+  // the MAGI / credit / repayment figures priced AT that
+  // solved draw): the solver lands on a one-cent grid, so an
+  // at-headline figure can sit a cent off the hand-derived
+  // landing without the landing being wrong.
+  const exact = (fail: (m: string) => void, label: string, got: number | null, want: number) => {
+    if (got !== want) {
+      fail(`${label}: got ${got}, want ${want}`);
+    }
+  };
   const near = (fail: (m: string) => void, label: string, got: number | null, want: number) => {
     if (got == null || Math.abs(got - want) > 0.02) {
       fail(`${label}: got ${got}, want ${want}`);
@@ -646,8 +875,8 @@ export function runDecemberFixtures(): {
     s.ytdOtherOrdinary = 50000;
     const r = computeDecemberProjection(s);
     if (!r.priced) return fail("not priced");
-    near(fail, "cliff", r.cliff, 84600);
-    near(fail, "target", r.targetMagi, 79600);
+    exact(fail, "cliff", r.cliff, 84600);
+    exact(fail, "target", r.targetMagi, 79600);
     near(fail, "headline", r.headlineDraw, 29600);
     const likely = r.cases[1]!;
     near(fail, "likely magi at headline", likely.magiAtHeadline, 79600);
@@ -702,7 +931,7 @@ export function runDecemberFixtures(): {
     if (!r.zeroDrawOverCliff) fail("zeroDrawOverCliff should be true");
     const likely = r.cases[1]!;
     if (!likely.overCliffEvenAtZero) fail("likely overCliffEvenAtZero should be true");
-    near(fail, "repayment", likely.repaymentExposure, 12000);
+    exact(fail, "repayment", likely.repaymentExposure, 12000);
   });
 
   run("dec-ranges-move-the-draw", (fail) => {
@@ -715,9 +944,9 @@ export function runDecemberFixtures(): {
       DecemberCaseResult,
       DecemberCaseResult,
     ];
-    near(fail, "low non-draw MAGI", low.nonDrawAcaMagi, 50000);
-    near(fail, "likely non-draw MAGI", likely.nonDrawAcaMagi, 55000);
-    near(fail, "high non-draw MAGI", high.nonDrawAcaMagi, 60000);
+    exact(fail, "low non-draw MAGI", low.nonDrawAcaMagi, 50000);
+    exact(fail, "likely non-draw MAGI", likely.nonDrawAcaMagi, 55000);
+    exact(fail, "high non-draw MAGI", high.nonDrawAcaMagi, 60000);
     near(fail, "low max draw", low.maxDraw, 29600);
     near(fail, "likely max draw", likely.maxDraw, 24600);
     near(fail, "high max draw", high.maxDraw, 19600);
@@ -746,12 +975,12 @@ export function runDecemberFixtures(): {
     withStray.strayTaxExempt = { status: "amount", amount: 2000 };
     const a = computeDecemberProjection(plain).cases[1]!;
     const b = computeDecemberProjection(withStray).cases[1]!;
-    near(fail, "MAGI lift from strays", b.nonDrawAcaMagi - a.nonDrawAcaMagi, 12000);
+    exact(fail, "MAGI lift from strays", b.nonDrawAcaMagi - a.nonDrawAcaMagi, 12000);
     const na = base();
     na.ytdOtherOrdinary = 40000;
     na.strayK1 = { status: "na", amount: 10000 };
     const c = computeDecemberProjection(na).cases[1]!;
-    near(fail, "N/A stray is inert", c.nonDrawAcaMagi - a.nonDrawAcaMagi, 0);
+    exact(fail, "N/A stray is inert", c.nonDrawAcaMagi - a.nonDrawAcaMagi, 0);
   });
 
   run("dec-settled-strays-flow-into-magi", (fail) => {
@@ -773,7 +1002,7 @@ export function runDecemberFixtures(): {
     withStrays.strayAgiReducers = { status: "amount", amount: 4000 };
     const a = computeDecemberProjection(plain).cases[1]!;
     const b = computeDecemberProjection(withStrays).cases[1]!;
-    near(fail, "MAGI lift from settled strays", b.nonDrawAcaMagi - a.nonDrawAcaMagi, 7000);
+    exact(fail, "MAGI lift from settled strays", b.nonDrawAcaMagi - a.nonDrawAcaMagi, 7000);
     // Coverage months: a $2,000 credit reduction for
     // ineligible months shrinks the final credit dollar for
     // dollar and raises the excess-APTC repayment by the
@@ -782,7 +1011,7 @@ export function runDecemberFixtures(): {
     withCoverage.ytdOtherOrdinary = 40000;
     withCoverage.strayCoverage = { status: "amount", amount: 2000 };
     const c = computeDecemberProjection(withCoverage).cases[1]!;
-    near(fail, "coverage leaves MAGI alone", c.nonDrawAcaMagi - a.nonDrawAcaMagi, 0);
+    exact(fail, "coverage leaves MAGI alone", c.nonDrawAcaMagi - a.nonDrawAcaMagi, 0);
     near(fail, "final credit after coverage", c.creditAtHeadline, 10071.84);
     near(fail, "excess after coverage", c.excessAptcRepayment, 1928.16);
     // The new fields ride the saved blob: a stored blob
@@ -828,8 +1057,351 @@ export function runDecemberFixtures(): {
     // The engine itself is untouched by this surface: a plain
     // Playground pricing of the same dials still prices.
     const pg = pricePlaygroundYear(decemberCaseInputs(base(), "likely", 0));
-    near(fail, "engine ACA MAGI passthrough", pg.acaMagi, 0);
+    exact(fail, "engine ACA MAGI passthrough", pg.acaMagi, 0);
   });
+
+  run("dec-spouse-rmd-on-own-clock", (fail) => {
+    // Fix A (finding 1 of the commit-5379b85 accuracy
+    // review): the spouse's RMD prices on the SPOUSE's clock
+    // from the SPOUSE's own balance. Primary 60 with $0,
+    // spouse 75 with $246,000: her RMD is $246,000 / 24.6 =
+    // $10,000, so the zero-draw MAGI is $70,000 + $10,000 =
+    // $80,000 — already over the $79,600 target (cliff
+    // $84,600 − buffer $5,000) — and the safe draw is $0.
+    const s = base();
+    s.agePrimary = 60;
+    s.ageSpouse = 75;
+    s.onMedicareSpouse = true;
+    s.ytdOtherOrdinary = 70000;
+    s.pretaxBalancePrimary = 0;
+    s.pretaxBalanceSpouse = 246000;
+    s.aptcTaken = 12000;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "spouse RMD priced", pg.rmdSpouse, 10000);
+    exact(fail, "primary RMD", pg.rmdPrimary, 0);
+    exact(fail, "gross RMD", pg.rmdGross, 10000);
+    const r = computeDecemberProjection(s);
+    const likely = r.cases[1]!;
+    exact(fail, "non-draw MAGI", likely.nonDrawAcaMagi, 80000);
+    if (r.headlineDraw !== 0) fail(`headline should be $0, got ${r.headlineDraw}`);
+  });
+
+  run("dec-rmd-already-received-counted-once", (fail) => {
+    // Fix A (finding 2): an RMD already received — and
+    // already inside the year-to-date income — is counted
+    // once. Primary 73, prior balance $265,000, RMD
+    // $265,000 / 26.5 = $10,000, received and inside the
+    // $79,600 of YTD ordinary income: MAGI is $79,600, the
+    // final credit is $20,000 − 9.96% × $79,600 =
+    // $12,071.84, and the repayment is $0.
+    const s = base();
+    s.agePrimary = 73;
+    s.ageSpouse = 64;
+    s.ytdOtherOrdinary = 79600;
+    s.pretaxBalancePrimary = 265000;
+    s.pretaxBalanceSpouse = null;
+    s.rmdAlreadyReceived = 10000;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "gross RMD", pg.rmdGross, 10000);
+    exact(fail, "received RMD", pg.rmdAlreadyReceived, 10000);
+    exact(fail, "net RMD priced", pg.rmd, 0);
+    exact(fail, "MAGI counts the RMD once", pg.acaMagi, 79600);
+    const r = computeDecemberProjection(s);
+    const likely = r.cases[1]!;
+    exact(fail, "console non-draw MAGI", likely.nonDrawAcaMagi, 79600);
+    exact(fail, "final credit", likely.creditAtHeadline, 12071.84);
+    exact(fail, "excess repayment", likely.excessAptcRepayment, 0);
+    exact(fail, "repayment exposure", likely.repaymentExposure, 0);
+  });
+
+  run("dec-benchmark-tier-by-enrollment", (fail) => {
+    // Fix B (finding 3): the prefill tier keys on who is on
+    // the marketplace, mirroring the long-horizon selection.
+    // Household of 3 with only the primary enrolled (spouse
+    // on Medicare) is the SINGLE tier — never the family
+    // tier its household size alone would suggest.
+    const tier = (o: Partial<Parameters<typeof decemberBenchmarkTier>[0]>) =>
+      decemberBenchmarkTier({
+        filingStatus: "mfj",
+        householdSize: 3,
+        onMedicarePrimary: false,
+        onMedicareSpouse: true,
+        ...o,
+      });
+    if (tier({}) !== "single") fail("spouse-only-Medicare HH3 should seed single");
+    if (tier({ onMedicareSpouse: false }) !== "family") {
+      fail("both spouses on ACA at HH3 should seed family");
+    }
+    if (tier({ onMedicareSpouse: false, householdSize: 2 }) !== "couple") {
+      fail("both spouses on ACA at HH2 should seed couple");
+    }
+    if (tier({ householdSize: 5 }) !== "single") {
+      fail("one spouse on ACA at HH5 should still seed single");
+    }
+    if (tier({ onMedicarePrimary: true }) !== null) {
+      fail("nobody on ACA should seed no tier");
+    }
+    if (tier({ householdSize: null }) !== null) {
+      fail("no household size should seed no tier");
+    }
+    if (
+      decemberBenchmarkTier({
+        filingStatus: "single",
+        householdSize: 1,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+      }) !== "single"
+    ) {
+      fail("a single filer on ACA should seed single");
+    }
+  });
+
+  run("dec-signed-k1-loss", (fail) => {
+    // Fix C (finding 4): a deductible K-1 loss is signed —
+    // −$10,000 at $50,000 of ordinary income puts the base
+    // MAGI at $40,000 and the max draw at $79,600 − $40,000
+    // = $39,600.
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    s.strayK1 = { status: "amount", amount: -10000 };
+    const r = computeDecemberProjection(s);
+    const likely = r.cases[1]!;
+    exact(fail, "base MAGI", likely.nonDrawAcaMagi, 40000);
+    near(fail, "max draw", likely.maxDraw, 39600);
+    // A positive K-1 still adds, exactly as before.
+    const pos = base();
+    pos.ytdOtherOrdinary = 50000;
+    pos.strayK1 = { status: "amount", amount: 10000 };
+    exact(
+      fail,
+      "positive K-1 MAGI",
+      computeDecemberProjection(pos).cases[1]!.nonDrawAcaMagi,
+      60000,
+    );
+  });
+
+  run("dec-enrollment-premium-cap", (fail) => {
+    // Fix D (finding 5): with an enrollment premium entered,
+    // the final credit is capped at it (Form 8962's
+    // lesser-of) before any coverage-month reduction. MAGI
+    // $79,600 (posted, $0 draw): benchmark credit
+    // $12,071.84, enrollment premium $8,000, APTC $8,000 →
+    // final credit $8,000, still due $0, repayment $0.
+    const s = base();
+    s.ytdOtherOrdinary = 79600;
+    s.acaEnrollmentPremiumAnnual = 8000;
+    s.aptcTaken = 8000;
+    const r = computeDecemberProjection(s);
+    if (r.headlineDraw !== 0) fail(`headline should be $0, got ${r.headlineDraw}`);
+    const likely = r.cases[1]!;
+    exact(fail, "capped final credit", likely.creditAtHeadline, 8000);
+    exact(fail, "credit still due", likely.creditStillDue, 0);
+    exact(fail, "excess repayment", likely.excessAptcRepayment, 0);
+    // Blank = no cap: the same year prices the full
+    // benchmark-based credit.
+    const blank = base();
+    blank.ytdOtherOrdinary = 79600;
+    blank.aptcTaken = 8000;
+    exact(
+      fail,
+      "uncapped final credit",
+      computeDecemberProjection(blank).cases[1]!.creditAtHeadline,
+      12071.84,
+    );
+  });
+
+  run("dec-roc-ordinary-character", (fail) => {
+    // Fix E (finding 6): return of capital reclassified as
+    // an ordinary dividend is taxed as one. $30,000 of it on
+    // $120,000 of wages (MFJ, both under 65, standard
+    // deduction $32,200): taxable income rises $87,800 →
+    // $117,800, and the increment is $13,000 × 12% + $17,000
+    // × 22% = $5,300 — not the $2,835 the capital treatment
+    // produced ($18,900 over the 0% room × 15%).
+    const wages = base();
+    wages.ytdOtherOrdinary = 120000;
+    const roc = base();
+    roc.ytdOtherOrdinary = 120000;
+    roc.strayROCOrdinary = { status: "amount", amount: 30000 };
+    const t0 = pricePlaygroundYear(decemberCaseInputs(wages, "likely", 0)).federalTax;
+    const t1 = pricePlaygroundYear(decemberCaseInputs(roc, "likely", 0)).federalTax;
+    exact(fail, "ordinary ROC tax increment", r2(t1 - t0), 5300);
+    // The capital part keeps the capital treatment (a
+    // review-baseline differential: the same $30,000 as
+    // over-basis capital income costs $2,835 more).
+    const cap = base();
+    cap.ytdOtherOrdinary = 120000;
+    cap.strayROC = { status: "amount", amount: 30000 };
+    const t2 = pricePlaygroundYear(decemberCaseInputs(cap, "likely", 0)).federalTax;
+    exact(fail, "capital ROC tax increment", r2(t2 - t0), 2835);
+  });
+
+  run("dec-jan-paid-qualified-portion", (fail) => {
+    // Fix F (finding 7): a January-paid dividend keeps its
+    // qualified character — $20,000 fully qualified on
+    // $100,000 of wages (MFJ) adds $0 of federal tax
+    // (taxable income $87,800 sits under the $98,900 0%-rate
+    // top), where the nonqualified treatment added $2,400.
+    const wages = base();
+    wages.ytdOtherOrdinary = 100000;
+    const t0 = pricePlaygroundYear(decemberCaseInputs(wages, "likely", 0)).federalTax;
+    const qualified = base();
+    qualified.ytdOtherOrdinary = 100000;
+    qualified.strayJanPaid = { status: "amount", amount: 20000 };
+    qualified.strayJanPaidQualifiedAmount = 20000;
+    const t1 = pricePlaygroundYear(decemberCaseInputs(qualified, "likely", 0)).federalTax;
+    exact(fail, "qualified Jan-paid tax increment", r2(t1 - t0), 0);
+    const nonQualified = base();
+    nonQualified.ytdOtherOrdinary = 100000;
+    nonQualified.strayJanPaid = { status: "amount", amount: 20000 };
+    const t2 = pricePlaygroundYear(decemberCaseInputs(nonQualified, "likely", 0)).federalTax;
+    exact(fail, "nonqualified Jan-paid tax increment", r2(t2 - t0), 2400);
+    // The portion is a portion: entering more than the total
+    // clamps to the total, never an amount on top.
+    const over = base();
+    over.ytdOtherOrdinary = 100000;
+    over.strayJanPaid = { status: "amount", amount: 20000 };
+    over.strayJanPaidQualifiedAmount = 25000;
+    const t3 = pricePlaygroundYear(decemberCaseInputs(over, "likely", 0)).federalTax;
+    exact(fail, "over-entered portion clamps", r2(t3 - t0), 0);
+  });
+
+  run("dec-dependent-magi-aca-only", (fail) => {
+    // Fix G (finding 8): a filing dependent's $20,000 rides
+    // the ACA household MAGI only. The parents' own return
+    // ($60,000 wages MFJ, standard deduction $32,200 →
+    // taxable $27,800 → tax $24,800 × 10% + $3,000 × 12% =
+    // $2,840) is untouched, while the ACA MAGI carries the
+    // full $80,000.
+    const s = base();
+    s.ytdOtherOrdinary = 60000;
+    s.strayDependent = { status: "amount", amount: 20000 };
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "parents' federal tax", pg.federalTax, 2840);
+    exact(fail, "parents' AGI excludes the dependent", pg.agi, 60000);
+    exact(fail, "parents' MAGI excludes the dependent", pg.magi, 60000);
+    exact(fail, "ACA MAGI includes the dependent", pg.acaMagi, 80000);
+    const r = computeDecemberProjection(s);
+    exact(fail, "console non-draw ACA MAGI", r.cases[1]!.nonDrawAcaMagi, 80000);
+  });
+
+  run("dec-save-revision-cas", (fail) => {
+    // Fix H (finding 9): the save contract the actions
+    // enforce. A blob written before revisions existed reads
+    // as revision 0; a save from the read revision is
+    // allowed and lands at revision + 1; a second save from
+    // the SAME base is refused; a save from the new revision
+    // succeeds.
+    if (parseDecemberRevision(undefined) !== 0) {
+      fail("no stored blob should read as revision 0");
+    }
+    if (parseDecemberRevision("{ not json") !== 0) {
+      fail("an unparseable blob should read as revision 0");
+    }
+    if (parseDecemberRevision('{"revision":4}') !== 4) {
+      fail("a stored revision should parse back");
+    }
+    const first = decideDecemberWrite(0, 0);
+    if (!first.allowed || first.nextRevision !== 1) {
+      fail("the first save from base 0 should be allowed at revision 1");
+    }
+    const stale = decideDecemberWrite(1, 0);
+    if (stale.allowed) fail("a second save from base 0 should be refused");
+    const current = decideDecemberWrite(1, 1);
+    if (!current.allowed || current.nextRevision !== 2) {
+      fail("a save from the current revision should be allowed");
+    }
+    // The serialized blob carries the revision AND round-
+    // trips through the lenient state parser.
+    const state = defaultDecemberState(2026);
+    state.ytdOtherOrdinary = 43210;
+    const blob = serializeDecemberState(state, 7);
+    if (parseDecemberRevision(blob) !== 7) {
+      fail("the serialized blob should carry its revision");
+    }
+    const back = parseDecemberState(blob, 2026);
+    if (back.ytdOtherOrdinary !== 43210) {
+      fail("the serialized blob should parse back through the state parser");
+    }
+  });
+
+  run("dec-legacy-blob-split-migration", (fail) => {
+    // Fix A's migration: a pre-split blob carries only the
+    // combined pretaxBalance — it migrates losslessly into
+    // the primary's split balance, the spouse's defaults to
+    // not-entered, and the combined field keeps its value,
+    // so the blob prices exactly as it did.
+    const legacy = parseDecemberState(
+      JSON.stringify({ taxYear: 2026, pretaxBalance: 300000 }),
+      2026,
+    );
+    if (legacy.pretaxBalancePrimary !== 300000) {
+      fail(`legacy combined should migrate to primary, got ${legacy.pretaxBalancePrimary}`);
+    }
+    if (legacy.pretaxBalanceSpouse !== null) {
+      fail("legacy spouse split should default to null");
+    }
+    if (legacy.pretaxBalance !== 300000) {
+      fail("legacy combined field should keep its value");
+    }
+    // A split blob reads the split as written, and the
+    // combined field is re-derived as the split's sum.
+    const split = parseDecemberState(
+      JSON.stringify({
+        taxYear: 2026,
+        pretaxBalancePrimary: 100000,
+        pretaxBalanceSpouse: 250000,
+      }),
+      2026,
+    );
+    if (split.pretaxBalancePrimary !== 100000 || split.pretaxBalanceSpouse !== 250000) {
+      fail("a split blob should read its split as written");
+    }
+    if (split.pretaxBalance !== 350000) {
+      fail(`combined should re-derive as the split sum, got ${split.pretaxBalance}`);
+    }
+    // Every new field defaults inertly on a legacy blob.
+    if (
+      legacy.rmdAlreadyReceived !== 0 ||
+      legacy.acaEnrollmentPremiumAnnual !== null ||
+      legacy.strayJanPaidQualifiedAmount !== 0 ||
+      legacy.strayROCOrdinary.status !== "na"
+    ) {
+      fail("new fields should default inertly on a legacy blob");
+    }
+  });
+
+  run("dec-no-cliff-year-2025", (fail) => {
+    // Fix I (finding 10): a pre-2026 year has no ACA cliff.
+    // HH2, on ACA, MAGI $50,000: the headline is the
+    // no-cliff state — no $0 maximum draw, no cliff figure,
+    // and the per-case cliff fields read null the way the
+    // Medicare no-ACA state reads.
+    const s = base();
+    s.taxYear = 2025;
+    s.ytdOtherOrdinary = 50000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("the 2025 year should still price");
+    if (r.cliff !== null) fail(`cliff should be null, got ${r.cliff}`);
+    if (r.targetMagi !== null) fail("target MAGI should be null");
+    if (r.headlineDraw !== null) fail("headline draw should be null, not $0");
+    if (
+      r.headlineText !==
+      "No ACA cliff this year — the draw is not cliff-constrained."
+    ) {
+      fail(`headline should be the no-cliff state, got: ${r.headlineText}`);
+    }
+    const likely = r.cases[1]!;
+    if (likely.maxDraw !== null) fail("per-case max draw should be null");
+    if (likely.distanceAtHeadline !== null) {
+      fail("per-case distance should be null");
+    }
+    if (likely.overCliffAtHeadline || likely.overCliffEvenAtZero) {
+      fail("a no-cliff year can never be over the cliff");
+    }
+    exact(fail, "2025 MAGI still prices", likely.nonDrawAcaMagi, 50000);
+  });
+
 
   return {
     total: results.length,

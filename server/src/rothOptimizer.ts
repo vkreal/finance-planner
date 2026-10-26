@@ -71,6 +71,7 @@ priceYear,
 resolveAcaHouseholdSchedule,
 rmdForYear,
 simulateRothPlan,
+uniformRmdFor,
 type AcaHouseholdStep,
 type DrawOrder,
 type EducationStudent,
@@ -2573,8 +2574,33 @@ export type PlaygroundYearInputs = {
   // never an amount on top of it.
   qualifiedDividends: number;
   // Combined pre-tax balance at the prior Dec 31, or null when
-  // not entered — null prices no RMD and caps nothing.
+  // not entered — null prices no RMD and caps nothing. When
+  // pretaxBalanceSpouse is present (below), this field is the
+  // PRIMARY's own balance instead, and the two balances are
+  // kept apart for the RMD step.
   pretaxBalance: number | null;
+  // December-fix optional inputs — ABSENT (undefined / null)
+  // on every pre-existing caller, and each prices bit-
+  // identically to before:
+  // · pretaxBalanceSpouse: the spouse's own prior-Dec-31
+  //   pre-tax balance. When present, the spouse's RMD is
+  //   computed on the spouse's OWN clock (uniformRmdFor —
+  //   own age, Uniform Lifetime Table), mirroring the long-
+  //   horizon engine's per-owner RMDs, and added to the
+  //   year's RMD income beside the primary's.
+  // · rmdAlreadyReceived: the part of this year's computed
+  //   RMD the household has ALREADY received (and already
+  //   counted in its entered income). The RMD income the
+  //   pricer adds is the gross RMD net of this amount,
+  //   floored at $0, so a paid RMD is never counted twice.
+  // · dependentMagiForAca: a filing dependent's MAGI that
+  //   belongs in the §36B household MAGI (Form 8962 line 2b)
+  //   ONLY. It is added to the ACA MAGI the credit / cliff
+  //   step reads — never to AGI, taxable income, federal or
+  //   state tax, or the IRMAA MAGI.
+  pretaxBalanceSpouse?: number | null;
+  rmdAlreadyReceived?: number | null;
+  dependentMagiForAca?: number | null;
   spouseSoleBeneficiary: boolean;
   acaHouseholdSize: number | null;
   acaBenchmarkAnnual: number | null;
@@ -2659,7 +2685,21 @@ export type PlaygroundYearResult = {
   // dividends + other ordinary income.
   otherOrdinaryTotal: number;
   rmdPriced: boolean;
+  // The RMD income actually priced (the gross RMD net of
+  // any rmdAlreadyReceived). With no received amount typed
+  // this is the gross RMD, exactly as before.
   rmd: number;
+  // December-fix RMD detail: the gross computed RMD before
+  // the received netting, its per-owner split (the spouse
+  // part is $0 unless a spouse balance was entered), and
+  // the received amount actually applied against it.
+  rmdGross: number;
+  rmdPrimary: number;
+  rmdSpouse: number;
+  rmdAlreadyReceived: number;
+  // The dependent MAGI added to the ACA MAGI only (the
+  // dependentMagiForAca input, echoed; $0 when absent).
+  dependentMagiForAca: number;
   rmdDivisor: number | null;
   rmdTable: "joint" | "uniform" | null;
   ssBenefits: number;
@@ -2945,23 +2985,61 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
 
   // The year's RMD — the plan's own rule (rmdForYear on the
   // primary's clock, Joint Life when applicable) over the
-  // combined prior-Dec-31 balance. No balance entered → no RMD
+  // prior-Dec-31 balance. No balance entered → no RMD
   // priced, and the conversion is not capped against anything.
-  let rmd = 0;
+  // December fix: when a SPOUSE balance is entered, the
+  // primary's RMD runs on the primary's balance alone and
+  // the spouse's RMD is computed on the spouse's OWN clock
+  // (uniformRmdFor — own age, Uniform Lifetime Table, the
+  // long-horizon engine's per-owner rule) and added; with
+  // no spouse balance the single-balance path below is the
+  // pre-fix computation term for term. The RMD income the
+  // year prices is the gross RMD net of any amount already
+  // received (rmdAlreadyReceived, floored at $0) — the
+  // received part already sits in the caller's entered
+  // income, so pricing it again would count it twice. The
+  // balance caps keep using the GROSS RMD: the received
+  // part has left the accounts too.
+  const hasSpouseBalance = inp.pretaxBalanceSpouse != null;
+  const totalPretaxBalance =
+    inp.pretaxBalance == null && !hasSpouseBalance
+      ? null
+      : r2((inp.pretaxBalance ?? 0) + (inp.pretaxBalanceSpouse ?? 0));
+  let rmdPrimary = 0;
+  let rmdSpouse = 0;
   let rmdDivisor: number | null = null;
   let rmdTable: "joint" | "uniform" | null = null;
-  if (inp.pretaxBalance != null) {
+  if (inp.pretaxBalance != null || hasSpouseBalance) {
     const r = rmdForYear({
-      priorDec31PreTax: inp.pretaxBalance,
+      priorDec31PreTax: inp.pretaxBalance ?? 0,
       agePrimary: inp.agePrimary,
       ageSpouse,
       birthYearPrimary: inp.taxYear - inp.agePrimary,
       spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
     });
-    rmd = r.rmd;
+    rmdPrimary = r.rmd;
     rmdDivisor = r.divisor;
     rmdTable = r.table;
   }
+  if (hasSpouseBalance && joint && ageSpouse != null) {
+    const rs = uniformRmdFor({
+      priorDec31PreTax: inp.pretaxBalanceSpouse ?? 0,
+      age: ageSpouse,
+      birthYear: inp.taxYear - ageSpouse,
+    });
+    rmdSpouse = rs.rmd;
+    if (rmdDivisor == null && rs.divisor != null) {
+      rmdDivisor = rs.divisor;
+      rmdTable = "uniform";
+    }
+  }
+  const rmdGross = r2(rmdPrimary + rmdSpouse);
+  const rmdAlreadyReceived = Math.min(
+    rmdGross,
+    Math.max(0, inp.rmdAlreadyReceived ?? 0),
+  );
+  const rmd = r2(rmdGross - rmdAlreadyReceived);
+  const dependentMagiForAca = Math.max(0, inp.dependentMagiForAca ?? 0);
 
   const base: PriceYearInput = {
     calendarYear: inp.taxYear,
@@ -3077,9 +3155,15 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     credit: null,
     applicablePct: null,
   };
+  // The §36B household MAGI: the year's own ACA MAGI plus
+  // any filing dependent's MAGI (dependentMagiForAca). The
+  // dependent amount touches ONLY this figure and the ACA
+  // step that reads it — AGI, MAGI (IRMAA), and every tax
+  // figure keep the priced values untouched.
+  const acaHouseholdMagi = r2(priced.acaMagi + dependentMagiForAca);
   if (acaApplies && inp.acaHouseholdSize != null) {
     const res = acaCreditFor({
-      magi: priced.acaMagi,
+      magi: acaHouseholdMagi,
       householdSize: inp.acaHouseholdSize,
       coverageYear: acaCoverageYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
@@ -3091,7 +3175,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       cliff: res.cliff,
       pctFpl: res.pctFpl,
       overCliff: res.overCliff,
-      positionDollars: r2(res.cliff - priced.acaMagi),
+      positionDollars: r2(res.cliff - acaHouseholdMagi),
       credit: inp.acaBenchmarkAnnual != null ? res.credit : null,
       applicablePct: inp.acaBenchmarkAnnual != null ? res.applicablePct : null,
     };
@@ -3134,19 +3218,22 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     capitalLossAllowance: 0,
   });
   const hasGainsTyped = stockGain !== 0 || inp.qualifiedDividends !== 0;
+  const withoutAcaHouseholdMagi = r2(
+    pricedWithoutGains.acaMagi + dependentMagiForAca,
+  );
   let withoutAcaOverCliff = false;
   let withoutAcaPosition: number | null = null;
   let withoutAcaCredit: number | null = null;
   if (acaApplies && inp.acaHouseholdSize != null) {
     const resW = acaCreditFor({
-      magi: pricedWithoutGains.acaMagi,
+      magi: withoutAcaHouseholdMagi,
       householdSize: inp.acaHouseholdSize,
       coverageYear: acaCoverageYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
       projected: acaProjected,
     });
     withoutAcaOverCliff = resW.overCliff;
-    withoutAcaPosition = r2(resW.cliff - pricedWithoutGains.acaMagi);
+    withoutAcaPosition = r2(resW.cliff - withoutAcaHouseholdMagi);
     withoutAcaCredit =
       inp.acaBenchmarkAnnual != null ? resW.credit : null;
   }
@@ -3181,7 +3268,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
         withoutPositionDollars: withoutAcaPosition,
         typedCredit: aca.credit,
         withoutCredit: withoutAcaCredit,
-        withoutAcaMagi: pricedWithoutGains.acaMagi,
+        withoutAcaMagi: withoutAcaHouseholdMagi,
         text: `Over the cliff by ${fmtDollars(-aca.positionDollars)} — ${gainsPhrase} is what put you over; without it you'd be under by ${fmtDollars(withoutAcaPosition)}${creditClause}.`,
       };
     } else if (flipped && !aca.overCliff) {
@@ -3198,7 +3285,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
         withoutPositionDollars: withoutAcaPosition,
         typedCredit: aca.credit,
         withoutCredit: withoutAcaCredit,
-        withoutAcaMagi: pricedWithoutGains.acaMagi,
+        withoutAcaMagi: withoutAcaHouseholdMagi,
         text: `Under the cliff by ${fmtDollars(aca.positionDollars)} — ${gainsPhrase} is what kept you under; without it you'd be over by ${fmtDollars(-withoutAcaPosition)}${creditClause}.`,
       };
     } else if (creditChanged) {
@@ -3215,7 +3302,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
         withoutPositionDollars: withoutAcaPosition,
         typedCredit: aca.credit,
         withoutCredit: withoutAcaCredit,
-        withoutAcaMagi: pricedWithoutGains.acaMagi,
+        withoutAcaMagi: withoutAcaHouseholdMagi,
         text: `${gainsPhrase.charAt(0).toUpperCase()}${gainsPhrase.slice(1)} ${verb} the credit — ${fmtDollars(aca.credit ?? 0)} with it, ${fmtDollars(withoutAcaCredit ?? 0)} without it.`,
       };
     }
@@ -3258,7 +3345,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     gainsStack: prefTyped,
     hasGainsTyped,
     withoutMagi: pricedWithoutGains.magi,
-    withoutAcaMagi: pricedWithoutGains.acaMagi,
+    withoutAcaMagi: withoutAcaHouseholdMagi,
     withoutTier: pricedWithoutGains.irmaaTier,
     acaFlag,
     irmaaFlag,
@@ -3299,8 +3386,13 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     nonQualifiedDividends,
     otherOrdinary: inp.otherOrdinary,
     otherOrdinaryTotal,
-    rmdPriced: inp.pretaxBalance != null,
+    rmdPriced: totalPretaxBalance != null,
     rmd,
+    rmdGross,
+    rmdPrimary,
+    rmdSpouse,
+    rmdAlreadyReceived,
+    dependentMagiForAca,
     rmdDivisor,
     rmdTable,
     ssBenefits,
@@ -3316,7 +3408,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     capitalLossAllowance,
     agi: priced.agi,
     magi: priced.magi,
-    acaMagi: priced.acaMagi,
+    acaMagi: acaHouseholdMagi,
     baseStandardDeduction: priced.baseStandardDeduction,
     age65AddonTotal: priced.age65AddonTotal,
     count65: priced.count65,
@@ -3366,8 +3458,8 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       priced.federalTax + priced.stateTax - (pricedZero.federalTax + pricedZero.stateTax),
     ),
     conversionExceedsBalance:
-      inp.pretaxBalance != null &&
-      inp.conversion > inp.pretaxBalance - rmd + 0.005,
+      totalPretaxBalance != null &&
+      inp.conversion > totalPretaxBalance - rmdGross + 0.005,
     aca,
     irmaa,
     gainsFlags,
@@ -3822,8 +3914,12 @@ export function solvePlaygroundBracketFill(
   // does not reach the top, the cap is the answer — the
   // bracket simply can't be filled from this balance.
   let capCents: number | null = null;
-  if (inp.pretaxBalance != null) {
-    capCents = Math.max(0, Math.round((inp.pretaxBalance - zero.rmd) * 100));
+  const typedTotalBalance =
+    inp.pretaxBalance == null && inp.pretaxBalanceSpouse == null
+      ? null
+      : (inp.pretaxBalance ?? 0) + (inp.pretaxBalanceSpouse ?? 0);
+  if (typedTotalBalance != null) {
+    capCents = Math.max(0, Math.round((typedTotalBalance - zero.rmdGross) * 100));
     if (!pastTop(capCents / 100)) return r2(capCents / 100);
   }
   // Upper bound (cents) past the top: grow from the slope-1
@@ -3909,8 +4005,12 @@ export function solvePlaygroundAcaCliffFill(
   // balance (the RMD comes out first). If even the cap does
   // not reach the target, the cap is the answer.
   let capCents: number | null = null;
-  if (inp.pretaxBalance != null) {
-    capCents = Math.max(0, Math.round((inp.pretaxBalance - zero.rmd) * 100));
+  const typedTotalBalance =
+    inp.pretaxBalance == null && inp.pretaxBalanceSpouse == null
+      ? null
+      : (inp.pretaxBalance ?? 0) + (inp.pretaxBalanceSpouse ?? 0);
+  if (typedTotalBalance != null) {
+    capCents = Math.max(0, Math.round((typedTotalBalance - zero.rmdGross) * 100));
     if (!pastTarget(capCents / 100)) return r2(capCents / 100);
   }
   // Upper bound (cents) past the target: grow from the

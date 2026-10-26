@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import { usePersistedFold } from "./foldState";
@@ -18,6 +18,7 @@ import {
 import { acaHouseholdSizeForYear } from "@space/server/taxEngine";
 import {
   computeDecemberProjection,
+  decemberBenchmarkTier,
   defaultDecemberState,
   type DecemberCaseKind,
   type DecemberState,
@@ -33,7 +34,11 @@ import {
    computeDecemberProjection — the same code the server action
    and the accuracy fixtures run. On a first open (nothing
    stored yet) the year block is preseeded from the saved Tax
-   Plan record where available; everything else starts blank. */
+   Plan record where available; everything else starts blank.
+   Saves carry the stored blob's revision (compare-and-swap):
+   if the stored copy moved since this screen read it, the
+   save is refused with the stored state instead of silently
+   overwriting it, and this screen reloads that state. */
 
 /* The form carries typed strings, like the Playground form;
    the saved state carries numbers. These two converters are
@@ -63,9 +68,12 @@ type DecForm = {
   remOtherOrdinary: RangeForm;
   acaHouseholdSize: string;
   acaBenchmarkAnnual: string;
+  acaEnrollmentPremiumAnnual: string;
   aptcTaken: string;
   bufferDollars: string;
-  pretaxBalance: string;
+  pretaxBalancePrimary: string;
+  pretaxBalanceSpouse: string;
+  rmdAlreadyReceived: string;
   spouseSoleBeneficiary: boolean;
   stateRatePct: string;
   residenceState: "WA" | "other";
@@ -81,9 +89,11 @@ type DecForm = {
   strayLossHarvest: StrayForm;
   strayCutoff: StrayForm;
   strayJanPaid: StrayForm;
+  strayJanPaidQualifiedAmount: string;
   strayDivInt: StrayForm;
   strayPlannedSales: StrayForm;
   strayROC: StrayForm;
+  strayROCOrdinary: StrayForm;
   strayAgiReducers: StrayForm;
   strayCoverage: StrayForm;
   strayTradeDate: StrayForm;
@@ -142,9 +152,14 @@ function formFromState(s: DecemberState): DecForm {
     remOtherOrdinary: rg(s.remOtherOrdinary),
     acaHouseholdSize: numStr(s.acaHouseholdSize),
     acaBenchmarkAnnual: moneyStr(s.acaBenchmarkAnnual ?? 0),
+    acaEnrollmentPremiumAnnual: moneyStr(s.acaEnrollmentPremiumAnnual ?? 0),
     aptcTaken: moneyStr(s.aptcTaken),
     bufferDollars: fmtMoneyInput(s.bufferDollars),
-    pretaxBalance: s.pretaxBalance == null ? "" : moneyStr(s.pretaxBalance),
+    pretaxBalancePrimary:
+      s.pretaxBalancePrimary == null ? "" : moneyStr(s.pretaxBalancePrimary),
+    pretaxBalanceSpouse:
+      s.pretaxBalanceSpouse == null ? "" : moneyStr(s.pretaxBalanceSpouse),
+    rmdAlreadyReceived: moneyStr(s.rmdAlreadyReceived),
     spouseSoleBeneficiary: s.spouseSoleBeneficiary,
     stateRatePct: String(s.stateRatePct),
     residenceState: s.residenceState,
@@ -160,9 +175,11 @@ function formFromState(s: DecemberState): DecForm {
     strayLossHarvest: st(s.strayLossHarvest),
     strayCutoff: st(s.strayCutoff),
     strayJanPaid: st(s.strayJanPaid),
+    strayJanPaidQualifiedAmount: moneyStr(s.strayJanPaidQualifiedAmount),
     strayDivInt: st(s.strayDivInt),
     strayPlannedSales: st(s.strayPlannedSales),
     strayROC: st(s.strayROC),
+    strayROCOrdinary: st(s.strayROCOrdinary),
     strayAgiReducers: st(s.strayAgiReducers),
     strayCoverage: st(s.strayCoverage),
     strayTradeDate: st(s.strayTradeDate),
@@ -179,6 +196,12 @@ function stateFromForm(f: DecForm): DecemberState {
   const st = (x: StrayForm): DecemberStray => ({
     status: x.status,
     amount: clamp0(parseMoney(x.amount)),
+  });
+  // The K-1 stray is the one signed stray: a deductible K-1
+  // loss is negative income, so its amount keeps its sign.
+  const stSigned = (x: StrayForm): DecemberStray => ({
+    status: x.status,
+    amount: parseMoney(x.amount),
   });
   const size = parseIntOrNull(f.acaHouseholdSize);
   return {
@@ -206,12 +229,29 @@ function stateFromForm(f: DecForm): DecemberState {
       const n = parseMoneyOrNull(f.acaBenchmarkAnnual);
       return n == null ? null : clamp0(n);
     })(),
-    aptcTaken: clamp0(parseMoney(f.aptcTaken)),
-    bufferDollars: clamp0(parseMoney(f.bufferDollars)),
-    pretaxBalance: (() => {
-      const n = parseMoneyOrNull(f.pretaxBalance);
+    acaEnrollmentPremiumAnnual: (() => {
+      const n = parseMoneyOrNull(f.acaEnrollmentPremiumAnnual);
       return n == null ? null : clamp0(n);
     })(),
+    aptcTaken: clamp0(parseMoney(f.aptcTaken)),
+    bufferDollars: clamp0(parseMoney(f.bufferDollars)),
+    pretaxBalancePrimary: (() => {
+      const n = parseMoneyOrNull(f.pretaxBalancePrimary);
+      return n == null ? null : clamp0(n);
+    })(),
+    pretaxBalanceSpouse: (() => {
+      const n = parseMoneyOrNull(f.pretaxBalanceSpouse);
+      return n == null ? null : clamp0(n);
+    })(),
+    // The legacy combined field is derived as the split's
+    // sum, so the saved blob's two views of the money agree.
+    pretaxBalance: (() => {
+      const prim = parseMoneyOrNull(f.pretaxBalancePrimary);
+      const sp = parseMoneyOrNull(f.pretaxBalanceSpouse);
+      if (prim == null && sp == null) return null;
+      return clamp0(prim ?? 0) + clamp0(sp ?? 0);
+    })(),
+    rmdAlreadyReceived: clamp0(parseMoney(f.rmdAlreadyReceived)),
     spouseSoleBeneficiary: f.spouseSoleBeneficiary,
     stateRatePct: Math.min(100, clamp0(parseMoney(f.stateRatePct))),
     residenceState: f.residenceState,
@@ -220,16 +260,18 @@ function stateFromForm(f: DecForm): DecemberState {
     itemizedCharitable: clamp0(parseMoney(f.itemizedCharitable)),
     itemizedOther: clamp0(parseMoney(f.itemizedOther)),
     strayCapDist: st(f.strayCapDist),
-    strayK1: st(f.strayK1),
+    strayK1: stSigned(f.strayK1),
     strayTaxExempt: st(f.strayTaxExempt),
     strayDependent: st(f.strayDependent),
     straySeverance: st(f.straySeverance),
     strayLossHarvest: st(f.strayLossHarvest),
     strayCutoff: st(f.strayCutoff),
     strayJanPaid: st(f.strayJanPaid),
+    strayJanPaidQualifiedAmount: clamp0(parseMoney(f.strayJanPaidQualifiedAmount)),
     strayDivInt: st(f.strayDivInt),
     strayPlannedSales: st(f.strayPlannedSales),
     strayROC: st(f.strayROC),
+    strayROCOrdinary: st(f.strayROCOrdinary),
     strayAgiReducers: st(f.strayAgiReducers),
     strayCoverage: st(f.strayCoverage),
     strayTradeDate: st(f.strayTradeDate),
@@ -253,15 +295,32 @@ export function December() {
   });
   const queryClient = useQueryClient();
   const saveMut = useMutation({
-    mutationFn: (state: DecemberState) => api.saveDecemberProjection({ state }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["decemberprojection"] });
+    mutationFn: (state: DecemberState) =>
+      api.saveDecemberProjection({ state, baseRevision: revisionRef.current }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        revisionRef.current = res.revision;
+        queryClient.invalidateQueries({ queryKey: ["decemberprojection"] });
+        return;
+      }
+      // Compare-and-swap conflict: the stored copy moved
+      // since this screen read it (another tab or device
+      // saved first). Reload the stored state into the form
+      // instead of overwriting it, and say so plainly.
+      revisionRef.current = res.revision;
+      setForm(formFromState(res.state));
+      setSaveNote(
+        "These entries were changed in another tab or on another device, so your last edit wasn’t saved over them — the saved entries are shown now.",
+      );
     },
   });
 
   const [form, setForm] = useState<DecForm | null>(null);
   const hydratedRef = useRef(false);
   const dirtyRef = useRef(false);
+  // The revision of the stored blob this screen's form was
+  // read at; every save passes it as the base revision.
+  const revisionRef = useRef(0);
   const [saveNote, setSaveNote] = useState<string>("");
   const [resetArmed, setResetArmed] = useState(false);
   const [detailOpen, setDetailOpen] = usePersistedFold("december.detail", false);
@@ -279,6 +338,7 @@ export function December() {
     // console needs no preseed and hydrates immediately.
     if (!decQ.data.hasStored && rothQ.isPending) return;
     hydratedRef.current = true;
+    revisionRef.current = decQ.data.revision;
     let initial = formFromState(decQ.data.state);
     if (!decQ.data.hasStored && rothQ.data) {
       const s = rothQ.data.saved;
@@ -289,19 +349,34 @@ export function December() {
           s.acaHouseholdSize != null
             ? acaHouseholdSizeForYear(s.acaHouseholdSize, s.acaHouseholdSchedule ?? null, year)
             : null;
+        // The benchmark tier keys on WHO is on the
+        // marketplace, never on household size alone —
+        // the same selection the long-horizon engine makes
+        // (decemberBenchmarkTier pins it): both spouses on
+        // ACA take the family tier at household size 3+ and
+        // the couple tier below; one spouse on ACA takes
+        // the single tier at any household size.
+        const tier = decemberBenchmarkTier({
+          filingStatus: s.filingStatus ?? "mfj",
+          householdSize: size,
+          onMedicarePrimary:
+            s.birthYearPrimary != null ? year - s.birthYearPrimary >= 65 : false,
+          onMedicareSpouse:
+            s.birthYearSpouse != null ? year - s.birthYearSpouse >= 65 : false,
+        });
         const benchmarkCents =
-          size == null
-            ? null
-            : size >= 3
-              ? (s.acaBenchmarkFamilyCents ?? s.acaBenchmarkCoupleCents)
-              : size === 2
-                ? s.acaBenchmarkCoupleCents
-                : s.acaBenchmarkSingleCents;
-        const pretaxCents =
-          (s.pretaxCents ?? snap?.pretaxCents ?? null) != null ||
-          s.pretaxSpouseCents != null
-            ? (s.pretaxCents ?? snap?.pretaxCents ?? 0) + (s.pretaxSpouseCents ?? 0)
-            : null;
+          tier === "family"
+            ? (s.acaBenchmarkFamilyCents ?? s.acaBenchmarkCoupleCents)
+            : tier === "couple"
+              ? s.acaBenchmarkCoupleCents
+              : tier === "single"
+                ? s.acaBenchmarkSingleCents
+                : null;
+        // Each owner's pre-tax balance seeds their own
+        // field — the record's own fields, never summed —
+        // so each owner's RMD prices on their own clock.
+        const primaryPretaxCents = s.pretaxCents ?? snap?.pretaxCents ?? null;
+        const spousePretaxCents = s.pretaxSpouseCents ?? null;
         initial = {
           ...initial,
           filingStatus: s.filingStatus ?? initial.filingStatus,
@@ -319,7 +394,14 @@ export function December() {
           stateRatePct: s.stateRatePct != null ? String(s.stateRatePct) : initial.stateRatePct,
           residenceState: s.residenceState ?? initial.residenceState,
           spouseSoleBeneficiary: s.spouseSoleBeneficiary ?? initial.spouseSoleBeneficiary,
-          pretaxBalance: pretaxCents != null ? fmtMoneyInput(pretaxCents / 100) : initial.pretaxBalance,
+          pretaxBalancePrimary:
+            primaryPretaxCents != null
+              ? fmtMoneyInput(primaryPretaxCents / 100)
+              : initial.pretaxBalancePrimary,
+          pretaxBalanceSpouse:
+            spousePretaxCents != null
+              ? fmtMoneyInput(spousePretaxCents / 100)
+              : initial.pretaxBalanceSpouse,
           itemizedMortgageInterest:
             s.itemizedMortgageInterestCents != null
               ? fmtMoneyInput(s.itemizedMortgageInterestCents / 100)
@@ -422,10 +504,11 @@ export function December() {
       | "strayDivInt"
       | "strayPlannedSales"
       | "strayROC"
+      | "strayROCOrdinary"
       | "strayAgiReducers"
       | "strayCoverage"
       | "strayTradeDate",
-    opts?: { amountLabel?: string; hint?: string },
+    opts?: { amountLabel?: string; hint?: string; extra?: ReactNode },
   ) => {
     const item = form[key];
     const hasAmount = opts?.amountLabel != null;
@@ -458,6 +541,7 @@ export function December() {
             )}
           </div>
         )}
+        {item.status === "amount" && opts?.extra}
       </div>
     );
   };
@@ -590,9 +674,18 @@ export function December() {
             numField("Age — spouse", form.ageSpouse, (v) => set("ageSpouse", v), {
               idLabel: "December age spouse",
             })}
-          {moneyField("Pre-tax balance (prior Dec 31)", form.pretaxBalance, (v) =>
-            set("pretaxBalance", v),
-          { idLabel: "December pretax balance", hint: "Sizes any RMD and caps the draw." },
+          {moneyField("Pre-tax balance — primary (prior Dec 31)", form.pretaxBalancePrimary, (v) =>
+            set("pretaxBalancePrimary", v),
+          { idLabel: "December pretax balance primary", hint: "The primary filer's own pre-tax balance. Sizes their RMD on their own clock and caps the draw." },
+          )}
+          {joint &&
+            moneyField("Pre-tax balance — spouse (prior Dec 31)", form.pretaxBalanceSpouse, (v) =>
+              set("pretaxBalanceSpouse", v),
+            { idLabel: "December pretax balance spouse", hint: "The spouse's own pre-tax balance — their RMD is computed on their own age and divisor table, not the primary's." },
+            )}
+          {moneyField("RMD already received this year", form.rmdAlreadyReceived, (v) =>
+            set("rmdAlreadyReceived", v),
+          { idLabel: "December RMD already received", hint: "The part of this year's RMD already paid — and already inside the year-to-date income below. It is subtracted from the RMD the balances imply, so a paid RMD is never counted twice." },
           )}
         </div>
         <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
@@ -638,7 +731,7 @@ export function December() {
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {moneyField("Wages & other ordinary income", form.ytdOtherOrdinary, (v) =>
             set("ytdOtherOrdinary", v),
-          { idLabel: "December YTD other ordinary" },
+          { idLabel: "December YTD other ordinary", hint: "Includes any RMD already received — enter that amount in “RMD already received this year” above so it isn’t counted twice." },
           )}
           {moneyField("Interest", form.ytdInterest, (v) => set("ytdInterest", v), {
             idLabel: "December YTD interest",
@@ -699,6 +792,10 @@ export function December() {
             set("acaBenchmarkAnnual", v),
           { idLabel: "December ACA benchmark", hint: "Second-lowest-cost Silver plan for the household." },
           )}
+          {moneyField("Enrollment premium (annual, the plan actually enrolled in)", form.acaEnrollmentPremiumAnnual, (v) =>
+            set("acaEnrollmentPremiumAnnual", v),
+          { idLabel: "December ACA enrollment premium", hint: "Optional — leave blank for no cap. When entered, each case’s final credit is capped at this premium (the credit never exceeds the premium of the plan actually enrolled in), applied before any coverage-month reduction." },
+          )}
           {moneyField("Advance credit (APTC) already taken", form.aptcTaken, (v) =>
             set("aptcTaken", v),
           { idLabel: "December APTC taken", hint: "Year-to-date. The repayment control is tracking cumulative advance credit taken — plus any scheduled remaining advances — against the projected final credit at the landing, which each case above shows. Any amount above the final credit is repaid in full at filing — no repayment caps after 2025. Over the cliff the final credit is $0, so the whole amount is repaid. Aligning the marketplace income estimate with the target is a starting input only and does not guarantee zero repayment — advances already paid under a different estimate are sunk." },
@@ -731,6 +828,14 @@ export function December() {
         {strayRow("Fund distributions paid in January but taxed this year", "strayJanPaid", {
           amountLabel: "January-paid distributions deemed received December 31",
           hint: "A dividend declared in October–December with a December record date and paid in January is deemed received on December 31 — check each fund’s declarations and distribution calendar, not just cash postings. An exempt-interest portion belongs under the tax-exempt item below, not here.",
+          extra: (
+            <div className="mt-2 max-w-xs">
+              {moneyField("Of which qualified dividends", form.strayJanPaidQualifiedAmount, (v) =>
+                set("strayJanPaidQualifiedAmount", v),
+              { idLabel: "December stray January-paid qualified portion", hint: "The part of the total above that is qualified dividends — it keeps its qualified character. Leave at $0 if none of it is qualified." },
+              )}
+            </div>
+          ),
         })}
         {strayRow("Dividends & interest actuals complete", "strayDivInt", {
           amountLabel: "Money-market dividends / savings-bond interest not entered above",
@@ -740,12 +845,17 @@ export function December() {
           amountLabel: "Forecast net gain on planned sales",
           hint: "Selling investments to pay the tax bill or raise spending cash realizes a gain too. Forecast it lot by lot (specific share lots), net of any prior-year capital-loss carryforward.",
         })}
-        {strayRow("Return of capital received", "strayROC", {
-          amountLabel: "Only the part that is income (over basis, or reclassified)",
-          hint: "Return of capital normally just reduces basis — it is income only when it is reclassified as a dividend or distribution, or once it exceeds the shares’ basis (then it is a capital gain). Enter only that income part; a pure basis reduction is “checked — none”.",
+        {strayRow("Return of capital reclassified as an ordinary dividend", "strayROCOrdinary", {
+          amountLabel: "Amount reclassified as an ordinary dividend",
+          hint: "When a fund reclassifies return of capital as a dividend, that part is an ORDINARY dividend — it is taxed as ordinary income, not as a capital gain. Enter it here, not under the capital part below.",
+        })}
+        {strayRow("Return of capital over basis (capital gain)", "strayROC", {
+          amountLabel: "Income over basis (capital gain)",
+          hint: "Return of capital normally just reduces basis — it becomes income only once it exceeds the shares’ basis, and that part is a capital gain. Enter only that over-basis part here; a pure basis reduction is “checked — none”.",
         })}
         {strayRow("K-1 income (partnership, S-corp, trust)", "strayK1", {
-          amountLabel: "K-1 income expected for the year",
+          amountLabel: "K-1 income expected for the year (a deductible loss as a negative amount)",
+          hint: "Taxable K-1 allocations count whether or not cash was distributed. A currently deductible K-1 loss is entered as a negative amount and reduces income dollar for dollar.",
         })}
         {strayRow("Tax-exempt interest beyond the actuals above", "strayTaxExempt", {
           amountLabel: "Additional tax-exempt interest",
@@ -753,7 +863,7 @@ export function December() {
         })}
         {strayRow("A dependent in the household is required to file", "strayDependent", {
           amountLabel: "That dependent’s income",
-          hint: "Count a dependent’s income toward household MAGI only when the dependent is required to file because their income meets the filing threshold — a return filed only to recover withholding does not count. Run the threshold test for each dependent.",
+          hint: "Count a dependent’s income toward household MAGI only when the dependent is required to file because their income meets the filing threshold — a return filed only to recover withholding does not count. Run the threshold test for each dependent. The amount counts toward the ACA household MAGI only — it is never added to the parents’ own taxable income.",
         })}
         {strayRow("Severance, bonus, or other one-off pay landing this year", "straySeverance", {
           amountLabel: "One-off pay still to land",
