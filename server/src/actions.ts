@@ -2655,7 +2655,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 50;
+export const API_CONTRACT_VERSION = 51;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -5193,7 +5193,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   deleteRothScenario: "Delete a saved Roth scenario by name.",
   renameRothScenario: "Rename a saved Roth scenario.",
   runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). Compute-only; saves nothing.",
-  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
+  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). PER-YEAR TAX READOUTS (contract v51): each scenario also carries federalTaxCents and stateTaxCents (the lifetime federal / state split of totalTaxCents — the two sum to totalTaxCents) and a years array, one readout per priced march year in cents, read straight off the same priced rows the lifetime totals sum: year, agePrimary, ageSpouse, federalTaxCents, stateTaxCents, totalIncomeCents (the year's AGI), taxableIncomeCents, acaCreditCents (the year's ACA premium credit kept), irmaaCents (IRMAA surcharges PAID that year — Medicare premiums, not tax), conversionCents, and pretaxDrawCents (the year's pre-tax money out by choice: its conversion plus its pre-tax draw for spending; an RMD alone is not in it). Display-only readouts — no score, ranking, or delta is derived from them, and no pricing changed. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
   runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
   runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing.",
@@ -10296,6 +10296,28 @@ export const Actions = {
           strategyDescription: z.string(),
           netCostCents: z.number(),
           totalTaxCents: z.number(),
+          // Lifetime federal / state split of totalTaxCents
+          // (contract v51): the two sum to totalTaxCents.
+          federalTaxCents: z.number(),
+          stateTaxCents: z.number(),
+          // Per-year tax readouts (contract v51): one row
+          // per priced march year, read off the same priced
+          // rows the lifetime totals sum. Display only.
+          years: z.array(
+            z.object({
+              year: z.number(),
+              agePrimary: z.number(),
+              ageSpouse: z.number().nullable(),
+              federalTaxCents: z.number(),
+              stateTaxCents: z.number(),
+              totalIncomeCents: z.number(),
+              taxableIncomeCents: z.number(),
+              acaCreditCents: z.number(),
+              irmaaCents: z.number(),
+              conversionCents: z.number(),
+              pretaxDrawCents: z.number(),
+            }),
+          ),
           penaltyCents: z.number(),
           irmaaCents: z.number(),
           acaCreditCents: z.number(),
@@ -10353,6 +10375,9 @@ export const Actions = {
           strategyDescription: s.strategyDescription,
           netCostCents: s.netCostCents,
           totalTaxCents: s.totalTaxCents,
+          federalTaxCents: s.federalTaxCents,
+          stateTaxCents: s.stateTaxCents,
+          years: s.years,
           penaltyCents: s.penaltyCents,
           irmaaCents: s.irmaaCents,
           acaCreditCents: s.acaCreditCents,
