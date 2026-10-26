@@ -30,6 +30,13 @@
 //      identical state (the localStorage chunk round trip).
 //   F. CAS spot check: a stale-revision saveRothInputs is refused
 //      and leaves the stored record untouched.
+//   G. December CAS end-to-end: saveDecemberProjection through
+//      the real dispatcher and store — first write (insert-only),
+//      a second save at the current revision on the EXISTING blob
+//      (the guarded UPDATE path the pure december fixtures cannot
+//      reach; the path that shipped broken 2026-10-26 when the
+//      handler passed the wrong handle to the guarded commit),
+//      and a stale save refused with the stored state intact.
 //
 // Run via packaged/run-harness.mjs (which bundles this file with the
 // same resolver seams as the browser build).
@@ -368,6 +375,55 @@ check(
 );
 const afterStale = await rt2.call<any>("getRothPlanner", {});
 eq("F4 revision unchanged by stale save", afterStale.revision, rev + 1);
+
+// ---------- G. December CAS end-to-end ----------
+// The December blob has never been written on this store, so
+// the sequence exercises all three save paths in order: the
+// insert-only first write, the guarded UPDATE on the existing
+// blob (a save at the current revision — the path the pure
+// dec-save-revision-cas fixture cannot reach, since it pins
+// only the revision decision logic), and the stale refusal.
+const dec0 = await rt2.call<any>("getDecemberProjection", {});
+eq(
+  "G1 December starts unstored at revision 0",
+  [dec0.hasStored, dec0.revision],
+  [false, 0],
+);
+const decState1 = { ...dec0.state, ytdOtherOrdinary: 43210 };
+const decSave1 = await rt2.call<any>("saveDecemberProjection", {
+  state: decState1,
+  baseRevision: 0,
+});
+eq(
+  "G2 first December save (insert) ok at revision 1",
+  [decSave1.ok, decSave1.revision],
+  [true, 1],
+);
+const decState2 = { ...decState1, ytdOtherOrdinary: 43211 };
+const decSave2 = await rt2.call<any>("saveDecemberProjection", {
+  state: decState2,
+  baseRevision: 1,
+});
+eq(
+  "G3 guarded-update December save ok at revision 2",
+  [decSave2.ok, decSave2.revision],
+  [true, 2],
+);
+const decStale = await rt2.call<any>("saveDecemberProjection", {
+  state: decState1,
+  baseRevision: 1,
+});
+eq(
+  "G4 stale December save conflicts",
+  [decStale.ok, decStale.conflict],
+  [false, true],
+);
+const decAfter = await rt2.call<any>("getDecemberProjection", {});
+eq(
+  "G5 stored December state intact after stale save",
+  [decAfter.revision, decAfter.state.ytdOtherOrdinary],
+  [2, 43211],
+);
 
 console.log(`\n${checks - failures}/${checks} harness checks passed`);
 process.exit(failures === 0 ? 0 : 1);

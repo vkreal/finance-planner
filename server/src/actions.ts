@@ -11024,8 +11024,16 @@ export const Actions = {
           };
         }
       } else {
+        // The guarded commit takes the DB handle (db), like
+        // every other commitSettingsValueGuarded call site —
+        // passing ctx here was the December save bug (found
+        // 2026-10-26): ctx has no .update, so a correct-
+        // revision save on an existing blob always threw
+        // "db.update is not a function" while stale saves
+        // (refused before this line) and first writes (the
+        // insert path above) worked.
         const committed = await commitSettingsValueGuarded(
-          ctx,
+          db,
           DECEMBER_STATE_KEY,
           current.value,
           blob,
