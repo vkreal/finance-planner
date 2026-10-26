@@ -83,6 +83,7 @@ type DecForm = {
   pretaxBalanceSpouse: string;
   rmdAlreadyReceived: string;
   spouseSoleBeneficiary: boolean;
+  primarySoleBeneficiaryOfSpouse: boolean;
   stateRatePct: string;
   residenceState: "WA" | "other";
   itemizedMortgageInterest: string;
@@ -167,6 +168,7 @@ function formFromState(s: DecemberState): DecForm {
     pretaxBalanceSpouse: decemberNullableMoneyFormValue(s.pretaxBalanceSpouse),
     rmdAlreadyReceived: moneyStr(s.rmdAlreadyReceived),
     spouseSoleBeneficiary: s.spouseSoleBeneficiary,
+    primarySoleBeneficiaryOfSpouse: s.primarySoleBeneficiaryOfSpouse,
     stateRatePct: String(s.stateRatePct),
     residenceState: s.residenceState,
     itemizedMortgageInterest: moneyStr(s.itemizedMortgageInterest),
@@ -259,6 +261,7 @@ function stateFromForm(f: DecForm): DecemberState {
     })(),
     rmdAlreadyReceived: clamp0(parseMoney(f.rmdAlreadyReceived)),
     spouseSoleBeneficiary: f.spouseSoleBeneficiary,
+    primarySoleBeneficiaryOfSpouse: f.primarySoleBeneficiaryOfSpouse,
     stateRatePct: Math.min(100, clamp0(parseMoney(f.stateRatePct))),
     residenceState: f.residenceState,
     itemizedMortgageInterest: clamp0(parseMoney(f.itemizedMortgageInterest)),
@@ -400,6 +403,14 @@ export function December() {
           stateRatePct: s.stateRatePct != null ? String(s.stateRatePct) : initial.stateRatePct,
           residenceState: s.residenceState ?? initial.residenceState,
           spouseSoleBeneficiary: s.spouseSoleBeneficiary ?? initial.spouseSoleBeneficiary,
+          // The second beneficiary fact preseeds from the
+          // plan record when the record carries it; absent
+          // there (null on any record written before it
+          // existed) the form keeps its unset default —
+          // not established, so the spouse's RMD prices on
+          // the Uniform table.
+          primarySoleBeneficiaryOfSpouse:
+            s.primarySoleBeneficiaryOfSpouse ?? initial.primarySoleBeneficiaryOfSpouse,
           pretaxBalancePrimary:
             primaryPretaxCents != null
               ? fmtMoneyInput(primaryPretaxCents / 100)
@@ -724,6 +735,19 @@ export function December() {
             />
             Spouse is sole beneficiary of the pre-tax accounts
           </label>
+          {joint && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={form.primarySoleBeneficiaryOfSpouse}
+                onChange={(e) =>
+                  set("primarySoleBeneficiaryOfSpouse", e.target.checked)
+                }
+              />
+              You are the sole beneficiary of your spouse’s pre-tax accounts
+            </label>
+          )}
         </div>
       </section>
 

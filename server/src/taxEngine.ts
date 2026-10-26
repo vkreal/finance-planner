@@ -1745,10 +1745,13 @@ export function rmdForYear(args: {
 }
 
 // One person's own RMD on the Uniform Lifetime Table — the
-// spouse's own RMD while both spouses are alive (her spouse is
-// older, so the Joint Life table never applies to her), and
-// the survivor's RMD on the combined inherited balance after
-// a death.
+// survivor's RMD on the combined inherited balance after a
+// death (a survivor-year simplification: the survivor is the
+// sole owner then, and neither spouse-beneficiary fact speaks
+// to an inherited balance). The spouse's own RMD while both
+// spouses are alive does NOT come through here any more: it
+// runs through rmdForYear with the roles swapped, gated on
+// primarySoleBeneficiaryOfSpouse (round-3 fix).
 export function uniformRmdFor(args: {
   priorDec31PreTax: number;
   age: number;
@@ -2515,6 +2518,21 @@ export type RothPlanInputs = {
   drawOrderSwitchAge?: number | null;
   drawOrderAfter?: DrawOrder | null;
   spouseSoleBeneficiary: boolean;
+  // The SECOND beneficiary fact (round-3 fix): the primary is
+  // the sole beneficiary of the SPOUSE's pre-tax accounts.
+  // A SEPARATE fact from spouseSoleBeneficiary above (which
+  // says the spouse is the PRIMARY's sole beneficiary and
+  // selects only the PRIMARY's RMD table). This fact alone
+  // selects the SPOUSE's RMD table: true → her RMD runs
+  // through rmdForYear with the roles swapped (the Joint and
+  // Last Survivor Table when the primary is more than 10
+  // years younger). Absent / null / false = NOT established
+  // → her RMD prices on the Uniform Lifetime Table, exactly
+  // as every record priced before this field existed (the
+  // conservative direction: Uniform gives the larger RMD;
+  // assuming reciprocity when it does not hold would
+  // understate her RMD and overstate the ACA credit).
+  primarySoleBeneficiaryOfSpouse?: boolean | null;
   acaHouseholdSize: number;
   // The household schedule (see the ACA household schedule
   // note above): the steps away from acaHouseholdSize over
@@ -3731,15 +3749,26 @@ export function simulateRothPlan(
     };
 
     // 1. RMDs from the prior Dec 31 pre-tax balances — per
-    // spouse, each on their own clock. The primary keeps the
-    // Joint Life table while both spouses are alive (spouse
-    // sole beneficiary, more than 10 years younger); the
-    // spouse's own RMDs always use the Uniform table. In a
-    // combined (survivor) year the whole RMD runs on the
-    // survivor's clock and the Uniform table. The death year
-    // is NOT combined — it takes the per-spouse branch below,
-    // so the deceased's final RMD is figured exactly as if
-    // they had lived the year.
+    // spouse, each on their own clock, each owner's table
+    // selected by THAT owner's own beneficiary fact
+    // (round-3 fix): the primary's RMD takes the Joint Life
+    // table while both spouses are alive when the spouse is
+    // the primary's sole beneficiary (spouseSoleBeneficiary)
+    // and more than 10 years younger; the spouse's RMD takes
+    // the Joint Life table only when the PRIMARY is the
+    // spouse's sole beneficiary
+    // (primarySoleBeneficiaryOfSpouse) and more than 10 years
+    // younger — the two facts are separate, and neither is
+    // read for the other owner. Fact absent / false → the
+    // Uniform table, bit-identical to the pre-fix march. In
+    // a combined (survivor) year the whole RMD runs on the
+    // survivor's clock and the Uniform table (deliberately
+    // unchanged: a survivor year's RMD is on an inherited
+    // combined balance, which neither beneficiary fact
+    // describes). The death year is NOT combined — it takes
+    // the per-spouse branch below, so the deceased's final
+    // RMD is figured exactly as if they had lived the year,
+    // on their own beneficiary fact like any living year.
     const priorP = pretaxP;
     const priorS = pretaxS;
     const priorPretaxBalance = priorP + priorS;
@@ -3780,14 +3809,25 @@ export function simulateRothPlan(
       divisorP = rp.divisor;
       tableP = rp.table;
       if (spouseAge != null && inputs.birthYearSpouse != null) {
-        const rs = uniformRmdFor({
+        // The spouse's own RMD, priced by the SAME rule as
+        // the primary's with the roles swapped — and gated
+        // on HER beneficiary fact (the primary is HER sole
+        // beneficiary), never on the primary's own fact.
+        // Absent / false → rmdForYear's Uniform branch,
+        // term-for-term the uniformRmdFor figure this
+        // replaces, so an existing record prices
+        // bit-identically.
+        const rs = rmdForYear({
           priorDec31PreTax: priorS,
-          age: spouseAge,
-          birthYear: inputs.birthYearSpouse,
+          agePrimary: spouseAge,
+          ageSpouse: age,
+          birthYearPrimary: inputs.birthYearSpouse,
+          spouseSoleBeneficiary:
+            inputs.primarySoleBeneficiaryOfSpouse === true,
         });
         rmdS = rs.rmd;
         divisorS = rs.divisor;
-        tableS = rs.divisor != null ? "uniform" : null;
+        tableS = rs.table;
       }
     }
     const rmd = r2(rmdP + rmdS);

@@ -2130,6 +2130,78 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "spouse-rmd-joint-table-when-primary-is-her-sole-beneficiary",
+    kind: "tax",
+    note: "Round-3 fix, march surface (a): the spouse is the OLDER owner — primary born 1966 (60 in 2026), spouse born 1951 (75 in 2026), her pre-tax $246,000, his $0, Do Nothing, 0% return, no spending. The plan record's SECOND beneficiary fact (primarySoleBeneficiaryOfSpouse) is TRUE — the primary is HER sole beneficiary and is more than 10 years younger — so her RMD prices on the Joint and Last Survivor Table: $246,000 ÷ 28.3 = $8,692.58, divisor 28.3, table \"joint\". The existing spouseSoleBeneficiary fact is also true in this plan and is irrelevant to her table: it names HER as the beneficiary of HIS accounts and selects only his (empty) RMD's table.",
+    expected: {
+      rmdSpouse: 8692.58,
+      divisorSpouse: 28.3,
+      tableSpouse: "joint",
+      rmdPrimary: 0,
+    },
+    actual: () => {
+      const res = simulateRothPlan(
+        basePlan({
+          startYear: 2026,
+          birthYearPrimary: 1966,
+          birthYearSpouse: 1951,
+          endAgePrimary: 60,
+          retirementAge: 60,
+          pretaxStart: 0,
+          pretaxSpouseStart: 246000,
+          spouseSoleBeneficiary: true,
+          primarySoleBeneficiaryOfSpouse: true,
+        }),
+        DO_NOTHING,
+      );
+      const y = res.years[0];
+      return {
+        rmdSpouse: y?.detail.rmdSpouse ?? null,
+        divisorSpouse: y?.detail.rmdDivisorSpouse ?? null,
+        tableSpouse: y?.detail.rmdTableSpouse ?? null,
+        rmdPrimary: y?.detail.rmdPrimary ?? null,
+      };
+    },
+  },
+  {
+    id: "spouse-rmd-uniform-when-second-beneficiary-fact-absent",
+    kind: "tax",
+    note: "Round-3 fix, march surface (b) — the bit-identity pin: the IDENTICAL plan to spouse-rmd-joint-table-when-primary-is-her-sole-beneficiary, except the second beneficiary fact is ABSENT (not established) — even though spouseSoleBeneficiary is true, reciprocity is never inferred, so her RMD prices on the Uniform Lifetime Table exactly as the pre-build engine priced every plan: $246,000 ÷ 24.6 = $10,000, divisor 24.6, table \"uniform\". The absent run's full year rows must also be identical to an explicit-false run (absent ≡ false), which is what keeps every existing record's figures bit-identical.",
+    expected: {
+      rmdSpouse: 10000,
+      divisorSpouse: 24.6,
+      tableSpouse: "uniform",
+      absentEqualsFalse: 1,
+    },
+    actual: () => {
+      const plan = {
+        startYear: 2026,
+        birthYearPrimary: 1966,
+        birthYearSpouse: 1951,
+        endAgePrimary: 60,
+        retirementAge: 60,
+        pretaxStart: 0,
+        pretaxSpouseStart: 246000,
+        spouseSoleBeneficiary: true,
+      };
+      const absent = simulateRothPlan(basePlan(plan), DO_NOTHING);
+      const explicitFalse = simulateRothPlan(
+        basePlan({ ...plan, primarySoleBeneficiaryOfSpouse: false }),
+        DO_NOTHING,
+      );
+      const y = absent.years[0];
+      return {
+        rmdSpouse: y?.detail.rmdSpouse ?? null,
+        divisorSpouse: y?.detail.rmdDivisorSpouse ?? null,
+        tableSpouse: y?.detail.rmdTableSpouse ?? null,
+        absentEqualsFalse:
+          JSON.stringify(absent.years) === JSON.stringify(explicitFalse.years)
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
     id: "conversion-sourcing-primary-first",
     kind: "tax",
     note: "Conversion sourcing (Part 1): the fill draws The primary filer's pre-tax first and touches the wife's only after his is exhausted. Age 57, no other income, Fill 12% (a $133,000 conversion, per the fill fixture), Taxable $1,000,000 at 100% basis paying the $11,600 tax. Case A — The primary filer $50,000, wife $100,000: the $133,000 fill drains The primary filer's $50,000 completely, then takes $83,000 of the wife's, leaving her $17,000; Roth receives the full $133,000. Case B — The primary filer $200,000, wife $100,000: the same fill is covered by The primary filer's balance alone, so the wife's $100,000 is untouched and The primary filer ends at $67,000.",

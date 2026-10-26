@@ -127,6 +127,17 @@ export const decemberState = z.object({
   // never counted twice.
   rmdAlreadyReceived: z.number().finite().min(0),
   spouseSoleBeneficiary: z.boolean(),
+  // The SECOND beneficiary fact (round-3 fix): the primary
+  // is the sole beneficiary of the SPOUSE's pre-tax
+  // accounts. A separate fact from spouseSoleBeneficiary
+  // above (the spouse is the PRIMARY's sole beneficiary —
+  // it selects only the PRIMARY's RMD table). This fact
+  // alone selects the SPOUSE's RMD table. False = not
+  // established → her RMD prices on the Uniform Lifetime
+  // Table (the conservative direction). Blobs written
+  // before this field existed parse it at this false
+  // default (see parseDecemberState).
+  primarySoleBeneficiaryOfSpouse: z.boolean(),
   stateRatePct: z.number().finite().min(0).max(100),
   residenceState: z.enum(["WA", "other"]),
   itemizedMortgageInterest: z.number().finite().min(0),
@@ -198,6 +209,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     pretaxBalanceSpouse: null,
     rmdAlreadyReceived: 0,
     spouseSoleBeneficiary: true,
+    primarySoleBeneficiaryOfSpouse: false,
     stateRatePct: 0,
     residenceState: "other",
     itemizedMortgageInterest: 0,
@@ -353,6 +365,14 @@ export function parseDecemberState(
   nonNeg("rmdAlreadyReceived", (n) => (out.rmdAlreadyReceived = n));
   if (typeof p.spouseSoleBeneficiary === "boolean") {
     out.spouseSoleBeneficiary = p.spouseSoleBeneficiary;
+  }
+  // The second beneficiary fact, read leniently like its
+  // sibling: absent on a pre-round-3 blob keeps the false
+  // default (not established → the spouse's RMD prices
+  // Uniform) — no reciprocity is ever inferred from the
+  // sibling fact's stored value.
+  if (typeof p.primarySoleBeneficiaryOfSpouse === "boolean") {
+    out.primarySoleBeneficiaryOfSpouse = p.primarySoleBeneficiaryOfSpouse;
   }
   const sr = num(p.stateRatePct);
   if (sr != null && sr >= 0 && sr <= 100) out.stateRatePct = sr;
@@ -618,6 +638,7 @@ export function decemberCaseInputs(
     rmdAlreadyReceived: state.rmdAlreadyReceived,
     dependentMagiForAca: strayAmount(state.strayDependent),
     spouseSoleBeneficiary: state.spouseSoleBeneficiary,
+    primarySoleBeneficiaryOfSpouse: state.primarySoleBeneficiaryOfSpouse,
     acaHouseholdSize: state.acaHouseholdSize,
     acaBenchmarkAnnual: state.acaBenchmarkAnnual,
     stateRatePct: state.stateRatePct,
@@ -1149,11 +1170,15 @@ export function runDecemberFixtures(): {
     // years younger, the Joint Life table would apply
     // instead (pinned separately by
     // dec-spouse-rmd-joint-table). The expectation is
-    // unchanged.
+    // unchanged. (Round-3: that fact is now its own field,
+    // primarySoleBeneficiaryOfSpouse, set false here
+    // explicitly — it was already this fixture's stated
+    // fact pattern.)
     const s = base();
     s.agePrimary = 60;
     s.ageSpouse = 75;
     s.spouseSoleBeneficiary = false;
+    s.primarySoleBeneficiaryOfSpouse = false;
     s.onMedicareSpouse = true;
     s.ytdOtherOrdinary = 70000;
     s.pretaxBalancePrimary = 0;
@@ -1188,10 +1213,20 @@ export function runDecemberFixtures(): {
     // (Verified against the live engine before the fix,
     // which priced the Uniform figures: RMD $10,000, MAGI
     // $80,000, draw $0, credit $12,032.00.)
+    // FACT ADJUSTMENT (round-3, flagged per the honesty
+    // standard): this fixture's setup originally relied on
+    // the round-2 build's SYMMETRIC read of
+    // spouseSoleBeneficiary to establish that the primary
+    // is the spouse's sole beneficiary. That fact is now
+    // its own field, so the fixture sets
+    // primarySoleBeneficiaryOfSpouse = true explicitly —
+    // the fact pattern it always stated — and every
+    // expectation below is unchanged.
     const s = base();
     s.agePrimary = 60;
     s.ageSpouse = 75;
     s.spouseSoleBeneficiary = true;
+    s.primarySoleBeneficiaryOfSpouse = true;
     s.onMedicareSpouse = true;
     s.ytdOtherOrdinary = 70000;
     s.pretaxBalancePrimary = 0;
@@ -1212,6 +1247,65 @@ export function runDecemberFixtures(): {
     exact(fail, "non-draw MAGI", likely.nonDrawAcaMagi, 78692.58);
     near(fail, "headline draw", r.headlineDraw, 907.42);
     near(fail, "likely max draw", likely.maxDraw, 907.42);
+  });
+
+  run("dec-spouse-rmd-beneficiary-direction", (fail) => {
+    // Round-3 fix: the reviewer's failing case. The
+    // existing flag is TRUE — the spouse IS the primary's
+    // sole beneficiary (of the PRIMARY's accounts) — but
+    // the spouse's own beneficiary is an adult child, so
+    // the NEW fact (the primary is the sole beneficiary of
+    // the SPOUSE's accounts) is FALSE, and her RMD must
+    // price on the Uniform Lifetime Table. The round-2
+    // build read the one flag symmetrically and priced
+    // her RMD on the Joint table ($8,692.58), landing MAGI
+    // at $83,692.58 with a phantom $11,664.22 credit and
+    // only $335.78 of repayment. Correct: her RMD is
+    // $246,000 / 24.6 = $10,000; non-draw MAGI is $75,000 +
+    // $10,000 = $85,000 — over the $84,600 cliff even at a
+    // $0 draw — so the final credit is $0 and the whole
+    // $12,000 of APTC taken is repaid.
+    const s = base();
+    s.agePrimary = 60;
+    s.ageSpouse = 75;
+    s.onMedicareSpouse = true;
+    s.spouseSoleBeneficiary = true;
+    s.primarySoleBeneficiaryOfSpouse = false;
+    s.pretaxBalancePrimary = 10000;
+    s.pretaxBalanceSpouse = 246000;
+    s.pretaxBalance = 256000;
+    s.ytdOtherOrdinary = 75000;
+    s.aptcTaken = 12000;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "spouse RMD on the Uniform table", pg.rmdSpouse, 10000);
+    exact(fail, "spouse RMD divisor", pg.rmdDivisor, 24.6);
+    if (pg.rmdTable !== "uniform") {
+      fail(`spouse RMD table should be uniform, got ${pg.rmdTable}`);
+    }
+    const r = computeDecemberProjection(s);
+    const likely = r.cases[1]!;
+    exact(fail, "non-draw MAGI", likely.nonDrawAcaMagi, 85000);
+    if (!likely.overCliffEvenAtZero) {
+      fail("the likely case should be over the cliff even at a $0 draw");
+    }
+    if (!r.zeroDrawOverCliff) fail("zeroDrawOverCliff should be true");
+    if (r.headlineDraw !== 0) fail(`headline should be $0, got ${r.headlineDraw}`);
+    exact(fail, "final credit", likely.creditAtHeadline, 0);
+    exact(fail, "excess APTC repayment", likely.excessAptcRepayment, 12000);
+    exact(fail, "repayment exposure", likely.repaymentExposure, 12000);
+    // A legacy blob carrying ONLY the old flag (true)
+    // parses the new fact at its not-established default —
+    // reciprocity is never inferred on read either.
+    const legacy = parseDecemberState(
+      JSON.stringify({ taxYear: 2026, spouseSoleBeneficiary: true }),
+      2026,
+    );
+    if (legacy.primarySoleBeneficiaryOfSpouse !== false) {
+      fail("a legacy blob must read the new beneficiary fact as not established");
+    }
+    if (legacy.spouseSoleBeneficiary !== true) {
+      fail("the legacy blob's own flag should still parse as stored");
+    }
   });
 
   run("dec-zero-balance-round-trips", (fail) => {

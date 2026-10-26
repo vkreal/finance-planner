@@ -1955,6 +1955,15 @@ export type RothSavedLike = {
   drawOrderSwitchAge?: number | null;
   drawOrderAfter?: string | null;
   spouseSoleBeneficiary: boolean | null;
+  // The second beneficiary fact (round-3 fix): the primary
+  // is the sole beneficiary of the SPOUSE's pre-tax
+  // accounts — separate from spouseSoleBeneficiary (the
+  // spouse is the PRIMARY's sole beneficiary). Optional:
+  // a saved record written before this build has no key,
+  // which reads as null = NOT established, so the spouse's
+  // RMD prices on the Uniform Lifetime Table and an
+  // untouched record prices bit-identically to before.
+  primarySoleBeneficiaryOfSpouse?: boolean | null;
   acaHouseholdSize: number | null;
   // The household schedule (MULTI-STEP ACA HOUSEHOLD SCHEDULE
   // build): the ordered steps away from acaHouseholdSize.
@@ -2587,12 +2596,25 @@ export type PlaygroundYearInputs = {
   //   the roles swapped (owner = spouse, beneficiary =
   //   primary), so the table selection mirrors the
   //   primary's exactly: the Joint and Last Survivor Table
-  //   when the spouse's sole-beneficiary spouse (the
-  //   primary) is more than 10 years younger, the Uniform
-  //   Lifetime Table otherwise (round-2 fix: the spouse
-  //   branch originally always used the Uniform table) —
-  //   and added to the year's RMD income beside the
-  //   primary's.
+  //   when the primary is the spouse's sole beneficiary and
+  //   more than 10 years younger, the Uniform Lifetime
+  //   Table otherwise (round-2 fix: the spouse branch
+  //   originally always used the Uniform table) — and added
+  //   to the year's RMD income beside the primary's.
+  // · primarySoleBeneficiaryOfSpouse: the SECOND
+  //   beneficiary fact (round-3 fix) — the primary is the
+  //   sole beneficiary of the SPOUSE's pre-tax accounts.
+  //   It ALONE gates the spouse branch's Joint-table
+  //   selection above. spouseSoleBeneficiary (below) says
+  //   the spouse is the PRIMARY's sole beneficiary and
+  //   drives ONLY the primary's table selection, exactly
+  //   as before round 2; the round-2 spouse branch read it
+  //   symmetrically, which inferred a reciprocal
+  //   designation the one fact does not establish.
+  //   Absent / null / false = NOT established → the
+  //   spouse's RMD prices on the Uniform Lifetime Table
+  //   (the conservative direction — Uniform gives the
+  //   larger RMD).
   // · rmdAlreadyReceived: the part of this year's computed
   //   RMD the household has ALREADY received (and already
   //   counted in its entered income). The RMD income the
@@ -2606,6 +2628,7 @@ export type PlaygroundYearInputs = {
   pretaxBalanceSpouse?: number | null;
   rmdAlreadyReceived?: number | null;
   dependentMagiForAca?: number | null;
+  primarySoleBeneficiaryOfSpouse?: boolean | null;
   spouseSoleBeneficiary: boolean;
   acaHouseholdSize: number | null;
   acaBenchmarkAnnual: number | null;
@@ -3033,20 +3056,26 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // The spouse's own RMD, priced by the SAME rule as the
     // primary's with the roles swapped: the owner is the
     // spouse, the beneficiary whose age can select the
-    // Joint Life table is the primary, and the
-    // sole-beneficiary flag is read symmetrically (it names
-    // the household's marking that each spouse is the
-    // other's sole beneficiary). Round-2 fix: this branch
-    // originally always used the Uniform Lifetime Table,
-    // which overstates the RMD when the primary is the
-    // spouse's sole beneficiary and more than 10 years
+    // Joint Life table is the primary. Round-2 fix: this
+    // branch originally always used the Uniform Lifetime
+    // Table, which overstates the RMD when the primary is
+    // the spouse's sole beneficiary and more than 10 years
     // younger (the Joint table's larger divisor applies).
+    // Round-3 fix: the table selection is gated on the
+    // SECOND beneficiary fact — the primary is the
+    // spouse's sole beneficiary
+    // (primarySoleBeneficiaryOfSpouse) — never on
+    // spouseSoleBeneficiary, which states only that the
+    // spouse is the PRIMARY's sole beneficiary and does
+    // not establish the reciprocal designation. Absent /
+    // false → the Uniform table.
     const rs = rmdForYear({
       priorDec31PreTax: inp.pretaxBalanceSpouse ?? 0,
       agePrimary: ageSpouse,
       ageSpouse: inp.agePrimary,
       birthYearPrimary: inp.taxYear - ageSpouse,
-      spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
+      spouseSoleBeneficiary:
+        inp.primarySoleBeneficiaryOfSpouse === true,
     });
     rmdSpouse = rs.rmd;
     if (rmdDivisor == null && rs.divisor != null) {
@@ -4864,6 +4893,14 @@ export function planInputsFromSaved(
     drawOrderAfter:
       saved.drawOrderAfter != null ? drawOrderFromKey(saved.drawOrderAfter) : null,
     spouseSoleBeneficiary: saved.spouseSoleBeneficiary ?? true,
+    // Second beneficiary fact passthrough (round-3 fix):
+    // absent / null = not established — the march prices the
+    // spouse's RMD on the Uniform table, bit-identical to
+    // before. Every pricing path builds its engine inputs
+    // from this one construction or spreads it, so the fact
+    // reaches every path exactly as entered.
+    primarySoleBeneficiaryOfSpouse:
+      saved.primarySoleBeneficiaryOfSpouse ?? null,
     acaHouseholdSize: saved.acaHouseholdSize ?? 1,
     // Household schedule passthrough (MULTI-STEP ACA HOUSEHOLD
     // SCHEDULE build): the saved schedule, resolved through

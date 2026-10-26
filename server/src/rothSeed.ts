@@ -107,6 +107,11 @@ export type RothSeedInputs = {
   preserveExitRatePct: null;
   claimAgeFloor: null;
   spouseSoleBeneficiary: boolean;
+  // The second beneficiary fact (round-3 fix) seeds blank
+  // (null = not established), like every fact the seed does
+  // not presume: the seed never invents a reciprocal
+  // beneficiary designation.
+  primarySoleBeneficiaryOfSpouse: null;
   acaHouseholdSize: number;
   // The household schedule seeds blank (null = no steps —
   // the initial size governs every year), like every
@@ -209,6 +214,7 @@ export function seedRothInputs(derived: {
     preserveExitRatePct: null,
     claimAgeFloor: null,
     spouseSoleBeneficiary: true,
+    primarySoleBeneficiaryOfSpouse: null,
     acaHouseholdSize: 2,
     acaHouseholdSchedule: null,
     collegeFallFromYear: null,
