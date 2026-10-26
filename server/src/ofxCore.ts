@@ -38,6 +38,14 @@ import { normalizeImportDate, parseImportAmount } from "./importParseCore";
 export const OFX_IMPORT_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 export const OFX_IMPORT_MAX_ROWS = 25000;
 export const OFX_IMPORT_MAX_FIELD_CHARS = 10000;
+/* Security round-2, finding 2: the nesting-depth bound the tree
+   builder enforces. Real OFX nesting is shallow (OFX → message
+   set → response → statement → list → transaction → field ≈ 8);
+   100 sits far above any real file and far below the call-stack
+   limit the recursive walks used to hit on a ~35 KB file nested
+   5,000 deep. A file nested deeper than this is refused with a
+   controlled parse error, never an uncaught RangeError. */
+export const OFX_MAX_DEPTH = 100;
 /* The persisted FITID cap: the transactions table's imported-id
    field (and the importTransactions request) accept at most 200
    characters. A longer bank id is dropped (the row still
@@ -162,13 +170,23 @@ function decodeOfxEntities(s: string): string {
   return s.replace(
     /&(#x?[0-9a-fA-F]+|amp|lt|gt|quot|apos);/g,
     (whole, body: string) => {
+      // Security round-2, finding 2: a numeric reference is
+      // decoded only when it names a legal Unicode code point
+      // (0 … U+10FFFF). Number.isFinite alone let &#x110000;
+      // through to String.fromCodePoint, which throws a
+      // RangeError; an out-of-range reference now stays literal,
+      // exactly like the non-finite fallback always did.
       if (body.startsWith("#x") || body.startsWith("#X")) {
         const n = Number.parseInt(body.slice(2), 16);
-        return Number.isFinite(n) ? String.fromCodePoint(n) : whole;
+        return Number.isInteger(n) && n >= 0 && n <= 0x10ffff
+          ? String.fromCodePoint(n)
+          : whole;
       }
       if (body.startsWith("#")) {
         const n = Number.parseInt(body.slice(1), 10);
-        return Number.isFinite(n) ? String.fromCodePoint(n) : whole;
+        return Number.isInteger(n) && n >= 0 && n <= 0x10ffff
+          ? String.fromCodePoint(n)
+          : whole;
       }
       switch (body) {
         case "amp":
@@ -196,7 +214,14 @@ function decodeOfxEntities(s: string): string {
    already closed — normalizing one adds a second close tag,
    which the stack parser simply ignores (it pops to a match
    that is no longer on the stack). */
-function parseOfxTree(text: string): OfxNode {
+/* Returns the tree, or null when the input nests deeper than
+   OFX_MAX_DEPTH — the caller turns that into a controlled parse
+   error (security round-2, finding 2). The builder itself is
+   iterative (an explicit stack), so the depth check is a simple
+   stack-length test; the tree walks below are iterative too, so
+   no input that passes the builder can overflow the call stack
+   on the way through them. */
+function parseOfxTree(text: string): OfxNode | null {
   const noPi = text
     .replace(/<\?[\s\S]*?\?>/g, " ")
     .replace(/<!--[\s\S]*?-->/g, " ");
@@ -227,6 +252,10 @@ function parseOfxTree(text: string): OfxNode {
         }
       }
     } else {
+      // stack.length is the new node's depth (the root sits at
+      // depth 0 beneath it). Deeper than the bound → the file is
+      // not a real bank export; refuse it whole.
+      if (stack.length > OFX_MAX_DEPTH) return null;
       const node: OfxNode = { tag: name, text: "", children: [] };
       const top = stack[stack.length - 1];
       if (top) top.children.push(node);
@@ -237,8 +266,19 @@ function parseOfxTree(text: string): OfxNode {
 }
 
 function findAllOfx(node: OfxNode, tag: string, out: OfxNode[]): void {
-  if (node.tag === tag) out.push(node);
-  for (const c of node.children) findAllOfx(c, tag, out);
+  // Iterative pre-order walk (document order, the order the
+  // recursive version produced) over an explicit stack, so the
+  // walk itself can never overflow the call stack.
+  const stack: OfxNode[] = [node];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur) break;
+    if (cur.tag === tag) out.push(cur);
+    for (let i = cur.children.length - 1; i >= 0; i--) {
+      const c = cur.children[i];
+      if (c) stack.push(c);
+    }
+  }
 }
 
 function firstOfxChild(node: OfxNode, tag: string): OfxNode | null {
@@ -253,16 +293,41 @@ function ofxChildText(node: OfxNode, tag: string): string {
   return decodeOfxEntities(c.text).trim();
 }
 
-/* The largest single field in the tree (the S4 field budget). */
+/* The largest single field in the tree (the S4 field budget).
+   Iterative, like findAllOfx, so it cannot overflow the stack. */
 function maxOfxFieldChars(node: OfxNode): number {
-  let max = node.text.trim().length;
-  for (const c of node.children) max = Math.max(max, maxOfxFieldChars(c));
+  let max = 0;
+  const stack: OfxNode[] = [node];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur) break;
+    max = Math.max(max, cur.text.trim().length);
+    for (const c of cur.children) stack.push(c);
+  }
   return max;
 }
 
 /* ---------------- the statement parse ---------------- */
 
+/* The public parse: the inner parse's known malformed-input
+   paths all return controlled errors, and this wrapper is the
+   last line of defence — any unexpected throw from a malformed
+   file is converted into the same controlled shape, so nothing
+   uncaught ever escapes into the import UI (security round-2,
+   finding 2). */
 export function parseOfx(text: string): OfxParseOutcome {
+  try {
+    return parseOfxInner(text);
+  } catch {
+    return {
+      ok: false,
+      error:
+        "That file couldn't be read as an OFX or QFX statement — check the file and try again.",
+    };
+  }
+}
+
+function parseOfxInner(text: string): OfxParseOutcome {
   if (text.length > OFX_IMPORT_MAX_BYTES) {
     return {
       ok: false,
@@ -277,6 +342,13 @@ export function parseOfx(text: string): OfxParseOutcome {
     };
   }
   const root = parseOfxTree(text);
+  if (root == null) {
+    return {
+      ok: false,
+      error:
+        "That file's contents are nested too deeply to be a bank export — check the file and try again.",
+    };
+  }
   if (maxOfxFieldChars(root) > OFX_IMPORT_MAX_FIELD_CHARS) {
     return {
       ok: false,

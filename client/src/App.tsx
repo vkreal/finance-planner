@@ -2466,6 +2466,7 @@ export function App() {
      targets), which the year panels omit to stay clean. */
   function renderMonthTiles(opts: {
     idPrefix: string;
+    periodCaption: string;
     trueCostCents: number;
     cashOutCents: number;
     totalMonthlyCents: number;
@@ -2478,138 +2479,156 @@ export function App() {
     ytd?: Dash["ytd"];
   }) {
     const key = (name: string) => `${opts.idPrefix}-${name}`;
+    const captionCls =
+      "text-xs font-medium tracking-wide text-[var(--dim)] uppercase";
     return (
       <>
-        <QuickTile
-          label="True cost"
-          tipId={`qtip-${key("true-cost")}`}
-          tip="Real monthly cost — yearly & periodic bills spread evenly. What the month really cost. The month's base (the entered total, the itemized total, or the spending recorded that month), minus any yearly/periodic lump sums that base includes, plus the monthly set-aside for yearly & periodic bills — so big yearly bills are spread evenly instead of spiking one month."
-          panelCls="left-0"
-          open={openTip === key("true-cost")}
-          onToggle={() =>
-            setOpenTip(openTip === key("true-cost") ? null : key("true-cost"))
-          }
-          onClose={() => setOpenTip(null)}
-          onDetails={opts.withNav ? () => scrollToSection("section-true-cost") : undefined}
-        >
-          <p className={tileValueCls}>{fmt(opts.trueCostCents)}</p>
-          {opts.withNav && opts.ytd && opts.ytd.trueCostCents !== opts.trueCostCents && (
-            <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-              YTD {fmt(opts.ytd.trueCostCents)}
-            </p>
-          )}
-        </QuickTile>
-        <QuickTile
-          label="Cash out"
-          tipId={`qtip-${key("cash-out")}`}
-          tip="Money that actually went out this month — all the money that actually left this month. If the month is itemized, that's the items added up; otherwise if you entered a monthly total, that's the number; otherwise it's the month's checking transactions added up. Paying off a credit card isn't counted twice. A charge paid by credit card lands here in the month the card payment leaves the bank, which can be the month after the charge."
-          panelCls="right-0 sm:right-auto sm:left-0"
-          open={openTip === key("cash-out")}
-          onToggle={() =>
-            setOpenTip(openTip === key("cash-out") ? null : key("cash-out"))
-          }
-          onClose={() => setOpenTip(null)}
-          onDetails={opts.withNav ? () => scrollToSection("section-cash-out") : undefined}
-        >
-          <p className={tileValueCls}>{fmt(opts.cashOutCents)}</p>
-          {opts.withNav && opts.ytd && opts.ytd.cashOutCents !== opts.cashOutCents && (
-            <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-              YTD {fmt(opts.ytd.cashOutCents)}
-            </p>
-          )}
-        </QuickTile>
-        <QuickTile
-          label="Total monthly"
-          tipId={`qtip-${key("total-monthly")}`}
-          tip="Your recurring monthly bills — all your monthly bills for this month added together (the Monthly bills list)."
-          panelCls="left-0 sm:left-auto sm:right-0"
-          open={openTip === key("total-monthly")}
-          onToggle={() =>
-            setOpenTip(openTip === key("total-monthly") ? null : key("total-monthly"))
-          }
-          onClose={() => setOpenTip(null)}
-          onDetails={opts.withNav ? () => scrollToSection("section-monthly-bills") : undefined}
-        >
-          <p className={tileValueCls}>
-            {fmt(opts.totalMonthlyCents)}
-            {opts.withNav && (
-              <span className="text-[11px] font-normal text-[var(--dim)]"> /mo</span>
-            )}
-          </p>
-          {opts.withNav && opts.ytd && opts.ytd.totalMonthlyCents !== opts.totalMonthlyCents && (
-            <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-              YTD {fmt(opts.ytd.totalMonthlyCents)}
-            </p>
-          )}
-        </QuickTile>
-        <QuickTile
-          label="Everything else"
-          tipId={`qtip-${key("everything-else")}`}
-          tip="Cash out − monthly bills − yearly & periodic bills paid this month. Cash out minus Total monthly (the monthly bills) minus the yearly & periodic bills paid this month. What's left is everything that isn't a bill — day-to-day spending like groceries, eating out, and shopping, plus anything else that left the account, such as transfers or card payments. It can be negative: negative for now means this month's recorded cash out is still below its bills and yearly payments — it can be negative mid-month, when the recorded cash out so far is still below the month's bills and yearly payments."
-          panelCls="right-0 sm:right-auto sm:left-0"
-          open={openTip === key("everything-else")}
-          onToggle={() =>
-            setOpenTip(
-              openTip === key("everything-else") ? null : key("everything-else"),
-            )
-          }
-          onClose={() => setOpenTip(null)}
-          onDetails={opts.withNav ? () => openExplorer("month") : undefined}
-        >
-          <p className={tileValueCls}>{fmt(opts.everythingElseCents)}</p>
-          {opts.withNav && opts.ytd && opts.ytd.everythingElseCents !== opts.everythingElseCents && (
-            <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-              YTD {fmt(opts.ytd.everythingElseCents)}
-            </p>
-          )}
-          {opts.oneOffsTotalCents > 0 && (
-            <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-              {opts.oneOffsCount === 1
-                ? `incl. ${fmt(opts.oneOffsTotalCents)} one-off`
-                : `incl. ${fmt(opts.oneOffsTotalCents)} one-offs (${opts.oneOffsCount})`}
-            </p>
-          )}
-        </QuickTile>
-        <QuickTile
-          label="Keep the lights on"
-          tipId={`qtip-${key("lights-on")}`}
-          tip="Bare-minimum bills to keep things running. The bills you checked as essential: checked monthly bills plus the set-asides of checked yearly/periodic bills. The must-pay floor for the month."
-          panelCls="left-0"
-          open={openTip === key("lights-on")}
-          onToggle={() =>
-            setOpenTip(openTip === key("lights-on") ? null : key("lights-on"))
-          }
-          onClose={() => setOpenTip(null)}
-          onDetails={opts.withNav ? () => scrollToSection("section-keep-lights-on") : undefined}
-        >
-          <p className={tileValueCls}>{fmt(opts.keepLightsOnCents)}</p>
-          {opts.withNav && opts.ytd && opts.ytd.keepLightsOnCents !== opts.keepLightsOnCents && (
-            <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-              YTD {fmt(opts.ytd.keepLightsOnCents)}
-            </p>
-          )}
-        </QuickTile>
-        <QuickTile
-          label="Yearly & periodic expenses"
-          tipId={`qtip-${key("yearly-paid-out")}`}
-          tip="Yearly & periodic bills actually paid this month. Yearly & periodic bills you entered as paid — the lump sums that went out, in the month the money left your bank account. A bill isn't always paid in its due month, and if it was charged to a credit card, it counts in the month the card payment left your account — enter that date when you record it."
-          panelCls="right-0"
-          open={openTip === key("yearly-paid-out")}
-          onToggle={() =>
-            setOpenTip(
-              openTip === key("yearly-paid-out") ? null : key("yearly-paid-out"),
-            )
-          }
-          onClose={() => setOpenTip(null)}
-          onDetails={opts.withNav ? () => scrollToSection("section-yearly-expenses") : undefined}
-        >
-          <p className={tileValueCls}>{fmt(opts.yearlyPaidOutCents)}</p>
-          {opts.withNav && opts.ytd && opts.ytd.yearlyPaidOutCents !== opts.yearlyPaidOutCents && (
-            <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-              YTD {fmt(opts.ytd.yearlyPaidOutCents)}
-            </p>
-          )}
-        </QuickTile>
+        {/* Grouped by kind (2026-10-25, option A): the first four
+            tiles describe the viewed period, under its caption;
+            the last two are standing roster rates that do not
+            change with the period, under their own. The tiles
+            themselves are unchanged — same figures, YTD lines,
+            tips, and order within each group. */}
+        <div>
+          <p className={captionCls}>{opts.periodCaption}</p>
+          <div className="mt-1.5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+            <QuickTile
+              label="True cost"
+              tipId={`qtip-${key("true-cost")}`}
+              tip="Real monthly cost — yearly & periodic bills spread evenly. What the month really cost. The month's base (the entered total, the itemized total, or the spending recorded that month), minus any yearly/periodic lump sums that base includes, plus the monthly set-aside for yearly & periodic bills — so big yearly bills are spread evenly instead of spiking one month."
+              panelCls="left-0"
+              open={openTip === key("true-cost")}
+              onToggle={() =>
+                setOpenTip(openTip === key("true-cost") ? null : key("true-cost"))
+              }
+              onClose={() => setOpenTip(null)}
+              onDetails={opts.withNav ? () => scrollToSection("section-true-cost") : undefined}
+            >
+              <p className={tileValueCls}>{fmt(opts.trueCostCents)}</p>
+              {opts.withNav && opts.ytd && opts.ytd.trueCostCents !== opts.trueCostCents && (
+                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
+                  YTD {fmt(opts.ytd.trueCostCents)}
+                </p>
+              )}
+            </QuickTile>
+            <QuickTile
+              label="Cash out"
+              tipId={`qtip-${key("cash-out")}`}
+              tip="Money that actually went out this month — all the money that actually left this month. If the month is itemized, that's the items added up; otherwise if you entered a monthly total, that's the number; otherwise it's the month's checking transactions added up. Paying off a credit card isn't counted twice. A charge paid by credit card lands here in the month the card payment leaves the bank, which can be the month after the charge."
+              panelCls="right-0 sm:right-auto sm:left-0"
+              open={openTip === key("cash-out")}
+              onToggle={() =>
+                setOpenTip(openTip === key("cash-out") ? null : key("cash-out"))
+              }
+              onClose={() => setOpenTip(null)}
+              onDetails={opts.withNav ? () => scrollToSection("section-cash-out") : undefined}
+            >
+              <p className={tileValueCls}>{fmt(opts.cashOutCents)}</p>
+              {opts.withNav && opts.ytd && opts.ytd.cashOutCents !== opts.cashOutCents && (
+                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
+                  YTD {fmt(opts.ytd.cashOutCents)}
+                </p>
+              )}
+            </QuickTile>
+            <QuickTile
+              label="Everything else"
+              tipId={`qtip-${key("everything-else")}`}
+              tip="Cash out − monthly bills − yearly & periodic bills paid this month. Cash out minus Total monthly (the monthly bills) minus the yearly & periodic bills paid this month. What's left is everything that isn't a bill — day-to-day spending like groceries, eating out, and shopping, plus anything else that left the account, such as transfers or card payments. It can be negative: negative for now means this month's recorded cash out is still below its bills and yearly payments — it can be negative mid-month, when the recorded cash out so far is still below the month's bills and yearly payments."
+              panelCls="left-0 sm:left-auto sm:right-0"
+              open={openTip === key("everything-else")}
+              onToggle={() =>
+                setOpenTip(
+                  openTip === key("everything-else") ? null : key("everything-else"),
+                )
+              }
+              onClose={() => setOpenTip(null)}
+              onDetails={opts.withNav ? () => openExplorer("month") : undefined}
+            >
+              <p className={tileValueCls}>{fmt(opts.everythingElseCents)}</p>
+              {opts.withNav && opts.ytd && opts.ytd.everythingElseCents !== opts.everythingElseCents && (
+                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
+                  YTD {fmt(opts.ytd.everythingElseCents)}
+                </p>
+              )}
+              {opts.oneOffsTotalCents > 0 && (
+                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
+                  {opts.oneOffsCount === 1
+                    ? `incl. ${fmt(opts.oneOffsTotalCents)} one-off`
+                    : `incl. ${fmt(opts.oneOffsTotalCents)} one-offs (${opts.oneOffsCount})`}
+                </p>
+              )}
+            </QuickTile>
+            <QuickTile
+              label="Yearly & periodic expenses"
+              tipId={`qtip-${key("yearly-paid-out")}`}
+              tip="Yearly & periodic bills actually paid this month. Yearly & periodic bills you entered as paid — the lump sums that went out, in the month the money left your bank account. A bill isn't always paid in its due month, and if it was charged to a credit card, it counts in the month the card payment left your account — enter that date when you record it."
+              panelCls="right-0 sm:right-auto sm:left-0"
+              open={openTip === key("yearly-paid-out")}
+              onToggle={() =>
+                setOpenTip(
+                  openTip === key("yearly-paid-out") ? null : key("yearly-paid-out"),
+                )
+              }
+              onClose={() => setOpenTip(null)}
+              onDetails={opts.withNav ? () => scrollToSection("section-yearly-expenses") : undefined}
+            >
+              <p className={tileValueCls}>{fmt(opts.yearlyPaidOutCents)}</p>
+              {opts.withNav && opts.ytd && opts.ytd.yearlyPaidOutCents !== opts.yearlyPaidOutCents && (
+                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
+                  YTD {fmt(opts.ytd.yearlyPaidOutCents)}
+                </p>
+              )}
+            </QuickTile>
+          </div>
+        </div>
+        <div className="mt-3.5">
+          <p className={captionCls}>Standing rates</p>
+          <div className="mt-1.5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+            <QuickTile
+              label="Total monthly"
+              tipId={`qtip-${key("total-monthly")}`}
+              tip="Your recurring monthly bills — all your monthly bills for this month added together (the Monthly bills list)."
+              panelCls="left-0"
+              open={openTip === key("total-monthly")}
+              onToggle={() =>
+                setOpenTip(openTip === key("total-monthly") ? null : key("total-monthly"))
+              }
+              onClose={() => setOpenTip(null)}
+              onDetails={opts.withNav ? () => scrollToSection("section-monthly-bills") : undefined}
+            >
+              <p className={tileValueCls}>
+                {fmt(opts.totalMonthlyCents)}
+                {opts.withNav && (
+                  <span className="text-[11px] font-normal text-[var(--dim)]"> /mo</span>
+                )}
+              </p>
+              {opts.withNav && opts.ytd && opts.ytd.totalMonthlyCents !== opts.totalMonthlyCents && (
+                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
+                  YTD {fmt(opts.ytd.totalMonthlyCents)}
+                </p>
+              )}
+            </QuickTile>
+            <QuickTile
+              label="Keep the lights on"
+              tipId={`qtip-${key("lights-on")}`}
+              tip="Bare-minimum bills to keep things running. The bills you checked as essential: checked monthly bills plus the set-asides of checked yearly/periodic bills. The must-pay floor for the month."
+              panelCls="right-0 sm:right-auto sm:left-0"
+              open={openTip === key("lights-on")}
+              onToggle={() =>
+                setOpenTip(openTip === key("lights-on") ? null : key("lights-on"))
+              }
+              onClose={() => setOpenTip(null)}
+              onDetails={opts.withNav ? () => scrollToSection("section-keep-lights-on") : undefined}
+            >
+              <p className={tileValueCls}>{fmt(opts.keepLightsOnCents)}</p>
+              {opts.withNav && opts.ytd && opts.ytd.keepLightsOnCents !== opts.keepLightsOnCents && (
+                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
+                  YTD {fmt(opts.ytd.keepLightsOnCents)}
+                </p>
+              )}
+            </QuickTile>
+          </div>
+        </div>
       </>
     );
   }
@@ -2974,9 +2993,10 @@ export function App() {
               )}
               {!inYearMode && (
                 <>
-                  <div className="mt-2.5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+                  <div className="mt-2.5">
                     {renderMonthTiles({
                       idPrefix: "month",
+                      periodCaption: monthLabel(month),
                       trueCostCents: data.smoothedCents,
                       cashOutCents: data.cashOutCents,
                       totalMonthlyCents: data.monthlyBillsTotalCents,
@@ -3071,9 +3091,10 @@ export function App() {
                             View month →
                           </button>
                         </div>
-                        <div className="mt-2.5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+                        <div className="mt-2.5">
                           {renderMonthTiles({
                             idPrefix: m.month,
+                            periodCaption: monthLabel(m.month),
                             trueCostCents: m.trueCostCents,
                             cashOutCents: m.cashOutCents,
                             totalMonthlyCents: m.totalMonthlyCents,

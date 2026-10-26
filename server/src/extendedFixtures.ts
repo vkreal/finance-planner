@@ -55,6 +55,7 @@ parseImportAmount,
 parseImportSettings,
 serializeImportSettings,
 upsertImportProfile,
+withImportOfxAccount,
 withLastImportSettings,
 type ImportColumnMapping,
 type ImportFileSettings,
@@ -156,6 +157,7 @@ CONVERTED_ALREADY_DISTINCTION_SENTENCE,
 EDUCATION_CREDIT_SEMANTICS,
 GUARDRAILS_SEMANTICS,
 LAW_YEAR_SEMANTICS,
+RESTORE_VALIDATION_SEMANTICS,
 PLAYGROUND_YEAR_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_BALANCE_KEYS,
@@ -192,6 +194,8 @@ type ClearAllState,
 import {
 BACKUP_KEY_CHECK_PLAINTEXT,
 BACKUP_KEY_CHECK_SETTING,
+ENCRYPTED_AT_REST_SETTING_KEYS,
+isEncryptedAtRestSettingKey,
 RESTORE_ROTH_BLOB_KEY,
 RESTORE_WIPE_ORDER,
 attemptRestore,
@@ -4895,6 +4899,337 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         febPlain29Bad: cashOutDayError("2026-02", 29) != null ? 1 : 0,
         nov31Bad: cashOutDayError("2026-11", 31) != null ? 1 : 0,
         nov30Ok: cashOutDayError("2026-11", 30) == null ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "nw-import-proto-key-cannot-be-planted-or-matched",
+    kind: "networth",
+    note: "Security round-2, finding 1 (the reviewer's reproduction, run against the shipped parser and matcher): a restored nw_import_settings_v1 value whose labelMappings carry \"__proto__\" → account 6 / Taxable (plus \"constructor\" and \"prototype\" entries and one legitimate \"brokerage\" mapping). The dangerous keys are rejected at parse time: the parsed blob holds ONLY the legitimate entry (storedKeys 1), \"__proto__\" is not an own property of the mappings, serializing the blob shows no \"__proto__\" anywhere, and a balance row labelled __proto__ ($1,234.00) comes back UNMATCHED (target null, matchedBy null) instead of the reviewer's remembered hit on account 6. The legitimate mapping still matches by name-key exactly as before (legitRemembered 1). Defence in depth: a hand-built dictionary whose PROTOTYPE carries a \"sneaky\" mapping (not an own property) also fails to match — the matcher requires an own-property hit. Global Object.prototype is untouched (globalProtoClean 1).",
+    expected: {
+      storedKeys: 1, protoNotOwn: 1, serializedClean: 1,
+      protoRowUnmatched: 1, legitRemembered: 1,
+      inheritedNotMatched: 1, globalProtoClean: 1,
+    },
+    actual: () => {
+      const raw = JSON.stringify({
+        profiles: [],
+        labelMappings: {
+          "__proto__": { accountId: 6, bucket: "Taxable" },
+          "constructor": { accountId: 6, bucket: "Taxable" },
+          "prototype": { accountId: 6, bucket: "Taxable" },
+          "brokerage": { accountId: 6, bucket: null },
+        },
+      });
+      const blob = parseNwImportSettings(raw);
+      const accounts = [{ id: 6, name: "Brokerage" }];
+      const protoRows = parseNwBalanceRows(
+        [["__proto__", "1234.00"]],
+        { label: 0, balance: 1, date: -1 },
+      ).rows;
+      const protoMatched = matchNwImportRows(protoRows, accounts, blob.labelMappings);
+      const legitRows = parseNwBalanceRows(
+        [["Brokerage", "10.00"]],
+        { label: 0, balance: 1, date: -1 },
+      ).rows;
+      const legitMatched = matchNwImportRows(legitRows, accounts, blob.labelMappings);
+      const hostileProto = { sneaky: { accountId: 6, bucket: null } };
+      const hostileDict = Object.create(hostileProto) as Record<
+        string,
+        { accountId: number; bucket: null }
+      >;
+      const sneakyRows = parseNwBalanceRows(
+        [["sneaky", "10.00"]],
+        { label: 0, balance: 1, date: -1 },
+      ).rows;
+      const sneakyMatched = matchNwImportRows(sneakyRows, accounts, hostileDict);
+      return {
+        storedKeys: Object.keys(blob.labelMappings).length,
+        protoNotOwn: Object.prototype.hasOwnProperty.call(blob.labelMappings, "__proto__") ? 0 : 1,
+        serializedClean: serializeNwImportSettings(blob).includes("__proto__") ? 0 : 1,
+        protoRowUnmatched:
+          protoMatched[0]?.target === null && protoMatched[0]?.matchedBy === null ? 1 : 0,
+        legitRemembered:
+          legitMatched[0]?.matchedBy === "remembered" &&
+          legitMatched[0]?.target?.accountId === 6 ? 1 : 0,
+        inheritedNotMatched:
+          sneakyMatched[0]?.target === null && sneakyMatched[0]?.matchedBy === null ? 1 : 0,
+        globalProtoClean:
+          (Object.prototype as Record<string, unknown>).accountId === undefined &&
+          ({} as Record<string, unknown>).bucket === undefined ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "import-settings-dictionary-sweep-safe-keys",
+    kind: "spending",
+    note: "Security round-2, finding 1 sweep (the sibling restored-JSON dictionaries get the same treatment as the NW label mappings): (a) the spending import settings' ofxAccounts dictionary — a restored blob carrying \"__proto__\" and one legitimate OFX account key parses to ONLY the legitimate entry (ofxStoredKeys 1), \"__proto__\" is not an own property and a lookup for it returns undefined, and withImportOfxAccount refuses to store a \"__proto__\" key while still storing a real one (ofxWriterKeys 2: the earlier legitimate mapping plus the new one — the __proto__ attempt added nothing); (b) the UI fold-state map — a restored blob carrying \"__proto__\": true and \"spending\": true parses to only the real fold (foldKeys 1), and applyUiFoldSet cannot write a \"__proto__\" entry (foldWriteClean 1). The explainer map in actions.ts was swept too: it assigns only the boolean true, which the __proto__ setter ignores, so no object value can ever be planted through it.",
+    expected: {
+      ofxStoredKeys: 1, ofxProtoNotOwn: 1, ofxProtoLookupMisses: 1,
+      ofxWriterKeys: 2, foldKeys: 1, foldWriteClean: 1,
+    },
+    actual: () => {
+      const raw = JSON.stringify({
+        lastSettings: null,
+        profiles: [],
+        ofxAccounts: {
+          "__proto__": { accountName: "Planted", template: "checking" },
+          "bank|example|1234": { accountName: "Everyday", template: "checking" },
+        },
+      });
+      const blob = parseImportSettings(raw);
+      const written = withImportOfxAccount(
+        withImportOfxAccount(blob, "__proto__", {
+          accountName: "Planted",
+          template: "checking",
+        }),
+        "bank|example|9999",
+        { accountName: "Savings", template: "card" },
+      );
+      const folds = parseUiFoldState('{"__proto__": true, "spending": true}');
+      const foldWritten = JSON.parse(
+        applyUiFoldSet('{"spending": true}', "__proto__", true),
+      ) as Record<string, unknown>;
+      return {
+        ofxStoredKeys: Object.keys(blob.ofxAccounts).length,
+        ofxProtoNotOwn: Object.prototype.hasOwnProperty.call(blob.ofxAccounts, "__proto__") ? 0 : 1,
+        ofxProtoLookupMisses: blob.ofxAccounts["__proto__"] === undefined ? 1 : 0,
+        ofxWriterKeys: Object.keys(written.ofxAccounts).length,
+        foldKeys: Object.keys(folds).length,
+        foldWriteClean: Object.prototype.hasOwnProperty.call(foldWritten, "__proto__") ? 0 : 1,
+      };
+    },
+  },
+  {
+    id: "ofx-malformed-inputs-controlled-errors",
+    kind: "spending",
+    note: "Security round-2, finding 2 (the reviewer's two attack files, plus controls): (a) a normal statement whose NAME carries the out-of-range reference &#x110000; and a second whose NAME carries &#1114112; no longer throws RangeError from String.fromCodePoint — both references stay literal in the decoded text (the transactions import with those literal names), while a legal reference (&#65; = 'A') still decodes. (b) \"<OFX>\" + \"<X>\"×5000 + \"</X>\"×5000 + \"</OFX>\" (~35 KB, far under the 5 MB limit) no longer overflows the stack in the tree walks: the depth bound refuses it as a controlled parse error naming the nesting (deepRefused 1, deepErrorNamesNesting 1), returned in the normal { ok: false, error } shape the import UI already renders.",
+    expected: {
+      badRefFileOk: 1, badRefTxns: 3, hexRefStaysLiteral: 1,
+      decRefStaysLiteral: 1, legalRefDecodes: 1,
+      deepRefused: 1, deepErrorNamesNesting: 1,
+    },
+    actual: () => {
+      const stmt = (name: string, fitId: string) =>
+        [
+          "<STMTTRN>",
+          "<TRNTYPE>DEBIT",
+          "<DTPOSTED>20261003",
+          "<TRNAMT>-10.00",
+          `<FITID>${fitId}`,
+          `<NAME>${name}`,
+          "</STMTTRN>",
+        ].join("\n");
+      const file = [
+        "OFXHEADER:100",
+        "DATA:OFXSGML",
+        "",
+        "<OFX>",
+        "<BANKMSGSRSV1>",
+        "<STMTTRNRS>",
+        "<STMTRS>",
+        "<CURDEF>USD",
+        "<BANKACCTFROM>",
+        "<BANKID>021000021",
+        "<ACCTID>000123456789",
+        "<ACCTTYPE>CHECKING",
+        "</BANKACCTFROM>",
+        "<BANKTRANLIST>",
+        stmt("Hex &#x110000; ref", "BADHEX"),
+        stmt("Dec &#1114112; ref", "BADDEC"),
+        stmt("&#65;mpersand shop", "GOODREF"),
+        "</BANKTRANLIST>",
+        "</STMTRS>",
+        "</STMTTRNRS>",
+        "</BANKMSGSRSV1>",
+        "</OFX>",
+      ].join("\n");
+      const res = parseOfx(file);
+      const txns = res.ok ? (res.accounts[0]?.transactions ?? []) : [];
+      const deep = parseOfx(
+        "<OFX>" + "<X>".repeat(5000) + "</X>".repeat(5000) + "</OFX>",
+      );
+      return {
+        badRefFileOk: res.ok ? 1 : 0,
+        badRefTxns: txns.length,
+        hexRefStaysLiteral: txns[0]?.description === "Hex &#x110000; ref" ? 1 : 0,
+        decRefStaysLiteral: txns[1]?.description === "Dec &#1114112; ref" ? 1 : 0,
+        legalRefDecodes: txns[2]?.description === "Ampersand shop" ? 1 : 0,
+        deepRefused: !deep.ok ? 1 : 0,
+        deepErrorNamesNesting:
+          !deep.ok && deep.error.includes("nested too deeply") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "restore-negative-amounts-refused-preflight",
+    kind: "restore",
+    note: "Security round-2, finding 4 (amount half — the reviewer's reproduction): a backup whose monthly bill version carries amountCents −10000 (the ordinary writer requires nonnegative, the payload schema used to check integer only) is REFUSED by preflight with a reason naming the negative amount: no commit, prior state byte-identical. The same refusal covers a negative monthly bill amount, a negative yearly expense amount, and a negative monthly summary cash-out (billRejected / yearlyRejected / summaryRejected). Signed amounts whose writers accept negatives are NOT refused: a payload carrying a −$50.00 transaction (a refund) and a −$200.00 Net Worth balance (a debt) restores fine (signedControlRestores 1), as does the positive-version control (controlRestores 1).",
+    expected: {
+      versionRejected: 1, versionCommitted: 0, versionPriorIntact: 1,
+      versionReasonNamesNegative: 1,
+      billRejected: 1, yearlyRejected: 1, summaryRejected: 1,
+      signedControlRestores: 1, controlRestores: 1,
+    },
+    actual: () => {
+      const billRow = {
+        id: 1, name: "Rent", amountCents: 10000, paidBy: "Checking",
+        notes: null, category: "Housing", keepLightsOn: 0, collapsed: 0,
+        createdAt: 1700000000000,
+      };
+      const withVersion = (amountCents: number): Record<string, unknown> => {
+        const raw = baseRestorePayload();
+        raw.monthlyBills = [billRow];
+        raw.monthlyBillVersions = [
+          { id: 1, billId: 1, amountCents, effectiveFrom: "2026-01", createdAt: 1700000000000 },
+        ];
+        return raw;
+      };
+      const prior = restorePriorState();
+      const res = attemptRestore(prior, withVersion(-10000), restoreKeyCheckValidFor(withVersion(-10000)));
+      const negBill = baseRestorePayload();
+      negBill.monthlyBills = [{ ...billRow, amountCents: -100 }];
+      const resBill = attemptRestore(restorePriorState(), negBill, restoreKeyCheckValidFor(negBill));
+      const negYearly = baseRestorePayload();
+      negYearly.yearlyExpenses = [
+        {
+          id: 1, name: "Tax", frequency: "yearly", expectedCents: -500,
+          dueMonth: 4, paidByType: "checking", paidByName: "Checking",
+          backfillBeforeFirstVersion: 0, category: "Taxes", keepLightsOn: 0,
+          createdAt: 1700000000000,
+        },
+      ];
+      const resYearly = attemptRestore(restorePriorState(), negYearly, restoreKeyCheckValidFor(negYearly));
+      const negSummary = baseRestorePayload();
+      negSummary.monthlySummaries = [
+        { month: "2026-01", cashOutCents: -1, createdAt: 1700000000000, updatedAt: 1700000000000 },
+      ];
+      const resSummary = attemptRestore(restorePriorState(), negSummary, restoreKeyCheckValidFor(negSummary));
+      const signed = baseRestorePayload();
+      signed.transactions = [
+        {
+          id: 1, date: "2026-01-10", description: "Refund", amountCents: -5000,
+          sourceType: "checking", accountName: "Checking", kind: "spending",
+          category: "Other", yearlyExpenseId: null, fitId: null,
+          createdAt: 1700000000000,
+        },
+      ];
+      (signed.nwBalances as Record<string, unknown>[])[0] = {
+        ...(signed.nwBalances as Record<string, unknown>[])[0],
+        balanceCents: -20000,
+      };
+      const resSigned = attemptRestore(restorePriorState(), signed, restoreKeyCheckValidFor(signed));
+      const control = attemptRestore(
+        restorePriorState(),
+        withVersion(10000),
+        restoreKeyCheckValidFor(withVersion(10000)),
+      );
+      return {
+        versionRejected: res.ok ? 0 : 1,
+        versionCommitted: res.committed ? 1 : 0,
+        versionPriorIntact:
+          restoreStateFingerprint(res.state) === restoreStateFingerprint(prior) ? 1 : 0,
+        versionReasonNamesNegative: res.reason.includes("negative amount") ? 1 : 0,
+        billRejected: !resBill.ok && !resBill.committed ? 1 : 0,
+        yearlyRejected: !resYearly.ok && !resYearly.committed ? 1 : 0,
+        summaryRejected: !resSummary.ok && !resSummary.committed ? 1 : 0,
+        signedControlRestores: resSigned.ok && resSigned.committed ? 1 : 0,
+        controlRestores: control.ok && control.committed ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "restore-invalid-typed-settings-refused-preflight",
+    kind: "restore",
+    note: "Security round-2, finding 4 (settings half — the reviewer's reproduction): a backup setting opening_reserve_cents: \"not-a-number\" passes the payload schema (settings are key/value strings) but is REFUSED by preflight, which validates it with the writer's own rule (an integer number of cents): rejected, no commit, prior byte-identical, and the reason names the setting. A fractional reserve (\"12.5\") refuses the same way; nw_target_cents refuses both \"not-a-number\" and \"0\" (its writer takes a positive integer; clearing deletes the row), and a reserve_start_month of \"not-a-month\" refuses (its writer takes YYYY-MM or blank). Controls: a payload carrying reserve \"250000\", target \"600000000\", and start month \"2026-01\" restores with all three values landing verbatim (controlRestores 1, controlValuesLand 3), and a reserve still carrying an older export's enc:v1: ciphertext is NOT refused by preflight (ciphertextReservePasses 1) — the handler's decrypt-verification guards that form, and current exports always carry the reserve decrypted.",
+    expected: {
+      reserveRejected: 1, reserveCommitted: 0, reservePriorIntact: 1,
+      reserveReasonNamesSetting: 1, fractionalReserveRejected: 1,
+      targetTextRejected: 1, targetZeroRejected: 1, badStartMonthRejected: 1,
+      controlRestores: 1, controlValuesLand: 3, ciphertextReservePasses: 1,
+    },
+    actual: () => {
+      const withSetting = (key: string, value: string): Record<string, unknown> => {
+        const raw = baseRestorePayload();
+        (raw.settings as Record<string, unknown>[]).push({ key, value });
+        return raw;
+      };
+      const attempt = (raw: Record<string, unknown>) =>
+        attemptRestore(restorePriorState(), raw, restoreKeyCheckValidFor(raw));
+      const prior = restorePriorState();
+      const badRaw = withSetting("opening_reserve_cents", "not-a-number");
+      const res = attemptRestore(prior, badRaw, restoreKeyCheckValidFor(badRaw));
+      const controlRaw = baseRestorePayload();
+      (controlRaw.settings as Record<string, unknown>[]).push(
+        { key: "opening_reserve_cents", value: "250000" },
+        { key: "nw_target_cents", value: "600000000" },
+        { key: "reserve_start_month", value: "2026-01" },
+      );
+      const control = attempt(controlRaw);
+      const landed = new Map<string, string>(
+        control.state.settings.map(
+          (s) => [String(s.key), String(s.value)] as [string, string],
+        ),
+      );
+      return {
+        reserveRejected: res.ok ? 0 : 1,
+        reserveCommitted: res.committed ? 1 : 0,
+        reservePriorIntact:
+          restoreStateFingerprint(res.state) === restoreStateFingerprint(prior) ? 1 : 0,
+        reserveReasonNamesSetting: res.reason.includes("opening_reserve_cents") ? 1 : 0,
+        fractionalReserveRejected: !attempt(withSetting("opening_reserve_cents", "12.5")).ok ? 1 : 0,
+        targetTextRejected: !attempt(withSetting("nw_target_cents", "not-a-number")).ok ? 1 : 0,
+        targetZeroRejected: !attempt(withSetting("nw_target_cents", "0")).ok ? 1 : 0,
+        badStartMonthRejected: !attempt(withSetting("reserve_start_month", "not-a-month")).ok ? 1 : 0,
+        controlRestores: control.ok && control.committed ? 1 : 0,
+        controlValuesLand: [
+          landed.get("opening_reserve_cents") === "250000",
+          landed.get("nw_target_cents") === "600000000",
+          landed.get("reserve_start_month") === "2026-01",
+        ].filter(Boolean).length,
+        ciphertextReservePasses: attempt(withSetting("opening_reserve_cents", "enc:v1:AAAA")).ok ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "restore-encrypted-at-rest-key-list-complete",
+    kind: "restore",
+    note: "Security round-2, finding 3 regression pin: the restore handler's settings loop branches on restoreCore's isEncryptedAtRestSettingKey, whose list (ENCRYPTED_AT_REST_SETTING_KEYS) must name EXACTLY the seven settings the ordinary writers store encrypted — opening_reserve_cents, the encryption key check, retirement_calc_inputs_v1, retirement_calc_baseline_v1, roth_conversion_inputs_v1, and BOTH import-settings blobs. Before this build the handler's hand-written list omitted spending_import_settings_v1, so a restored spending-import settings value sat in the database as the backup's plaintext until a later save rewrote it; every key on the list is now re-encrypted by the restore as it stores the row. The pin is exact in both directions: all seven expected keys are listed (expectedKeysListed 7) and the list carries nothing else (listLength 7), so neither a future omission nor a silent broadening passes.",
+    expected: { expectedKeysListed: 7, listLength: 7, spendingImportListed: 1 },
+    actual: () => {
+      const expectedKeys = [
+        "opening_reserve_cents",
+        "encryption_key_check_v1",
+        "retirement_calc_inputs_v1",
+        "retirement_calc_baseline_v1",
+        "roth_conversion_inputs_v1",
+        "spending_import_settings_v1",
+        "nw_import_settings_v1",
+      ];
+      return {
+        expectedKeysListed: expectedKeys.filter((k) => isEncryptedAtRestSettingKey(k)).length,
+        listLength: ENCRYPTED_AT_REST_SETTING_KEYS.length,
+        spendingImportListed: isEncryptedAtRestSettingKey("spending_import_settings_v1") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "api-restore-validation-semantics-content",
+    kind: "apicontract",
+    note: "Security round-2, findings 3–4 contract text: describeApi publishes RESTORE_VALIDATION_SEMANTICS verbatim (the handler returns this exact constant), and it must state the new restore rules in as many words — preflight enforces the writers' invariants and a violation 'is REFUSED with a plain reason and zero writes'; the typed-settings rule ('opening_reserve_cents must be a valid integer number of cents', the 'not-a-number' refusal, the NaN consequence it prevents); the signed-amount carve-out ('Transaction amounts and Net Worth balances stay signed'); and the encrypted-at-rest guarantee naming BOTH import-settings blobs ('spending_import_settings_v1 and nw_import_settings_v1'), stored encrypted 'immediately on restore'. The behaviour itself is pinned by the restore-negative-amounts / restore-invalid-typed-settings / restore-encrypted-at-rest fixtures; this fixture pins only that the published text cannot silently lose the rules.",
+    expected: { phrasesFound: 6 },
+    actual: () => {
+      const phrases = [
+        "is REFUSED with a plain reason and zero writes",
+        "opening_reserve_cents must be a valid integer number of cents",
+        "'not-a-number' refuses the restore",
+        "Transaction amounts and Net Worth balances stay signed",
+        "spending_import_settings_v1 and nw_import_settings_v1",
+        "stored encrypted at rest immediately on restore",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => RESTORE_VALIDATION_SEMANTICS.includes(p))
+          .length,
       };
     },
   },
