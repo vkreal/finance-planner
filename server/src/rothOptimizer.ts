@@ -5224,12 +5224,50 @@ export function buildCompareScenario(
   };
 }
 
+/* Per-year tax readouts for one compare scenario (contract
+   v51): the priced march's own rows, in cents — read straight
+   off the same RothYear rows the scenario's lifetime totals
+   sum, so a per-year display can never disagree with the
+   lifetime figures beside it. Display only: no score, ranking,
+   or delta is derived from them. pretaxDrawCents is the year's
+   pre-tax money out by choice — its conversion plus its
+   pre-tax draw for spending (an RMD alone is not in it). */
+export type RothCompareScenarioYear = {
+  year: number;
+  agePrimary: number;
+  ageSpouse: number | null;
+  federalTaxCents: number;
+  stateTaxCents: number;
+  // The year's AGI — the total income the return strikes
+  // before deductions.
+  totalIncomeCents: number;
+  taxableIncomeCents: number;
+  // The year's ACA premium credit kept ($0 when the year
+  // prices no credit).
+  acaCreditCents: number;
+  // IRMAA surcharges PAID that year (Medicare premiums, not
+  // tax — carried separately so a bill display never folds
+  // them into a tax line).
+  irmaaCents: number;
+  conversionCents: number;
+  pretaxDrawCents: number;
+};
+
 export type RothCompareScenarioResult = {
   name: string;
   strategyDescription: string;
   saved: RothCompareBaseSaved;
   netCostCents: number;
   totalTaxCents: number;
+  // Lifetime federal / state split of totalTaxCents
+  // (contract v51): federalTaxCents + stateTaxCents =
+  // totalTaxCents, so a composition display can name the
+  // federal part exactly instead of re-deriving it.
+  federalTaxCents: number;
+  stateTaxCents: number;
+  // Per-year readouts of the scenario's priced march
+  // (contract v51; see RothCompareScenarioYear).
+  years: RothCompareScenarioYear[];
   penaltyCents: number;
   irmaaCents: number;
   acaCreditCents: number;
@@ -5330,6 +5368,21 @@ export function runRothCompare(
       built: b,
       netCostCents: toCents(cost.netCost),
       totalTaxCents: toCents(cost.tax),
+      federalTaxCents: toCents(result.lifetimeFederalTax),
+      stateTaxCents: toCents(result.lifetimeStateTax),
+      years: result.years.map((y) => ({
+        year: y.year,
+        agePrimary: y.agePrimary,
+        ageSpouse: y.ageSpouse,
+        federalTaxCents: toCents(y.federalTax),
+        stateTaxCents: toCents(y.stateTax),
+        totalIncomeCents: toCents(y.agi),
+        taxableIncomeCents: toCents(y.taxableIncome),
+        acaCreditCents: toCents(y.acaCreditKept),
+        irmaaCents: toCents(y.irmaaPaid),
+        conversionCents: toCents(y.conversion),
+        pretaxDrawCents: toCents(y.conversion + y.detail.extraPreTaxDraw),
+      })),
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),
       acaCreditCents: toCents(cost.acaCredit),
@@ -5356,6 +5409,9 @@ export function runRothCompare(
       saved: p.built.saved,
       netCostCents: p.netCostCents,
       totalTaxCents: p.totalTaxCents,
+      federalTaxCents: p.federalTaxCents,
+      stateTaxCents: p.stateTaxCents,
+      years: p.years,
       penaltyCents: p.penaltyCents,
       irmaaCents: p.irmaaCents,
       acaCreditCents: p.acaCreditCents,

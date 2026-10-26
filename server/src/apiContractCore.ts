@@ -732,7 +732,7 @@ const ROTH_COMPARE_EXAMPLE_BASE = {
 };
 export const ROTH_COMPARE_EXAMPLE = {
   action: "runRothCompare",
-  note: "A complete, valid runRothCompare request and the response it prices. The base plan is the seeded fresh-user plan shape with explicit balances (a saved record's balances are usually null, which follows the Net Worth snapshot instead). Response figures are the engine's output for this exact request at start year 2026, re-verified by the accuracy fixtures on every run.",
+  note: "A complete, valid runRothCompare request and the response it prices. The base plan is the seeded fresh-user plan shape with explicit balances (a saved record's balances are usually null, which follows the Net Worth snapshot instead). Response figures are the engine's output for this exact request at start year 2026, re-verified by the accuracy fixtures on every run. Each scenario also carries federalTaxCents / stateTaxCents (the lifetime federal / state split of totalTaxCents, contract v51 — both scenarios here price at a 0% state rate, so the split is all federal) and a years array of per-year tax readouts (contract v51); the years arrays are omitted from this published example for size.",
   request: {
     ...ROTH_COMPARE_EXAMPLE_BASE,
     baselineName: "Seeded plan as-is",
@@ -751,6 +751,8 @@ export const ROTH_COMPARE_EXAMPLE = {
           "Retire at 57 · Fill to the top of the 12% bracket · Convert ages 57–74 · Draw order Taxable → Pre-tax → Roth",
         netCostCents: 194504904,
         totalTaxCents: 108376285,
+        federalTaxCents: 108376285,
+        stateTaxCents: 0,
         penaltyCents: 0,
         irmaaCents: 6693120,
         acaCreditCents: 0,
@@ -773,6 +775,8 @@ export const ROTH_COMPARE_EXAMPLE = {
           "Retire at 56 · Fill to the top of the 12% bracket · Convert ages 57–74 · Draw order Taxable → Pre-tax → Roth",
         netCostCents: 194504904,
         totalTaxCents: 108376285,
+        federalTaxCents: 108376285,
+        stateTaxCents: 0,
         penaltyCents: 0,
         irmaaCents: 6693120,
         acaCreditCents: 0,

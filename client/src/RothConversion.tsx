@@ -793,6 +793,10 @@ export function RothConversion() {
     advanced: false,
   });
   const [yearTableOpen, setYearTableOpen] = useState(false);
+  // Tax-by-year chart's per-year numbers fold: closed by
+  // default (the year-by-year table below carries the same
+  // figures); display only, in-session like yearTableOpen.
+  const [taxYearNumbersOpen, setTaxYearNumbersOpen] = useState(false);
   // Strategy Lab "Debate dials" section: collapsed by default;
   // the open/closed choice persists in the Roth UI state.
   const [labDialsOpen, setLabDialsOpen] = useState(false);
@@ -4213,6 +4217,38 @@ export function RothConversion() {
     savedStripData?.ok === true
       ? (savedStripData.scenarios.find(
           (r) => r.name === savedStripData.baselineName,
+        ) ?? null)
+      : null;
+
+  /* -------- Tax by year: the SAVED plan's priced years --------
+     The same baseline-only compare over the saved-plan payload
+     as the ending strip (identical query key, so the two share
+     one run), enabled wherever the plan workspace shows. The
+     Tax by year section renders the baseline row's per-year
+     tax readouts (contract v51) — figures priced from the
+     SAVED RECORD, never the working form, exactly like the
+     strip: an unsaved form edit cannot move them. */
+  const savedTaxQ = useQuery({
+    queryKey: [
+      "rothSavedStrip",
+      savedPlanPayload ? JSON.stringify(savedPlanPayload) : null,
+      data?.snapshot ? JSON.stringify(data.snapshot) : null,
+    ],
+    enabled:
+      (face === "plan" || (face === "settings" && resultsMode === "plan")) &&
+      savedPlanPayload != null,
+    queryFn: () =>
+      api.runRothCompare({
+        ...(savedPlanPayload as PlanPayload),
+        baselineName: "Your saved plan",
+        scenarios: [{ name: "Your saved plan", overrides: {} }],
+      }),
+  });
+  const savedTaxData = savedTaxQ.data;
+  const savedTaxRow =
+    savedTaxData?.ok === true
+      ? (savedTaxData.scenarios.find(
+          (r) => r.name === savedTaxData.baselineName,
         ) ?? null)
       : null;
 
@@ -10015,6 +10051,247 @@ export function RothConversion() {
           </section>
         );
       })()}
+
+      {/* Tax by year — the SAVED plan's lifetime tax picture.
+          Every figure comes from the baseline row of the
+          saved-payload compare (savedTaxRow — the same run the
+          ending strip prices from), whose per-year readouts
+          (contract v51) are read straight off the priced march
+          the lifetime totals sum. Priced from the saved record,
+          never the working form: an unsaved edit cannot move
+          these figures, exactly like the strip. The composition
+          line foots to the row's net cost EXACTLY, in cents:
+          net cost = federal tax + IRMAA \u2212 ACA credits kept +
+          the remainder, where the remainder (state tax +
+          pre-59\u00bd penalties + tax on the ending pre-tax
+          balance \u2212 refundable education credit) is named
+          component by component underneath, never folded
+          silently into the headline figures. */}
+      {showPlanWorkspace && savedPlanPayload && (
+        <section className={sectionCls} aria-label="Tax by year">
+          <h2 className="text-base font-semibold">Tax by year</h2>
+          {savedTaxQ.isPending ? (
+            <p className="mt-1 text-sm text-[var(--dim)]">Pricing the saved plan\u2026</p>
+          ) : savedTaxRow ? (
+            (() => {
+              const planYears = savedTaxRow.years;
+              const remainder =
+                savedTaxRow.stateTaxCents +
+                savedTaxRow.penaltyCents +
+                savedTaxRow.terminalCents -
+                savedTaxRow.educationRefundableCents;
+              const remainderParts: string[] = [];
+              if (savedTaxRow.stateTaxCents !== 0)
+                remainderParts.push(`state tax ${fmtCents(savedTaxRow.stateTaxCents)}`);
+              if (savedTaxRow.penaltyCents !== 0)
+                remainderParts.push(`pre-59\u00bd penalties ${fmtCents(savedTaxRow.penaltyCents)}`);
+              if (savedTaxRow.terminalCents !== 0)
+                remainderParts.push(
+                  `tax on the ending pre-tax balance ${fmtCents(savedTaxRow.terminalCents)}`,
+                );
+              if (savedTaxRow.educationRefundableCents !== 0)
+                remainderParts.push(
+                  `less the refundable education credit ${fmtCents(savedTaxRow.educationRefundableCents)}`,
+                );
+              const rawMax = Math.max(0, ...planYears.map((y) => y.federalTaxCents));
+              const niceMax = (() => {
+                if (rawMax <= 0) return 100;
+                const pow = Math.pow(10, Math.floor(Math.log10(rawMax)));
+                const unit = rawMax / pow;
+                const nice = unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 2.5 ? 2.5 : unit <= 5 ? 5 : 10;
+                return nice * pow;
+              })();
+              const gridFracs = [1, 0.75, 0.5, 0.25, 0];
+              // The first year the saved plan takes pre-tax
+              // money out by choice — a conversion or a pre-tax
+              // draw for spending (an RMD alone is not a draw
+              // decision, so it does not open the mini bill).
+              const firstDrawYear =
+                planYears.find((y) => y.pretaxDrawCents > 0) ?? null;
+              const billRow = (
+                label: string,
+                value: string,
+                opts?: { bold?: boolean; divide?: boolean },
+              ) => (
+                <div
+                  className={`flex items-baseline justify-between gap-4 ${
+                    opts?.divide ? "mt-1 border-t border-[var(--border)] pt-1.5" : "py-0.5"
+                  }`}
+                >
+                  <span className={opts?.bold ? "font-semibold" : undefined}>{label}</span>
+                  <span className={`tnum ${opts?.bold ? "font-bold" : ""}`}>{value}</span>
+                </div>
+              );
+              return (
+                <>
+                  <p className="tnum mt-1 max-w-3xl text-sm">
+                    Lifetime federal tax {fmtCents(savedTaxRow.federalTaxCents)} \u00b7 ACA credits kept{" "}
+                    {savedTaxRow.acaCreditCents > 0
+                      ? `\u2212${fmtCents(savedTaxRow.acaCreditCents)}`
+                      : fmtCents(savedTaxRow.acaCreditCents)}{" "}
+                    \u00b7 IRMAA {fmtCents(savedTaxRow.irmaaCents)} \u00b7 Lifetime net cost{" "}
+                    {fmtCents(savedTaxRow.netCostCents)}
+                  </p>
+                  <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+                    {remainderParts.length > 0 ? (
+                      <>
+                        Net cost is federal tax + IRMAA \u2212 ACA credits kept, plus the
+                        rest of the score: {remainderParts.join(", ")} \u2014{" "}
+                        {fmtCents(remainder)} in all. Priced from the saved
+                        record \u2014 edits not yet saved do not move these
+                        figures.
+                      </>
+                    ) : (
+                      <>
+                        For this plan, net cost is exactly federal tax + IRMAA \u2212 ACA
+                        credits kept \u2014 there is no state tax, penalty, ending
+                        pre-tax tax, or refundable education credit in the score.
+                        Priced from the saved record \u2014 edits not yet saved
+                        do not move these figures.
+                      </>
+                    )}
+                  </p>
+                  {rawMax <= 0 ? (
+                    <p className="mt-3 text-sm text-[var(--dim)]">
+                      Federal tax is $0 in every year of the saved plan.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="mt-3 flex gap-2">
+                        <div className="relative h-56 w-16 shrink-0" aria-hidden="true">
+                          {gridFracs.map((f) => (
+                            <span
+                              key={f}
+                              className="tnum absolute right-0 text-[10px] text-[var(--dim)]"
+                              style={{
+                                top: `${(1 - f) * 100}%`,
+                                transform: "translateY(-50%)",
+                              }}
+                            >
+                              {fmtDollars((niceMax * f) / 100)}
+                            </span>
+                          ))}
+                        </div>
+                        <div
+                          className="relative h-56 min-w-0 flex-1"
+                          role="img"
+                          aria-label={`Bar chart of federal tax by plan year, ${planYears[0]?.year} to ${planYears[planYears.length - 1]?.year}; the largest year is ${fmtCents(rawMax)}. Per-year figures are in the numbers fold below.`}
+                        >
+                          {gridFracs.map((f) => (
+                            <div
+                              key={f}
+                              aria-hidden="true"
+                              className="absolute right-0 left-0 border-t border-[var(--border)]"
+                              style={{ top: `${(1 - f) * 100}%` }}
+                            />
+                          ))}
+                          <div className="absolute inset-0 flex items-end gap-[2px]">
+                            {planYears.map((y) => (
+                              <div
+                                key={y.year}
+                                className="relative h-full min-w-0 flex-1"
+                                title={`${y.year}: federal tax ${fmtCents(y.federalTaxCents)}`}
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="absolute right-0 bottom-0 left-0 rounded-t-sm"
+                                  style={{
+                                    height: `${(y.federalTaxCents / niceMax) * 100}%`,
+                                    background: "var(--accent)",
+                                  }}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-1 flex gap-2" aria-hidden="true">
+                        <div className="w-16 shrink-0" />
+                        <div className="flex min-w-0 flex-1 gap-[2px]">
+                          {planYears.map((y) => (
+                            <span
+                              key={y.year}
+                              className="min-w-0 flex-1 text-center text-[10px] whitespace-nowrap text-[var(--dim)]"
+                            >
+                              {y.year % 5 === 0 ||
+                              y.year === planYears[0]?.year ||
+                              y.year === planYears[planYears.length - 1]?.year
+                                ? y.year
+                                : ""}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    aria-expanded={taxYearNumbersOpen}
+                    aria-label="Federal tax by year \u2014 numbers"
+                    className="mt-2 flex items-center gap-2 text-sm font-medium text-[var(--accent)]"
+                    onClick={() => setTaxYearNumbersOpen(!taxYearNumbersOpen)}
+                  >
+                    Federal tax by year \u2014 numbers
+                    <FoldChevron open={taxYearNumbersOpen} />
+                  </button>
+                  {taxYearNumbersOpen && (
+                    <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3 lg:grid-cols-4">
+                      {planYears.map((y) => (
+                        <p key={y.year} className="tnum flex justify-between gap-3">
+                          <span className="text-[var(--dim)]">{y.year}</span>
+                          <span>{fmtCents(y.federalTaxCents)}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  {firstDrawYear && (
+                    <div
+                      className="mt-4 max-w-xl rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3"
+                      aria-label="First draw year tax bill"
+                    >
+                      <p className="text-sm font-semibold">
+                        First draw year \u2014 {firstDrawYear.year}
+                        <span className="font-normal text-[var(--dim)]">
+                          {" "}(ages {firstDrawYear.agePrimary}
+                          {firstDrawYear.ageSpouse != null ? `/${firstDrawYear.ageSpouse}` : ""})
+                        </span>
+                      </p>
+                      <div className="mt-1 text-sm">
+                        {billRow("Total income", fmtCents(firstDrawYear.totalIncomeCents))}
+                        {billRow("Taxable income", fmtCents(firstDrawYear.taxableIncomeCents))}
+                        {billRow("Federal tax", fmtCents(firstDrawYear.federalTaxCents))}
+                        {firstDrawYear.acaCreditCents > 0 &&
+                          billRow(
+                            "ACA premium credit",
+                            `\u2212${fmtCents(firstDrawYear.acaCreditCents)}`,
+                          )}
+                        {billRow(
+                          "Net tax",
+                          fmtCents(firstDrawYear.federalTaxCents - firstDrawYear.acaCreditCents),
+                          { bold: true, divide: true },
+                        )}
+                      </div>
+                      {firstDrawYear.irmaaCents > 0 && (
+                        <p className="tnum mt-2 text-sm text-[var(--dim)]">
+                          Medicare premium surcharges (IRMAA) paid that year:{" "}
+                          {fmtCents(firstDrawYear.irmaaCents)} \u2014 premiums, not tax, so
+                          they are not part of the net tax above.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
+              );
+            })()
+          ) : savedTaxQ.data && !savedTaxQ.data.ok ? (
+            <p className="mt-1 text-sm text-[var(--dim)]">{savedTaxQ.data.reason}</p>
+          ) : (
+            <p className="mt-1 text-sm text-[var(--dim)]">
+              The saved plan could not be priced for this picture.
+            </p>
+          )}
+        </section>
+      )}
 
       {showPlanWorkspace && planInputs && mainResult && (
         <section className={sectionCls} aria-label="Year by year">
