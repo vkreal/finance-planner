@@ -75,6 +75,13 @@ runRothCasFixtures,
 runRothUiStateFixtures,
 } from "./extendedFixtures";
 import {
+DECEMBER_STATE_KEY,
+computeDecemberProjection,
+decemberState,
+parseDecemberState,
+runDecemberFixtures,
+} from "./decemberCore";
+import {
 applyRothUiWrite,
 parseRothUiState,
 playgroundFormState,
@@ -2624,7 +2631,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 44;
+export const API_CONTRACT_VERSION = 45;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3830,6 +3837,36 @@ const playgroundYearOut = z.object({
     .nullable(),
 });
 
+/* The December projection's priced result (decemberCore's
+   computeDecemberProjection), published by runDecemberProjection
+   and computed identically in the December view. */
+const decemberCaseOut = z.object({
+  kind: z.enum(["low", "likely", "high"]),
+  nonDrawAcaMagi: z.number(),
+  maxDraw: z.number().nullable(),
+  magiAtHeadline: z.number(),
+  distanceAtHeadline: z.number().nullable(),
+  overCliffAtHeadline: z.boolean(),
+  overCliffEvenAtZero: z.boolean(),
+  creditAtHeadline: z.number().nullable(),
+  excessAptcRepayment: z.number().nullable(),
+  creditStillDue: z.number().nullable(),
+  repaymentExposure: z.number(),
+  federalTaxAtHeadline: z.number(),
+  totalTaxAtHeadline: z.number(),
+});
+const decemberProjectionOut = z.object({
+  priced: z.boolean(),
+  reason: z.string().nullable(),
+  cliff: z.number().nullable(),
+  targetMagi: z.number().nullable(),
+  headlineDraw: z.number().nullable(),
+  headlineText: z.string(),
+  zeroDrawOverCliff: z.boolean(),
+  cases: z.array(decemberCaseOut),
+  warnings: z.array(z.string()),
+});
+
 const playgroundPasteOut = z.object({
   kind: z.string(),
   version: z.number(),
@@ -4995,6 +5032,7 @@ const accuracySuiteEnum = z.enum([
   "roth-cas",
   "retirement-cas",
   "replay",
+  "december",
 ]);
 const accuracySelfCheckResponse = z.object({
   suite: z.string(),
@@ -5007,6 +5045,7 @@ const accuracySelfCheckResponse = z.object({
   uiStateFixtures: accuracyFixtureSuiteSchema.nullable(),
   rothCasFixtures: accuracyFixtureSuiteSchema.nullable(),
   retirementCasFixtures: accuracyFixtureSuiteSchema.nullable(),
+  decemberFixtures: accuracyFixtureSuiteSchema.nullable(),
   teeth: z.object({
     retirement: accuracyTeethSchema.nullable(),
     extended: accuracyTeethSchema.nullable(),
@@ -5118,7 +5157,10 @@ const ACTION_PURPOSES: Record<string, string> = {
   deleteBackup: "Delete one backup-*.mstbak file from this space's own backups folder. A backup that exists only in the legacy shared folder is refused — that folder is read-only.",
   deleteAllBackups: "Delete every backup file in this space's own backups folder. Legacy-folder backups are never deleted.",
   createBackupNow: "Create an encrypted backup file now from the current dataset (same payload as exportbackup).",
-  runAccuracySelfCheck: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, data integrity, or the replay reproducibility diagnostic) per call.",
+  runAccuracySelfCheck: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, data integrity, the replay reproducibility diagnostic, or the December console fixtures) per call.",
+  getDecemberProjection: "Read the December projection console's saved inputs (one settings blob, parsed leniently field by field; hasStored says whether a blob was ever saved, so a first open can preseed from the saved Tax Plan record). Read-only.",
+  saveDecemberProjection: "Save the December projection console's inputs as one settings blob. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view.",
+  runDecemberProjection: "Price the December year-end projection from the given console inputs through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver: the maximum safe December pre-tax draw for the likely case at cliff minus the entered buffer, projected MAGI and distance to the cliff for the low / likely / high cases at that draw, the final allowable credit per case, and the excess-APTC repayment per case — after 2025 there are no repayment caps (P.L. 119-21 §71305), so any APTC taken above the final credit is repaid in full in every case, under the cliff as well as over it (over the cliff the final credit is $0 and the whole APTC taken is repaid). Compute-only; reads and writes nothing.",
   describeApi: "Return the machine-readable API contract for every published action, generated live from the actions' own zod schemas, with version stamps and conventions.",
 };
 
@@ -10853,6 +10895,64 @@ export const Actions = {
     },
   }),
 
+  // December projection console: the saved December inputs
+  // (one settings blob, form state in the Playground blob's
+  // style — see decemberCore). get returns the leniently parsed
+  // state plus whether a blob was ever stored; save replaces
+  // the blob whole (the console sends its complete input set,
+  // like the Playground form save). Neither prices anything.
+  getDecemberProjection: defineAction({
+    request: z.object({}),
+    response: z.object({
+      state: decemberState,
+      hasStored: z.boolean(),
+    }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.settings);
+      const raw = rows.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
+      return {
+        state: parseDecemberState(raw, new Date().getFullYear()),
+        hasStored: raw !== undefined,
+      };
+    },
+  }),
+
+  saveDecemberProjection: defineAction({
+    request: z.object({ state: decemberState }),
+    response: z.object({ ok: z.literal(true) }),
+    async handler(ctx, args): Promise<{ ok: true }> {
+      const db = ctx.db<typeof schema>();
+      await db
+        .insert(schema.settings)
+        .values({ key: DECEMBER_STATE_KEY, value: JSON.stringify(args.state) })
+        .onConflictDoUpdate({
+          target: schema.settings.key,
+          set: { value: JSON.stringify(args.state) },
+        });
+      ctx.invalidateQueries();
+      return { ok: true as const };
+    },
+  }),
+
+  // December projection pricing (compute-only): assembles the
+  // year's income from the console inputs (actuals + range case
+  // + strays) and prices it through the shared single-year
+  // engine — see decemberCore. Saves nothing.
+  runDecemberProjection: defineAction({
+    request: z.object({ state: decemberState }),
+    response: z.object({
+      provenance: provenanceOut,
+      result: decemberProjectionOut,
+    }),
+    async handler(_ctx, args) {
+      return {
+        provenance: apiProvenance(),
+        result: computeDecemberProjection(args.state),
+      };
+    },
+  }),
+
   // Plan-year detail (engine access, part 2): runs the planner
   // (the payload's own ceilings strategy, as the Plan tab runs
   // it) and returns the target year's complete row PLUS the
@@ -12518,6 +12618,7 @@ export const Actions = {
         uiStateFixtures: null,
         rothCasFixtures: null,
         retirementCasFixtures: null,
+        decemberFixtures: null,
         teeth: { retirement: null, extended: null, tax: null },
         integrity: null,
         replay: null,
@@ -12640,6 +12741,13 @@ export const Actions = {
             note: "Ran the Retirement records CAS fixtures suite only.",
             retirementCasFixtures: runRetirementCasFixtures(),
           };
+        case "december":
+          return {
+            ...empty,
+            suite: "december",
+            note: "Ran the December projection console fixtures suite only.",
+            decemberFixtures: runDecemberFixtures(),
+          };
         case "replay":
           return {
             ...empty,
@@ -12651,7 +12759,7 @@ export const Actions = {
           return {
             ...empty,
             suite: "none",
-            note: "No suite selected: ran only the fast integrity suite. The tax, tax-teeth, tax-teeth-opt, extended, extended-teeth, retirement, retirement-teeth, ui-state, roth-cas, retirement-cas, and replay suites were NOT run. Call again with suite set to one of: tax, tax-teeth, tax-teeth-opt, extended, extended-teeth, retirement, retirement-teeth, integrity, ui-state, roth-cas, retirement-cas, replay.",
+            note: "No suite selected: ran only the fast integrity suite. The tax, tax-teeth, tax-teeth-opt, extended, extended-teeth, retirement, retirement-teeth, ui-state, roth-cas, retirement-cas, replay, and december suites were NOT run. Call again with suite set to one of: tax, tax-teeth, tax-teeth-opt, extended, extended-teeth, retirement, retirement-teeth, integrity, ui-state, roth-cas, retirement-cas, replay, december.",
             integrity: await loadIntegrity(),
           };
       }

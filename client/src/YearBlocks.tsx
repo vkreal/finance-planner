@@ -115,7 +115,7 @@ function YearPicker({
   onChange: (year: number) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 print:hidden">
+    <div className="flex flex-nowrap shrink-0 items-center gap-2 print:hidden">
       <button
         type="button"
         aria-label="Previous year"
@@ -225,9 +225,14 @@ export function YearInSpendingBlock({
       aria-label="Year in spending"
       className="mt-8 scroll-mt-4"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="display text-xl font-semibold">Year in spending</h2>
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Header follows the Spending sections' settled single-row
+          pattern: title on the left, control cluster on the right,
+          all on one row at every width — the row and the cluster
+          never wrap; the title shrinks/wraps within the left side
+          instead. Control styles and behaviour are unchanged. */}
+      <div className="flex flex-nowrap items-center justify-between gap-x-3">
+        <h2 className="display min-w-0 flex-1 text-xl font-semibold">Year in spending</h2>
+        <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
           <button
             type="button"
             className={btnGhost}
