@@ -127,17 +127,24 @@ export const decemberState = z.object({
   // never counted twice.
   rmdAlreadyReceived: z.number().finite().min(0),
   spouseSoleBeneficiary: z.boolean(),
-  // The SECOND beneficiary fact (round-3 fix): the primary
-  // is the sole beneficiary of the SPOUSE's pre-tax
-  // accounts. A separate fact from spouseSoleBeneficiary
-  // above (the spouse is the PRIMARY's sole beneficiary —
-  // it selects only the PRIMARY's RMD table). This fact
-  // alone selects the SPOUSE's RMD table. False = not
-  // established → her RMD prices on the Uniform Lifetime
-  // Table (the conservative direction). Blobs written
-  // before this field existed parse it at this false
-  // default (see parseDecemberState).
-  primarySoleBeneficiaryOfSpouse: z.boolean(),
+  // The SECOND beneficiary fact (round-3 fix; tri-state
+  // since the round-4 fix): the primary is the sole
+  // beneficiary of the SPOUSE's pre-tax accounts. A
+  // separate fact from spouseSoleBeneficiary above (the
+  // spouse is the PRIMARY's sole beneficiary — it selects
+  // only the PRIMARY's RMD table). This fact alone
+  // selects the SPOUSE's RMD table. TRI-STATE, matching
+  // the Tax Plan record's semantics: true / false are
+  // explicit answers; null = UNANSWERED. Only explicit
+  // true selects the Joint table — null and false both
+  // price her RMD on the Uniform Lifetime Table (not
+  // established, the conservative direction). Blobs
+  // written before this field existed parse a missing
+  // key as null, never as false, so an unanswered
+  // console value can be resolved at load from the Tax
+  // Plan record (see resolveDecemberStateAtLoad and
+  // parseDecemberState).
+  primarySoleBeneficiaryOfSpouse: z.boolean().nullable(),
   stateRatePct: z.number().finite().min(0).max(100),
   residenceState: z.enum(["WA", "other"]),
   itemizedMortgageInterest: z.number().finite().min(0),
@@ -209,7 +216,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     pretaxBalanceSpouse: null,
     rmdAlreadyReceived: 0,
     spouseSoleBeneficiary: true,
-    primarySoleBeneficiaryOfSpouse: false,
+    primarySoleBeneficiaryOfSpouse: null,
     stateRatePct: 0,
     residenceState: "other",
     itemizedMortgageInterest: 0,
@@ -366,13 +373,19 @@ export function parseDecemberState(
   if (typeof p.spouseSoleBeneficiary === "boolean") {
     out.spouseSoleBeneficiary = p.spouseSoleBeneficiary;
   }
-  // The second beneficiary fact, read leniently like its
-  // sibling: absent on a pre-round-3 blob keeps the false
-  // default (not established → the spouse's RMD prices
-  // Uniform) — no reciprocity is ever inferred from the
-  // sibling fact's stored value.
+  // The second beneficiary fact (round-4 tri-state): an
+  // explicit boolean survives as written; an explicit
+  // null and a MISSING key both read as null —
+  // UNANSWERED, never as false. A pre-round-3 blob has
+  // no answer to this question, and converting that
+  // absence into an explicit false would block the
+  // load-time Tax Plan prefill that can supply a known
+  // answer (resolveDecemberStateAtLoad). No reciprocity
+  // is ever inferred from the sibling fact's value.
   if (typeof p.primarySoleBeneficiaryOfSpouse === "boolean") {
     out.primarySoleBeneficiaryOfSpouse = p.primarySoleBeneficiaryOfSpouse;
+  } else if (p.primarySoleBeneficiaryOfSpouse === null) {
+    out.primarySoleBeneficiaryOfSpouse = null;
   }
   const sr = num(p.stateRatePct);
   if (sr != null && sr >= 0 && sr <= 100) out.stateRatePct = sr;
@@ -403,6 +416,31 @@ export function parseDecemberState(
   stray("strayCoverage", (s) => (out.strayCoverage = s));
   stray("strayTradeDate", (s) => (out.strayTradeDate = s));
   return out;
+}
+
+/* Round-4 fix — load-time resolution of the tri-state
+   second beneficiary fact, the exact function the
+   December view's hydration runs. Precedence: an
+   explicit console answer (true or false) is NEVER
+   overwritten; only an unanswered (null) console value
+   is resolved, from the saved Tax Plan record's own
+   value for the same fact — the record's explicit
+   true/false supplies the effective value for display
+   and pricing, and a record null leaves the console
+   value unanswered (pricing Uniform, not established).
+   Pure: it returns the effective state for this open
+   and writes nothing — the stored blob changes only
+   when the user saves in the console. */
+export function resolveDecemberStateAtLoad(
+  state: DecemberState,
+  taxPlanPrimarySoleBeneficiaryOfSpouse: boolean | null | undefined,
+): DecemberState {
+  if (state.primarySoleBeneficiaryOfSpouse != null) return state;
+  if (taxPlanPrimarySoleBeneficiaryOfSpouse == null) return state;
+  return {
+    ...state,
+    primarySoleBeneficiaryOfSpouse: taxPlanPrimarySoleBeneficiaryOfSpouse,
+  };
 }
 
 function r2(n: number): number {
@@ -1294,14 +1332,19 @@ export function runDecemberFixtures(): {
     exact(fail, "excess APTC repayment", likely.excessAptcRepayment, 12000);
     exact(fail, "repayment exposure", likely.repaymentExposure, 12000);
     // A legacy blob carrying ONLY the old flag (true)
-    // parses the new fact at its not-established default —
-    // reciprocity is never inferred on read either.
+    // parses the new fact as UNANSWERED (null, round-4
+    // tri-state) — not as an explicit false, and
+    // reciprocity is never inferred on read either. Null
+    // prices Uniform exactly as false does (above); the
+    // distinction exists so a known Tax Plan answer can
+    // be resolved at load (the dec-load-prefill-*
+    // fixtures below).
     const legacy = parseDecemberState(
       JSON.stringify({ taxYear: 2026, spouseSoleBeneficiary: true }),
       2026,
     );
-    if (legacy.primarySoleBeneficiaryOfSpouse !== false) {
-      fail("a legacy blob must read the new beneficiary fact as not established");
+    if (legacy.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("a legacy blob must read the new beneficiary fact as unanswered (null)");
     }
     if (legacy.spouseSoleBeneficiary !== true) {
       fail("the legacy blob's own flag should still parse as stored");
@@ -1720,6 +1763,203 @@ export function runDecemberFixtures(): {
       fail("a no-cliff year can never be over the cliff");
     }
     exact(fail, "2025 MAGI still prices", likely.nonDrawAcaMagi, 50000);
+  });
+
+  /* ---- Round-4 fixtures: the load / prefill path ----
+     The reviewer's reproduction household, carried in a
+     PRE-V47 BLOB (every field the console then had, the
+     second beneficiary fact's key absent): primary 60,
+     spouse 75, her pre-tax $246,000, his $10,000, posted
+     ordinary income $75,000, household 2, benchmark
+     $20,000, APTC taken $12,000, buffer $5,000, the old
+     flag true. Two pricings are possible for her RMD:
+     Joint (fact true): $246,000 / 28.3 = $8,692.58 → MAGI
+     $83,692.58, credit $20,000 − 9.96% × $83,692.58 =
+     $11,664.22, repayment $12,000 − $11,664.22 = $335.78.
+     Uniform (fact false or unanswered): $246,000 / 24.6 =
+     $10,000 → MAGI $85,000, over the $84,600 cliff →
+     credit $0, repayment the whole $12,000. Each fixture
+     runs the FULL load path — parseDecemberState on the
+     stored blob, then resolveDecemberStateAtLoad against
+     a Tax Plan record value (the exact function the
+     view's hydration runs) — never the pricer alone. */
+  const legacyBlobJson = (extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      taxYear: 2026,
+      agePrimary: 60,
+      ageSpouse: 75,
+      spouseSoleBeneficiary: true,
+      pretaxBalancePrimary: 10000,
+      pretaxBalanceSpouse: 246000,
+      pretaxBalance: 256000,
+      ytdOtherOrdinary: 75000,
+      acaHouseholdSize: 2,
+      acaBenchmarkAnnual: 20000,
+      aptcTaken: 12000,
+      bufferDollars: 5000,
+      ...extra,
+    });
+  const loadAndPrice = (
+    blob: string,
+    record: boolean | null,
+  ): {
+    effective: DecemberState;
+    rmd: number;
+    table: string | null;
+    result: DecemberProjectionResult;
+    likely: DecemberCaseResult;
+  } => {
+    const effective = resolveDecemberStateAtLoad(
+      parseDecemberState(blob, 2026),
+      record,
+    );
+    const pg = pricePlaygroundYear(decemberCaseInputs(effective, "likely", 0));
+    const result = computeDecemberProjection(effective);
+    return {
+      effective,
+      rmd: pg.rmdSpouse,
+      table: pg.rmdTable,
+      result,
+      likely: result.cases[1]!,
+    };
+  };
+  const expectJoint = (
+    fail: (m: string) => void,
+    label: string,
+    got: ReturnType<typeof loadAndPrice>,
+  ) => {
+    exact(fail, `${label} spouse RMD`, got.rmd, 8692.58);
+    if (got.table !== "joint") {
+      fail(`${label}: spouse RMD table should be joint, got ${got.table}`);
+    }
+    exact(fail, `${label} non-draw MAGI`, got.likely.nonDrawAcaMagi, 83692.58);
+    exact(fail, `${label} final credit`, got.likely.creditAtHeadline, 11664.22);
+    exact(
+      fail,
+      `${label} excess repayment`,
+      got.likely.excessAptcRepayment,
+      335.78,
+    );
+  };
+  const expectUniform = (
+    fail: (m: string) => void,
+    label: string,
+    got: ReturnType<typeof loadAndPrice>,
+  ) => {
+    exact(fail, `${label} spouse RMD`, got.rmd, 10000);
+    if (got.table !== "uniform") {
+      fail(`${label}: spouse RMD table should be uniform, got ${got.table}`);
+    }
+    exact(fail, `${label} non-draw MAGI`, got.likely.nonDrawAcaMagi, 85000);
+    exact(fail, `${label} final credit`, got.likely.creditAtHeadline, 0);
+    exact(
+      fail,
+      `${label} excess repayment`,
+      got.likely.excessAptcRepayment,
+      12000,
+    );
+  };
+
+  run("dec-load-prefill-legacy-record-true", (fail) => {
+    // (i) Legacy blob (key missing) + Tax Plan record
+    // true → the record supplies the answer at load and
+    // the year prices on the Joint table.
+    const got = loadAndPrice(legacyBlobJson(), true);
+    if (got.effective.primarySoleBeneficiaryOfSpouse !== true) {
+      fail("the record's true should resolve the unanswered console value");
+    }
+    expectJoint(fail, "legacy+record-true", got);
+  });
+
+  run("dec-load-prefill-legacy-record-false", (fail) => {
+    // (ii) Legacy blob + record false → the record's
+    // explicit false supplies the answer; Uniform.
+    const got = loadAndPrice(legacyBlobJson(), false);
+    if (got.effective.primarySoleBeneficiaryOfSpouse !== false) {
+      fail("the record's false should resolve the unanswered console value");
+    }
+    expectUniform(fail, "legacy+record-false", got);
+  });
+
+  run("dec-load-prefill-legacy-record-null", (fail) => {
+    // (iii) Legacy blob + record null → still unanswered;
+    // unanswered prices Uniform (not established).
+    const got = loadAndPrice(legacyBlobJson(), null);
+    if (got.effective.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("a null record must leave the console value unanswered");
+    }
+    expectUniform(fail, "legacy+record-null", got);
+  });
+
+  run("dec-load-prefill-console-false-wins", (fail) => {
+    // (iv) Blob explicit false + record true → the
+    // console's own answer wins; prefill never
+    // overwrites an explicit console value.
+    const got = loadAndPrice(
+      legacyBlobJson({ primarySoleBeneficiaryOfSpouse: false }),
+      true,
+    );
+    if (got.effective.primarySoleBeneficiaryOfSpouse !== false) {
+      fail("an explicit console false must survive load resolution");
+    }
+    expectUniform(fail, "console-false+record-true", got);
+  });
+
+  run("dec-load-prefill-console-true-wins", (fail) => {
+    // (v) Blob explicit true + record false → the
+    // console's own answer wins, in the other direction.
+    const got = loadAndPrice(
+      legacyBlobJson({ primarySoleBeneficiaryOfSpouse: true }),
+      false,
+    );
+    if (got.effective.primarySoleBeneficiaryOfSpouse !== true) {
+      fail("an explicit console true must survive load resolution");
+    }
+    expectJoint(fail, "console-true+record-false", got);
+  });
+
+  run("dec-beneficiary-tristate-round-trip", (fail) => {
+    // (vi) Tri-state round trip: unset / true / false
+    // survive a save → load cycle DISTINCTLY, through
+    // the exact serializer and parser the actions run.
+    const roundTrip = (v: boolean | null): boolean | null => {
+      const s = defaultDecemberState(2026);
+      s.primarySoleBeneficiaryOfSpouse = v;
+      return parseDecemberState(serializeDecemberState(s, 3), 2026)
+        .primarySoleBeneficiaryOfSpouse;
+    };
+    if (roundTrip(null) !== null) fail("unset (null) should round-trip as null");
+    if (roundTrip(true) !== true) fail("true should round-trip as true");
+    if (roundTrip(false) !== false) fail("false should round-trip as false");
+    // The writer schema itself carries the tri-state:
+    // null, true, and false all validate as a state.
+    for (const v of [null, true, false] as const) {
+      const s = defaultDecemberState(2026);
+      s.primarySoleBeneficiaryOfSpouse = v;
+      if (!decemberState.safeParse(s).success) {
+        fail(`the state schema should accept primarySoleBeneficiaryOfSpouse=${v}`);
+      }
+    }
+    // And the raw-blob reads: explicit null reads
+    // unanswered, a missing key reads unanswered, and
+    // neither collapses into false.
+    const explicitNull = parseDecemberState(
+      JSON.stringify({ taxYear: 2026, primarySoleBeneficiaryOfSpouse: null }),
+      2026,
+    );
+    if (explicitNull.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("an explicit null in the blob should read as unanswered");
+    }
+    const missing = parseDecemberState(
+      JSON.stringify({ taxYear: 2026 }),
+      2026,
+    );
+    if (missing.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("a missing key should read as unanswered, never false");
+    }
+    if (defaultDecemberState(2026).primarySoleBeneficiaryOfSpouse !== null) {
+      fail("the default state should start unanswered");
+    }
   });
 
 

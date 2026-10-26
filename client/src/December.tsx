@@ -22,6 +22,7 @@ import {
   decemberNullableMoneyFormValue,
   decemberNullableMoneyFromFormValue,
   defaultDecemberState,
+  resolveDecemberStateAtLoad,
   type DecemberCaseKind,
   type DecemberState,
   type DecemberStray,
@@ -83,7 +84,10 @@ type DecForm = {
   pretaxBalanceSpouse: string;
   rmdAlreadyReceived: string;
   spouseSoleBeneficiary: boolean;
-  primarySoleBeneficiaryOfSpouse: boolean;
+  // Tri-state (round-4 fix): true / false are explicit
+  // answers; null = not answered — the three states are
+  // distinct in the saved state and in the form control.
+  primarySoleBeneficiaryOfSpouse: boolean | null;
   stateRatePct: string;
   residenceState: "WA" | "other";
   itemizedMortgageInterest: string;
@@ -315,9 +319,19 @@ export function December() {
       // Compare-and-swap conflict: the stored copy moved
       // since this screen read it (another tab or device
       // saved first). Reload the stored state into the form
-      // instead of overwriting it, and say so plainly.
+      // instead of overwriting it, and say so plainly. An
+      // unanswered second beneficiary fact in that state
+      // resolves from the Tax Plan record exactly as at
+      // first load (display only — nothing is written).
       revisionRef.current = res.revision;
-      setForm(formFromState(res.state));
+      setForm(
+        formFromState(
+          resolveDecemberStateAtLoad(
+            res.state,
+            rothQ.data?.saved?.primarySoleBeneficiaryOfSpouse ?? null,
+          ),
+        ),
+      );
       setSaveNote(
         "These entries were changed in another tab or on another device, so your last edit wasn’t saved over them — the saved entries are shown now.",
       );
@@ -337,18 +351,38 @@ export function December() {
   /* Hydrate once from the stored blob. On a first-ever open
      (nothing stored) preseed the year block from the saved Tax
      Plan record where available, and save that preseed so the
-     session reopens on it. */
+     session reopens on it. On a stored open, an UNANSWERED
+     (null) second beneficiary fact is resolved at load from
+     the Tax Plan record (round-4 fix, resolveDecemberStateAtLoad
+     in decemberCore): the record's explicit true/false supplies
+     the effective value for display and pricing, an explicit
+     console value is never overwritten, and the resolution is
+     display-only — dirtyRef stays unset, so opening the
+     console never rewrites the stored blob; it changes only
+     when the user saves in the console. */
   useEffect(() => {
     if (hydratedRef.current) return;
     if (!decQ.data) return;
-    // On a first open the preseed reads the Tax Plan record —
-    // wait for that read to settle before hydrating, so the
-    // preseed is never skipped just for losing a race. A stored
-    // console needs no preseed and hydrates immediately.
-    if (!decQ.data.hasStored && rothQ.isPending) return;
+    // The preseed (first open) and the load-time resolution of
+    // an unanswered beneficiary fact (any open) both read the
+    // Tax Plan record — wait for that read to settle before
+    // hydrating, so neither is skipped just for losing a race.
+    // A stored console whose fact is explicitly answered needs
+    // no record and hydrates immediately.
+    const needsRecord =
+      !decQ.data.hasStored ||
+      decQ.data.state.primarySoleBeneficiaryOfSpouse == null;
+    if (needsRecord && rothQ.isPending) return;
     hydratedRef.current = true;
     revisionRef.current = decQ.data.revision;
-    let initial = formFromState(decQ.data.state);
+    let initial = formFromState(
+      decQ.data.hasStored
+        ? resolveDecemberStateAtLoad(
+            decQ.data.state,
+            rothQ.data?.saved?.primarySoleBeneficiaryOfSpouse ?? null,
+          )
+        : decQ.data.state,
+    );
     if (!decQ.data.hasStored && rothQ.data) {
       const s = rothQ.data.saved;
       const snap = rothQ.data.snapshot;
@@ -735,20 +769,47 @@ export function December() {
             />
             Spouse is sole beneficiary of the pre-tax accounts
           </label>
-          {joint && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={form.primarySoleBeneficiaryOfSpouse}
-                onChange={(e) =>
-                  set("primarySoleBeneficiaryOfSpouse", e.target.checked)
-                }
-              />
+        </div>
+        {joint && (
+          <div className="mt-3 max-w-md">
+            <label
+              className={labelCls}
+              htmlFor="december-primary-sole-beneficiary-of-spouse"
+            >
               You are the sole beneficiary of your spouse’s pre-tax accounts
             </label>
-          )}
-        </div>
+            <select
+              id="december-primary-sole-beneficiary-of-spouse"
+              aria-label="You are the sole beneficiary of your spouse’s pre-tax accounts"
+              className={inputCls}
+              value={
+                form.primarySoleBeneficiaryOfSpouse == null
+                  ? "unanswered"
+                  : form.primarySoleBeneficiaryOfSpouse
+                    ? "yes"
+                    : "no"
+              }
+              onChange={(e) =>
+                set(
+                  "primarySoleBeneficiaryOfSpouse",
+                  e.target.value === "unanswered"
+                    ? null
+                    : e.target.value === "yes",
+                )
+              }
+            >
+              <option value="unanswered">Not answered</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+            <p className={hintCls}>
+              This fact alone picks your spouse’s RMD table. “Not answered”
+              prices it on the Uniform table; when your Tax Plan record
+              answers this, that answer shows here until you answer in this
+              console.
+            </p>
+          </div>
+        )}
       </section>
 
       {/* Year-to-date actuals */}
