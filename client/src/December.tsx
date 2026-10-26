@@ -565,7 +565,7 @@ export function December() {
 
   return (
     <div>
-      <h2 className="mt-4 text-base font-semibold">December projection</h2>
+      <h2 className="mt-4 text-base font-semibold">December draw</h2>
       <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
         A year-end projection for the December decision: enter what has already posted this
         year and what is still to come, and read the largest pre-tax draw that keeps the
