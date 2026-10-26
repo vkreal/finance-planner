@@ -464,6 +464,51 @@ export function serializeDecemberState(
   return JSON.stringify({ ...state, revision });
 }
 
+/* ---------------- Form conversion: nullable money fields ----------------
+   The December form carries typed strings; the saved state
+   carries numbers. Most money fields are plain numbers —
+   blank reads as $0 and the two are the same fact, so the
+   form renders $0 as blank like every other view. FOUR
+   fields are NULLABLE, and for them null and $0 are
+   different facts with different pricing:
+
+   · pretaxBalancePrimary / pretaxBalanceSpouse — null =
+     not entered (no RMD priced for that owner, no
+     available-balance cap on the draw); $0 = a known empty
+     balance (that owner's RMD is $0 and the balance caps
+     the draw at what the balances actually hold).
+   · acaBenchmarkAnnual — null = no benchmark entered (the
+     credit is not priced); $0 prices a $0 credit.
+   · acaEnrollmentPremiumAnnual — null = NO enrollment-
+     premium cap; $0 caps every case's final credit at $0.
+
+   Rendering any of these four through the generic
+   $0-shows-blank converter silently turned a known $0 into
+   "not entered" on the next form load (round-2 defect 1:
+   a household with an explicitly entered $0 balance got a
+   fictitious draw, because the solver imposes no balance
+   cap on a null balance). These two converters are the
+   pair the view's form boundary runs for exactly those
+   four fields — a null renders blank, a $0 renders "0",
+   and the parse reads blank back as null and "0" back as
+   $0 — so an entered zero round-trips as zero. The
+   fixtures pin this exact pair. */
+export function decemberNullableMoneyFormValue(n: number | null): string {
+  if (n == null) return "";
+  // The same grouped-thousands rendering the money inputs
+  // use everywhere (fmtMoneyInput in the client): cents
+  // shown only when the amount has them. $0 renders "0" —
+  // visibly distinct from the blank that means not entered.
+  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+export function decemberNullableMoneyFromFormValue(s: string): number | null {
+  const cleaned = s.replace(/[$,\s]/g, "");
+  if (cleaned === "") return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
 /* Assemble ONE case's single-year engine dials at a given
    pre-tax draw. The year's income is: year-to-date actuals +
    this case's remaining-income ranges + the stray amounts
@@ -710,6 +755,32 @@ export function computeDecemberProjection(
       : solvePlaygroundAcaCliffFill(zeroInputs[1]!, state.bufferDollars);
   const drawForPricing = headlineDraw ?? 0;
 
+  // Round-2 nit: a $0 headline can bind for two different
+  // reasons — the year's income already uses the room under
+  // the target, or the entered pre-tax balance is $0 and
+  // there is simply nothing to draw. The headline must name
+  // the real one. The balance binds SOLELY when a balance
+  // was entered, the entered total is exactly $0, and the
+  // same solve with NO balance entered (no cap) finds a
+  // positive draw — i.e. income room exists and only the
+  // empty balance holds the draw at $0.
+  const enteredTotalBalance =
+    state.pretaxBalancePrimary != null || state.pretaxBalanceSpouse != null
+      ? r2((state.pretaxBalancePrimary ?? 0) + (state.pretaxBalanceSpouse ?? 0))
+      : state.pretaxBalance;
+  const uncappedDraw =
+    cliff != null && headlineDraw === 0 && enteredTotalBalance === 0
+      ? solvePlaygroundAcaCliffFill(
+          {
+            ...zeroInputs[1]!,
+            pretaxBalance: null,
+            pretaxBalanceSpouse: undefined,
+          },
+          state.bufferDollars,
+        )
+      : null;
+  const zeroBalanceBinds = uncappedDraw != null && uncappedDraw > 0;
+
   const coverageReduction = strayAmount(state.strayCoverage);
   const cases: DecemberCaseResult[] = DECEMBER_CASE_KINDS.map((kind, i) => {
     const zero = zeroResults[i]!;
@@ -782,6 +853,9 @@ export function computeDecemberProjection(
         : "No ACA cliff to aim at — enter the ACA household size for the year to size the December draw.";
   } else if (zeroDrawOverCliff) {
     headlineText = `No December draw is safe this year: income already posted puts MAGI at ${fmt(likelyCase.nonDrawAcaMagi)}, over the ${fmt(cliff)} cliff before any draw — no draw can fix that year. The credit is lost in the likely case and the advance credit taken (${fmt(state.aptcTaken)}) is repaid.`;
+  } else if (zeroBalanceBinds) {
+    headlineText =
+      "Take no December draw: the pre-tax balance is $0, so there is nothing to draw.";
   } else if (headlineDraw != null && headlineDraw <= 0) {
     headlineText = `Take no December draw: income already posted leaves no room under the cliff minus your ${fmt(state.bufferDollars)} buffer.`;
   } else {
@@ -1068,9 +1142,18 @@ export function runDecemberFixtures(): {
     // $10,000, so the zero-draw MAGI is $70,000 + $10,000 =
     // $80,000 — already over the $79,600 target (cliff
     // $84,600 − buffer $5,000) — and the safe draw is $0.
+    // FACT PATTERN (round-2 adjustment): the primary is NOT
+    // the spouse's sole beneficiary here, so the Uniform
+    // Lifetime Table genuinely applies to her RMD — with
+    // the primary as her sole beneficiary, more than 10
+    // years younger, the Joint Life table would apply
+    // instead (pinned separately by
+    // dec-spouse-rmd-joint-table). The expectation is
+    // unchanged.
     const s = base();
     s.agePrimary = 60;
     s.ageSpouse = 75;
+    s.spouseSoleBeneficiary = false;
     s.onMedicareSpouse = true;
     s.ytdOtherOrdinary = 70000;
     s.pretaxBalancePrimary = 0;
@@ -1080,10 +1163,143 @@ export function runDecemberFixtures(): {
     exact(fail, "spouse RMD priced", pg.rmdSpouse, 10000);
     exact(fail, "primary RMD", pg.rmdPrimary, 0);
     exact(fail, "gross RMD", pg.rmdGross, 10000);
+    exact(fail, "spouse RMD divisor", pg.rmdDivisor, 24.6);
+    if (pg.rmdTable !== "uniform") {
+      fail(`spouse RMD table should be uniform, got ${pg.rmdTable}`);
+    }
     const r = computeDecemberProjection(s);
     const likely = r.cases[1]!;
     exact(fail, "non-draw MAGI", likely.nonDrawAcaMagi, 80000);
     if (r.headlineDraw !== 0) fail(`headline should be $0, got ${r.headlineDraw}`);
+  });
+
+  run("dec-spouse-rmd-joint-table", (fail) => {
+    // Round-2 fix 2: the spouse's RMD selects its IRS
+    // lifetime table the same way the primary's does. Same
+    // household as dec-spouse-rmd-on-own-clock, except the
+    // primary IS the spouse's sole beneficiary and is more
+    // than 10 years younger (60 vs 75), so Pub. 590-B
+    // Table II (Joint and Last Survivor) applies to HER
+    // RMD: $246,000 / 28.3 = $8,692.58, not the Uniform
+    // table's $246,000 / 24.6 = $10,000. Zero-draw MAGI is
+    // $70,000 + $8,692.58 = $78,692.58; the room to the
+    // $79,600 target is a $907.42 draw; and the credit at a
+    // $0 draw is $20,000 − 9.96% × $78,692.58 = $12,162.22.
+    // (Verified against the live engine before the fix,
+    // which priced the Uniform figures: RMD $10,000, MAGI
+    // $80,000, draw $0, credit $12,032.00.)
+    const s = base();
+    s.agePrimary = 60;
+    s.ageSpouse = 75;
+    s.spouseSoleBeneficiary = true;
+    s.onMedicareSpouse = true;
+    s.ytdOtherOrdinary = 70000;
+    s.pretaxBalancePrimary = 0;
+    s.pretaxBalanceSpouse = 246000;
+    s.aptcTaken = 12000;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "spouse RMD on the Joint table", pg.rmdSpouse, 8692.58);
+    exact(fail, "primary RMD", pg.rmdPrimary, 0);
+    exact(fail, "gross RMD", pg.rmdGross, 8692.58);
+    exact(fail, "spouse RMD divisor", pg.rmdDivisor, 28.3);
+    if (pg.rmdTable !== "joint") {
+      fail(`spouse RMD table should be joint, got ${pg.rmdTable}`);
+    }
+    exact(fail, "zero-draw ACA MAGI", pg.acaMagi, 78692.58);
+    exact(fail, "zero-draw credit", pg.aca.credit, 12162.22);
+    const r = computeDecemberProjection(s);
+    const likely = r.cases[1]!;
+    exact(fail, "non-draw MAGI", likely.nonDrawAcaMagi, 78692.58);
+    near(fail, "headline draw", r.headlineDraw, 907.42);
+    near(fail, "likely max draw", likely.maxDraw, 907.42);
+  });
+
+  run("dec-zero-balance-round-trips", (fail) => {
+    // Round-2 fix 1: a known $0 pre-tax balance round-trips
+    // as zero through the form, never as not-entered. The
+    // reviewer's repro: a legacy blob with pretaxBalance 0
+    // (ages 60/58, HH2, benchmark $20,000, posted ordinary
+    // income $50,000, buffer $5,000) — the correct headline
+    // draw is $0 (no balance, no cap-free room), where the
+    // form's old $0-shows-blank conversion turned the
+    // balance into null and the console recommended
+    // $29,600. The converters pinned here are the exact
+    // pair the view's form boundary runs for the nullable
+    // money fields (decemberNullableMoneyFormValue /
+    // decemberNullableMoneyFromFormValue in this module).
+    const legacy = parseDecemberState(
+      JSON.stringify({ taxYear: 2026, pretaxBalance: 0 }),
+      2026,
+    );
+    if (legacy.pretaxBalancePrimary !== 0) {
+      fail(`legacy $0 should migrate to a $0 primary balance, got ${legacy.pretaxBalancePrimary}`);
+    }
+    if (legacy.pretaxBalance !== 0) {
+      fail("legacy combined $0 should keep its value");
+    }
+    // The form load/save cycle: $0 renders "0" (not blank)
+    // and parses back to $0; blank renders and parses as
+    // not-entered (null) — the two stay distinct.
+    if (decemberNullableMoneyFormValue(legacy.pretaxBalancePrimary) !== "0") {
+      fail("an entered $0 balance should render as \"0\", not blank");
+    }
+    if (decemberNullableMoneyFromFormValue("0") !== 0) {
+      fail("\"0\" should parse back to a $0 balance");
+    }
+    if (decemberNullableMoneyFormValue(null) !== "") {
+      fail("a not-entered balance should render blank");
+    }
+    if (decemberNullableMoneyFromFormValue("") !== null) {
+      fail("blank should parse back to not-entered (null)");
+    }
+    if (decemberNullableMoneyFormValue(246000) !== "246,000") {
+      fail("a positive balance should render grouped, as the money inputs do");
+    }
+    if (decemberNullableMoneyFromFormValue("246,000") !== 246000) {
+      fail("a grouped balance should parse back to its value");
+    }
+    // The full repro, with the balance carried through the
+    // round trip: the projection caps the draw at $0, and
+    // the headline names the empty balance as the reason
+    // (round-2 fix 3) — income room ($29,600 of it) exists.
+    const s = base();
+    s.pretaxBalancePrimary = decemberNullableMoneyFromFormValue(
+      decemberNullableMoneyFormValue(legacy.pretaxBalancePrimary),
+    );
+    s.pretaxBalanceSpouse = legacy.pretaxBalanceSpouse;
+    s.pretaxBalance = legacy.pretaxBalance;
+    s.ytdOtherOrdinary = 50000;
+    const r = computeDecemberProjection(s);
+    if (r.headlineDraw !== 0) {
+      fail(`headline should be $0 with a $0 balance, got ${r.headlineDraw}`);
+    }
+    if (
+      r.headlineText !==
+      "Take no December draw: the pre-tax balance is $0, so there is nothing to draw."
+    ) {
+      fail(`headline should name the $0 balance, got: ${r.headlineText}`);
+    }
+    // The contrast that proves the cap is what binds: the
+    // same year with NO balance entered caps nothing and
+    // recommends the full $29,600 of income room, with the
+    // ordinary maximum-draw headline.
+    const unentered = base();
+    unentered.ytdOtherOrdinary = 50000;
+    const ru = computeDecemberProjection(unentered);
+    near(fail, "unentered-balance headline", ru.headlineDraw, 29600);
+    // And a $0 balance with NO income room keeps the
+    // income headline — the balance text fires only when
+    // the empty balance is the sole binding reason.
+    const noRoom = base();
+    noRoom.pretaxBalancePrimary = 0;
+    noRoom.pretaxBalanceSpouse = null;
+    noRoom.pretaxBalance = 0;
+    noRoom.ytdOtherOrdinary = 79600;
+    const rn = computeDecemberProjection(noRoom);
+    if (rn.headlineDraw !== 0) fail("no-room headline draw should be $0");
+    if (!rn.headlineText.includes("leaves no room")) {
+      fail(`no-room headline should name the income, got: ${rn.headlineText}`);
+    }
   });
 
   run("dec-rmd-already-received-counted-once", (fail) => {

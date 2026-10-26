@@ -19,6 +19,8 @@ import { acaHouseholdSizeForYear } from "@space/server/taxEngine";
 import {
   computeDecemberProjection,
   decemberBenchmarkTier,
+  decemberNullableMoneyFormValue,
+  decemberNullableMoneyFromFormValue,
   defaultDecemberState,
   type DecemberCaseKind,
   type DecemberState,
@@ -43,7 +45,13 @@ import {
 /* The form carries typed strings, like the Playground form;
    the saved state carries numbers. These two converters are
    the only boundary. A $0 amount shows blank, as on the other
-   views' money dials. */
+   views' money dials — EXCEPT the four nullable money fields
+   (the two per-owner pre-tax balances, the ACA benchmark,
+   and the enrollment premium), where null (not entered) and
+   $0 are different facts with different pricing: those four
+   convert through decemberCore's nullable-money pair, which
+   renders an entered $0 as "0" and reads blank back as null,
+   so a known $0 round-trips as zero (round-2 fix 1). */
 type RangeForm = { low: string; likely: string; high: string };
 type StrayForm = { status: DecemberStray["status"]; amount: string };
 type DecForm = {
@@ -107,12 +115,6 @@ const parseMoney = (s: string): number => {
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : 0;
 };
-const parseMoneyOrNull = (s: string): number | null => {
-  const cleaned = s.replace(/[$,\s]/g, "");
-  if (cleaned === "") return null;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
-};
 const parseIntOrNull = (s: string): number | null => {
   const cleaned = s.replace(/\s/g, "");
   if (cleaned === "") return null;
@@ -151,14 +153,18 @@ function formFromState(s: DecemberState): DecForm {
     remQualifiedDividends: rg(s.remQualifiedDividends),
     remOtherOrdinary: rg(s.remOtherOrdinary),
     acaHouseholdSize: numStr(s.acaHouseholdSize),
-    acaBenchmarkAnnual: moneyStr(s.acaBenchmarkAnnual ?? 0),
-    acaEnrollmentPremiumAnnual: moneyStr(s.acaEnrollmentPremiumAnnual ?? 0),
+    // The four nullable money fields render through the
+    // nullable-money converter: null shows blank, an
+    // entered $0 shows "0" — never the generic moneyStr,
+    // whose $0-shows-blank would erase the distinction.
+    acaBenchmarkAnnual: decemberNullableMoneyFormValue(s.acaBenchmarkAnnual),
+    acaEnrollmentPremiumAnnual: decemberNullableMoneyFormValue(
+      s.acaEnrollmentPremiumAnnual,
+    ),
     aptcTaken: moneyStr(s.aptcTaken),
     bufferDollars: fmtMoneyInput(s.bufferDollars),
-    pretaxBalancePrimary:
-      s.pretaxBalancePrimary == null ? "" : moneyStr(s.pretaxBalancePrimary),
-    pretaxBalanceSpouse:
-      s.pretaxBalanceSpouse == null ? "" : moneyStr(s.pretaxBalanceSpouse),
+    pretaxBalancePrimary: decemberNullableMoneyFormValue(s.pretaxBalancePrimary),
+    pretaxBalanceSpouse: decemberNullableMoneyFormValue(s.pretaxBalanceSpouse),
     rmdAlreadyReceived: moneyStr(s.rmdAlreadyReceived),
     spouseSoleBeneficiary: s.spouseSoleBeneficiary,
     stateRatePct: String(s.stateRatePct),
@@ -226,28 +232,28 @@ function stateFromForm(f: DecForm): DecemberState {
     remOtherOrdinary: rg(f.remOtherOrdinary),
     acaHouseholdSize: size != null && size >= 1 && size <= 20 ? size : null,
     acaBenchmarkAnnual: (() => {
-      const n = parseMoneyOrNull(f.acaBenchmarkAnnual);
+      const n = decemberNullableMoneyFromFormValue(f.acaBenchmarkAnnual);
       return n == null ? null : clamp0(n);
     })(),
     acaEnrollmentPremiumAnnual: (() => {
-      const n = parseMoneyOrNull(f.acaEnrollmentPremiumAnnual);
+      const n = decemberNullableMoneyFromFormValue(f.acaEnrollmentPremiumAnnual);
       return n == null ? null : clamp0(n);
     })(),
     aptcTaken: clamp0(parseMoney(f.aptcTaken)),
     bufferDollars: clamp0(parseMoney(f.bufferDollars)),
     pretaxBalancePrimary: (() => {
-      const n = parseMoneyOrNull(f.pretaxBalancePrimary);
+      const n = decemberNullableMoneyFromFormValue(f.pretaxBalancePrimary);
       return n == null ? null : clamp0(n);
     })(),
     pretaxBalanceSpouse: (() => {
-      const n = parseMoneyOrNull(f.pretaxBalanceSpouse);
+      const n = decemberNullableMoneyFromFormValue(f.pretaxBalanceSpouse);
       return n == null ? null : clamp0(n);
     })(),
     // The legacy combined field is derived as the split's
     // sum, so the saved blob's two views of the money agree.
     pretaxBalance: (() => {
-      const prim = parseMoneyOrNull(f.pretaxBalancePrimary);
-      const sp = parseMoneyOrNull(f.pretaxBalanceSpouse);
+      const prim = decemberNullableMoneyFromFormValue(f.pretaxBalancePrimary);
+      const sp = decemberNullableMoneyFromFormValue(f.pretaxBalanceSpouse);
       if (prim == null && sp == null) return null;
       return clamp0(prim ?? 0) + clamp0(sp ?? 0);
     })(),
@@ -676,12 +682,12 @@ export function December() {
             })}
           {moneyField("Pre-tax balance — primary (prior Dec 31)", form.pretaxBalancePrimary, (v) =>
             set("pretaxBalancePrimary", v),
-          { idLabel: "December pretax balance primary", hint: "The primary filer's own pre-tax balance. Sizes their RMD on their own clock and caps the draw." },
+          { idLabel: "December pretax balance primary", hint: "The primary filer's own pre-tax balance. Sizes their RMD on their own clock and caps the draw. Enter 0 for a known-empty balance — blank means not entered, and only an entered balance caps the draw." },
           )}
           {joint &&
             moneyField("Pre-tax balance — spouse (prior Dec 31)", form.pretaxBalanceSpouse, (v) =>
               set("pretaxBalanceSpouse", v),
-            { idLabel: "December pretax balance spouse", hint: "The spouse's own pre-tax balance — their RMD is computed on their own age and divisor table, not the primary's." },
+            { idLabel: "December pretax balance spouse", hint: "The spouse's own pre-tax balance — their RMD is computed on their own age and divisor table, not the primary's. Enter 0 for a known-empty balance — blank means not entered." },
             )}
           {moneyField("RMD already received this year", form.rmdAlreadyReceived, (v) =>
             set("rmdAlreadyReceived", v),
@@ -790,7 +796,7 @@ export function December() {
           )}
           {moneyField("Benchmark premium (annual)", form.acaBenchmarkAnnual, (v) =>
             set("acaBenchmarkAnnual", v),
-          { idLabel: "December ACA benchmark", hint: "Second-lowest-cost Silver plan for the household." },
+          { idLabel: "December ACA benchmark", hint: "Second-lowest-cost Silver plan for the household. Blank means the credit is not priced; an entered 0 prices a $0 credit." },
           )}
           {moneyField("Enrollment premium (annual, the plan actually enrolled in)", form.acaEnrollmentPremiumAnnual, (v) =>
             set("acaEnrollmentPremiumAnnual", v),

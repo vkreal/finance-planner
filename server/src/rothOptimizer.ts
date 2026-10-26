@@ -71,7 +71,6 @@ priceYear,
 resolveAcaHouseholdSchedule,
 rmdForYear,
 simulateRothPlan,
-uniformRmdFor,
 type AcaHouseholdStep,
 type DrawOrder,
 type EducationStudent,
@@ -2584,10 +2583,16 @@ export type PlaygroundYearInputs = {
   // identically to before:
   // · pretaxBalanceSpouse: the spouse's own prior-Dec-31
   //   pre-tax balance. When present, the spouse's RMD is
-  //   computed on the spouse's OWN clock (uniformRmdFor —
-  //   own age, Uniform Lifetime Table), mirroring the long-
-  //   horizon engine's per-owner RMDs, and added to the
-  //   year's RMD income beside the primary's.
+  //   computed on the spouse's OWN clock — rmdForYear with
+  //   the roles swapped (owner = spouse, beneficiary =
+  //   primary), so the table selection mirrors the
+  //   primary's exactly: the Joint and Last Survivor Table
+  //   when the spouse's sole-beneficiary spouse (the
+  //   primary) is more than 10 years younger, the Uniform
+  //   Lifetime Table otherwise (round-2 fix: the spouse
+  //   branch originally always used the Uniform table) —
+  //   and added to the year's RMD income beside the
+  //   primary's.
   // · rmdAlreadyReceived: the part of this year's computed
   //   RMD the household has ALREADY received (and already
   //   counted in its entered income). The RMD income the
@@ -2990,8 +2995,11 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // December fix: when a SPOUSE balance is entered, the
   // primary's RMD runs on the primary's balance alone and
   // the spouse's RMD is computed on the spouse's OWN clock
-  // (uniformRmdFor — own age, Uniform Lifetime Table, the
-  // long-horizon engine's per-owner rule) and added; with
+  // (rmdForYear with the roles swapped — the same table
+  // selection as the primary's: Joint and Last Survivor
+  // when the spouse's sole-beneficiary spouse, the
+  // primary, is more than 10 years younger; Uniform
+  // otherwise) and added; with
   // no spouse balance the single-balance path below is the
   // pre-fix computation term for term. The RMD income the
   // year prices is the gross RMD net of any amount already
@@ -3022,15 +3030,28 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     rmdTable = r.table;
   }
   if (hasSpouseBalance && joint && ageSpouse != null) {
-    const rs = uniformRmdFor({
+    // The spouse's own RMD, priced by the SAME rule as the
+    // primary's with the roles swapped: the owner is the
+    // spouse, the beneficiary whose age can select the
+    // Joint Life table is the primary, and the
+    // sole-beneficiary flag is read symmetrically (it names
+    // the household's marking that each spouse is the
+    // other's sole beneficiary). Round-2 fix: this branch
+    // originally always used the Uniform Lifetime Table,
+    // which overstates the RMD when the primary is the
+    // spouse's sole beneficiary and more than 10 years
+    // younger (the Joint table's larger divisor applies).
+    const rs = rmdForYear({
       priorDec31PreTax: inp.pretaxBalanceSpouse ?? 0,
-      age: ageSpouse,
-      birthYear: inp.taxYear - ageSpouse,
+      agePrimary: ageSpouse,
+      ageSpouse: inp.agePrimary,
+      birthYearPrimary: inp.taxYear - ageSpouse,
+      spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
     });
     rmdSpouse = rs.rmd;
     if (rmdDivisor == null && rs.divisor != null) {
       rmdDivisor = rs.divisor;
-      rmdTable = "uniform";
+      rmdTable = rs.table;
     }
   }
   const rmdGross = r2(rmdPrimary + rmdSpouse);
