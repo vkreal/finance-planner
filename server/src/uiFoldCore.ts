@@ -21,6 +21,11 @@
    or non-object blob reads as an empty map, and only entries
    whose value is exactly true survive. No amount, version, or
    total is ever touched by this state. */
+import {
+  isDangerousDictKey,
+  safeDict,
+} from "./safeDictCore";
+
 export const UI_FOLD_STATE_KEY = "ui_fold_state_v1";
 
 export function parseUiFoldState(
@@ -32,8 +37,13 @@ export function parseUiFoldState(
     if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {};
     }
-    const out: Record<string, boolean> = {};
+    // Security round-2, finding 1 sweep: this map is also built
+    // from restored JSON keys, so it is a null-prototype
+    // dictionary with dangerous keys dropped (safeDictCore),
+    // like the import-settings dictionaries.
+    const out: Record<string, boolean> = safeDict();
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (isDangerousDictKey(k)) continue;
       if (v === true) out[k] = true;
     }
     return out;
@@ -55,6 +65,9 @@ export function applyUiFoldSet(
   open: boolean,
 ): string {
   const map = parseUiFoldState(storedRaw);
+  // Dangerous dictionary keys are never stored (safeDictCore),
+  // matching the parser: writing one is a no-op.
+  if (isDangerousDictKey(id)) return JSON.stringify(map);
   if (open) map[id] = true;
   else delete map[id];
   return JSON.stringify(map);

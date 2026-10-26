@@ -11,6 +11,11 @@
    the preview UI; the write path (importTransactions +
    importCore's atomic batch plan) is unchanged. */
 
+import {
+  isDangerousDictKey,
+  safeDict,
+} from "./safeDictCore";
+
 /* ---------------- dates ----------------
    Accepted shapes: YYYY-MM-DD, M/D/YYYY, M-D-YYYY, and — new in
    the IM-2 dialect fixes — M/D/YY and M-D-YY, read as 20YY.
@@ -328,18 +333,31 @@ export function parseImportSettings(raw: string): ImportSettingsBlob {
       if (profiles.length >= IMPORT_PROFILE_LIMIT) break;
     }
   }
-  const ofxAccounts: Record<string, ImportOfxAccountMapping> = {};
+  // Security round-2, finding 1 sweep: this dictionary is built
+  // from restored JSON keys exactly like nwImportCore's label
+  // mappings were, so it gets the same treatment — a
+  // null-prototype dictionary (safeDictCore) and dangerous keys
+  // ("__proto__" / "constructor" / "prototype") rejected at
+  // parse time. On a plain {} a "__proto__" key would mutate the
+  // object's prototype instead of becoming a visible entry.
+  const ofxAccounts: Record<string, ImportOfxAccountMapping> = safeDict();
   if (
     typeof o.ofxAccounts === "object" &&
     o.ofxAccounts !== null &&
     !Array.isArray(o.ofxAccounts)
   ) {
+    let kept = 0;
     for (const [k, v] of Object.entries(
       o.ofxAccounts as Record<string, unknown>,
     )) {
+      const key = k.slice(0, IMPORT_OFX_KEY_CAP);
+      if (isDangerousDictKey(key)) continue;
       const clean = cleanImportOfxAccountMapping(v);
-      if (clean) ofxAccounts[k.slice(0, IMPORT_OFX_KEY_CAP)] = clean;
-      if (Object.keys(ofxAccounts).length >= IMPORT_OFX_ACCOUNT_LIMIT) break;
+      if (clean) {
+        ofxAccounts[key] = clean;
+        kept++;
+      }
+      if (kept >= IMPORT_OFX_ACCOUNT_LIMIT) break;
     }
   }
   return { lastSettings, profiles, ofxAccounts };
@@ -426,10 +444,17 @@ export function withImportOfxAccount(
   entries.delete(cleanKey);
   entries.set(cleanKey, { ...mapping });
   const kept = [...entries.entries()].slice(-IMPORT_OFX_ACCOUNT_LIMIT);
+  // Rebuilt as a null-prototype dictionary with dangerous keys
+  // dropped, exactly as the parser builds it (safeDictCore).
+  const ofxAccounts: Record<string, ImportOfxAccountMapping> = safeDict();
+  for (const [k, v] of kept) {
+    if (isDangerousDictKey(k)) continue;
+    ofxAccounts[k] = v;
+  }
   return {
     lastSettings: blob.lastSettings,
     profiles: blob.profiles,
-    ofxAccounts: Object.fromEntries(kept),
+    ofxAccounts,
   };
 }
 

@@ -114,6 +114,7 @@ type RothBlobRevisionState,
 } from "./rothRevisionCore";
 import {
 BACKUP_AUTHENTICITY_SEMANTICS,
+RESTORE_VALIDATION_SEMANTICS,
 BALANCE_SEMANTICS,
 CEILING_BREACHED_SEMANTICS,
 CEILINGS_REPLACEMENT_SENTENCE,
@@ -283,6 +284,7 @@ RESTORE_ROTH_BLOB_KEY,
 backupNwAccount,
 backupPayload,
 backupSetting,
+isEncryptedAtRestSettingKey,
 isRealCalendarDate,
 normalizeBackupBalance,
 payloadKeyCheckValue,
@@ -2622,7 +2624,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 43;
+export const API_CONTRACT_VERSION = 44;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -5111,7 +5113,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
   deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
   exportbackup: "Export the complete dataset as one decrypted backup payload. The payload carries an authenticityMac — a keyed MAC over its contents — which restorebackup verifies before restoring.",
-  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes.",
+  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative, and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes; every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes.",
   listBackups: "List the encrypted backup files the Backups panel shows: this space's own backups folder unioned with the legacy shared folder. Each entry's source says which folder it resolved to — \"own\" (deletable from the app) or \"legacy\" (exists only in the legacy folder, which is read-only: listed and restorable, never deletable from here).",
   deleteBackup: "Delete one backup-*.mstbak file from this space's own backups folder. A backup that exists only in the legacy shared folder is refused — that folder is read-only.",
   deleteAllBackups: "Delete every backup file in this space's own backups folder. Legacy-folder backups are never deleted.",
@@ -5136,6 +5138,7 @@ const describeApiResponse = z.object({
   irmaaLookbackSemantics: z.string(),
   ceilingBreachedSemantics: z.string(),
   backupAuthenticitySemantics: z.string(),
+  restoreValidationSemantics: z.string(),
   scoreIdentities: z.string(),
   lawYearSemantics: z.string(),
   rmdAgeSemantics: z.string(),
@@ -5352,6 +5355,7 @@ export const Actions = {
         irmaaLookbackSemantics: IRMAA_LOOKBACK_SEMANTICS,
         ceilingBreachedSemantics: CEILING_BREACHED_SEMANTICS,
         backupAuthenticitySemantics: BACKUP_AUTHENTICITY_SEMANTICS,
+        restoreValidationSemantics: RESTORE_VALIDATION_SEMANTICS,
         scoreIdentities: SCORE_IDENTITIES,
         lawYearSemantics: LAW_YEAR_SEMANTICS,
         rmdAgeSemantics: RMD_AGE_SEMANTICS,
@@ -12097,14 +12101,14 @@ export const Actions = {
       const settingsRows: (typeof schema.settings.$inferInsert)[] = [];
       for (const s of args.settings) {
         let stored = s.value;
-        if (
-          s.key === "opening_reserve_cents" ||
-          s.key === KEY_CHECK_SETTING ||
-          s.key === "retirement_calc_inputs_v1" ||
-          s.key === "retirement_calc_baseline_v1" ||
-          s.key === "roth_conversion_inputs_v1" ||
-          s.key === NW_IMPORT_SETTINGS_KEY
-        ) {
+        // The encrypted-at-rest keys are restoreCore's ONE list
+        // (ENCRYPTED_AT_REST_SETTING_KEYS, via
+        // isEncryptedAtRestSettingKey) — security round-2,
+        // finding 3: the hand-written list here omitted
+        // IMPORT_SETTINGS_KEY, so a restored spending-import
+        // settings value was stored as plaintext until a later
+        // save happened to rewrite it.
+        if (isEncryptedAtRestSettingKey(s.key)) {
           if (isEncrypted(s.value)) {
             // Reserved-prefix verification (cluster E): a value for
             // one of these encrypted-at-rest keys that CARRIES the

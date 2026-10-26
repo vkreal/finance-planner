@@ -2756,20 +2756,8 @@ export function RetirementCalc() {
           className={`mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3${flashCls}`}
         >
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <p className="tnum text-sm">
-              <strong>Calculated with:</strong>{" "}
-              Portfolio {fmt(inputs.startCents)} ·{" "}
-              {inputs.strategy === "percent"
-                ? `Spending ${inputs.percentOfPortfolio}% of portfolio/yr (Percent of portfolio)`
-                : `Spending ${fmt(inputs.spendingCents)}/yr${inputs.strategy === "guardrails" ? " (Guardrails base)" : inputs.strategy === "phased" ? " (Phased start)" : " (Constant)"}`}{" "}
-              · Ages {inputs.currentAge} → retire {inputs.retirementAge} → end {inputs.endAge} ·{" "}
-              {stocks}% stocks · Expected return {(expected * 100).toFixed(2)}% · Volatility {(vol * 100).toFixed(2)}%
-              {inputs.strategy === "guardrails" &&
-                ` · Guardrails cut ${inputs.guardrailsCutPct}% · Raise ${inputs.guardrailsRaisePct}% · Adjust ${inputs.guardrailsAdjustmentPct}%`}
-              {inputs.strategy === "phased" &&
-                ` · Steps down ${inputs.phaseDeclinePct}%/yr from age ${inputs.phaseStartAge}`}
-              {inputs.extraIncomeCents > 0 &&
-                ` · Extra income ${fmt(inputs.extraIncomeCents)}/yr from age ${inputs.extraIncomeStartAge ?? inputs.retirementAge}`}
+            <p className="text-sm">
+              <strong>Calculated with:</strong>
             </p>
             {resultsFlash && (
               <span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-xs font-semibold text-white">
@@ -2777,6 +2765,168 @@ export function RetirementCalc() {
               </span>
             )}
           </div>
+          {/* Tiles + strategy band (2026-10-25, option B): the
+              strip's old bold text line, re-presented. Every value
+              below is the exact expression the line rendered —
+              tiles for the headline numbers, a band picturing the
+              spending strategy's own mechanics from its real
+              dials, and a residual line for the rest — so no fact
+              the line carried is dropped. */}
+          <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+              <p className="text-xs text-[var(--dim)]">Portfolio</p>
+              <p className="tnum text-base font-semibold">{fmt(inputs.startCents)}</p>
+            </div>
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+              <p className="text-xs text-[var(--dim)]">Spending</p>
+              <p className="tnum text-base font-semibold">
+                {inputs.strategy === "percent"
+                  ? `${inputs.percentOfPortfolio}% of portfolio/yr`
+                  : `${fmt(inputs.spendingCents)}/yr`}
+              </p>
+              <p className="text-xs text-[var(--dim)]">
+                {inputs.strategy === "percent"
+                  ? "Percent of portfolio"
+                  : inputs.strategy === "guardrails"
+                    ? "Guardrails base"
+                    : inputs.strategy === "phased"
+                      ? "Phased start"
+                      : "Constant"}
+              </p>
+            </div>
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+              <p className="text-xs text-[var(--dim)]">Ages</p>
+              <p className="tnum text-base font-semibold">
+                {inputs.currentAge} → retire {inputs.retirementAge} → end {inputs.endAge}
+              </p>
+            </div>
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+              <p className="text-xs text-[var(--dim)]">Expected return</p>
+              <p className="tnum text-base font-semibold">{(expected * 100).toFixed(2)}%</p>
+            </div>
+          </div>
+          {inputs.strategy === "guardrails" ? (
+            (() => {
+              const raise = inputs.guardrailsRaisePct;
+              const cut = inputs.guardrailsCutPct;
+              const adj = inputs.guardrailsAdjustmentPct;
+              const hi = Math.max(cut * 1.2, raise * 1.6, 100);
+              const raisePos = (raise / hi) * 100;
+              const cutPos = (cut / hi) * 100;
+              const startPos = (100 / hi) * 100;
+              return (
+                <div className="mt-3">
+                  <p className="text-xs text-[var(--dim)]">
+                    Guardrails corridor — each year&rsquo;s withdrawal rate against its starting rate
+                  </p>
+                  <div
+                    className="relative mt-1 flex h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+                    role="img"
+                    aria-label={`Guardrails corridor: spending rises by ${adj}% when the withdrawal rate falls below ${raise}% of its starting rate, and falls by ${adj}% when the rate rises above ${cut}% of its starting rate; between ${raise}% and ${cut}% spending is unchanged.`}
+                  >
+                    <div className="h-full bg-[var(--surface-alt)]" style={{ width: `${raisePos}%` }} />
+                    <div className="h-full bg-[var(--accent-soft)]" style={{ width: `${Math.max(0, cutPos - raisePos)}%` }} />
+                    <div className="h-full flex-1 bg-[var(--warn-soft)]" />
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-y-0 border-l border-dashed border-[var(--dim)]"
+                      style={{ left: `${startPos}%` }}
+                    />
+                    <span
+                      className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap"
+                      style={{ left: `${(raisePos + cutPos) / 2}%` }}
+                    >
+                      Adjust ±{adj}%
+                    </span>
+                  </div>
+                  <div className="relative mt-1 h-4 text-[11px] whitespace-nowrap text-[var(--dim)]">
+                    <span className="absolute -translate-x-1/2" style={{ left: `${raisePos}%` }}>
+                      Raise {raise}%
+                    </span>
+                    <span className="absolute -translate-x-1/2" style={{ left: `${startPos}%` }}>
+                      start 100%
+                    </span>
+                    <span className="absolute -translate-x-1/2" style={{ left: `${cutPos}%` }}>
+                      Cut {cut}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })()
+          ) : inputs.strategy === "phased" ? (
+            (() => {
+              const span = Math.max(1, inputs.endAge - inputs.currentAge);
+              const levelAt = (age: number): number =>
+                age <= inputs.phaseStartAge
+                  ? 1
+                  : Math.pow(1 - inputs.phaseDeclinePct / 100, age - inputs.phaseStartAge);
+              const points: string[] = [];
+              for (let i = 0; i <= 20; i++) {
+                const age = inputs.currentAge + (span * i) / 20;
+                const x = (i / 20) * 100;
+                const y = 33 - levelAt(age) * 27;
+                points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+              }
+              const startX = Math.min(100, Math.max(0, ((inputs.phaseStartAge - inputs.currentAge) / span) * 100));
+              return (
+                <div className="mt-3">
+                  <p className="text-xs text-[var(--dim)]">
+                    Phased — spending level until age {inputs.phaseStartAge}, then steps down {inputs.phaseDeclinePct}%/yr
+                  </p>
+                  <div
+                    className="relative mt-1 h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)]"
+                    role="img"
+                    aria-label={`Phased spending shape: level until age ${inputs.phaseStartAge}, then declining ${inputs.phaseDeclinePct}% per year, ending at ${Math.round(levelAt(inputs.endAge) * 100)}% of the starting spending at age ${inputs.endAge}.`}
+                  >
+                    <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-full w-full" aria-hidden="true">
+                      <polyline points={points.join(" ")} fill="none" stroke="var(--accent)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+                    </svg>
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-y-0 border-l border-dashed border-[var(--dim)]"
+                      style={{ left: `${startX}%` }}
+                    />
+                  </div>
+                  <div className="relative mt-1 h-4 text-[11px] whitespace-nowrap text-[var(--dim)]">
+                    <span className="absolute left-0">age {inputs.currentAge}</span>
+                    <span className="absolute -translate-x-1/2" style={{ left: `${startX}%` }}>
+                      steps down from {inputs.phaseStartAge}
+                    </span>
+                    <span className="absolute right-0">
+                      age {inputs.endAge} · {Math.round(levelAt(inputs.endAge) * 100)}% of start
+                    </span>
+                  </div>
+                </div>
+              );
+            })()
+          ) : (
+            <div className="mt-3">
+              <p className="text-xs text-[var(--dim)]">
+                {inputs.strategy === "percent"
+                  ? "Percent of portfolio — spending moves with the portfolio balance"
+                  : "Constant — spending stays level in today's dollars"}
+              </p>
+              <div
+                className="relative mt-1 flex h-10 w-full items-center overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)]"
+                role="img"
+                aria-label={
+                  inputs.strategy === "percent"
+                    ? `Spending shape: ${inputs.percentOfPortfolio}% of the portfolio balance each year.`
+                    : "Spending shape: a level amount every year, in today's dollars."
+                }
+              >
+                <div
+                  aria-hidden="true"
+                  className={`mx-3 h-[3px] w-full rounded bg-[var(--accent)]${inputs.strategy === "percent" ? " opacity-70" : ""}`}
+                />
+              </div>
+            </div>
+          )}
+          <p className="tnum mt-2 text-sm">
+            {stocks}% stocks · Volatility {(vol * 100).toFixed(2)}%
+            {inputs.extraIncomeCents > 0 &&
+              ` · Extra income ${fmt(inputs.extraIncomeCents)}/yr from age ${inputs.extraIncomeStartAge ?? inputs.retirementAge}`}
+          </p>
           <p className="mt-1 text-xs text-[var(--dim)]" aria-live="polite">
             {defaultDiffLabels.length === 0
               ? "These are the defaults — the same values Reset to defaults restores."

@@ -8795,15 +8795,31 @@ export function RothConversion() {
             <strong>Calculated with:</strong>
           </p>
           <div
-            className="mt-2 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
+            className={`mt-2 flex h-9 w-full overflow-hidden rounded-[var(--radius)]${calcStartTotal > 0 ? "" : " items-center justify-center border border-[var(--border)] bg-[var(--surface-alt)]"}`}
             role="img"
-            aria-label={`Starting balances: ${calcStartSegs
-              .map(
-                (s) =>
-                  `${s.label} ${fmtDollars(s.dollars)}, ${calcStartTotal > 0 ? ((s.dollars / calcStartTotal) * 100).toFixed(1) : "0.0"} percent`,
-              )
-              .join("; ")}`}
+            aria-label={
+              calcStartTotal > 0
+                ? `Starting balances: ${calcStartSegs
+                    .map(
+                      (s) =>
+                        `${s.label} ${fmtDollars(s.dollars)}, ${((s.dollars / calcStartTotal) * 100).toFixed(1)} percent`,
+                    )
+                    .join("; ")}`
+                : "Starting balances: none yet — all five balances are $0"
+            }
           >
+            {calcStartTotal <= 0 && (
+              // Zero state (2026-10-25): with every balance at $0
+              // no segment draws, and the bare container used to
+              // read as a blank void between the heading and the
+              // legend. The empty track keeps the bar's exact
+              // height and outline, labelled, so the strip's
+              // layout never jumps; the legend below still echoes
+              // each $0 balance, unchanged.
+              <span className="text-xs text-[var(--dim)]">
+                No starting balances yet
+              </span>
+            )}
             {calcStartSegs
               .filter((s) => s.dollars > 0)
               .map((s) => (

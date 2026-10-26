@@ -29,6 +29,11 @@ ofxAccountKey,
 type OfxAccount,
 } from "./ofxCore";
 import { NW_SPLIT_BUCKETS, type NwSplitBucket } from "./nwCore";
+import {
+  hasOwnDictKey,
+  isDangerousDictKey,
+  safeDict,
+} from "./safeDictCore";
 
 export { importHeaderFingerprint };
 export type { NwSplitBucket };
@@ -248,8 +253,19 @@ export function matchNwImportRows(
     if (!byName.has(key)) byName.set(key, a.id);
   }
   return rows.map((r) => {
+    // Security round-2, finding 1: a remembered hit counts only
+    // on an OWN property of the mappings dictionary, and never
+    // for a dangerous key — a bare lookup would fall through to
+    // the object's prototype, where a crafted settings blob can
+    // plant an invisible "__proto__" mapping (the parser below
+    // rejects those keys and stores the mappings in a
+    // null-prototype dictionary; this own-property rule is the
+    // second line of defence for dictionaries built elsewhere).
+    const lookupKey = normalizeNwLabel(r.matchKey ?? r.label);
     const remembered =
-      labelMappings[normalizeNwLabel(r.matchKey ?? r.label)];
+      !isDangerousDictKey(lookupKey) && hasOwnDictKey(labelMappings, lookupKey)
+        ? labelMappings[lookupKey]
+        : undefined;
     if (remembered && ids.has(remembered.accountId)) {
       return { ...r, target: { ...remembered }, matchedBy: "remembered" as const };
     }
@@ -584,18 +600,31 @@ export function parseNwImportSettings(raw: string): NwImportSettingsBlob {
       if (profiles.length >= NW_IMPORT_PROFILE_LIMIT) break;
     }
   }
-  const labelMappings: Record<string, NwImportRowTarget> = {};
+  // Security round-2, finding 1: the mappings dictionary is a
+  // null-prototype object (safeDictCore), and dangerous keys
+  // ("__proto__" / "constructor" / "prototype") are rejected
+  // outright. On a plain {} the assignment labelMappings[k] = v
+  // with k "__proto__" would mutate the object's prototype —
+  // an invisible, unserializable entry a later lookup would
+  // still return as a "remembered" mapping.
+  const labelMappings: Record<string, NwImportRowTarget> = safeDict();
   if (
     typeof o.labelMappings === "object" &&
     o.labelMappings !== null &&
     !Array.isArray(o.labelMappings)
   ) {
+    let kept = 0;
     for (const [k, v] of Object.entries(
       o.labelMappings as Record<string, unknown>,
     )) {
+      const key = k.slice(0, NW_IMPORT_LABEL_CAP);
+      if (isDangerousDictKey(key)) continue;
       const target = cleanNwImportTarget(v);
-      if (target) labelMappings[k.slice(0, NW_IMPORT_LABEL_CAP)] = target;
-      if (Object.keys(labelMappings).length >= NW_IMPORT_LABEL_MAPPING_LIMIT) {
+      if (target) {
+        labelMappings[key] = target;
+        kept++;
+      }
+      if (kept >= NW_IMPORT_LABEL_MAPPING_LIMIT) {
         break;
       }
     }
@@ -654,5 +683,14 @@ export function withNwLabelMappings(
     entries.set(key, { ...v });
   }
   const kept = [...entries.entries()].slice(-NW_IMPORT_LABEL_MAPPING_LIMIT);
-  return { profiles: blob.profiles, labelMappings: Object.fromEntries(kept) };
+  // The merged dictionary is rebuilt as a null-prototype object
+  // with dangerous keys dropped (safeDictCore), exactly as the
+  // parser builds it — a mapping confirmed for a "__proto__"
+  // label is never stored, so it can never be matched later.
+  const labelMappings: Record<string, NwImportRowTarget> = safeDict();
+  for (const [k, v] of kept) {
+    if (isDangerousDictKey(k)) continue;
+    labelMappings[k] = v;
+  }
+  return { profiles: blob.profiles, labelMappings };
 }

@@ -13,7 +13,10 @@
 //      the current key, the payload's authenticity MAC is checked
 //      (S1: a carried MAC that does not verify refuses the
 //      restore; no MAC restores labelled unauthenticated), every
-//      enum is checked for membership, and
+//      enum is checked for membership, the ordinary writers'
+//      value invariants are enforced (security round-2, finding
+//      4: nonnegative amounts wherever a writer requires them,
+//      typed settings parsed as their writers parse them), and
 //      intra-payload uniqueness + referential integrity are
 //      checked. Any failure refuses the restore with zero writes.
 //   2. The destructive replacement is ONE atomic batch: the wipe
@@ -41,6 +44,34 @@ export const BACKUP_SCHEMA_VERSION = 1;
 
 export const BACKUP_KEY_CHECK_SETTING = "encryption_key_check_v1";
 export const BACKUP_KEY_CHECK_PLAINTEXT = "hatch-encryption-check-v1";
+
+/* ---------------- Encrypted-at-rest settings (finding 3) ----------------
+   The settings keys whose values are stored ENCRYPTED at rest by
+   their ordinary writers. Export decrypts them so a backup can
+   travel and restore under another key; the restore handler must
+   therefore re-encrypt every one of them as it stores the
+   restored rows — a key missing from this list is stored as the
+   backup's PLAINTEXT until some later save happens to rewrite
+   it. This list is the ONE definition: the restore handler's
+   settings loop branches on isEncryptedAtRestSettingKey, and
+   the accuracy fixtures pin the list's contents (security
+   round-2, finding 3 — spending_import_settings_v1 was the
+   omitted key: its Net Worth sibling was listed, it was not). */
+export const IMPORT_SETTINGS_KEY = "spending_import_settings_v1";
+export const NW_IMPORT_SETTINGS_KEY = "nw_import_settings_v1";
+export const ENCRYPTED_AT_REST_SETTING_KEYS: readonly string[] = [
+  "opening_reserve_cents",
+  BACKUP_KEY_CHECK_SETTING,
+  "retirement_calc_inputs_v1",
+  "retirement_calc_baseline_v1",
+  "roth_conversion_inputs_v1",
+  IMPORT_SETTINGS_KEY,
+  NW_IMPORT_SETTINGS_KEY,
+];
+
+export function isEncryptedAtRestSettingKey(key: string): boolean {
+  return ENCRYPTED_AT_REST_SETTING_KEYS.includes(key);
+}
 
 /* ------------------------- Payload schema -------------------------
    The exact shape exportbackup returns. Fields a current export
@@ -447,6 +478,110 @@ export function preflightRestoreBackup(
     ) {
       return refuse(
         `Backup rejected: monthly cash-out item ${it.id} has an invalid day "${it.day}" — not a day of ${it.month}.`,
+      );
+    }
+  }
+
+  // Writer invariants (security round-2, finding 4): the payload
+  // schema above types amounts as integers only, but the ordinary
+  // writers refuse more than that, and a restore must not smuggle
+  // in a value no writer would ever store — before this build a
+  // restored monthly bill version at −10000 priced a −$100/mo
+  // bill, and an opening reserve of "not-a-number" restored
+  // verbatim and turned the reserve math into NaN. Every amount
+  // whose writer requires nonnegative is checked here; the
+  // signed amounts whose writers accept negatives (transaction
+  // amounts — refunds are negative — and Net Worth balances —
+  // debts are negative) are deliberately NOT checked. Settings
+  // with typed writer parsers are validated the same way.
+  for (const y of payload.yearlyExpenses) {
+    if (y.expectedCents < 0) {
+      return refuse(
+        `Backup rejected: yearly expense ${y.id} ("${y.name}") has a negative amount (${y.expectedCents} cents) — bill amounts are never negative.`,
+      );
+    }
+  }
+  for (const v of payload.yearlyExpenseVersions) {
+    if (v.expectedCents < 0) {
+      return refuse(
+        `Backup rejected: yearly expense version ${v.id} has a negative amount (${v.expectedCents} cents) — bill amounts are never negative.`,
+      );
+    }
+  }
+  for (const b of payload.monthlyBills) {
+    if (b.amountCents < 0) {
+      return refuse(
+        `Backup rejected: monthly bill ${b.id} ("${b.name}") has a negative amount (${b.amountCents} cents) — bill amounts are never negative.`,
+      );
+    }
+  }
+  for (const v of payload.monthlyBillVersions) {
+    if (v.amountCents < 0) {
+      return refuse(
+        `Backup rejected: monthly bill version ${v.id} has a negative amount (${v.amountCents} cents) — bill amounts are never negative.`,
+      );
+    }
+  }
+  for (const s of payload.monthlySummaries) {
+    if (s.cashOutCents < 0) {
+      return refuse(
+        `Backup rejected: monthly summary for ${s.month} has a negative cash-out amount (${s.cashOutCents} cents) — cash-out totals are never negative.`,
+      );
+    }
+  }
+  for (const o of payload.monthlyOneOffs) {
+    if (o.amountCents < 0) {
+      return refuse(
+        `Backup rejected: monthly one-off ${o.id} has a negative amount (${o.amountCents} cents) — one-off amounts are never negative.`,
+      );
+    }
+  }
+  for (const it of payload.monthlyCashOutItems) {
+    if (it.amountCents < 0) {
+      return refuse(
+        `Backup rejected: monthly cash-out item ${it.id} has a negative amount (${it.amountCents} cents) — cash-out amounts are never negative.`,
+      );
+    }
+  }
+  for (const s of payload.settings) {
+    // The opening reserve's writer takes an integer number of
+    // cents and stores its decimal string; anything else in the
+    // payload ("not-a-number", "12.5", "") would reach Number(...)
+    // downstream as NaN. A value still carrying the enc:v1:
+    // prefix is an older export's ciphertext: the handler's
+    // decrypt-verify path guards it, and its plaintext cannot be
+    // checked here — every current export carries the reserve
+    // decrypted, so the check bites exactly where it can see.
+    if (
+      s.key === "opening_reserve_cents" &&
+      !s.value.startsWith("enc:v1:") &&
+      !/^-?\d+$/.test(s.value.trim())
+    ) {
+      return refuse(
+        `Backup rejected: the opening_reserve_cents setting ("${s.value}") is not a valid integer number of cents.`,
+      );
+    }
+    // The Net Worth target's writer takes a positive integer
+    // number of cents (clearing the target deletes the row, so a
+    // stored value is never 0 or negative). Plaintext setting —
+    // never encrypted — so there is no ciphertext case.
+    if (
+      s.key === "nw_target_cents" &&
+      !(/^\d+$/.test(s.value.trim()) && Number(s.value.trim()) > 0)
+    ) {
+      return refuse(
+        `Backup rejected: the nw_target_cents setting ("${s.value}") is not a valid positive integer number of cents.`,
+      );
+    }
+    // The reserve start month's writer takes a YYYY-MM month or
+    // blank (its null form, stored as "").
+    if (
+      s.key === "reserve_start_month" &&
+      s.value !== "" &&
+      !isBackupMonth(s.value)
+    ) {
+      return refuse(
+        `Backup rejected: the reserve_start_month setting ("${s.value}") is not a real month (YYYY-MM).`,
       );
     }
   }
