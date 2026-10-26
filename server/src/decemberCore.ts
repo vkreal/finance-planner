@@ -1597,7 +1597,17 @@ export function runDecemberFixtures(): {
 
   run("dec-save-revision-cas", (fail) => {
     // Fix H (finding 9): the save contract the actions
-    // enforce. A blob written before revisions existed reads
+    // enforce. NOTE: this fixture pins only the pure revision
+    // DECISION logic — it never reaches the guarded UPDATE
+    // the handler runs against the store, which is how the
+    // 2026-10-26 wrong-handle bug (the save passed ctx instead
+    // of the db handle to the guarded commit, so every
+    // correct-revision save on an existing blob threw) shipped
+    // green. The guarded-update path itself is covered
+    // end-to-end by packaged/harness.ts section G, which
+    // drives saveDecemberProjection through the real
+    // dispatcher and store.
+    // A blob written before revisions existed reads
     // as revision 0; a save from the read revision is
     // allowed and lands at revision + 1; a second save from
     // the SAME base is refused; a save from the new revision
