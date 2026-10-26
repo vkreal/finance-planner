@@ -111,16 +111,29 @@ export const decemberState = z.object({
   aptcTaken: z.number().finite().min(0),
   bufferDollars: z.number().finite().min(0),
   // Pricing context (the same dials the Playground carries).
-  // pretaxBalance is the LEGACY combined balance: readers
-  // migrate it losslessly into the primary's split balance
-  // (below) when a blob carries no split, and writers keep
-  // it as the split's sum, so old and new blobs both read.
+  // pretaxBalance is the LEGACY combined balance: when a
+  // blob carries no split its ownership is unanswered and
+  // load resolution supplies the owner split (record
+  // first, combined→primary as the last-resort fallback —
+  // see parseDecemberState / resolveDecemberStateAtLoad);
+  // writers keep it as the split's sum when a split is
+  // explicit, so old and new blobs both read.
   pretaxBalance: z.number().finite().min(0).nullable(),
   // Per-owner prior-Dec-31 pre-tax balances (December fix):
   // each owner's RMD is computed on their own clock from
   // their own balance. Null = not entered for that owner.
   pretaxBalancePrimary: z.number().finite().min(0).nullable(),
   pretaxBalanceSpouse: z.number().finite().min(0).nullable(),
+  // Round-5 provenance: true only when the split above was
+  // actually entered (in this console, or carried in a blob
+  // whose split keys hold amounts). A blob carrying ONLY
+  // the legacy combined pretaxBalance parses with this
+  // false — ownership UNANSWERED — so load resolution can
+  // supply the Tax Plan record's split, falling back to
+  // the combined→primary assignment only when neither the
+  // blob nor the record has a split. Derived on read by
+  // parseDecemberState; never a user-entered fact.
+  pretaxSplitExplicit: z.boolean(),
   // The part of this year's RMD already received (and
   // already inside the year-to-date income above): netted
   // from the computed RMD, floored at $0, so a paid RMD is
@@ -182,6 +195,20 @@ export const decemberState = z.object({
   strayAgiReducers: decemberStray,
   strayCoverage: decemberStray,
   strayTradeDate: decemberStray,
+  // Round-5 provenance flags (derived on read by
+  // parseDecemberState from the RAW blob, never entered):
+  // true when a legacy amount predates its tax-character
+  // split — strayROC holds an amount but the blob has no
+  // strayROCOrdinary key, or strayJanPaid holds an amount
+  // but the blob has no strayJanPaidQualifiedAmount key.
+  // The flags change NO pricing (the entered split values
+  // govern exactly as before); they drive a view note and
+  // a projection warning so the user confirms the split.
+  // Every save through serializeDecemberState writes the
+  // split keys explicitly, so both flags read false on
+  // the next load.
+  legacyRocSplitUnconfirmed: z.boolean(),
+  legacyJanPaidSplitUnconfirmed: z.boolean(),
 });
 export type DecemberState = z.infer<typeof decemberState>;
 
@@ -214,6 +241,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     pretaxBalance: null,
     pretaxBalancePrimary: null,
     pretaxBalanceSpouse: null,
+    pretaxSplitExplicit: false,
     rmdAlreadyReceived: 0,
     spouseSoleBeneficiary: true,
     primarySoleBeneficiaryOfSpouse: null,
@@ -239,6 +267,8 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     strayAgiReducers: strayDefault(),
     strayCoverage: strayDefault(),
     strayTradeDate: strayDefault(),
+    legacyRocSplitUnconfirmed: false,
+    legacyJanPaidSplitUnconfirmed: false,
   };
 }
 
@@ -260,6 +290,13 @@ export function parseDecemberState(
   }
   if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return out;
   const p = parsed as Record<string, unknown>;
+  // Round-5 format marker: serializeDecemberState writes
+  // `decemberStateFormat` from this build on. A blob
+  // WITHOUT it predates the marker — under v47 the
+  // beneficiary control's default state was false, so a
+  // stored false in a pre-marker blob is indistinguishable
+  // from never answering and parses as UNANSWERED below.
+  const hasStateFormatMarker = typeof p.decemberStateFormat === "number";
   const num = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
   const nonNeg = (key: string, set: (n: number) => void) => {
@@ -335,15 +372,24 @@ export function parseDecemberState(
   }
   nonNeg("aptcTaken", (n) => (out.aptcTaken = n));
   nonNeg("bufferDollars", (n) => (out.bufferDollars = n));
-  // Pre-tax balances, split by owner (December fix). A blob
-  // carrying either split field reads the split as written;
-  // a blob carrying ONLY the legacy combined pretaxBalance
-  // migrates it losslessly into the primary's split balance
-  // (the spouse's defaults to not-entered), so a pre-split
-  // blob prices its RMD exactly as it did — on the primary's
-  // clock, over the whole combined balance. When a split is
-  // present, the legacy combined field is re-derived as the
-  // split's sum, keeping the two views of the money in step.
+  // Pre-tax balances, split by owner (December fix), with
+  // round-5 ownership provenance. A blob whose split keys
+  // hold an amount for either owner carries an EXPLICIT
+  // split: it reads as written and governs over any Tax
+  // Plan record split, and the combined field re-derives
+  // as the split's sum. A blob carrying ONLY the legacy
+  // combined pretaxBalance has ownership UNANSWERED
+  // (pretaxSplitExplicit false, split fields null, the
+  // combined amount preserved): the parser does NOT assign
+  // it to the primary, because the correct owner may be
+  // known to the Tax Plan record — load resolution
+  // (resolveDecemberStateAtLoad) supplies the record's
+  // split when it has one, and only when neither blob nor
+  // record has a split falls back to the historical
+  // combined→primary assignment. An un-resolved legacy
+  // state still prices the combined amount on the primary
+  // dial through decemberCaseInputs (its pre-split
+  // behaviour), so parsing alone never moves a figure.
   const nullableNonNeg = (
     key: string,
   ): { seen: boolean; value: number | null } => {
@@ -356,34 +402,55 @@ export function parseDecemberState(
   };
   const splitPrimary = nullableNonNeg("pretaxBalancePrimary");
   const splitSpouse = nullableNonNeg("pretaxBalanceSpouse");
-  if (splitPrimary.seen) out.pretaxBalancePrimary = splitPrimary.value;
-  if (splitSpouse.seen) out.pretaxBalanceSpouse = splitSpouse.value;
   const legacyPretax = nullableNonNeg("pretaxBalance");
-  if (legacyPretax.seen) out.pretaxBalance = legacyPretax.value;
-  if (!splitPrimary.seen && !splitSpouse.seen && legacyPretax.seen) {
-    out.pretaxBalancePrimary = legacyPretax.value;
-  }
-  if (splitPrimary.seen || splitSpouse.seen) {
-    out.pretaxBalance =
-      out.pretaxBalancePrimary == null && out.pretaxBalanceSpouse == null
-        ? null
-        : r2((out.pretaxBalancePrimary ?? 0) + (out.pretaxBalanceSpouse ?? 0));
+  const splitHasAmount = splitPrimary.value != null || splitSpouse.value != null;
+  if (splitHasAmount) {
+    out.pretaxSplitExplicit = true;
+    out.pretaxBalancePrimary = splitPrimary.value;
+    out.pretaxBalanceSpouse = splitSpouse.value;
+    out.pretaxBalance = r2(
+      (splitPrimary.value ?? 0) + (splitSpouse.value ?? 0),
+    );
+  } else if (legacyPretax.value != null) {
+    out.pretaxSplitExplicit = false;
+    out.pretaxBalancePrimary = null;
+    out.pretaxBalanceSpouse = null;
+    out.pretaxBalance = legacyPretax.value;
+  } else {
+    out.pretaxSplitExplicit = false;
+    out.pretaxBalancePrimary = splitPrimary.value;
+    out.pretaxBalanceSpouse = splitSpouse.value;
+    out.pretaxBalance = legacyPretax.value;
   }
   nonNeg("rmdAlreadyReceived", (n) => (out.rmdAlreadyReceived = n));
   if (typeof p.spouseSoleBeneficiary === "boolean") {
     out.spouseSoleBeneficiary = p.spouseSoleBeneficiary;
   }
-  // The second beneficiary fact (round-4 tri-state): an
-  // explicit boolean survives as written; an explicit
-  // null and a MISSING key both read as null —
+  // The second beneficiary fact (round-4 tri-state,
+  // round-5 marker rule): an explicit boolean in a blob
+  // WITH the state-format marker survives as written; an
+  // explicit null and a MISSING key both read as null —
   // UNANSWERED, never as false. A pre-round-3 blob has
   // no answer to this question, and converting that
   // absence into an explicit false would block the
   // load-time Tax Plan prefill that can supply a known
   // answer (resolveDecemberStateAtLoad). No reciprocity
   // is ever inferred from the sibling fact's value.
+  // PRE-MARKER FALSE (round-5 fix 1a): a blob without
+  // the format marker may carry a false that v47 wrote
+  // on the user's behalf — at 410a63f the parser and
+  // default state materialised the missing key as false
+  // and any in-window autosave persisted it — so a
+  // pre-marker false is indistinguishable from never
+  // answering and reads as UNANSWERED (null). A
+  // pre-marker TRUE stays true: setting it was a
+  // deliberate act in every version that could write it.
   if (typeof p.primarySoleBeneficiaryOfSpouse === "boolean") {
-    out.primarySoleBeneficiaryOfSpouse = p.primarySoleBeneficiaryOfSpouse;
+    if (p.primarySoleBeneficiaryOfSpouse) {
+      out.primarySoleBeneficiaryOfSpouse = true;
+    } else if (hasStateFormatMarker) {
+      out.primarySoleBeneficiaryOfSpouse = false;
+    }
   } else if (p.primarySoleBeneficiaryOfSpouse === null) {
     out.primarySoleBeneficiaryOfSpouse = null;
   }
@@ -415,31 +482,166 @@ export function parseDecemberState(
   stray("strayAgiReducers", (s) => (out.strayAgiReducers = s));
   stray("strayCoverage", (s) => (out.strayCoverage = s));
   stray("strayTradeDate", (s) => (out.strayTradeDate = s));
+  // Round-5 character-provenance flags, derived from the
+  // RAW blob (never from any stored flag value): a legacy
+  // amount whose split key is ABSENT predates the split,
+  // so the amount's full tax character was never stated
+  // under the split's terms. Detection is keyed on the
+  // raw object's keys, so a blob round-tripped through
+  // serializeDecemberState — which writes every split key
+  // explicitly — reads both flags false.
+  out.legacyRocSplitUnconfirmed =
+    strayAmount(out.strayROC) > 0 && !("strayROCOrdinary" in p);
+  out.legacyJanPaidSplitUnconfirmed =
+    strayAmount(out.strayJanPaid) > 0 &&
+    !("strayJanPaidQualifiedAmount" in p);
   return out;
 }
 
-/* Round-4 fix — load-time resolution of the tri-state
-   second beneficiary fact, the exact function the
-   December view's hydration runs. Precedence: an
-   explicit console answer (true or false) is NEVER
-   overwritten; only an unanswered (null) console value
-   is resolved, from the saved Tax Plan record's own
-   value for the same fact — the record's explicit
-   true/false supplies the effective value for display
-   and pricing, and a record null leaves the console
-   value unanswered (pricing Uniform, not established).
+/* The Tax Plan record facts load resolution may draw
+   on, in December units (dollars). Every field optional:
+   absent / null = the record does not answer. */
+export type DecemberRecordFacts = {
+  primarySoleBeneficiaryOfSpouse?: boolean | null;
+  pretaxBalancePrimary?: number | null;
+  pretaxBalanceSpouse?: number | null;
+};
+
+/* Round-4 fix, round-5 extension — load-time resolution,
+   the exact function the December view's hydration runs.
+   It resolves TWO unanswered provenances, as an OVERLAY
+   for display and pricing only:
+
+   · The tri-state second beneficiary fact: an explicit
+     console answer (true or false) is NEVER overwritten;
+     only an unanswered (null) console value is resolved
+     from the record's value for the same fact — the
+     record's explicit true/false supplies the effective
+     value, and a record null leaves it unanswered
+     (pricing Uniform, not established).
+
+   · Legacy pre-tax balance ownership (round-5 fix 2):
+     when the blob carries no explicit split
+     (pretaxSplitExplicit false) but does carry the legacy
+     combined balance, ownership is unanswered: a record
+     split (either owner's amount present) supplies the
+     split for display and pricing; when neither blob nor
+     record has a split, the historical combined→primary
+     assignment is the last-resort fallback. A blob WITH
+     an explicit split always governs.
+
    Pure: it returns the effective state for this open
-   and writes nothing — the stored blob changes only
-   when the user saves in the console. */
+   and writes nothing. Round-5 fix 1b: the resolution is
+   an overlay, never an input to a save — the client
+   derives every save through decemberStateForSave,
+   which restores the STORED (unresolved) values for any
+   field the user has not themselves edited in the
+   console, so an inherited answer can never acquire the
+   precedence of an explicit console answer merely
+   because an unrelated field was edited and autosaved.
+   The second argument also accepts the round-4 bare
+   beneficiary value (boolean / null) for compatibility. */
 export function resolveDecemberStateAtLoad(
   state: DecemberState,
-  taxPlanPrimarySoleBeneficiaryOfSpouse: boolean | null | undefined,
+  record: boolean | null | undefined | DecemberRecordFacts,
 ): DecemberState {
-  if (state.primarySoleBeneficiaryOfSpouse != null) return state;
-  if (taxPlanPrimarySoleBeneficiaryOfSpouse == null) return state;
+  const facts: DecemberRecordFacts =
+    record != null && typeof record === "object"
+      ? record
+      : { primarySoleBeneficiaryOfSpouse: record ?? null };
+  let out = state;
+  if (
+    out.primarySoleBeneficiaryOfSpouse == null &&
+    facts.primarySoleBeneficiaryOfSpouse != null
+  ) {
+    out = {
+      ...out,
+      primarySoleBeneficiaryOfSpouse: facts.primarySoleBeneficiaryOfSpouse,
+    };
+  }
+  if (!out.pretaxSplitExplicit && out.pretaxBalance != null) {
+    const recPrimary = facts.pretaxBalancePrimary ?? null;
+    const recSpouse = facts.pretaxBalanceSpouse ?? null;
+    if (recPrimary != null || recSpouse != null) {
+      out = {
+        ...out,
+        pretaxBalancePrimary: recPrimary,
+        pretaxBalanceSpouse: recSpouse,
+        pretaxBalance: r2((recPrimary ?? 0) + (recSpouse ?? 0)),
+      };
+    } else {
+      out = {
+        ...out,
+        pretaxBalancePrimary: out.pretaxBalance,
+        pretaxBalanceSpouse: null,
+      };
+    }
+  }
+  return out;
+}
+
+/* The provenance a save must preserve for fields the
+   user has not edited in the console: the STORED blob's
+   own values (as parsed, before any load resolution). */
+export type DecemberStoredProvenance = {
+  primarySoleBeneficiaryOfSpouse: boolean | null;
+  pretaxBalancePrimary: number | null;
+  pretaxBalanceSpouse: number | null;
+  pretaxBalance: number | null;
+  pretaxSplitExplicit: boolean;
+};
+
+export function decemberStoredProvenanceOf(
+  state: DecemberState,
+): DecemberStoredProvenance {
   return {
-    ...state,
-    primarySoleBeneficiaryOfSpouse: taxPlanPrimarySoleBeneficiaryOfSpouse,
+    primarySoleBeneficiaryOfSpouse: state.primarySoleBeneficiaryOfSpouse,
+    pretaxBalancePrimary: state.pretaxBalancePrimary,
+    pretaxBalanceSpouse: state.pretaxBalanceSpouse,
+    pretaxBalance: state.pretaxBalance,
+    pretaxSplitExplicit: state.pretaxSplitExplicit,
+  };
+}
+
+/* Round-5 fix 1b / fix 2 — the save-state derivation the
+   December view's autosave actually runs. `display` is
+   the form state the user sees (load resolution applied);
+   `stored` is the provenance of the blob it was read
+   from. For each provenance field the user has NOT
+   edited in the console, the save writes the STORED
+   value — so a record-resolved beneficiary fact stays
+   unanswered (null) in the blob no matter what else was
+   edited, and a record-supplied balance split stays
+   un-owned by the console. Once the user edits that
+   control, the display value is theirs and governs from
+   then on (an edited balance split is explicit). The
+   character-provenance flags always save false: the
+   save writes the split keys explicitly, so the flags
+   have done their job. */
+export function decemberStateForSave(
+  display: DecemberState,
+  stored: DecemberStoredProvenance,
+  edited: { beneficiary: boolean; balances: boolean },
+): DecemberState {
+  return {
+    ...display,
+    primarySoleBeneficiaryOfSpouse: edited.beneficiary
+      ? display.primarySoleBeneficiaryOfSpouse
+      : stored.primarySoleBeneficiaryOfSpouse,
+    pretaxBalancePrimary: edited.balances
+      ? display.pretaxBalancePrimary
+      : stored.pretaxBalancePrimary,
+    pretaxBalanceSpouse: edited.balances
+      ? display.pretaxBalanceSpouse
+      : stored.pretaxBalanceSpouse,
+    pretaxBalance: edited.balances
+      ? display.pretaxBalance
+      : stored.pretaxBalance,
+    pretaxSplitExplicit: edited.balances
+      ? true
+      : stored.pretaxSplitExplicit,
+    legacyRocSplitUnconfirmed: false,
+    legacyJanPaidSplitUnconfirmed: false,
   };
 }
 
@@ -515,11 +717,24 @@ export function decideDecemberWrite(
   return decideRothBlobWrite(storedRevision, baseRevision);
 }
 
+/* The state-format marker written by every save from
+   the round-5 build on (see parseDecemberState): its
+   presence is what makes a stored beneficiary `false` a
+   genuine answer. Value 2 = the first marked format
+   (the unmarked legacy format is implicitly 1). Like
+   `revision`, it rides beside the state fields and never
+   enters the DecemberState the parser returns. */
+export const DECEMBER_STATE_FORMAT = 2;
+
 export function serializeDecemberState(
   state: DecemberState,
   revision: number,
 ): string {
-  return JSON.stringify({ ...state, revision });
+  return JSON.stringify({
+    ...state,
+    decemberStateFormat: DECEMBER_STATE_FORMAT,
+    revision,
+  });
 }
 
 /* ---------------- Form conversion: nullable money fields ----------------
@@ -789,6 +1004,24 @@ export function computeDecemberProjection(
         `${label}: the low / likely / high amounts are out of order — the cases below price them exactly as entered.`,
       );
     }
+  }
+  // Round-5 character provenance: the amounts below price
+  // exactly as split on the checklist — the flags change
+  // no figure — but a legacy amount saved before its
+  // split existed has an UNCONFIRMED tax character, and
+  // the character is worth real tax (the round-5 cases:
+  // $2,465 on the ROC split, $2,400 on the January-paid
+  // qualified portion), so the projection names it until
+  // the user confirms the split and saves.
+  if (state.legacyRocSplitUnconfirmed) {
+    warnings.push(
+      "Return of capital: the amount on the checklist was saved before the capital-gain / ordinary-dividend split existed, so its tax character is unconfirmed — it prices exactly as split below; check whether any of it was reclassified as an ordinary dividend and enter that part under the ordinary-dividend return-of-capital item.",
+    );
+  }
+  if (state.legacyJanPaidSplitUnconfirmed) {
+    warnings.push(
+      "January-paid distributions: the amount on the checklist was saved before the qualified-dividend portion existed, so its tax character is unconfirmed — it prices with the qualified portion exactly as entered below; check what part of it is qualified dividends.",
+    );
   }
   // Zero-draw pricings first: they carry the cliff and each
   // case's non-draw MAGI.
@@ -1364,10 +1597,17 @@ export function runDecemberFixtures(): {
     // pair the view's form boundary runs for the nullable
     // money fields (decemberNullableMoneyFormValue /
     // decemberNullableMoneyFromFormValue in this module).
-    const legacy = parseDecemberState(
+    const parsedLegacy = parseDecemberState(
       JSON.stringify({ taxYear: 2026, pretaxBalance: 0 }),
       2026,
     );
+    // Round-5: the parser alone leaves a legacy combined
+    // balance's ownership UNANSWERED; the load path
+    // (no record split here) falls back to the primary.
+    if (parsedLegacy.pretaxSplitExplicit || parsedLegacy.pretaxBalancePrimary !== null) {
+      fail("a legacy $0 blob should parse with ownership unanswered");
+    }
+    const legacy = resolveDecemberStateAtLoad(parsedLegacy, null);
     if (legacy.pretaxBalancePrimary !== 0) {
       fail(`legacy $0 should migrate to a $0 primary balance, got ${legacy.pretaxBalancePrimary}`);
     }
@@ -1689,15 +1929,30 @@ export function runDecemberFixtures(): {
   });
 
   run("dec-legacy-blob-split-migration", (fail) => {
-    // Fix A's migration: a pre-split blob carries only the
-    // combined pretaxBalance — it migrates losslessly into
-    // the primary's split balance, the spouse's defaults to
-    // not-entered, and the combined field keeps its value,
-    // so the blob prices exactly as it did.
-    const legacy = parseDecemberState(
+    // Fix A's migration, round-5 restated: a pre-split
+    // blob carries only the combined pretaxBalance. The
+    // parser preserves the amount with ownership
+    // UNANSWERED (no owner assignment — the record may
+    // know the split); the LOAD path with no record split
+    // applies the historical fallback — the combined
+    // balance migrates into the primary's split balance,
+    // the spouse's defaults to not-entered, and the
+    // combined field keeps its value, so the blob prices
+    // exactly as it did.
+    const parsedLegacy = parseDecemberState(
       JSON.stringify({ taxYear: 2026, pretaxBalance: 300000 }),
       2026,
     );
+    if (parsedLegacy.pretaxSplitExplicit) {
+      fail("a legacy combined blob should parse with the split unanswered");
+    }
+    if (parsedLegacy.pretaxBalancePrimary !== null || parsedLegacy.pretaxBalanceSpouse !== null) {
+      fail("the parser must not assign a legacy combined balance to an owner");
+    }
+    if (parsedLegacy.pretaxBalance !== 300000) {
+      fail("legacy combined field should keep its value");
+    }
+    const legacy = resolveDecemberStateAtLoad(parsedLegacy, null);
     if (legacy.pretaxBalancePrimary !== 300000) {
       fail(`legacy combined should migrate to primary, got ${legacy.pretaxBalancePrimary}`);
     }
@@ -1719,6 +1974,9 @@ export function runDecemberFixtures(): {
     );
     if (split.pretaxBalancePrimary !== 100000 || split.pretaxBalanceSpouse !== 250000) {
       fail("a split blob should read its split as written");
+    }
+    if (!split.pretaxSplitExplicit) {
+      fail("a split blob should read as an explicit split");
     }
     if (split.pretaxBalance !== 350000) {
       fail(`combined should re-derive as the split sum, got ${split.pretaxBalance}`);
@@ -1894,9 +2152,18 @@ export function runDecemberFixtures(): {
   run("dec-load-prefill-console-false-wins", (fail) => {
     // (iv) Blob explicit false + record true → the
     // console's own answer wins; prefill never
-    // overwrites an explicit console value.
+    // overwrites an explicit console value. Round-5: a
+    // GENUINE explicit false lives in a blob WITH the
+    // state-format marker (a pre-marker false reads as
+    // unanswered — pinned by
+    // dec-pre-marker-beneficiary-false), so this blob
+    // carries the marker, exactly as every save since
+    // the marker build writes it.
     const got = loadAndPrice(
-      legacyBlobJson({ primarySoleBeneficiaryOfSpouse: false }),
+      legacyBlobJson({
+        primarySoleBeneficiaryOfSpouse: false,
+        decemberStateFormat: DECEMBER_STATE_FORMAT,
+      }),
       true,
     );
     if (got.effective.primarySoleBeneficiaryOfSpouse !== false) {
@@ -1959,6 +2226,373 @@ export function runDecemberFixtures(): {
     }
     if (defaultDecemberState(2026).primarySoleBeneficiaryOfSpouse !== null) {
       fail("the default state should start unanswered");
+    }
+  });
+
+  /* ---- Round-5 fixtures: provenance of stored values ---- */
+
+  run("dec-pre-marker-beneficiary-false", (fail) => {
+    // Fix 1a: the format marker separates a genuine No
+    // from a v47-materialised default. Through the real
+    // parse path: (1) pre-marker false → UNANSWERED (v47's
+    // default state was false and any in-window autosave
+    // persisted it without the user answering); (2)
+    // pre-marker true → true (checking that box was
+    // deliberate in every version); (3) WITH-marker false
+    // → false, a genuine answer that survives resolution.
+    const preMarkerFalse = parseDecemberState(
+      JSON.stringify({ taxYear: 2026, primarySoleBeneficiaryOfSpouse: false }),
+      2026,
+    );
+    if (preMarkerFalse.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("a pre-marker stored false should read as unanswered (null)");
+    }
+    const preMarkerTrue = parseDecemberState(
+      JSON.stringify({ taxYear: 2026, primarySoleBeneficiaryOfSpouse: true }),
+      2026,
+    );
+    if (preMarkerTrue.primarySoleBeneficiaryOfSpouse !== true) {
+      fail("a pre-marker stored true should stay true");
+    }
+    const markedFalse = parseDecemberState(
+      JSON.stringify({
+        taxYear: 2026,
+        primarySoleBeneficiaryOfSpouse: false,
+        decemberStateFormat: DECEMBER_STATE_FORMAT,
+      }),
+      2026,
+    );
+    if (markedFalse.primarySoleBeneficiaryOfSpouse !== false) {
+      fail("a with-marker stored false should read as a genuine false");
+    }
+    // The serializer writes the marker: a state saved
+    // from this build on carries it, and its false then
+    // round-trips as false (also pinned by the tri-state
+    // round-trip fixture above).
+    const blob = serializeDecemberState(defaultDecemberState(2026), 1);
+    const raw = JSON.parse(blob) as Record<string, unknown>;
+    if (raw.decemberStateFormat !== DECEMBER_STATE_FORMAT) {
+      fail("the serializer should write the state-format marker");
+    }
+    // And the recovery the marker exists for: a v47-
+    // persisted false + a record that answers true now
+    // resolves at load and prices Joint — the round-4
+    // reproduction recovered end to end.
+    const recovered = loadAndPrice(
+      legacyBlobJson({ primarySoleBeneficiaryOfSpouse: false }),
+      true,
+    );
+    if (recovered.effective.primarySoleBeneficiaryOfSpouse !== true) {
+      fail("a pre-marker false should resolve from the record at load");
+    }
+    expectJoint(fail, "pre-marker-false+record-true", recovered);
+  });
+
+  run("dec-resolution-never-enters-saved-state", (fail) => {
+    // Fix 1b (Finding 2): load resolution is an overlay.
+    // The sequence, run at the state/serialize layer the
+    // client actually uses (parse → resolveDecemberStateAtLoad
+    // for display → decemberStateForSave for the autosave
+    // → serializeDecemberState → parse): the stored fact
+    // is unanswered and the record says true, so the open
+    // prices Joint; the user edits ONLY bufferDollars
+    // ($5,000 → $4,900) and the autosave must still store
+    // null for the beneficiary fact; the record then
+    // flips to false, and reopening prices Uniform.
+    const stored = parseDecemberState(legacyBlobJson(), 2026);
+    if (stored.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("the stored blob should start unanswered");
+    }
+    const provenance = decemberStoredProvenanceOf(stored);
+    const display = resolveDecemberStateAtLoad(stored, true);
+    if (display.primarySoleBeneficiaryOfSpouse !== true) {
+      fail("the record's true should supply the display value");
+    }
+    const displayPriced = {
+      effective: display,
+      rmd: pricePlaygroundYear(decemberCaseInputs(display, "likely", 0))
+        .rmdSpouse,
+      table: pricePlaygroundYear(decemberCaseInputs(display, "likely", 0))
+        .rmdTable,
+      result: computeDecemberProjection(display),
+      likely: computeDecemberProjection(display).cases[1]!,
+    };
+    expectJoint(fail, "resolved-display", displayPriced);
+    // The unrelated edit + autosave.
+    const edited: DecemberState = { ...display, bufferDollars: 4900 };
+    const toSave = decemberStateForSave(edited, provenance, {
+      beneficiary: false,
+      balances: false,
+    });
+    if (toSave.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("an unrelated edit must save the beneficiary fact as unanswered");
+    }
+    if (toSave.bufferDollars !== 4900) {
+      fail("the buffer edit itself should be in the saved state");
+    }
+    const reopened = parseDecemberState(
+      serializeDecemberState(toSave, 5),
+      2026,
+    );
+    if (reopened.primarySoleBeneficiaryOfSpouse !== null) {
+      fail("the reloaded blob should still read unanswered");
+    }
+    // The record flips to false → reopening prices
+    // Uniform (the same household; the $4,900 buffer does
+    // not change the credit arithmetic — both MAGI values
+    // sit past the buffered target, and Uniform MAGI is
+    // over the cliff itself).
+    const flipped = loadAndPrice(serializeDecemberState(toSave, 5), false);
+    if (flipped.effective.primarySoleBeneficiaryOfSpouse !== false) {
+      fail("the flipped record false should resolve the unanswered value");
+    }
+    expectUniform(fail, "record-flipped-false", flipped);
+    // The other direction of the same rule: when the user
+    // DOES change the beneficiary control, the chosen
+    // value is what saves.
+    const answered = decemberStateForSave(
+      { ...display, primarySoleBeneficiaryOfSpouse: false },
+      provenance,
+      { beneficiary: true, balances: false },
+    );
+    if (answered.primarySoleBeneficiaryOfSpouse !== false) {
+      fail("a console-changed beneficiary value should be the saved value");
+    }
+    const answeredBack = parseDecemberState(
+      serializeDecemberState(answered, 6),
+      2026,
+    );
+    if (answeredBack.primarySoleBeneficiaryOfSpouse !== false) {
+      fail("a console answer saved with the marker should read back as false");
+    }
+  });
+
+  run("dec-legacy-balance-ownership-resolution", (fail) => {
+    // Fix 2 (Finding 3): a legacy blob with ONLY the
+    // combined balance has ownership unanswered. The
+    // reviewer's household: primary 60, spouse 75 on
+    // Medicare, combined $246,000, posted ordinary income
+    // $75,000, HH2, benchmark $20,000, APTC $12,000,
+    // buffer $5,000, no Joint-table designation.
+    const legacyCombinedBlob = JSON.stringify({
+      taxYear: 2026,
+      agePrimary: 60,
+      ageSpouse: 75,
+      onMedicareSpouse: true,
+      pretaxBalance: 246000,
+      ytdOtherOrdinary: 75000,
+      acaHouseholdSize: 2,
+      acaBenchmarkAnnual: 20000,
+      aptcTaken: 12000,
+      bufferDollars: 5000,
+    });
+    const parsedLegacy = parseDecemberState(legacyCombinedBlob, 2026);
+    if (parsedLegacy.pretaxSplitExplicit) {
+      fail("the legacy blob should parse with ownership unanswered");
+    }
+    // (i) Record split {0 / 246,000} — the money is HERS:
+    // her RMD is $246,000 / 24.6 = $10,000, MAGI $85,000
+    // is over the $84,600 cliff at a $0 draw, the safe
+    // draw is $0, and the whole $12,000 APTC is repaid.
+    const hers = resolveDecemberStateAtLoad(parsedLegacy, {
+      pretaxBalancePrimary: 0,
+      pretaxBalanceSpouse: 246000,
+    });
+    if (hers.pretaxBalancePrimary !== 0 || hers.pretaxBalanceSpouse !== 246000) {
+      fail("the record split should supply the balance ownership");
+    }
+    const hersPg = pricePlaygroundYear(decemberCaseInputs(hers, "likely", 0));
+    exact(fail, "(i) spouse RMD", hersPg.rmdSpouse, 10000);
+    exact(fail, "(i) primary RMD", hersPg.rmdPrimary, 0);
+    const hersResult = computeDecemberProjection(hers);
+    exact(fail, "(i) non-draw MAGI", hersResult.cases[1]!.nonDrawAcaMagi, 85000);
+    if (hersResult.headlineDraw !== 0) {
+      fail(`(i) headline draw should be $0, got ${hersResult.headlineDraw}`);
+    }
+    exact(
+      fail,
+      "(i) excess repayment",
+      hersResult.cases[1]!.excessAptcRepayment,
+      12000,
+    );
+    // (ii) Record split {246,000 / 0} — the money is HIS:
+    // the split resolves to the primary, exactly the
+    // assignment the old parser made unconditionally.
+    const his = resolveDecemberStateAtLoad(parsedLegacy, {
+      pretaxBalancePrimary: 246000,
+      pretaxBalanceSpouse: 0,
+    });
+    if (his.pretaxBalancePrimary !== 246000 || his.pretaxBalanceSpouse !== 0) {
+      fail("(ii) the record split should assign the balance to the primary");
+    }
+    // (iii) No record split → the last-resort fallback:
+    // combined → primary, spouse not-entered (the round-1
+    // legacy expectation, preserved on this path only).
+    const fallback = resolveDecemberStateAtLoad(parsedLegacy, {});
+    if (fallback.pretaxBalancePrimary !== 246000 || fallback.pretaxBalanceSpouse !== null) {
+      fail("(iii) with no record split the combined balance should fall back to the primary");
+    }
+    // (iv) An explicit blob split governs over a
+    // different record split.
+    const explicitBlob = parseDecemberState(
+      JSON.stringify({
+        taxYear: 2026,
+        pretaxBalancePrimary: 10000,
+        pretaxBalanceSpouse: 246000,
+      }),
+      2026,
+    );
+    const blobWins = resolveDecemberStateAtLoad(explicitBlob, {
+      pretaxBalancePrimary: 246000,
+      pretaxBalanceSpouse: 0,
+    });
+    if (blobWins.pretaxBalancePrimary !== 10000 || blobWins.pretaxBalanceSpouse !== 246000) {
+      fail("(iv) an explicit blob split must govern over the record split");
+    }
+    // And the save-side rule: an unrelated edit on a
+    // legacy-ownership console saves the STORED
+    // provenance (combined, unanswered) — never the
+    // record-supplied split — while an edit to a balance
+    // field makes the console's own values govern.
+    const prov = decemberStoredProvenanceOf(parsedLegacy);
+    const unrelatedSave = decemberStateForSave(
+      { ...hers, bufferDollars: 4900 },
+      prov,
+      { beneficiary: false, balances: false },
+    );
+    if (
+      unrelatedSave.pretaxBalance !== 246000 ||
+      unrelatedSave.pretaxBalancePrimary !== null ||
+      unrelatedSave.pretaxSplitExplicit
+    ) {
+      fail("an unrelated edit must not save the record-supplied split as the console's own");
+    }
+    const balanceSave = decemberStateForSave(hers, prov, {
+      beneficiary: false,
+      balances: true,
+    });
+    if (
+      balanceSave.pretaxBalancePrimary !== 0 ||
+      balanceSave.pretaxBalanceSpouse !== 246000 ||
+      !balanceSave.pretaxSplitExplicit
+    ) {
+      fail("a balance edit should save the console's own split as explicit");
+    }
+  });
+
+  run("dec-legacy-character-provenance-flags", (fail) => {
+    // Fix 3 (Findings 4 + 5): a legacy amount predating
+    // its tax-character split parses with a provenance
+    // flag and prices with a warning naming the
+    // unconfirmed character; the flag changes NO figure
+    // (the entered split values govern — here the split
+    // defaults, exactly the pre-fix pricing). Blobs that
+    // carry the split keys explicitly get no flag, and a
+    // save → load round trip clears both flags because
+    // the serializer writes the split keys.
+    const priced = {
+      taxYear: 2026,
+      agePrimary: 60,
+      ageSpouse: 58,
+      acaHouseholdSize: 2,
+      acaBenchmarkAnnual: 20000,
+    };
+    const rocLegacy = parseDecemberState(
+      JSON.stringify({
+        ...priced,
+        strayROC: { status: "amount", amount: 30000 },
+      }),
+      2026,
+    );
+    if (!rocLegacy.legacyRocSplitUnconfirmed) {
+      fail("a legacy ROC amount without the split key should set the ROC flag");
+    }
+    if (rocLegacy.legacyJanPaidSplitUnconfirmed) {
+      fail("the ROC-only blob should not set the January-paid flag");
+    }
+    const rocResult = computeDecemberProjection(rocLegacy);
+    if (
+      !rocResult.warnings.some(
+        (w) => w.includes("Return of capital") && w.includes("unconfirmed"),
+      )
+    ) {
+      fail("the projection should warn that the ROC character is unconfirmed");
+    }
+    const janLegacy = parseDecemberState(
+      JSON.stringify({
+        ...priced,
+        strayJanPaid: { status: "amount", amount: 20000 },
+      }),
+      2026,
+    );
+    if (!janLegacy.legacyJanPaidSplitUnconfirmed) {
+      fail("a legacy January-paid amount without the qualified key should set the flag");
+    }
+    if (janLegacy.legacyRocSplitUnconfirmed) {
+      fail("the January-paid-only blob should not set the ROC flag");
+    }
+    const janResult = computeDecemberProjection(janLegacy);
+    if (
+      !janResult.warnings.some(
+        (w) => w.includes("January-paid") && w.includes("unconfirmed"),
+      )
+    ) {
+      fail("the projection should warn that the January-paid character is unconfirmed");
+    }
+    // Explicit-split blobs: the split keys are present
+    // (even at their inert defaults), so no flags.
+    const explicit = parseDecemberState(
+      JSON.stringify({
+        ...priced,
+        strayROC: { status: "amount", amount: 30000 },
+        strayROCOrdinary: { status: "na", amount: 0 },
+        strayJanPaid: { status: "amount", amount: 20000 },
+        strayJanPaidQualifiedAmount: 0,
+      }),
+      2026,
+    );
+    if (explicit.legacyRocSplitUnconfirmed || explicit.legacyJanPaidSplitUnconfirmed) {
+      fail("blobs carrying the split keys explicitly should set no flags");
+    }
+    const explicitResult = computeDecemberProjection(explicit);
+    if (explicitResult.warnings.some((w) => w.includes("unconfirmed"))) {
+      fail("an explicit-split state should price with no unconfirmed warning");
+    }
+    // The flags change no pricing: the legacy ROC state
+    // and the same state with the split entered at its
+    // defaults price identically.
+    const rocExplicitTwin = parseDecemberState(
+      JSON.stringify({
+        ...priced,
+        strayROC: { status: "amount", amount: 30000 },
+        strayROCOrdinary: { status: "na", amount: 0 },
+      }),
+      2026,
+    );
+    exact(
+      fail,
+      "legacy ROC pricing equals explicit-default pricing",
+      computeDecemberProjection(rocLegacy).cases[1]!.federalTaxAtHeadline,
+      computeDecemberProjection(rocExplicitTwin).cases[1]!.federalTaxAtHeadline,
+    );
+    // Save → load round trip clears both flags.
+    const bothLegacy = parseDecemberState(
+      JSON.stringify({
+        ...priced,
+        strayROC: { status: "amount", amount: 30000 },
+        strayJanPaid: { status: "amount", amount: 20000 },
+      }),
+      2026,
+    );
+    if (!bothLegacy.legacyRocSplitUnconfirmed || !bothLegacy.legacyJanPaidSplitUnconfirmed) {
+      fail("the combined legacy blob should set both flags");
+    }
+    const roundTripped = parseDecemberState(
+      serializeDecemberState(bothLegacy, 2),
+      2026,
+    );
+    if (roundTripped.legacyRocSplitUnconfirmed || roundTripped.legacyJanPaidSplitUnconfirmed) {
+      fail("a save → load round trip should clear both character flags");
     }
   });
 
