@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./api";
+import { api, type ApiResponse } from "./api";
 import { usePersistedFold } from "./foldState";
 import { FoldChevron } from "./FoldChevron";
 import {
@@ -21,10 +21,14 @@ import {
   decemberBenchmarkTier,
   decemberNullableMoneyFormValue,
   decemberNullableMoneyFromFormValue,
+  decemberStateForSave,
+  decemberStoredProvenanceOf,
   defaultDecemberState,
   resolveDecemberStateAtLoad,
   type DecemberCaseKind,
+  type DecemberRecordFacts,
   type DecemberState,
+  type DecemberStoredProvenance,
   type DecemberStray,
 } from "@space/server/decemberCore";
 
@@ -110,7 +114,34 @@ type DecForm = {
   strayAgiReducers: StrayForm;
   strayCoverage: StrayForm;
   strayTradeDate: StrayForm;
+  // Round-5 provenance, carried passively through the
+  // form: whether the balance split is the console's own
+  // explicit split, and the two legacy character flags
+  // (they drive the checklist notes; decemberStateForSave
+  // clears them on every save).
+  pretaxSplitExplicit: boolean;
+  legacyRocSplitUnconfirmed: boolean;
+  legacyJanPaidSplitUnconfirmed: boolean;
 };
+
+/* The Tax Plan record facts load resolution draws on,
+   in December dollars: the record's beneficiary answer
+   and its per-owner pre-tax split (the primary's amount
+   falls back to the snapshot's pre-tax total, the same
+   fallback the first-open preseed uses). */
+function recordFactsOf(
+  data: ApiResponse<typeof api, "getRothPlanner"> | undefined,
+): DecemberRecordFacts {
+  const s = data?.saved;
+  const primaryCents = s?.pretaxCents ?? data?.snapshot?.pretaxCents ?? null;
+  return {
+    primarySoleBeneficiaryOfSpouse:
+      s?.primarySoleBeneficiaryOfSpouse ?? null,
+    pretaxBalancePrimary: primaryCents != null ? primaryCents / 100 : null,
+    pretaxBalanceSpouse:
+      s?.pretaxSpouseCents != null ? s.pretaxSpouseCents / 100 : null,
+  };
+}
 
 const moneyStr = (n: number): string => (n === 0 ? "" : fmtMoneyInput(n));
 const numStr = (n: number | null): string => (n == null ? "" : String(n));
@@ -195,6 +226,9 @@ function formFromState(s: DecemberState): DecForm {
     strayAgiReducers: st(s.strayAgiReducers),
     strayCoverage: st(s.strayCoverage),
     strayTradeDate: st(s.strayTradeDate),
+    pretaxSplitExplicit: s.pretaxSplitExplicit,
+    legacyRocSplitUnconfirmed: s.legacyRocSplitUnconfirmed,
+    legacyJanPaidSplitUnconfirmed: s.legacyJanPaidSplitUnconfirmed,
   };
 }
 
@@ -288,6 +322,9 @@ function stateFromForm(f: DecForm): DecemberState {
     strayAgiReducers: st(f.strayAgiReducers),
     strayCoverage: st(f.strayCoverage),
     strayTradeDate: st(f.strayTradeDate),
+    pretaxSplitExplicit: f.pretaxSplitExplicit,
+    legacyRocSplitUnconfirmed: f.legacyRocSplitUnconfirmed,
+    legacyJanPaidSplitUnconfirmed: f.legacyJanPaidSplitUnconfirmed,
   };
 }
 
@@ -310,9 +347,14 @@ export function December() {
   const saveMut = useMutation({
     mutationFn: (state: DecemberState) =>
       api.saveDecemberProjection({ state, baseRevision: revisionRef.current }),
-    onSuccess: (res) => {
+    onSuccess: (res, variables) => {
       if (res.ok) {
         revisionRef.current = res.revision;
+        // The saved state is the new provenance baseline:
+        // whatever it holds for the beneficiary fact and
+        // the balance split is now the stored truth the
+        // next save preserves.
+        storedProvenanceRef.current = decemberStoredProvenanceOf(variables);
         queryClient.invalidateQueries({ queryKey: ["decemberprojection"] });
         return;
       }
@@ -324,12 +366,12 @@ export function December() {
       // resolves from the Tax Plan record exactly as at
       // first load (display only — nothing is written).
       revisionRef.current = res.revision;
+      storedProvenanceRef.current = decemberStoredProvenanceOf(res.state);
+      setBeneficiaryEdited(false);
+      setBalancesEdited(false);
       setForm(
         formFromState(
-          resolveDecemberStateAtLoad(
-            res.state,
-            rothQ.data?.saved?.primarySoleBeneficiaryOfSpouse ?? null,
-          ),
+          resolveDecemberStateAtLoad(res.state, recordFactsOf(rothQ.data)),
         ),
       );
       setSaveNote(
@@ -341,6 +383,24 @@ export function December() {
   const [form, setForm] = useState<DecForm | null>(null);
   const hydratedRef = useRef(false);
   const dirtyRef = useRef(false);
+  // Round-5 provenance: the STORED blob's own beneficiary
+  // fact and balance split (before load resolution), and
+  // whether the user has edited those controls in this
+  // console since hydration. Every autosave derives its
+  // state through decemberStateForSave, which restores
+  // the stored values for anything not edited here — so
+  // a record-resolved (inherited) value is displayed and
+  // priced, but never becomes the console's saved answer
+  // just because another field was edited.
+  const storedProvenanceRef = useRef<DecemberStoredProvenance>({
+    primarySoleBeneficiaryOfSpouse: null,
+    pretaxBalancePrimary: null,
+    pretaxBalanceSpouse: null,
+    pretaxBalance: null,
+    pretaxSplitExplicit: false,
+  });
+  const [beneficiaryEdited, setBeneficiaryEdited] = useState(false);
+  const [balancesEdited, setBalancesEdited] = useState(false);
   // The revision of the stored blob this screen's form was
   // read at; every save passes it as the base revision.
   const revisionRef = useRef(0);
@@ -371,16 +431,21 @@ export function December() {
     // no record and hydrates immediately.
     const needsRecord =
       !decQ.data.hasStored ||
-      decQ.data.state.primarySoleBeneficiaryOfSpouse == null;
+      decQ.data.state.primarySoleBeneficiaryOfSpouse == null ||
+      (!decQ.data.state.pretaxSplitExplicit &&
+        decQ.data.state.pretaxBalance != null);
     if (needsRecord && rothQ.isPending) return;
     hydratedRef.current = true;
     revisionRef.current = decQ.data.revision;
+    // The stored blob's own provenance, captured BEFORE
+    // resolution: saves preserve these values for any
+    // field the user does not edit here (round-5).
+    storedProvenanceRef.current = decemberStoredProvenanceOf(decQ.data.state);
+    setBeneficiaryEdited(false);
+    setBalancesEdited(false);
     let initial = formFromState(
       decQ.data.hasStored
-        ? resolveDecemberStateAtLoad(
-            decQ.data.state,
-            rothQ.data?.saved?.primarySoleBeneficiaryOfSpouse ?? null,
-          )
+        ? resolveDecemberStateAtLoad(decQ.data.state, recordFactsOf(rothQ.data))
         : decQ.data.state,
     );
     if (!decQ.data.hasStored && rothQ.data) {
@@ -472,6 +537,25 @@ export function December() {
         };
       }
     }
+    if (!decQ.data.hasStored) {
+      // First-open preseed provenance (round-5): the
+      // preseeded BALANCES become the console's own stored
+      // values (they are this console's initial entries),
+      // but the beneficiary fact stays UNANSWERED in the
+      // preseeded blob even when the record answers it —
+      // load resolution supplies the record's answer for
+      // display and pricing until the user answers here.
+      const preseeded = stateFromForm(initial);
+      storedProvenanceRef.current = {
+        primarySoleBeneficiaryOfSpouse: null,
+        pretaxBalancePrimary: preseeded.pretaxBalancePrimary,
+        pretaxBalanceSpouse: preseeded.pretaxBalanceSpouse,
+        pretaxBalance: preseeded.pretaxBalance,
+        pretaxSplitExplicit:
+          preseeded.pretaxBalancePrimary != null ||
+          preseeded.pretaxBalanceSpouse != null,
+      };
+    }
     setForm(initial);
     if (!decQ.data.hasStored) {
       dirtyRef.current = true;
@@ -482,15 +566,27 @@ export function December() {
   }, [decQ.data, rothQ.data, rothQ.isPending]);
 
   /* Debounced autosave of every edit, so the December session
-     can be left and reopened at any point. */
+     can be left and reopened at any point. The saved state is
+     derived through decemberStateForSave (round-5): fields
+     the user has not edited in this console — the beneficiary
+     fact, the balance split — save their STORED values, never
+     a load-resolved (inherited) value, so an inherited answer
+     keeps no precedence over a later record change. */
   useEffect(() => {
     if (!form || !dirtyRef.current) return;
     setSaveNote("Saving…");
     const t = setTimeout(() => {
-      saveMut.mutate(stateFromForm(form), {
-        onSuccess: () => setSaveNote("Saved"),
-        onError: () => setSaveNote("Could not save — your entries stay on this screen."),
-      });
+      saveMut.mutate(
+        decemberStateForSave(
+          stateFromForm(form),
+          storedProvenanceRef.current,
+          { beneficiary: beneficiaryEdited, balances: balancesEdited },
+        ),
+        {
+          onSuccess: () => setSaveNote("Saved"),
+          onError: () => setSaveNote("Could not save — your entries stay on this screen."),
+        },
+      );
     }, 700);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -559,7 +655,7 @@ export function December() {
       | "strayAgiReducers"
       | "strayCoverage"
       | "strayTradeDate",
-    opts?: { amountLabel?: string; hint?: string; extra?: ReactNode },
+    opts?: { amountLabel?: string; hint?: string; extra?: ReactNode; note?: string },
   ) => {
     const item = form[key];
     const hasAmount = opts?.amountLabel != null;
@@ -584,6 +680,11 @@ export function December() {
           </select>
         </div>
         {opts?.hint && <p className={hintCls}>{opts.hint}</p>}
+        {opts?.note && (
+          <p className="mt-1 text-sm text-[var(--warn)]" role="note">
+            {opts.note}
+          </p>
+        )}
         {hasAmount && item.status === "amount" && (
           <div className="mt-2 max-w-xs">
             {moneyField(opts.amountLabel!, item.amount, (v) =>
@@ -725,13 +826,17 @@ export function December() {
             numField("Age — spouse", form.ageSpouse, (v) => set("ageSpouse", v), {
               idLabel: "December age spouse",
             })}
-          {moneyField("Pre-tax balance — primary (prior Dec 31)", form.pretaxBalancePrimary, (v) =>
-            set("pretaxBalancePrimary", v),
+          {moneyField("Pre-tax balance — primary (prior Dec 31)", form.pretaxBalancePrimary, (v) => {
+            setBalancesEdited(true);
+            edit((f) => ({ ...f, pretaxBalancePrimary: v, pretaxSplitExplicit: true }));
+          },
           { idLabel: "December pretax balance primary", hint: "The primary filer's own pre-tax balance. Sizes their RMD on their own clock and caps the draw. Enter 0 for a known-empty balance — blank means not entered, and only an entered balance caps the draw." },
           )}
           {joint &&
-            moneyField("Pre-tax balance — spouse (prior Dec 31)", form.pretaxBalanceSpouse, (v) =>
-              set("pretaxBalanceSpouse", v),
+            moneyField("Pre-tax balance — spouse (prior Dec 31)", form.pretaxBalanceSpouse, (v) => {
+              setBalancesEdited(true);
+              edit((f) => ({ ...f, pretaxBalanceSpouse: v, pretaxSplitExplicit: true }));
+            },
             { idLabel: "December pretax balance spouse", hint: "The spouse's own pre-tax balance — their RMD is computed on their own age and divisor table, not the primary's. Enter 0 for a known-empty balance — blank means not entered." },
             )}
           {moneyField("RMD already received this year", form.rmdAlreadyReceived, (v) =>
@@ -739,6 +844,16 @@ export function December() {
           { idLabel: "December RMD already received", hint: "The part of this year's RMD already paid — and already inside the year-to-date income below. It is subtracted from the RMD the balances imply, so a paid RMD is never counted twice." },
           )}
         </div>
+        {decQ.data?.state &&
+          !decQ.data.state.pretaxSplitExplicit &&
+          decQ.data.state.pretaxBalance != null &&
+          !balancesEdited && (
+            <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]" role="note">
+              Balance ownership: this console’s saved state holds only a combined pre-tax
+              total, so the per-owner balances above come from your Tax Plan record.
+              Editing either balance here makes them this console’s own from then on.
+            </p>
+          )}
         <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -789,14 +904,15 @@ export function December() {
                     ? "yes"
                     : "no"
               }
-              onChange={(e) =>
+              onChange={(e) => {
+                setBeneficiaryEdited(true);
                 set(
                   "primarySoleBeneficiaryOfSpouse",
                   e.target.value === "unanswered"
                     ? null
                     : e.target.value === "yes",
-                )
-              }
+                );
+              }}
             >
               <option value="unanswered">Not answered</option>
               <option value="yes">Yes</option>
@@ -806,7 +922,9 @@ export function December() {
               This fact alone picks your spouse’s RMD table. “Not answered”
               prices it on the Uniform table; when your Tax Plan record
               answers this, that answer shows here until you answer in this
-              console.
+              console — and it is not saved into this console unless you
+              change it here, so a later change to the record still flows
+              in.
             </p>
           </div>
         )}
@@ -918,6 +1036,9 @@ export function December() {
         })}
         {strayRow("Fund distributions paid in January but taxed this year", "strayJanPaid", {
           amountLabel: "January-paid distributions deemed received December 31",
+          note: form.legacyJanPaidSplitUnconfirmed
+            ? "Saved before the qualified-dividend split existed — check it: this amount predates the “of which qualified” field, so confirm the qualified portion below before relying on it."
+            : undefined,
           hint: "A dividend declared in October–December with a December record date and paid in January is deemed received on December 31 — check each fund’s declarations and distribution calendar, not just cash postings. An exempt-interest portion belongs under the tax-exempt item below, not here.",
           extra: (
             <div className="mt-2 max-w-xs">
@@ -938,10 +1059,16 @@ export function December() {
         })}
         {strayRow("Return of capital reclassified as an ordinary dividend", "strayROCOrdinary", {
           amountLabel: "Amount reclassified as an ordinary dividend",
+          note: form.legacyRocSplitUnconfirmed
+            ? "Saved before this split existed — check it: the return-of-capital amount below was entered before there were two items, so confirm how much of it belongs here as an ordinary dividend."
+            : undefined,
           hint: "When a fund reclassifies return of capital as a dividend, that part is an ORDINARY dividend — it is taxed as ordinary income, not as a capital gain. Enter it here, not under the capital part below.",
         })}
         {strayRow("Return of capital over basis (capital gain)", "strayROC", {
           amountLabel: "Income over basis (capital gain)",
+          note: form.legacyRocSplitUnconfirmed
+            ? "Saved before the split existed — check it: this amount was entered before the capital / ordinary split, so confirm the part above that was reclassified as an ordinary dividend."
+            : undefined,
           hint: "Return of capital normally just reduces basis — it becomes income only once it exceeds the shares’ basis, and that part is a capital gain. Enter only that over-basis part here; a pure basis reduction is “checked — none”.",
         })}
         {strayRow("K-1 income (partnership, S-corp, trust)", "strayK1", {
@@ -1108,6 +1235,11 @@ export function December() {
               onClick={() => {
                 const blank = defaultDecemberState(new Date().getFullYear());
                 dirtyRef.current = true;
+                // A reset is the user's own answer for every
+                // field: the blank state saves verbatim, with
+                // no stored provenance preserved.
+                setBeneficiaryEdited(true);
+                setBalancesEdited(true);
                 setForm(formFromState(blank));
                 setResetArmed(false);
               }}
