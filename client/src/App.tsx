@@ -2661,7 +2661,7 @@ export function App() {
       href="https://github.com/vkreal/finance-planner"
       target="_blank"
       rel="noreferrer"
-      aria-label="Mo Money on GitHub (opens in a new tab)"
+      aria-label="Finance Planner on GitHub (opens in a new tab)"
       title="View the source on GitHub"
       className="inline-flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)] focus-visible:border-[var(--accent)] focus-visible:text-[var(--accent)]"
     >
