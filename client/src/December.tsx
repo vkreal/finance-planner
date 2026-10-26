@@ -407,6 +407,13 @@ export function December() {
   const [saveNote, setSaveNote] = useState<string>("");
   const [resetArmed, setResetArmed] = useState(false);
   const [detailOpen, setDetailOpen] = usePersistedFold("december.detail", false);
+  // The projected tax bill's income lines (total income →
+  // MAGI → taxable income) sit behind the bill block's own
+  // fold; the tax, credit, and net lines always show.
+  const [billIncomeOpen, setBillIncomeOpen] = usePersistedFold(
+    "december.billIncome",
+    false,
+  );
 
   /* Hydrate once from the stored blob. On a first-ever open
      (nothing stored) preseed the year block from the saved Tax
@@ -618,6 +625,31 @@ export function December() {
   }
 
   const joint = form.filingStatus === "mfj";
+  /* Projected tax bill (contract v50): the likely case's
+     bill at the headline draw, from the core result's
+     readouts — the view does no settlement arithmetic of
+     its own. The state rows show only when a state tax is
+     in play (a rate entered, or a priced state amount —
+     the Washington excise at a 0% flat rate); at a plain
+     0% state the federal line stands alone. */
+  const likelyCase = result.cases.find((c) => c.kind === "likely") ?? null;
+  const billShowState =
+    likelyCase != null &&
+    (state.stateRatePct > 0 || likelyCase.stateTaxAtHeadline > 0);
+  const billRow = (
+    label: string,
+    value: string,
+    opts?: { bold?: boolean; divide?: boolean },
+  ) => (
+    <div
+      className={`flex items-baseline justify-between gap-4 ${
+        opts?.divide ? "mt-1 border-t border-[var(--border)] pt-1.5" : "py-0.5"
+      }`}
+    >
+      <span className={opts?.bold ? "font-semibold" : undefined}>{label}</span>
+      <span className={`tnum ${opts?.bold ? "font-bold" : ""}`}>{value}</span>
+    </div>
+  );
   const rangeRow = (
     label: string,
     key: "remCapDist" | "remInterest" | "remOrdinaryDividends" | "remQualifiedDividends" | "remOtherOrdinary",
@@ -731,6 +763,60 @@ export function December() {
                 (cliff − {fmtDollars(state.bufferDollars)} buffer)
               </p>
             )}
+            {likelyCase && (
+              <div
+                className="mt-3 max-w-xl rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3"
+                aria-label="Projected tax bill"
+              >
+                <p className="text-sm font-semibold">
+                  Projected tax bill
+                  <span className="font-normal text-[var(--dim)]">
+                    {" "}— likely case
+                    {result.headlineDraw != null ? ", at the headline draw" : ""}
+                  </span>
+                </p>
+                <div className="mt-1 text-sm">
+                  <button
+                    type="button"
+                    aria-expanded={billIncomeOpen}
+                    onClick={() => setBillIncomeOpen(!billIncomeOpen)}
+                    className="flex w-full items-center justify-between gap-3 py-0.5 text-left"
+                  >
+                    <span>Income details</span>
+                    <FoldChevron open={billIncomeOpen} />
+                  </button>
+                  {billIncomeOpen && (
+                    <>
+                      {billRow("Total income", fmtDollars(likelyCase.totalIncomeAtHeadline))}
+                      {billRow("MAGI", fmtDollars(likelyCase.magiAtHeadline))}
+                      {billRow("Taxable income", fmtDollars(likelyCase.taxableIncomeAtHeadline))}
+                    </>
+                  )}
+                  {billRow("Federal tax", fmtDollars(likelyCase.federalTaxAtHeadline))}
+                  {billShowState && billRow("State tax", fmtDollars(likelyCase.stateTaxAtHeadline))}
+                  {billShowState && billRow("Total tax", fmtDollars(likelyCase.totalTaxAtHeadline))}
+                  {likelyCase.creditAtHeadline != null &&
+                    billRow(
+                      "ACA premium credit",
+                      likelyCase.creditAtHeadline > 0
+                        ? `−${fmtDollars(likelyCase.creditAtHeadline)}`
+                        : fmtDollars(likelyCase.creditAtHeadline),
+                    )}
+                  {likelyCase.excessAptcRepayment != null &&
+                    likelyCase.excessAptcRepayment > 0 &&
+                    billRow("Advance credit to repay", fmtDollars(likelyCase.excessAptcRepayment))}
+                  {billRow(
+                    "Estimated amount to settle at filing",
+                    fmtDollars(likelyCase.netSettleAtHeadline),
+                    { bold: true, divide: true },
+                  )}
+                </div>
+                <p className="mt-2 text-xs text-[var(--dim)]">
+                  This estimate is before any withholding or estimated payments,
+                  which this console does not track.
+                </p>
+              </div>
+            )}
             {result.cases.length > 0 && (
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
                 {result.cases.map((c) => (
@@ -777,6 +863,12 @@ export function December() {
                           Additional credit still due: {fmtDollars(c.creditStillDue)}
                         </p>
                       )}
+                    <p className="tnum mt-1 text-sm">
+                      Estimated amount to settle at filing:{" "}
+                      <span className="font-semibold">
+                        {fmtDollars(c.netSettleAtHeadline)}
+                      </span>
+                    </p>
                     {c.overCliffEvenAtZero && (
                       <p className="mt-1 text-sm font-medium text-[var(--bad)]">
                         Over the cliff even with a $0 draw.
