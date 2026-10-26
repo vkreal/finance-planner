@@ -78,8 +78,11 @@ import {
 DECEMBER_STATE_KEY,
 computeDecemberProjection,
 decemberState,
+decideDecemberWrite,
+parseDecemberRevision,
 parseDecemberState,
 runDecemberFixtures,
+serializeDecemberState,
 } from "./decemberCore";
 import {
 applyRothUiWrite,
@@ -3689,6 +3692,11 @@ const playgroundYearOut = z.object({
   otherOrdinaryTotal: z.number(),
   rmdPriced: z.boolean(),
   rmd: z.number(),
+  rmdGross: z.number(),
+  rmdPrimary: z.number(),
+  rmdSpouse: z.number(),
+  rmdAlreadyReceived: z.number(),
+  dependentMagiForAca: z.number(),
   rmdDivisor: z.number().nullable(),
   rmdTable: z.enum(["joint", "uniform"]).nullable(),
   ssBenefits: z.number(),
@@ -3866,6 +3874,30 @@ const decemberProjectionOut = z.object({
   cases: z.array(decemberCaseOut),
   warnings: z.array(z.string()),
 });
+
+/* The December console's get / save responses, hoisted so the
+   handlers annotate against them (a returned `ok: true`
+   widens to boolean unless the handler's return type pins
+   the literal). The save response is the compare-and-swap
+   union: success carries the new revision; a conflict carries
+   the stored revision and the stored state so the client
+   reloads it instead of overwriting it. */
+const getDecemberProjectionResponse = z.object({
+  state: decemberState,
+  hasStored: z.boolean(),
+  revision: z.number(),
+});
+
+const saveDecemberProjectionResponse = z.union([
+  z.object({ ok: z.literal(true), revision: z.number() }),
+  z.object({
+    ok: z.literal(false),
+    conflict: z.literal(true),
+    revision: z.number(),
+    state: decemberState,
+    hasStored: z.boolean(),
+  }),
+]);
 
 const playgroundPasteOut = z.object({
   kind: z.string(),
@@ -5158,9 +5190,9 @@ const ACTION_PURPOSES: Record<string, string> = {
   deleteAllBackups: "Delete every backup file in this space's own backups folder. Legacy-folder backups are never deleted.",
   createBackupNow: "Create an encrypted backup file now from the current dataset (same payload as exportbackup).",
   runAccuracySelfCheck: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, data integrity, the replay reproducibility diagnostic, or the December console fixtures) per call.",
-  getDecemberProjection: "Read the December projection console's saved inputs (one settings blob, parsed leniently field by field; hasStored says whether a blob was ever saved, so a first open can preseed from the saved Tax Plan record). Read-only.",
-  saveDecemberProjection: "Save the December projection console's inputs as one settings blob. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view.",
-  runDecemberProjection: "Price the December year-end projection from the given console inputs through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver: the maximum safe December pre-tax draw for the likely case at cliff minus the entered buffer, projected MAGI and distance to the cliff for the low / likely / high cases at that draw, the final allowable credit per case, and the excess-APTC repayment per case — after 2025 there are no repayment caps (P.L. 119-21 §71305), so any APTC taken above the final credit is repaid in full in every case, under the cliff as well as over it (over the cliff the final credit is $0 and the whole APTC taken is repaid). Compute-only; reads and writes nothing.",
+  getDecemberProjection: "Read the December projection console's saved inputs. Returns {state, hasStored, revision}: state is the console's complete input set (one settings blob, parsed leniently field by field — see saveDecemberProjection for the state fields' meanings, including the per-owner pre-tax balances, rmdAlreadyReceived, acaEnrollmentPremiumAnnual, and the stray character splits); hasStored says whether a blob was ever saved (a first open can preseed from the saved Tax Plan record); revision is the blob's write revision — pass it back as baseRevision when saving, and a blob written before revisions existed reads as revision 0. Read-only.",
+  saveDecemberProjection: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision. REQUEST: {state, baseRevision} — baseRevision is REQUIRED and must equal the revision the caller's copy was read at (from getDecemberProjection; 0 when nothing is stored). RESPONSES: success is {ok:true, revision} with the NEW revision (the next save must pass it); a stale base is NOT an error throw — it returns the machine-readable conflict object {ok:false, conflict:true, revision, state, hasStored} carrying the currently stored revision and state, and writes nothing, so the caller reloads state instead of overwriting it. STATE FIELDS (all dollars, all lenient on read — a missing field reads at its inert default): pretaxBalancePrimary / pretaxBalanceSpouse are the two owners' SEPARATE prior-Dec-31 pre-tax balances (null = not entered for that owner); each owner's RMD is computed on their own age and divisor table from their own balance. pretaxBalance is the legacy combined total — writers set it to the split's sum; a stored blob carrying only pretaxBalance reads it as the primary's balance. rmdAlreadyReceived is the part of this year's RMD already paid AND already included in ytdOtherOrdinary — it is netted from the computed RMD (floored at $0) so a paid RMD is never counted twice. acaEnrollmentPremiumAnnual is the annual premium of the plan actually enrolled in (null = blank = NO cap, the benchmark-based credit stands); when entered, each case's final credit is capped at min(benchmark-based credit, this premium) BEFORE any coverage-month reduction. Stray character splits: strayROC is return of capital that is income OVER BASIS (a capital gain — rides the gains stack) while strayROCOrdinary is return of capital RECLASSIFIED AS AN ORDINARY DIVIDEND (rides ordinary dividends); strayJanPaid is the total of fund distributions paid in January but deemed received Dec 31 (§852(b)(7)), and strayJanPaidQualifiedAmount is the qualified-dividends PORTION of that total (a portion, clamped to the total). strayDependent's amount counts toward the ACA household MAGI ONLY — never the parents' AGI, taxable income, or tax. strayK1 is the one SIGNED stray: a negative amount is a deductible K-1 loss and reduces ordinary income; every other stray amount is non-negative. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view.",
+  runDecemberProjection: "Price the December year-end projection from the given console inputs (same state shape as saveDecemberProjection) through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver. Compute-only; reads and writes nothing. RESPONSE FIELDS: priced=false with reason set means the year cannot be priced (no primary age entered) and every other field is inert. cliff is the year's 400%-of-FPL line in dollars, or null when NO cliff applies — nobody on the marketplace, or a pre-2026 tax year (the enhanced-credit years have no cliff; headlineText then reads 'No ACA cliff this year — the draw is not cliff-constrained.'). targetMagi is cliff − bufferDollars (null when cliff is null). headlineDraw is the maximum safe December pre-tax draw for the LIKELY case landing MAGI at targetMagi: null means 'not cliff-constrained' (cliff is null — no draw limit from the cliff), while 0 means a cliff EXISTS but no draw is safe — either the room under cliff − buffer is already used up, or income already posted is over the cliff at a $0 draw (zeroDrawOverCliff=true, and headlineText says no draw can fix that year). headlineText is the plain-language headline and always disambiguates the null/0 cases. PER CASE (low / likely / high range cases, all priced AT the headline draw): nonDrawAcaMagi is the case's ACA household MAGI before any draw; maxDraw is that case's OWN maximum safe draw (null when cliff is null); magiAtHeadline is the case's MAGI at the headline draw; distanceAtHeadline is cliff − magiAtHeadline (negative = over the cliff; null when cliff is null); overCliffAtHeadline / overCliffEvenAtZero say whether the case is over at the headline draw / even at $0. creditAtHeadline is the case's final allowable credit — the benchmark-based credit capped at acaEnrollmentPremiumAnnual when entered, less any coverage-month reduction, $0 when over the cliff — or null when no benchmark premium was entered (credit not priced). excessAptcRepayment is max(0, aptcTaken − creditAtHeadline): after 2025 there are no repayment caps (P.L. 119-21 §71305), so any APTC taken above the final credit is repaid in full in EVERY case, under the cliff as well as over it (over the cliff the final credit is $0 and the whole APTC taken is repaid); it is null when the credit is not priced or the year is pre-2026. creditStillDue is max(0, creditAtHeadline − aptcTaken) under the same null conditions. repaymentExposure is excessAptcRepayment as an always-a-number field ($0 when unpriced). federalTaxAtHeadline / totalTaxAtHeadline are the case's taxes at the headline draw. warnings lists input problems priced as entered (e.g. a range whose low/likely/high are out of order).",
   describeApi: "Return the machine-readable API contract for every published action, generated live from the actions' own zod schemas, with version stamps and conventions.",
 };
 
@@ -10898,40 +10930,92 @@ export const Actions = {
   // December projection console: the saved December inputs
   // (one settings blob, form state in the Playground blob's
   // style — see decemberCore). get returns the leniently parsed
-  // state plus whether a blob was ever stored; save replaces
-  // the blob whole (the console sends its complete input set,
-  // like the Playground form save). Neither prices anything.
+  // state, whether a blob was ever stored, and the blob's
+  // write revision; save is a compare-and-swap on that
+  // revision (the Roth records' pattern): the caller passes
+  // the revision its copy was read at (baseRevision), and a
+  // save whose base no longer matches is refused with the
+  // stored state instead of overwriting it. Neither prices
+  // anything.
   getDecemberProjection: defineAction({
     request: z.object({}),
-    response: z.object({
-      state: decemberState,
-      hasStored: z.boolean(),
-    }),
-    async handler(ctx) {
+    response: getDecemberProjectionResponse,
+    async handler(ctx): Promise<z.infer<typeof getDecemberProjectionResponse>> {
       const db = ctx.db<typeof schema>();
       const rows = await db.select().from(schema.settings);
       const raw = rows.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
       return {
         state: parseDecemberState(raw, new Date().getFullYear()),
         hasStored: raw !== undefined,
+        revision: parseDecemberRevision(raw),
       };
     },
   }),
 
   saveDecemberProjection: defineAction({
-    request: z.object({ state: decemberState }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    request: z.object({
+      state: decemberState,
+      baseRevision: z.number().int().min(0),
+    }),
+    response: saveDecemberProjectionResponse,
+    async handler(ctx, args): Promise<z.infer<typeof saveDecemberProjectionResponse>> {
       const db = ctx.db<typeof schema>();
-      await db
-        .insert(schema.settings)
-        .values({ key: DECEMBER_STATE_KEY, value: JSON.stringify(args.state) })
-        .onConflictDoUpdate({
-          target: schema.settings.key,
-          set: { value: JSON.stringify(args.state) },
-        });
+      const rows = await db.select().from(schema.settings);
+      const current = rows.find((r) => r.key === DECEMBER_STATE_KEY);
+      const storedRevision = parseDecemberRevision(current?.value);
+      const decision = decideDecemberWrite(storedRevision, args.baseRevision);
+      if (!decision.allowed) {
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: storedRevision,
+          state: parseDecemberState(current?.value, new Date().getFullYear()),
+          hasStored: current !== undefined,
+        };
+      }
+      const blob = serializeDecemberState(args.state, decision.nextRevision);
+      if (current === undefined) {
+        // First write: claim the key insert-only (the Roth
+        // insert-if-absent pattern, on the December key) —
+        // the guarded insert is the atomic compare.
+        const claimedRows = await db
+          .insert(schema.settings)
+          .values({ key: DECEMBER_STATE_KEY, value: blob })
+          .onConflictDoNothing()
+          .returning({ key: schema.settings.key });
+        const claimed = claimedRows.length === 1;
+        if (!claimed) {
+          const after = await db.select().from(schema.settings);
+          const afterRaw = after.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
+          return {
+            ok: false as const,
+            conflict: true as const,
+            revision: parseDecemberRevision(afterRaw),
+            state: parseDecemberState(afterRaw, new Date().getFullYear()),
+            hasStored: afterRaw !== undefined,
+          };
+        }
+      } else {
+        const committed = await commitSettingsValueGuarded(
+          ctx,
+          DECEMBER_STATE_KEY,
+          current.value,
+          blob,
+        );
+        if (!committed) {
+          const after = await db.select().from(schema.settings);
+          const afterRaw = after.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
+          return {
+            ok: false as const,
+            conflict: true as const,
+            revision: parseDecemberRevision(afterRaw),
+            state: parseDecemberState(afterRaw, new Date().getFullYear()),
+            hasStored: afterRaw !== undefined,
+          };
+        }
+      }
       ctx.invalidateQueries();
-      return { ok: true as const };
+      return { ok: true as const, revision: decision.nextRevision };
     },
   }),
 

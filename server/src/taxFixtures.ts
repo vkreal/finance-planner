@@ -825,7 +825,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-aca-family-benchmark-prices-family-year",
     kind: "tax",
-    note: "Family benchmark prices a household-5 year (hand-derived, IRC §36B + Rev. Proc. 2025-25): both spouses under 65 and on the marketplace from the retirement year (born 1969 / 1980, retire at 57, plan year 2026), household of 5, other income $120,000, Do Nothing. FPL for a household of 5 on the 2025 guidelines is $15,650 + 4 × $5,500 = $37,650 (cliff $150,600); MAGI $120,000 is 318.73% of FPL, inside the flat 300–400% band, so the applicable percentage is 9.96% and the expected contribution is $11,952. With the family benchmark entered at $32,000 the year's benchmark is the FAMILY figure — not the couple $20,000 or the one-spouse $15,000 — and the credit is $32,000 − $11,952 = $22,048.",
+    note: "Family benchmark prices a household-5 year (hand-derived, IRC §36B + Rev. Proc. 2025-25): both spouses under 65 and on the marketplace from the retirement year (born 1969 / 1980, retire at 57, plan year 2026), household of 5, other income $120,000, Do Nothing. FPL for a household of 5 on the 2025 guidelines is $15,650 + 4 × $5,500 = $37,650 (cliff $150,600); MAGI $120,000 is 318.73% of FPL, inside the flat 300–400% band, so the applicable percentage is 9.96% and the expected contribution is $11,952. With the family benchmark entered at $32,000 the year's benchmark is the FAMILY figure — not the couple $20,000 or the one-spouse $15,000 — and the credit is $32,000 − $11,952 = $20,048.",
     expected: {
       benchmark: 32000,
       credit: 20048,
@@ -860,7 +860,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-aca-family-benchmark-spouse-only-year-prices-single",
     kind: "tax",
-    note: "Family benchmark must NOT price a spouse-only marketplace year (the who's-covered pin, hand-derived on the family case's shape): primary born 1960 is 66 in 2026 and on Medicare, spouse born 1980 is 46 and the only one on ACA, household size still 5, other income $120,000, Do Nothing, family benchmark entered at $32,000. Household size drives only the FPL math — FPL for a household of 5 is $37,650 (cliff $150,600), MAGI $120,000 is 318.73% of FPL, applicable percentage 9.96%, expected contribution $11,952 — but the benchmark is the ONE-SPOUSE figure $15,000, so the credit is $15,000 − $11,952 = $4,848, exactly the credit the same shape prices with the family field blank (diff $0). Pricing off the family figure here would invent $32,000 − $15,000 = $17,200 of phantom benchmark.",
+    note: "Family benchmark must NOT price a spouse-only marketplace year (the who's-covered pin, hand-derived on the family case's shape): primary born 1960 is 66 in 2026 and on Medicare, spouse born 1980 is 46 and the only one on ACA, household size still 5, other income $120,000, Do Nothing, family benchmark entered at $32,000. Household size drives only the FPL math — FPL for a household of 5 is $37,650 (cliff $150,600), MAGI $120,000 is 318.73% of FPL, applicable percentage 9.96%, expected contribution $11,952 — but the benchmark is the ONE-SPOUSE figure $15,000, so the credit is $15,000 − $11,952 = $3,048, exactly the credit the same shape prices with the family field blank (diff $0). Pricing off the family figure here would invent $32,000 − $15,000 = $17,200 of phantom benchmark.",
     expected: {
       benchmark: 15000,
       credit: 3048,
@@ -21855,6 +21855,184 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       ];
       return {
         phrasesFound: phrases.filter((p) => s.includes(p)).length,
+      };
+    },
+  },  {
+    id: "pg-spouse-rmd-and-received-netting",
+    kind: "tax",
+    note: "DECEMBER FIX (single-year pricer inputs, hand-derived): pricePlaygroundYear's OPTIONAL spouse balance + already-received inputs. (1) Spouse RMD on her own clock: primary 60 / spouse 75, HH2, 2026, spouse pre-tax $246,000, primary $0, other ordinary $70,000, benchmark $20,000 — her RMD is $246,000 / 24.6 (Uniform Lifetime, age 75) = $10,000, priced as RMD income, so MAGI is $80,000 and the ACA credit is $20,000 − 9.96% × $80,000 = $12,032. (2) Received netting: primary 73 with a $265,000 prior balance (RMD $265,000 / 26.5 = $10,000) already received and inside $79,600 of other ordinary income — the net RMD priced is $0, MAGI is $79,600 counted once, the credit is $20,000 − $7,928.16 = $12,071.84.",
+    expected: {
+      spouseRmd: 10000,
+      grossRmd1: 10000,
+      magi1: 80000,
+      credit1: 12032,
+      grossRmd2: 10000,
+      received2: 10000,
+      netRmd2: 0,
+      magi2: 79600,
+      credit2: 12071.84,
+    },
+    actual: () => {
+      const baseInp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        spouseSoleBeneficiary: true,
+        stateRatePct: 0,
+        residenceState: "other" as const,
+        itemizedMortgageInterest: 0,
+        itemizedSaltPaid: 0,
+        itemizedCharitable: 0,
+        itemizedOther: 0,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 20000,
+      };
+      const r1 = pricePlaygroundYear({
+        ...baseInp,
+        agePrimary: 60,
+        ageSpouse: 75,
+        otherOrdinary: 70000,
+        pretaxBalance: 0,
+        pretaxBalanceSpouse: 246000,
+      });
+      const r2 = pricePlaygroundYear({
+        ...baseInp,
+        agePrimary: 73,
+        ageSpouse: 64,
+        otherOrdinary: 79600,
+        pretaxBalance: 265000,
+        rmdAlreadyReceived: 10000,
+      });
+      return {
+        spouseRmd: r1.rmdSpouse,
+        grossRmd1: r1.rmdGross,
+        magi1: r1.magi,
+        credit1: r1.aca.credit,
+        grossRmd2: r2.rmdGross,
+        received2: r2.rmdAlreadyReceived,
+        netRmd2: r2.rmd,
+        magi2: r2.magi,
+        credit2: r2.aca.credit,
+      };
+    },
+  },
+  {
+    id: "pg-dependent-magi-aca-only",
+    kind: "tax",
+    note: "DECEMBER FIX (single-year pricer input, hand-derived): pricePlaygroundYear's OPTIONAL dependentMagiForAca adds the amount to the §36B household MAGI ONLY. Parents MFJ (both under 65), $60,000 wages, dependent wages $20,000: the parents' AGI and MAGI stay $60,000 and their federal tax is $2,840 (taxable $60,000 − $32,200 standard deduction = $27,800; $24,800 × 10% + $3,000 × 12% = $2,840), while the ACA household MAGI is $80,000 and the credit at the $20,000 benchmark is $20,000 − 9.96% × $80,000 = $12,032.",
+    expected: {
+      agi: 60000,
+      magi: 60000,
+      acaMagi: 80000,
+      federalTax: 2840,
+      credit: 12032,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 60,
+        ageSpouse: 58,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 60000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        stateRatePct: 0,
+        residenceState: "other",
+        itemizedMortgageInterest: 0,
+        itemizedSaltPaid: 0,
+        itemizedCharitable: 0,
+        itemizedOther: 0,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 20000,
+        dependentMagiForAca: 20000,
+      });
+      return {
+        agi: r.agi,
+        magi: r.magi,
+        acaMagi: r.acaMagi,
+        federalTax: r.federalTax,
+        credit: r.aca.credit,
+      };
+    },
+  },
+  {
+    id: "pg-new-optional-inputs-absent-identity",
+    kind: "tax",
+    note: "DECEMBER FIX (bit-identity pin): the three new OPTIONAL pricePlaygroundYear inputs (pretaxBalanceSpouse, rmdAlreadyReceived, dependentMagiForAca) are inert when absent — and equally inert when passed explicitly as null / null / 0. Two pricings of the same year (primary 73, $265,000 balance, $70,000 other ordinary, HH2, benchmark $20,000) diff $0 on AGI, MAGI, ACA MAGI, federal tax, ACA credit, and the priced RMD, so every pre-existing caller prices bit-identically.",
+    expected: {
+      agiDiff: 0,
+      magiDiff: 0,
+      acaMagiDiff: 0,
+      federalTaxDiff: 0,
+      creditDiff: 0,
+      rmdDiff: 0,
+    },
+    actual: () => {
+      const baseInp = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 73,
+        ageSpouse: 64,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 70000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 265000,
+        spouseSoleBeneficiary: true,
+        stateRatePct: 0,
+        residenceState: "other" as const,
+        itemizedMortgageInterest: 0,
+        itemizedSaltPaid: 0,
+        itemizedCharitable: 0,
+        itemizedOther: 0,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 20000,
+      };
+      const absent = pricePlaygroundYear(baseInp);
+      const explicit = pricePlaygroundYear({
+        ...baseInp,
+        pretaxBalanceSpouse: null,
+        rmdAlreadyReceived: null,
+        dependentMagiForAca: 0,
+      });
+      const d = (a: number | null, b: number | null) =>
+        a == null || b == null ? (a === b ? 0 : -1) : Math.round((a - b) * 100) / 100;
+      return {
+        agiDiff: d(absent.agi, explicit.agi),
+        magiDiff: d(absent.magi, explicit.magi),
+        acaMagiDiff: d(absent.acaMagi, explicit.acaMagi),
+        federalTaxDiff: d(absent.federalTax, explicit.federalTax),
+        creditDiff: d(absent.aca.credit, explicit.aca.credit),
+        rmdDiff: d(absent.rmd, explicit.rmd),
       };
     },
   },
