@@ -72,6 +72,7 @@ import { giftAgeGuardMessage } from "@space/server/giftModel";
 import { seedRothInputs, SEED_RETIREMENT_AGE_FALLBACK } from "@space/server/rothSeed";
 import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
+import { December } from "./December";
 
 // SavePayload is the plan record's writer (saveRothInputs) — the
 // only payload that carries the execution-year fields. PlanPayload
@@ -836,6 +837,17 @@ export function RothConversion() {
      results workspaces, exactly as the view worked before. A
      fresh visit always opens on "plan". */
   const [face, setFace] = useState<"plan" | "change" | "settings">("plan");
+  /* December draw console (display only — never saved here,
+     never priced here): the December projection console lives
+     inside this view since the nav-crowding move (Kyle's pick
+     A) took it out of the top-level tab strip. When open it
+     swaps this view's whole screen for the console — the same
+     December component, with its own saved state, that used
+     to sit behind the December tab — and the console's back
+     control returns here, to the face the user left. In-session
+     only, exactly like the face above: a fresh visit always
+     opens on the Tax Plan itself. */
+  const [decemberOpen, setDecemberOpen] = useState(false);
   /* Pretax Spending (proof) scratch overrides — this tab only.
      Blank = the plan's own value; a typed value replaces that
      one input in the proof run in memory. These states are
@@ -5685,6 +5697,29 @@ export function RothConversion() {
     changedFields.magiCap ||
     changedFields.cliffBuffer;
 
+  /* December draw console, open: the console takes the whole
+     screen (a full-screen swap within this view), with its back
+     control at the top returning to the Tax Plan face the user
+     left. The December component itself is unchanged — same
+     saved state, same pricing — only its doorway moved here. */
+  if (decemberOpen) {
+    return (
+      <div>
+        <div className="pt-5">
+          <button
+            type="button"
+            aria-label="Back to Tax Plan view"
+            onClick={() => setDecemberOpen(false)}
+            className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)] hover:text-[var(--accent)]"
+          >
+            ← Tax Plan
+          </button>
+        </div>
+        <December />
+      </div>
+    );
+  }
+
   return (
     <div>
       <h1 className="pt-5 text-xl font-semibold">Tax Plan</h1>
@@ -5696,10 +5731,24 @@ export function RothConversion() {
         on the marketplace.
       </p>
 
+      {/* The view's action row: the December draw entry point
+          first, then the face switch. (This view's header is a
+          plain title + intro with no right-hand action cluster
+          to host the button, so it leads the action row.) */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          aria-label="December draw"
+          onClick={() => setDecemberOpen(true)}
+          className="rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+        >
+          December draw
+        </button>
+
       <div
         role="group"
         aria-label="Tax Plan view"
-        className="mt-4 inline-flex max-w-full flex-wrap gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-1"
+        className="inline-flex max-w-full flex-wrap gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-1"
       >
         {(
           [
@@ -5723,6 +5772,7 @@ export function RothConversion() {
             {f.label}
           </button>
         ))}
+      </div>
       </div>
 
       {init && (

@@ -72,7 +72,6 @@ import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
 import { RothConversion } from "./RothConversion";
 import { Playground } from "./Playground";
-import { December } from "./December";
 import { YearInSpendingBlock } from "./YearBlocks";
 import { FoldChevron } from "./FoldChevron";
 
@@ -1597,7 +1596,7 @@ export function App() {
   /* Top-level view switch: "spending" is the whole existing dashboard;
      "networth" is its own self-contained view — while it is active
      none of the spending sections render. In-session only. */
-  const [topView, setTopView] = useState<"spending" | "networth" | "retirement" | "roth" | "playground" | "december">("spending");
+  const [topView, setTopView] = useState<"spending" | "networth" | "retirement" | "roth" | "playground">("spending");
   const [viewYear, setViewYear] = useState<number>(() =>
     Number(currentMonth().slice(0, 4)),
   );
@@ -2728,15 +2727,6 @@ export function App() {
       >
         Playground
       </button>
-      <button
-        type="button"
-        aria-label="December view"
-        aria-pressed={topView === "december"}
-        onClick={() => setTopView("december")}
-        className={`px-4 py-2 text-sm font-medium ${topView === "december" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
-      >
-        December
-      </button>
     </div>
   );
 
@@ -2796,18 +2786,6 @@ export function App() {
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
           <Playground />
-        </main>
-      </div>
-    );
-  }
-
-  if (topView === "december") {
-    return (
-      <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
-        <SafeAreaTopScrim backgroundColor="var(--bg)" />
-        <main className="mx-auto w-full max-w-5xl px-4 pb-16">
-          {topBar}
-          <December />
         </main>
       </div>
     );
