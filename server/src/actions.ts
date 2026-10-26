@@ -142,6 +142,7 @@ ITEMIZED_DEDUCTION_SEMANTICS,
 LAW_YEAR_SEMANTICS,
 LOSS_CARRYFORWARD_SEMANTICS,
 RMD_AGE_SEMANTICS,
+RMD_BENEFICIARY_SEMANTICS,
 PLAYGROUND_YEAR_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_COMPARE_EXAMPLE,
@@ -2287,6 +2288,20 @@ const rothInputFields = {
   // and below-floor ages are still priced and shown.
   claimAgeFloor: z.number().int().min(62).max(70).nullable(),
   spouseSoleBeneficiary: z.boolean().nullable(),
+  // The second beneficiary fact (round-3 fix): the primary
+  // is the sole beneficiary of the SPOUSE's pre-tax
+  // accounts — a SEPARATE fact from spouseSoleBeneficiary
+  // above (the spouse is the PRIMARY's sole beneficiary,
+  // which selects only the primary's RMD table). This fact
+  // alone selects the spouse's RMD table in the march.
+  // Null on records written before this build = not
+  // established = her RMD prices on the Uniform Lifetime
+  // Table, so an untouched record prices bit-identically
+  // to before (see the rmdBeneficiarySemantics convention
+  // describeApi publishes). A required key like every field
+  // here: null accepted, omission rejected — the compute
+  // variant below makes it optional there.
+  primarySoleBeneficiaryOfSpouse: z.boolean().nullable(),
   acaHouseholdSize: z.number().int().min(1).max(20).nullable(),
   // The household schedule (MULTI-STEP ACA HOUSEHOLD SCHEDULE
   // build): the ordered (fromYear → householdSize) steps away
@@ -2471,6 +2486,12 @@ const rothComputeFields = {
   // education students — absent prices exactly as null (no
   // expenses entered, no credits).
   educationStudents: rothInputFields.educationStudents.optional(),
+  // Compute path only (round-3 fix): a pricing payload may
+  // omit the second beneficiary fact — absent prices
+  // exactly as null (not established; the spouse's RMD
+  // prices on the Uniform Lifetime Table).
+  primarySoleBeneficiaryOfSpouse:
+    rothInputFields.primarySoleBeneficiaryOfSpouse.optional(),
   // Compute path only: the strict ceilings variant (unknown keys
   // rejected). rothInputFields itself — and therefore the writers
   // and the saved shape — keeps the lenient shared object.
@@ -2634,7 +2655,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 46;
+export const API_CONTRACT_VERSION = 47;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -2850,6 +2871,11 @@ function parseRothInputs(raw: unknown): RothInputs | null {
     preserveExitRatePct: num(r.preserveExitRatePct),
     claimAgeFloor: num(r.claimAgeFloor),
     spouseSoleBeneficiary: bool(r.spouseSoleBeneficiary),
+    // The second beneficiary fact, read leniently like its
+    // sibling: absent on a pre-round-3 record reads as null
+    // = not established (the spouse's RMD prices Uniform),
+    // bit-identical pricing.
+    primarySoleBeneficiaryOfSpouse: bool(r.primarySoleBeneficiaryOfSpouse),
     acaHouseholdSize: num(r.acaHouseholdSize),
     // Household schedule (MULTI-STEP ACA HOUSEHOLD SCHEDULE
     // build), read leniently like the basis tiers and
@@ -5191,7 +5217,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   createBackupNow: "Create an encrypted backup file now from the current dataset (same payload as exportbackup).",
   runAccuracySelfCheck: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, data integrity, the replay reproducibility diagnostic, or the December console fixtures) per call.",
   getDecemberProjection: "Read the December projection console's saved inputs. Returns {state, hasStored, revision}: state is the console's complete input set (one settings blob, parsed leniently field by field — see saveDecemberProjection for the state fields' meanings, including the per-owner pre-tax balances, rmdAlreadyReceived, acaEnrollmentPremiumAnnual, and the stray character splits); hasStored says whether a blob was ever saved (a first open can preseed from the saved Tax Plan record); revision is the blob's write revision — pass it back as baseRevision when saving, and a blob written before revisions existed reads as revision 0. Read-only.",
-  saveDecemberProjection: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision. REQUEST: {state, baseRevision} — baseRevision is REQUIRED and must equal the revision the caller's copy was read at (from getDecemberProjection; 0 when nothing is stored). RESPONSES: success is {ok:true, revision} with the NEW revision (the next save must pass it); a stale base is NOT an error throw — it returns the machine-readable conflict object {ok:false, conflict:true, revision, state, hasStored} carrying the currently stored revision and state, and writes nothing, so the caller reloads state instead of overwriting it. STATE FIELDS (all dollars, all lenient on read — a missing field reads at its inert default): pretaxBalancePrimary / pretaxBalanceSpouse are the two owners' SEPARATE prior-Dec-31 pre-tax balances (null = not entered for that owner); each owner's RMD is computed on their own age from their own balance, with the SAME table selection for both owners: the Joint and Last Survivor table when that owner's spouse is their sole beneficiary (the spouseSoleBeneficiary flag is read symmetrically for both owners) and more than 10 years younger, otherwise the Uniform Lifetime table. A balance entered as 0 is a REAL balance, distinct from null: it prices that owner's RMD as $0 and caps the draw at what the entered balances hold (a $0 total caps the draw at $0), while null caps nothing. pretaxBalance is the legacy combined total — writers set it to the split's sum; a stored blob carrying only pretaxBalance reads it as the primary's balance. rmdAlreadyReceived is the part of this year's RMD already paid AND already included in ytdOtherOrdinary — it is netted from the computed RMD (floored at $0) so a paid RMD is never counted twice. acaEnrollmentPremiumAnnual is the annual premium of the plan actually enrolled in (null = blank = NO cap, the benchmark-based credit stands); when entered, each case's final credit is capped at min(benchmark-based credit, this premium) BEFORE any coverage-month reduction. Stray character splits: strayROC is return of capital that is income OVER BASIS (a capital gain — rides the gains stack) while strayROCOrdinary is return of capital RECLASSIFIED AS AN ORDINARY DIVIDEND (rides ordinary dividends); strayJanPaid is the total of fund distributions paid in January but deemed received Dec 31 (§852(b)(7)), and strayJanPaidQualifiedAmount is the qualified-dividends PORTION of that total (a portion, clamped to the total). strayDependent's amount counts toward the ACA household MAGI ONLY — never the parents' AGI, taxable income, or tax. strayK1 is the one SIGNED stray: a negative amount is a deductible K-1 loss and reduces ordinary income; every other stray amount is non-negative. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view.",
+  saveDecemberProjection: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision. REQUEST: {state, baseRevision} — baseRevision is REQUIRED and must equal the revision the caller's copy was read at (from getDecemberProjection; 0 when nothing is stored). RESPONSES: success is {ok:true, revision} with the NEW revision (the next save must pass it); a stale base is NOT an error throw — it returns the machine-readable conflict object {ok:false, conflict:true, revision, state, hasStored} carrying the currently stored revision and state, and writes nothing, so the caller reloads state instead of overwriting it. STATE FIELDS (all dollars, all lenient on read — a missing field reads at its inert default): pretaxBalancePrimary / pretaxBalanceSpouse are the two owners' SEPARATE prior-Dec-31 pre-tax balances (null = not entered for that owner); each owner's RMD is computed on their own age from their own balance, and each owner's table is selected by THAT owner's own beneficiary fact — the two facts are separate and neither is read for the other owner: spouseSoleBeneficiary states the spouse is the sole beneficiary of the PRIMARY's pre-tax accounts and selects ONLY the primary's table, while primarySoleBeneficiaryOfSpouse states the primary is the sole beneficiary of the SPOUSE's pre-tax accounts and selects ONLY the spouse's table (a blob written before that field existed reads it as false = not established). An owner's table is the Joint and Last Survivor table when that owner's fact is true and their spouse is more than 10 years younger, otherwise the Uniform Lifetime table. A balance entered as 0 is a REAL balance, distinct from null: it prices that owner's RMD as $0 and caps the draw at what the entered balances hold (a $0 total caps the draw at $0), while null caps nothing. pretaxBalance is the legacy combined total — writers set it to the split's sum; a stored blob carrying only pretaxBalance reads it as the primary's balance. rmdAlreadyReceived is the part of this year's RMD already paid AND already included in ytdOtherOrdinary — it is netted from the computed RMD (floored at $0) so a paid RMD is never counted twice. acaEnrollmentPremiumAnnual is the annual premium of the plan actually enrolled in (null = blank = NO cap, the benchmark-based credit stands); when entered, each case's final credit is capped at min(benchmark-based credit, this premium) BEFORE any coverage-month reduction. Stray character splits: strayROC is return of capital that is income OVER BASIS (a capital gain — rides the gains stack) while strayROCOrdinary is return of capital RECLASSIFIED AS AN ORDINARY DIVIDEND (rides ordinary dividends); strayJanPaid is the total of fund distributions paid in January but deemed received Dec 31 (§852(b)(7)), and strayJanPaidQualifiedAmount is the qualified-dividends PORTION of that total (a portion, clamped to the total). strayDependent's amount counts toward the ACA household MAGI ONLY — never the parents' AGI, taxable income, or tax. strayK1 is the one SIGNED stray: a negative amount is a deductible K-1 loss and reduces ordinary income; every other stray amount is non-negative. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view.",
   runDecemberProjection: "Price the December year-end projection from the given console inputs (same state shape as saveDecemberProjection) through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver. Compute-only; reads and writes nothing. RESPONSE FIELDS: priced=false with reason set means the year cannot be priced (no primary age entered) and every other field is inert. cliff is the year's 400%-of-FPL line in dollars, or null when NO cliff applies — nobody on the marketplace, or a pre-2026 tax year (the enhanced-credit years have no cliff; headlineText then reads 'No ACA cliff this year — the draw is not cliff-constrained.'). targetMagi is cliff − bufferDollars (null when cliff is null). headlineDraw is the maximum safe December pre-tax draw for the LIKELY case landing MAGI at targetMagi: null means 'not cliff-constrained' (cliff is null — no draw limit from the cliff), while 0 means a cliff EXISTS but no draw is safe — the room under cliff − buffer is already used up, income already posted is over the cliff at a $0 draw (zeroDrawOverCliff=true, and headlineText says no draw can fix that year), or the entered pre-tax balance is $0 so there is nothing to draw (headlineText then says exactly that, whenever the empty balance is the sole binding reason and income room otherwise exists). headlineText is the plain-language headline and always disambiguates the null/0 cases and names the binding reason for a $0 draw. PER CASE (low / likely / high range cases, all priced AT the headline draw): nonDrawAcaMagi is the case's ACA household MAGI before any draw; maxDraw is that case's OWN maximum safe draw (null when cliff is null); magiAtHeadline is the case's MAGI at the headline draw; distanceAtHeadline is cliff − magiAtHeadline (negative = over the cliff; null when cliff is null); overCliffAtHeadline / overCliffEvenAtZero say whether the case is over at the headline draw / even at $0. creditAtHeadline is the case's final allowable credit — the benchmark-based credit capped at acaEnrollmentPremiumAnnual when entered, less any coverage-month reduction, $0 when over the cliff — or null when no benchmark premium was entered (credit not priced). excessAptcRepayment is max(0, aptcTaken − creditAtHeadline): after 2025 there are no repayment caps (P.L. 119-21 §71305), so any APTC taken above the final credit is repaid in full in EVERY case, under the cliff as well as over it (over the cliff the final credit is $0 and the whole APTC taken is repaid); it is null when the credit is not priced or the year is pre-2026. creditStillDue is max(0, creditAtHeadline − aptcTaken) under the same null conditions. repaymentExposure is excessAptcRepayment as an always-a-number field ($0 when unpriced). federalTaxAtHeadline / totalTaxAtHeadline are the case's taxes at the headline draw. warnings lists input problems priced as entered (e.g. a range whose low/likely/high are out of order).",
   describeApi: "Return the machine-readable API contract for every published action, generated live from the actions' own zod schemas, with version stamps and conventions.",
 };
@@ -5216,6 +5242,7 @@ const describeApiResponse = z.object({
   scoreIdentities: z.string(),
   lawYearSemantics: z.string(),
   rmdAgeSemantics: z.string(),
+  rmdBeneficiarySemantics: z.string(),
   acaSemantics: z.string(),
   acaHouseholdScheduleSemantics: z.string(),
   stateSemantics: z.string(),
@@ -5433,6 +5460,7 @@ export const Actions = {
         scoreIdentities: SCORE_IDENTITIES,
         lawYearSemantics: LAW_YEAR_SEMANTICS,
         rmdAgeSemantics: RMD_AGE_SEMANTICS,
+        rmdBeneficiarySemantics: RMD_BENEFICIARY_SEMANTICS,
         acaSemantics: ACA_SEMANTICS,
         acaHouseholdScheduleSemantics: ACA_HOUSEHOLD_SCHEDULE_SEMANTICS,
         stateSemantics: STATE_SEMANTICS,

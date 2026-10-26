@@ -521,6 +521,16 @@ export function RothConversion() {
   const [drawOrderSwitchAge, setDrawOrderSwitchAge] = useState("");
   const [drawOrderAfter, setDrawOrderAfter] = useState<string>(DEFAULT_DRAW_ORDER_KEY);
   const [soleBeneficiary, setSoleBeneficiary] = useState(true);
+  // The second beneficiary fact (round-3 fix): the primary
+  // is the sole beneficiary of the SPOUSE's pre-tax
+  // accounts. Separate from soleBeneficiary above (the
+  // spouse is the primary's sole beneficiary). The form
+  // state is a plain boolean defaulting to NOT established
+  // (false) — a record written before the fact existed
+  // hydrates to false, and her RMD prices on the Uniform
+  // table, exactly as it did before.
+  const [primarySoleBeneficiaryOfSpouse, setPrimarySoleBeneficiaryOfSpouse] =
+    useState(false);
   // The household's college window, labeled by fall year —
   // drives only the FAFSA college-years watch-out. Blank (the
   // state for any record written before these fields existed)
@@ -1091,6 +1101,7 @@ export function RothConversion() {
     drawOrderSwitchAge?: number | null;
     drawOrderAfter?: string | null;
     spouseSoleBeneficiary: boolean | null;
+    primarySoleBeneficiaryOfSpouse?: boolean | null;
     acaHouseholdSize: number | null;
     acaHouseholdSchedule: { fromYear: number; householdSize: number }[] | null;
     collegeFallFromYear?: number | null;
@@ -1217,6 +1228,9 @@ export function RothConversion() {
         : DEFAULT_DRAW_ORDER_KEY,
     );
     setSoleBeneficiary(src.spouseSoleBeneficiary ?? true);
+    setPrimarySoleBeneficiaryOfSpouse(
+      src.primarySoleBeneficiaryOfSpouse ?? false,
+    );
     setAcaSize(num(src.acaHouseholdSize));
     setAcaSteps(acaStepRowsFrom(src.acaHouseholdSchedule));
     setCollegeFromYear(num(src.collegeFallFromYear ?? null));
@@ -1312,6 +1326,7 @@ export function RothConversion() {
       { label: "earliest claim age", value: "blank" },
       { label: "draw order", value: drawOrderLabel(drawOrderFromKey(null)) },
       { label: "spouse sole beneficiary", value: "yes" },
+      { label: "primary sole beneficiary of spouse", value: "blank" },
       { label: "ACA household size", value: "5" },
       { label: "ACA household steps", value: "none" },
       { label: "ACA benchmark premiums", value: "blank/blank/blank" },
@@ -1719,6 +1734,7 @@ export function RothConversion() {
       drawOrderSwitchAge: age(drawOrderSwitchAge, 120),
       drawOrderAfter: asDrawOrderKey(drawOrderAfter),
       spouseSoleBeneficiary: soleBeneficiary,
+      primarySoleBeneficiaryOfSpouse,
       acaHouseholdSize: (() => {
         const n = parseIntField(acaSize);
         return n == null ? null : Math.min(20, Math.max(1, n));
@@ -1956,7 +1972,7 @@ export function RothConversion() {
     preservePretax, preserveExitRate, claimAgeFloor,
     jobSalary, jobEmployer401k, jobEmployerHsa,
     drawOrder, drawOrderSwitchAge, drawOrderAfter,
-    soleBeneficiary, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple, benchSingle, benchFamily,
+    soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple, benchSingle, benchFamily,
     inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, ceilBracket, ceilIrmaa, ceilLtcg, ceilAca, ceilAcaFamilyOnly, magiCap, cliffBuffer,
     guardrailOn, bunchingOn, gainsHarvestOn,
     balanceOverrides,
@@ -2523,6 +2539,8 @@ export function RothConversion() {
           : DEFAULT_DRAW_ORDER_KEY,
       ),
       spouseSoleBeneficiary: sc.spouseSoleBeneficiary ?? true,
+      primarySoleBeneficiaryOfSpouse:
+        sc.primarySoleBeneficiaryOfSpouse ?? null,
       acaHouseholdSize: clampCount(sc.acaHouseholdSize ?? null),
       acaHouseholdSchedule:
         sc.acaHouseholdSchedule == null
@@ -3235,6 +3253,7 @@ export function RothConversion() {
           ? drawOrderFromKey(drawOrderAfter)
           : null,
       spouseSoleBeneficiary: soleBeneficiary,
+      primarySoleBeneficiaryOfSpouse,
       acaHouseholdSize: parseIntField(acaSize) ?? 1,
       acaHouseholdSchedule: acaStepsFromRows(acaSteps),
       collegeFallFromYear: parseIntField(collegeFromYear),
@@ -3275,7 +3294,7 @@ export function RothConversion() {
     survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude,
     hsaBal, basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS,
     ssSAge, ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom,
-    protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple,
+    protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple,
     benchSingle, benchFamily, acaSpouseEndAge, inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, balanceOverrides, data,
   ]);
 
@@ -3632,6 +3651,9 @@ export function RothConversion() {
           ? `${drawOrderLabel(drawOrderFromKey(drawOrder))}, then ${drawOrderLabel(drawOrderFromKey(drawOrderAfter))} from ${parseIntField(drawOrderSwitchAge)}`
           : drawOrderLabel(drawOrderFromKey(drawOrder)),
       "spouse sole beneficiary": soleBeneficiary ? "yes" : "no",
+      "primary sole beneficiary of spouse": primarySoleBeneficiaryOfSpouse
+        ? "yes"
+        : "blank",
       "ACA household size": acaSize,
       "ACA household steps":
         acaSteps.length === 0
@@ -3656,7 +3678,7 @@ export function RothConversion() {
     ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd,
     taxExempt, convertedAlready, winStart, winStop, payTaxFrom, protectMin,
     preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter,
-    soleBeneficiary, acaSize, acaSteps, benchCouple, benchSingle, benchFamily,
+    soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, benchCouple, benchSingle, benchFamily,
     inflation, stateRate, heirRate, ceilingsSummary,
   ]);
 
@@ -3751,6 +3773,11 @@ export function RothConversion() {
     collegeFromYear: intChanged(collegeFromYear, savedResolved?.collegeFallFromYear),
     collegeThroughYear: intChanged(collegeThroughYear, savedResolved?.collegeFallThroughYear),
     soleBeneficiary: boolChanged(soleBeneficiary, savedResolved?.spouseSoleBeneficiary, true),
+    primarySoleBeneficiaryOfSpouse: boolChanged(
+      primarySoleBeneficiaryOfSpouse,
+      savedResolved?.primarySoleBeneficiaryOfSpouse,
+      false,
+    ),
     survivorOn: boolChanged(survivorOn, savedResolved?.survivorEnabled, false),
     survivorWho: savedResolved != null && survivorWho !== (savedResolved.survivorWho ?? "primary"),
     survivorDeathYear: intChanged(survivorDeathYear, savedResolved?.survivorDeathYear),
@@ -5211,6 +5238,9 @@ export function RothConversion() {
     birthYearP ? `you born ${birthYearP}` : "your birth year not entered",
     birthYearS ? `spouse born ${birthYearS}` : "spouse's birth year not entered",
     soleBeneficiary ? "spouse is sole beneficiary" : null,
+    primarySoleBeneficiaryOfSpouse
+      ? "you are sole beneficiary of spouse's accounts"
+      : null,
     retirementAge ? `retire at ${retirementAge}` : null,
     endAge ? `plan to age ${endAge}` : null,
     parseDollars(spending) != null
@@ -6211,7 +6241,7 @@ export function RothConversion() {
         </>
       ), planTotalHeader)}
 
-      {rothSection("household", "Spending & timing", householdSummary + drawOrderSwitchSummary + (sectionChangedCount(["filingStatus", "birthYearP", "birthYearS", "retirementAge", "endAge", "winStart", "winStop", "convertedAlready", "collegeFromYear", "collegeThroughYear", "soleBeneficiary", "survivorOn", "survivorWho", "survivorDeathYear", "spending", "payTaxFrom", "protectMin", "preservePretax", "preserveExitRate", "drawOrder", "drawOrderSwitchAge", "drawOrderAfter"]) > 0 ? ` · ${sectionChangedCount(["filingStatus", "birthYearP", "birthYearS", "retirementAge", "endAge", "winStart", "winStop", "convertedAlready", "collegeFromYear", "collegeThroughYear", "soleBeneficiary", "survivorOn", "survivorWho", "survivorDeathYear", "spending", "payTaxFrom", "protectMin", "preservePretax", "preserveExitRate", "drawOrder", "drawOrderSwitchAge", "drawOrderAfter"])} changed` : ""), (
+      {rothSection("household", "Spending & timing", householdSummary + drawOrderSwitchSummary + (sectionChangedCount(["filingStatus", "birthYearP", "birthYearS", "retirementAge", "endAge", "winStart", "winStop", "convertedAlready", "collegeFromYear", "collegeThroughYear", "soleBeneficiary", "primarySoleBeneficiaryOfSpouse", "survivorOn", "survivorWho", "survivorDeathYear", "spending", "payTaxFrom", "protectMin", "preservePretax", "preserveExitRate", "drawOrder", "drawOrderSwitchAge", "drawOrderAfter"]) > 0 ? ` · ${sectionChangedCount(["filingStatus", "birthYearP", "birthYearS", "retirementAge", "endAge", "winStart", "winStop", "convertedAlready", "collegeFromYear", "collegeThroughYear", "soleBeneficiary", "primarySoleBeneficiaryOfSpouse", "survivorOn", "survivorWho", "survivorDeathYear", "spending", "payTaxFrom", "protectMin", "preservePretax", "preserveExitRate", "drawOrder", "drawOrderSwitchAge", "drawOrderAfter"])} changed` : ""), (
         <>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div>
@@ -6274,6 +6304,27 @@ export function RothConversion() {
               than 10 years younger, RMDs use the Joint Life table — larger divisors,
               smaller RMDs.
               {changedFields.soleBeneficiary && <ChangedMark />}
+            </label>
+          </div>
+          )}
+          {filingStatus !== "single" && (
+          <div className="col-span-2 flex items-start gap-2 sm:col-span-2">
+            <input
+              id="roth-sole-spouse"
+              type="checkbox"
+              aria-label="You are the sole beneficiary of your spouse's pre-tax accounts"
+              className="mt-1 h-4 w-4"
+              checked={primarySoleBeneficiaryOfSpouse}
+              onChange={(e) =>
+                setPrimarySoleBeneficiaryOfSpouse(e.target.checked)
+              }
+            />
+            <label htmlFor="roth-sole-spouse" className="text-sm">
+              You are the sole beneficiary of your spouse’s pre-tax accounts — a
+              separate fact from the one above: it selects your spouse’s RMD table
+              only. With you more than 10 years younger, her RMDs use the Joint Life
+              table. Left unchecked, her RMDs use the Uniform table.
+              {changedFields.primarySoleBeneficiaryOfSpouse && <ChangedMark />}
             </label>
           </div>
           )}
