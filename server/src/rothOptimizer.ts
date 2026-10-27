@@ -5238,8 +5238,7 @@ export type RothCompareScenarioYear = {
   ageSpouse: number | null;
   federalTaxCents: number;
   stateTaxCents: number;
-  // The year's AGI — the total income the return strikes
-  // before deductions.
+  // The year's adjusted gross income (AGI).
   totalIncomeCents: number;
   taxableIncomeCents: number;
   // The year's ACA premium credit kept ($0 when the year

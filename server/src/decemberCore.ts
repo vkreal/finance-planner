@@ -115,8 +115,10 @@ export const decemberState = z.object({
   // blob carries no split its ownership is unanswered and
   // load resolution allocates THIS total across the
   // owners by the Tax Plan record split's proportions
-  // (combined→primary as the last-resort fallback when
-  // the record has no usable split — see
+  // when both owners are known, or by the single known
+  // owner's amount capped at this total when exactly one
+  // is known (combined→primary as the last-resort
+  // fallback when the record has no usable split — see
   // parseDecemberState / resolveDecemberStateAtLoad);
   // writers keep it as the split's sum when a split is
   // explicit, so old and new blobs both read.
@@ -132,10 +134,11 @@ export const decemberState = z.object({
   // the legacy combined pretaxBalance parses with this
   // false — ownership UNANSWERED — so load resolution can
   // allocate the combined total by the Tax Plan record
-  // split's proportions, falling back to the
-  // combined→primary assignment only when the record has
-  // no usable split. Derived on read by
-  // parseDecemberState; never a user-entered fact.
+  // split's proportions (or by a single known owner amount
+  // capped at the total when exactly one is known),
+  // falling back to the combined→primary assignment only
+  // when the record has no usable split. Derived on read
+  // by parseDecemberState; never a user-entered fact.
   pretaxSplitExplicit: z.boolean(),
   // The part of this year's RMD already received (and
   // already inside the year-to-date income above): netted
@@ -583,16 +586,20 @@ export type DecemberRecordFacts = {
      (pricing Uniform, not established).
 
    · Legacy pre-tax balance ownership (round-5 fix 2,
-     round-6 allocation): when the blob carries no
-     explicit split (pretaxSplitExplicit false) but does
-     carry the legacy combined balance, ownership is
-     unanswered: when the record supplies BOTH owner
-     amounts with a positive sum, the SAVED combined
-     total is allocated across the owners by the record
-     split's proportions — resolution never changes the
-     total itself; when the record has no usable split
-     (either amount missing, or the sum is $0), the
-     historical combined→primary assignment is the
+     round-6 allocation, round-7 partial split): when the
+     blob carries no explicit split
+     (pretaxSplitExplicit false) but does carry the legacy
+     combined balance, ownership is unanswered: when the
+     record supplies BOTH owner amounts with a positive
+     sum, the SAVED combined total is allocated across the
+     owners by the record split's proportions — resolution
+     never changes the total itself; when the record
+     supplies EXACTLY ONE owner amount, that owner
+     receives min(known, saved total) and the other owner
+     receives the remainder (saved total − that), so the
+     total is still preserved exactly; when the record
+     supplies NEITHER amount (or a both-known sum of $0),
+     the historical combined→primary assignment is the
      last-resort fallback. A blob WITH an explicit split
      always governs.
 
@@ -632,6 +639,7 @@ export function resolveDecemberStateAtLoad(
       recPrimary != null && recSpouse != null
         ? r2(recPrimary + recSpouse)
         : null;
+    const savedTotal = out.pretaxBalance;
     if (recSum != null && recSum > 0) {
       // Round-6 fix 2: allocate the SAVED combined total
       // across the owners by the record split's
@@ -641,7 +649,6 @@ export function resolveDecemberStateAtLoad(
       // the residual (itself rounded to cents) goes to
       // the LARGER rounded share (tie → the primary's),
       // so the shares sum EXACTLY to the saved total.
-      const savedTotal = out.pretaxBalance;
       const sharePrimary = r2((savedTotal * recPrimary!) / recSum);
       const shareSpouse = r2((savedTotal * recSpouse!) / recSum);
       const residual = r2(savedTotal - sharePrimary - shareSpouse);
@@ -656,8 +663,33 @@ export function resolveDecemberStateAtLoad(
           : r2(shareSpouse + residual),
         pretaxBalance: savedTotal,
       };
+    } else if (
+      (recPrimary != null) !== (recSpouse != null)
+    ) {
+      // Round-7 fix A: exactly one owner amount is known.
+      // The known owner receives min(known, saved total)
+      // and the other owner receives the remainder, so
+      // the known ownership is honoured and the saved
+      // total is preserved exactly (both as numbers).
+      if (recPrimary != null) {
+        const primaryShare = r2(Math.min(recPrimary, savedTotal));
+        out = {
+          ...out,
+          pretaxBalancePrimary: primaryShare,
+          pretaxBalanceSpouse: r2(savedTotal - primaryShare),
+          pretaxBalance: savedTotal,
+        };
+      } else {
+        const spouseShare = r2(Math.min(recSpouse!, savedTotal));
+        out = {
+          ...out,
+          pretaxBalancePrimary: r2(savedTotal - spouseShare),
+          pretaxBalanceSpouse: spouseShare,
+          pretaxBalance: savedTotal,
+        };
+      }
     } else {
-      // No usable record split (either amount missing, or
+      // No usable record split (neither amount known, or
       // the record sum is $0 and proportions are
       // undefined): the last-resort fallback — the
       // combined balance on the primary, spouse
@@ -1045,22 +1077,25 @@ export type DecemberCaseResult = {
   // premium was entered and the case is not over the cliff —
   // over the cliff the allowable credit is $0 by law).
   creditAtHeadline: number | null;
-  // Excess-APTC repayment at the headline draw, for tax years
-  // after 2025: there are NO repayment caps (P.L. 119-21
-  // §71305), so ANY advance credit taken above the final
-  // allowable credit is repaid in full — even when MAGI lands
-  // UNDER the cliff. max(0, APTC taken − final credit); the
-  // over-the-cliff case is the same formula at a $0 final
-  // credit, i.e. the whole APTC taken. Null when the final
+  // Excess-APTC repayment at the headline draw. For tax
+  // years 2026 and later there are NO repayment caps
+  // (P.L. 119-21 §71305), so ANY advance credit taken above
+  // the final allowable credit is repaid in full — even
+  // when MAGI lands UNDER the cliff. max(0, APTC taken −
+  // final credit); the over-the-cliff case is the same
+  // formula at a $0 final credit, i.e. the whole APTC
+  // taken. For years before 2026 the capped-repayment rules
+  // are NOT modeled: the repayment is $0 when APTC taken is
+  // at or below the final credit, and null (unmodeled) when
+  // APTC taken exceeds it. Null in every year when the final
   // credit is not priced (no benchmark entered, case under
-  // the cliff) or the tax year is 2025 or earlier, whose
-  // capped-repayment rules this console does not price.
+  // the cliff).
   excessAptcRepayment: number | null;
   // The other side of the same reconciliation: when the APTC
   // taken is BELOW the final allowable credit, this further
   // credit is still due at filing. max(0, final credit − APTC
-  // taken); null under the same conditions as
-  // excessAptcRepayment.
+  // taken) in ALL years whenever the final credit is priced;
+  // null only when the final credit is not priced.
   creditStillDue: number | null;
   // The headline repayment figure: excessAptcRepayment when
   // it is priced, else $0. Kept as the always-a-number field
@@ -1071,10 +1106,10 @@ export type DecemberCaseResult = {
   // Projected-tax-bill readouts (contract v50): the same
   // priced year at the headline draw, read straight off the
   // engine result — no new pricing. totalIncomeAtHeadline
-  // is the year's AGI (the total income the return strikes
-  // before deductions; the December assembly nets its
-  // above-the-line reducers into income itself, so AGI is
-  // the year's total-income figure on this construction),
+  // is the year's adjusted gross income (AGI) (the amount
+  // the return strikes before deductions; the December
+  // assembly nets its above-the-line reducers into income
+  // itself, so AGI is the figure this readout carries),
   // taxableIncomeAtHeadline its taxable income, and
   // stateTaxAtHeadline the state component inside
   // totalTaxAtHeadline ($0 at a 0% flat rate; the
@@ -1088,12 +1123,14 @@ export type DecemberCaseResult = {
   // (creditStillDue), plus any excess advance credit to
   // repay (excessAptcRepayment) — equivalently totalTax −
   // creditAtHeadline + APTC taken whenever the credit is
-  // priced. An unpriced credit (either field null) counts
-  // as $0 on both sides, so the net is then the total tax
-  // alone. Negative = a net refund at filing. The figure is
-  // BEFORE withholding and estimated payments, which the
-  // console does not track.
-  netSettleAtHeadline: number;
+  // priced and the repayment is modeled. Null whenever
+  // excessAptcRepayment is null (the credit is unpriced, or
+  // a pre-2026 year whose APTC exceeds its final credit,
+  // whose repayment is unmodeled) — no single settlement
+  // figure is then shown. Negative = a net refund at filing.
+  // The figure is BEFORE withholding and estimated payments,
+  // which the console does not track.
+  netSettleAtHeadline: number | null;
 };
 
 export type DecemberProjectionResult = {
@@ -1246,25 +1283,40 @@ export function computeDecemberProjection(
       : cappedCredit == null
         ? null
         : r2(Math.max(0, cappedCredit - coverageReduction));
-    // Post-2025 reconciliation (P.L. 119-21 §71305): no
-    // repayment caps — every excess APTC dollar is repaid,
-    // under the cliff as well as over it.
-    const excessAptcRepayment: number | null =
-      state.taxYear >= 2026 && finalCredit != null
-        ? r2(Math.max(0, state.aptcTaken - finalCredit))
-        : null;
+    // ACA reconciliation (round-7 fix B): creditStillDue
+    // prices in ALL years whenever the final credit is
+    // priced. The repayment: for 2026 and later there are
+    // no repayment caps (P.L. 119-21 §71305) — every excess
+    // APTC dollar is repaid, under the cliff as well as
+    // over it. Before 2026 the capped-repayment rules are
+    // not modeled: $0 when APTC taken is at or below the
+    // final credit, null (unmodeled) when it exceeds it.
     const creditStillDue: number | null =
-      state.taxYear >= 2026 && finalCredit != null
+      finalCredit != null
         ? r2(Math.max(0, finalCredit - state.aptcTaken))
         : null;
-    // The projected tax bill's net (contract v50): the
-    // filing settlement for this case at the headline
-    // draw — see the field's note on DecemberCaseResult.
-    const netSettleAtHeadline = r2(
-      atHeadline.totalTax -
-        (creditStillDue ?? 0) +
-        (excessAptcRepayment ?? 0),
-    );
+    const excessAptcRepayment: number | null =
+      finalCredit == null
+        ? null
+        : state.taxYear >= 2026
+          ? r2(Math.max(0, state.aptcTaken - finalCredit))
+          : state.aptcTaken <= finalCredit
+            ? 0
+            : null;
+    // The projected tax bill's net (contract v50, round-7
+    // fix B): the filing settlement for this case at the
+    // headline draw — see the field's note on
+    // DecemberCaseResult. Null whenever the repayment is
+    // null, so no single figure is shown for a case whose
+    // repayment is unmodeled or whose credit is unpriced.
+    const netSettleAtHeadline: number | null =
+      excessAptcRepayment == null
+        ? null
+        : r2(
+            atHeadline.totalTax -
+              (creditStillDue ?? 0) +
+              excessAptcRepayment,
+          );
     return {
       kind,
       nonDrawAcaMagi: zero.acaMagi,
@@ -2812,6 +2864,94 @@ export function runDecemberFixtures(): {
     if (zeroRecord.pretaxBalance !== 246000) {
       fail("(vi) the fallback must keep the saved combined total");
     }
+    // (vii) Round-7 fix A, partial split — spouse known:
+    // record {primary null, spouse $246,000} with the
+    // saved total $246,000. The known spouse amount
+    // already accounts for the whole total, so resolution
+    // gives spouse $246,000 / primary $0 (both numbers,
+    // total preserved). Her RMD is $246,000 / 24.6 =
+    // $10,000, MAGI $85,000, credit $0, repayment $12,000,
+    // headline draw $0 — the same pricing as the
+    // both-known case (i).
+    const partialSpouseFull = resolveDecemberStateAtLoad(parsedLegacy, {
+      pretaxBalancePrimary: null,
+      pretaxBalanceSpouse: 246000,
+    });
+    if (
+      partialSpouseFull.pretaxBalancePrimary !== 0 ||
+      partialSpouseFull.pretaxBalanceSpouse !== 246000 ||
+      partialSpouseFull.pretaxBalance !== 246000
+    ) {
+      fail("(vii) a partial spouse-known split should resolve to spouse $246,000 / primary $0 with the total preserved");
+    }
+    const partialPg = pricePlaygroundYear(
+      decemberCaseInputs(partialSpouseFull, "likely", 0),
+    );
+    exact(fail, "(vii) spouse RMD", partialPg.rmdSpouse, 10000);
+    const partialResult = computeDecemberProjection(partialSpouseFull);
+    exact(
+      fail,
+      "(vii) non-draw MAGI",
+      partialResult.cases[1]!.nonDrawAcaMagi,
+      85000,
+    );
+    exact(
+      fail,
+      "(vii) credit at headline",
+      partialResult.cases[1]!.creditAtHeadline,
+      0,
+    );
+    exact(
+      fail,
+      "(vii) excess repayment",
+      partialResult.cases[1]!.excessAptcRepayment,
+      12000,
+    );
+    if (partialResult.headlineDraw !== 0) {
+      fail(`(vii) headline draw should be $0, got ${partialResult.headlineDraw}`);
+    }
+    // (viii) Partial, known below the total: record
+    // {null, $200,000}, saved $246,000 → spouse $200,000 /
+    // primary $46,000 (the remainder), total preserved.
+    const partialBelow = resolveDecemberStateAtLoad(parsedLegacy, {
+      pretaxBalancePrimary: null,
+      pretaxBalanceSpouse: 200000,
+    });
+    if (
+      partialBelow.pretaxBalanceSpouse !== 200000 ||
+      partialBelow.pretaxBalancePrimary !== 46000 ||
+      partialBelow.pretaxBalance !== 246000
+    ) {
+      fail("(viii) a partial split below the total should give the remainder to the other owner");
+    }
+    // (ix) Partial, known above the total: record
+    // {null, $300,000}, saved $246,000 → the known owner
+    // is capped at the total: spouse $246,000 / primary
+    // $0, total preserved.
+    const partialAbove = resolveDecemberStateAtLoad(parsedLegacy, {
+      pretaxBalancePrimary: null,
+      pretaxBalanceSpouse: 300000,
+    });
+    if (
+      partialAbove.pretaxBalanceSpouse !== 246000 ||
+      partialAbove.pretaxBalancePrimary !== 0 ||
+      partialAbove.pretaxBalance !== 246000
+    ) {
+      fail("(ix) a partial split above the total should cap the known owner at the saved total");
+    }
+    // (x) Primary-known mirror: record {$246,000, null},
+    // saved $246,000 → primary $246,000 / spouse $0.
+    const partialPrimary = resolveDecemberStateAtLoad(parsedLegacy, {
+      pretaxBalancePrimary: 246000,
+      pretaxBalanceSpouse: null,
+    });
+    if (
+      partialPrimary.pretaxBalancePrimary !== 246000 ||
+      partialPrimary.pretaxBalanceSpouse !== 0 ||
+      partialPrimary.pretaxBalance !== 246000
+    ) {
+      fail("(x) a primary-known partial split should resolve to primary $246,000 / spouse $0");
+    }
     // And the save-side rule: an unrelated edit on a
     // legacy-ownership console saves the STORED
     // provenance (combined, unanswered) — never the
@@ -3203,6 +3343,60 @@ export function runDecemberFixtures(): {
     exact(fail, "excess repayment", likely.excessAptcRepayment, 0);
     exact(fail, "total tax", likely.totalTaxAtHeadline, 4765.11);
     exact(fail, "net settle = total tax − full credit", likely.netSettleAtHeadline, -6899.11);
+  });
+
+  run("dec-tax-bill-2025-reconciliation", (fail) => {
+    // Round-7 fix B: a pre-2026 year still reconciles the
+    // credit it priced. Base case: 2025, MFJ ages 60/58,
+    // both on the marketplace, ordinary income $100,000,
+    // HH2, benchmark $20,000, no state tax. The 2025
+    // schedule prices the credit at 8.5% above 400% FPL
+    // with no cliff: expected contribution $8,500, final
+    // credit $20,000 − $8,500 = $11,500. Federal tax on
+    // $100,000 with the $31,500 standard deduction is
+    // $7,743 (taxable $68,500: $2,385 + 12% × $44,650).
+    const base2025 = (): DecemberState => {
+      const s = base();
+      s.taxYear = 2025;
+      s.agePrimary = 60;
+      s.ageSpouse = 58;
+      s.onMedicarePrimary = false;
+      s.onMedicareSpouse = false;
+      s.ytdOtherOrdinary = 100000;
+      s.aptcTaken = 0;
+      return s;
+    };
+    // (i) No APTC taken: the whole credit is still due,
+    // the repayment is $0 (APTC ≤ final credit), and the
+    // net is $7,743 − $11,500 = −$3,757.
+    const noAptc = computeDecemberProjection(base2025()).cases[1]!;
+    exact(fail, "(i) final credit", noAptc.creditAtHeadline, 11500);
+    exact(fail, "(i) credit still due", noAptc.creditStillDue, 11500);
+    exact(fail, "(i) excess repayment", noAptc.excessAptcRepayment, 0);
+    exact(fail, "(i) federal tax", noAptc.federalTaxAtHeadline, 7743);
+    exact(fail, "(i) net settle", noAptc.netSettleAtHeadline, -3757);
+    // (ii) Partial APTC $5,000: $6,500 still due,
+    // repayment $0, net $7,743 − $6,500 = $1,243.
+    const partialState = base2025();
+    partialState.aptcTaken = 5000;
+    const partial = computeDecemberProjection(partialState).cases[1]!;
+    exact(fail, "(ii) credit still due", partial.creditStillDue, 6500);
+    exact(fail, "(ii) excess repayment", partial.excessAptcRepayment, 0);
+    exact(fail, "(ii) net settle", partial.netSettleAtHeadline, 1243);
+    // (iii) Excess APTC $15,000 above the $11,500 final
+    // credit: pre-2026 repayment caps are not modeled, so
+    // the repayment is null and the net is null; the
+    // credit still due is $0.
+    const excessState = base2025();
+    excessState.aptcTaken = 15000;
+    const excess = computeDecemberProjection(excessState).cases[1]!;
+    exact(fail, "(iii) credit still due", excess.creditStillDue, 0);
+    if (excess.excessAptcRepayment !== null) {
+      fail(`(iii) excess repayment should be null (unmodeled), got ${excess.excessAptcRepayment}`);
+    }
+    if (excess.netSettleAtHeadline !== null) {
+      fail(`(iii) net settle should be null, got ${excess.netSettleAtHeadline}`);
+    }
   });
 
 
