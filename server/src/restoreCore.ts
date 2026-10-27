@@ -17,6 +17,18 @@
 //      value invariants are enforced (security round-2, finding
 //      4: nonnegative amounts wherever a writer requires them,
 //      typed settings parsed as their writers parse them), and
+//      — since contract v60 (packaged-parity F4) — every
+//      backed-up field's own writer rule: string lengths,
+//      ranges, and 0/1 flag representations via the shared
+//      fieldValidators fragments the writers themselves use,
+//      positive row ids, and no tax-bucket split on a property
+//      or custodial account's balance. Deliberate exclusions
+//      (named in the restorebackup contract text): settings
+//      values other than the three scalar typed settings ride
+//      as opaque blobs; the Net Worth account `bucket` column
+//      is a legacy field no current writer writes; and
+//      server-assigned values (sortOrder, createdAt) are
+//      carried, not range-checked. And
 //      intra-payload uniqueness + referential integrity are
 //      checked. Any failure refuses the restore with zero writes.
 //   2. The destructive replacement is ONE atomic batch: the wipe
@@ -28,6 +40,20 @@
 //      payload. An unsplit row keeps its payload balanceCents.
 
 import { z } from "@hatch/space-sdk";
+import {
+  backupFlagField,
+  billNameField,
+  billNotesField,
+  category60Field,
+  descriptionField,
+  dueMonthField,
+  fitIdField,
+  longNoteField,
+  nwAccountNameField,
+  paidByField,
+  snapshotNoteField,
+  txnCategoryField,
+} from "./fieldValidators";
 import { NW_PROPERTY_KINDS, splitPartsOf } from "./nwCore";
 import {
 classifyBackupAuthenticity,
@@ -67,6 +93,16 @@ export const ENCRYPTED_AT_REST_SETTING_KEYS: readonly string[] = [
   "roth_conversion_inputs_v1",
   IMPORT_SETTINGS_KEY,
   NW_IMPORT_SETTINGS_KEY,
+  // The sticky entry defaults whose values are stored encrypted
+  // (the paid-by label texts; their sibling paid-type key stores
+  // a plaintext enum and is NOT listed). Added at contract v60:
+  // the packaged-parity F5 acceptance (install A → fresh
+  // install B) caught these two riding a restore as the SOURCE
+  // install's ciphertext, after which every dashboard load in
+  // the importing install failed decryption — the same omission
+  // class as the round-2 finding-3 key above.
+  "entry_default_monthly_paid_from_v1",
+  "entry_default_yearly_paid_name_v1",
 ];
 
 export function isEncryptedAtRestSettingKey(key: string): boolean {
@@ -83,15 +119,19 @@ export function isEncryptedAtRestSettingKey(key: string): boolean {
 
 export const backupYearlyExpense = z.object({
   id: z.number().int(),
-  name: z.string(),
+  name: billNameField,
   frequency: z.string(),
   expectedCents: z.number().int(),
-  dueMonth: z.number().int().nullable(),
+  // Contract v60 (F4): the writers' due-month rule (1–12 or null)
+  // is the shared dueMonthField — before v60 this was a bare int
+  // and a payload dueMonth of 13 restored a value no writer
+  // would ever store.
+  dueMonth: dueMonthField,
   paidByType: z.string(),
-  paidByName: z.string(),
-  backfillBeforeFirstVersion: z.number().int(),
-  category: z.string(),
-  keepLightsOn: z.number().int(),
+  paidByName: paidByField,
+  backfillBeforeFirstVersion: backupFlagField,
+  category: category60Field,
+  keepLightsOn: backupFlagField,
   createdAt: z.number(),
 });
 export const backupYearlyExpenseVersion = z.object({
@@ -105,18 +145,18 @@ export const backupYearlyExpenseVersion = z.object({
 export const backupTransaction = z.object({
   id: z.number().int(),
   date: z.string(),
-  description: z.string(),
+  description: descriptionField,
   amountCents: z.number().int(),
   sourceType: z.string(),
-  accountName: z.string(),
+  accountName: paidByField,
   kind: z.string(),
-  category: z.string(),
+  category: txnCategoryField,
   yearlyExpenseId: z.number().int().nullable(),
   // Added with IM-5 (the OFX FITID a transaction was imported
   // with): backups from before it have no such field, so a
   // missing value restores as null (no bank id) — the same
   // treatment the later NW split columns above already carry.
-  fitId: z.string().nullable().default(null),
+  fitId: fitIdField.nullable().default(null),
   createdAt: z.number(),
 });
 export const backupMonthlySummary = z.object({
@@ -127,13 +167,16 @@ export const backupMonthlySummary = z.object({
 });
 export const backupMonthlyBill = z.object({
   id: z.number().int(),
-  name: z.string(),
+  // Contract v60 (F4): the writers' name rule (1–120 chars) is
+  // the shared billNameField — before v60 this was a bare string
+  // and an empty name restored a bill no writer would create.
+  name: billNameField,
   amountCents: z.number().int(),
-  paidBy: z.string(),
-  notes: z.string().nullable(),
-  category: z.string(),
-  keepLightsOn: z.number().int(),
-  collapsed: z.number().int(),
+  paidBy: paidByField,
+  notes: billNotesField.nullable(),
+  category: category60Field,
+  keepLightsOn: backupFlagField,
+  collapsed: backupFlagField,
   createdAt: z.number(),
 });
 export const backupMonthlyBillVersion = z.object({
@@ -146,17 +189,17 @@ export const backupMonthlyBillVersion = z.object({
 export const backupMonthlyOneOff = z.object({
   id: z.number().int(),
   month: z.string(),
-  description: z.string(),
+  description: descriptionField,
   amountCents: z.number().int(),
-  note: z.string().nullable(),
+  note: longNoteField.nullable(),
   createdAt: z.number(),
 });
 export const backupMonthlyCashOutItem = z.object({
   id: z.number().int(),
   month: z.string(),
-  description: z.string(),
+  description: descriptionField,
   amountCents: z.number().int(),
-  note: z.string().nullable(),
+  note: longNoteField.nullable(),
   // Added with the cash-out day: backups from before it have no
   // such field, so a missing value restores as day 1 — the same
   // default the migration backfilled every existing row with.
@@ -167,7 +210,7 @@ export const backupMonthlyCashOutItem = z.object({
 });
 export const backupNwAccount = z.object({
   id: z.number().int(),
-  name: z.string(),
+  name: nwAccountNameField,
   bucket: z.string(),
   // The property-kind column was added after the first v1 backups:
   // older backups have no such field, so a missing value restores
@@ -178,15 +221,15 @@ export const backupNwAccount = z.object({
   propertyKind: z.string().default("none"),
   // Added with the custodial account type: older backups have no
   // such field, so a missing value restores as 0 (ordinary).
-  custodial: z.number().int().default(0),
+  custodial: backupFlagField.default(0),
   sortOrder: z.number().int(),
-  archived: z.number().int(),
+  archived: backupFlagField,
   createdAt: z.number(),
 });
 export const backupNwSnapshot = z.object({
   id: z.number().int(),
   date: z.string(),
-  note: z.string().nullable(),
+  note: snapshotNoteField.nullable(),
   createdAt: z.number(),
 });
 export const backupNwBalance = z.object({
@@ -583,6 +626,83 @@ export function preflightRestoreBackup(
       return refuse(
         `Backup rejected: the reserve_start_month setting ("${s.value}") is not a real month (YYYY-MM).`,
       );
+    }
+  }
+
+  // Writer invariants, contract v60 (F4 sweep): the field-level
+  // rules the payload schema cannot express. Per-field lengths,
+  // ranges, and flag representations are enforced by the schema
+  // itself through the shared fieldValidators fragments (the same
+  // zod chains the writers use — dueMonth 1–12, bill names
+  // 1–120, paid-by labels 1–60, categories, descriptions, notes,
+  // and every 0/1 flag). What remains here:
+  //   * Row ids and foreign keys are positive — every writer
+  //     addresses rows by z.number().int().positive() and the
+  //     database assigns ids from 1; a payload id of 0 or less
+  //     names a row no writer could have produced.
+  //   * A balance for a property or custodial account carries
+  //     NO tax-bucket split — the snapshot writers store those
+  //     balances whole (nwBalanceRowValues' noSplit path), so a
+  //     split on one is a value no writer would store.
+  for (const [rows, label] of [
+    [payload.yearlyExpenses, "yearly expense"],
+    [payload.yearlyExpenseVersions, "yearly expense version"],
+    [payload.transactions, "transaction"],
+    [payload.monthlyBills, "monthly bill"],
+    [payload.monthlyBillVersions, "monthly bill version"],
+    [payload.monthlyOneOffs, "monthly one-off"],
+    [payload.monthlyCashOutItems, "monthly cash-out item"],
+    [payload.nwAccounts, "Net Worth account"],
+    [payload.nwSnapshots, "Net Worth snapshot"],
+    [payload.nwBalances, "Net Worth balance"],
+  ] as const) {
+    for (const r of rows) {
+      if (!(r.id > 0)) {
+        return refuse(
+          `Backup rejected: ${label} has a non-positive id (${r.id}) — row ids are positive.`,
+        );
+      }
+    }
+  }
+  for (const v of payload.yearlyExpenseVersions) {
+    if (!(v.expenseId > 0)) {
+      return refuse(
+        `Backup rejected: yearly expense version ${v.id} has a non-positive expenseId (${v.expenseId}).`,
+      );
+    }
+  }
+  for (const t of payload.transactions) {
+    if (t.yearlyExpenseId != null && !(t.yearlyExpenseId > 0)) {
+      return refuse(
+        `Backup rejected: transaction ${t.id} has a non-positive yearlyExpenseId (${t.yearlyExpenseId}).`,
+      );
+    }
+  }
+  for (const v of payload.monthlyBillVersions) {
+    if (!(v.billId > 0)) {
+      return refuse(
+        `Backup rejected: monthly bill version ${v.id} has a non-positive billId (${v.billId}).`,
+      );
+    }
+  }
+  for (const b of payload.nwBalances) {
+    if (!(b.snapshotId > 0) || !(b.accountId > 0)) {
+      return refuse(
+        `Backup rejected: Net Worth balance ${b.id} has a non-positive snapshot or account id (${b.snapshotId}/${b.accountId}).`,
+      );
+    }
+  }
+  {
+    const accountById = new Map(payload.nwAccounts.map((a) => [a.id, a]));
+    for (const b of payload.nwBalances) {
+      const account = accountById.get(b.accountId);
+      if (!account) continue; // referential check below refuses it
+      const wholeOnly = account.propertyKind !== "none" || account.custodial === 1;
+      if (wholeOnly && splitPartsOf(b).length > 0) {
+        return refuse(
+          `Backup rejected: Net Worth balance ${b.id} carries a tax-bucket split for account ${account.id} ("${account.name}"), which is a ${account.custodial === 1 ? "custodial" : "property"} account — those balances are stored whole, never split.`,
+        );
+      }
     }
   }
 

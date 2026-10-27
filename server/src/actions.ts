@@ -315,6 +315,24 @@ preflightRestoreBackup,
 stampRestoredRothBlob,
 } from "./restoreCore";
 import {
+  billNameField,
+  billNotesField,
+  category60Field,
+  descriptionField,
+  dueMonthField,
+  fitIdField,
+  longNoteField,
+  nwAccountNameField,
+  paidByField,
+  snapshotNoteField,
+  txnCategoryField,
+} from "./fieldValidators";
+import {
+  datasetIsEmpty,
+  nonEmptyDatasetTables,
+  type DatasetPresence,
+} from "./seedGuardCore";
+import {
 buildClearAllPlan,
 isClearAllConfirmed,
 type ClearAllTable,
@@ -502,12 +520,12 @@ const sourceType = z.enum(["checking", "card"]);
 
 const txnInput = z.object({
   date: dateString,
-  description: z.string().min(1).max(200),
+  description: descriptionField,
   amountCents: z.number().int(),
   sourceType,
-  accountName: z.string().min(1).max(60),
+  accountName: paidByField,
   kind: txnKind,
-  category: z.string().min(1).max(40),
+  category: txnCategoryField,
   yearlyExpenseId: z.number().int().positive().nullable().default(null),
   // IM-5: the bank's transaction id (OFX FITID) when this row
   // comes from an OFX/QFX import; null for everything else. Only
@@ -515,7 +533,7 @@ const txnInput = z.object({
   // accept the shared input shape but never set it, and an edit
   // never clears a recorded id — their SET lists don't name the
   // column). Stored encrypted; see schema.ts.
-  fitId: z.string().min(1).max(200).nullable().default(null),
+  fitId: fitIdField.nullable().default(null),
 });
 
 const txnOut = z.object({
@@ -623,9 +641,9 @@ const oneOffOut = z.object({
 
 const oneOffInput = z.object({
   month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
-  description: z.string().min(1).max(200),
+  description: descriptionField,
   amountCents: z.number().int().nonnegative(),
-  note: z.string().max(1000).nullable().default(null),
+  note: longNoteField.nullable().default(null),
 });
 
 const cashOutItemOut = z.object({
@@ -655,9 +673,9 @@ function refineCashOutDay(
 
 const cashOutItemFields = {
   month: z.string().regex(monthRe),
-  description: z.string().min(1).max(200),
+  description: descriptionField,
   amountCents: z.number().int().nonnegative(),
-  note: z.string().max(1000).nullable().default(null),
+  note: longNoteField.nullable().default(null),
   // New items default to day 1 when no day is supplied.
   day: z.number().int().min(1).max(31).default(1),
 };
@@ -693,12 +711,12 @@ const monthlyBillOut = z.object({
 });
 
 const monthlyBillInput = z.object({
-  name: z.string().min(1).max(120),
+  name: billNameField,
   amountCents: z.number().int().nonnegative(),
   effectiveFrom: z.string().regex(monthRe),
-  paidBy: z.string().min(1).max(60),
-  notes: z.string().max(300).nullable().default(null),
-  category: z.string().min(1).max(60).default("Uncategorized"),
+  paidBy: paidByField,
+  notes: billNotesField.nullable().default(null),
+  category: category60Field.default("Uncategorized"),
   keepLightsOn: z.boolean().default(false),
 });
 
@@ -1343,7 +1361,7 @@ type NwEncryptedRowValues = NonNullable<
 
 const nwSnapshotInput = z.object({
   date: dateString,
-  note: z.string().max(500).nullable().default(null),
+  note: snapshotNoteField.nullable().default(null),
   balances: z.array(nwBalanceEntry).max(200),
 });
 
@@ -1470,7 +1488,11 @@ async function buildBackupPayload(
       // inputs while every other figure survived). The CSV
       // import setup blobs (IMPORT_SETTINGS_KEY and
       // NW_IMPORT_SETTINGS_KEY) get the same treatment for the
-      // same reason. All remaining settings
+      // same reason, as do the encrypted sticky entry defaults
+      // (ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY and
+      // ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY — added at contract
+      // v60 when the packaged cross-install restore caught them
+      // travelling as source-install ciphertext). All remaining settings
       // (UI flags, the include-property toggle, the reserve
       // start month) are stored plaintext already and are
       // carried exactly as stored. A legacy plaintext import
@@ -1483,7 +1505,18 @@ async function buildBackupPayload(
               r.key === "retirement_calc_baseline_v1" ||
               r.key === "roth_conversion_inputs_v1"
             ? await decryptStr(key, r.value)
-            : r.key === IMPORT_SETTINGS_KEY || r.key === NW_IMPORT_SETTINGS_KEY
+            : r.key === IMPORT_SETTINGS_KEY ||
+                r.key === NW_IMPORT_SETTINGS_KEY ||
+                // The encrypted sticky entry defaults (contract
+                // v60): their label values are stored encrypted,
+                // so they export decrypted like every other
+                // encrypted figure — before v60 they travelled
+                // as the source install's ciphertext and broke
+                // every load after a cross-key restore. (The
+                // lenient reader: a legacy plaintext value
+                // exports as itself.)
+                r.key === ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY ||
+                r.key === ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY
               ? ((await decryptSettingValue(key, r.value)) ?? r.value)
               : r.value,
     });
@@ -2677,7 +2710,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 59;
+export const API_CONTRACT_VERSION = 60;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -5198,9 +5231,10 @@ const ACTION_PURPOSES: Record<string, string> = {
   setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist.",
   deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist.",
   deleteMonthlyBillVersion: "Remove one version from a monthly bill's history.",
-  seedExamples: "Seed the example dataset into an empty tracker.",
+  seedExamples: "Seed the example spending dataset. Refused unless the WHOLE dataset is empty — every dataset table, settings included (the one global first-run emptiness check, seedGuardCore): a tracker holding any real record receives no sample rows.",
+  seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
   clearAllData: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state. Requires confirm to carry the exact phrase \"delete everything\"; any other confirmation deletes nothing.",
-  seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data (no-op once accounts exist).",
+  seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table.",
   getNetWorth: "Net Worth view: accounts, snapshots, totals, bucket split subtotals, and target progress.",
   setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals.",
   setNwTarget: "Set the Net Worth target amount.",
@@ -5244,7 +5278,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
   deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
   exportbackup: "Export the complete dataset as one decrypted backup payload. The payload carries an authenticityMac — a keyed MAC over its contents — which restorebackup verifies before restoring.",
-  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative, and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes; every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes.",
+  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative; every backed-up field's own writer rule holds (string lengths for names, descriptions, categories, paid-by labels and notes; the yearly dueMonth within 1–12 or null; every stored flag a 0/1 value; row ids and foreign keys positive; no tax-bucket split on a property or custodial account's balance — the field rules are the shared fieldValidators fragments the writers themselves use); and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes. Named exclusions: settings values other than those three scalar typed settings ride as opaque blobs (their writers validate structured objects at save time and their readers parse leniently), the Net Worth account bucket field is a legacy column no current writer writes, and server-assigned values (sortOrder, createdAt timestamps) are carried without range checks; transaction amounts and Net Worth balances stay signed because their writers accept negatives. Every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes.",
   listBackups: "List the encrypted backup files the Backups panel shows: this space's own backups folder unioned with the legacy shared folder. Each entry's source says which folder it resolved to — \"own\" (deletable from the app) or \"legacy\" (exists only in the legacy folder, which is read-only: listed and restorable, never deletable from here).",
   deleteBackup: "Delete one backup-*.mstbak file from this space's own backups folder. A backup that exists only in the legacy shared folder is refused — that folder is read-only.",
   deleteAllBackups: "Delete every backup file in this space's own backups folder. Legacy-folder backups are never deleted.",
@@ -5446,6 +5480,380 @@ async function loadRothPlannerResponse(ctx: Ctx): Promise<RothPlannerResponse> {
     taxReturn: blob.taxReturn,
     revision: blob.revision,
   };
+}
+
+/* First-run seed presence (contract v60, F7): whether each
+   dataset table holds at least one record, for seedGuardCore's
+   single emptiness predicate. The settings count excludes the
+   encryption key-check row — infrastructure ensureKeyCheck
+   creates on the first data load, not user data; every other
+   settings row is a real record and blocks seeding. */
+async function loadDatasetPresence(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+): Promise<DatasetPresence> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const has = async (table: any): Promise<boolean> =>
+    (await db.select().from(table).limit(1)).length > 0;
+  const settingRows = (await db
+    .select({ key: schema.settings.key })
+    .from(schema.settings)) as { key: string }[];
+  return {
+    transactions: await has(schema.transactions),
+    yearlyExpenses: await has(schema.yearlyExpenses),
+    yearlyExpenseVersions: await has(schema.yearlyExpenseVersions),
+    monthlySummaries: await has(schema.monthlySummaries),
+    monthlyBills: await has(schema.monthlyBills),
+    monthlyBillVersions: await has(schema.monthlyBillVersions),
+    monthlyOneOffs: await has(schema.monthlyOneOffs),
+    monthlyCashOutItems: await has(schema.monthlyCashOutItems),
+    nwAccounts: await has(schema.nwAccounts),
+    nwSnapshots: await has(schema.nwSnapshots),
+    nwBalances: await has(schema.nwBalances),
+    settings: settingRows.some((r) => r.key !== KEY_CHECK_SETTING),
+  };
+}
+
+async function seedExamplesBody(
+  ctx: Ctx,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  key: CryptoKey,
+): Promise<{ ok: boolean; reason: string }> {
+  /* SAMPLE DATA — a complete sample household for a fresh
+     install (this is what the public demo loads). Twelve
+     months ending in the current month, recorded the way
+     the app is meant to be used: a roster of monthly bills,
+     smoothed yearly & periodic bills with their payments
+     recorded as transactions, and one entered cash-out
+     total per month. The three layers agree by construction:
+     each month's cash out is exactly its monthly bills +
+     the smoothed payments that left that month + a positive
+     "everything else" remainder, so the Quick view tiles,
+     the Keep the lights on floor, the category breakdown,
+     and the Coming up forecast all show real, consistent
+     figures. All figures are synthetic. */
+  const now = new Date();
+  const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const MONTH_COUNT = 12;
+  const startMonth = shiftMonth(curMonth, -(MONTH_COUNT - 1));
+  const monthAt = (offset: number) => shiftMonth(startMonth, offset);
+  // Two monthly bills step up partway through the year (a
+  // grocery budget increase and a utility rate change at
+  // offset 7), so the bill history shows a version change.
+  const BUMP_OFFSET = 7;
+
+  type MonthlySeed = {
+    name: string;
+    paidBy: string;
+    category: string;
+    keepLightsOn: boolean;
+    amountCents: number;
+    bumpedAmountCents?: number;
+  };
+  const monthlySeed: MonthlySeed[] = [
+    { name: "Mortgage", paidBy: "Checking", category: "Housing", keepLightsOn: true, amountCents: 185000 },
+    { name: "Groceries & household", paidBy: "Credit Card", category: "Food & household", keepLightsOn: false, amountCents: 65000, bumpedAmountCents: 68500 },
+    { name: "Dining out", paidBy: "Credit Card", category: "Food & household", keepLightsOn: false, amountCents: 24000 },
+    { name: "Electric & gas", paidBy: "Checking", category: "Utilities", keepLightsOn: true, amountCents: 15800, bumpedAmountCents: 17100 },
+    { name: "Water & sewer", paidBy: "Checking", category: "Utilities", keepLightsOn: true, amountCents: 8600 },
+    { name: "Internet", paidBy: "Checking", category: "Internet", keepLightsOn: true, amountCents: 7900 },
+    { name: "Phone", paidBy: "Checking", category: "Phone", keepLightsOn: true, amountCents: 11800 },
+    { name: "Fuel & transit", paidBy: "Credit Card", category: "Transportation", keepLightsOn: false, amountCents: 21000 },
+    { name: "Health insurance premium", paidBy: "Checking", category: "Health Insurance", keepLightsOn: true, amountCents: 34200 },
+    { name: "Gym", paidBy: "Credit Card", category: "Gym", keepLightsOn: false, amountCents: 5800 },
+    { name: "Streaming & apps", paidBy: "Credit Card", category: "Subscriptions", keepLightsOn: false, amountCents: 3600 },
+    { name: "Pet care", paidBy: "Credit Card", category: "Other", keepLightsOn: false, amountCents: 7400 },
+  ];
+  const monthlyAmountAt = (b: MonthlySeed, offset: number): number =>
+    offset >= BUMP_OFFSET && b.bumpedAmountCents != null
+      ? b.bumpedAmountCents
+      : b.amountCents;
+  const monthlyTotalAt = (offset: number): number =>
+    monthlySeed.reduce((s, b) => s + monthlyAmountAt(b, offset), 0);
+  for (const b of monthlySeed) {
+    const latestCents = monthlyAmountAt(b, MONTH_COUNT - 1);
+    const [row] = await db
+      .insert(schema.monthlyBills)
+      .values({
+        name: await encryptStr(key, b.name),
+        amountCents: await encryptNum(key, latestCents),
+        paidBy: await encryptStr(key, b.paidBy),
+        notes: null,
+        category: await encryptStr(key, b.category),
+        keepLightsOn: b.keepLightsOn ? 1 : 0,
+      })
+      .returning({ id: schema.monthlyBills.id });
+    if (!row) continue;
+    await db.insert(schema.monthlyBillVersions).values({
+      billId: row.id,
+      amountCents: await encryptNum(key, b.amountCents),
+      effectiveFrom: startMonth,
+    });
+    if (b.bumpedAmountCents != null) {
+      await db.insert(schema.monthlyBillVersions).values({
+        billId: row.id,
+        amountCents: await encryptNum(key, b.bumpedAmountCents),
+        effectiveFrom: monthAt(BUMP_OFFSET),
+      });
+    }
+  }
+
+  type SmoothedSeed = {
+    name: string;
+    expectedCents: number;
+    frequency: "yearly" | "semiannual" | "quarterly";
+    dueMonth: number;
+    category: string;
+    keepLightsOn: boolean;
+    // One recorded payment that differed from the set-aside
+    // amount (a renewal that came in higher) — the app shows
+    // the difference on the bill's card.
+    actualDeltaCents?: number;
+  };
+  const smoothedSeed: SmoothedSeed[] = [
+    { name: "Property tax", expectedCents: 265000, frequency: "semiannual", dueMonth: 4, category: "Taxes", keepLightsOn: true },
+    { name: "Home insurance", expectedCents: 184200, frequency: "yearly", dueMonth: 3, category: "Insurance", keepLightsOn: true, actualDeltaCents: 3200 },
+    { name: "Auto insurance", expectedCents: 87600, frequency: "semiannual", dueMonth: 2, category: "Insurance", keepLightsOn: true },
+    { name: "Umbrella insurance", expectedCents: 38500, frequency: "yearly", dueMonth: 8, category: "Insurance", keepLightsOn: false },
+    { name: "Vehicle registration", expectedCents: 27600, frequency: "yearly", dueMonth: 9, category: "Transportation", keepLightsOn: false },
+    { name: "Trash & recycling", expectedCents: 11700, frequency: "quarterly", dueMonth: 1, category: "Utilities", keepLightsOn: true },
+    { name: "Pest control", expectedCents: 14500, frequency: "quarterly", dueMonth: 2, category: "Housing", keepLightsOn: false },
+    { name: "Warehouse club membership", expectedCents: 6500, frequency: "yearly", dueMonth: 9, category: "Subscriptions", keepLightsOn: false },
+    { name: "Cloud backup", expectedCents: 12000, frequency: "yearly", dueMonth: 12, category: "Subscriptions", keepLightsOn: false },
+  ];
+  const smoothedIds = new Map<string, number>();
+  for (const y of smoothedSeed) {
+    const encExpected = await encryptNum(key, y.expectedCents);
+    const [row] = await db
+      .insert(schema.yearlyExpenses)
+      .values({
+        name: await encryptStr(key, y.name),
+        expectedCents: encExpected,
+        dueMonth: y.dueMonth,
+        paidByType: "checking" as const,
+        paidByName: await encryptStr(key, "Checking"),
+        category: await encryptStr(key, y.category),
+        backfillBeforeFirstVersion: 0,
+        frequency: y.frequency,
+        keepLightsOn: y.keepLightsOn ? 1 : 0,
+      })
+      .returning({ id: schema.yearlyExpenses.id });
+    if (row) {
+      smoothedIds.set(y.name, row.id);
+      await db.insert(schema.yearlyExpenseVersions).values({
+        expenseId: row.id,
+        expectedCents: encExpected,
+        frequency: y.frequency,
+        effectiveFrom: startMonth,
+      });
+    }
+  }
+  // The smoothed payments recorded in one month: every bill
+  // whose due pattern lands in that calendar month, at its
+  // expected amount (plus the one renewal difference).
+  const paymentsAt = (offset: number) => {
+    const calMonth = Number(monthAt(offset).slice(5, 7));
+    const out: { seed: SmoothedSeed; amountCents: number }[] = [];
+    for (const y of smoothedSeed) {
+      const dues = dueMonthsFor({ frequency: y.frequency, dueMonth: y.dueMonth });
+      if (!dues.includes(calMonth)) continue;
+      out.push({ seed: y, amountCents: y.expectedCents + (y.actualDeltaCents ?? 0) });
+    }
+    return out;
+  };
+
+  // "Everything else" per month — the day-to-day spending
+  // beyond the bill roster and the smoothed payments. Always
+  // comfortably positive, so no month shows the negative
+  // remainder an unfinished month shows.
+  const everythingElse: number[] = [
+    112400, 98700, 124600, 108300, 131900, 95400,
+    118700, 142600, 106900, 129400, 115800, 138200,
+  ];
+  const cashOutAt = (offset: number): number =>
+    monthlyTotalAt(offset) +
+    paymentsAt(offset).reduce((s, p) => s + p.amountCents, 0) +
+    (everythingElse[offset] ?? 115000);
+
+  // Entered cash-out totals (the checking-account outflow
+  // for the month) — the month's spending base.
+  for (let i = 0; i < MONTH_COUNT; i++) {
+    await db.insert(schema.monthlySummaries).values({
+      month: monthAt(i),
+      cashOutCents: await encryptNum(key, cashOutAt(i)),
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  // The recorded smoothed-bill payments themselves.
+  for (let i = 0; i < MONTH_COUNT; i++) {
+    const m = monthAt(i);
+    for (const p of paymentsAt(i)) {
+      await db.insert(schema.transactions).values({
+        date: `${m}-10`,
+        description: await encryptStr(key, `${p.seed.name} payment`),
+        amountCents: await encryptNum(key, p.amountCents),
+        sourceType: "checking",
+        accountName: await encryptStr(key, "Checking"),
+        kind: "spending",
+        category: await encryptStr(key, p.seed.category),
+        yearlyExpenseId: smoothedIds.get(p.seed.name) ?? null,
+      });
+    }
+  }
+  // Two one-offs, already counted in their months' cash out:
+  // they explain part of those months' Everything else.
+  const oneOffSeed = [
+    { offset: 5, description: "Water heater replacement", amountCents: 64800 },
+    { offset: 9, description: "Weekend trip", amountCents: 51200 },
+  ];
+  for (const o of oneOffSeed) {
+    await db.insert(schema.monthlyOneOffs).values({
+      month: monthAt(o.offset),
+      description: await encryptStr(key, o.description),
+      amountCents: await encryptNum(key, o.amountCents),
+      note: await encryptNullable(key, "One-off — already counted in that month's cash out."),
+    });
+  }
+  // The current month's cash out, itemized: the bill groups,
+  // that month's smoothed payments, and the remainder. The
+  // items sum to the entered total exactly, demonstrating
+  // the itemized month at a $0 difference.
+  {
+    const offset = MONTH_COUNT - 1;
+    const m = monthAt(offset);
+    const billAmount = (name: string): number => {
+      const b = monthlySeed.find((x) => x.name === name);
+      return b ? monthlyAmountAt(b, offset) : 0;
+    };
+    const groupAmount = (names: string[]): number =>
+      names.reduce((s, n) => s + billAmount(n), 0);
+    const items: { description: string; amountCents: number }[] = [
+      { description: "Mortgage", amountCents: billAmount("Mortgage") },
+      { description: "Groceries & household", amountCents: billAmount("Groceries & household") },
+      { description: "Dining, fuel, pet care, gym & streaming", amountCents: groupAmount(["Dining out", "Fuel & transit", "Pet care", "Gym", "Streaming & apps"]) },
+      { description: "Electric, water, internet & phone", amountCents: groupAmount(["Electric & gas", "Water & sewer", "Internet", "Phone"]) },
+      { description: "Health insurance premium", amountCents: billAmount("Health insurance premium") },
+      ...paymentsAt(offset).map((p) => ({
+        description: `${p.seed.name} payment`,
+        amountCents: p.amountCents,
+      })),
+      { description: "Everything else — day-to-day spending", amountCents: everythingElse[offset] ?? 115000 },
+    ];
+    for (const it of items) {
+      await db.insert(schema.monthlyCashOutItems).values({
+        month: m,
+        description: await encryptStr(key, it.description),
+        amountCents: await encryptNum(key, it.amountCents),
+        note: null,
+        day: 1,
+      });
+    }
+  }
+  // The smoothed-bill reserve opens with $2,500 already set
+  // aside, so the reserve and the Coming up forecast start
+  // from a realistic, positive position.
+  await db
+    .insert(schema.settings)
+    .values({ key: "opening_reserve_cents", value: await encryptStr(key, "250000") })
+    .onConflictDoNothing();
+  await db
+    .insert(schema.settings)
+    .values({ key: "reserve_start_month", value: startMonth })
+    .onConflictDoNothing();
+  ctx.invalidateQueries();
+  return { ok: true, reason: "Sample household loaded — twelve months of bills, smoothed expenses, and cash-out totals." };
+}
+
+async function seedNetWorthBody(
+  ctx: Ctx,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  key: CryptoKey,
+): Promise<{ ok: boolean; seeded: boolean; reason: string }> {
+  const accountIds: number[] = [];
+  for (let i = 0; i < NW_SEED_ACCOUNTS.length; i++) {
+    const acct = NW_SEED_ACCOUNTS[i];
+    if (!acct) continue;
+    const [row] = await db
+      .insert(schema.nwAccounts)
+      .values({
+        name: await encryptStr(key, acct.name),
+        sortOrder: i,
+        archived: 0,
+        propertyKind: acct.propertyKind,
+        custodial: acct.custodial ? 1 : 0,
+      })
+      .returning({ id: schema.nwAccounts.id });
+    if (!row) throw new Error("seed account insert failed");
+    accountIds.push(row.id);
+  }
+  // Twelve monthly snapshots ending in the current month, on
+  // the 1st — the same relative window seedExamples uses for
+  // the spending side, so the two sample datasets line up.
+  const now = new Date();
+  const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const startMonth = shiftMonth(curMonth, -(NW_SEED_VALUES.length - 1));
+  for (let s = 0; s < NW_SEED_VALUES.length; s++) {
+    const values = NW_SEED_VALUES[s];
+    if (!values) continue;
+    const [srow] = await db
+      .insert(schema.nwSnapshots)
+      .values({
+        date: `${shiftMonth(startMonth, s)}-01`,
+        note: await encryptNullable(key, NW_SEED_NOTES[s] ?? null),
+      })
+      .returning({ id: schema.nwSnapshots.id });
+    if (!srow) throw new Error("seed snapshot insert failed");
+    for (let i = 0; i < accountIds.length; i++) {
+      const dollars = values[i];
+      const accountId = accountIds[i];
+      const acct = NW_SEED_ACCOUNTS[i];
+      if (dollars == null || accountId == null || !acct) continue;
+      const balanceCents = Math.round(dollars * 100);
+      // Split balances go through the same row writer as a
+      // hand-entered snapshot, so the stored balance is the
+      // sum of its parts by construction.
+      const noSplit =
+        acct.splitShares.length === 0 ||
+        acct.propertyKind !== "none" ||
+        acct.custodial;
+      let splits: { bucket: NwSplitBucket; amountCents: number }[] | null = null;
+      if (!noSplit) {
+        splits = [];
+        let assigned = 0;
+        for (let p = 0; p < acct.splitShares.length; p++) {
+          const part = acct.splitShares[p];
+          if (!part) continue;
+          const isLast = p === acct.splitShares.length - 1;
+          const amountCents = isLast
+            ? balanceCents - assigned
+            : Math.round((balanceCents * part.share) / 1000) * 1000;
+          assigned += amountCents;
+          splits.push({ bucket: part.bucket, amountCents });
+        }
+      }
+      const rowValues = await nwBalanceRowValues(
+        key,
+        { accountId, balanceCents, splits },
+        noSplit,
+      );
+      if (!rowValues) continue;
+      await db.insert(schema.nwBalances).values({
+        snapshotId: srow.id,
+        accountId,
+        ...rowValues,
+      });
+    }
+  }
+  // The sample target, only when no target is stored yet.
+  await db
+    .insert(schema.settings)
+    .values({ key: NW_TARGET_KEY, value: String(NW_SEED_TARGET_CENTS) })
+    .onConflictDoNothing();
+  ctx.invalidateQueries();
+  return { ok: true, seeded: true, reason: "Net Worth history seeded from the sample dataset." };
 }
 
 export const Actions = {
@@ -6977,13 +7385,13 @@ export const Actions = {
   addYearlyExpense: defineAction({
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
-      name: z.string().min(1).max(120),
+      name: billNameField,
       frequency: yearlyFrequencyWithDefault,
       expectedCents: z.number().int().nonnegative(),
-      dueMonth: z.number().int().min(1).max(12).nullable().default(null),
+      dueMonth: dueMonthField.default(null),
       paidByType: sourceType,
-      paidByName: z.string().min(1).max(60),
-      category: z.string().min(1).max(60).default("Uncategorized"),
+      paidByName: paidByField,
+      category: category60Field.default("Uncategorized"),
       keepLightsOn: z.boolean().default(false),
       effectiveFrom: z.string().regex(monthRe).optional(),
     }),
@@ -7036,13 +7444,13 @@ export const Actions = {
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       id: z.number().int().positive(),
-      name: z.string().min(1).max(120),
+      name: billNameField,
       frequency: yearlyFrequencyWithDefault,
       expectedCents: z.number().int().nonnegative(),
-      dueMonth: z.number().int().min(1).max(12).nullable().default(null),
+      dueMonth: dueMonthField.default(null),
       paidByType: sourceType,
-      paidByName: z.string().min(1).max(60),
-      category: z.string().min(1).max(60).default("Uncategorized"),
+      paidByName: paidByField,
+      category: category60Field.default("Uncategorized"),
       keepLightsOn: z.boolean().default(false),
       effectiveFrom: z.string().regex(monthRe).optional(),
     }),
@@ -7301,7 +7709,7 @@ export const Actions = {
   setYearlyDueMonth: defineAction({
     request: z.object({
       id: z.number().int().positive(),
-      dueMonth: z.number().int().min(1).max(12).nullable(),
+      dueMonth: dueMonthField,
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -8133,265 +8541,20 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      const existing = await db.select().from(schema.transactions).limit(1);
-      const existingY = await db.select().from(schema.yearlyExpenses).limit(1);
-      const existingS = await db.select().from(schema.monthlySummaries).limit(1);
-      const existingB = await db.select().from(schema.monthlyBills).limit(1);
-      if (
-        existing.length > 0 ||
-        existingY.length > 0 ||
-        existingS.length > 0 ||
-        existingB.length > 0
-      ) {
+      // Global first-run emptiness (contract v60, F7): the ONE
+      // predicate in seedGuardCore, over every dataset table —
+      // before v60 this guard looked at four spending tables
+      // only, so sample rows could land beside real records held
+      // in an unchecked table (a settings blob, a one-off, a
+      // Net Worth account).
+      const presence = await loadDatasetPresence(db);
+      if (!datasetIsEmpty(presence)) {
         return {
           ok: false,
-          reason: "Example data only loads into an empty tracker.",
+          reason: `Example data only loads into a completely empty tracker — this tracker already has data (${nonEmptyDatasetTables(presence).join(", ")}). Nothing was seeded.`,
         };
       }
-      /* SAMPLE DATA — a complete sample household for a fresh
-         install (this is what the public demo loads). Twelve
-         months ending in the current month, recorded the way
-         the app is meant to be used: a roster of monthly bills,
-         smoothed yearly & periodic bills with their payments
-         recorded as transactions, and one entered cash-out
-         total per month. The three layers agree by construction:
-         each month's cash out is exactly its monthly bills +
-         the smoothed payments that left that month + a positive
-         "everything else" remainder, so the Quick view tiles,
-         the Keep the lights on floor, the category breakdown,
-         and the Coming up forecast all show real, consistent
-         figures. All figures are synthetic. */
-      const now = new Date();
-      const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-      const MONTH_COUNT = 12;
-      const startMonth = shiftMonth(curMonth, -(MONTH_COUNT - 1));
-      const monthAt = (offset: number) => shiftMonth(startMonth, offset);
-      // Two monthly bills step up partway through the year (a
-      // grocery budget increase and a utility rate change at
-      // offset 7), so the bill history shows a version change.
-      const BUMP_OFFSET = 7;
-
-      type MonthlySeed = {
-        name: string;
-        paidBy: string;
-        category: string;
-        keepLightsOn: boolean;
-        amountCents: number;
-        bumpedAmountCents?: number;
-      };
-      const monthlySeed: MonthlySeed[] = [
-        { name: "Mortgage", paidBy: "Checking", category: "Housing", keepLightsOn: true, amountCents: 185000 },
-        { name: "Groceries & household", paidBy: "Credit Card", category: "Food & household", keepLightsOn: false, amountCents: 65000, bumpedAmountCents: 68500 },
-        { name: "Dining out", paidBy: "Credit Card", category: "Food & household", keepLightsOn: false, amountCents: 24000 },
-        { name: "Electric & gas", paidBy: "Checking", category: "Utilities", keepLightsOn: true, amountCents: 15800, bumpedAmountCents: 17100 },
-        { name: "Water & sewer", paidBy: "Checking", category: "Utilities", keepLightsOn: true, amountCents: 8600 },
-        { name: "Internet", paidBy: "Checking", category: "Internet", keepLightsOn: true, amountCents: 7900 },
-        { name: "Phone", paidBy: "Checking", category: "Phone", keepLightsOn: true, amountCents: 11800 },
-        { name: "Fuel & transit", paidBy: "Credit Card", category: "Transportation", keepLightsOn: false, amountCents: 21000 },
-        { name: "Health insurance premium", paidBy: "Checking", category: "Health Insurance", keepLightsOn: true, amountCents: 34200 },
-        { name: "Gym", paidBy: "Credit Card", category: "Gym", keepLightsOn: false, amountCents: 5800 },
-        { name: "Streaming & apps", paidBy: "Credit Card", category: "Subscriptions", keepLightsOn: false, amountCents: 3600 },
-        { name: "Pet care", paidBy: "Credit Card", category: "Other", keepLightsOn: false, amountCents: 7400 },
-      ];
-      const monthlyAmountAt = (b: MonthlySeed, offset: number): number =>
-        offset >= BUMP_OFFSET && b.bumpedAmountCents != null
-          ? b.bumpedAmountCents
-          : b.amountCents;
-      const monthlyTotalAt = (offset: number): number =>
-        monthlySeed.reduce((s, b) => s + monthlyAmountAt(b, offset), 0);
-      for (const b of monthlySeed) {
-        const latestCents = monthlyAmountAt(b, MONTH_COUNT - 1);
-        const [row] = await db
-          .insert(schema.monthlyBills)
-          .values({
-            name: await encryptStr(key, b.name),
-            amountCents: await encryptNum(key, latestCents),
-            paidBy: await encryptStr(key, b.paidBy),
-            notes: null,
-            category: await encryptStr(key, b.category),
-            keepLightsOn: b.keepLightsOn ? 1 : 0,
-          })
-          .returning({ id: schema.monthlyBills.id });
-        if (!row) continue;
-        await db.insert(schema.monthlyBillVersions).values({
-          billId: row.id,
-          amountCents: await encryptNum(key, b.amountCents),
-          effectiveFrom: startMonth,
-        });
-        if (b.bumpedAmountCents != null) {
-          await db.insert(schema.monthlyBillVersions).values({
-            billId: row.id,
-            amountCents: await encryptNum(key, b.bumpedAmountCents),
-            effectiveFrom: monthAt(BUMP_OFFSET),
-          });
-        }
-      }
-
-      type SmoothedSeed = {
-        name: string;
-        expectedCents: number;
-        frequency: "yearly" | "semiannual" | "quarterly";
-        dueMonth: number;
-        category: string;
-        keepLightsOn: boolean;
-        // One recorded payment that differed from the set-aside
-        // amount (a renewal that came in higher) — the app shows
-        // the difference on the bill's card.
-        actualDeltaCents?: number;
-      };
-      const smoothedSeed: SmoothedSeed[] = [
-        { name: "Property tax", expectedCents: 265000, frequency: "semiannual", dueMonth: 4, category: "Taxes", keepLightsOn: true },
-        { name: "Home insurance", expectedCents: 184200, frequency: "yearly", dueMonth: 3, category: "Insurance", keepLightsOn: true, actualDeltaCents: 3200 },
-        { name: "Auto insurance", expectedCents: 87600, frequency: "semiannual", dueMonth: 2, category: "Insurance", keepLightsOn: true },
-        { name: "Umbrella insurance", expectedCents: 38500, frequency: "yearly", dueMonth: 8, category: "Insurance", keepLightsOn: false },
-        { name: "Vehicle registration", expectedCents: 27600, frequency: "yearly", dueMonth: 9, category: "Transportation", keepLightsOn: false },
-        { name: "Trash & recycling", expectedCents: 11700, frequency: "quarterly", dueMonth: 1, category: "Utilities", keepLightsOn: true },
-        { name: "Pest control", expectedCents: 14500, frequency: "quarterly", dueMonth: 2, category: "Housing", keepLightsOn: false },
-        { name: "Warehouse club membership", expectedCents: 6500, frequency: "yearly", dueMonth: 9, category: "Subscriptions", keepLightsOn: false },
-        { name: "Cloud backup", expectedCents: 12000, frequency: "yearly", dueMonth: 12, category: "Subscriptions", keepLightsOn: false },
-      ];
-      const smoothedIds = new Map<string, number>();
-      for (const y of smoothedSeed) {
-        const encExpected = await encryptNum(key, y.expectedCents);
-        const [row] = await db
-          .insert(schema.yearlyExpenses)
-          .values({
-            name: await encryptStr(key, y.name),
-            expectedCents: encExpected,
-            dueMonth: y.dueMonth,
-            paidByType: "checking" as const,
-            paidByName: await encryptStr(key, "Checking"),
-            category: await encryptStr(key, y.category),
-            backfillBeforeFirstVersion: 0,
-            frequency: y.frequency,
-            keepLightsOn: y.keepLightsOn ? 1 : 0,
-          })
-          .returning({ id: schema.yearlyExpenses.id });
-        if (row) {
-          smoothedIds.set(y.name, row.id);
-          await db.insert(schema.yearlyExpenseVersions).values({
-            expenseId: row.id,
-            expectedCents: encExpected,
-            frequency: y.frequency,
-            effectiveFrom: startMonth,
-          });
-        }
-      }
-      // The smoothed payments recorded in one month: every bill
-      // whose due pattern lands in that calendar month, at its
-      // expected amount (plus the one renewal difference).
-      const paymentsAt = (offset: number) => {
-        const calMonth = Number(monthAt(offset).slice(5, 7));
-        const out: { seed: SmoothedSeed; amountCents: number }[] = [];
-        for (const y of smoothedSeed) {
-          const dues = dueMonthsFor({ frequency: y.frequency, dueMonth: y.dueMonth });
-          if (!dues.includes(calMonth)) continue;
-          out.push({ seed: y, amountCents: y.expectedCents + (y.actualDeltaCents ?? 0) });
-        }
-        return out;
-      };
-
-      // "Everything else" per month — the day-to-day spending
-      // beyond the bill roster and the smoothed payments. Always
-      // comfortably positive, so no month shows the negative
-      // remainder an unfinished month shows.
-      const everythingElse: number[] = [
-        112400, 98700, 124600, 108300, 131900, 95400,
-        118700, 142600, 106900, 129400, 115800, 138200,
-      ];
-      const cashOutAt = (offset: number): number =>
-        monthlyTotalAt(offset) +
-        paymentsAt(offset).reduce((s, p) => s + p.amountCents, 0) +
-        (everythingElse[offset] ?? 115000);
-
-      // Entered cash-out totals (the checking-account outflow
-      // for the month) — the month's spending base.
-      for (let i = 0; i < MONTH_COUNT; i++) {
-        await db.insert(schema.monthlySummaries).values({
-          month: monthAt(i),
-          cashOutCents: await encryptNum(key, cashOutAt(i)),
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-      // The recorded smoothed-bill payments themselves.
-      for (let i = 0; i < MONTH_COUNT; i++) {
-        const m = monthAt(i);
-        for (const p of paymentsAt(i)) {
-          await db.insert(schema.transactions).values({
-            date: `${m}-10`,
-            description: await encryptStr(key, `${p.seed.name} payment`),
-            amountCents: await encryptNum(key, p.amountCents),
-            sourceType: "checking",
-            accountName: await encryptStr(key, "Checking"),
-            kind: "spending",
-            category: await encryptStr(key, p.seed.category),
-            yearlyExpenseId: smoothedIds.get(p.seed.name) ?? null,
-          });
-        }
-      }
-      // Two one-offs, already counted in their months' cash out:
-      // they explain part of those months' Everything else.
-      const oneOffSeed = [
-        { offset: 5, description: "Water heater replacement", amountCents: 64800 },
-        { offset: 9, description: "Weekend trip", amountCents: 51200 },
-      ];
-      for (const o of oneOffSeed) {
-        await db.insert(schema.monthlyOneOffs).values({
-          month: monthAt(o.offset),
-          description: await encryptStr(key, o.description),
-          amountCents: await encryptNum(key, o.amountCents),
-          note: await encryptNullable(key, "One-off — already counted in that month's cash out."),
-        });
-      }
-      // The current month's cash out, itemized: the bill groups,
-      // that month's smoothed payments, and the remainder. The
-      // items sum to the entered total exactly, demonstrating
-      // the itemized month at a $0 difference.
-      {
-        const offset = MONTH_COUNT - 1;
-        const m = monthAt(offset);
-        const billAmount = (name: string): number => {
-          const b = monthlySeed.find((x) => x.name === name);
-          return b ? monthlyAmountAt(b, offset) : 0;
-        };
-        const groupAmount = (names: string[]): number =>
-          names.reduce((s, n) => s + billAmount(n), 0);
-        const items: { description: string; amountCents: number }[] = [
-          { description: "Mortgage", amountCents: billAmount("Mortgage") },
-          { description: "Groceries & household", amountCents: billAmount("Groceries & household") },
-          { description: "Dining, fuel, pet care, gym & streaming", amountCents: groupAmount(["Dining out", "Fuel & transit", "Pet care", "Gym", "Streaming & apps"]) },
-          { description: "Electric, water, internet & phone", amountCents: groupAmount(["Electric & gas", "Water & sewer", "Internet", "Phone"]) },
-          { description: "Health insurance premium", amountCents: billAmount("Health insurance premium") },
-          ...paymentsAt(offset).map((p) => ({
-            description: `${p.seed.name} payment`,
-            amountCents: p.amountCents,
-          })),
-          { description: "Everything else — day-to-day spending", amountCents: everythingElse[offset] ?? 115000 },
-        ];
-        for (const it of items) {
-          await db.insert(schema.monthlyCashOutItems).values({
-            month: m,
-            description: await encryptStr(key, it.description),
-            amountCents: await encryptNum(key, it.amountCents),
-            note: null,
-            day: 1,
-          });
-        }
-      }
-      // The smoothed-bill reserve opens with $2,500 already set
-      // aside, so the reserve and the Coming up forecast start
-      // from a realistic, positive position.
-      await db
-        .insert(schema.settings)
-        .values({ key: "opening_reserve_cents", value: await encryptStr(key, "250000") })
-        .onConflictDoNothing();
-      await db
-        .insert(schema.settings)
-        .values({ key: "reserve_start_month", value: startMonth })
-        .onConflictDoNothing();
-      ctx.invalidateQueries();
-      return { ok: true, reason: "Sample household loaded — twelve months of bills, smoothed expenses, and cash-out totals." };
+      return seedExamplesBody(ctx, db, key);
     },
   }),
 
@@ -8444,8 +8607,10 @@ export const Actions = {
 
   /* ---------------- Net Worth actions ---------------- */
 
-  // Idempotent seed of the sample data. Does nothing when any NW
-  // account already exists, so re-running it can never duplicate.
+  // Idempotent seed of the sample Net Worth history. Runs only
+  // into a completely empty dataset (the global seedGuardCore
+  // check), so re-running it can never duplicate or mix sample
+  // rows with real records.
   seedNetWorth: defineAction({
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
@@ -8454,92 +8619,55 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      const existing = await db.select().from(schema.nwAccounts).limit(1);
-      if (existing.length > 0) {
-        return { ok: true, seeded: false, reason: "Net Worth data already present — nothing seeded." };
+      // Global first-run emptiness (contract v60, F7): the same
+      // seedGuardCore predicate seedExamples uses — before v60
+      // this guard looked only at Net Worth accounts, so the
+      // sample history could be seeded beside real spending data.
+      const presence = await loadDatasetPresence(db);
+      if (!datasetIsEmpty(presence)) {
+        return {
+          ok: true,
+          seeded: false,
+          reason: `Dataset is not empty (${nonEmptyDatasetTables(presence).join(", ")}) — nothing seeded.`,
+        };
       }
-      const accountIds: number[] = [];
-      for (let i = 0; i < NW_SEED_ACCOUNTS.length; i++) {
-        const acct = NW_SEED_ACCOUNTS[i];
-        if (!acct) continue;
-        const [row] = await db
-          .insert(schema.nwAccounts)
-          .values({
-            name: await encryptStr(key, acct.name),
-            sortOrder: i,
-            archived: 0,
-            propertyKind: acct.propertyKind,
-            custodial: acct.custodial ? 1 : 0,
-          })
-          .returning({ id: schema.nwAccounts.id });
-        if (!row) throw new Error("seed account insert failed");
-        accountIds.push(row.id);
+      return seedNetWorthBody(ctx, db, key);
+    },
+  }),
+
+  // First-run seed (contract v60, F7): ONE global emptiness
+  // check over every dataset table (seedGuardCore), then BOTH
+  // sample datasets as a single all-or-nothing operation — the
+  // packaged build's boot path calls this instead of the two
+  // individual seed actions, so a store holding any real record
+  // receives no sample rows from either seed, and a store that
+  // passes the check receives both datasets or (on failure) is
+  // reported unseeded so the caller does not mark it seeded.
+  seedFirstRun: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), seeded: z.boolean(), reason: z.string() }),
+    async handler(ctx): Promise<{ ok: boolean; seeded: boolean; reason: string }> {
+      const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
+      await ensureKeyCheck(ctx, db, key);
+      const presence = await loadDatasetPresence(db);
+      if (!datasetIsEmpty(presence)) {
+        return {
+          ok: true,
+          seeded: false,
+          reason: `Dataset is not empty (${nonEmptyDatasetTables(presence).join(", ")}) — nothing seeded.`,
+        };
       }
-      // Twelve monthly snapshots ending in the current month, on
-      // the 1st — the same relative window seedExamples uses for
-      // the spending side, so the two sample datasets line up.
-      const now = new Date();
-      const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-      const startMonth = shiftMonth(curMonth, -(NW_SEED_VALUES.length - 1));
-      for (let s = 0; s < NW_SEED_VALUES.length; s++) {
-        const values = NW_SEED_VALUES[s];
-        if (!values) continue;
-        const [srow] = await db
-          .insert(schema.nwSnapshots)
-          .values({
-            date: `${shiftMonth(startMonth, s)}-01`,
-            note: await encryptNullable(key, NW_SEED_NOTES[s] ?? null),
-          })
-          .returning({ id: schema.nwSnapshots.id });
-        if (!srow) throw new Error("seed snapshot insert failed");
-        for (let i = 0; i < accountIds.length; i++) {
-          const dollars = values[i];
-          const accountId = accountIds[i];
-          const acct = NW_SEED_ACCOUNTS[i];
-          if (dollars == null || accountId == null || !acct) continue;
-          const balanceCents = Math.round(dollars * 100);
-          // Split balances go through the same row writer as a
-          // hand-entered snapshot, so the stored balance is the
-          // sum of its parts by construction.
-          const noSplit =
-            acct.splitShares.length === 0 ||
-            acct.propertyKind !== "none" ||
-            acct.custodial;
-          let splits: { bucket: NwSplitBucket; amountCents: number }[] | null = null;
-          if (!noSplit) {
-            splits = [];
-            let assigned = 0;
-            for (let p = 0; p < acct.splitShares.length; p++) {
-              const part = acct.splitShares[p];
-              if (!part) continue;
-              const isLast = p === acct.splitShares.length - 1;
-              const amountCents = isLast
-                ? balanceCents - assigned
-                : Math.round((balanceCents * part.share) / 1000) * 1000;
-              assigned += amountCents;
-              splits.push({ bucket: part.bucket, amountCents });
-            }
-          }
-          const rowValues = await nwBalanceRowValues(
-            key,
-            { accountId, balanceCents, splits },
-            noSplit,
-          );
-          if (!rowValues) continue;
-          await db.insert(schema.nwBalances).values({
-            snapshotId: srow.id,
-            accountId,
-            ...rowValues,
-          });
-        }
+      const spending = await seedExamplesBody(ctx, db, key);
+      if (!spending.ok) {
+        return { ok: false, seeded: false, reason: spending.reason };
       }
-      // The sample target, only when no target is stored yet.
-      await db
-        .insert(schema.settings)
-        .values({ key: NW_TARGET_KEY, value: String(NW_SEED_TARGET_CENTS) })
-        .onConflictDoNothing();
-      ctx.invalidateQueries();
-      return { ok: true, seeded: true, reason: "Net Worth history seeded from the sample dataset." };
+      const nw = await seedNetWorthBody(ctx, db, key);
+      if (!nw.seeded) {
+        return { ok: false, seeded: false, reason: nw.reason };
+      }
+      return { ok: true, seeded: true, reason: "Sample data loaded." };
     },
   }),
 
@@ -10176,7 +10304,22 @@ export const Actions = {
       ),
     }),
     async handler(ctx, args) {
-      const capturedYear = new Date().getFullYear();
+      // Plan-year capture (contract v60, F6): the Roth compute
+      // actions (runRothOptimizer, runRothCompare,
+      // runRothMonteCarloCheck / Stats, runWorkYearsCompare) and
+      // the December console's default year read the year in UTC,
+      // so the same instant prices the same starting year on the
+      // server and in a browser in any timezone — before v60 the
+      // local clock let a Los Angeles browser still be in the old
+      // year while a UTC server had rolled over, pricing a
+      // different horizon. Every other clock read in this file
+      // (dashboard month strings, effectiveFrom defaults, seed
+      // windows, the Retirement default age, and the non-listed
+      // Roth readers runRothGiftCompare / runPlanYearDetail /
+      // runRothFunding) stays on the local clock deliberately:
+      // those are user-local calendar displays and defaults, not
+      // priced plan years.
+      const capturedYear = new Date().getUTCFullYear();
       const empty = {
         candidatesTested: 0,
         doNothing: null,
@@ -10418,7 +10561,7 @@ export const Actions = {
       ),
     }),
     async handler(ctx, args) {
-      const capturedYear = new Date().getFullYear();
+      const capturedYear = new Date().getUTCFullYear();
       const resolved = await resolveArgsBalances(ctx, args);
       const result = runRothCompare(
         resolved,
@@ -10528,7 +10671,7 @@ export const Actions = {
       winnerName: z.string(),
     }),
     async handler(ctx, args) {
-      const capturedYear = new Date().getFullYear();
+      const capturedYear = new Date().getUTCFullYear();
       const empty = {
         pathsRun: 0,
         winRatePct: 0,
@@ -10666,7 +10809,7 @@ export const Actions = {
       ),
     }),
     async handler(ctx, args) {
-      const capturedYear = new Date().getFullYear();
+      const capturedYear = new Date().getUTCFullYear();
       const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args, capturedYear);
       const result = runRothMonteCarloStats(
         resolved,
@@ -10742,7 +10885,7 @@ export const Actions = {
       rows: z.array(workYearsRowOut),
     }),
     async handler(ctx, args) {
-      const capturedYear = new Date().getFullYear();
+      const capturedYear = new Date().getUTCFullYear();
       const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args, capturedYear);
       const inputs = planInputsFromSaved(resolved, capturedYear);
       if (!inputs) {
@@ -11087,7 +11230,7 @@ export const Actions = {
       const rows = await db.select().from(schema.settings);
       const raw = rows.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
       return {
-        state: parseDecemberState(raw, new Date().getFullYear()),
+        state: parseDecemberState(raw, new Date().getUTCFullYear()),
         hasStored: raw !== undefined,
         revision: parseDecemberRevision(raw),
       };
@@ -11111,7 +11254,7 @@ export const Actions = {
           ok: false as const,
           conflict: true as const,
           revision: storedRevision,
-          state: parseDecemberState(current?.value, new Date().getFullYear()),
+          state: parseDecemberState(current?.value, new Date().getUTCFullYear()),
           hasStored: current !== undefined,
         };
       }
@@ -11133,7 +11276,7 @@ export const Actions = {
             ok: false as const,
             conflict: true as const,
             revision: parseDecemberRevision(afterRaw),
-            state: parseDecemberState(afterRaw, new Date().getFullYear()),
+            state: parseDecemberState(afterRaw, new Date().getUTCFullYear()),
             hasStored: afterRaw !== undefined,
           };
         }
@@ -11159,7 +11302,7 @@ export const Actions = {
             ok: false as const,
             conflict: true as const,
             revision: parseDecemberRevision(afterRaw),
-            state: parseDecemberState(afterRaw, new Date().getFullYear()),
+            state: parseDecemberState(afterRaw, new Date().getUTCFullYear()),
             hasStored: afterRaw !== undefined,
           };
         }
@@ -12153,7 +12296,7 @@ export const Actions = {
   addNwAccount: defineAction({
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
-      name: z.string().min(1).max(80),
+      name: nwAccountNameField,
       propertyKind: nwPropertyKindWithDefault,
       // Custodial (e.g. UTMA/UGMA): recorded but never counted.
       // A custodial account is never a property account — when
@@ -12197,7 +12340,7 @@ export const Actions = {
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       id: z.number().int().positive(),
-      name: z.string().min(1).max(80),
+      name: nwAccountNameField,
       // Optional so older callers that only rename keep working;
       // when present, the account's property flag is updated too.
       propertyKind: nwPropertyKindEnum.optional(),

@@ -60,6 +60,21 @@ jobs:
         working-directory: packaged
         run: bun run build
 
+      # Verification gate (contract v60, F8): the packaged harness
+      # — which runs the full fixture census (the tax suite chunked
+      # via packaged/taxtest.ts, plus the extended / roth-cas /
+      # retirement / ui-state / integrity suites through the real
+      # packaged dispatcher) and the store-protocol, backup, and
+      # seed acceptance checks — must pass BEFORE anything deploys.
+      # A failing suite fails this step, the job, and the
+      # deployment. (The headless-Chromium probe, packaged/probe.ts,
+      # needs the packaged dist plus a Chromium binary at a
+      # machine-specific path, so it stays a local/release check;
+      # the harness covers the same pinned figures headlessly.)
+      - name: Run the packaged harness and fixture census (deploy gate)
+        working-directory: packaged
+        run: bun run harness
+
       - uses: actions/configure-pages@v5
         with:
           # Enable Pages with the GitHub Actions source automatically if it

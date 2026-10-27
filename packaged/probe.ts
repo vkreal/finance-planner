@@ -192,7 +192,13 @@ try {
   });
   check(
     "8. Playground year matches live-pinned figures",
-    pg.result?.magi === 128500 && pg.result?.federalTax === 9200 && pg.lawYearUsed === 2026,
+    // Contract v60 (F9): corrected to the harness's figures —
+    // MAGI $121,500 and federal tax $8,360. The pre-v60 pins
+    // (128,500 / 9,200) double-counted the $7,000 of qualified
+    // dividends (already inside the $9,000 of ordinary
+    // dividends), so a CORRECT browser engine failed this check;
+    // see the derivation in packaged/harness.ts (C24/C25).
+    pg.result?.magi === 121500 && pg.result?.federalTax === 8360 && pg.lawYearUsed === 2026,
     `magi ${pg.result?.magi}, tax ${pg.result?.federalTax}, lawYear ${pg.lawYearUsed}`,
   );
 

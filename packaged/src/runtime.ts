@@ -30,8 +30,12 @@
 // {error: message}.
 import { Actions } from "../../server/src/actions";
 import { createPrivilegedExecutor } from "./spaceSdkShim";
-import { initLocalDb, type LocalDb } from "./localDb";
+import { initLocalDb, StaleTabError, type LocalDb } from "./localDb";
 import { createLocalPrivileged } from "./localPrivileged";
+import {
+  decryptPortableBackup,
+  encryptPortableBackup,
+} from "./portableBackup";
 import type { KeyValueStore } from "./storage";
 
 export const PACKAGED_SPACE_DIR = "packaged-local";
@@ -45,6 +49,15 @@ export interface PackagedRuntime {
   dispatch(action: string, args: unknown): Promise<DispatchResult>;
   /** Convenience for the harness/probe: parsed `data`, throws on error. */
   call<T = unknown>(action: string, args?: unknown): Promise<T>;
+  /** Portable encrypted backup (F5): exportbackup's payload,
+      encrypted under the user's passphrase as a downloadable
+      .mstbak envelope (portableBackup.ts). */
+  exportPortableBackup(passphrase: string): Promise<{ filename: string; contents: string }>;
+  /** Portable encrypted backup import: decrypt the envelope
+      under the passphrase and run the existing validated
+      restorebackup over the payload. Throws on a wrong
+      passphrase or a refused restore. */
+  importPortableBackup(contents: string, passphrase: string): Promise<{ ok: boolean; reason: string; authenticated: boolean }>;
   localDb: LocalDb;
   store: KeyValueStore;
 }
@@ -80,6 +93,20 @@ export async function createRuntime(opts: {
         status: 404,
         body: JSON.stringify({ error: `Unknown action: ${action}` }),
       };
+    }
+    // Stale-tab gate (contract v60, F1): a tab whose store
+    // generation has moved past the one it loaded must not run
+    // ANY action — a read would answer from a stale image, and
+    // the persist that follows any dispatch would overwrite the
+    // newer tab's commits with that image. Refuse up front with
+    // a reload instruction; nothing runs, nothing is written.
+    try {
+      localDb.assertCurrent();
+    } catch (err) {
+      if (err instanceof StaleTabError) {
+        return { status: 409, body: JSON.stringify({ error: err.message }) };
+      }
+      throw err;
     }
     const parsed = def.request.safeParse(args ?? {});
     if (!parsed.success) {
@@ -118,33 +145,57 @@ export async function createRuntime(opts: {
         list: unavailable("ctx.blobs"),
       },
     };
+    let result: DispatchResult;
     try {
-      const result = await def.handler(ctx, parsed.data);
-      const checked = def.response.safeParse(result);
+      const value = await def.handler(ctx, parsed.data);
+      const checked = def.response.safeParse(value);
       if (!checked.success) {
-        return {
+        result = {
           status: 500,
           body: JSON.stringify({
             error: `Action ${action} returned a response that failed validation.`,
           }),
         };
+      } else {
+        result = { status: 200, body: JSON.stringify({ data: checked.data }) };
       }
-      return { status: 200, body: JSON.stringify({ data: checked.data }) };
     } catch (err) {
-      return {
+      result = {
         status: 500,
         body: JSON.stringify({
           error: err instanceof Error ? err.message : String(err),
         }),
       };
-    } finally {
-      // Every statement the handler executed is already applied to the
-      // in-memory database; persist the image whether the action
-      // succeeded or failed partway, matching the live database's
-      // durability for the statements that ran.
-      localDb.persist();
-      if (invalidatePending) opts.onInvalidateQueries?.();
     }
+    // Every statement the handler executed is already applied to the
+    // in-memory database; persist the image whether the action
+    // succeeded or failed partway, matching the live database's
+    // durability for the statements that ran. A persist failure is
+    // NEVER swallowed (contract v60, F1/F2): a stale tab's persist
+    // is refused with 409 (its in-memory work is discarded by the
+    // reload this forces — the durable store still holds the other
+    // tab's commits), and a store failure (e.g. quota) turns a
+    // would-be success into a 500, because reporting success for a
+    // write that is not durable would be a silent data loss. The
+    // generation protocol leaves the previous generation active
+    // in both cases.
+    try {
+      localDb.persist();
+    } catch (err) {
+      if (err instanceof StaleTabError) {
+        return { status: 409, body: JSON.stringify({ error: err.message }) };
+      }
+      if (result.status === 200) {
+        return {
+          status: 500,
+          body: JSON.stringify({
+            error: `The change could not be saved to this browser's storage (${err instanceof Error ? err.message : String(err)}). The previously saved data is unchanged.`,
+          }),
+        };
+      }
+    }
+    if (invalidatePending) opts.onInvalidateQueries?.();
+    return result;
   }
 
   async function call<T = unknown>(action: string, args?: unknown): Promise<T> {
@@ -155,18 +206,85 @@ export async function createRuntime(opts: {
     return (JSON.parse(res.body) as { data: T }).data;
   }
 
-  const runtime: PackagedRuntime = { dispatch, call, localDb, store };
+  // Portable encrypted backup workflow (contract v60, F5): the
+  // payload path is the app's own — exportbackup produces the
+  // payload, restorebackup validates and restores it — and
+  // portableBackup.ts supplies the passphrase-keyed envelope
+  // that makes the file restorable on ANY install. (The in-store
+  // .mstbak vault stays as-is: its per-install RSA wrapping makes
+  // it a local backup list, not a move path.)
+  async function exportPortableBackup(
+    passphrase: string,
+  ): Promise<{ filename: string; contents: string }> {
+    const payload = await call("exportbackup", {});
+    const contents = await encryptPortableBackup(
+      JSON.stringify(payload),
+      passphrase,
+    );
+    const stamp = new Date().toISOString().slice(0, 10);
+    return { filename: `backup-${stamp}-portable.mstbak`, contents };
+  }
 
-  // First boot on a fresh store: seed the sample data exactly as the
-  // app's own seed actions do (the same actions the "seed" buttons in
-  // Spending and Net Worth call). This runs once — the seeded flag in
-  // the store meta survives clearAllData, so a user who wipes their
-  // data is not re-seeded.
+  async function importPortableBackup(
+    contents: string,
+    passphrase: string,
+  ): Promise<{ ok: boolean; reason: string; authenticated: boolean }> {
+    const payloadJson = await decryptPortableBackup(contents, passphrase);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(payloadJson);
+    } catch {
+      throw new Error("The decrypted backup is not a valid backup payload.");
+    }
+    const restored = await call<{
+      ok: boolean;
+      reason: string;
+      authenticated: boolean;
+    }>("restorebackup", payload);
+    if (!restored.ok) {
+      throw new Error(`The backup was refused: ${restored.reason}`);
+    }
+    return restored;
+  }
+
+  const runtime: PackagedRuntime = {
+    dispatch,
+    call,
+    exportPortableBackup,
+    importPortableBackup,
+    localDb,
+    store,
+  };
+
+  // First boot on a fresh store: seed the sample data through the
+  // app's own first-run seed action — ONE global emptiness check
+  // over every dataset table, then both sample datasets (contract
+  // v60, F7; before v60 the two seed actions were called in
+  // sequence, their incomplete per-action guards never inspected).
+  // The seeded flag is set only from the action's own result: when
+  // the seed ran (seeded: true), or when the dataset already holds
+  // real records (ok: true, seeded: false — this store is not a
+  // seed candidate, and re-checking every boot would be noise).
+  // A FAILED seed leaves the flag unset so a later boot retries,
+  // and the failure is reported, not hidden. The flag survives
+  // clearAllData, so a user who wipes their data is not re-seeded.
   if (!localDb.meta.seeded) {
-    await call("seedExamples", {});
-    await call("seedNetWorth", {});
-    localDb.meta.seeded = true;
-    localDb.saveMeta();
+    try {
+      const seed = await call<{ ok: boolean; seeded: boolean; reason: string }>(
+        "seedFirstRun",
+        {},
+      );
+      if (seed.ok) {
+        localDb.meta.seeded = true;
+        localDb.saveMeta();
+      } else {
+        console.error(`Packaged first-run seed failed: ${seed.reason}`);
+      }
+    } catch (err) {
+      console.error(
+        `Packaged first-run seed failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   return runtime;
