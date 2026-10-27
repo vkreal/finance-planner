@@ -2655,7 +2655,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 55;
+export const API_CONTRACT_VERSION = 56;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3415,6 +3415,11 @@ const optScoreOut = z.object({
   windowStopAge: z.number(),
   guardrail: z.boolean(),
   bunching: z.boolean(),
+  // Gain harvesting (contract v56): the strategy's
+  // gainsHarvest state — true for a harvest twin (its name
+  // also carries the harvesting phrase), false otherwise,
+  // including Do Nothing.
+  gainsHarvest: z.boolean(),
   ceilings: z.object({
     bracketTopPct: z.number().nullable(),
     irmaaTierCap: z.number().nullable(),
@@ -3479,6 +3484,7 @@ function toOptScore(
     windowStopAge: s.spec.windowStopAge,
     guardrail: s.spec.guardrail,
     bunching: s.spec.bunching,
+    gainsHarvest: s.spec.gainsHarvest ?? false,
     ceilings: {
       bracketTopPct: s.spec.ceilings.bracketTopPct,
       irmaaTierCap: s.spec.ceilings.irmaaTierCap,
@@ -3558,6 +3564,7 @@ function mcCandidateFromScore(
       windowLabel: "",
       guardrail: score.guardrail,
       bunching: score.bunching,
+      gainsHarvest: score.gainsHarvest ?? false,
       drawOrder: drawOrderFromKey(score.drawOrder),
     },
     claimAges: {
@@ -5193,7 +5200,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
   deleteRothScenario: "Delete a saved Roth scenario by name.",
   renameRothScenario: "Rename a saved Roth scenario.",
-  runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). Compute-only; saves nothing.",
+  runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). The searched candidate space includes gain-harvesting variants of every conversion candidate when the plan holds a taxable balance with basis below 100% (and is unchanged otherwise): each conversion candidate also gets a gainsHarvest twin, Do Nothing never does, and there is no separate ltcgZeroCap ceiling candidate family. Every scored candidate in the response (winner, runnersUp, doNothing, orderWinner, orderRunnersUp, orderDoNothing, claim-age table best entries, and the sensitivity entries) exposes its gainsHarvest state as a boolean, and a harvest twin's name carries the harvesting phrase (gain harvesting into the 0% bracket). Claiming-age floor conflicts are reported via claimAgeFloorMet and an explicit note rather than asserted away: claimAgeFloorMet is null when no claimAgeFloor is set, true when the crowned winner claims at or above the floor (or has no primary claiming age to violate it, or is the floor-exempt Do Nothing benchmark), and false when the winner claims below the floor — including a locked claim and the no-eligible-candidate fallback — in which case claimSearchNote states the conflict plainly, naming the floor and the winner's actual claiming age (and the locked reason when the claim is locked), and does not assert the winner meets the floor; the note never references below-floor markings in the per-age table when the claim age table is empty. Compute-only; saves nothing.",
   runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). PER-YEAR TAX READOUTS (contract v51): each scenario also carries federalTaxCents and stateTaxCents (the lifetime federal / state split of totalTaxCents — the two sum to totalTaxCents) and a years array, one readout per priced march year in cents, read straight off the same priced rows the lifetime totals sum: year, agePrimary, ageSpouse, federalTaxCents, stateTaxCents, totalIncomeCents (the year's adjusted gross income (AGI)), taxableIncomeCents, acaCreditCents (the year's ACA premium credit kept), irmaaCents (IRMAA surcharges PAID that year — Medicare premiums, not tax), conversionCents, and pretaxDrawCents (the year's pre-tax money out by choice: its conversion plus its pre-tax draw for spending; an RMD alone is not in it). Display-only readouts — no score, ranking, or delta is derived from them, and no pricing changed. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
   runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Each scenario also carries fullyFundedRatePct (the share of paths with neither an unfunded-spending year nor an unpaid-tax year), pathsWithUnpaidTax, and the total unpaid tax p50/p90 in cents; neverShortfallRatePct and pathsWithShortfall remain the SPENDING-shortfall-only measures — a path can fund every dollar of spending yet leave assessed tax unpaid, and only fullyFundedRatePct counts that as a failure. Every scenario's horizon is validated like the base plan's (its end age must be after the current age); a scenario that fails makes the whole call fail with a reason naming that scenario. Each path draws a fixed 160-year shock vector (MC_STREAM_STRIDE_YEARS) regardless of which scenarios are batched, so a scenario's statistics are identical whether it is priced alone or alongside longer- or shorter-horizon companions. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Each year's return is applied with the year's growth factor floored at zero (returns floored at −100%), which at volatility near the 100% maximum raises the applied distribution's effective mean and lowers its effective volatility (a requested 0% mean / 100% volatility applies as approximately +8.33% / 86.67%), while at ordinary volatilities the effect is negligible. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
@@ -10071,6 +10078,9 @@ export const Actions = {
           winnerName: z.string(),
           windowLabel: z.string(),
           drawOrderLabel: z.string(),
+          // The varied run winner's gain-harvesting state
+          // (contract v56).
+          gainsHarvest: z.boolean(),
           netCost: z.number(),
           // Lifetime Social Security collected under the varied
           // run's winner (dollars) — display only, beside the net
@@ -10088,6 +10098,7 @@ export const Actions = {
           drawOrderLabel: z.string(),
           guardrail: z.boolean(),
           bunching: z.boolean(),
+          gainsHarvest: z.boolean(),
           netCost: z.number(),
           ssCollected: z.number(),
           savingVsDoNothing: z.number(),
@@ -10099,6 +10110,13 @@ export const Actions = {
       // The claim floor in effect for this run (62–70), or null
       // when none is set.
       claimAgeFloor: z.number().nullable(),
+      // Whether the crowned winner meets the claim floor
+      // (contract v56): null when no floor is set; true when
+      // the winner claims at or above the floor (or has no
+      // primary claiming age, or is the floor-exempt Do
+      // Nothing benchmark); false when the winner claims
+      // below the floor.
+      claimAgeFloorMet: z.boolean().nullable(),
       // Per-claiming-age pricing table: one row per primary
       // claiming age the joint search varied, carrying that
       // age's best fully-priced candidate as a full score.
@@ -10132,6 +10150,7 @@ export const Actions = {
         claimCombosTested: 0,
         claimSearchNote: "",
         claimAgeFloor: null,
+        claimAgeFloorMet: null,
         claimAgeTable: [],
       };
       const { resolved, effectiveInputs } = await computeEffectiveInputs(ctx, args, capturedYear);
@@ -10179,6 +10198,7 @@ export const Actions = {
           winnerName: s.winner.spec.name,
           windowLabel: s.winner.spec.windowLabel,
           drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
+          gainsHarvest: s.winner.spec.gainsHarvest ?? false,
           netCost: s.winner.cost.netCost,
           ssCollected: s.winner.cost.ssCollected,
           changed: s.winner.spec.key !== winnerKey,
@@ -10193,6 +10213,7 @@ export const Actions = {
           drawOrderLabel: drawOrderLabel(s.winner.spec.drawOrder),
           guardrail: s.winner.spec.guardrail,
           bunching: s.winner.spec.bunching,
+          gainsHarvest: s.winner.spec.gainsHarvest ?? false,
           netCost: s.winner.cost.netCost,
           ssCollected: s.winner.cost.ssCollected,
           savingVsDoNothing:
@@ -10223,6 +10244,7 @@ export const Actions = {
         claimCombosTested: res.jointSearch.combosTested,
         claimSearchNote: jointSearchNote(res.jointSearch),
         claimAgeFloor: res.jointSearch.claimAgeFloor ?? null,
+        claimAgeFloorMet: res.claimAgeFloorMet,
         claimAgeTable: res.claimAgeTable.map((row) => ({
           primaryAge: row.primaryAge,
           primaryAnnual: row.primaryAnnual,
