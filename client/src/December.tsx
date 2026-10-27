@@ -114,14 +114,17 @@ type DecForm = {
   strayAgiReducers: StrayForm;
   strayCoverage: StrayForm;
   strayTradeDate: StrayForm;
-  // Round-5 provenance, carried passively through the
-  // form: whether the balance split is the console's own
-  // explicit split, and the two legacy character flags
-  // (they drive the checklist notes; decemberStateForSave
-  // clears them on every save).
+  // Provenance, carried passively through the form:
+  // whether the balance split is the console's own
+  // explicit split, the two legacy character flags (they
+  // drive the checklist notes), and the beneficiary-
+  // answer confirm flag (round-6; it drives the note by
+  // the beneficiary select). decemberStateForSave clears
+  // a flag only when its own control was edited.
   pretaxSplitExplicit: boolean;
   legacyRocSplitUnconfirmed: boolean;
   legacyJanPaidSplitUnconfirmed: boolean;
+  legacyBeneficiaryAnswerUnconfirmed: boolean;
 };
 
 /* The Tax Plan record facts load resolution draws on,
@@ -229,6 +232,7 @@ function formFromState(s: DecemberState): DecForm {
     pretaxSplitExplicit: s.pretaxSplitExplicit,
     legacyRocSplitUnconfirmed: s.legacyRocSplitUnconfirmed,
     legacyJanPaidSplitUnconfirmed: s.legacyJanPaidSplitUnconfirmed,
+    legacyBeneficiaryAnswerUnconfirmed: s.legacyBeneficiaryAnswerUnconfirmed,
   };
 }
 
@@ -325,6 +329,7 @@ function stateFromForm(f: DecForm): DecemberState {
     pretaxSplitExplicit: f.pretaxSplitExplicit,
     legacyRocSplitUnconfirmed: f.legacyRocSplitUnconfirmed,
     legacyJanPaidSplitUnconfirmed: f.legacyJanPaidSplitUnconfirmed,
+    legacyBeneficiaryAnswerUnconfirmed: f.legacyBeneficiaryAnswerUnconfirmed,
   };
 }
 
@@ -369,6 +374,8 @@ export function December() {
       storedProvenanceRef.current = decemberStoredProvenanceOf(res.state);
       setBeneficiaryEdited(false);
       setBalancesEdited(false);
+      setRocCharacterEdited(false);
+      setJanPaidCharacterEdited(false);
       setForm(
         formFromState(
           resolveDecemberStateAtLoad(res.state, recordFactsOf(rothQ.data)),
@@ -398,9 +405,18 @@ export function December() {
     pretaxBalanceSpouse: null,
     pretaxBalance: null,
     pretaxSplitExplicit: false,
+    legacyBeneficiaryAnswerUnconfirmed: false,
+    legacyRocSplitUnconfirmed: false,
+    legacyJanPaidSplitUnconfirmed: false,
   });
   const [beneficiaryEdited, setBeneficiaryEdited] = useState(false);
   const [balancesEdited, setBalancesEdited] = useState(false);
+  // Round-6: whether the user has edited each tax-
+  // character control in this console since hydration —
+  // the matching legacy character flag clears only on
+  // its own edit (decemberStateForSave).
+  const [rocCharacterEdited, setRocCharacterEdited] = useState(false);
+  const [janPaidCharacterEdited, setJanPaidCharacterEdited] = useState(false);
   // The revision of the stored blob this screen's form was
   // read at; every save passes it as the base revision.
   const revisionRef = useRef(0);
@@ -450,6 +466,8 @@ export function December() {
     storedProvenanceRef.current = decemberStoredProvenanceOf(decQ.data.state);
     setBeneficiaryEdited(false);
     setBalancesEdited(false);
+    setRocCharacterEdited(false);
+    setJanPaidCharacterEdited(false);
     let initial = formFromState(
       decQ.data.hasStored
         ? resolveDecemberStateAtLoad(decQ.data.state, recordFactsOf(rothQ.data))
@@ -561,6 +579,9 @@ export function December() {
         pretaxSplitExplicit:
           preseeded.pretaxBalancePrimary != null ||
           preseeded.pretaxBalanceSpouse != null,
+        legacyBeneficiaryAnswerUnconfirmed: false,
+        legacyRocSplitUnconfirmed: false,
+        legacyJanPaidSplitUnconfirmed: false,
       };
     }
     setForm(initial);
@@ -587,7 +608,12 @@ export function December() {
         decemberStateForSave(
           stateFromForm(form),
           storedProvenanceRef.current,
-          { beneficiary: beneficiaryEdited, balances: balancesEdited },
+          {
+            beneficiary: beneficiaryEdited,
+            balances: balancesEdited,
+            rocCharacter: rocCharacterEdited,
+            janPaidCharacter: janPaidCharacterEdited,
+          },
         ),
         {
           onSuccess: () => setSaveNote("Saved"),
@@ -687,7 +713,17 @@ export function December() {
       | "strayAgiReducers"
       | "strayCoverage"
       | "strayTradeDate",
-    opts?: { amountLabel?: string; hint?: string; extra?: ReactNode; note?: string },
+    opts?: {
+      amountLabel?: string;
+      hint?: string;
+      extra?: ReactNode;
+      note?: string;
+      // Round-6 character edit tracking: invoked from
+      // BOTH the status select and the amount field, so
+      // touching this row's character control counts as
+      // confirming its tax character.
+      onEdit?: () => void;
+    },
   ) => {
     const item = form[key];
     const hasAmount = opts?.amountLabel != null;
@@ -699,12 +735,13 @@ export function December() {
             aria-label={`${label} — status`}
             className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-sm text-[var(--text)]"
             value={item.status}
-            onChange={(e) =>
+            onChange={(e) => {
+              opts?.onEdit?.();
               edit((f) => ({
                 ...f,
                 [key]: { ...f[key], status: e.target.value as StrayForm["status"] },
-              }))
-            }
+              }));
+            }}
           >
             <option value="na">Doesn’t apply</option>
             <option value="confirmed">Checked — none / confirmed</option>
@@ -719,8 +756,10 @@ export function December() {
         )}
         {hasAmount && item.status === "amount" && (
           <div className="mt-2 max-w-xs">
-            {moneyField(opts.amountLabel!, item.amount, (v) =>
-              edit((f) => ({ ...f, [key]: { ...f[key], amount: v } })),
+            {moneyField(opts.amountLabel!, item.amount, (v) => {
+              opts?.onEdit?.();
+              edit((f) => ({ ...f, [key]: { ...f[key], amount: v } }));
+            },
             { idLabel: `December stray ${label} amount` },
             )}
           </div>
@@ -946,6 +985,36 @@ export function December() {
               Editing either balance here makes them this console’s own from then on.
             </p>
           )}
+        {decQ.data?.state &&
+          !decQ.data.state.pretaxSplitExplicit &&
+          decQ.data.state.pretaxBalance != null &&
+          !balancesEdited &&
+          (() => {
+            // Round-6: when the record's per-owner total
+            // disagrees with this console's saved total,
+            // name BOTH totals — the console prices its
+            // own saved total, allocated by the record's
+            // proportions (decemberCore resolution).
+            const facts = recordFactsOf(rothQ.data);
+            const savedTotal = decQ.data?.state?.pretaxBalance ?? null;
+            if (
+              facts.pretaxBalancePrimary == null ||
+              facts.pretaxBalanceSpouse == null ||
+              savedTotal == null
+            ) {
+              return null;
+            }
+            const recordSum = facts.pretaxBalancePrimary + facts.pretaxBalanceSpouse;
+            if (Math.abs(recordSum - savedTotal) <= 0.01) return null;
+            return (
+              <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]" role="note">
+                Balance totals differ: your Tax Plan record’s per-owner balances add
+                to {fmtDollars(recordSum)}, while this console’s saved total is{" "}
+                {fmtDollars(savedTotal)}. This console prices its own saved total,
+                split between the owners in the record’s proportions.
+              </p>
+            );
+          })()}
         <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -998,18 +1067,28 @@ export function December() {
               }
               onChange={(e) => {
                 setBeneficiaryEdited(true);
-                set(
-                  "primarySoleBeneficiaryOfSpouse",
-                  e.target.value === "unanswered"
-                    ? null
-                    : e.target.value === "yes",
-                );
+                // Answering here settles the carried-over
+                // answer too: the confirm flag clears.
+                edit((f) => ({
+                  ...f,
+                  primarySoleBeneficiaryOfSpouse:
+                    e.target.value === "unanswered"
+                      ? null
+                      : e.target.value === "yes",
+                  legacyBeneficiaryAnswerUnconfirmed: false,
+                }));
               }}
             >
               <option value="unanswered">Not answered</option>
               <option value="yes">Yes</option>
               <option value="no">No</option>
             </select>
+            {form.legacyBeneficiaryAnswerUnconfirmed && (
+              <p className="mt-1 text-sm text-[var(--warn)]" role="note">
+                This answer was carried over from an older version of this
+                console — please check that it is still right.
+              </p>
+            )}
             <p className={hintCls}>
               This fact alone picks your spouse’s RMD table. “Not answered”
               prices it on the Uniform table; when your Tax Plan record
@@ -1134,8 +1213,17 @@ export function December() {
           hint: "A dividend declared in October–December with a December record date and paid in January is deemed received on December 31 — check each fund’s declarations and distribution calendar, not just cash postings. An exempt-interest portion belongs under the tax-exempt item below, not here.",
           extra: (
             <div className="mt-2 max-w-xs">
-              {moneyField("Of which qualified dividends", form.strayJanPaidQualifiedAmount, (v) =>
-                set("strayJanPaidQualifiedAmount", v),
+              {moneyField("Of which qualified dividends", form.strayJanPaidQualifiedAmount, (v) => {
+                // Round-6: this field IS the January-paid
+                // character control — editing it confirms
+                // the character and clears its flag.
+                setJanPaidCharacterEdited(true);
+                edit((f) => ({
+                  ...f,
+                  strayJanPaidQualifiedAmount: v,
+                  legacyJanPaidSplitUnconfirmed: false,
+                }));
+              },
               { idLabel: "December stray January-paid qualified portion", hint: "The part of the total above that is qualified dividends — it keeps its qualified character. Leave at $0 if none of it is qualified." },
               )}
             </div>
@@ -1150,6 +1238,13 @@ export function December() {
           hint: "Selling investments to pay the tax bill or raise spending cash realizes a gain too. Forecast it lot by lot (specific share lots), net of any prior-year capital-loss carryforward.",
         })}
         {strayRow("Return of capital reclassified as an ordinary dividend", "strayROCOrdinary", {
+          // Round-6: this row IS the ROC character
+          // control — editing it (status or amount)
+          // confirms the character and clears its flag.
+          onEdit: () => {
+            setRocCharacterEdited(true);
+            edit((f) => ({ ...f, legacyRocSplitUnconfirmed: false }));
+          },
           amountLabel: "Amount reclassified as an ordinary dividend",
           note: form.legacyRocSplitUnconfirmed
             ? "Saved before this split existed — check it: the return-of-capital amount below was entered before there were two items, so confirm how much of it belongs here as an ordinary dividend."
@@ -1332,6 +1427,8 @@ export function December() {
                 // no stored provenance preserved.
                 setBeneficiaryEdited(true);
                 setBalancesEdited(true);
+                setRocCharacterEdited(true);
+                setJanPaidCharacterEdited(true);
                 setForm(formFromState(blank));
                 setResetArmed(false);
               }}
