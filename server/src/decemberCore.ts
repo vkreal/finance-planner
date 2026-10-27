@@ -3317,7 +3317,7 @@ export function runDecemberFixtures(): {
     // (solver-independent, hence exact): AGI $83,692.58
     // less $39,850 of deductions ($32,200 standard +
     // $1,650 age-65+ add-on for the spouse + the $6,000
-    // §224 senior deduction) = taxable income $43,842.58,
+    // §151(d)(5)(C) senior deduction) = taxable income $43,842.58,
     // federal tax $2,480 + 12% × $19,042.58 = $4,765.11.
     // Final credit $20,000 − 9.96% × $83,692.58 =
     // $11,664.22; the $12,000 taken exceeds it, so

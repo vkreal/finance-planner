@@ -458,7 +458,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-senior-deduction-phaseout-on-agi",
     kind: "tax",
-    note: "OBBBA senior-deduction phase-out (§224): MAGI for the phase-out adds back only foreign-income exclusions — NOT tax-exempt interest. 2026 MFJ, both spouses 65+, $100,000 ordinary income + $60,000 tax-exempt interest: AGI is $100,000 (under the $150,000 phase-out start) even though MAGI-for-IRMAA is $160,000, so the full $12,000 senior deduction is preserved.",
+    note: "OBBBA senior-deduction phase-out (§151(d)(5)(C)): MAGI for the phase-out adds back only foreign-income exclusions — NOT tax-exempt interest. 2026 MFJ, both spouses 65+, $100,000 ordinary income + $60,000 tax-exempt interest: AGI is $100,000 (under the $150,000 phase-out start) even though MAGI-for-IRMAA is $160,000, so the full $12,000 senior deduction is preserved.",
     expected: { agi: 100000, magi: 160000, seniorDeduction: 12000 },
     actual: () => {
       const p = priceYear(
@@ -494,7 +494,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-senior-deduction-deflated-2028",
     kind: "tax",
-    note: "OBBBA senior deduction deflated into today's dollars (hand-derived): the §224 figures are statutory (not indexed), so priceYear deflates BOTH the $6,000 per-person amount and the phase-out start by deflationFactor — the same convention the engine already applies to the §86 thresholds and the NIIT threshold (deflator 1/(1+inflation)^(year − 2026); 1.0 in 2025–2026, so base-law-year pricing is unchanged). Shape: 2028 MFJ, primary 66 / spouse 60 (one person 65+), $160,000 of ordinary income, 2.5% inflation. Derivation: deflator = 1 / 1.025^2 = 0.9518143962. Deflated base = $6,000 × 0.9518143962 = $5,710.89; deflated phase-out start = $150,000 × 0.9518143962 = $142,772.16; excess = $160,000 − $142,772.16 = $17,227.84; phase-out = 6% × $17,227.84 = $1,033.67; deduction = $5,710.89 − $1,033.67 = $4,677.22. (The pre-fix undeflated math gave $6,000 − 6% × $10,000 = $5,400 — $722.78 more.) Tax: deductions = $32,200 standard + $1,650 age-65 add-on + $4,677.22 = $38,527.22, taxable income $121,472.78 — the whole $722.78 deduction loss lands in the 22% bracket (MFJ 22% span $100,800–$211,400), so federal tax = $2,480 + $9,120 + 22% × $20,672.78 = $16,148.01, exactly $159.01 (= $722.78 × 22%) above the pre-fix $15,989. Control: the identical shape priced in 2026 (deflator 1.0) keeps the nominal $5,400 deduction and $15,989 tax, bit-identical to the pre-fix engine.",
+    note: "OBBBA senior deduction deflated into today's dollars (hand-derived): the §151(d)(5)(C) figures are statutory (not indexed), so priceYear deflates BOTH the $6,000 per-person amount and the phase-out start by deflationFactor — the same convention the engine already applies to the §86 thresholds and the NIIT threshold (deflator 1/(1+inflation)^(year − 2026); 1.0 in 2025–2026, so base-law-year pricing is unchanged). Shape: 2028 MFJ, primary 66 / spouse 60 (one person 65+), $160,000 of ordinary income, 2.5% inflation. Derivation: deflator = 1 / 1.025^2 = 0.9518143962. Deflated base = $6,000 × 0.9518143962 = $5,710.89; deflated phase-out start = $150,000 × 0.9518143962 = $142,772.16; excess = $160,000 − $142,772.16 = $17,227.84; phase-out = 6% × $17,227.84 = $1,033.67; deduction = $5,710.89 − $1,033.67 = $4,677.22. (The pre-fix undeflated math gave $6,000 − 6% × $10,000 = $5,400 — $722.78 more.) Tax: deductions = $32,200 standard + $1,650 age-65 add-on + $4,677.22 = $38,527.22, taxable income $121,472.78 — the whole $722.78 deduction loss lands in the 22% bracket (MFJ 22% span $100,800–$211,400), so federal tax = $2,480 + $9,120 + 22% × $20,672.78 = $16,148.01, exactly $159.01 (= $722.78 × 22%) above the pre-fix $15,989. Control: the identical shape priced in 2026 (deflator 1.0) keeps the nominal $5,400 deduction and $15,989 tax, bit-identical to the pre-fix engine.",
     expected: { senior2028: 4677.22, fed2028: 16148.01, senior2026: 5400, fed2026: 15989 },
     actual: () => {
       const p28 = priceYear(
@@ -1789,7 +1789,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "joint-maxifi-property",
     kind: "tax",
-    note: "MaxiFi property — separate optima are not joint optima: on the torpedo plan ($48,000 of Social Security entered at 65, pre-tax $1,200,000, window 65–74, plan to 85), the best conversion strategy at the ENTERED claim age scores a $223,353.19 lifetime net cost, and the best claiming age under Do Nothing (claim at 62) scores $426,822.66 — but the JOINT winner (claim at 62 for $38,769.23/yr) scores $203,231.48, beating the fixed-claim optimum by $20,121.71 and the best Do Nothing claim by $223,591.18. The joint result's Do Nothing is the best Do Nothing found (at claim 62), priced exactly as the standalone scan prices it. (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: the torpedo primary as originally shaped (born 1961) is 65 at plan start with the claim entered at 65 — already receiving — so the claim is locked at the entered age and no joint search exists on that shape; its locked best, $181,984.20, is pinned by joint-winner-reproduces-from-saved-parameters and claim-floor-edges-and-blank. This case therefore runs the identical torpedo shape with the primary born 1966 — age 60 at plan start, the claim entered at 65 not yet made — restoring the searched 62–70 space, and every figure in this paragraph is re-derived on that shape (its §224 deflation years are 2032–2033, when the primary is 66–67; the FIX 4 paragraph below describes the retired 1961 shape). The property — joint beats both separate optima — is unchanged.) (RE-PINNED by the BASIS-DRIFT build: pre-drift the joint winner claimed at 70 and netted $156,545.03 against a $183,813.90 fixed best. The torpedo plan's basis % is an explicitly set 100% at a 3% return, so under drift the basis share erodes as the balance compounds, later draws and tax payments realize gains the flat model priced at $0, and both searches re-solve — the fixed best rises $1,080.43 and the joint crown moves to claim 62. Do Nothing's best-claim net is unmoved: its spending is covered by benefits and RMDs, so it never draws Taxable into drifted-gain territory. The property itself — joint beats both separate optima — is what the pin protects, and it holds.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo plan's primary (born 1961) is 66 in 2027 and 67 in 2028, and priceYear now deflates the statutory §224 figures into today's dollars at the plan's 2.5% inflation — 2027: $6,000/1.025 = $5,853.66 per person over a $150,000/1.025 = $146,341.46 phase-out start; 2028: $6,000/1.025² = $5,710.89 over $142,772.16 — where the old pins priced the nominal $6,000 / $150,000 in both years. Those two years reprice for every candidate and both searches re-solve: the fixed best rises $119.00 and the joint winner falls $16.99. Do Nothing's best-claim net is unmoved — at its 2027/2028 AGI the deduction is fully phased out under both the nominal and the deflated figures. The corrected fixed best is cross-validated to the cent by opt-ss-collected-carried-by-scores and mc-check-zero-vol-equals-deterministic, the corrected joint winner by claim-table-per-age-best and claim-floor-edges-and-blank.)",
+    note: "MaxiFi property — separate optima are not joint optima: on the torpedo plan ($48,000 of Social Security entered at 65, pre-tax $1,200,000, window 65–74, plan to 85), the best conversion strategy at the ENTERED claim age scores a $223,353.19 lifetime net cost, and the best claiming age under Do Nothing (claim at 62) scores $426,822.66 — but the JOINT winner (claim at 62 for $38,769.23/yr) scores $203,231.48, beating the fixed-claim optimum by $20,121.71 and the best Do Nothing claim by $223,591.18. The joint result's Do Nothing is the best Do Nothing found (at claim 62), priced exactly as the standalone scan prices it. (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: the torpedo primary as originally shaped (born 1961) is 65 at plan start with the claim entered at 65 — already receiving — so the claim is locked at the entered age and no joint search exists on that shape; its locked best, $181,984.20, is pinned by joint-winner-reproduces-from-saved-parameters and claim-floor-edges-and-blank. This case therefore runs the identical torpedo shape with the primary born 1966 — age 60 at plan start, the claim entered at 65 not yet made — restoring the searched 62–70 space, and every figure in this paragraph is re-derived on that shape (its §151(d)(5)(C) deflation years are 2032–2033, when the primary is 66–67; the FIX 4 paragraph below describes the retired 1961 shape). The property — joint beats both separate optima — is unchanged.) (RE-PINNED by the BASIS-DRIFT build: pre-drift the joint winner claimed at 70 and netted $156,545.03 against a $183,813.90 fixed best. The torpedo plan's basis % is an explicitly set 100% at a 3% return, so under drift the basis share erodes as the balance compounds, later draws and tax payments realize gains the flat model priced at $0, and both searches re-solve — the fixed best rises $1,080.43 and the joint crown moves to claim 62. Do Nothing's best-claim net is unmoved: its spending is covered by benefits and RMDs, so it never draws Taxable into drifted-gain territory. The property itself — joint beats both separate optima — is what the pin protects, and it holds.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo plan's primary (born 1961) is 66 in 2027 and 67 in 2028, and priceYear now deflates the statutory §151(d)(5)(C) figures into today's dollars at the plan's 2.5% inflation — 2027: $6,000/1.025 = $5,853.66 per person over a $150,000/1.025 = $146,341.46 phase-out start; 2028: $6,000/1.025² = $5,710.89 over $142,772.16 — where the old pins priced the nominal $6,000 / $150,000 in both years. Those two years reprice for every candidate and both searches re-solve: the fixed best rises $119.00 and the joint winner falls $16.99. Do Nothing's best-claim net is unmoved — at its 2027/2028 AGI the deduction is fully phased out under both the nominal and the deflated figures. The corrected fixed best is cross-validated to the cent by opt-ss-collected-carried-by-scores and mc-check-zero-vol-equals-deterministic, the corrected joint winner by claim-table-per-age-best and claim-floor-edges-and-blank.)",
     expected: {
       combos: 9,
       jointNetCost: 203231.48,
@@ -2238,7 +2238,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "survivor-tax-penalty",
     kind: "tax",
-    note: "The widow's penalty, demonstrated (Part 2): $100,000/yr of other ordinary income (= spending, so no draws), The primary filer born 1961, wife born 1972, The primary filer dies in 2027. The death year (2027) still files MFJ: standard deduction $32,200 + one $1,650 age-65 add-on (The primary filer 66, wife 55) = $33,850, plus the OBBBA senior deduction — deflated into today's dollars under FIX 4 (the §224 figures are statutory, not indexed): the 2027 deflator at the plan's 2.5% inflation is 1/1.025, so the per-person amount is $6,000/1.025 = $5,853.66 and the phase-out start $150,000/1.025 = $146,341.46; AGI $100,000 is under the deflated start, so the full $5,853.66 stands → taxable $100,000 − $33,850 − $5,853.66 = $60,296.34 → tax $2,480 + 12% × $35,496.34 = $6,739.56. (Pre-FIX 4 this year priced the nominal $6,000: taxable $60,150, tax $6,722 — the $146.34 of deflated deduction at the 12% margin is the whole $17.56 difference.) The next year (2028) the survivor (wife, 56) files Single: standard deduction $16,100, no add-ons, no senior deduction → taxable $83,900 → tax $1,240 + 12% × $38,000 + 22% × $33,500 = $13,170. The SAME income costs $6,430.44 more as a single filer — the penalty, in exact dollars.",
+    note: "The widow's penalty, demonstrated (Part 2): $100,000/yr of other ordinary income (= spending, so no draws), The primary filer born 1961, wife born 1972, The primary filer dies in 2027. The death year (2027) still files MFJ: standard deduction $32,200 + one $1,650 age-65 add-on (The primary filer 66, wife 55) = $33,850, plus the OBBBA senior deduction — deflated into today's dollars under FIX 4 (the §151(d)(5)(C) figures are statutory, not indexed): the 2027 deflator at the plan's 2.5% inflation is 1/1.025, so the per-person amount is $6,000/1.025 = $5,853.66 and the phase-out start $150,000/1.025 = $146,341.46; AGI $100,000 is under the deflated start, so the full $5,853.66 stands → taxable $100,000 − $33,850 − $5,853.66 = $60,296.34 → tax $2,480 + 12% × $35,496.34 = $6,739.56. (Pre-FIX 4 this year priced the nominal $6,000: taxable $60,150, tax $6,722 — the $146.34 of deflated deduction at the 12% margin is the whole $17.56 difference.) The next year (2028) the survivor (wife, 56) files Single: standard deduction $16,100, no add-ons, no senior deduction → taxable $83,900 → tax $1,240 + 12% × $38,000 + 22% × $33,500 = $13,170. The SAME income costs $6,430.44 more as a single filer — the penalty, in exact dollars.",
     expected: {
       filingDeathYear: "mfj",
       filingNextYear: "single",
@@ -3397,7 +3397,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-zero-vol-equals-deterministic",
     kind: "tax",
-    note: "Market-uncertainty check at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path's pricing is the deterministic pricing, bit for bit. On the torpedo plan the optimizer's winner (Fill to the top of the 12% bracket, through the RMD years) genuinely beats Do Nothing deterministically — net cost $181,984.20 vs $380,487.57, an advantage of $198,503.37 — so the check at volatility 0, N = 8, seed 12345 must report a 100% win rate with the median advantage, both median net costs, and p10 = p90 all EQUAL to those deterministic figures to the cent (the deterministic figures are pinned alongside, from the optimizer run itself). (Winner figures RE-PINNED by the BASIS-DRIFT build from $183,813.90 / $199,501.11 — the torpedo plan's set-100% basis drifts at its 3% return, raising the winner's net $1,080.43; Do Nothing's $380,487.57 is unmoved, as in joint-maxifi-property.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo primary (born 1961) is 66 in 2027 and 67 in 2028, years whose §224 figures now deflate into today's dollars (2027: $5,853.66 per person over a $146,341.46 start; 2028: $5,710.89 over $142,772.16) instead of pricing the nominal $6,000 / $150,000, so the winner's net rises $119.00 to $181,984.20 and the advantage falls to $380,487.57 − $181,984.20 = $198,503.37; Do Nothing's $380,487.57 is unmoved, its deduction being fully phased out in those years under either figure set. See joint-maxifi-property for the full derivation.)",
+    note: "Market-uncertainty check at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path's pricing is the deterministic pricing, bit for bit. On the torpedo plan the optimizer's winner (Fill to the top of the 12% bracket, through the RMD years) genuinely beats Do Nothing deterministically — net cost $181,984.20 vs $380,487.57, an advantage of $198,503.37 — so the check at volatility 0, N = 8, seed 12345 must report a 100% win rate with the median advantage, both median net costs, and p10 = p90 all EQUAL to those deterministic figures to the cent (the deterministic figures are pinned alongside, from the optimizer run itself). (Winner figures RE-PINNED by the BASIS-DRIFT build from $183,813.90 / $199,501.11 — the torpedo plan's set-100% basis drifts at its 3% return, raising the winner's net $1,080.43; Do Nothing's $380,487.57 is unmoved, as in joint-maxifi-property.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo primary (born 1961) is 66 in 2027 and 67 in 2028, years whose §151(d)(5)(C) figures now deflate into today's dollars (2027: $5,853.66 per person over a $146,341.46 start; 2028: $5,710.89 over $142,772.16) instead of pricing the nominal $6,000 / $150,000, so the winner's net rises $119.00 to $181,984.20 and the advantage falls to $380,487.57 − $181,984.20 = $198,503.37; Do Nothing's $380,487.57 is unmoved, its deduction being fully phased out in those years under either figure set. See joint-maxifi-property for the full derivation.)",
     expected: {
       winRatePct: 100,
       wins: 8,
@@ -3437,7 +3437,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-seeded-small-n",
     kind: "tax",
-    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §224 senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §224 figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.)",
+    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.)",
     expected: {
       pathsRun: 40,
       wins: 34,
@@ -5447,7 +5447,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-ss-collected-carried-by-scores",
     kind: "tax",
-    note: "Lifetime Social Security collected carried by every optimizer score (display only): on the torpedo plan (primary born 1961, $48,000/yr entered at 65, no spouse benefit, plan 2026–2046 = ages 65–85, 21 years) every candidate at the entered claiming ages collects 21 × $48,000 = $1,008,000, whatever its conversion strategy or draw order — conversions never change the benefit paid. The winner's, Do Nothing's, and the first runner-up's breakdowns must all carry exactly that figure, the winner's own simulation total must match it, and the winner's net cost must still be the pinned $181,984.20 — the new figure changes no score and no ranking. (Net RE-PINNED by the BASIS-DRIFT build from $183,813.90 — the torpedo plan's set-100% basis drifts at its 3% return; the collected-benefit figures are benefit arithmetic and are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Net re-pinned under FIX 4 — §224 senior-deduction deflation: the torpedo plan's 2027/2028 years now price the deflated §224 figures ($5,853.66 / $146,341.46 in 2027; $5,710.89 / $142,772.16 in 2028) instead of the nominal $6,000 / $150,000, raising the winner's net $119.00 from $185,169.85; the collected-benefit figures are benefit arithmetic and are unmoved. Derivation at joint-maxifi-property.)",
+    note: "Lifetime Social Security collected carried by every optimizer score (display only): on the torpedo plan (primary born 1961, $48,000/yr entered at 65, no spouse benefit, plan 2026–2046 = ages 65–85, 21 years) every candidate at the entered claiming ages collects 21 × $48,000 = $1,008,000, whatever its conversion strategy or draw order — conversions never change the benefit paid. The winner's, Do Nothing's, and the first runner-up's breakdowns must all carry exactly that figure, the winner's own simulation total must match it, and the winner's net cost must still be the pinned $181,984.20 — the new figure changes no score and no ranking. (Net RE-PINNED by the BASIS-DRIFT build from $183,813.90 — the torpedo plan's set-100% basis drifts at its 3% return; the collected-benefit figures are benefit arithmetic and are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Net re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo plan's 2027/2028 years now price the deflated §151(d)(5)(C) figures ($5,853.66 / $146,341.46 in 2027; $5,710.89 / $142,772.16 in 2028) instead of the nominal $6,000 / $150,000, raising the winner's net $119.00 from $185,169.85; the collected-benefit figures are benefit arithmetic and are unmoved. Derivation at joint-maxifi-property.)",
     expected: {
       winnerSsCollected: 1008000,
       doNothingSsCollected: 1008000,
@@ -5469,7 +5469,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-table-per-age-best",
     kind: "tax",
-    note: "Per-claiming-age table (torpedo plan: primary $48,000 entered at 65, spouse blank): the joint result carries one row per primary age 62–70, and each row's best is that age's TRUE best fully-priced candidate — cross-checked against an independent fixed-claim-age run at that age (scoreAllCandidates on the age's own combination, plan draw order): the best net cost, strategy name, and window stop must match the row's exactly at all nine ages. The table's winning row is the joint winner itself (claim 62, $203,231.48, per the MaxiFi pin — RE-PINNED by the BASIS-DRIFT build from claim 70 / $156,545.03, the torpedo plan's set-100% basis drift; see joint-maxifi-property; the dollar figure re-pinned under FIX 4's §224 senior-deduction deflation from $168,927.75 — derivation at joint-maxifi-property) and exactly one row is marked as the winner. Yearly benefits are the statutory derivations from the entered anchor: PIA = $48,000 ÷ (13/15) = $55,384.62, so claim 62 (60 months early, factor 0.70) pays $38,769.23 and claim 70 (factor 1.24) pays $68,676.92; with no spouse benefit, the survivor-keeps figure equals the row's own benefit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (RE-PINNED by Round-7 Build 3, N-1: on the torpedo shape as originally born (1961) the claim is locked at the entered 65 and the table degenerates to the single entered age, so — like joint-maxifi-property — this case runs the torpedo shape with the primary born 1966, the claim entered at 65 not yet made; the winner-row figure is that shape's joint winner, cross-pinned there. The benefit derivations are unchanged: FRA is 67 for both birth years.)",
+    note: "Per-claiming-age table (torpedo plan: primary $48,000 entered at 65, spouse blank): the joint result carries one row per primary age 62–70, and each row's best is that age's TRUE best fully-priced candidate — cross-checked against an independent fixed-claim-age run at that age (scoreAllCandidates on the age's own combination, plan draw order): the best net cost, strategy name, and window stop must match the row's exactly at all nine ages. The table's winning row is the joint winner itself (claim 62, $203,231.48, per the MaxiFi pin — RE-PINNED by the BASIS-DRIFT build from claim 70 / $156,545.03, the torpedo plan's set-100% basis drift; see joint-maxifi-property; the dollar figure re-pinned under FIX 4's §151(d)(5)(C) senior-deduction deflation from $168,927.75 — derivation at joint-maxifi-property) and exactly one row is marked as the winner. Yearly benefits are the statutory derivations from the entered anchor: PIA = $48,000 ÷ (13/15) = $55,384.62, so claim 62 (60 months early, factor 0.70) pays $38,769.23 and claim 70 (factor 1.24) pays $68,676.92; with no spouse benefit, the survivor-keeps figure equals the row's own benefit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (RE-PINNED by Round-7 Build 3, N-1: on the torpedo shape as originally born (1961) the claim is locked at the entered 65 and the table degenerates to the single entered age, so — like joint-maxifi-property — this case runs the torpedo shape with the primary born 1966, the claim entered at 65 not yet made; the winner-row figure is that shape's joint winner, cross-pinned there. The benefit derivations are unchanged: FRA is 67 for both birth years.)",
     expected: {
       rowCount: 9,
       agesAscending62to70: 1,
@@ -5534,7 +5534,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-crowning",
     kind: "tax",
-    note: "Claim floor crowning (claim-floor plan: primary $48,000 entered at 65, born 1962 — age 64 at plan start, the claim not yet made — pre-tax $300,000, plan to 80; its searched ages are 64–70 and its per-age bests rise monotonically from 67 to 70, so the floor genuinely bites): with no floor the winner claims at 66 ($2,400.56). With floor 67 the crowned winner is the best claim-67 candidate, $4,632.50 — cross-checked against an independent fixed-claim-age run at 67 (scoreAllCandidates on the age-67 combination) — and it is the table's own age-67 row best. The youngest row (age 64) best appears in the table at $4,261.60, unmarked as winner; rows 64–66 are marked below the floor (3 rows), rows 67–70 are not; and the floor moves nothing else — the joint Do Nothing is identical to the no-floor run's, to the cent ($82,851.40). (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: on the plan's original shape (primary born 1961, claim entered at 65 at age 65, already receiving) the claim is locked and no floor can bite, so the plan's primary is now born 1962 and every figure is re-derived on that shape. The retired 1961 shape's pins — floor-67 winner $4,873.24, age-62 row $149.54, five below-floor rows, Do Nothing $81,117.30 — were themselves re-pinned by the BASIS-DRIFT build and FIX 4's §224 deflation; the crowning mechanics this case pins are unchanged.)",
+    note: "Claim floor crowning (claim-floor plan: primary $48,000 entered at 65, born 1962 — age 64 at plan start, the claim not yet made — pre-tax $300,000, plan to 80; its searched ages are 64–70 and its per-age bests rise monotonically from 67 to 70, so the floor genuinely bites): with no floor the winner claims at 66 ($2,400.56). With floor 67 the crowned winner is the best claim-67 candidate, $4,632.50 — cross-checked against an independent fixed-claim-age run at 67 (scoreAllCandidates on the age-67 combination) — and it is the table's own age-67 row best. The youngest row (age 64) best appears in the table at $4,261.60, unmarked as winner; rows 64–66 are marked below the floor (3 rows), rows 67–70 are not; and the floor moves nothing else — the joint Do Nothing is identical to the no-floor run's, to the cent ($82,851.40). (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: on the plan's original shape (primary born 1961, claim entered at 65 at age 65, already receiving) the claim is locked and no floor can bite, so the plan's primary is now born 1962 and every figure is re-derived on that shape. The retired 1961 shape's pins — floor-67 winner $4,873.24, age-62 row $149.54, five below-floor rows, Do Nothing $81,117.30 — were themselves re-pinned by the BASIS-DRIFT build and FIX 4's §151(d)(5)(C) deflation; the crowning mechanics this case pins are unchanged.)",
     expected: {
       winnerAge: 67,
       winnerNetCost: 4632.5,
@@ -5583,7 +5583,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-edges-and-blank",
     kind: "tax",
-    note: "Claim floor edges: blank reproduces the un-floored winner — on the torpedo plan a floor key ABSENT crowns the pinned winner (claim 65, $181,984.20 — under N-1 the torpedo primary is already receiving at the entered 65, so the claim is locked and the absent-floor winner is the entered-claim best, cross-pinned by joint-winner-reproduces-from-saved-parameters); on the claim-floor plan a floor explicitly NULL and a floor of 62 (which excludes no searched age) crown exactly the absent-floor winner (claim 66), with no row marked below the floor at 62. On the claim-floor plan a floor of 70 leaves only age 70 eligible: the winner is age 70's own best ($10,610.98), all six younger rows (64–69) are marked below the floor, and every runner-up is also a claim-70 candidate — no below-floor candidate leaks into the crowned set however cheap it is (the age-64 best is $4,261.60). (RE-PINNED by Round-7 Build 3, N-1: the torpedo figure moved because the claim locked at the entered age, and the claim-floor plan's primary is now born 1962 (age 64 at plan start, claim entered at 65 not yet made; searched ages 64–70) — on the retired born-1961 shape, itself re-pinned by the BASIS-DRIFT build, FIX 1, and FIX 4's §224 deflation, the pins were torpedo $165,393.40 at claim 62, floor-70 winner $11,186.99, eight below-floor rows. The edge mechanics are the pin's subject and are unmoved.)",
+    note: "Claim floor edges: blank reproduces the un-floored winner — on the torpedo plan a floor key ABSENT crowns the pinned winner (claim 65, $181,984.20 — under N-1 the torpedo primary is already receiving at the entered 65, so the claim is locked and the absent-floor winner is the entered-claim best, cross-pinned by joint-winner-reproduces-from-saved-parameters); on the claim-floor plan a floor explicitly NULL and a floor of 62 (which excludes no searched age) crown exactly the absent-floor winner (claim 66), with no row marked below the floor at 62. On the claim-floor plan a floor of 70 leaves only age 70 eligible: the winner is age 70's own best ($10,610.98), all six younger rows (64–69) are marked below the floor, and every runner-up is also a claim-70 candidate — no below-floor candidate leaks into the crowned set however cheap it is (the age-64 best is $4,261.60). (RE-PINNED by Round-7 Build 3, N-1: the torpedo figure moved because the claim locked at the entered age, and the claim-floor plan's primary is now born 1962 (age 64 at plan start, claim entered at 65 not yet made; searched ages 64–70) — on the retired born-1961 shape, itself re-pinned by the BASIS-DRIFT build, FIX 1, and FIX 4's §151(d)(5)(C) deflation, the pins were torpedo $165,393.40 at claim 62, floor-70 winner $11,186.99, eight below-floor rows. The edge mechanics are the pin's subject and are unmoved.)",
     expected: {
       absentWinner: 181984.2,
       nullWinnerAge: 66,
@@ -7702,16 +7702,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-super-catchup-60-61",
     kind: "tax",
-    note: "Super catch-up at 60–61 (SECURE 2.0 §414(v)): the 60–63 catch-up limit is $11,250 (Roth at this salary, as in the 56–59 case), so the mega backdoor shrinks to $72,000 − $24,500 − $11,250 = $36,250 and the total sheltered stays $81,750. Taxable wages / federal / FICA / surplus are unchanged from the 56–59 case (the catch-up is Roth either way, so it never touched taxable wages). Pinned at both 60 and 61 (calendar 2030/2031 price under the latest law row, 2030). (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $11,250 super catch-up is excluded from §415(c) annual additions, so the shrinkage described above no longer happens — the mega backdoor stays $47,500 at 60 and 61, total sheltered rises to $93,000, and surplus falls by the extra $11,250 sheltered, to $91,804.62.)",
+    note: "Super catch-up at 60–61 (SECURE 2.0 §414(v)): the 60–63 catch-up limit is $11,250 (Roth at this salary, as in the 56–59 case), so the mega backdoor shrinks to $72,000 − $24,500 − $11,250 = $36,250 and the total sheltered stays $81,750. Taxable wages / federal / FICA / surplus are unchanged from the 56–59 case (the catch-up is Roth either way, so it never touched taxable wages). Pinned at both 60 and 61 (calendar 2030/2031 price under the latest law row, 2030). (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $11,250 super catch-up is excluded from §415(c) annual additions, so the shrinkage described above no longer happens — the mega backdoor stays $47,500 at 60 and 61, total sheltered rises to $93,000, and surplus falls by the extra $11,250 sheltered, to $91,804.62.) (RE-PINNED by contract v61, F2/F3 — the statute-fixed work-years amounts now deflate: both years price off the 2026 row at the plan's 2.5% inflation, so the §223(b)(3) HSA catch-up deflates (2030: $1,000 × 0.9059506448 = $905.95 → HSA limit $9,655.95, own HSA $94.05 less than the flat $9,750; 2031: × 0.8838542878 = $883.85 → limit $9,633.85, $116.15 less) and the §3101(b)(2) threshold deflates ($226,487.66 in 2030, $220,963.57 in 2031). Sheltered falls by exactly each year's HSA shortfall ($92,905.95 / $92,883.85; the §414(v) catch-up and the mega are unmoved). Surplus 2030: +$94.05 (own contributions fall) − $213.82 FICA (Additional Medicare $1,699.71 vs $1,487.25 on the deflated threshold, Medicare +$1.36 on the higher FICA wages) − $22.57 federal (24% × the $94.05 of extra taxable wages) = −$142.34 → $91,662.28. Surplus 2031: +$116.15 − $264.05 FICA − $27.88 federal = −$175.78 → $91,628.84. The two years no longer pin equal: each carried year deflates one step further.)",
     expected: {
       catchUp60: 11250,
       mega60: 47500,
-      sheltered60: 93000,
-      surplus60: 91804.62,
+      sheltered60: 92905.95,
+      surplus60: 91662.28,
       catchUp61: 11250,
       mega61: 47500,
-      sheltered61: 93000,
-      surplus61: 91804.62,
+      sheltered61: 92883.85,
+      surplus61: 91628.84,
     },
     actual: () => {
       const plan = basePlan({
@@ -7959,18 +7959,117 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "v61-workyears-additional-medicare-deflates",
+    kind: "tax",
+    note: "Contract v61, F2 — THE ADDITIONAL MEDICARE THRESHOLD DEFLATES IN WORK YEARS (tax-law data audit acceptance case, hand-derived; IRC §3101(b)(2)): the $250,000 MFJ threshold is statute-fixed (not indexed), so a work year priced off a carried law row deflates it by deflationFactor(calendarYear, law.year, plan.inflationPct), threaded from priceOneWorkYear (the plan's inflationPct) into payrollTaxBreakdown; the indexed wage base and the rates stay as read. Case: 3% inflation, calendar 2027 priced off the 2026 row, MFJ FICA wages $260,000 — the deflated threshold is $250,000 / 1.03 = $242,718.45, so the Additional Medicare Tax is 0.9% × $17,281.55 = $155.53 (pre-fix: 0.9% × $10,000 = $90.00) and the payroll total is $11,439.00 (capped Social Security) + $3,770.00 (Medicare) + $155.53 = $15,364.53. Pinned at the payrollTaxBreakdown mechanics and end-to-end through priceOneWorkYear (age 45 in 2027, salary $268,750, own HSA the $8,750 family limit, so FICA wages are exactly $260,000); the no-factor control keeps the pre-fix $90.00 / $15,299.00, and a year with its own row (factor 1.0) prices bit-identically to before.",
+    expected: {
+      directAdditional: 155.53,
+      directTotal: 15364.53,
+      controlAdditional: 90,
+      controlTotal: 15299,
+      e2eWages: 260000,
+      e2eAdditional: 155.53,
+      e2ePayroll: 15364.53,
+    },
+    actual: () => {
+      const law = lawForYear(2026);
+      const defl = deflationFactor(2027, law.year, 3);
+      const direct = payrollTaxBreakdown(260000, "mfj", law, defl);
+      const control = payrollTaxBreakdown(260000, "mfj", law);
+      const line = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1982,
+          birthYearSpouse: 1993,
+          inflationPct: 3,
+          retirementAge: 45,
+          windowStartAge: 45,
+        }),
+        { salary: 268750, employer401k: 0, employerHsa: 0 },
+        45,
+      );
+      return {
+        directAdditional: direct.additionalMedicare,
+        directTotal: direct.total,
+        controlAdditional: control.additionalMedicare,
+        controlTotal: control.total,
+        e2eWages: line.ficaWages,
+        e2eAdditional: line.payrollAdditionalMedicare,
+        e2ePayroll: line.payrollTax,
+      };
+    },
+  },
+  {
+    id: "v61-workyears-hsa-catchup-deflates",
+    kind: "tax",
+    note: "Contract v61, F3 — THE HSA AGE-55 CATCH-UP DEFLATES IN WORK YEARS (tax-law data audit acceptance case, hand-derived; IRC §223(b)(3)): the $1,000 catch-up has been statute-fixed since 2009, so a work year priced off a carried law row deflates ONLY the catch-up by the year's deflationFactor, threaded from priceOneWorkYear into contributionStack; the indexed base limits (family $8,750 / self-only $4,400 on the 2026 row) stay as read. Case: 3% inflation, calendar 2027 priced off the 2026 row, a 55-year-old with family coverage — the limit is $8,750 + $1,000 / 1.03 = $8,750 + $970.87 = $9,720.87 (pre-fix $9,750); self-only is $4,400 + $970.87 = $5,370.87. Pinned at the contributionStack mechanics and end-to-end through priceOneWorkYear (age 55 in 2027, salary $100,000, no employer HSA: own HSA fills the deflated limit, so FICA wages are $100,000 − $9,720.87 = $90,279.13); the no-factor control keeps the pre-fix $9,750 limit.",
+    expected: {
+      directLimit: 9720.87,
+      directSelfLimit: 5370.87,
+      controlLimit: 9750,
+      e2eLimit: 9720.87,
+      e2eOwnHsa: 9720.87,
+      e2eWages: 90279.13,
+    },
+    actual: () => {
+      const law = lawForYear(2026);
+      const defl = deflationFactor(2027, law.year, 3);
+      const direct = contributionStack(
+        55,
+        100000,
+        0,
+        0,
+        "mfj",
+        law,
+        null,
+        null,
+        defl,
+      );
+      const directSelf = contributionStack(
+        55,
+        100000,
+        0,
+        0,
+        "single",
+        law,
+        null,
+        null,
+        defl,
+      );
+      const control = contributionStack(55, 100000, 0, 0, "mfj", law);
+      const line = priceOneWorkYear(
+        basePlan({
+          birthYearPrimary: 1972,
+          birthYearSpouse: 1983,
+          inflationPct: 3,
+          retirementAge: 55,
+          windowStartAge: 55,
+        }),
+        { salary: 100000, employer401k: 0, employerHsa: 0 },
+        55,
+      );
+      return {
+        directLimit: direct.hsaLimit,
+        directSelfLimit: directSelf.hsaLimit,
+        controlLimit: control.hsaLimit,
+        e2eLimit: line.stack.hsaLimit,
+        e2eOwnHsa: line.stack.ownHsa,
+        e2eWages: line.ficaWages,
+      };
+    },
+  },
+  {
     id: "workyears-payroll-fold-in-identity",
     kind: "tax",
-    note: "T2 — the fold-in identity on the saved record's $425,000 example-salary shape (the golden work-to-60 shape, employer $0, four work years): payroll tax is its own component of the roll totals and of the compare row, and it folds into the plan's total tax and all-in score. Per year the payroll tax is $18,947.38 (the workyears-stack-56-59 pin: Social Security $11,439.00 + Medicare $6,021.13 + Additional Medicare $1,487.25), so over four years payrollTax = $75,789.52 with parts Social Security $45,756.00, Medicare $24,084.52, Additional Medicare $5,949.00 (the parts sum to the total here). The standing golden anchors do NOT move: federal total $284,992, winner net $386,045.08, all-in $746,826.60 — payroll was already inside workTax; T2 names it and folds it into totalTax, it does not re-price it. The identities asserted: workTax = federal + state + payroll (diff $0); totalTax = winnerTax + workTax (diff $0); allInTax = totalTax + penalty + irmaa − acaCredit + terminal (diff $0) — the contract's score identity with payroll inside totalTax. The zero-salary control row prices payrollTax $0 and totalTax exactly the winner's tax (diff $0).",
+    note: "T2 — the fold-in identity on the saved record's $425,000 example-salary shape (the golden work-to-60 shape, employer $0, four work years): payroll tax is its own component of the roll totals and of the compare row, and it folds into the plan's total tax and all-in score. (RE-PINNED by contract v61, F2/F3 — the four work years are calendar 2031–2034, priced off the 2026 row at the plan's 2.5% inflation, and the two statute-fixed work-years amounts now deflate: per-year payroll is $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 — own HSA $9,633.85 → $9,570.75 as the §223(b)(3) catch-up deflates, Additional Medicare $1,749.62 → $1,892.18 as the §3101(b)(2) threshold deflates from $220,963.57 to $205,186.64 — so over four years payrollTax = $77,135.04 with parts Social Security $45,756.00 (capped, unmoved), Medicare $24,093.08, Additional Medicare $7,285.95; the rounded parts sum to $77,135.03, one cent under the round-once total — the breakdown's documented seam, pinned as partsDiff −0.01 (pre-v61 the parts summed exactly). The federal total rises $142.05 to $285,134.05 (the four years' Σ $591.83 of HSA-catch-up shortfall is extra taxable wages at the 24% margin). The winner net does NOT move ($386,045.08): the deltas land in the work years and in ending balances, not in the winner's tax, so all-in rises by exactly ΔworkTax = $142.05 + $1,345.52 = $1,487.57, to $748,314.17. Pre-v61 pins: payroll $75,789.52 at $18,947.38/yr, federal $284,992, all-in $746,826.60.) The identities asserted: workTax = federal + state + payroll (diff $0); totalTax = winnerTax + workTax (diff $0); allInTax = totalTax + penalty + irmaa − acaCredit + terminal (diff $0) — the contract's score identity with payroll inside totalTax. The zero-salary control row prices payrollTax $0 and totalTax exactly the winner's tax (diff $0).",
     expected: {
-      payrollTotal: 75789.52,
+      payrollTotal: 77135.04,
       payrollSsTotal: 45756,
-      payrollMedicareTotal: 24084.52,
-      payrollAdditionalTotal: 5949,
-      partsDiff: 0,
-      federalTotal: 284992,
+      payrollMedicareTotal: 24093.08,
+      payrollAdditionalTotal: 7285.95,
+      partsDiff: -0.01,
+      federalTotal: 285134.05,
       net: 386045.08,
-      allIn: 746826.6,
+      allIn: 748314.17,
       workTaxDiff: 0,
       totalTaxDiff: 0,
       scoreIdentityDiff: 0,
@@ -8106,17 +8205,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-60-no-employer",
     kind: "tax",
-    note: "GOLDEN, work to 60 with employer $0 (4 work years, ages 56–59): balances at 60 — pre-tax $2,357,877.13, Roth $906,719.82, HSA $180,061.52 (the analysis's figures, reproduced exactly by grow-then-year-end-contributions); Taxable $3,589,252.71 — the analysis printed $3,589,252.73, a 2¢ seam from its carrying the unrounded half-cent FICA ($18,947.375) into the surplus while printing $18,947.38; the engine rounds each year's FICA to the cent like every other year figure in the app, and this case pins the engine's consistent construction. Winner net $386,045.08, after-tax ending $34,086,735.45 (analysis: $35,009,641.22 — the same 2¢ seam grown for 35 years), all-in = $386,045.08 + federal $284,992 + FICA $75,789.52 = $746,826.60 (analysis: ≈$804,200 from FICA $75,789.50 unrounded, at the analysis's $443,418.49 net). (Net and all-in re-pinned 2026-10-14 from $443,418.49 / $804,200.01 for the newest-row FPL fallback, hand-reconciled: same winner “Fill to the top of the 32% bracket” at claim 65 with identical tax, IRMAA, terminal, conversions, and ending wealth — only kept ACA credits moved, +$172.18 in 2035 and +$179.36/yr in 2036–2046 = +$2,145.14.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $47,500 rather than $39,500 — the $8,000 catch-up no longer nets against the §415(c) room — so $8,000/yr more lands in Roth and $8,000/yr less banks to Taxable: Roth at 60 is $929,726.92 and Taxable at 60 is $3,415,748.78 (a $34,867.32 shift, the $8,000/yr grown at 5.75%); winner, net, and after-tax ending are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "GOLDEN, work to 60 with employer $0 (4 work years, ages 56–59): balances at 60 — pre-tax $2,357,877.13, Roth $906,719.82, HSA $180,061.52 (the analysis's figures, reproduced exactly by grow-then-year-end-contributions); Taxable $3,589,252.71 — the analysis printed $3,589,252.73, a 2¢ seam from its carrying the unrounded half-cent FICA ($18,947.375) into the surplus while printing $18,947.38; the engine rounds each year's FICA to the cent like every other year figure in the app, and this case pins the engine's consistent construction. Winner net $386,045.08, after-tax ending $34,086,735.45 (analysis: $35,009,641.22 — the same 2¢ seam grown for 35 years), all-in = $386,045.08 + federal $284,992 + FICA $75,789.52 = $746,826.60 (analysis: ≈$804,200 from FICA $75,789.50 unrounded, at the analysis's $443,418.49 net). (Net and all-in re-pinned 2026-10-14 from $443,418.49 / $804,200.01 for the newest-row FPL fallback, hand-reconciled: same winner “Fill to the top of the 32% bracket” at claim 65 with identical tax, IRMAA, terminal, conversions, and ending wealth — only kept ACA credits moved, +$172.18 in 2035 and +$179.36/yr in 2036–2046 = +$2,145.14.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $47,500 rather than $39,500 — the $8,000 catch-up no longer nets against the §415(c) room — so $8,000/yr more lands in Roth and $8,000/yr less banks to Taxable: Roth at 60 is $929,726.92 and Taxable at 60 is $3,415,748.78 (a $34,867.32 shift, the $8,000/yr grown at 5.75%); winner, net, and after-tax ending are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — per-year payroll $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 (FICA total $77,135.04, +$1,345.52) and federal +$142.05 (the Σ $591.83 HSA-catch-up shortfall in taxable wages at the 24% margin), so all-in rises by exactly ΔworkTax $1,487.57 to $748,314.17. The per-year surplus shortfalls (−$175.78 / −$208.41 / −$240.25 / −$271.30) grown at 5.75% leave Taxable at 60 lower by $966.31 ($3,414,782.47) and the HSA lower by the grown catch-up shortfalls, $638.45 ($179,423.07); pre-tax, Roth, the winner, and its net ($386,045.08) are unmoved — the winner's bracket-fill tax is balance-insensitive at this scale, so the whole delta lands in ending balances: after-tax ending −$12,008.91 ($34,074,726.54), the at-60 deltas compounded through the march.)",
     expected: {
       pretaxAt60: 2357877.13,
       rothAt60: 929726.92,
-      taxableAt60: 3415748.78,
-      hsaAt60: 180061.52,
-      federalTotal: 284992,
-      ficaTotal: 75789.52,
+      taxableAt60: 3414782.47,
+      hsaAt60: 179423.07,
+      federalTotal: 285134.05,
+      ficaTotal: 77135.04,
       net: 386045.08,
-      afterTax: 34086735.45,
-      allIn: 746826.6,
+      afterTax: 34074726.54,
+      allIn: 748314.17,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8140,13 +8239,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-62-no-employer",
     kind: "tax",
-    note: "GOLDEN, work to 62 with employer $0 (6 work years): winner “Fill to the top of the 24% bracket”, claim 69, net $544,573.72, after-tax ending $38,629,259.08 (analysis: $39,663,955.44 — the same half-cent FICA rounding seam as the work-to-60 case, grown), all-in $1,085,746.00 (analysis: ≈$1,158,215, stated rounded to the dollar, at the analysis's $617,042.28 net). (Net and all-in re-pinned 2026-10-14 from $617,042.28 / $1,158,214.56 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "GOLDEN, work to 62 with employer $0 (6 work years): winner “Fill to the top of the 24% bracket”, claim 69, net $544,573.72, after-tax ending $38,629,259.08 (analysis: $39,663,955.44 — the same half-cent FICA rounding seam as the work-to-60 case, grown), all-in $1,085,746.00 (analysis: ≈$1,158,215, stated rounded to the dollar, at the analysis's $617,042.28 net). (Net and all-in re-pinned 2026-10-14 from $617,042.28 / $1,158,214.56 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3: the six work years are calendar 2031–2036, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — ΔworkTax over the six years is $2,538.38 (payroll +$2,296.00 on the deflating §3101(b)(2) threshold; federal +$242.38 = 24% × the Σ $1,009.91 HSA-catch-up shortfall), so all-in rises by exactly that to $1,088,284.38; winner, claim age, and net are unmoved, and after-tax ending falls $19,233.32 to $38,610,025.76, the at-62 balance deltas compounded through the march.)",
     expected: {
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 69,
       net: 544573.72,
-      afterTax: 38629259.08,
-      allIn: 1085746,
+      afterTax: 38610025.76,
+      allIn: 1088284.38,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8168,17 +8267,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-60-employer",
     kind: "tax",
-    note: "GOLDEN, work to 60 WITH the example employer figures ($16,250 401(k) / $1,500 HSA): balances at 60 — pre-tax $2,428,701.38, Roth $835,895.57, Taxable $3,664,891.92, HSA $180,061.52 (the analysis's figures, all exact). Winner “Fill to the top of the 24% bracket”, claim 66, net $410,260.22, after-tax ending $35,489,154.78 (exact); all-in $772,622.74 (analysis: $829,544.09 at its $467,181.59 net — the 2¢ half-cent FICA seam: $18,982.625/yr carried unrounded there, rounded to the cent here). (Net and all-in re-pinned 2026-10-14 from $467,181.59 / $829,544.11 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,793.99 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $31,250 rather than $23,250 — the catch-up no longer nets against the §415(c) room — so Roth at 60 is $858,902.67 and Taxable at 60 is $3,491,387.98. The after-tax ending value of $34,516,787.14 (up $0.07) is an engine-produced downstream re-price of the shifted age-60 balances, not hand-derived; the winner, claim age, and net are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "GOLDEN, work to 60 WITH the example employer figures ($16,250 401(k) / $1,500 HSA): balances at 60 — pre-tax $2,428,701.38, Roth $835,895.57, Taxable $3,664,891.92, HSA $180,061.52 (the analysis's figures, all exact). Winner “Fill to the top of the 24% bracket”, claim 66, net $410,260.22, after-tax ending $35,489,154.78 (exact); all-in $772,622.74 (analysis: $829,544.09 at its $467,181.59 net — the 2¢ half-cent FICA seam: $18,982.625/yr carried unrounded there, rounded to the cent here). (Net and all-in re-pinned 2026-10-14 from $467,181.59 / $829,544.11 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,793.99 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $31,250 rather than $23,250 — the catch-up no longer nets against the §415(c) room — so Roth at 60 is $858,902.67 and Taxable at 60 is $3,491,387.98. The after-tax ending value of $34,516,787.14 (up $0.07) is an engine-produced downstream re-price of the shifted age-60 balances, not hand-derived; the winner, claim age, and net are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3, the same work-years deflation as the employer-$0 golden: the employer-HSA shape carries the identical per-year deltas (the HSA bucket fills to the deflated limit in both shapes), so Taxable at 60 falls $966.31 to $3,490,421.67, the HSA falls $638.45 to $179,423.07, all-in rises by exactly ΔworkTax $1,487.57 to $774,110.31, and after-tax ending falls $12,008.91 to $34,504,778.23; pre-tax, Roth, winner, claim age, and net are unmoved.)",
     expected: {
       pretaxAt60: 2428701.38,
       rothAt60: 858902.67,
-      taxableAt60: 3491387.98,
-      hsaAt60: 180061.52,
+      taxableAt60: 3490421.67,
+      hsaAt60: 179423.07,
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 66,
       net: 410260.22,
-      afterTax: 34516787.14,
-      allIn: 772622.74,
+      afterTax: 34504778.23,
+      allIn: 774110.31,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8202,13 +8301,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-62-employer",
     kind: "tax",
-    note: "GOLDEN, work to 62 WITH employer figures: winner “Fill to the top of the 24% bracket”, claim 70, net $582,483.94, after-tax ending $39,241,837.23 (exact); all-in $1,126,027.72 (analysis: $1,199,809.30 at its $656,265.55 net — the 3¢ half-cent FICA seam over 6 years). (Net and all-in re-pinned 2026-10-14 from $656,265.55 / $1,199,809.33 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "GOLDEN, work to 62 WITH employer figures: winner “Fill to the top of the 24% bracket”, claim 70, net $582,483.94, after-tax ending $39,241,837.23 (exact); all-in $1,126,027.72 (analysis: $1,199,809.30 at its $656,265.55 net — the 3¢ half-cent FICA seam over 6 years). (Net and all-in re-pinned 2026-10-14 from $656,265.55 / $1,199,809.33 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3, the same six-year work-years deflation as the employer-$0 quit-62 golden: ΔworkTax $2,538.38, so all-in rises to $1,128,566.10 and after-tax ending falls the identical $19,233.32 to $39,222,603.91; winner, claim age, and net are unmoved.)",
     expected: {
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 70,
       net: 582483.94,
-      afterTax: 39241837.23,
-      allIn: 1126027.72,
+      afterTax: 39222603.91,
+      allIn: 1128566.1,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8432,22 +8531,22 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-state-tax-line-roll",
     kind: "tax",
-    note: "Salary-year STATE tax at a 5% rate on the golden employer shape (salary $425,000, employer 401(k) $16,250, employer HSA $1,500; the golden plan with stateRatePct 5). Age-56 line: the stack is unchanged from the employer-displacement case, so taxable wages = $425,000 − $24,500 − $8,250 = $392,250 and federal = $71,608; taxable income = $392,250 − $32,200 MFJ standard deduction = $360,050, so state tax = 5% × $360,050 = $18,002.50; FICA = $18,982.63 (as in the displacement case); surplus = $425,000 − $71,608 − $18,002.50 − $18,982.63 − $150,000 spending − $64,000 own contributions = $94,974.79. Quit-60 roll (four identical years, ages 56–59): state total = 4 × $18,002.50 = $72,010.00, federal total $286,432, FICA total $75,930.52, surplus banked = 4 × $94,974.79 = $379,899.16, banked = $327,000 contributions (unchanged) + $379,899.16 = $736,627.48 (the 0% golden banked $778,909.16 − $72,010). Balances at 60: Pre-tax / Roth / HSA are unchanged from the 0% golden employer case ($2,428,701.38 / $835,895.57 / $180,061.52 — contributions do not depend on the state rate); Taxable is re-derived from the reduced surplus stream grown at 5.75%: each year's surplus is $18,002.50 lower and the four reductions compound by (1.0575³ + 1.0575² + 1.0575 + 1) = 4.35841511, a $78,462.37 reduction, so Taxable = $3,664,891.92 − $78,462.37 = $3,586,429.55. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the stack is the corrected displacement stack — mega $31,250, own contributions $72,000 — so the age-56 surplus is $94,406.87 and the four-year surplus total is $377,627.48; banked is unchanged at $736,627.48 (contributions $359,000 + surplus $377,627.48). Balances at 60 follow the corrected golden employer case (Roth $858,902.67), and Taxable = $3,630,024.60 − $78,462.37 = $3,412,925.61 — the state-tax reduction itself is unchanged.)",
+    note: "Salary-year STATE tax at a 5% rate on the golden employer shape (salary $425,000, employer 401(k) $16,250, employer HSA $1,500; the golden plan with stateRatePct 5). Age-56 line: the stack is unchanged from the employer-displacement case, so taxable wages = $425,000 − $24,500 − $8,250 = $392,250 and federal = $71,608; taxable income = $392,250 − $32,200 MFJ standard deduction = $360,050, so state tax = 5% × $360,050 = $18,002.50; FICA = $18,982.63 (as in the displacement case); surplus = $425,000 − $71,608 − $18,002.50 − $18,982.63 − $150,000 spending − $64,000 own contributions = $94,974.79. Quit-60 roll (four identical years, ages 56–59): state total = 4 × $18,002.50 = $72,010.00, federal total $286,432, FICA total $75,930.52, surplus banked = 4 × $94,974.79 = $379,899.16, banked = $327,000 contributions (unchanged) + $379,899.16 = $736,627.48 (the 0% golden banked $778,909.16 − $72,010). Balances at 60: Pre-tax / Roth / HSA are unchanged from the 0% golden employer case ($2,428,701.38 / $835,895.57 / $180,061.52 — contributions do not depend on the state rate); Taxable is re-derived from the reduced surplus stream grown at 5.75%: each year's surplus is $18,002.50 lower and the four reductions compound by (1.0575³ + 1.0575² + 1.0575 + 1) = 4.35841511, a $78,462.37 reduction, so Taxable = $3,664,891.92 − $78,462.37 = $3,586,429.55. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the stack is the corrected displacement stack — mega $31,250, own contributions $72,000 — so the age-56 surplus is $94,406.87 and the four-year surplus total is $377,627.48; banked is unchanged at $736,627.48 (contributions $359,000 + surplus $377,627.48). Balances at 60 follow the corrected golden employer case (Roth $858,902.67), and Taxable = $3,630,024.60 − $78,462.37 = $3,412,925.61 — the state-tax reduction itself is unchanged.) (RE-PINNED by contract v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate. Age-56 (2031) line: the deflated HSA limit leaves own HSA $8,133.85, so taxable wages rise by the $116.15 catch-up shortfall to $392,366.15, federal +$27.88 (24% margin) to $71,635.88, state +$5.81 (5% × $116.15) to $18,008.31, FICA +$264.05 (Additional Medicare on the deflated $220,963.57 threshold, plus Medicare on the higher wages) to $19,246.68, and surplus = +$116.15 − $27.88 − $5.81 − $264.05 = −$181.59, to $94,225.28. Roll totals: federal +$142.05, FICA +$1,345.52 (the golden channels), state +$29.60 (5% × the Σ $591.83 shortfall, per-year rounding); surplus total −$925.34 (the per-year shortfalls net of the added taxes); total contributions fall by the Σ $591.83 shortfall (the HSA bucket receives the deflated limit), so banked falls $925.34 + $591.83 = $1,517.17 to $735,110.31; Taxable at 60 falls $998.24 (the grown surplus shortfalls) to $3,411,927.37 and the HSA falls $638.45 to $179,423.07; pre-tax and Roth are unmoved.)",
     expected: {
-      taxableWages: 392250,
-      federal: 71608,
-      state: 18002.5,
-      fica: 18982.63,
-      surplus: 94406.87,
-      stateTotal: 72010,
-      federalTotal: 286432,
-      ficaTotal: 75930.52,
-      surplusTotal: 377627.48,
-      banked: 736627.48,
+      taxableWages: 392366.15,
+      federal: 71635.88,
+      state: 18008.31,
+      fica: 19246.68,
+      surplus: 94225.28,
+      stateTotal: 72039.6,
+      federalTotal: 286574.05,
+      ficaTotal: 77276.04,
+      surplusTotal: 376702.14,
+      banked: 735110.31,
       pretaxAt60: 2428701.38,
       rothAt60: 858902.67,
-      taxableAt60: 3412925.61,
-      hsaAt60: 180061.52,
+      taxableAt60: 3411927.37,
+      hsaAt60: 179423.07,
     },
     actual: () => {
       const base = goldenWorkPlan();
@@ -8477,14 +8576,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-state-tax-quit-60",
     kind: "tax",
-    note: "Salary-year state tax, full quit-60 compare at a 5% state rate on the golden employer shape. Work tax = federal $286,432 + state $72,010 + FICA $75,930.52 = $434,372.52. The winner is “Fill to the top of the 35% bracket”, claim 66, and the optimizer net is NOT the 0% golden net: the same 5% rate also prices state tax in the conversion years, so the net rises to $532,596.79 — $148,425.16 above the current 0% golden net of $468,432.05 (the difference of the two current engine pins; the build-time decomposition verified that a 0% run on these same rolled balances reproduced the then-golden net to the cent, i.e. the increase is conversion-year state pricing, but that reproduction was verified under the pre-E2 table and is not re-asserted here). All-in tax = $532,596.79 + $434,372.52 = $966,969.31; after-tax ending wealth $33,149,625.38. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the winner was “Fill to a $500,000 MAGI cap” at claim 64 with net $608,840.55, all-in $1,043,213.07 and after-tax ending $34,068,453 — pricing the plans' late-life RMD years on the true Table II cells flipped this close winner and repriced the row; earlier re-pin history: 2026-10-14 for the newest-row FPL fallback, and under Fix 2 (§415(c) catch-up exclusion) for the corrected rolled balances.)",
+    note: "Salary-year state tax, full quit-60 compare at a 5% state rate on the golden employer shape. Work tax = federal $286,432 + state $72,010 + FICA $75,930.52 = $434,372.52. The winner is “Fill to the top of the 35% bracket”, claim 66, and the optimizer net is NOT the 0% golden net: the same 5% rate also prices state tax in the conversion years, so the net rises to $532,596.79 — $148,425.16 above the current 0% golden net of $468,432.05 (the difference of the two current engine pins; the build-time decomposition verified that a 0% run on these same rolled balances reproduced the then-golden net to the cent, i.e. the increase is conversion-year state pricing, but that reproduction was verified under the pre-E2 table and is not re-asserted here). All-in tax = $532,596.79 + $434,372.52 = $966,969.31; after-tax ending wealth $33,149,625.38. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the winner was “Fill to a $500,000 MAGI cap” at claim 64 with net $608,840.55, all-in $1,043,213.07 and after-tax ending $34,068,453 — pricing the plans' late-life RMD years on the true Table II cells flipped this close winner and repriced the row; earlier re-pin history: 2026-10-14 for the newest-row FPL fallback, and under Fix 2 (§415(c) catch-up exclusion) for the corrected rolled balances.) (RE-PINNED by contract v61, F2/F3, on the state-tax-line-roll derivation: work tax rises by exactly the four years' added work tax — federal +$142.05, FICA +$1,345.52, state +$29.60 = +$1,517.17 — to $435,889.69, and all-in rises by the same $1,517.17 to $968,486.48; winner, claim age, and net are unmoved, and after-tax ending falls $12,247.86 to $33,137,377.52, the rolled-balance deltas compounded through the march.)",
     expected: {
       winnerName: "Fill to the top of the 35% bracket",
       claimAge: 66,
       net: 532596.79,
-      workTax: 434372.52,
-      allIn: 966969.31,
-      afterTax: 33149625.38,
+      workTax: 435889.69,
+      allIn: 968486.48,
+      afterTax: 33137377.52,
     },
     actual: () => {
       const base = goldenWorkPlan();
@@ -9049,7 +9148,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-medicare-hsa-ineligible",
     kind: "tax",
-    note: "F6 (contract v58) — Medicare enrollment stops HSA contributions. Single filer (no spouse), primary b.1961, window start 65, salary $100,000, employer 401(k) $0, employer HSA $1,000, medicareAgePrimary 65, quit 66 (one work year at 65, calendar 2026): the household is HSA-ineligible, so the stack's own HSA, employer HSA, and HSA bucket are all $0. Taxable wages rise to $100,000 − $24,500 deferral − $8,000 pre-tax catch-up = $67,500, and FICA wages are the full $100,000 (no HSA exclusion), so FICA is $7,650 — both exactly as the audit hand-derived. Federal tax pins $4,954, NOT the audit's $6,020: the audit's federal arithmetic omitted the two deductions the shared pricer applies to any 65-year-old — the §63(f) age-65 standard-deduction add-on ($2,050 single, 2026 row) and the §224 senior deduction ($6,000, unphased at this MAGI, added on top of the standard side). Taxable income is $67,500 − ($16,100 + $2,050) − $6,000 = $43,350, and the 2026 single brackets give $1,240 + 12% × $30,950 = $4,954 exactly. The audit's FICA delta against the eligible case (+$336.60) reproduces exactly; its federal delta does not survive the deduction rules every other fixture pins.",
+    note: "F6 (contract v58) — Medicare enrollment stops HSA contributions. Single filer (no spouse), primary b.1961, window start 65, salary $100,000, employer 401(k) $0, employer HSA $1,000, medicareAgePrimary 65, quit 66 (one work year at 65, calendar 2026): the household is HSA-ineligible, so the stack's own HSA, employer HSA, and HSA bucket are all $0. Taxable wages rise to $100,000 − $24,500 deferral − $8,000 pre-tax catch-up = $67,500, and FICA wages are the full $100,000 (no HSA exclusion), so FICA is $7,650 — both exactly as the audit hand-derived. Federal tax pins $4,954, NOT the audit's $6,020: the audit's federal arithmetic omitted the two deductions the shared pricer applies to any 65-year-old — the §63(f) age-65 standard-deduction add-on ($2,050 single, 2026 row) and the §151(d)(5)(C) senior deduction ($6,000, unphased at this MAGI, added on top of the standard side). Taxable income is $67,500 − ($16,100 + $2,050) − $6,000 = $43,350, and the 2026 single brackets give $1,240 + 12% × $30,950 = $4,954 exactly. The audit's FICA delta against the eligible case (+$336.60) reproduces exactly; its federal delta does not survive the deduction rules every other fixture pins.",
     expected: {
       ownHsa: 0,
       employerHsa: 0,
@@ -11228,7 +11327,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-senior-deduction-sunset",
     kind: "tax",
-    note: "OBBBA senior-deduction sunset (§224, available 2025–2028 only): MFJ ages 66/65 with $100,000 of ordinary income and 0% inflation — in 2028 the senior deduction is the full $12,000 (AGI $100,000 is under the $150,000 phase-out start; deductions $35,500 + $12,000 = $47,500, taxable $52,500, federal tax $2,480 + 12% × $27,700 = $5,804); in 2029 the deduction is $0 (sunset — deductions $35,500, taxable $64,500, federal tax $2,480 + 12% × $39,700 = $7,244), priced under the fallback 2026 law row in both years.",
+    note: "OBBBA senior-deduction sunset (§151(d)(5)(C), available 2025–2028 only): MFJ ages 66/65 with $100,000 of ordinary income and 0% inflation — in 2028 the senior deduction is the full $12,000 (AGI $100,000 is under the $150,000 phase-out start; deductions $35,500 + $12,000 = $47,500, taxable $52,500, federal tax $2,480 + 12% × $27,700 = $5,804); in 2029 the deduction is $0 (sunset — deductions $35,500, taxable $64,500, federal tax $2,480 + 12% × $39,700 = $7,244), priced under the fallback 2026 law row in both years.",
     expected: { senior2028: 12000, fed2028: 5804, senior2029: 0, fed2029: 7244 },
     actual: () => {
       const p28 = priceYear(
@@ -17853,6 +17952,42 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "v61-wa-surtax-threshold-deflates",
+    kind: "tax",
+    note: "Contract v61, F1 — THE WA SURTAX THRESHOLD DEFLATES (tax-law data audit acceptance case, hand-derived; RCW 82.87.040(1)(b), RCW 82.87.150): the $1,000,000 surtax threshold is statute-fixed — it is NOT among the amounts RCW 82.87.150 adjusts annually — so a year priced off a carried law row deflates it by deflationFactor, while the DOR-indexed standard deduction ($278,000) and charitable threshold / cap stay at their nominal row values. Case: gains priced as calendar 2027 off the 2026 law row at 3% inflation — $1,278,000 of WA long-term gains − $278,000 standard deduction = $1,000,000 of taxable gains; the deflated threshold is $1,000,000 / 1.03 = $970,873.79, so the tax is 7% × $970,873.79 + 9.9% × $29,126.21 = $67,961.17 + $2,883.50 = $70,844.66 (the pre-fix engine priced the nominal threshold: 7% × $1,000,000 = $70,000, an $844.66 understatement). Pinned three ways: a direct waCapitalGainsTax call with the explicit factor, the same year priced through priceYear, and the no-factor control at exactly $70,000 — the direct fixture calls of t3-wa-boundary keep pinning current-year behavior bit-identically, because a year with its own row has factor 1.0.",
+    expected: {
+      directTax: 70844.66,
+      directTaxable: 1000000,
+      pricedStateTax: 70844.66,
+      pricedWaTaxable: 1000000,
+      controlTax: 70000,
+    },
+    actual: () => {
+      const law = lawForYear(2026);
+      const direct = waCapitalGainsTax({
+        ltcg: 1278000,
+        law,
+        deflationFactor: deflationFactor(2027, law.year, 3),
+      });
+      const priced = priceYear(
+        basePrice({
+          calendarYear: 2027,
+          inflationPct: 3,
+          ltcg: 1278000,
+          residenceState: "WA",
+        }),
+      );
+      const control = waCapitalGainsTax({ ltcg: 1278000, law });
+      return {
+        directTax: direct.tax,
+        directTaxable: direct.taxableGains,
+        pricedStateTax: priced.stateTax,
+        pricedWaTaxable: priced.waTaxableGains,
+        controlTax: control.tax,
+      };
+    },
+  },
+  {
     id: "t3-wa-plan-anchor-shape",
     kind: "tax",
     note: "T3 (h) — PLAN-LEVEL ANCHOR SHAPE: a Washington plan that lives on taxable-account draws (no pre-tax, $2,000,000 taxable at 50% basis, $200,000/yr of spending, ages 57–60, 0% return) realizes roughly $100–130K of gains a year — every year under the $278,000 standard deduction — so its lifetime state tax is $0 even with a 5% flat rate also entered, and the plan prices bit-identically to the same plan with no residence and a 0% flat rate (same ending taxable balance, same federal tax). The $0 is the deduction working on real realized gains (the largest year's WA base is over $0), not an empty base.",
@@ -18820,7 +18955,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t5-age65-addon-on-standard-side",
     kind: "tax",
-    note: "T5 (f) — THE 65+ ADDITIONAL AMOUNT APPLIES ON THE STANDARD SIDE OF THE COMPARISON (hand-derived; §63(f) add-ons belong to the standard deduction, §224 senior deduction stacks on top of the winner): (1) MFJ 2026, ages 66/49 — one person 65+, so the standard side is $32,200 + $1,650 = $33,850. Itemized mortgage interest of $33,000 would beat the bare $32,200 base but loses to $33,850 BECAUSE of the add-on: the standard side wins. The senior deduction (primary 66, MAGI $200,000) is $6,000 − 6% × $50,000 = $3,000 and still applies on top, so deductions are $36,850, taxable income $163,150, tax $2,480 + $9,120 + 22% × $62,350 = $25,317. (2) Both spouses 66, $140,000 of income, $40,000 of other itemized: the standard side is $35,500, the itemized total wins, and the full $12,000 senior deduction (MAGI under $150,000, both 65+) stacks on top of the ITEMIZED side — deductions $52,000, taxable $88,000, tax $2,480 + 12% × $63,200 = $10,064. §224 is allowed whether or not the filer itemizes; it is never part of either side of the comparison.",
+    note: "T5 (f) — THE 65+ ADDITIONAL AMOUNT APPLIES ON THE STANDARD SIDE OF THE COMPARISON (hand-derived; §63(f) add-ons belong to the standard deduction, §151(d)(5)(C) senior deduction stacks on top of the winner): (1) MFJ 2026, ages 66/49 — one person 65+, so the standard side is $32,200 + $1,650 = $33,850. Itemized mortgage interest of $33,000 would beat the bare $32,200 base but loses to $33,850 BECAUSE of the add-on: the standard side wins. The senior deduction (primary 66, MAGI $200,000) is $6,000 − 6% × $50,000 = $3,000 and still applies on top, so deductions are $36,850, taxable income $163,150, tax $2,480 + $9,120 + 22% × $62,350 = $25,317. (2) Both spouses 66, $140,000 of income, $40,000 of other itemized: the standard side is $35,500, the itemized total wins, and the full $12,000 senior deduction (MAGI under $150,000, both 65+) stacks on top of the ITEMIZED side — deductions $52,000, taxable $88,000, tax $2,480 + 12% × $63,200 = $10,064. §151(d)(5)(C) is allowed whether or not the filer itemizes; it is never part of either side of the comparison.",
     expected: {
       standardWithAddon: 33850,
       addonTotal: 1650,
@@ -20134,7 +20269,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-senior-deduction-addback",
     kind: "tax",
-    note: "T7 (l) — THE §224 SENIOR DEDUCTION IS ADDED BACK IN BOTH DEDUCTION BRANCHES (contract v36; §56(b)(5)(D) per the 2025 Form 6251 instructions — the pre-v36 contract text answered §56(b)(1) alone and did not add it back). STANDARD BRANCH: 2025 MFJ, ages 66/64 (one 65+ claimant), other ordinary $148,000, no itemized inputs. Standard deduction $31,500 + the $1,600 age-65+ add-on = $33,100; the §224 deduction is the full $6,000 (AGI $148,000 is under the $150,000 MFJ phase-out start); taxable income $108,900; regular tax $13,786. AMTI = $108,900 + $33,100 + $6,000 = $148,000: the §224 amount raises AMTI dollar-for-dollar (without the add-back AMTI would be $142,000 and the tentative tax $1,300). Exemption $137,000 → taxable excess $11,000 → tentative tax 26% × $11,000 = $2,860, below the regular tax, so AMT owed is $0. ITEMIZED BRANCH: the same household shape with other ordinary $190,000, mortgage interest $40,000, SALT paid $10,000 (allowed in full — the 2025 cap does not phase down at this AGI). The §224 deduction phases out to $6,000 − 6% × ($190,000 − $150,000) = $3,600; the $50,000 itemized total beats the $33,100 standard; taxable income $190,000 − $50,000 − $3,600 = $136,400; regular tax $19,836. AMTI = $136,400 + the $10,000 SALT + the $3,600 §224 amount = $150,000 (without the §224 add-back: $146,400 and a tentative tax of $2,444 — the delta is exactly 26% × $3,600 = $936). Exemption $137,000 → excess $13,000 → tentative tax $3,380, AMT owed $0. Both branches pin the tentative tax AND the owed amount, per the Case 2 lesson.",
+    note: "T7 (l) — THE §151(d)(5)(C) SENIOR DEDUCTION IS ADDED BACK IN BOTH DEDUCTION BRANCHES (contract v36; §56(b)(5)(D) per the 2025 Form 6251 instructions — the pre-v36 contract text answered §56(b)(1) alone and did not add it back). STANDARD BRANCH: 2025 MFJ, ages 66/64 (one 65+ claimant), other ordinary $148,000, no itemized inputs. Standard deduction $31,500 + the $1,600 age-65+ add-on = $33,100; the §151(d)(5)(C) deduction is the full $6,000 (AGI $148,000 is under the $150,000 MFJ phase-out start); taxable income $108,900; regular tax $13,786. AMTI = $108,900 + $33,100 + $6,000 = $148,000: the §151(d)(5)(C) amount raises AMTI dollar-for-dollar (without the add-back AMTI would be $142,000 and the tentative tax $1,300). Exemption $137,000 → taxable excess $11,000 → tentative tax 26% × $11,000 = $2,860, below the regular tax, so AMT owed is $0. ITEMIZED BRANCH: the same household shape with other ordinary $190,000, mortgage interest $40,000, SALT paid $10,000 (allowed in full — the 2025 cap does not phase down at this AGI). The §151(d)(5)(C) deduction phases out to $6,000 − 6% × ($190,000 − $150,000) = $3,600; the $50,000 itemized total beats the $33,100 standard; taxable income $190,000 − $50,000 − $3,600 = $136,400; regular tax $19,836. AMTI = $136,400 + the $10,000 SALT + the $3,600 §151(d)(5)(C) amount = $150,000 (without the §151(d)(5)(C) add-back: $146,400 and a tentative tax of $2,444 — the delta is exactly 26% × $3,600 = $936). Exemption $137,000 → excess $13,000 → tentative tax $3,380, AMT owed $0. Both branches pin the tentative tax AND the owed amount, per the Case 2 lesson.",
     expected: {
       stdSenior: 6000,
       stdTaken: "standard",
@@ -21112,6 +21247,40 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "v61-section170p-cap-deflates",
+    kind: "tax",
+    note: "Contract v61, F4 — THE §170(p) CAP DEFLATES (tax-law data audit acceptance case, hand-derived; IRC §170(p), §63(b)(4)): the non-itemizer charitable caps are statute-fixed ($2,000 MFJ / $1,000 single or HOH, not indexed), so a year priced off a carried law row deflates the cap by deflationFactor at its use site — the same treatment priceYear gives the §151(d)(5)(C) senior deduction in the same function. Case: priced as calendar 2027 off the 2026 law row at 3% inflation — MFJ, $100,000 of ordinary AGI, $2,000 of qualifying cash giving, the standard side wins. The deflated cap is $2,000 / 1.03 = $1,941.75, so deductions are $32,200 + $1,941.75 = $34,141.75, taxable income is $65,858.25, and federal tax is $2,480 + 12% × $41,058.25 = $7,406.99 — exactly $6.99 above the undeflated pricing (taxable income $65,800, tax $7,400 — the T8 (d) figures, pinned here as the 2026 control: own row, factor 1.0, bit-identical to the pre-fix engine).",
+    expected: {
+      cappedDeduction: 1941.75,
+      deductions: 34141.75,
+      taxableIncome: 65858.25,
+      federalTax: 7406.99,
+      controlDeduction: 2000,
+      controlTax: 7400,
+    },
+    actual: () => {
+      const r = priceYear(
+        basePrice({
+          calendarYear: 2027,
+          inflationPct: 3,
+          otherOrdinary: 100000,
+          itemizedCharitable: 2000,
+        }),
+      );
+      const control = priceYear(
+        basePrice({ otherOrdinary: 100000, itemizedCharitable: 2000 }),
+      );
+      return {
+        cappedDeduction: r.nonItemizerCharitableDeduction,
+        deductions: r.deductions,
+        taxableIncome: r.taxableIncome,
+        federalTax: r.federalTax,
+        controlDeduction: control.nonItemizerCharitableDeduction,
+        controlTax: control.federalTax,
+      };
+    },
+  },
+  {
     id: "t8-comparison-accounts-for-trio",
     kind: "tax",
     note: "T8 (f) — THE GREATER-OF COMPARISON RUNS ON POST-TRIO FIGURES (hand-derived): (1) THE FLIP: 2026 MFJ, AGI $100,000, mortgage interest $31,000, charitable $2,000. BEFORE the trio the itemized total would have been $33,000 and would have beaten the bare $32,200 standard deduction; AFTER the floor the charitable component is $1,500 and the itemized total is $32,500, while the standard side carries $32,200 + the $2,000 §170(p) deduction — the standard side wins, §170(p) applies below the line (AGI stays $100,000; deductions are $32,200 + $2,000 = $34,200), taxable income $65,800, tax $7,400. (2) NO FLIP: mortgage interest $40,000 instead — the itemized total after the floor is $41,500 and wins; an itemizer gets NO §170(p) (AGI stays $100,000), taxable income $58,500, tax $2,480 + 12% × $33,700 = $6,524.",
@@ -21318,14 +21487,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t8-trio-plan-march-and-contract",
     kind: "tax",
-    note: "T8 (k) — THE TRIO FLOWS THROUGH THE PLAN MARCH, THE FUNDING ROWS, AND THE CONTRACT TEXT (hand-derived from T8 (d)): a two-year plan (2026–2027, ages 57–58, $100,000 of other ordinary income, $2,000 of charitable contributions entered, no balances, no spending, Do Nothing) prices the T8 (d) year twice — the 2027 year carries the 2026 law row forward, the trio is law-year data (2026+), and nothing in the year deflates — so each year carries the §170(p) deduction $2,000 on its detail, AGI $100,000 (§170(p) is below the line per §63(b)(4) and does not reduce AGI), and federal tax $7,400; the lifetime federal tax is $14,800. The funding rows carry the same §170(p) figure in integer cents ($200,000) with a $0 §68 reduction. The contract's itemizedDeductionSemantics names all three rules, the statute sections, the 2/37 fraction, the below-the-line placement (§63(b)(4)), the assumed married-filing-separately figure, and the cash-treatment simplification.",
+    note: "T8 (k) — THE TRIO FLOWS THROUGH THE PLAN MARCH, THE FUNDING ROWS, AND THE CONTRACT TEXT (hand-derived from T8 (d)): a two-year plan (2026–2027, ages 57–58, $100,000 of other ordinary income, $2,000 of charitable contributions entered, no balances, no spending, Do Nothing) prices the T8 (d) year twice — with one contract-v61 correction: the 2027 year carries the 2026 law row forward and the §170(p) cap is statute-fixed, so it DEFLATES at the plan's 2.5% inflation (F4): the 2027 cap is $2,000 / 1.025 = $1,951.22, that year's federal tax is $2,480 + 12% × $41,048.78 = $7,405.85, and the lifetime federal tax is $7,400 + $7,405.85 = $14,805.85 (pre-v61 pins: $2,000 / $7,400 / $14,800, from the false premise that nothing in the carried year deflates). The 2026 year is unmoved: §170(p) deduction $2,000 on its detail, AGI $100,000 (§170(p) is below the line per §63(b)(4) and does not reduce AGI), federal tax $7,400. The funding rows carry the FIRST year's §170(p) figure in integer cents ($200,000) with a $0 §68 reduction. The contract's itemizedDeductionSemantics names all three rules, the statute sections, the 2/37 fraction, the below-the-line placement (§63(b)(4)), the assumed married-filing-separately figure, and the cash-treatment simplification.",
     expected: {
       years: 2,
       y1NonItemizer: 2000,
       y1Agi: 100000,
       y1Tax: 7400,
-      y2NonItemizer: 2000,
-      lifetimeFederal: 14800,
+      y2NonItemizer: 1951.22,
+      lifetimeFederal: 14805.85,
       fundingNonItemizerCents: 200000,
       fundingS68Cents: 0,
       semanticsFloor: 1,
@@ -21988,7 +22157,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "audit2-170p-below-the-line",
     kind: "tax",
-    note: "ENGINE-AUDIT ROUND 2, FIX 1 — §170(p) IS BELOW THE LINE (hand-derived; IRC §170(p), §63(b)(4), §62): (1) THE AUDIT'S CASE: 2026 MFJ, AGI $100,000 all ordinary, $2,000 of eligible cash giving, standard side wins. §170(p) is a deduction FROM AGI in determining taxable income (§63(b)(4)); §62 does not list it, so AGI stays $100,000 and ACA MAGI stays $100,000 (the trio's original build reduced both to $98,000), and taxable income reflects the extra $2,000 deduction inside deductions: $32,200 standard + $2,000 = $34,200, taxable income $65,800, tax $2,480 + 12% × $41,000 = $7,400. (2) THE §224 SENIOR DEDUCTION IS PRICED ON THE TRUE AGI: 2026 MFJ, both spouses 65+, AGI $152,000, charitable $2,000, standard side wins. The senior phase-out runs on $152,000 (not $152,000 − $2,000): excess $2,000 over the $150,000 start, per-person $6,000 − 6% × $2,000 = $5,880, total $11,760 (the old placement priced $12,000). Standard deduction $32,200 + 2 × $1,650 age-65 add-ons = $35,500; deductions $35,500 + $2,000 §170(p) + $11,760 = $49,260; taxable income $102,740; tax $2,480 + $9,120 + 22% × $1,940 = $12,026.80. The itemized side (charitable after the floor: $2,000 − 0.5% × $152,000 = $1,240) loses, as pinned.",
+    note: "ENGINE-AUDIT ROUND 2, FIX 1 — §170(p) IS BELOW THE LINE (hand-derived; IRC §170(p), §63(b)(4), §62): (1) THE AUDIT'S CASE: 2026 MFJ, AGI $100,000 all ordinary, $2,000 of eligible cash giving, standard side wins. §170(p) is a deduction FROM AGI in determining taxable income (§63(b)(4)); §62 does not list it, so AGI stays $100,000 and ACA MAGI stays $100,000 (the trio's original build reduced both to $98,000), and taxable income reflects the extra $2,000 deduction inside deductions: $32,200 standard + $2,000 = $34,200, taxable income $65,800, tax $2,480 + 12% × $41,000 = $7,400. (2) THE §151(d)(5)(C) SENIOR DEDUCTION IS PRICED ON THE TRUE AGI: 2026 MFJ, both spouses 65+, AGI $152,000, charitable $2,000, standard side wins. The senior phase-out runs on $152,000 (not $152,000 − $2,000): excess $2,000 over the $150,000 start, per-person $6,000 − 6% × $2,000 = $5,880, total $11,760 (the old placement priced $12,000). Standard deduction $32,200 + 2 × $1,650 age-65 add-ons = $35,500; deductions $35,500 + $2,000 §170(p) + $11,760 = $49,260; taxable income $102,740; tax $2,480 + $9,120 + 22% × $1,940 = $12,026.80. The itemized side (charitable after the floor: $2,000 − 0.5% × $152,000 = $1,240) loses, as pinned.",
     expected: {
       agi: 100000,
       magi: 100000,

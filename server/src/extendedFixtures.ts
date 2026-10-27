@@ -4271,12 +4271,12 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cold-audit-wording-content",
     kind: "apicontract",
-    note: "Cold-AI audit wording (2026-10-21 audit, explanation-level findings): describeApi publishes STATE_SEMANTICS and EDUCATION_CREDIT_SEMANTICS verbatim, and they must state two things the audit found unstated — whether the Washington $1,000,000 surtax threshold deflates (it does NOT: waCapitalGainsTax applies the nominal threshold in every year, unlike the deflating federal thresholds), and how the Playground's totalTax treats the refundable education credit (totalTax is federalTax plus stateTax and does NOT subtract the refundable portion, which is reported separately and never netted into federalTax or totalTax — the same treatment the plan score identity gives it). This fixture pins only that the published text cannot silently lose either statement.",
+    note: "Cold-AI audit wording (2026-10-21 audit, explanation-level findings; threshold statement REWRITTEN by contract v61, F1): describeApi publishes STATE_SEMANTICS and EDUCATION_CREDIT_SEMANTICS verbatim, and they must state two things the audit found unstated — whether the Washington $1,000,000 surtax threshold deflates (it DOES, since v61: the threshold is statute-fixed — RCW 82.87.040(1)(b), absent from RCW 82.87.150's indexed list — so it deflates in today's-dollars projections like the federal fixed thresholds, while the DOR-indexed standard deduction and charitable amounts stay at their published nominal values; the 2026-10-21 wording stated the opposite and was superseded by the tax-law data audit settlement of 2026-10-27), and how the Playground's totalTax treats the refundable education credit (totalTax is federalTax plus stateTax and does NOT subtract the refundable portion, which is reported separately and never netted into federalTax or totalTax — the same treatment the plan score identity gives it). This fixture pins only that the published text cannot silently lose either statement.",
     expected: { phrasesFound: 4 },
     actual: () => {
       const phrases: [string, string][] = [
-        ["the Washington $1,000,000 surtax threshold does NOT deflate", STATE_SEMANTICS],
-        ["it stays at $1,000,000 in every priced year", STATE_SEMANTICS],
+        ["the Washington $1,000,000 surtax threshold deflates in today's-dollars projections", STATE_SEMANTICS],
+        ["the Washington standard deduction and charitable amounts are DOR-indexed and stay at their published nominal values", STATE_SEMANTICS],
         ["The Playground's totalTax treats the refundable education credit the same way", EDUCATION_CREDIT_SEMANTICS],
         ["totalTax is federalTax plus stateTax, so it does NOT subtract the refundable portion", EDUCATION_CREDIT_SEMANTICS],
       ];

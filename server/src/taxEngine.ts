@@ -164,7 +164,7 @@ export type PriceYearInput = {
   // deduction (base + age-65+ add-ons) and the itemized
   // total (the four components, with the SALT component
   // capped); the OBBBA senior deduction then applies on top
-  // of whichever side wins — §224 allows it whether or not
+  // of whichever side wins — §151(d)(5)(C) allows it whether or not
   // the filer itemizes. The components are the household's
   // own figures as it knows them: the state and local taxes
   // ENGINE prices (T3) are not re-entered here — this input
@@ -286,7 +286,7 @@ export type PriceYearResult = {
   // took ("standard" on a tie — the dollars are the same).
   // `deductions` below is max(standardDeduction,
   // itemizedDeduction) + seniorDeduction: the senior
-  // deduction applies on top of either side (§224).
+  // deduction applies on top of either side (§151(d)(5)(C)).
   itemizedDeduction: number;
   itemizedSaltAllowed: number;
   itemizedSaltCap: number;
@@ -371,7 +371,7 @@ export type PriceYearResult = {
   // the year's alternative minimum taxable income (regular
   // taxable income plus the core-scope add-backs — the SALT
   // deduction actually taken in an itemized year, the
-  // standard deduction in a standard year, and the §224
+  // standard deduction in a standard year, and the §151(d)(5)(C)
   // senior deduction in either year), the §55(d)
   // exemption after its phase-out, the tentative minimum
   // tax (the 26% / 28% rates with the preferential 0% /
@@ -418,7 +418,7 @@ function marginalRate(taxableOrdinary: number, law: YearLaw, fs: FilingStatus): 
 // THE UNINDEXED-THRESHOLD DEFLATION RULE (explicit mechanism,
 // T1): the law figures a statute does NOT inflation-index —
 // the §86 Social Security provisional-income thresholds, the
-// §1411 NIIT thresholds, and the OBBBA §224 senior-deduction
+// §1411 NIIT thresholds, and the OBBBA §151(d)(5)(C) senior-deduction
 // amount and phase-out start — are stated in the dollars of
 // the law row a year prices under. In today's-dollars pricing
 // those nominal figures buy less each year, so the engine
@@ -549,14 +549,20 @@ export function irmaaAnnualPerPerson(tier: number, law: YearLaw): number {
    the DOR's tiered statement of the same law: the first
    $1,000,000 of TAXABLE Washington capital gains at 7%, the
    excess at 9.9%. Every parameter comes from the priced
-   year's law row (the T1 mechanism); the $1,000,000
-   threshold is statutory and unindexed (it is not among RCW
-   82.87.150's applicable amounts), so in today's-dollars
-   modeling it is NOT deflated — the statute states it in
-   nominal dollars for every year, exactly as the DOR
-   publishes it. A year whose gains are negative owes $0 and
-   carries nothing forward (RCW 82.87.040(3)): the base here
-   is floored at $0 before any deduction. */
+   year's law row (the T1 mechanism). The $1,000,000 surtax
+   threshold is statute-fixed: RCW 82.87.040(1)(b) states it
+   and it is NOT among the amounts RCW 82.87.150 adjusts
+   annually, so — like the statute-fixed federal thresholds
+   — it DEFLATES in today's-dollars projections by the
+   priced year's deflation factor (contract v61, F1): the
+   caller passes that factor in and only the threshold is
+   scaled by it. The standard deduction and the charitable
+   threshold / cap ARE among RCW 82.87.150's indexed amounts
+   (DOR publishes their adjusted values), so they stay at
+   their law-row nominal values, undeflated. A year whose
+   gains are negative owes $0 and carries nothing forward
+   (RCW 82.87.040(3)): the base here is floored at $0 before
+   any deduction. */
 
 export type WaCapitalGainsResult = {
   // WA-allocated long-term gains entering the base (≥ 0).
@@ -577,6 +583,13 @@ export function waCapitalGainsTax(args: {
   ltcg: number;
   charitableDonations?: number;
   law: YearLaw;
+  // The priced year's deflation factor (deflationFactor of
+  // the calendar year against the law row's year at the
+  // plan's inflation rate), applied ONLY to the statute-fixed
+  // $1,000,000 surtax threshold — see the block comment above.
+  // Omitted = 1 (a year pricing under its own law row, and
+  // every direct fixture call, deflates zero steps).
+  deflationFactor?: number;
 }): WaCapitalGainsResult {
   const waGains = Math.max(0, args.ltcg);
   const donations = Math.max(0, args.charitableDonations ?? 0);
@@ -588,7 +601,9 @@ export function waCapitalGainsTax(args: {
     0,
     waGains - args.law.waStandardDeduction - charitableDeduction,
   );
-  const atBase = Math.min(taxableGains, args.law.waAdditionalThreshold);
+  const surtaxThreshold =
+    args.law.waAdditionalThreshold * (args.deflationFactor ?? 1);
+  const atBase = Math.min(taxableGains, surtaxThreshold);
   const above = taxableGains - atBase;
   const tax =
     (args.law.waRatePct / 100) * atBase +
@@ -830,7 +845,7 @@ export function applyLossLedger(
      figures apply exactly.
    Form 8863 rounds the phase-out ratio to three decimals;
    the engine uses the exact ratio, its standing treatment
-   of statutory ratios (the §86 and §224 phase-outs price
+   of statutory ratios (the §86 and §151(d)(5)(C) phase-outs price
    the same way). */
 
 export type EducationCreditsResult = {
@@ -973,12 +988,12 @@ export function educationCreditsFor(args: {
      §164(b)(7) cap (§56(b)(1)) — in a year the itemized
      side won, and the STANDARD DEDUCTION (base + age-65+
      add-ons, §56(b)(1)) in a year the standard side won.
-     The OBBBA §224 senior deduction is added back in
+     The OBBBA §151(d)(5)(C) senior deduction is added back in
      BOTH branches: the 2025 Form 6251 instructions place
      the add-back in §56(b)(5)(D), the standard-deduction
-     disallowance family — §224 is claimable whether or
+     disallowance family — §151(d)(5)(C) is claimable whether or
      not the filer itemizes and is disallowed for AMT
-     either way, so the year's priced §224 amount joins
+     either way, so the year's priced §151(d)(5)(C) amount joins
      whichever add-back applies. (An earlier build read
      §56(b)(1) alone and did not add it back; the
      instructions' §56(b)(5)(D) placement governs.)
@@ -1065,7 +1080,7 @@ export function amtFor(args: {
   // greater-of result) — decides which add-back applies.
   deductionTaken: "standard" | "itemized";
   // The standard deduction (base + age-65+ add-ons) —
-  // the add-back in a standard-deduction year. The §224
+  // the add-back in a standard-deduction year. The §151(d)(5)(C)
   // senior deduction is never part of this figure; it
   // arrives separately (seniorDeduction below) and is
   // added back in BOTH branches.
@@ -1073,8 +1088,8 @@ export function amtFor(args: {
   // The SALT amount actually deducted (after the
   // §164(b)(7) cap) — the add-back in an itemized year.
   itemizedSaltAllowed: number;
-  // The year's priced §224 senior deduction amount —
-  // added back in both branches (§56(b)(5)(D): §224 is
+  // The year's priced §151(d)(5)(C) senior deduction amount —
+  // added back in both branches (§56(b)(5)(D): §151(d)(5)(C) is
   // claimable whether or not the filer itemizes and is
   // disallowed for AMT either way).
   seniorDeduction: number;
@@ -1187,7 +1202,7 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // trio) is below the line — §63(b)(4) subtracts it from
   // AGI in determining taxable income, and §62 does not
   // list it — so it never reduces AGI, MAGI, or ACA MAGI.
-  // Every AGI-driven step (the §224 phase-out, the SALT
+  // Every AGI-driven step (the §151(d)(5)(C) phase-out, the SALT
   // phase-down, the charitable floor, the §68 threshold,
   // the education phase-outs, the ACA credit) prices on
   // these figures; the deduction step below applies
@@ -1201,11 +1216,11 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     (fs === "mfj" && input.ageSpouse != null && input.ageSpouse >= 65 ? 1 : 0);
   const standardDeduction =
     law.standardDeduction[fs] + law.age65Addon[fs] * count65;
-  // The §224 senior deduction as a function of the AGI its
+  // The §151(d)(5)(C) senior deduction as a function of the AGI its
   // phase-out runs on: the deduction step below prices it
   // on the year's AGI — the same figure for both sides —
   // because §170(p) is below the line (§63(b)(4)) and never
-  // reduces the AGI the §224 phase-out runs on.
+  // reduces the AGI the §151(d)(5)(C) phase-out runs on.
   const seniorFor = (agiForPhaseOut: number): number => {
     if (
       input.calendarYear < SENIOR_DEDUCTION.firstYear ||
@@ -1214,9 +1229,9 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     ) {
       return 0;
     }
-    // §224 MAGI adds back only foreign-income exclusions — NOT
+    // §151(d)(5)(C) MAGI adds back only foreign-income exclusions — NOT
     // tax-exempt interest — so the phase-out runs on AGI.
-    // The §224 dollar figures are statutory (not indexed), so —
+    // The §151(d)(5)(C) dollar figures are statutory (not indexed), so —
     // exactly like the §86 thresholds and the NIIT threshold
     // above — BOTH the per-person amount and the phase-out
     // start deflate into today's dollars by `defl` (1.0 in the
@@ -1252,7 +1267,7 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // floor. §164(b)(7) modified AGI adds back only the
   // §§911 / 931 / 933 foreign-income exclusions (none
   // modeled) — tax-exempt interest is NOT added back — so
-  // the phase-down runs on AGI, exactly as the §224
+  // the phase-down runs on AGI, exactly as the §151(d)(5)(C)
   // phase-out above does. The cap's dollar figures are
   // statutory (not inflation-indexed), so — like the §86
   // thresholds, the NIIT threshold, and the senior-
@@ -1263,7 +1278,7 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // (for 2025 and 2026 that factor equals the old law-row
   // `defl`, so those years price bit-identically). The
   // OBBBA senior deduction is then added on top of
-  // WHICHEVER side wins: §224 allows it whether or not the
+  // WHICHEVER side wins: §151(d)(5)(C) allows it whether or not the
   // filer itemizes (the law table's own note has always
   // stated this; until this build the engine modeled
   // standard-deduction filers only, so the distinction
@@ -1338,11 +1353,11 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
         call; the engine-audit round-2 fix corrected the
         placement to the statute.)
      The comparison therefore weighs TOTAL deduction
-     effect: (standard + §170(p) + the §224 senior
+     effect: (standard + §170(p) + the §151(d)(5)(C) senior
      deduction, the senior deduction priced on the year's
      AGI) against (the §68-reduced itemized total + the
      same senior deduction). The senior deduction itself
-     is never part of either side — §224 allows it on top
+     is never part of either side — §151(d)(5)(C) allows it on top
      of whichever side wins, exactly as before — it enters
      the comparison only so the greater-of choice weighs
      each side's full effect on taxable income. ---- */
@@ -1400,13 +1415,19 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
       Math.min(itemizedBefore68, excess68);
   }
   const itemizedDeduction = itemizedBefore68 - section68Reduction;
+  // The §170(p) caps are statute-fixed ($1,000 / $2,000, not
+  // indexed), so — exactly like the §151(d)(5)(C) senior
+  // deduction above — the cap deflates into today's dollars
+  // by `defl` at its use site (contract v61, F4; 1.0 in the
+  // base law year and earlier, so 2025–2026 pricing is
+  // unchanged).
   const section170pCandidate = deductionTrioApplies
     ? Math.min(
         charitableEntered,
-        DEDUCTION_2026.nonItemizerCharitableCap[fs],
+        DEDUCTION_2026.nonItemizerCharitableCap[fs] * defl,
       )
     : 0;
-  // The §224 senior deduction is priced on the TRUE AGI on
+  // The §151(d)(5)(C) senior deduction is priced on the TRUE AGI on
   // both sides: §170(p) is below the line and never touches
   // the AGI its phase-out runs on.
   const standardEffect =
@@ -1424,7 +1445,7 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
     // true figures struck above (the §86 taxable-benefits
     // amount is unaffected by §170(p) either way), and
     // `deductions` carries the standard deduction PLUS
-    // the §170(p) amount PLUS the §224 senior deduction
+    // the §170(p) amount PLUS the §151(d)(5)(C) senior deduction
     // (priced on the true AGI), so taxable income below
     // still foots as AGI − deductions.
     nonItemizerCharitableDeduction = section170pCandidate;
@@ -1534,7 +1555,7 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // reduction moves the regular tax only, never the
   // tentative minimum tax. In a standard year there is no
   // §68 figure and the priced taxable income is used as-is.
-  // The §224 senior deduction amount is passed for the
+  // The §151(d)(5)(C) senior deduction amount is passed for the
   // §56(b)(5)(D) add-back inside amtFor, and the regular
   // ordinary stack (ordinaryTi — regular taxable income
   // minus the gains inside it) is passed because Form
@@ -1581,6 +1602,11 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
           // prices from — no second charitable input exists.
           charitableDonations: input.itemizedCharitable,
           law,
+          // The year's deflation factor, for the statute-fixed
+          // surtax threshold only (contract v61, F1) — the
+          // DOR-indexed standard deduction and charitable
+          // amounts inside the pricer stay nominal.
+          deflationFactor: defl,
         })
       : null;
   const stateTax = wa ? wa.tax : (input.stateRatePct / 100) * taxableIncome;

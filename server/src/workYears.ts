@@ -83,7 +83,11 @@
 // law-row work-years limits are stored in cents and converted
 // at this boundary, as are the saved job inputs (cents).
 
-import { priceYear, type RothPlanInputs } from "./taxEngine";
+import {
+  deflationFactor,
+  priceYear,
+  type RothPlanInputs,
+} from "./taxEngine";
 import { lawForYear, type FilingStatus, type YearLaw } from "./taxLaw";
 import {
 runJointOptimizer,
@@ -174,6 +178,14 @@ export function contributionStack(
   // freed salary through its existing formula). Absent / null
   // = not enrolled this year.
   medicareAgePrimary?: number | null,
+  // The priced year's deflation factor (deflationFactor of
+  // the calendar year against the law row's year at the
+  // plan's inflation rate), applied ONLY to the statute-fixed
+  // HSA age-55 catch-up (contract v61, F3). The indexed base
+  // limits stay as read from the row. Omitted = 1 (a year
+  // pricing under its own law row, and every direct fixture
+  // call, deflates zero steps).
+  defl?: number,
 ): ContributionStack {
   const empty: ContributionStack = {
     deferral: 0,
@@ -200,9 +212,13 @@ export function contributionStack(
   // deduction — it reduces Box 3; the pre-tax 401(k) deferral
   // does NOT). Computed here because the catch-up test below
   // reads wages; the HSA figures themselves are unchanged.
+  // The base limits are inflation-indexed and stay as read
+  // from the row; the age-55 catch-up is statute-fixed at
+  // $1,000 (§223(b)(3), not indexed), so it deflates into
+  // today's dollars by the year's factor (contract v61, F3).
   const hsaLimit =
     (filingStatus === "mfj" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 +
-    (age >= 55 ? law.hsaCatchUp55 / 100 : 0);
+    (age >= 55 ? (law.hsaCatchUp55 / 100) * (defl ?? 1) : 0);
   // HSA eligibility (contract v58, F6): Medicare enrollment
   // ends HSA eligibility, so a year at or after the primary's
   // Medicare enrollment age makes NO HSA contribution of
@@ -305,10 +321,17 @@ export type PayrollTaxBreakdown = {
 // Medicare at the row's rate on all wages, plus the
 // Additional Medicare Tax at the row's rate over the row's
 // filing-status threshold. The employer share is not priced.
+// The wage base and the rates are inflation-indexed / rate
+// data and stay as read; the Additional Medicare threshold
+// is statute-fixed (§3101(b)(2), not indexed), so it deflates
+// into today's dollars by the caller's deflation factor
+// (contract v61, F2; omitted = 1, a year pricing under its
+// own law row deflates zero steps).
 export function payrollTaxBreakdown(
   ficaWages: number,
   filingStatus: FilingStatus,
   law: YearLaw,
+  defl = 1,
 ): PayrollTaxBreakdown {
   if (ficaWages <= 0) {
     return { socialSecurity: 0, medicare: 0, additionalMedicare: 0, total: 0 };
@@ -319,7 +342,10 @@ export function payrollTaxBreakdown(
   const medicare = (law.payrollMedicareRatePct / 100) * ficaWages;
   const additional =
     (law.payrollAdditionalMedicareRatePct / 100) *
-    Math.max(0, ficaWages - law.payrollAdditionalMedicareThreshold[filingStatus]);
+    Math.max(
+      0,
+      ficaWages - law.payrollAdditionalMedicareThreshold[filingStatus] * defl,
+    );
   return {
     socialSecurity: r2(ss),
     medicare: r2(medicare),
@@ -332,8 +358,9 @@ export function ficaTax(
   ficaWages: number,
   filingStatus: FilingStatus,
   law: YearLaw,
+  defl = 1,
 ): number {
-  return payrollTaxBreakdown(ficaWages, filingStatus, law).total;
+  return payrollTaxBreakdown(ficaWages, filingStatus, law, defl).total;
 }
 
 /* ---------------- The taxable basis ledger (contract v58, F2) ----------------
@@ -700,6 +727,15 @@ export function priceOneWorkYear(
 ): WorkYearLine {
   const calendarYear = plan.birthYearPrimary + age;
   const law = lawForYear(calendarYear);
+  // Today's-dollars deflation for this priced year (contract
+  // v61, F2/F3): the plan's inflationPct against the law
+  // row's year — 1.0 for a year with its own row. Only the
+  // statute-fixed amounts deflate (the §3101(b)(2) Additional
+  // Medicare threshold in the payroll below, the §223(b)(3)
+  // HSA age-55 catch-up inside the stack); every indexed
+  // amount (wage base, base HSA limits, deferral limits) is
+  // read from the row unchanged.
+  const defl = deflationFactor(calendarYear, law.year, plan.inflationPct);
   const stack = contributionStack(
     age,
     job.salary,
@@ -709,6 +745,7 @@ export function priceOneWorkYear(
     law,
     priorYearWages,
     job.medicareAgePrimary ?? null,
+    defl,
   );
   const catchUpPreTax = stack.catchUpIsRoth ? 0 : stack.catchUp;
   const taxableWages = r2(
@@ -808,6 +845,7 @@ export function priceOneWorkYear(
     Math.max(0, ficaWages),
     plan.filingStatus,
     law,
+    defl,
   );
   const fica = payroll.total;
   const ownContributions =

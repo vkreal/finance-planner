@@ -78,7 +78,7 @@ export type YearLaw = {
      cents end to end. Sources: IRS Notice 2024-80 (2025) and
      Notice 2025-67 / SSA wage-base release (2026) for the
      deferral / catch-up / §415(c) / wage-base figures; the HSA
-     limits are from Rev. Proc. 2024-18 (2025) and Rev. Proc.
+     limits are from Rev. Proc. 2024-25 (2025) and Rev. Proc.
      2025-19 (2026). ---- */
   // §402(g) elective deferral limit (401(k)).
   elective401kLimit: number;
@@ -167,7 +167,11 @@ export type YearLaw = {
   // waAdditionalThreshold — a 9.9% combined marginal rate
   // above the threshold. The statute does not index the
   // threshold (RCW 82.87.150's adjustment list does not reach
-  // it), so it is a fixed $1,000,000 in every row.
+  // it), so it is a fixed $1,000,000 in every row — and, as a
+  // statute-fixed amount, the pricer deflates it in
+  // today's-dollars projections (contract v61, F1); the
+  // DOR-indexed standard deduction and charitable amounts
+  // beside it price at their row values, undeflated.
   waAdditionalRatePct: number;
   waAdditionalThreshold: number;
   // Charitable donation deduction (RCW 82.87.080):
@@ -204,7 +208,7 @@ export type YearLaw = {
      the law rows stay self-describing and the T5 fixtures
      that pin them keep their meaning; they price only
      years before 2025, on the pre-Build-B path. Like the
-     NIIT thresholds and the §224 senior-deduction figures,
+     NIIT thresholds and the §151(d)(5)(C) senior-deduction figures,
      the cap is statutory (not inflation-indexed — the 1%
      bump is a fixed statutory escalator), so the engine
      DEFLATES these dollar figures at the plan's inflation
@@ -224,7 +228,7 @@ export type YearLaw = {
   // foreign-income exclusions — none modeled by this engine,
   // and tax-exempt interest is NOT added back, so the engine
   // phases the cap down on AGI, exactly as it phases out
-  // the §224 senior deduction).
+  // the §151(d)(5)(C) senior deduction).
   saltPhaseOutStart: number;
   // The phase-down rate: the cap is reduced by this percent
   // of the modified AGI above saltPhaseOutStart, down to
@@ -708,7 +712,7 @@ export const DEDUCTION_2026 = {
    models standard-deduction filers). Phases out at 6% of MAGI
    over $75,000 single / $150,000 joint; not available MFS (the
    engine has no MFS status). Amounts are statutory (not indexed).
-   §224 MAGI adds back only foreign-income exclusions (which the
+   §151(d)(5)(C) MAGI adds back only foreign-income exclusions (which the
    engine does not model) — it does NOT add back tax-exempt
    interest, so the engine phases the deduction out on AGI. */
 export const SENIOR_DEDUCTION = {
