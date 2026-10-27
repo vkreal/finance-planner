@@ -502,7 +502,7 @@ function yearInSpending(core: SpendingCore, year: number, floorMonth: string) {
 // primitives, exactly as getExplorer and the Year Summary's top
 // categories run it: monthly bills at versionInEffect amounts,
 // smoothed bills at core.billMonthlyAccrual, grouped by category,
-// plus the "Everything else" residual (True cost − pivot total)
+// plus the "Other spending" residual (True cost − pivot total)
 // competing in the same sort (total desc, label tie-break).
 // Category assignments for the synthetic bills (the core dataset
 // carries no categories, so the fixture states them here):
@@ -540,7 +540,7 @@ function categoryPivot(
   }
   const rows = [...groupMap.entries()].map(([label, totalCents]) => ({ label, totalCents }));
   const pivotTotal = rows.reduce((s, r) => s + r.totalCents, 0);
-  rows.push({ label: "Everything else", totalCents: totalTrueCost - pivotTotal });
+  rows.push({ label: "Other spending", totalCents: totalTrueCost - pivotTotal });
   rows.sort((a, b) => b.totalCents - a.totalCents || a.label.localeCompare(b.label));
   return { rows, pivotTotal, residual: totalTrueCost - pivotTotal };
 }
@@ -952,7 +952,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-accrual-per-bill-rounding",
     kind: "spending",
-    note: "Rounding pin: three yearly bills of $100.00 each. Per-bill monthly set-aside = round($100.00 / 12) = $8.33, so the month's set-aside is $8.33 × 3 = $24.99. The old annual-once method — round($300.00 / 12) = $25.00 — diverged by 1¢; the dashboard accrual must be the sum of the per-bill rounded set-asides the cards show.",
+    note: "Rounding pin: three yearly bills of $100.00 each. January's per-bill set-aside under cumulative rounding = round($100.00 × 1/12) − round($0) = $8.33, so the month's set-aside is $8.33 × 3 = $24.99. The annual-once method — round($300.00 / 12) = $25.00 — diverged by 1¢; the dashboard accrual must be the sum of the per-bill set-asides the cards show. (January is unchanged from the old flat rule; the cumulative rule's conservation over the full year is pinned by sp-accrual-cumulative-conservation.)",
     expected: { totalAnnual: 30000, accrual: 2499, billMonthly: 833 },
     actual: () => {
       const bills3: CoreYearlyBillNamed[] = [1, 2, 3].map((id) => ({
@@ -992,6 +992,153 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "sp-accrual-cumulative-conservation",
+    kind: "spending",
+    note: "Cumulative rounding conservation (contract v59, F3): one yearly bill of $100.00/yr. Monthly set-aside for month n = round(10000 × n/12) − round(10000 × (n−1)/12): Jan $8.33 (833), Feb $8.34 (1667 − 833), Aug $8.34 (6667 − 5833), Dec $8.33 (10000 − 9167) — February and August differ from the old flat round(10000/12) = $8.33 repeated. The twelve monthly set-asides sum to exactly $100.00 (10000), where the flat rule summed to $99.96. Three such bills: the year's total set-aside is exactly $300.00 (30000).",
+    expected: { jan: 833, feb: 834, aug: 834, dec: 833, yearOneBill: 10000, yearThreeBills: 30000 },
+    actual: () => {
+      const bills3: CoreYearlyBillNamed[] = [1, 2, 3].map((id) => ({
+        id,
+        name: `Round${id}`,
+        frequency: "yearly",
+        expectedCents: 10000,
+        dueMonth: 1,
+        backfillBeforeFirstVersion: 0,
+        keepLightsOn: 0,
+      }));
+      const versions3: CoreYearlyVersion[] = bills3.map((b, i) => ({
+        id: 100 + i,
+        expenseId: b.id,
+        effectiveFrom: "2024-11",
+        expectedCents: 10000,
+        frequency: "yearly",
+      }));
+      const c = createSpendingCore({
+        txns: [],
+        yearly: bills3,
+        yearlyVersions: versions3,
+        summaries: [],
+        cashOutItems: [],
+        bills: [],
+        billVersions: [],
+        oneOffs: [],
+        openingReserveCents: 0,
+        reserveStartSetting: null,
+      });
+      const first = bills3[0] as CoreYearlyBillNamed;
+      let yearOneBill = 0;
+      let yearThreeBills = 0;
+      for (let n = 1; n <= 12; n++) {
+        const m = `2025-${String(n).padStart(2, "0")}`;
+        yearOneBill += c.billMonthlyAccrual(first, m);
+        yearThreeBills += c.accrualForMonth(m);
+      }
+      return {
+        jan: c.billMonthlyAccrual(first, "2025-01"),
+        feb: c.billMonthlyAccrual(first, "2025-02"),
+        aug: c.billMonthlyAccrual(first, "2025-08"),
+        dec: c.billMonthlyAccrual(first, "2025-12"),
+        yearOneBill,
+        yearThreeBills,
+      };
+    },
+  },
+  {
+    id: "sp-cash-basis-micro-case",
+    kind: "spending",
+    note: "One cash basis for every entry mode (contract v59, F1 — the audit's micro-case 1, all transaction-recorded): a $1,000.00 monthly bill leaves checking each month (unlinked checking spending), a $1,200.00 yearly bill (set-aside $100.00/mo) is paid from checking in February, and a $300.00 card charge made in January is paid from checking in February; spending otherwise zero. Cash out: Jan $1,000.00, Feb $1,000 + $1,200 + $300 = $2,500.00, Mar $1,000.00. True cost = cash out − settled yearly lumps + set-aside: Jan 1000 − 0 + 100 = $1,100.00; Feb 2500 − 1200 + 100 = $1,400.00; Mar 1000 − 0 + 100 = $1,100.00. (The pre-v59 incurred branch priced Jan $1,400.00 / Feb $1,100.00.) Everything else (cash out − monthly bills − yearly paid out): Jan $0.00, Feb $300.00, Mar $0.00; yearly paid out counts the $1,200.00 in February, its settlement month.",
+    expected: {
+      janTrue: 110000, febTrue: 140000, marTrue: 110000,
+      janElse: 0, febElse: 30000, marElse: 0,
+      janPaid: 0, febPaid: 120000,
+    },
+    actual: () => {
+      const bills: CoreYearlyBillNamed[] = [
+        { id: 1, name: "YearlyBill", frequency: "yearly", expectedCents: 120000, dueMonth: 2, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+      ];
+      const versions: CoreYearlyVersion[] = [
+        { id: 1, expenseId: 1, effectiveFrom: "2025-11", expectedCents: 120000, frequency: "yearly" },
+      ];
+      const txns: CoreTxn[] = [
+        { date: "2026-01-05", kind: "spending", sourceType: "checking", amountCents: 100000, yearlyExpenseId: null },
+        { date: "2026-01-10", kind: "spending", sourceType: "card", amountCents: 30000, yearlyExpenseId: null },
+        { date: "2026-02-05", kind: "spending", sourceType: "checking", amountCents: 100000, yearlyExpenseId: null },
+        { date: "2026-02-10", kind: "spending", sourceType: "checking", amountCents: 120000, yearlyExpenseId: 1 },
+        { date: "2026-02-15", kind: "card_payment", sourceType: "checking", amountCents: 30000, yearlyExpenseId: null },
+        { date: "2026-03-05", kind: "spending", sourceType: "checking", amountCents: 100000, yearlyExpenseId: null },
+      ];
+      const c = createSpendingCore({
+        txns,
+        yearly: bills,
+        yearlyVersions: versions,
+        summaries: [],
+        cashOutItems: [],
+        bills: [],
+        billVersions: [],
+        oneOffs: [],
+        openingReserveCents: 0,
+        reserveStartSetting: null,
+      });
+      const elseFor = (m: string) =>
+        c.eff(m).cashOut - 100000 - c.yearlyPaidOutForMonth(m);
+      return {
+        janTrue: c.eff("2026-01").smoothed,
+        febTrue: c.eff("2026-02").smoothed,
+        marTrue: c.eff("2026-03").smoothed,
+        janElse: elseFor("2026-01"),
+        febElse: elseFor("2026-02"),
+        marElse: elseFor("2026-03"),
+        janPaid: c.yearlyPaidOutForMonth("2026-01"),
+        febPaid: c.yearlyPaidOutForMonth("2026-02"),
+      };
+    },
+  },
+  {
+    id: "sp-card-settlement-attribution",
+    kind: "spending",
+    note: "The yearly-payment correction follows the money (contract v59, F2 — the audit's two-month case): a $1,200.00 yearly bill (set-aside $100.00/mo) is CHARGED to a card in January; January's entered cash-out total is $0. In February a generic $1,200.00 card payment leaves checking and February's entered total is $1,200.00; no other spending. FIFO attribution settles the January charge with the February payment, so the correction fires in February: Jan True cost = 0 − 0 + 100 = $100.00; Feb True cost = 1200 − 1200 settled + 100 = $100.00 (the pre-v59 code priced February $1,300.00 — the correction never fired). Yearly paid out counts the payment in its settlement month: Jan $0.00, Feb $1,200.00; settled lumps: Jan $0.00, Feb $1,200.00.",
+    expected: {
+      janTrue: 10000, febTrue: 10000,
+      janPaid: 0, febPaid: 120000,
+      janLumps: 0, febLumps: 120000,
+    },
+    actual: () => {
+      const bills: CoreYearlyBillNamed[] = [
+        { id: 1, name: "CardYearly", frequency: "yearly", expectedCents: 120000, dueMonth: 1, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+      ];
+      const versions: CoreYearlyVersion[] = [
+        { id: 1, expenseId: 1, effectiveFrom: "2025-11", expectedCents: 120000, frequency: "yearly" },
+      ];
+      const txns: CoreTxn[] = [
+        { date: "2026-01-10", kind: "spending", sourceType: "card", amountCents: 120000, yearlyExpenseId: 1 },
+        { date: "2026-02-15", kind: "card_payment", sourceType: "checking", amountCents: 120000, yearlyExpenseId: null },
+      ];
+      const c = createSpendingCore({
+        txns,
+        yearly: bills,
+        yearlyVersions: versions,
+        summaries: [
+          { month: "2026-01", cashOutCents: 0 },
+          { month: "2026-02", cashOutCents: 120000 },
+        ],
+        cashOutItems: [],
+        bills: [],
+        billVersions: [],
+        oneOffs: [],
+        openingReserveCents: 0,
+        reserveStartSetting: null,
+      });
+      return {
+        janTrue: c.eff("2026-01").smoothed,
+        febTrue: c.eff("2026-02").smoothed,
+        janPaid: c.yearlyPaidOutForMonth("2026-01"),
+        febPaid: c.yearlyPaidOutForMonth("2026-02"),
+        janLumps: c.eff("2026-01").lumps,
+        febLumps: c.eff("2026-02").lumps,
+      };
+    },
+  },
+  {
     id: "sp-late-start-bill-zero-before-start",
     kind: "spending",
     note: "LateStart's only version starts Mar 2025: it contributes $0 in Feb (annualised still $4,800.00) and its full $2,400.00/yr from Mar (total $7,200.00, set-aside $600.00, its own set-aside $200.00).",
@@ -1007,8 +1154,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-txn-month-eff",
     kind: "spending",
-    note: "Jan 2025 (transactions basis): incurred = $500.00 spending + $200.00 BiWater + $300.00 card-paid QuarterFee = $1,000.00; lumps = the two linked payments $500.00; cash out counts checking only = $700.00 (the card charge is not cash out); smoothed = 1000 − 500 + 400 set-aside = $900.00.",
-    expected: { incurred: 100000, cashOut: 70000, lumps: 50000, smoothed: 90000 },
+    note: "Jan 2025 (transaction-only month, cash basis — contract v59 F1/F2): incurred = $500.00 spending + $200.00 BiWater + $300.00 card-paid QuarterFee = $1,000.00 (reported, no longer the True cost basis); cash out counts checking only = $700.00 (the card charge is not cash out); lumps = the yearly money whose cash left checking in January = BiWater's $200.00 only — QuarterFee's $300.00 card charge is settled by February's card payment, so its correction lands in February; smoothed = cash out 700 − 200 settled + 400 set-aside = $900.00. (Pre-v59 this pinned the incurred basis: 1000 − 500 + 400 = $900.00 — the same total by coincidence, with the card charge counted in both incurred and lumps.)",
+    expected: { incurred: 100000, cashOut: 70000, lumps: 20000, smoothed: 90000 },
     actual: (w) => {
       const e = w.core.eff("2025-01");
       return { incurred: e.incurred, cashOut: e.cashOut, lumps: e.lumps, smoothed: e.smoothed };
@@ -1017,8 +1164,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-summary-month-lump-fallback",
     kind: "spending",
-    note: "Feb 2025 (entered total $9,000.00): the total is the base — the month's transactions are not added. Only the checking lump inside it (AnnualSub's early $1,200.00 payment) is subtracted; Feb's $300.00 card payment is not a lump. Smoothed = 9000 − 1200 + 400 = $8,200.00.",
-    expected: { incurred: 900000, cashOut: 900000, lumps: 120000, smoothed: 820000 },
+    note: "Feb 2025 (entered total $9,000.00): the total is the base — the month's transactions are not added. The settled lumps subtracted are AnnualSub's early $1,200.00 checking payment PLUS QuarterFee's $300.00 card charge from January, settled by February's $300.00 card payment (FIFO attribution, contract v59 F2) = $1,500.00. Smoothed = 9000 − 1500 + 400 = $7,900.00. (Pre-v59: only the checking lump was subtracted and February priced $8,200.00 — the card settlement was missed entirely.)",
+    expected: { incurred: 900000, cashOut: 900000, lumps: 150000, smoothed: 790000 },
     actual: (w) => {
       const e = w.core.eff("2025-02");
       return { incurred: e.incurred, cashOut: e.cashOut, lumps: e.lumps, smoothed: e.smoothed };
@@ -1047,8 +1194,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-reserve-accumulation",
     kind: "spending",
-    note: "Reserve from Jan 2025 (opening $0): Jan +400 set-aside − 500 lumps = −$100.00; Feb + 400 − 1,200 (the early AnnualSub payment, on the summary month's checking-lumps basis) = −$900.00; Mar + 600 − 600 (SemiIns's late payment) = −$900.00.",
-    expected: { startMonth: 202501, jan: -10000, feb: -90000, mar: -90000 },
+    note: "Reserve from Jan 2025 (opening $0), on the settlement basis (contract v59): Jan +400 set-aside − 200 settled lumps (BiWater's checking payment; QuarterFee's card charge settles in Feb) = +$200.00; Feb + 400 − 1,500 settled (AnnualSub's early $1,200.00 checking payment + QuarterFee's $300.00 settlement) = −$900.00; Mar + 600 − 600 (SemiIns's late checking payment) = −$900.00. (Pre-v59 January read −$100.00 on the charge-month basis; Feb/Mar totals are unchanged.)",
+    expected: { startMonth: 202501, jan: 20000, feb: -90000, mar: -90000 },
     actual: (w) => ({
       startMonth: w.core.reserveStartMonth ? Number(w.core.reserveStartMonth.replace("-", "")) : null,
       jan: w.core.reserveThrough("2025-01"),
@@ -1059,11 +1206,11 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-forecast-card-and-late-payments",
     kind: "spending",
-    note: "Forecast viewed from Jan 2025. Jan: QuarterFee due — its recorded card payment ($300.00) is the amount; BiWater due and paid ($200.00); total due $500.00, projected reserve = the calculated reserve −$100.00. Feb: SemiIns due, unpaid yet — expected $600.00; projected reserve −100 + 400 − 600 due − 1,200 (AnnualSub's early Feb payment for a bill not due in Feb) = −$1,500.00. Mar: AnnualSub due — expected $1,200.00 (its actual landed in Feb); BiWater due $200.00; projected reserve −1,500 + 600 − 1,400 due − 600 (SemiIns's late Mar payment, not due in Mar) = −$2,900.00.",
+    note: "Forecast viewed from Jan 2025. Jan: QuarterFee due — its recorded card payment ($300.00) is the amount; BiWater due and paid ($200.00); total due $500.00, projected reserve = the calculated reserve +$200.00 (settlement basis — see sp-reserve-accumulation). Feb: SemiIns due, unpaid yet — expected $600.00; projected reserve 200 + 400 − 600 due − 1,200 (AnnualSub's early Feb payment for a bill not due in Feb) = −$1,200.00. Mar: AnnualSub due — expected $1,200.00 (its actual landed in Feb); BiWater due $200.00; projected reserve −1,200 + 600 − 1,400 due − 600 (SemiIns's late Mar payment, not due in Mar) = −$2,600.00.",
     expected: {
-      janDue: 50000, janProjected: -10000, janY3Amount: 30000,
-      febDue: 60000, febProjected: -150000, febY2Amount: 60000,
-      marDue: 140000, marProjected: -290000, marY1Amount: 120000,
+      janDue: 50000, janProjected: 20000, janY3Amount: 30000,
+      febDue: 60000, febProjected: -120000, febY2Amount: 60000,
+      marDue: 140000, marProjected: -260000, marY1Amount: 120000,
     },
     actual: (w) => {
       const [jan, feb, mar] = w.forecastJan;
@@ -1267,8 +1414,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "ys-2025-spending",
     kind: "yearsummary",
-    note: "2025 spending over all 12 data months (the monthly bills make every month a data month): True cost = Jan $900.00 + Feb $8,200.00 + Mar $4,500.00 + 9 accrual-only months × $600.00 = $19,000.00; cash out = $700.00 + $9,000.00 + $4,500.00 = $14,200.00; average = 19000/12 rounded = $1,583.33. Scope endpoints: January (1) through December (12).",
-    expected: { months: 12, trueCost: 1900000, cashOut: 1420000, average: 158333, firstMonthNum: 1, lastMonthNum: 12 },
+    note: "2025 spending over all 12 data months (the monthly bills make every month a data month): True cost = Jan $900.00 + Feb $7,900.00 + Mar $4,500.00 + 9 accrual-only months × $600.00 = $18,700.00; cash out = $700.00 + $9,000.00 + $4,500.00 = $14,200.00; average = 18700/12 rounded = $1,558.33. (February is $7,900.00 since contract v59 — its entered total also settles January's $300.00 card-paid QuarterFee; pre-v59 the year read $19,000.00.) Scope endpoints: January (1) through December (12).",
+    expected: { months: 12, trueCost: 1870000, cashOut: 1420000, average: 155833, firstMonthNum: 1, lastMonthNum: 12 },
     actual: (w) => yearSpending(w.core, 2025),
   },
   {
@@ -1544,9 +1691,9 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "ys-year-in-spending-aggregates",
     kind: "yearsummary",
-    note: "Year-in-spending aggregates for 2025, derived BY HAND from the dataset's per-month True costs (ys-2025-spending): Jan $900.00, Feb $8,200.00, Mar $4,500.00, Apr–Dec $600.00 each. Highest is therefore February (month 2) at $8,200.00 with $0 one-offs; the lowest is the earliest of the nine tied $600.00 months, April (month 4), at $600.00 with $0 one-offs. The year's only one-off is January's $777.00, so totalOneOffs is $777.00. Floor at Dec 2025: Rent $1,000.00 (lights-on) + QuarterFee's $100.00 set-aside (the only lights-on smoothed bill) = $1,100.00 — the same figure sp-monthly-total-and-klo pins for Jan and Mar.",
+    note: "Year-in-spending aggregates for 2025, derived BY HAND from the dataset's per-month True costs (ys-2025-spending): Jan $900.00, Feb $7,900.00, Mar $4,500.00, Apr–Dec $600.00 each. Highest is therefore February (month 2) at $7,900.00 with $0 one-offs; the lowest is the earliest of the nine tied $600.00 months, April (month 4), at $600.00 with $0 one-offs. The year's only one-off is January's $777.00, so totalOneOffs is $777.00. Floor at Dec 2025: Rent $1,000.00 (lights-on) + QuarterFee's $100.00 set-aside (the only lights-on smoothed bill) = $1,100.00 — the same figure sp-monthly-total-and-klo pins for Jan and Mar.",
     expected: {
-      highestMonthNum: 2, highestTrueCost: 820000, highestOneOffs: 0,
+      highestMonthNum: 2, highestTrueCost: 790000, highestOneOffs: 0,
       lowestMonthNum: 4, lowestTrueCost: 60000, lowestOneOffs: 0,
       totalOneOffs: 77700, floor: 110000,
     },
@@ -1555,13 +1702,13 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "ys-top-categories-pivot-and-residual",
     kind: "yearsummary",
-    note: "Top categories for 2025, derived BY HAND with the category assignments stated above categoryPivot. Over the 12 included months: Housing = Rent $1,000.00 × 12 = $12,000.00; Health = Gym $50.00 × 12 = $600.00; Subscriptions = AnnualSub accrual $100.00 × 12 ($1,200.00) + LateStart accrual $200.00 × Mar–Dec 10 months ($2,000.00) = $3,200.00; Insurance = SemiIns $100.00 × 12 = $1,200.00; Fees = QuarterFee $100.00 × 12 = $1,200.00; Utilities = BiWater $100.00 × 12 = $1,200.00. Pivot total = 12,000 + 600 + 3,200 + 1,200 × 3 = $19,400.00. Total True cost is $19,000.00 (ys-2025-spending), so the Everything else residual = 19,000 − 19,400 = −$400.00. Sorted desc with label tie-breaks, the top 5 are Housing, Subscriptions, then Fees / Insurance / Utilities (tied at $1,200.00, alphabetical) — Everything else (−$400.00) and Health ($600.00) fall outside the top 5, and all 7 rows sum exactly to True cost. Over Jan–Mar alone the same pivot gives: pivot $4,550.00 (Housing $3,000.00 + Health $150.00 + Subscriptions $300.00 + $200.00 + Insurance $300.00 + Fees $300.00 + Utilities $300.00) against True cost $900.00 + $8,200.00 + $4,500.00 = $13,600.00, so the residual is $9,050.00 and IS the top row — the residual competes like any other row.",
+    note: "Top categories for 2025, derived BY HAND with the category assignments stated above categoryPivot. Over the 12 included months: Housing = Rent $1,000.00 × 12 = $12,000.00; Health = Gym $50.00 × 12 = $600.00; Subscriptions = AnnualSub accrual $100.00 × 12 ($1,200.00) + LateStart accrual $200.00 × Mar–Dec 10 months ($2,000.00) = $3,200.00; Insurance = SemiIns $100.00 × 12 = $1,200.00; Fees = QuarterFee $100.00 × 12 = $1,200.00; Utilities = BiWater $100.00 × 12 = $1,200.00. Pivot total = 12,000 + 600 + 3,200 + 1,200 × 3 = $19,400.00. Total True cost is $18,700.00 (ys-2025-spending), so the Other spending residual (the True-cost residual's label since contract v59, F5) = 18,700 − 19,400 = −$700.00. Sorted desc with label tie-breaks, the top 5 are Housing, Subscriptions, then Fees / Insurance / Utilities (tied at $1,200.00, alphabetical) — Other spending (−$700.00) and Health ($600.00) fall outside the top 5, and all 7 rows sum exactly to True cost. Over Jan–Mar alone the same pivot gives: pivot $4,550.00 (Housing $3,000.00 + Health $150.00 + Subscriptions $300.00 + $200.00 + Insurance $300.00 + Fees $300.00 + Utilities $300.00) against True cost $900.00 + $7,900.00 + $4,500.00 = $13,300.00, so the residual is $8,750.00 and IS the top row — the residual competes like any other row.",
     expected: {
-      pivotTotal: 1940000, residual: -40000,
+      pivotTotal: 1940000, residual: -70000,
       top1Total: 1200000, top2Total: 320000, top3Total: 120000,
       top4Total: 120000, top5Total: 120000,
-      top1IsHousing: 1, top3IsFees: 1, allRowsSum: 1900000, rowCount: 7,
-      janMarResidual: 905000, janMarTopIsEverythingElse: 1,
+      top1IsHousing: 1, top3IsFees: 1, allRowsSum: 1870000, rowCount: 7,
+      janMarResidual: 875000, janMarTopIsEverythingElse: 1,
     },
     actual: (w) => {
       const months2025: string[] = [];
@@ -1587,17 +1734,17 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         allRowsSum: full.rows.reduce((s, r) => s + r.totalCents, 0),
         rowCount: full.rows.length,
         janMarResidual: janMar.residual,
-        janMarTopIsEverythingElse: janMar.rows[0]?.label === "Everything else" ? 1 : 0,
+        janMarTopIsEverythingElse: janMar.rows[0]?.label === "Other spending" ? 1 : 0,
       };
     },
   },
   {
     id: "ys-trend-rows",
     kind: "yearsummary",
-    note: "Multi-year trend rows, derived BY HAND (property off). 2024: spending data in Nov + Dec only, each an accrual-only $400.00 month → 2 months, True cost $800.00; exactly ONE snapshot (Dec 20, $1,050,000.00) → ending $1,050,000.00 and change null (fewer than two snapshots). 2025: 12 spending months, True cost $19,000.00 (ys-2025-spending); two snapshots Jan 15 $1,150,000.00 → Feb 10 $970,000.00 → change −$180,000.00, ending $970,000.00. 2023: no spending months and no snapshots at all → months 0, True cost null, change null, ending null.",
+    note: "Multi-year trend rows, derived BY HAND (property off). 2024: spending data in Nov + Dec only, each an accrual-only $400.00 month → 2 months, True cost $800.00; exactly ONE snapshot (Dec 20, $1,050,000.00) → ending $1,050,000.00 and change null (fewer than two snapshots). 2025: 12 spending months, True cost $18,700.00 (ys-2025-spending); two snapshots Jan 15 $1,150,000.00 → Feb 10 $970,000.00 → change −$180,000.00, ending $970,000.00. 2023: no spending months and no snapshots at all → months 0, True cost null, change null, ending null.",
     expected: {
       m2024: 2, tc2024: 80000, chg2024: null, end2024: 105000000,
-      m2025: 12, tc2025: 1900000, chg2025: -18000000, end2025: 97000000,
+      m2025: 12, tc2025: 1870000, chg2025: -18000000, end2025: 97000000,
       m2023: 0, tc2023: null, chg2023: null, end2023: null,
     },
     actual: (w) => {

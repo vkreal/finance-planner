@@ -41,6 +41,11 @@ export type CoreTxn = {
   sourceType: string;
   amountCents: number;
   yearlyExpenseId: number | null;
+  // The account label the transaction was recorded against (a card
+  // name for card charges, the checking account for checking rows).
+  // Optional: older fixture datasets omit it; the card-settlement
+  // attribution below does not depend on it (see settledLumps).
+  accountName?: string;
 };
 
 export type CoreMonthlyBill = { id: number; keepLightsOn: number };
@@ -171,6 +176,32 @@ export function annualCentsFor(y: { expectedCents: number; frequency: string }):
 
 export function annualCentsForValues(expectedCents: number, frequency: string): number {
   return expectedCents * paymentsPerYear(frequency);
+}
+
+/* Cumulative rounding for a smoothed bill's monthly set-aside
+   (contract v59, finding F3): the accrual for calendar month n of
+   a year is round(annual × n/12) − round(annual × (n−1)/12), so a
+   bill active all twelve months with a stable annual amount
+   accrues its annual amount EXACTLY over the year — the old flat
+   round(annual/12) repeated every month leaked up to ~6¢ per bill
+   per year (a $100/yr bill accrued $8.33 × 12 = $99.96). The
+   monthly figure therefore varies by a cent from month to month
+   (a $100/yr bill: $8.33 in January, $8.34 in February, …), and
+   every consumer — bill cards, the Keep-the-lights-on floor, the
+   dashboard, the Explorer and Year Summary pivots — reads this
+   one function so all surfaces agree to the cent. The annual used
+   is the version in effect for the month asked about, so an
+   amount change prices its first month at (approximately) the new
+   monthly amount, exactly as the flat rule did. */
+export function monthlyAccrualForAnnual(annualCents: number, month: string): number {
+  const n = Number(month.slice(5, 7));
+  if (!Number.isInteger(n) || n < 1 || n > 12) {
+    return Math.round(annualCents / 12);
+  }
+  return (
+    Math.round((annualCents * n) / 12) -
+    Math.round((annualCents * (n - 1)) / 12)
+  );
 }
 
 export function dueMonthsFor(y: { frequency: string; dueMonth: number | null }): number[] {
@@ -336,22 +367,26 @@ export function createSpendingCore<
       return s + (v ? annualCentsForValues(v.expectedCents, v.frequency) : annualCentsFor(y));
     }, 0);
   // One smoothed bill's monthly set-aside for a month, on the
-  // per-bill rounding the bill cards and the Keep the lights on
-  // floor use: a bill that has not started contributes 0.
+  // cumulative-rounding rule every surface shares (bill cards,
+  // Keep the lights on floor, dashboard — all read this one
+  // function): a bill that has not started contributes 0.
   const billMonthlyAccrual = (y: YB, m: string): number => {
     const vs = yearlyVersionsByExpense.get(y.id) ?? [];
     const vRaw = yearlyVersionInEffect(vs, m, y.backfillBeforeFirstVersion === 1);
     if (vRaw === null) return 0;
     const effExpected = vRaw?.expectedCents ?? y.expectedCents;
     const effFrequency = vRaw?.frequency ?? y.frequency;
-    return Math.round(annualCentsForValues(effExpected, effFrequency) / 12);
+    return monthlyAccrualForAnnual(
+      annualCentsForValues(effExpected, effFrequency),
+      m,
+    );
   };
-  // The month's set-aside is the SUM of the per-bill rounded monthly
+  // The month's set-aside is the SUM of the per-bill monthly
   // set-asides — the exact figures the bill cards and the lights-on
   // floor show — never the annual total rounded once. The two can
-  // differ by a cent (three $100/yr bills: per-bill $8.33 × 3 =
-  // $24.99, annual-once $300 ÷ 12 = $25.00), so every surface now
-  // uses this one definition.
+  // differ by a cent (three $100/yr bills in January: per-bill
+  // $8.33 × 3 = $24.99, annual-once $300 ÷ 12 = $25.00), so every
+  // surface uses this one definition.
   const accrualForMonth = (m: string): number =>
     yearly.reduce((s, y) => s + billMonthlyAccrual(y, m), 0);
 
@@ -376,6 +411,89 @@ export function createSpendingCore<
     byMonth.set(m, e);
   }
 
+  /* ---- Card-settlement attribution (contract v59, finding F2) ----
+     The yearly-payment correction follows the money: it fires in
+     the month the money leaves checking, not the month a charge
+     was recorded. A smoothed bill paid from checking is settled in
+     its own month. A smoothed bill CHARGED to a card is settled
+     when a later card payment leaves checking: card payments are
+     matched FIFO against the outstanding card-paid yearly charges
+     (oldest charge first), and each payment attributes at most its
+     own amount and at most the total outstanding. Matching is not
+     per card account: a generic card payment is recorded from
+     checking with no link to any charge or card, and a payment
+     reduces the whole card balance — the data cannot say which
+     charge a payment was "for", so the oldest outstanding yearly
+     charge is treated as settled first. A card refund (a negative
+     linked card charge) first cancels that bill's outstanding
+     unsettled charges; any remainder reverses a settlement already
+     attributed, in the refund's own month. settledLumps(m) is the
+     total whose money left checking in m — the ONE correction
+     figure every basis uses — and yearlyPaidOut(m) counts a yearly
+     payment in its settlement month: checking payments in their
+     own month, card charges in the month their settlement lands
+     (a charge not yet settled counts in no month). A household
+     that records only the payout (a checking transaction in the
+     payout month, never the charge) is untouched by the matching:
+     its figures are exactly the pre-v59 figures. */
+  const settledByMonth = new Map<string, number>();
+  const paidOutByMonth = new Map<string, number>();
+  {
+    const addTo = (map: Map<string, number>, m: string, cents: number) =>
+      map.set(m, (map.get(m) ?? 0) + cents);
+    const outstanding: { expenseId: number; remaining: number }[] = [];
+    const chronological = [...txns].sort((a, b) =>
+      a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
+    );
+    for (const t of chronological) {
+      const m = monthOf(t.date);
+      if (t.kind === "spending" && t.yearlyExpenseId != null) {
+        if (t.sourceType === "checking") {
+          addTo(settledByMonth, m, t.amountCents);
+          addTo(paidOutByMonth, m, t.amountCents);
+        } else if (t.sourceType === "card") {
+          if (t.amountCents > 0) {
+            outstanding.push({
+              expenseId: t.yearlyExpenseId,
+              remaining: t.amountCents,
+            });
+          } else if (t.amountCents < 0) {
+            let refund = -t.amountCents;
+            for (const o of outstanding) {
+              if (refund <= 0) break;
+              if (o.expenseId !== t.yearlyExpenseId || o.remaining <= 0) {
+                continue;
+              }
+              const take = Math.min(o.remaining, refund);
+              o.remaining -= take;
+              refund -= take;
+            }
+            if (refund > 0) {
+              addTo(settledByMonth, m, -refund);
+              addTo(paidOutByMonth, m, -refund);
+            }
+          }
+        }
+      }
+      if (t.kind === "card_payment" && t.sourceType === "checking" && t.amountCents > 0) {
+        let remaining = t.amountCents;
+        for (const o of outstanding) {
+          if (remaining <= 0) break;
+          if (o.remaining <= 0) continue;
+          const take = Math.min(o.remaining, remaining);
+          o.remaining -= take;
+          remaining -= take;
+          addTo(settledByMonth, m, take);
+          addTo(paidOutByMonth, m, take);
+        }
+      }
+    }
+  }
+  const settledLumpsForMonth = (m: string): number =>
+    settledByMonth.get(m) ?? 0;
+  const yearlyPaidOutForMonth = (m: string): number =>
+    paidOutByMonth.get(m) ?? 0;
+
   const summaryByMonth = new Map(
     summaries.map((s) => [s.month, s.cashOutCents]),
   );
@@ -392,21 +510,30 @@ export function createSpendingCore<
 
   // Effective numbers for a month. THE cash-out resolution, used by
   // every figure on every surface: items sum (month has ≥1 item)
-  // > entered cash-out total > transactions. Itemized and summary
-  // months both use the base as-is — their transactions are not
-  // added in, and only smoothed bills that left checking are
-  // subtracted in the smoothed formula. The accrual is per-month:
-  // the version in effect for that month.
+  // > entered cash-out total > transactions. ONE basis for every
+  // entry mode (contract v59, finding F1): True cost (smoothed) is
+  // always the month's cash out − the yearly lumps whose money left
+  // checking that month (settledLumpsForMonth — checking-paid
+  // lumps in their own month, card-paid lumps in their settlement
+  // month) + the month's accrual. Before v59 the transaction-only
+  // branch priced True cost on the incurred basis (card charges in
+  // their charge month), so the same economic month priced two
+  // different True costs depending on how it was entered. The
+  // accrual is per-month: the version in effect for that month.
+  // `incurred` still reports the raw incurred total for
+  // transaction months (the dashboard's Actual figure); it no
+  // longer feeds True cost.
   const eff = (m: string): EffMonth => {
     const e = byMonth.get(m) ?? emptyAgg();
     const acc = accrualForMonth(m);
+    const settled = settledLumpsForMonth(m);
     const items = itemsByMonth.get(m);
     if (items) {
       return {
         incurred: items.total,
         cashOut: items.total,
-        lumps: e.lumpsChecking,
-        smoothed: items.total - e.lumpsChecking + acc,
+        lumps: settled,
+        smoothed: items.total - settled + acc,
         accrual: acc,
       };
     }
@@ -415,23 +542,28 @@ export function createSpendingCore<
       return {
         incurred: entered,
         cashOut: entered,
-        lumps: e.lumpsChecking,
-        smoothed: entered - e.lumpsChecking + acc,
+        lumps: settled,
+        smoothed: entered - settled + acc,
         accrual: acc,
       };
     }
     return {
       incurred: e.incurred,
       cashOut: e.cashOut,
-      lumps: e.lumps,
-      smoothed: e.incurred - e.lumps + acc,
+      lumps: settled,
+      smoothed: e.cashOut - settled + acc,
       accrual: acc,
     };
   };
 
   // Recorded smoothed-bill payments in one month: the spending
-  // transactions linked to a yearly/periodic bill — the same rows
-  // the dashboard counts as "Yearly & periodic expenses paid-out".
+  // transactions linked to a yearly/periodic bill, counted in
+  // their RECORDED (charge) month. This feeds only the Year
+  // Summary's excluded-payments footnote (payments recorded for
+  // months past the totals window). The published "Yearly &
+  // periodic expenses paid-out" figure is yearlyPaidOutForMonth
+  // above — the settlement basis, where a card-paid bill counts
+  // in the month its money leaves checking.
   const recordedPaymentsForMonth = (
     m: string,
   ): { totalCents: number; count: number } => {
@@ -484,8 +616,9 @@ export function createSpendingCore<
 
   // Reserve through a month: opening reserve plus, from the reserve
   // start month, each month's accrual minus its effective lumps.
-  // Summary months count only the lumps that left checking, matching
-  // the smoothed formula for those months.
+  // The lumps are the settlement-basis figures (eff().lumps): the
+  // reserve drains in the month the money leaves checking, matching
+  // the smoothed formula for every month.
   const reserveThrough = (month: string): number => {
     let reserveCents = openingReserveCents;
     if (reserveStartMonth && reserveStartMonth <= month) {
@@ -671,6 +804,8 @@ export function createSpendingCore<
     monthHasData,
     recordedPaymentsForMonth,
     recordedPaymentsAfter,
+    settledLumpsForMonth,
+    yearlyPaidOutForMonth,
   };
 }
 

@@ -1,20 +1,33 @@
 // Actions for the Finance Planner.
 //
-// Math (accrual / incurred basis):
+// Math (accrual / cash basis — one basis for every entry mode,
+// contract v59):
 //   incurred(month)   = sum of "spending" transactions dated that month
 //                       (checking bills + card charges; refunds are negative
-//                       spending rows, so they net out automatically)
-//   yearlyLumps(month)= the part of incurred linked to a smoothed expense
+//                       spending rows, so they net out automatically).
+//                       Reported as the Actual figure; it no longer
+//                       feeds True cost.
+//   cashOut(month)    = sum of ALL checking transactions that month
+//                       (spending + card payments + transfers) — what
+//                       really left checking
+//   settledLumps(month) = the yearly-expense money that left checking
+//                       that month: a smoothed bill paid from checking
+//                       counts in its own month; a smoothed bill charged
+//                       to a card counts in the month a card payment
+//                       settles it (FIFO against outstanding card-paid
+//                       yearly charges — see spendingCore.ts).
 //   accrual(month)    = the sum of the per-bill monthly set-asides
-//                       (each bill's annualised amount / 12, rounded
-//                       per bill — the figures the bill cards show),
-//                       using each bill's version in effect for that month
+//                       (the figures the bill cards show), using each
+//                       bill's version in effect for that month
 //                       (a yearly item annualises at its expected amount;
 //                       a periodic item annualises at per-bill × payments
 //                       per year — ×6 every other month, ×4 every 3
-//                       months, ×2 every 6 months — so its monthly
-//                       set-aside is per-bill divided by its period in
-//                       months). Smoothed bills
+//                       months, ×2 every 6 months). Each bill's monthly
+//                       set-aside uses CUMULATIVE rounding —
+//                       round(annual × n/12) − round(annual × (n−1)/12)
+//                       for calendar month n — so twelve monthly
+//                       set-asides sum to the annual amount exactly.
+//                       Smoothed bills
 //                       are versioned like monthly bills: editing an
 //                       amount or frequency creates a new version from
 //                       a chosen month onward and never rewrites earlier
@@ -24,14 +37,12 @@
 //                       the 0007 migration for pre-existing bills): those
 //                       fall back to their earliest version so their
 //                       historic Aug/Sep/Oct numbers are preserved.
-//   smoothed(month)   = incurred - yearlyLumps + accrual
-//   cashOut(month)    = sum of ALL checking transactions that month
-//                       (spending + card payments + transfers) — what
-//                       really left checking
+//   smoothed(month)   = cashOut - settledLumps + accrual   (True cost)
 //   reserve(month)    = opening reserve + sum over months up to this one
-//                       of (accrual - yearlyLumps)
-// Card payments and transfers are never "spending", so paying a card bill
-// can never double-count the charges already counted when incurred.
+//                       of (accrual - settledLumps)
+// Card payments and transfers are never "spending"; a card payment
+// enters True cost only as the settlement of an outstanding
+// card-paid yearly charge (above), never as a charge counted twice.
 //
 // Cash-out items: a month can instead be itemized — line items whose
 // sum IS the month's cash out. Precedence, one resolution used by every
@@ -257,6 +268,7 @@ earliestYearlyVersion,
 latestVersion,
 latestYearlyVersion,
 monthOf,
+monthlyAccrualForAnnual,
 monthlyBillUpdateOutcome,
 monthlyBillUpdateSet,
 monthsBetween,
@@ -523,6 +535,8 @@ const yearlyVersionOut = z.object({
   expectedCents: z.number(),
   frequency: z.string(),
   annualCents: z.number(),
+  // The cumulative-rounded monthly set-aside this version
+  // contributes in its own effective-from month.
   monthlyAccrualCents: z.number(),
   effectiveFrom: z.string(),
 });
@@ -555,9 +569,12 @@ const yearlyOut = z.object({
   // covered payments from the amount, never transaction rows — one
   // due paid in two instalments covers one payment.
   duePaymentsToDate: z.number(),
-  // This item's monthly set-aside: annualCents / 12 (per-bill ÷ 2 for
+  // This item's monthly set-aside for the selected month: the
+  // cumulative-rounded share of annualCents — round(annual × n/12)
+  // − round(annual × (n−1)/12) for calendar month n — so the year's
+  // twelve set-asides sum to annualCents exactly (per-bill ÷ 2 for
   // every-other-month items, per-bill ÷ 3 for every-3-month items,
-  // per-bill ÷ 6 for every-6-month items).
+  // per-bill ÷ 6 for every-6-month items, before the rounding).
   monthlyAccrualCents: z.number(),
   // Month the selected month's version took effect; null when the item
   // has no versions (legacy fallback to the row itself) or when the
@@ -1039,7 +1056,7 @@ function yearlyOutFor(
     annualCents,
     expectedToDateCents,
     duePaymentsToDate,
-    monthlyAccrualCents: Math.round(annualCents / 12),
+    monthlyAccrualCents: monthlyAccrualForAnnual(annualCents, selectedMonth),
     effectiveFrom: notStarted ? null : (inEffect?.effectiveFrom ?? null),
     inEffectForMonth: !notStarted,
     backfillBeforeFirstVersion: backfill,
@@ -1058,8 +1075,13 @@ function yearlyOutFor(
         expectedCents: v.expectedCents,
         frequency: v.frequency,
         annualCents: annualCentsForValues(v.expectedCents, v.frequency),
-        monthlyAccrualCents: Math.round(
-          annualCentsForValues(v.expectedCents, v.frequency) / 12,
+        // The set-aside this version contributes in its OWN first
+        // month (cumulative rounding — see monthlyAccrualForAnnual):
+        // the history list shows one figure per version, so it is
+        // priced at the version's effective-from month.
+        monthlyAccrualCents: monthlyAccrualForAnnual(
+          annualCentsForValues(v.expectedCents, v.frequency),
+          v.effectiveFrom,
         ),
         effectiveFrom: v.effectiveFrom,
       })),
@@ -2655,7 +2677,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 58;
+export const API_CONTRACT_VERSION = 59;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -4932,7 +4954,7 @@ async function computeRetirementDefaults(
   // --- default spending: trailing True cost, annualised ---
   const { txns, yearly, yearlyVersions, summaries, cashOutItems } =
     await loadAll(ctx);
-  // The per-month computation (the per-bill-rounded accrual and
+  // The per-month computation (the cumulative-rounded accrual and
   // the cash-out resolution behind the smoothed figure) lives in
   // the shared spending core (server/src/spendingCore.ts) — the
   // same code the dashboard runs — so this default can never
@@ -5515,15 +5537,17 @@ export const Actions = {
       transactionCashOutCents: z.number(),
       transactionCountThisMonth: z.number(),
       yearlyLumpsCheckingCents: z.number(),
-      // Total of payments RECORDED against yearly/periodic expenses in
-      // the viewed month — every "spending" transaction linked to a
-      // smoothed expense, any paid-by channel, whether or not the month
-      // is an entered-total (summary) month. Display-only: it is NOT
-      // the effective lumps figure used by the smoothed formula (that
-      // one is yearlyLumpsCents, which counts checking-only lumps in
-      // summary months). A bill's actual payment month often differs
-      // from its scheduled due month, so this uses recorded payments,
-      // never the due schedule.
+      // Total of yearly/periodic expense money that LEFT CHECKING in
+      // the viewed month (contract v59): a bill paid from checking
+      // counts in its own month; a bill charged to a card counts in
+      // the month a card payment settles it (FIFO attribution in the
+      // spending core), whether or not the month is an entered-total
+      // (summary) month. This is the same settlement-basis figure
+      // the smoothed formula subtracts (yearlyLumpsCents) and the
+      // Everything else plug subtracts. A bill's settlement month
+      // often differs from its scheduled due month and from its
+      // charge month, so this uses settlements, never the due
+      // schedule and never raw charge dates.
       yearlyPaidOutCents: z.number(),
       summaries: z.array(summaryOut),
       // Cash-out items for the SELECTED month, and whether the selected
@@ -5624,6 +5648,11 @@ export const Actions = {
           yearlyLumpsCents: z.number(),
           oneOffTotalCents: z.number(),
           hasOneOff: z.boolean(),
+          // True when this history month is after the current
+          // calendar month — its figures were entered ahead and
+          // are estimates, the same flag the entered-ahead rows
+          // carry (contract v59, finding F4).
+          estimate: z.boolean(),
         }),
       ),
       // Months AFTER the viewed month that already carry entered
@@ -5633,7 +5662,8 @@ export const Actions = {
       // uses. The Month-mode chart appends these past the viewed
       // month so figures entered ahead of time are visible; no other
       // surface reads this list, and the trailing averages above are
-      // computed without it.
+      // computed without it — they never include any month after
+      // the current calendar month, whatever month is viewed.
       enteredAheadMonths: z.array(
         z.object({
           month: z.string(),
@@ -5744,6 +5774,7 @@ export const Actions = {
         reserveStartMonth,
         monthlyTotalForMonth,
         keepLightsOnForMonth,
+        yearlyPaidOutForMonth,
       } = core;
       const totalAnnualCents = totalAnnualForMonth(month);
       const totalExpectedYearlyCents = totalAnnualCents;
@@ -5755,15 +5786,23 @@ export const Actions = {
       const isItemsMonth = itemsByMonth.has(month);
       const smoothedCents = curEff.smoothed;
 
-      // Trailing window: up to 12 months ending at the selected month,
-      // but only months from the first month that has data.
-      const windowStart = shiftMonth(month, -11);
+      // Trailing window: up to 12 months ending at the earlier of
+      // the selected month and the current calendar month, and only
+      // months from the first month that has data — and
+      // NEVER past the current calendar month (contract v59,
+      // finding F4): when a future month is selected, the averages
+      // still cover only months up to the current month, so figures
+      // entered ahead can never blend into the "actual" averages.
+      const nowForTrailing = new Date();
+      const currentMonthStr = `${nowForTrailing.getFullYear()}-${String(nowForTrailing.getMonth() + 1).padStart(2, "0")}`;
+      const trailingEnd = month < currentMonthStr ? month : currentMonthStr;
+      const windowStart = shiftMonth(trailingEnd, -11);
       const coveredStart =
         earliest && earliest > windowStart ? earliest : windowStart;
       const trailingMonthsCovered =
-        earliest == null
+        earliest == null || coveredStart > trailingEnd
           ? 0
-          : Math.max(0, monthsBetween(coveredStart, month) + 1);
+          : Math.max(0, monthsBetween(coveredStart, trailingEnd) + 1);
       let trailingSum = 0;
       let smoothedSum = 0;
       let cashOutSum = 0;
@@ -5797,7 +5836,8 @@ export const Actions = {
           : 0;
 
       // Reserve: accrual minus lumps, accumulated from the start month.
-      // Summary months count only the lumps that left checking, matching
+      // Every month counts only the lumps whose money left checking
+      // that month (the settlement basis), matching
       // the smoothed formula for those months.
       const reserveCents = core.reserveThrough(month);
 
@@ -5833,6 +5873,9 @@ export const Actions = {
           yearlyLumpsCents: e.lumps,
           oneOffTotalCents: ooTotal,
           hasOneOff: ooTotal !== 0,
+          // Entered-ahead months keep their estimate flag in the
+          // history rows too (contract v59, finding F4).
+          estimate: m > currentMonthStr,
         });
       }
 
@@ -6044,7 +6087,7 @@ export const Actions = {
           if (earliest != null && m < earliest) continue;
           const e = eff(m);
           const mt = monthlyTotalForMonth(m);
-          const paid = byMonth.get(m)?.lumps ?? 0;
+          const paid = yearlyPaidOutForMonth(m);
           ytd.trueCostCents += e.smoothed;
           ytd.cashOutCents += e.cashOut;
           ytd.totalMonthlyCents += mt;
@@ -6070,7 +6113,7 @@ export const Actions = {
           (t) => monthOf(t.date) === month,
         ).length,
         yearlyLumpsCheckingCents: cur.lumpsChecking,
-        yearlyPaidOutCents: cur.lumps,
+        yearlyPaidOutCents: yearlyPaidOutForMonth(month),
         summaries: summaries.map((s) => ({
           month: s.month,
           cashOutCents: s.cashOutCents,
@@ -6244,7 +6287,7 @@ export const Actions = {
         billVersions,
         oneOffs,
       });
-      const { byMonth, eff, monthlyTotalForMonth, keepLightsOnForMonth } = core;
+      const { eff, monthlyTotalForMonth, keepLightsOnForMonth } = core;
 
       const txnEarliest = txns.length > 0 ? monthOf(txns[0]?.date ?? windowStart) : null;
       const sumEarliest = summaries.length > 0 ? (summaries[0]?.month ?? null) : null;
@@ -6280,7 +6323,7 @@ export const Actions = {
         }
         const e = eff(m);
         const mt = monthlyTotalForMonth(m);
-        const paid = byMonth.get(m)?.lumps ?? 0;
+        const paid = core.yearlyPaidOutForMonth(m);
         return {
           trueCostCents: e.smoothed,
           cashOutCents: e.cashOut,
@@ -6419,7 +6462,6 @@ export const Actions = {
       const {
         yearlyVersionsByExpense,
         versionsByBill,
-        byMonth,
         eff,
         monthlyTotalForMonth,
       } = core;
@@ -6432,7 +6474,7 @@ export const Actions = {
       const monthRows = months.map((m) => {
         const e = eff(m);
         const mt = monthlyTotalForMonth(m);
-        const paid = byMonth.get(m)?.lumps ?? 0;
+        const paid = core.yearlyPaidOutForMonth(m);
         return {
           month: m,
           cashOutCents: e.cashOut,
@@ -6486,24 +6528,25 @@ export const Actions = {
       const rows = [...groupMap.values()]
         .map((g) => ({ label: g.label, valuesCents: g.valuesCents, totalCents: g.valuesCents.reduce((s, v) => s + v, 0) }))
         .sort((a, b) => b.totalCents - a.totalCents || a.label.localeCompare(b.label));
-      // Everything else (day-to-day, not bills) is not part of the bill
-      // pivot above, but it is real money. Append it as ONE final row
-      // (after the sorted bill rows, never sorted into them) so each
-      // month column totals to that month's True cost and the grand
-      // total equals the range's total True cost. The row is therefore
-      // the True-cost residual — True cost minus the bill pivot's own
-      // column total — NOT the Quick view's cash-out-based Everything
-      // else (Cash out − Total monthly − Yearly paid out, kept as-is
-      // in monthRows / Month grouping). The two agree whenever a
-      // month's cash out equals its incurred spending with no card-paid
-      // smoothed bills, but True cost is incurred-based: card charges
-      // count in True cost before any cash leaves checking, and a
-      // card-paid smoothed bill in an entered-total month is subtracted
-      // from True cost only when it leaves checking. Using the
-      // cash-out figure here dropped exactly those amounts from the
-      // column totals (verified: a $500 card charge in a
-      // transaction-only month, and a $1,200 card-paid yearly bill in
-      // an entered-total month, each vanished from the totals).
+      // "Other spending" (day-to-day, not bills) is not part of the
+      // bill pivot above, but it is real money. Append it as ONE
+      // final row (after the sorted bill rows, never sorted into
+      // them) so each month column totals to that month's True cost
+      // and the grand total equals the range's total True cost. The
+      // row is therefore the True-cost residual — True cost minus
+      // the bill pivot's own column total — NOT the Quick view's
+      // cash-out-based Everything else (Cash out − Total monthly −
+      // Yearly paid out, kept as-is in monthRows / Month grouping).
+      // The two are different quantities and, since contract v59
+      // (finding F5), carry different labels: the plug keeps
+      // "Everything else"; this residual is "Other spending". Since
+      // the v59 cash-basis unification the two agree whenever a
+      // month's cash out equals its True cost basis with no
+      // unsettled card-paid smoothed bills; using the cash-out
+      // figure here would drop card amounts from the column totals
+      // (verified pre-v59: a $500 card charge in a transaction-only
+      // month, and a $1,200 card-paid yearly bill in an
+      // entered-total month, each vanished from the totals).
       if (args.groupBy !== "month") {
         const everythingElseValues = monthRows.map(
           (r, i) =>
@@ -6513,7 +6556,7 @@ export const Actions = {
         const everythingElseTotal = everythingElseValues.reduce((s, v) => s + v, 0);
         if (rows.length > 0 || everythingElseValues.some((v) => v !== 0)) {
           rows.push({
-            label: "Everything else",
+            label: "Other spending",
             valuesCents: everythingElseValues,
             totalCents: everythingElseTotal,
           });
@@ -11514,7 +11557,7 @@ export const Actions = {
       // effect for the month, smoothed bills at their monthly accrual
       // (core.billMonthlyAccrual, the same accrual yearlyOutFor
       // reports), grouped by bill category (empty → "Uncategorized"),
-      // plus the "Everything else" residual row (True cost − the
+      // plus the "Other spending" residual row (True cost − the
       // pivot's own total) so the rows sum exactly to True cost.
       // The residual competes for a top-5 place like any other row.
       const topCategories: { label: string; totalCents: number }[] = (() => {
@@ -11544,7 +11587,7 @@ export const Actions = {
         }));
         const pivotTotal = rows.reduce((s, r) => s + r.totalCents, 0);
         rows.push({
-          label: "Everything else",
+          label: "Other spending",
           totalCents: totalTrueCostCents - pivotTotal,
         });
         rows.sort(
