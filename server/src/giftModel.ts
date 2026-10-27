@@ -16,11 +16,18 @@
 //     injected into that year's long-term gains stack, so the
 //     shared engine prices it (bracket stacking, NIIT, ACA /
 //     IRMAA MAGI, and the fill ceilings, which see the gain as
-//     income occupying them).
+//     income occupying them). The injected position is capped
+//     at the shares the baseline still holds at the start of
+//     the sale year (v57, F6): if the no-gift plan has already
+//     spent part of the position by then, the counterfactual
+//     sale shrinks in the same proportion, basis included.
 //   · WITH GIFT — the same plan with the shares removed from
 //     the parents' Taxable bucket at the start of the gift
 //     year (a one-time outflow that leaves the household; the
 //     amount stops growing for the parents from that year).
+//     The parcel's OWN basis leaves with the shares (v57, F1:
+//     specific-lot semantics via the giftOutflowBasis seam),
+//     not a pro-rata share of the pool's basis.
 // The side ledgers (the child's own sale, the gift-tax
 // exclusion, the step-up given up, the FAFSA watch-out) are
 // priced here, never in the optimizer.
@@ -225,7 +232,10 @@ export type GiftComparison = {
     // Value of the shares in the sale year: the gift amount
     // grown at the plan's expected return from the gift year.
     valueAtSale: number;
-    // Gain on the child's sale, at carryover basis.
+    // Recognized gain (or loss, negative) on the child's
+    // sale under the §1015 dual basis: gain measured from
+    // the donor's carryover basis, loss measured from the
+    // lower gift-date value, $0 between the two bases.
     gain: number;
     kiddieGate: boolean;
     // The law row's kiddie threshold for the sale year.
@@ -387,27 +397,84 @@ export function computeGiftComparison(
     typedAmount > 0 ? r2(typedBasis * (amount / typedAmount)) : typedBasis;
   const valueAtSale = valueFor(amount);
   const parentsGain = Math.max(0, r2(valueAtSale - basis));
-  const childGain = r2(valueAtSale - basis);
+  // The child's recognized gain/loss follows the §1015 dual
+  // basis (v57, F3): the GAIN basis is the donor's (effective)
+  // basis, but the LOSS basis is the lower of that basis and
+  // the gift-date fair market value (the effective gift
+  // amount). A sale above the gain basis recognizes the gain;
+  // a sale below the loss basis recognizes the loss; a sale
+  // between the two bases recognizes neither.
+  const childLossBasis = Math.min(basis, amount);
+  const childGain =
+    valueAtSale > basis
+      ? r2(valueAtSale - basis)
+      : valueAtSale < childLossBasis
+        ? r2(valueAtSale - childLossBasis)
+        : 0;
 
-  // Baseline: the plan as saved, plus the counterfactual sale
-  // gain in the sale year when a sale age is set.
+  // F6 (v57) — cap the counterfactual sale at the shares the
+  // baseline still holds in the sale year. The parents cannot
+  // sell shares the no-gift plan has already spent: the
+  // baseline's Taxable holdings at the start of the sale year
+  // come from a NO-INJECTION baseline run (its winner's
+  // Taxable balance at the end of the year before the sale
+  // year; the plan's starting Taxable when the sale year is
+  // the plan's first year). When the grown share value
+  // exceeds those holdings, the counterfactual position
+  // scales down in the same proportion, basis included.
+  let baselineGain = parentsGain;
+  if (salePriced && parentsGain > 0) {
+    let holdings: number;
+    if (saleAge <= startAge) {
+      holdings = plan.taxableStart;
+    } else {
+      const noInjectionBaseline = runJointOptimizer(plan);
+      const startRow = noInjectionBaseline.winner.result.years.find(
+        (y) => y.agePrimary === saleAge - 1,
+      );
+      holdings = startRow ? startRow.taxableEnd : plan.taxableStart;
+    }
+    holdings = Math.max(0, holdings);
+    if (valueAtSale > 0 && valueAtSale > holdings) {
+      const remainingValue = Math.min(valueAtSale, holdings);
+      baselineGain =
+        remainingValue <= 0
+          ? 0
+          : Math.min(
+              parentsGain,
+              Math.max(
+                0,
+                r2(remainingValue - (basis * remainingValue) / valueAtSale),
+              ),
+            );
+    }
+  }
+
+  // Baseline: the plan as saved, plus the (holdings-capped)
+  // counterfactual sale gain in the sale year when a sale age
+  // is set. The provisional run is reused only when it was
+  // priced with exactly the final gain and the gift was not
+  // capped — otherwise the baseline is priced fresh.
   const baselineOpt =
-    !capped && provisionalBaseline
+    !capped && baselineGain === parentsGain && provisionalBaseline
       ? provisionalBaseline
       : runJointOptimizer(
-          salePriced && parentsGain > 0
-            ? { ...plan, saleGainAge: saleAge, saleGainAmount: parentsGain }
+          salePriced && baselineGain > 0
+            ? { ...plan, saleGainAge: saleAge, saleGainAmount: baselineGain }
             : plan,
         );
   // With gift: the shares leave the Taxable bucket at the
-  // gift year. A blank / $0 effective gift is the identity —
-  // the gift side IS the baseline run, exactly.
+  // gift year, and the parcel's own (effective) basis leaves
+  // with them (giftOutflowBasis). A blank / $0 effective gift
+  // is the identity — the gift side IS the baseline run,
+  // exactly.
   const withGiftOpt =
     amount > 0
       ? runJointOptimizer({
           ...plan,
           giftOutflowAge: giftAge,
           giftOutflowAmount: amount,
+          giftOutflowBasis: basis,
         })
       : baselineOpt;
 
@@ -495,11 +562,25 @@ export function computeGiftComparison(
   }
 
   // Gift-tax ledger: the gift year's annual exclusion per
-  // donor, times two donors when filing jointly (gift-
-  // splitting between spouses) or one otherwise.
+  // donor, times the number of donors in the GIFT YEAR —
+  // two when the plan files jointly that year (gift-splitting
+  // between spouses), one otherwise. The count follows the
+  // gift year's filing status, mirroring the march's
+  // survivor switch (v57, F2): with a survivor scenario, the
+  // death year itself still files jointly (two donors), but
+  // every later year has one donor, because the survivor
+  // files single from then on.
   const exclusionPerDonor =
     lawForYear(giftYear).giftAnnualExclusionCents / 100;
-  const donors = plan.filingStatus === "mfj" ? 2 : 1;
+  const donors =
+    plan.filingStatus === "mfj" &&
+    !(
+      plan.survivorEnabled === true &&
+      plan.survivorDeathYear != null &&
+      giftYear > plan.survivorDeathYear
+    )
+      ? 2
+      : 1;
   const exclusionAvailable = exclusionPerDonor * donors;
   const excess = r2(Math.max(0, amount - exclusionAvailable));
 

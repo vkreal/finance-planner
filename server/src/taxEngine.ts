@@ -2689,6 +2689,15 @@ export type RothPlanInputs = {
   //   for the parents from that year onward.
   giftOutflowAge?: number | null;
   giftOutflowAmount?: number;
+  // · giftOutflowBasis: the gifted parcel's OWN cost basis
+  //   (dollars), set ONLY by the gift comparison model
+  //   alongside giftOutflowAge / giftOutflowAmount. When
+  //   present, the outflow removes that specific lot's basis
+  //   from the basis ledger with the shares (specific-lot
+  //   semantics) instead of a pro-rata share of the pool's
+  //   basis. Absent = the legacy pro-rata removal, and the
+  //   simulation is bit-identical to before.
+  giftOutflowBasis?: number;
   // · saleGain: a one-time long-term capital gain injected
   //   into the gains stack of the year the primary reaches
   //   saleGainAge — the counterfactual "parents sell the
@@ -4044,14 +4053,81 @@ export function simulateRothPlan(
       (inputs.giftOutflowAmount ?? 0) > 0 &&
       age >= inputs.giftOutflowAge
     ) {
-      // The gifted shares carry their share of the basis
-      // dollars out with them (pro-rata, no gain realized —
-      // the ratio itself is unchanged by the removal). With
-      // basis tiers the removal is pro-rata across every tier
-      // alike, so each tier's own ratio is unchanged too.
+      // Basis removal for the gifted shares (no gain is
+      // realized by the outflow either way). When the gift
+      // comparison supplies the parcel's own basis
+      // (giftOutflowBasis — specific-lot semantics), exactly
+      // that basis leaves with the shares: in the single pool
+      // the ledger drops by the parcel's basis, clamped to
+      // the ledger itself. With basis tiers the tier BALANCES
+      // still fall pro-rata by balance, as before (the parcel
+      // is not identified with any one tier), but tier basis
+      // is reduced so the TOTAL basis removed equals the
+      // parcel's basis exactly: forced removals first (a tier
+      // whose basis would exceed its post-removal balance
+      // sheds the excess, holding the basis ≤ balance
+      // invariant — if those forced removals alone exceed
+      // the parcel's basis, they stand, as the invariant is
+      // what the rest of the march clamps against), then the
+      // rest allocated pro-rata to the tiers' basis, clamped
+      // at each tier's own basis, with
+      // any clamped remainder redistributed to tiers with
+      // headroom until the full parcel basis is removed; no
+      // tier's basis goes below 0 or above its post-removal
+      // balance. When giftOutflowBasis is ABSENT, the legacy
+      // fallback applies: the gifted shares carry a pro-rata
+      // share of the basis dollars out with them — the ratio
+      // itself is unchanged by the removal — pro-rata across
+      // every tier alike, so each tier's own ratio is
+      // unchanged too.
       if (driftOn && taxable > 0) {
         const removed = taxable - Math.max(0, taxable - (inputs.giftOutflowAmount ?? 0));
-        if (tiersActive && tierState) {
+        if (inputs.giftOutflowBasis != null) {
+          const parcelBasis = Math.min(
+            Math.max(inputs.giftOutflowBasis, 0),
+            taxableBasisDollars,
+          );
+          if (tiersActive && tierState) {
+            const frac = removed / taxable;
+            for (const t of tierState) {
+              t.bal -= t.bal * frac;
+            }
+            let removedBasis = 0;
+            for (const t of tierState) {
+              const forced = Math.max(0, t.basis - t.bal);
+              if (forced > 0) {
+                t.basis -= forced;
+                removedBasis += forced;
+              }
+            }
+            let remaining = parcelBasis - removedBasis;
+            while (remaining > 1e-9) {
+              const totalBasis = tierState.reduce((s, t) => s + t.basis, 0);
+              if (totalBasis <= 0) break;
+              let progressed = false;
+              for (const t of tierState) {
+                if (remaining <= 1e-9) break;
+                if (t.basis <= 0) continue;
+                const take = Math.min(
+                  (remaining * t.basis) / totalBasis,
+                  t.basis,
+                );
+                if (take > 0) {
+                  t.basis -= take;
+                  remaining -= take;
+                  progressed = true;
+                }
+              }
+              if (!progressed) break;
+            }
+            taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
+          } else {
+            taxableBasisDollars = Math.max(
+              0,
+              taxableBasisDollars - parcelBasis,
+            );
+          }
+        } else if (tiersActive && tierState) {
           const frac = removed / taxable;
           for (const t of tierState) {
             t.bal -= t.bal * frac;

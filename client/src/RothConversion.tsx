@@ -8776,8 +8776,8 @@ export function RothConversion() {
                 ) : (
                   <p>
                     Their gain at your carryover basis: $0 — at these
-                    figures the shares are worth exactly your basis, and no
-                    tax is owed.
+                    figures the sale recognizes no gain or loss, and no tax
+                    is owed.
                   </p>
                 )}
                 {giftResult.child.childTax != null ? (
@@ -8820,8 +8820,10 @@ export function RothConversion() {
                     {giftResult.giftTax.donors === 2
                       ? `, ${fmtDollars(giftResult.giftTax.exclusionAvailable)} for the two of you with gift-splitting between spouses`
                       : ""}
-                    — so there is no gift tax, no return needed for this
-                    gift.
+                    — so there is no gift tax,{" "}
+                    {giftResult.giftTax.donors === 2
+                      ? "but splitting the gift between spouses takes an election on a gift-tax return (Form 709), even though no tax is due."
+                      : "no return needed for this gift."}
                   </p>
                 ) : (
                   <p>
@@ -8835,9 +8837,11 @@ export function RothConversion() {
                       : ""}
                     ). The {fmtDollars(giftResult.giftTax.excess)} over the
                     exclusion counts against the lifetime estate-and-gift
-                    exemption and a gift-tax return (Form 709) is due for
-                    the gift year — no gift tax is priced, the exemption
-                    covers it at these levels.
+                    exemption, and a gift-tax return (Form 709) is due for
+                    the gift year. No gift tax is priced here, and whether
+                    the lifetime exemption covers the excess has not been
+                    checked — if the exemption has already been used up,
+                    gift tax could be due.
                   </p>
                 )}
               </div>
