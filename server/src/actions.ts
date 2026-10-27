@@ -2655,7 +2655,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 57;
+export const API_CONTRACT_VERSION = 58;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -5204,7 +5204,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). PER-YEAR TAX READOUTS (contract v51): each scenario also carries federalTaxCents and stateTaxCents (the lifetime federal / state split of totalTaxCents — the two sum to totalTaxCents) and a years array, one readout per priced march year in cents, read straight off the same priced rows the lifetime totals sum: year, agePrimary, ageSpouse, federalTaxCents, stateTaxCents, totalIncomeCents (the year's adjusted gross income (AGI)), taxableIncomeCents, acaCreditCents (the year's ACA premium credit kept), irmaaCents (IRMAA surcharges PAID that year — Medicare premiums, not tax), conversionCents, and pretaxDrawCents (the year's pre-tax money out by choice: its conversion plus its pre-tax draw for spending; an RMD alone is not in it). Display-only readouts — no score, ranking, or delta is derived from them, and no pricing changed. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
   runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Each scenario also carries fullyFundedRatePct (the share of paths with neither an unfunded-spending year nor an unpaid-tax year), pathsWithUnpaidTax, and the total unpaid tax p50/p90 in cents; neverShortfallRatePct and pathsWithShortfall remain the SPENDING-shortfall-only measures — a path can fund every dollar of spending yet leave assessed tax unpaid, and only fullyFundedRatePct counts that as a failure. Every scenario's horizon is validated like the base plan's (its end age must be after the current age); a scenario that fails makes the whole call fail with a reason naming that scenario. Each path draws a fixed 160-year shock vector (MC_STREAM_STRIDE_YEARS) regardless of which scenarios are batched, so a scenario's statistics are identical whether it is priced alone or alongside longer- or shorter-horizon companions. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Each year's return is applied with the year's growth factor floored at zero (returns floored at −100%), which at volatility near the 100% maximum raises the applied distribution's effective mean and lowers its effective volatility (a requested 0% mean / 100% volatility applies as approximately +8.33% / 86.67%), while at ordinary volatilities the effect is negligible. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
-  runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing.",
+  runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing. In each work year the plan's taxable interest and dividend yields are priced as mandatory income on the year's opening Taxable balance, and Social Security benefits whose start age has been reached are deposited and taxed during the work years — the pre-full-retirement-age earnings test is NOT modeled, so benefits are deposited in full. A work-year deficit funded from Taxable realizes capital gains on the sale, priced into that year's tax, and the taxable account's cost basis rolls forward in dollars into the plan priced at the quit age. The optional medicareAgePrimary request field (the primary's Medicare enrollment age; request-only, never saved) stops all HSA contributions — the employee's and the employer's — in work years at or after that age; the employer HSA figure is read as the employer's contribution only in years the primary is HSA-eligible.",
   runRothGiftCompare: "Price the plan as saved versus with a one-off gift of appreciated stock to a child, including the child's sale tax and the gift-tax exclusion check. The gifted parcel's own basis leaves the parents' basis ledger with the shares; the counterfactual sale is capped at the shares the baseline still holds in the sale year; the exclusion's donor count follows the gift year's filing status (one donor after a spouse's death year). Compute-only; saves nothing.",
   runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced. The optional residenceState prices the state tax under a state's rules layer instead of the flat stateRatePct when present ('WA' = Washington's capital-gains excise, RCW 82.87 — see the stateSemantics convention); absent prices the flat rate exactly as before. Dividends follow the playgroundYearSemantics convention describeApi publishes: the Ordinary dividends input is the total and the Qualified input is its subset, and the pricer derives the non-qualified part from the pair.",
   runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state); ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
@@ -10654,21 +10654,35 @@ export const Actions = {
   // stack from the law tables, salary-year federal tax through
   // the shared priceYear path, employee payroll tax priced
   // entirely from each year's own law row — wage base, rates,
-  // and Additional Medicare threshold as dated table data),
-  // then the rolled
-  // balances are priced with the existing joint optimizer.
+  // and Additional Medicare threshold as dated table data;
+  // contract v58: work-year yields and already-started Social
+  // Security benefits priced as work-year income, deficit-
+  // funding Taxable sales realizing gains off a basis ledger
+  // that rolls forward in dollars into the rolled plan, the
+  // roll never pricing a year before the plan's current age,
+  // and the request-only medicareAgePrimary field stopping
+  // HSA contributions in Medicare-enrolled years), then the
+  // rolled balances are priced with the existing joint
+  // optimizer.
   // The all-in lifetime tax is the optimizer's net cost plus
   // the work years' own federal tax + state tax + payroll tax,
   // and the row's totalTax folds the same work-year taxes into
-  // the winner's tax, payroll as its own component. A quit age equal
-  // to the plan's window-start age prices zero work years and
-  // reproduces the plain optimizer run exactly; a blank / $0
-  // salary prices no work years at any age.
+  // the winner's tax, payroll as its own component. A quit age that
+  // prices zero work years prices retiring at that quit age
+  // (the rolled inputs carry the quit age as the retirement
+  // age); a blank / $0 salary prices no work years at any age.
   runWorkYearsCompare: defineAction({
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
       quitAges: z.array(z.number().int()).min(1).max(3),
+      // The primary's Medicare enrollment age (contract v58,
+      // F6): request-only — never persisted, never part of the
+      // saved record. In work years at or after this age the
+      // household is HSA-ineligible and no HSA contribution
+      // (employee or employer) is made. Absent / null = not
+      // enrolled during the work years.
+      medicareAgePrimary: z.number().int().min(0).max(120).nullable().optional(),
       fafsaReportableAssetsCents: z.number().int().nullable().optional(),
       // Transient spend-from-cash sleeve size (cents) — the
       // snapshot Cash bucket portion of the taxable pool; never
@@ -10716,6 +10730,7 @@ export const Actions = {
         salary: (args.yearlySalaryCents ?? 0) / 100,
         employer401k: (args.employer401kCents ?? 0) / 100,
         employerHsa: (args.employerHsaCents ?? 0) / 100,
+        medicareAgePrimary: args.medicareAgePrimary ?? null,
       };
       const compared = runWorkYearsCompare(inputs, job, ages);
       return {

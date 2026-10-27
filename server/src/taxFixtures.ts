@@ -8230,7 +8230,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-zero-salary",
     kind: "tax",
-    note: "Zero-salary case: with no salary entered there is no stack and no FICA at ANY quit age — every quit-age row is the no-work run itself. On the golden plan shape, quit 56 and quit 60 with salary $0 both price 0 work years, a $0 ledger, and the quit-56 golden winner / net / all-in ($156,321.51, re-pinned 2026-10-14 with the quit-56 golden row for the newest-row FPL fallback) bit for bit. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Zero-salary case: with no salary entered there is no stack and no FICA at ANY quit age — every quit-age row is a no-work run. On the golden plan shape, quit 56 and quit 60 with salary $0 both price 0 work years and a $0 ledger. (Re-pinned 2026-10-27 for contract v58, F5a: the rows no longer share one no-work run — a zero-year row prices retiring AT its quit age, so quit 60 now prices retirement at 60 (winner still “Fill to the top of the 24% bracket”, claim 66, net $393,236.47, all-in the same with no work tax) while quit 56, whose quit age equals the saved retirement age, reproduces the quit-56 golden net $156,321.51 bit for bit. The pre-v58 pin asserted both rows at $156,321.51 because the zero-year path returned the saved plan untouched. Earlier re-pins: 2026-10-14 for the newest-row FPL fallback; 2026-10-19 for the E2 Joint Life Table II completion.)",
     expected: {
       years56: 0,
       years60: 0,
@@ -8238,8 +8238,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       fica60: 0,
       banked60: 0,
       net56: 156321.51,
-      net60: 156321.51,
-      allIn60: 156321.51,
+      net60: 393236.47,
+      allIn60: 393236.47,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8519,6 +8519,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
     actual: () => {
       const plan = basePlan({
+        // startYear 2025: the plan's current age is 50, the
+        // window-start age — so the two-year roll prices 2025
+        // and 2026 as intended (contract v58, F5b: a 2026
+        // startYear would make the 2025 year a past year the
+        // roll may no longer price, and the case would roll
+        // only 2026). Expectations are unchanged.
+        startYear: 2025,
         birthYearPrimary: 1975,
         birthYearSpouse: 1986,
         retirementAge: 50,
@@ -8553,6 +8560,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
     actual: () => {
       const plan = basePlan({
+        // startYear 2025, as in workyears-catchup-prior-year-
+        // wages: current age 50 = window start, so both years
+        // roll (contract v58, F5b). Expectations unchanged.
+        startYear: 2025,
         birthYearPrimary: 1975,
         birthYearSpouse: 1986,
         retirementAge: 50,
@@ -8763,6 +8774,316 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         employer401k: s.employer401k,
         mega: s.mega,
         additions: s.deferral + s.employer401k + s.mega,
+      };
+    },
+  },
+  {
+    id: "workyears-deficit-sale-gains-priced",
+    kind: "tax",
+    note: "F1 (contract v58) — a deficit-funding Taxable sale realizes capital gains inside the work year. The settlement micro-case: MFJ, primary b.1971, spouse b.1982, window start 55, salary $100,000, employer 401(k) $5,000, employer HSA $0, spending $100,000, return 0, Taxable $200,000 at 0% basis single-pool, no yields, no SS; quit 56 (one work year, 2026). The contribution stack is the audit's passing base case (deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 = $84,750; FICA $6,904.13), so at ltcg $0 the deficit is $94,224.13. Selling at 0% basis realizes the whole drawn amount as gain; the first $73,350 of gain sits in the 0% LTCG band ($98,900 MFJ threshold − $25,550 ordinary taxable income) and the rest prices at 15%, so the converged sale x solves x = $94,224.13 + 0.15(x − $73,350), giving x = $97,907.80 and gains tax $3,683.67. Federal tax is therefore $2,570 + $3,683.67 = $6,253.67, total work tax $6,253.67 + $6,904.13 = $13,157.80, at-quit Taxable $200,000 − $97,907.80 = $102,092.20, shortfall $0, and the line's realized gain is the full drawn $97,907.80. Hand-derived in the audit settlement; the pre-fix roll reported Taxable $105,775.87 with the gains tax omitted.",
+    expected: {
+      federal: 6253.67,
+      fica: 6904.13,
+      workTax: 13157.8,
+      ltcg: 97907.8,
+      taxableAtQuit: 102092.2,
+      shortfall: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 100000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 200000,
+        taxableBasisPct: 0,
+        hsaStart: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 100000, employer401k: 5000, employerHsa: 0 },
+        56,
+      );
+      const line = roll.lines[0];
+      return {
+        federal: line?.federalTax ?? null,
+        fica: line?.fica ?? null,
+        workTax: Math.round(((line?.federalTax ?? 0) + (line?.stateTax ?? 0) + (line?.fica ?? 0)) * 100) / 100,
+        ltcg: line?.ltcg ?? null,
+        taxableAtQuit: roll.balances.taxable,
+        shortfall: roll.totals.shortfall,
+      };
+    },
+  },
+  {
+    id: "workyears-basis-dollars-roll-forward",
+    kind: "tax",
+    note: "F2 (contract v58) — basis dollars roll forward with the balance. The base micro-case (MFJ b.1971/b.1982, window 55, salary $100,000, employer 401(k) $5,000, spending $5,000, return 0, quit 56) with Taxable starting at $10,000 at 50% basis: the year's surplus is the base case's $775.87, a real inflow of 100%-basis cash, so the rolled balance is $10,000 + $775.87 = $10,775.87 and the rolled basis is $5,000 + $775.87 = $5,775.87. The pre-fix roll kept the entered 50% against the moved balance, imputing $5,387.94 of basis — $387.94 of phantom gain on a full sale.",
+    expected: {
+      taxableAtQuit: 10775.87,
+      basisAtQuit: 5775.87,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 5000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 10000,
+        taxableBasisPct: 50,
+        hsaStart: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 100000, employer401k: 5000, employerHsa: 0 },
+        56,
+      );
+      return {
+        taxableAtQuit: roll.balances.taxable,
+        basisAtQuit: roll.balances.taxableBasis,
+      };
+    },
+  },
+  {
+    id: "workyears-basis-growth-adds-none",
+    kind: "tax",
+    note: "F2 (contract v58) — growth adds no basis. The basis-dollars micro-case at a 10% return instead of 0%: the surplus is unchanged at $775.87 (no yields are entered, so the return prices no income), the balance is the grown $10,000 × 1.10 + $775.87 = $11,775.87, and the basis is the starting $5,000 + the landed surplus $775.87 = $5,775.87 — the $1,000 of market growth added no basis dollars.",
+    expected: {
+      taxableAtQuit: 11775.87,
+      basisAtQuit: 5775.87,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 5000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 10,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 10000,
+        taxableBasisPct: 50,
+        hsaStart: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 100000, employer401k: 5000, employerHsa: 0 },
+        56,
+      );
+      return {
+        taxableAtQuit: roll.balances.taxable,
+        basisAtQuit: roll.balances.taxableBasis,
+      };
+    },
+  },
+  {
+    id: "workyears-yields-priced",
+    kind: "tax",
+    note: "F3 (contract v58) — taxable yields price as work-year income. The base micro-case with Taxable $200,000 at 100% basis, interest yield 5%, return 5%, spending $5,000, quit 56: interest income is 5% × $200,000 = $10,000 on the opening balance, lifting taxable income from $25,550 to $35,550 and federal tax from $2,570 to $2,480 + 12% × $10,750 = $3,770. The year's surplus is $775.87 − $1,200 = −$424.13 — a small deficit sale, but at the post-step-up basis (the $10,000 yield steps basis up to the grown $210,000 balance) it realizes no gain, isolating the yield pricing. At-quit Taxable = $210,000 − $424.13 = $209,575.87. The pre-fix roll priced no yield and reported $210,775.87.",
+    expected: {
+      interestIncome: 10000,
+      federal: 3770,
+      taxableAtQuit: 209575.87,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 5000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 5,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 200000,
+        taxableBasisPct: 100,
+        taxableInterestYieldPct: 5,
+        hsaStart: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 100000, employer401k: 5000, employerHsa: 0 },
+        56,
+      );
+      const line = roll.lines[0];
+      return {
+        interestIncome: line?.interestIncome ?? null,
+        federal: line?.federalTax ?? null,
+        taxableAtQuit: roll.balances.taxable,
+      };
+    },
+  },
+  {
+    id: "workyears-ss-benefits-deposited",
+    kind: "tax",
+    note: "F4 (contract v58) — Social Security already started counts during work years. MFJ, primary b.1959, spouse b.1982, window start 67, salary $20,000, employer $0/$0, spending $0, return 0, Taxable $5,000, primary benefit $24,000 from age 62, quit 68 (one work year at 67, calendar 2026). The stack defers the whole $20,000 salary, so taxable wages are $0; provisional income is $12,000 (half the benefit), under the MFJ §86 threshold, so federal tax is $0; FICA is 7.65% × $20,000 = $1,530. The benefit deposits into the surplus: at-quit Taxable = $5,000 + $20,000 salary − $20,000 deferral − $1,530 FICA + $24,000 benefit = $27,470. The pre-fix roll ignored the benefit and reported $3,470. The earnings test is not modeled (stated in the action's purpose).",
+    expected: {
+      federal: 0,
+      fica: 1530,
+      ssBenefits: 24000,
+      taxableAtQuit: 27470,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1959,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 0,
+        retirementAge: 67,
+        windowStartAge: 67,
+        expectedReturnPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 5000,
+        hsaStart: 0,
+        ssPrimaryAnnual: 24000,
+        ssPrimaryStartAge: 62,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 20000, employer401k: 0, employerHsa: 0 },
+        68,
+      );
+      const line = roll.lines[0];
+      return {
+        federal: line?.federalTax ?? null,
+        fica: line?.fica ?? null,
+        ssBenefits: line?.ssBenefits ?? null,
+        taxableAtQuit: roll.balances.taxable,
+      };
+    },
+  },
+  {
+    id: "workyears-zero-year-quit-age-handoff",
+    kind: "tax",
+    note: "F5a (contract v58) — a zero-work-year quit prices retiring AT the quit age. Window start 55, saved retirement age 57, quit 55, Roth $100,000, spending $10,000, end age 58, 0% return, no other balances or income: the row prices four spending years (55–58) out of Roth, ending at $60,000 after tax. The pre-fix zero-year path returned the saved plan untouched, pricing only ages 57–58 and ending at $80,000.",
+    expected: {
+      workYears: 0,
+      endingAfterTax: 60000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 10000,
+        retirementAge: 57,
+        windowStartAge: 55,
+        endAgePrimary: 58,
+        expectedReturnPct: 0,
+        pretaxStart: 0,
+        rothStart: 100000,
+        taxableStart: 0,
+        hsaStart: 0,
+      });
+      const row = runWorkYearsCompare(
+        plan,
+        { salary: 100000, employer401k: 0, employerHsa: 0 },
+        [55],
+      )[0];
+      return {
+        workYears: row?.workYears ?? null,
+        endingAfterTax: row?.endingAfterTax ?? null,
+      };
+    },
+  },
+  {
+    id: "workyears-no-past-year-priced",
+    kind: "tax",
+    note: "F5b (contract v58) — the roll never prices a past year. startYear 2026, primary b.1971 (current age 55), window start 54, salary $100,000, quit 55: the roll's first year is max(54, 55) = 55, so the count is 0 and the at-quit balances are the plan's starts, unchanged. The pre-fix roll counted from the window start and priced a full already-past 2025 salary year onto today's balances.",
+    expected: {
+      workYears: 0,
+      pretax: 1000,
+      roth: 2000,
+      taxable: 3000,
+      hsa: 4000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 5000,
+        retirementAge: 57,
+        windowStartAge: 54,
+        expectedReturnPct: 0,
+        pretaxStart: 1000,
+        rothStart: 2000,
+        taxableStart: 3000,
+        hsaStart: 4000,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 100000, employer401k: 5000, employerHsa: 0 },
+        55,
+      );
+      return {
+        workYears: roll.totals.years,
+        pretax: roll.balances.pretax,
+        roth: roll.balances.roth,
+        taxable: roll.balances.taxable,
+        hsa: roll.balances.hsa,
+      };
+    },
+  },
+  {
+    id: "workyears-medicare-hsa-ineligible",
+    kind: "tax",
+    note: "F6 (contract v58) — Medicare enrollment stops HSA contributions. Single filer (no spouse), primary b.1961, window start 65, salary $100,000, employer 401(k) $0, employer HSA $1,000, medicareAgePrimary 65, quit 66 (one work year at 65, calendar 2026): the household is HSA-ineligible, so the stack's own HSA, employer HSA, and HSA bucket are all $0. Taxable wages rise to $100,000 − $24,500 deferral − $8,000 pre-tax catch-up = $67,500, and FICA wages are the full $100,000 (no HSA exclusion), so FICA is $7,650 — both exactly as the audit hand-derived. Federal tax pins $4,954, NOT the audit's $6,020: the audit's federal arithmetic omitted the two deductions the shared pricer applies to any 65-year-old — the §63(f) age-65 standard-deduction add-on ($2,050 single, 2026 row) and the §224 senior deduction ($6,000, unphased at this MAGI, added on top of the standard side). Taxable income is $67,500 − ($16,100 + $2,050) − $6,000 = $43,350, and the 2026 single brackets give $1,240 + 12% × $30,950 = $4,954 exactly. The audit's FICA delta against the eligible case (+$336.60) reproduces exactly; its federal delta does not survive the deduction rules every other fixture pins.",
+    expected: {
+      ownHsa: 0,
+      employerHsa: 0,
+      hsaBucket: 0,
+      federal: 4954,
+      fica: 7650,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1961,
+        birthYearSpouse: null,
+        filingStatus: "single",
+        annualSpending: 0,
+        retirementAge: 65,
+        windowStartAge: 65,
+        expectedReturnPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 0,
+        hsaStart: 0,
+      });
+      const roll = rollWorkYears(
+        plan,
+        { salary: 100000, employer401k: 0, employerHsa: 1000, medicareAgePrimary: 65 },
+        66,
+      );
+      const line = roll.lines[0];
+      return {
+        ownHsa: line?.stack.ownHsa ?? null,
+        employerHsa: line?.stack.employerHsa ?? null,
+        hsaBucket: line?.stack.hsaBucket ?? null,
+        federal: line?.federalTax ?? null,
+        fica: line?.fica ?? null,
       };
     },
   },
