@@ -60,6 +60,7 @@ type RothStrategy,
 } from "./taxEngine";
 import {
 DO_NOTHING_SPEC,
+MC_STREAM_STRIDE_YEARS,
 ROTH_MC_CHECK_SEED,
 claimAgeCombos,
 claimAgeLabel,
@@ -3541,12 +3542,59 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "mc-stats-golden-shocks",
+    kind: "tax",
+    note: "Monte Carlo golden shocks (independent oracle): the expected values are LITERALS computed EXTERNALLY — an independent replication of mulberry32(12345 × 7919 + 17) + Box–Muller, cross-checked against the external reviewer's published values — never derived by calling this implementation's helpers. Trial 0's first four standardized shocks are z0 = −1.7371168353769846, z1 = 1.0408662773034743, z2 = 1.0814420259706854, z3 = 0.18027822825626721, and trial 1's first shock under the fixed-stride discipline (MC_STREAM_STRIDE_YEARS = 160 shocks consumed per path) is 1.2686864367358899. The case draws two consecutive stride-length series from rothMcStream(ROTH_MC_CHECK_SEED) via rothMcShockSeries and compares series1[0..3] and series2[0] against the literals with tolerance 1e-9; maxDiffNano is the largest absolute difference in nanounits (expected 0 — the shipped stream reproduces the literals exactly).",
+    expected: {
+      allWithinTol: 1,
+      maxDiffNano: 0,
+      z0s: "-1.7371168354",
+      z1s: "1.0408662773",
+      z2s: "1.0814420260",
+      z3s: "0.1802782283",
+      t1z0s: "1.2686864367",
+    },
+    actual: () => {
+      const literals = [
+        -1.7371168353769846, 1.0408662773034743, 1.0814420259706854,
+        0.18027822825626721,
+      ];
+      const rng = rothMcStream(ROTH_MC_CHECK_SEED);
+      const series1 = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+      const series2 = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+      const values = [
+        series1[0] ?? NaN,
+        series1[1] ?? NaN,
+        series1[2] ?? NaN,
+        series1[3] ?? NaN,
+        series2[0] ?? NaN,
+      ];
+      const targets = [...literals, 1.2686864367358899];
+      let maxAbsDiff = 0;
+      let allWithinTol = 1;
+      for (let i = 0; i < values.length; i++) {
+        const d = Math.abs((values[i] ?? NaN) - (targets[i] ?? NaN));
+        if (!(d <= 1e-9)) allWithinTol = 0;
+        if (d > maxAbsDiff) maxAbsDiff = d;
+      }
+      return {
+        allWithinTol,
+        maxDiffNano: Math.round(maxAbsDiff * 1e9),
+        z0s: (values[0] ?? NaN).toFixed(10),
+        z1s: (values[1] ?? NaN).toFixed(10),
+        z2s: (values[2] ?? NaN).toFixed(10),
+        z3s: (values[3] ?? NaN).toFixed(10),
+        t1z0s: (values[4] ?? NaN).toFixed(10),
+      };
+    },
+  },
+  {
     id: "mc-stats-zero-vol-equals-compare",
     kind: "tax",
-    note: "Monte Carlo stats at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path prices the deterministic plan bit for bit and every percentile (p10 = p50 = p90) of every scenario must equal its runRothCompare figure TO THE CENT — 27 exact comparisons across Do Nothing, Fill 12%, and an Overspend scenario on the small mcStatsBase plan (born 1961/1972, $720,000 across the buckets, $30,000 spending, 3% return, retire 65, plan to 85). The funded scenarios pin neverShortfallRatePct 100 with zero total shortfall; the Overspend scenario ($400,000/yr against the same balances) shorts deterministically, so at N = 8 its rate is 0, all 8 paths count as shortfall paths, and its per-path total shortfall is the one deterministic figure $7,294,458.10 at p50 and p90 alike. The deterministic compare figures are pinned alongside, from the same compare run the identity checks against.",
+    note: "Monte Carlo stats at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path prices the deterministic plan bit for bit and every percentile (p10 = p50 = p90) of every scenario must equal its runRothCompare figure TO THE CENT — 27 exact comparisons across Do Nothing, Fill 12%, and an Overspend scenario on the small mcStatsBase plan (born 1961/1972, $720,000 across the buckets, $30,000 spending, 3% return, retire 65, plan to 85). The funded scenarios pin neverShortfallRatePct 100 with zero total shortfall; the Overspend scenario ($400,000/yr against the same balances) shorts deterministically, so at N = 8 its rate is 0, all 8 paths count as shortfall paths, and its per-path total shortfall is the one deterministic figure $7,294,458.10 at p50 and p90 alike. The deterministic compare figures are pinned alongside, from the same compare run the identity checks against. EXTENDED (v55, F1): at volatility 0 every path is the deterministic path, so for EACH scenario the stats row's totalUnpaidTaxP50Cents and totalUnpaidTaxP90Cents must equal the compare row's unpaidTaxCents, pathsWithUnpaidTax must equal (unpaidTaxCents > 0 ? pathsRun : 0), and fullyFundedRatePct must equal 100 exactly when pathsWithShortfall == 0 AND unpaidTaxCents == 0, else 0 — 12 further in-case comparisons (39 total), with the resulting per-scenario constants pinned alongside.",
     expected: {
       mismatches: 0,
-      comparedFields: 27,
+      comparedFields: 39,
       dnRate: 100,
       fillRate: 100,
       overRate: 0,
@@ -3558,6 +3606,15 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       fillDetPretax: 2324,
       fillDetCost: 3451047,
       overDetWealth: 3720589,
+      dnUnpaid: 0,
+      fillUnpaid: 0,
+      overUnpaid: 1755106,
+      dnFully: 100,
+      fillFully: 100,
+      overFully: 0,
+      dnWithUnpaid: 0,
+      fillWithUnpaid: 0,
+      overWithUnpaid: 8,
     },
     actual: () => {
       const base = mcStatsBase();
@@ -3604,6 +3661,25 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           comparedFields++;
           if (a !== b) mismatches++;
         }
+        // F1 identities at volatility 0 (every path is the
+        // deterministic path): the stats row's unpaid-tax
+        // percentiles equal the compare row's unpaidTaxCents,
+        // its unpaid-tax path count is all-or-none, and its
+        // fully-funded rate is 100 exactly when the scenario
+        // has neither a shortfall nor unpaid tax, else 0.
+        const f1Pairs: [number, number][] = [
+          [s.totalUnpaidTaxP50Cents, c.unpaidTaxCents],
+          [s.totalUnpaidTaxP90Cents, c.unpaidTaxCents],
+          [s.pathsWithUnpaidTax, c.unpaidTaxCents > 0 ? s.pathsRun : 0],
+          [
+            s.fullyFundedRatePct,
+            s.pathsWithShortfall === 0 && c.unpaidTaxCents === 0 ? 100 : 0,
+          ],
+        ];
+        for (const [a, b] of f1Pairs) {
+          comparedFields++;
+          if (a !== b) mismatches++;
+        }
       }
       const byName = (n: string) => stats.scenarios.find((s) => s.name === n)!;
       const det = (n: string) => cmp.scenarios.find((s) => s.name === n)!;
@@ -3621,37 +3697,46 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         fillDetPretax: det("Fill 12%").endingPretaxCents,
         fillDetCost: det("Fill 12%").netCostCents,
         overDetWealth: det("Overspend").endingAfterTaxWealthCents,
+        dnUnpaid: det("Do Nothing").unpaidTaxCents,
+        fillUnpaid: det("Fill 12%").unpaidTaxCents,
+        overUnpaid: det("Overspend").unpaidTaxCents,
+        dnFully: byName("Do Nothing").fullyFundedRatePct,
+        fillFully: byName("Fill 12%").fullyFundedRatePct,
+        overFully: byName("Overspend").fullyFundedRatePct,
+        dnWithUnpaid: byName("Do Nothing").pathsWithUnpaidTax,
+        fillWithUnpaid: byName("Fill 12%").pathsWithUnpaidTax,
+        overWithUnpaid: byName("Overspend").pathsWithUnpaidTax,
       };
     },
   },
   {
     id: "mc-stats-seeded-pinned",
     kind: "tax",
-    note: "Monte Carlo stats, seeded pinned run: the mcStatsBase plan at volatility 15, N = 40, seed 12345, Do Nothing and Fill 12%. The pinned figures are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run. The stream and the per-path pricing are cross-validated by the zero-volatility identity (mc-stats-zero-vol-equals-compare) and, for Do Nothing here, by an independent in-case re-derivation: the series are regenerated from rothMcStream and every path is re-priced directly through buildCompareScenario + simulateRothPlan + planNetCost, with the re-derived median net cost, p90 net cost, and shortfall-path count pinned to the same constants as the stats output. On this plan both strategies fund spending on all 40 paths (rate 100); Fill 12% drains the pre-tax pile (median ending pre-tax $2.03) and holds the median net cost to $33,936.22 against Do Nothing's $75,079.02, while Do Nothing's ending wealth spreads widest (p10 $201,756.29, p90 $1,516,474.80).",
+    note: "Monte Carlo stats, seeded pinned run: the mcStatsBase plan at volatility 15, N = 40, seed 12345, Do Nothing and Fill 12%. The pinned figures are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) under the fixed-stride discipline (v55, F3): each path consumes exactly MC_STREAM_STRIDE_YEARS (160) shocks from the stream whatever scenarios are batched, and each scenario prices from its own horizon prefix — deterministic by construction, so the same inputs reproduce them exactly on every run, alone or batched. The stream and the per-path pricing are cross-validated by the zero-volatility identity (mc-stats-zero-vol-equals-compare) and, for Do Nothing here, by an independent in-case re-derivation: the stride-length shock vectors are regenerated from rothMcStream and every path is re-priced directly through buildCompareScenario + simulateRothPlan + planNetCost, with the re-derived median net cost, p90 net cost, and shortfall-path count pinned to the same constants as the stats output. On this plan both strategies fund spending on all 40 paths (rate 100); Fill 12% drains the pre-tax pile (median ending pre-tax $0.45) and holds the median net cost to $33,622.35 against Do Nothing's $77,265.99, while Do Nothing's ending wealth spreads widest (p10 $242,333.28, p90 $2,208,220.93). (Headline figures re-pinned under the fixed-stride discipline in v55.)",
     expected: {
       dnPaths: 40,
       dnRate: 100,
       dnWithShort: 0,
-      dnWealthP10: 20175629,
-      dnWealthP50: 75300949,
-      dnWealthP90: 151647480,
-      dnPretaxP10: 12697600,
-      dnPretaxP50: 33205993,
-      dnPretaxP90: 66932965,
-      dnCostP10: 2793472,
-      dnCostP50: 7507902,
-      dnCostP90: 15497983,
-      dnDirectCostP50: 7507902,
-      dnDirectCostP90: 15497983,
+      dnWealthP10: 24233328,
+      dnWealthP50: 79783719,
+      dnWealthP90: 220822093,
+      dnPretaxP10: 12666840,
+      dnPretaxP50: 34838924,
+      dnPretaxP90: 96947726,
+      dnCostP10: 2786705,
+      dnCostP50: 7726599,
+      dnCostP90: 23748055,
+      dnDirectCostP50: 7726599,
+      dnDirectCostP90: 23748055,
       dnDirectWithShort: 0,
       fillRate: 100,
-      fillWealthP10: 21202724,
-      fillWealthP50: 77989445,
-      fillWealthP90: 158345702,
-      fillPretaxP50: 203,
-      fillCostP10: 2681825,
-      fillCostP50: 3393622,
-      fillCostP90: 4238681,
+      fillWealthP10: 25208941,
+      fillWealthP50: 82517160,
+      fillWealthP90: 232698494,
+      fillPretaxP50: 45,
+      fillCostP10: 2857222,
+      fillCostP50: 3362235,
+      fillCostP90: 4139481,
     },
     actual: () => {
       const base = mcStatsBase();
@@ -3679,18 +3764,27 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       });
       const dn = stats.scenarios[0]!;
       const fill = stats.scenarios[1]!;
-      // Independent re-derivation of the Do Nothing row: the
-      // same fixed stream regenerated series by series, each
-      // path priced directly, percentiles by the documented
-      // convention (median = mean of the two middle values,
-      // p90 = sorted[floor(0.9 × n)]).
-      const baseInputs = planInputsFromSaved(base, 2026)!;
+      // Independent re-derivation of the Do Nothing row under
+      // the fixed-stride discipline (v55, F3): per path draw
+      // MC_STREAM_STRIDE_YEARS standardized shocks from the
+      // same fixed stream, take the Do Nothing scenario's own
+      // horizon prefix centered on its own expected return,
+      // and price each path directly; percentiles by the
+      // documented convention (median = mean of the two middle
+      // values, p90 = sorted[floor(0.9 × n)]).
       const builtDn = buildCompareScenario(base, "Do Nothing", {}, 2026)!;
+      const dnHorizon =
+        builtDn.inputs.endAgePrimary -
+        (builtDn.inputs.startYear - builtDn.inputs.birthYearPrimary) +
+        1;
       const rng = rothMcStream(ROTH_MC_CHECK_SEED);
       const directCosts: number[] = [];
       let directShort = 0;
       for (let i = 0; i < 40; i++) {
-        const series = rothMcReturnSeries(baseInputs, 15, rng);
+        const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+        const series = z
+          .slice(0, dnHorizon)
+          .map((zi) => builtDn.inputs.expectedReturnPct + 15 * zi);
         const res = simulateRothPlan(builtDn.inputs, builtDn.strategy, series);
         directCosts.push(
           Math.round(planNetCost(res, builtDn.inputs).netCost * 100),
@@ -3730,19 +3824,23 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-stats-shortfall-some-paths",
     kind: "tax",
-    note: "Monte Carlo stats, genuine shortfall case: the mcStatsBase plan with spending raised by scenario patch to $55,000/yr. The steady path still funds every year (the zero-volatility control in this same case reports rate 100), but across the fixed 40-path stream at volatility 15, exactly 15 paths run an unfunded-spending year — neverShortfallRatePct 62.5, strictly between 0 and 100 — with total-shortfall p50 $0 (more than half the paths never run short) and p90 $246,682.75. The shortfall-path count is pinned twice: from the stats output and from an independent in-case re-derivation (series regenerated from rothMcStream, each path priced directly through buildCompareScenario + simulateRothPlan, shortfall years counted off the year rows).",
+    note: "Monte Carlo stats, genuine shortfall case: the mcStatsBase plan with spending raised by scenario patch to $55,000/yr. The steady path still funds every year (the zero-volatility control in this same case reports rate 100), but across the fixed 40-path stream at volatility 15, exactly 17 paths run an unfunded-spending year — neverShortfallRatePct 57.5, strictly between 0 and 100 — with total-shortfall p50 $0 (more than half the paths never run short) and p90 $193,039.13. No path leaves tax unpaid on this shape (pathsWithUnpaidTax 0, unpaid-tax p50/p90 $0), so fullyFundedRatePct equals the spending rate, 57.5. The shortfall-path count is pinned twice: from the stats output and from an independent in-case re-derivation (stride-length shock vectors regenerated from rothMcStream under the fixed-stride discipline, each path priced directly through buildCompareScenario + simulateRothPlan, shortfall years counted off the year rows). The four F1 fields (fullyFundedRatePct, pathsWithUnpaidTax, totalUnpaidTaxP50Cents, totalUnpaidTaxP90Cents) are pinned from the same fixed-code run, so the unpaid-tax classifier wiring is pinned on a seeded shape. (Re-pinned under the fixed-stride discipline in v55.)",
     expected: {
       pathsRun: 40,
-      withShort: 15,
-      rate: 62.5,
+      withShort: 17,
+      rate: 57.5,
       sfP50: 0,
-      sfP90: 24668275,
-      wealthP10: 1098500,
-      wealthP50: 18567066,
-      wealthP90: 57689672,
-      costP50: 1586024,
+      sfP90: 19303913,
+      wealthP10: 1095838,
+      wealthP50: 11976379,
+      wealthP90: 78466818,
+      costP50: 1625665,
       detRate: 100,
-      directWithShort: 15,
+      directWithShort: 17,
+      fullyFunded: 57.5,
+      withUnpaid: 0,
+      unpaidP50: 0,
+      unpaidP90: 0,
     },
     actual: () => {
       const base = mcStatsBase();
@@ -3760,17 +3858,23 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         seed: ROTH_MC_CHECK_SEED,
       });
       const s = stats.scenarios[0]!;
-      const baseInputs = planInputsFromSaved(base, 2026)!;
       const builtHs = buildCompareScenario(
         base,
         "High spending",
         { annualSpendingCents: 5500000 },
         2026,
       )!;
+      const hsHorizon =
+        builtHs.inputs.endAgePrimary -
+        (builtHs.inputs.startYear - builtHs.inputs.birthYearPrimary) +
+        1;
       const rng = rothMcStream(ROTH_MC_CHECK_SEED);
       let directShort = 0;
       for (let i = 0; i < 40; i++) {
-        const series = rothMcReturnSeries(baseInputs, 15, rng);
+        const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+        const series = z
+          .slice(0, hsHorizon)
+          .map((zi) => builtHs.inputs.expectedReturnPct + 15 * zi);
         const res = simulateRothPlan(builtHs.inputs, builtHs.strategy, series);
         if (res.years.some((y) => y.spendShortfall > 0)) directShort++;
       }
@@ -3786,6 +3890,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         costP50: s.netCostP50Cents,
         detRate: det.scenarios[0]!.neverShortfallRatePct,
         directWithShort: directShort,
+        fullyFunded: s.fullyFundedRatePct,
+        withUnpaid: s.pathsWithUnpaidTax,
+        unpaidP50: s.totalUnpaidTaxP50Cents,
+        unpaidP90: s.totalUnpaidTaxP90Cents,
       };
     },
   },
@@ -3933,22 +4041,22 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-stats-mixed-horizon-seeded",
     kind: "tax",
-    note: "Monte Carlo stats with mixed horizons, seeded (the F5 pin): the mcStatsBase plan ends at age 85 (horizon 21 years); one scenario overrides nothing and one overrides endAge to 95 (horizon 31 years), priced at volatility 15, N = 40, seed 12345. Per path the shared standardized shocks are drawn once at the longest horizon (31) via rothMcShockSeries, and each scenario is priced from its own prefix centered on its own expected return — re-derived in-case from rothMcStream(12345) through buildCompareScenario + simulateRothPlan + planNetCost with the stats function's median/percentile conventions, and the re-derived figures (ending-wealth p10/p50/p90, shortfall-path count, shortfall p50/p90, net-cost p50 — 7 fields × 2 scenarios = 14 comparisons) equal the action's output to the cent. The long scenario's ending-wealth spread is non-degenerate (p90 − p10 = $1,944,452.70, more than one cent), and pricing the long scenario the OLD way — a series drawn at the base horizon of 21 via rothMcReturnSeries on the base inputs, with the tail deterministic inside simulateRothPlan — gives a median ending wealth $343,994.31 away from the action's, so the stochastic tail genuinely prices. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Monte Carlo stats with mixed horizons, seeded — REWORKED in v55 (F3) into the fixed-stride batch-independence pin: the mcStatsBase plan ends at age 85 (horizon 21 years); one scenario overrides nothing and one overrides endAge to 95 (horizon 31 years), priced at volatility 15, N = 40, seed 12345. Per path one standardized shock vector of exactly MC_STREAM_STRIDE_YEARS (160) is drawn via rothMcShockSeries, and each scenario is priced from its own prefix (21 / 31) centered on its own expected return — re-derived in-case from rothMcStream(12345) through buildCompareScenario + simulateRothPlan + planNetCost with the stats function's median/percentile conventions, and the re-derived figures (ending-wealth p10/p50/p90, shortfall-path count, shortfall p50/p90, net-cost p50 — 7 fields × 2 scenarios = 14 comparisons) equal the action's output to the cent. BATCH INDEPENDENCE: the same 'Base horizon' scenario is ALSO run alone in a second runRothMonteCarloStats call, and EVERY reported field of its row (20 fields, names and figures alike) must equal the batched run's row exactly — alone == batched to the cent (34 comparisons in total). The long scenario's ending-wealth spread is non-degenerate (p90 − p10 = $2,514,284.62, more than one cent), and pricing the long scenario the OLD way — a series drawn at the base horizon of 21 via rothMcReturnSeries on the base inputs, with the tail deterministic inside simulateRothPlan — gives a median ending wealth $158,609.99 away from the action's, so the stochastic tail genuinely prices. (Headline figures re-pinned under the fixed-stride discipline in v55; earlier re-pin 2026-10-19 for the E2 Joint Life Table II completion.)",
     expected: {
       mismatches: 0,
-      comparedFields: 14,
-      baseWealthP10: 14825954,
-      baseWealthP50: 49330170,
-      baseWealthP90: 158754893,
-      baseCostP50: 5239967,
-      longWealthP10: 13405522,
-      longWealthP50: 65327502,
-      longWealthP90: 207850792,
-      longCostP50: 2952617,
-      longWithShort: 1,
-      longSpread: 194445270,
+      comparedFields: 34,
+      baseWealthP10: 24233328,
+      baseWealthP50: 79783719,
+      baseWealthP90: 220822093,
+      baseCostP50: 7726599,
+      longWealthP10: 13009201,
+      longWealthP50: 83865934,
+      longWealthP90: 264437663,
+      longCostP50: 4314206,
+      longWithShort: 0,
+      longSpread: 251428462,
       spreadExceedsOneCent: 1,
-      tailDiffCents: 34399431,
+      tailDiffCents: 15860999,
       tailDiffExceedsOneCent: 1,
     },
     actual: () => {
@@ -3992,7 +4100,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       const perScenario: Row[][] = built.map(() => []);
       const rng = rothMcStream(12345);
       for (let i = 0; i < 40; i++) {
-        const z = rothMcShockSeries(31, rng);
+        const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
         for (let j = 0; j < built.length; j++) {
           const b = built[j]!;
           const years =
@@ -4045,6 +4153,54 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           if (x !== y) mismatches++;
         }
       }
+      // Batch independence (v55, F3): the "Base horizon"
+      // scenario priced ALONE must report exactly the batched
+      // run's row — every field, to the cent.
+      const alone = runRothMonteCarloStats(base, [scenarios[0]!], 2026, {
+        volatilityPct: 15,
+        pathCount: 40,
+        seed: 12345,
+      });
+      const batchedBase = stats.scenarios[0]!;
+      const aloneBase = alone.scenarios[0]!;
+      const alonePairs: [number, number][] = [
+        [aloneBase.pathsRun, batchedBase.pathsRun],
+        [aloneBase.pathsWithShortfall, batchedBase.pathsWithShortfall],
+        [aloneBase.neverShortfallRatePct, batchedBase.neverShortfallRatePct],
+        [aloneBase.totalShortfallP50Cents, batchedBase.totalShortfallP50Cents],
+        [aloneBase.totalShortfallP90Cents, batchedBase.totalShortfallP90Cents],
+        [aloneBase.fullyFundedRatePct, batchedBase.fullyFundedRatePct],
+        [aloneBase.pathsWithUnpaidTax, batchedBase.pathsWithUnpaidTax],
+        [aloneBase.totalUnpaidTaxP50Cents, batchedBase.totalUnpaidTaxP50Cents],
+        [aloneBase.totalUnpaidTaxP90Cents, batchedBase.totalUnpaidTaxP90Cents],
+        [
+          aloneBase.endingAfterTaxWealthP10Cents,
+          batchedBase.endingAfterTaxWealthP10Cents,
+        ],
+        [
+          aloneBase.endingAfterTaxWealthP50Cents,
+          batchedBase.endingAfterTaxWealthP50Cents,
+        ],
+        [
+          aloneBase.endingAfterTaxWealthP90Cents,
+          batchedBase.endingAfterTaxWealthP90Cents,
+        ],
+        [aloneBase.endingPretaxP10Cents, batchedBase.endingPretaxP10Cents],
+        [aloneBase.endingPretaxP50Cents, batchedBase.endingPretaxP50Cents],
+        [aloneBase.endingPretaxP90Cents, batchedBase.endingPretaxP90Cents],
+        [aloneBase.netCostP10Cents, batchedBase.netCostP10Cents],
+        [aloneBase.netCostP50Cents, batchedBase.netCostP50Cents],
+        [aloneBase.netCostP90Cents, batchedBase.netCostP90Cents],
+      ];
+      for (const [x, y] of alonePairs) {
+        comparedFields++;
+        if (x !== y) mismatches++;
+      }
+      comparedFields++;
+      if (aloneBase.name !== batchedBase.name) mismatches++;
+      comparedFields++;
+      if (aloneBase.strategyDescription !== batchedBase.strategyDescription)
+        mismatches++;
       // Deterministic-tail re-computation (the OLD construction):
       // the long scenario priced from a series drawn at the base
       // horizon of 21, its tail years deterministic inside
@@ -4428,18 +4584,18 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "flex-seeded-mc-flex-on",
     kind: "tax",
-    note: "Flexible spending, the seeded value measurement: the mc-stats-shortfall-some-paths shape (mcStatsBase with spending patched to $55,000/yr by scenario override) with flex ON (cut 20 / floor 50) set on the BASE so the scenario inherits it — vol 15, N = 40, seed 12345, priced through runRothMonteCarloStats. Pins from the implementation's first correct run: 9 of 40 paths run a shortfall year (neverShortfallRatePct 77.5), total-shortfall p50 $0 and p90 $118,843.20, ending-wealth p50 $270,584.44. Each figure is ALSO re-derived in-case replicating the post-R4-1 stats loop (rng = rothMcStream(12345); per path z = rothMcShockSeries(21, rng); series = the prefix mapped with the scenario's expectedReturnPct + 15z; buildCompareScenario + simulateRothPlan + planNetCost; median = mean of the two middle values, p90 = sorted[floor(0.9 × n)] — the mc-stats-mixed-horizon-seeded conventions), and the re-derived figures are pinned to the same constants. Direction check, stated as the brief requires: the flex-OFF control on this identical stream (mc-stats-shortfall-some-paths) reads 15 shortfall paths / 62.5% / p90 $246,682.75 — flex ON improves on all three (9 paths, 77.5%, $118,843.20), so the expected direction held on the first correct run; fewerThanOff pins that comparison as 1.",
+    note: "Flexible spending, the seeded value measurement: the mc-stats-shortfall-some-paths shape (mcStatsBase with spending patched to $55,000/yr by scenario override) with flex ON (cut 20 / floor 50) set on the BASE so the scenario inherits it — vol 15, N = 40, seed 12345, priced through runRothMonteCarloStats. Pins under the fixed-stride discipline (v55, F3): 9 of 40 paths run a shortfall year (neverShortfallRatePct 77.5), total-shortfall p50 $0 and p90 $75,084.53, ending-wealth p50 $241,083.63. Each figure is ALSO re-derived in-case replicating the stats loop (rng = rothMcStream(12345); per path z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng); series = the scenario-horizon prefix mapped with the scenario's expectedReturnPct + 15z; buildCompareScenario + simulateRothPlan + planNetCost; median = mean of the two middle values, p90 = sorted[floor(0.9 × n)] — the mc-stats-mixed-horizon-seeded conventions), and the re-derived figures are pinned to the same constants. Direction check: the flex-OFF control on this identical stream (mc-stats-shortfall-some-paths, re-pinned in v55) reads 17 shortfall paths / 57.5% / p90 $193,039.13 — flex ON improves on all three (9 paths, 77.5%, $75,084.53), so the expected direction held under the new stream; fewerThanOff pins that comparison as 1.",
     expected: {
       withShort: 9,
       rate: 77.5,
       sfP50: 0,
-      sfP90: 11884320,
-      wealthP50: 27058444,
+      sfP90: 7508453,
+      wealthP50: 24108363,
       reWithShort: 9,
       reRate: 77.5,
       reSfP50: 0,
-      reSfP90: 11884320,
-      reWealthP50: 27058444,
+      reSfP90: 7508453,
+      reWealthP50: 24108363,
       fewerThanOff: 1,
     },
     actual: () => {
@@ -4453,9 +4609,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         seed: ROTH_MC_CHECK_SEED,
       });
       const s = stats.scenarios[0]!;
-      // Independent re-derivation, replicating the post-R4-1
-      // stats loop construction exactly (shocks drawn once at
-      // the scenario horizon of 21, centered per scenario).
+      // Independent re-derivation, replicating the stats loop
+      // construction exactly (fixed-stride shocks drawn once
+      // per path, the scenario-horizon prefix centered per
+      // scenario).
       const toCents = (dollars: number): number => Math.round(dollars * 100);
       const medianCents = (values: number[]): number => {
         const sorted = [...values].sort((a, b) => a - b);
@@ -4480,15 +4637,19 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         { annualSpendingCents: 5500000 },
         2026,
       )!;
+      const flexHorizon =
+        built.inputs.endAgePrimary -
+        (built.inputs.startYear - built.inputs.birthYearPrimary) +
+        1;
       const rng = rothMcStream(ROTH_MC_CHECK_SEED);
       const wealths: number[] = [];
       const shortfalls: number[] = [];
       let reWithShort = 0;
       for (let i = 0; i < 40; i++) {
-        const z = rothMcShockSeries(21, rng);
-        const series = z.map(
-          (zi) => built.inputs.expectedReturnPct + 15 * zi,
-        );
+        const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+        const series = z
+          .slice(0, flexHorizon)
+          .map((zi) => built.inputs.expectedReturnPct + 15 * zi);
         const res = simulateRothPlan(built.inputs, built.strategy, series);
         // Priced through planNetCost exactly as the stats loop
         // prices each path (the net cost itself is not pinned
@@ -4515,7 +4676,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         reSfP50: medianCents(shortfalls),
         reSfP90: pctCents(shortfalls, 90),
         reWealthP50: medianCents(wealths),
-        fewerThanOff: s.pathsWithShortfall < 15 ? 1 : 0,
+        fewerThanOff: s.pathsWithShortfall < 17 ? 1 : 0,
       };
     },
   },

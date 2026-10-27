@@ -1322,6 +1322,21 @@ export const ROTH_MC_CHECK_SEED = 12345;
 // under the optimizer's own ~40–50 s and the ~30 s budget.
 export const ROTH_MC_CHECK_PATHS = 250;
 
+// Fixed stream stride for runRothMonteCarloStats (F3,
+// batch-independent streams): the stats run draws exactly
+// this many standardized shocks per path from its stream,
+// whatever scenarios are in the call, so a scenario's trial
+// streams — and therefore its statistics — are identical
+// whether it is priced alone or batched with longer- or
+// shorter-horizon companions. Within-call pairing is
+// preserved: every scenario still consumes its own prefix of
+// the same per-path vector. 160 covers the longest horizon
+// the schemas permit (endAge max 130, earliest current age
+// 0 → 131 years) with headroom. Trial 0's shocks are
+// unchanged from the old discipline — the stream starts
+// identically; only the per-path consumption count is fixed.
+export const MC_STREAM_STRIDE_YEARS = 160;
+
 // mulberry32 + Box–Muller, replicated from retirementEngines.ts
 // (runMonteCarlo draws its batch exactly this way); that module
 // is not modified.
@@ -1502,15 +1517,21 @@ export function runRothMonteCarloCheck(
    a spending shortfall, the path's total shortfall, and its
    ending after-tax wealth / ending pre-tax / net cost.
 
-   Pairing: one rng stream (rothMcStream(seed)); per path a
-   shared standardized shock series is drawn ONCE, with length
-   equal to the longest horizon among the base plan and every
-   built scenario, then every scenario is priced from its own
-   prefix of those shocks centered on its own expected return
-   (each scenario's series value is its own expectedReturnPct
-   plus volatilityPct × the shared shock) — paired across
-   scenarios exactly as the check pairs its two candidates, and
-   series generation never depends on the candidates.
+   Pairing and batch independence: one rng stream
+   (rothMcStream(seed)); per path a shared standardized shock
+   vector of exactly MC_STREAM_STRIDE_YEARS (160) shocks is
+   drawn ONCE — a fixed stride, whatever scenarios are in the
+   call — then every scenario is priced from its own prefix
+   of those shocks centered on its own expected return (each
+   scenario's series value is its own expectedReturnPct plus
+   volatilityPct × the shared shock). Paired across scenarios
+   exactly as the check pairs its two candidates, and series
+   generation never depends on the candidates. Because the
+   per-path consumption is the fixed stride rather than the
+   batch's longest horizon, a scenario's trial streams — and
+   therefore its statistics — are identical whether it is
+   priced alone or batched with longer- or shorter-horizon
+   companions.
    Percentiles use the check's own helpers
    (mcPercentile / mcMedianOf), so p50 is the median convention
    the check reports. Money out is integer cents (the
@@ -1529,15 +1550,29 @@ export type RothMcStatsScenarioResult = {
   pathsRun: number;
   // Paths on which at least one year ran a spending shortfall.
   pathsWithShortfall: number;
-  // Share of paths with NO shortfall year, in percent to one
-  // decimal (the winRatePct rounding convention); 100 = the
-  // money lasted on every path.
+  // Share of paths with NO spending-shortfall year, in percent
+  // to one decimal (the winRatePct rounding convention);
+  // 100 = spending was funded on every path. This is the
+  // SPENDING-shortfall-only rate — a path can score here while
+  // still leaving assessed tax unpaid (see fullyFundedRatePct).
   neverShortfallRatePct: number;
   // Per-path lifetime shortfall (the sum of the path's yearly
   // spendShortfall), percentiles across ALL paths — p50 is 0
   // whenever at least half the paths never ran short.
   totalShortfallP50Cents: number;
   totalShortfallP90Cents: number;
+  // Share of paths with NO spending shortfall AND NO unpaid
+  // tax, in percent to one decimal (the same rounding
+  // convention as neverShortfallRatePct); 100 = every path
+  // funded both its spending and its assessed tax in full.
+  fullyFundedRatePct: number;
+  // Paths on which at least one year left assessed tax unpaid.
+  pathsWithUnpaidTax: number;
+  // Per-path lifetime unpaid tax (the sum of the path's yearly
+  // unpaidTax), percentiles across ALL paths — p50 is 0
+  // whenever at least half the paths never left tax unpaid.
+  totalUnpaidTaxP50Cents: number;
+  totalUnpaidTaxP90Cents: number;
   endingAfterTaxWealthP10Cents: number;
   endingAfterTaxWealthP50Cents: number;
   endingAfterTaxWealthP90Cents: number;
@@ -1592,25 +1627,39 @@ export function runRothMonteCarloStats(
     if (!b) return noBirthYear;
     built.push(b);
   }
+  // F2: every built scenario's horizon is validated with the
+  // base plan's predicate — a scenario whose end age is not
+  // after the current age has no lifetime to stress-test, and
+  // pricing it would report a silent 100% over zero years.
+  for (const b of built) {
+    if (b.inputs.endAgePrimary <= ageNow) {
+      return {
+        ok: false,
+        reason: `Scenario "${b.name}": the plan end age is not after the current age, so there is no lifetime to stress-test — raise the end age in that scenario and run again.`,
+        scenarios: [],
+      };
+    }
+  }
   type PathRow = {
     netCostCents: number;
     wealthCents: number;
     pretaxCents: number;
     shortfallCents: number;
     hasShortfall: boolean;
+    unpaidTaxCents: number;
+    hasUnpaidTax: boolean;
   };
   const perScenario: PathRow[][] = built.map(() => []);
   const rng = rothMcStream(opts.seed);
   const horizonYears = (inputs: RothPlanInputs): number =>
     inputs.endAgePrimary - (inputs.startYear - inputs.birthYearPrimary) + 1;
-  const baseYears = horizonYears(baseInputs);
   const scenarioYears = built.map((b) => horizonYears(b.inputs));
-  const maxYears = Math.max(baseYears, ...scenarioYears);
   for (let i = 0; i < opts.pathCount; i++) {
-    // Draw the shared standardized shocks once, then price
-    // EVERY scenario from its own prefix centered on its own
-    // expected return — paired paths by construction.
-    const z = rothMcShockSeries(maxYears, rng);
+    // Draw the fixed-stride standardized shock vector once,
+    // then price EVERY scenario from its own prefix centered
+    // on its own expected return — paired paths by
+    // construction, and identical streams alone or batched.
+    const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
     for (let j = 0; j < built.length; j++) {
       const b = built[j]!;
       const yearsS = scenarioYears[j] ?? 0;
@@ -1626,9 +1675,13 @@ export function runRothMonteCarloStats(
       const cost = planNetCost(result, b.inputs);
       let shortfallDollars = 0;
       let hasShortfall = false;
+      let unpaidTaxDollars = 0;
+      let hasUnpaidTax = false;
       for (const y of result.years) {
         if (y.spendShortfall > 0) hasShortfall = true;
         shortfallDollars += y.spendShortfall;
+        if (y.unpaidTax > 0) hasUnpaidTax = true;
+        unpaidTaxDollars += y.unpaidTax;
       }
       perScenario[j]!.push({
         netCostCents: toCents(cost.netCost),
@@ -1636,6 +1689,8 @@ export function runRothMonteCarloStats(
         pretaxCents: toCents(result.endingPretax),
         shortfallCents: toCents(shortfallDollars),
         hasShortfall,
+        unpaidTaxCents: toCents(unpaidTaxDollars),
+        hasUnpaidTax,
       });
     }
   }
@@ -1647,7 +1702,12 @@ export function runRothMonteCarloStats(
     scenarios: built.map((b, j) => {
       const rows = perScenario[j]!;
       const withShortfall = rows.filter((r) => r.hasShortfall).length;
+      const withUnpaidTax = rows.filter((r) => r.hasUnpaidTax).length;
+      const fullyFunded = rows.filter(
+        (r) => !r.hasShortfall && !r.hasUnpaidTax,
+      ).length;
       const shortfalls = rows.map((r) => r.shortfallCents);
+      const unpaidTaxes = rows.map((r) => r.unpaidTaxCents);
       const wealths = rows.map((r) => r.wealthCents);
       const pretaxes = rows.map((r) => r.pretaxCents);
       const costs = rows.map((r) => r.netCostCents);
@@ -1663,6 +1723,13 @@ export function runRothMonteCarloStats(
             : 0,
         totalShortfallP50Cents: Math.round(mcMedianOf(shortfalls)),
         totalShortfallP90Cents: mcPercentile(sortedCopy(shortfalls), 90),
+        fullyFundedRatePct:
+          rows.length > 0
+            ? Math.round((fullyFunded / rows.length) * 1000) / 10
+            : 0,
+        pathsWithUnpaidTax: withUnpaidTax,
+        totalUnpaidTaxP50Cents: Math.round(mcMedianOf(unpaidTaxes)),
+        totalUnpaidTaxP90Cents: mcPercentile(sortedCopy(unpaidTaxes), 90),
         endingAfterTaxWealthP10Cents: mcPercentile(sortedCopy(wealths), 10),
         endingAfterTaxWealthP50Cents: Math.round(mcMedianOf(wealths)),
         endingAfterTaxWealthP90Cents: mcPercentile(sortedCopy(wealths), 90),
