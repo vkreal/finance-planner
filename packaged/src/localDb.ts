@@ -1,6 +1,6 @@
 // Local database for the packaged build: a real SQLite database
-// (sql.js — SQLite compiled to WebAssembly) living in memory, with its
-// image persisted into the key/value store as base64 chunks.
+// (sql.js — SQLite compiled to WebAssembly) living in memory, with
+// its image persisted into the key/value store.
 //
 // The server actions receive their database through ctx.db(), typed as
 // the SDK's SpaceDb = Pick<drizzle LibSQLDatabase, "select" | "insert"
@@ -11,29 +11,92 @@
 // inlined at build time by the "packaged-migrations" virtual module)
 // the live server runs.
 //
-// Persistence model: after every successful action dispatch the whole
-// database image is re-exported and rewritten to the store (see
-// dispatch.ts). The dataset this app holds is small (a household's
-// bills, snapshots, and plan records), so a full-image write per action
-// is simple and safe; it also makes every write atomic at the store
-// level — there is no half-written state to recover from.
-import initSqlJs, { type Database } from "sql.js";
+// Persistence protocol (contract v60, F1–F3 — this replaces the
+// pre-v60 in-place chunk writes, which could leave a hybrid image
+// behind on a quota failure and silently re-initialized an empty
+// database over damaged data):
+//
+//   * Images are IMMUTABLE GENERATIONS. A persist exports the whole
+//     image, base64-chunks it under a fresh generation number
+//     (fpkg:v1:gen:<g>:<i>), reads the chunks back and verifies the
+//     SHA-256 over the exact bytes, and confirms the bytes open as
+//     a SQLite database — all BEFORE committing anything.
+//   * The commit is ONE small write: the active-generation pointer
+//     (fpkg:v1:active = {gen, chunks, sha256}). Until that write
+//     lands, the previous generation is the store's state, fully
+//     intact; a failure anywhere earlier (quota, verification)
+//     leaves it active and surfaces an error. The previous
+//     generation's chunks are retained after the switch (cleanup
+//     removes only generations older than the previous one).
+//   * On load, the active generation is reassembled and its hash
+//     verified before use. A corrupt, incomplete, or
+//     checksum-failing image is NEVER replaced with an empty
+//     database while store keys exist: initLocalDb throws
+//     StoreRecoveryRequiredError and writes nothing, preserving
+//     every key for recovery. Only a genuinely fresh store (no
+//     pointer, no legacy chunks, no meta) initializes empty.
+//   * The migration count lives INSIDE the image (PRAGMA
+//     user_version), so it commits atomically with the schema it
+//     describes — the pre-v60 localStorage meta said "applied"
+//     before the image was durable and could strand a migration
+//     forever. The meta's appliedMigrations field is kept only as
+//     an informational mirror; nothing reads it to decide
+//     migrations. A pre-v60 store's legacy chunks are adopted on
+//     first boot: loaded, re-persisted as generation 1 under this
+//     protocol, and only then removed.
+//   * Stale-tab protection: a tab remembers the generation it
+//     loaded (or last wrote). persist() and assertCurrent()
+//     re-read the pointer and refuse — StaleTabError — when it no
+//     longer names that generation, so a stale tab can never
+//     overwrite another tab's commit, not even via a read-only
+//     action's persist. Persist is fully synchronous (localStorage
+//     and the hash are synchronous), so the check-and-commit
+//     cannot interleave with another tab's persist mid-write.
+import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import * as schema from "../../server/src/schema";
 import { MIGRATIONS } from "packaged-migrations";
+import { bytesToHex, sha256Bytes } from "../../server/src/backupMacCore";
 import {
+  ACTIVE_KEY,
   DB_CHUNK_KEY,
   DB_COUNT_KEY,
+  GEN_CHUNK_KEY,
   META_KEY,
   type KeyValueStore,
 } from "./storage";
 
 const CHUNK_CHARS = 100_000;
 
+/** The stored database could not be loaded and must not be
+    overwritten: every key is preserved; a human (or a future
+    recovery tool) decides what happens next. */
+export class StoreRecoveryRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StoreRecoveryRequiredError";
+  }
+}
+
+/** Another tab (or window) committed a newer generation since
+    this tab loaded. This tab must reload before it can act. */
+export class StaleTabError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StaleTabError";
+  }
+}
+
 interface PackagedMeta {
   appliedMigrations: number;
   seeded: boolean;
   createdMs: number;
+}
+
+interface GenerationPointer {
+  gen: number;
+  chunks: number;
+  sha256: string;
 }
 
 function readMeta(store: KeyValueStore): PackagedMeta {
@@ -69,30 +132,135 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-function loadImage(store: KeyValueStore): Uint8Array | null {
+function imageSha256(bytes: Uint8Array): string {
+  return bytesToHex(sha256Bytes(bytes));
+}
+
+function readPointer(store: KeyValueStore): GenerationPointer | null {
+  const raw = store.get(ACTIVE_KEY);
+  if (raw == null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new StoreRecoveryRequiredError(
+      "The stored database pointer is unreadable. Your stored data was left untouched; recovery is required before the app can open.",
+    );
+  }
+  const p = parsed as Partial<GenerationPointer>;
+  if (
+    typeof p.gen !== "number" ||
+    typeof p.chunks !== "number" ||
+    typeof p.sha256 !== "string"
+  ) {
+    throw new StoreRecoveryRequiredError(
+      "The stored database pointer is incomplete. Your stored data was left untouched; recovery is required before the app can open.",
+    );
+  }
+  return { gen: p.gen, chunks: p.chunks, sha256: p.sha256 };
+}
+
+/** Reassemble one generation's image bytes, verifying completeness
+    and the recorded hash. Any failure is a recovery state. */
+function loadGenerationBytes(
+  store: KeyValueStore,
+  pointer: GenerationPointer,
+): Uint8Array {
+  let b64 = "";
+  for (let i = 0; i < pointer.chunks; i++) {
+    const chunk = store.get(GEN_CHUNK_KEY(pointer.gen, i));
+    if (chunk == null) {
+      throw new StoreRecoveryRequiredError(
+        `The stored database is incomplete (generation ${pointer.gen} is missing chunk ${i} of ${pointer.chunks}). Your stored data was left untouched; recovery is required before the app can open.`,
+      );
+    }
+    b64 += chunk;
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(b64);
+  } catch {
+    throw new StoreRecoveryRequiredError(
+      "The stored database image is not valid base64. Your stored data was left untouched; recovery is required before the app can open.",
+    );
+  }
+  if (imageSha256(bytes) !== pointer.sha256) {
+    throw new StoreRecoveryRequiredError(
+      "The stored database failed its integrity check (checksum mismatch). Your stored data was left untouched; recovery is required before the app can open.",
+    );
+  }
+  return bytes;
+}
+
+/** The pre-v60 image layout: chunks written in place under
+    fpkg:v1:db:<i> with a separate count key. Returns the bytes, or
+    null when no legacy image exists; a partial legacy image is a
+    recovery state, not an empty database. */
+function loadLegacyBytes(store: KeyValueStore): Uint8Array | null {
   const countRaw = store.get(DB_COUNT_KEY);
   if (!countRaw) return null;
   const count = Number.parseInt(countRaw, 10);
-  if (!Number.isFinite(count) || count <= 0) return null;
+  if (!Number.isFinite(count) || count <= 0) {
+    throw new StoreRecoveryRequiredError(
+      "The stored database (older format) has an unreadable chunk count. Your stored data was left untouched; recovery is required before the app can open.",
+    );
+  }
   let b64 = "";
   for (let i = 0; i < count; i++) {
     const chunk = store.get(DB_CHUNK_KEY(i));
-    if (chunk == null) return null;
+    if (chunk == null) {
+      throw new StoreRecoveryRequiredError(
+        "The stored database (older format) is incomplete. Your stored data was left untouched; recovery is required before the app can open.",
+      );
+    }
     b64 += chunk;
   }
-  return base64ToBytes(b64);
+  try {
+    return base64ToBytes(b64);
+  } catch {
+    throw new StoreRecoveryRequiredError(
+      "The stored database (older format) is not valid base64. Your stored data was left untouched; recovery is required before the app can open.",
+    );
+  }
 }
 
-function saveImage(store: KeyValueStore, bytes: Uint8Array): void {
-  const b64 = bytesToBase64(bytes);
-  const count = Math.max(1, Math.ceil(b64.length / CHUNK_CHARS));
-  const prevCountRaw = store.get(DB_COUNT_KEY);
-  const prevCount = prevCountRaw ? Number.parseInt(prevCountRaw, 10) : 0;
-  for (let i = 0; i < count; i++) {
-    store.set(DB_CHUNK_KEY(i), b64.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS));
+function removeLegacyKeys(store: KeyValueStore): void {
+  const countRaw = store.get(DB_COUNT_KEY);
+  const count = countRaw ? Number.parseInt(countRaw, 10) : 0;
+  if (Number.isFinite(count)) {
+    for (let i = 0; i < count; i++) store.remove(DB_CHUNK_KEY(i));
   }
-  store.set(DB_COUNT_KEY, String(count));
-  for (let i = count; i < prevCount; i++) store.remove(DB_CHUNK_KEY(i));
+  store.remove(DB_COUNT_KEY);
+}
+
+/** Remove every chunk of one generation (indices are contiguous;
+    probing stops at the first gap). */
+function removeGeneration(store: KeyValueStore, gen: number): void {
+  for (let i = 0; ; i++) {
+    const key = GEN_CHUNK_KEY(gen, i);
+    if (store.get(key) == null) return;
+    store.remove(key);
+  }
+}
+
+function openImage(SQL: SqlJsStatic, bytes: Uint8Array): Database {
+  try {
+    const db = new SQL.Database(bytes);
+    // A truncated or foreign file can construct yet fail on first
+    // touch; force one real read of the schema page.
+    db.exec("SELECT count(*) FROM sqlite_master");
+    return db;
+  } catch (err) {
+    throw new StoreRecoveryRequiredError(
+      `The stored database could not be opened (${err instanceof Error ? err.message : String(err)}). Your stored data was left untouched; recovery is required before the app can open.`,
+    );
+  }
+}
+
+function readUserVersion(db: Database): number {
+  const rows = db.exec("PRAGMA user_version");
+  const v = rows[0]?.values[0]?.[0];
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
 type ProxyMethod = "run" | "all" | "values" | "get";
@@ -106,8 +274,16 @@ function bindValue(v: unknown): unknown {
 export interface LocalDb {
   /** The drizzle database handed to actions through ctx.db(). */
   db: ReturnType<typeof drizzle<typeof schema>>;
-  /** Export the current image into the store. */
+  /** Commit the current image as a new generation (see the
+      protocol above). Throws StaleTabError when another tab has
+      committed since this tab loaded, and propagates store
+      failures (e.g. quota) with the previous generation intact. */
   persist(): void;
+  /** Throw StaleTabError when the store's active generation is
+      no longer the one this tab loaded or last wrote. */
+  assertCurrent(): void;
+  /** The generation this tab loaded or last wrote. */
+  readonly generation: number;
   meta: PackagedMeta;
   saveMeta(): void;
 }
@@ -117,20 +293,59 @@ export async function initLocalDb(
   wasmUrl: string,
 ): Promise<LocalDb> {
   const SQL = await initSqlJs({ locateFile: () => wasmUrl });
-  const image = loadImage(store);
-  const sqlDb: Database = image ? new SQL.Database(image) : new SQL.Database();
-
   const meta = readMeta(store);
-  const migrationsBefore = meta.appliedMigrations;
-  // Apply any migrations the stored image has not seen yet, in the
-  // same filename order the live platform applies them. Each file's
-  // "--> statement-breakpoint" lines are plain SQLite comments, so a
-  // file can be executed as-is.
-  for (let i = meta.appliedMigrations; i < MIGRATIONS.length; i++) {
-    sqlDb.exec(MIGRATIONS[i]);
-    meta.appliedMigrations = i + 1;
+  const hadMeta = store.get(META_KEY) != null;
+  const pointer = readPointer(store);
+
+  let sqlDb: Database;
+  let knownGen = 0;
+  let adoptedLegacy = false;
+  let fresh = false;
+  if (pointer) {
+    const bytes = loadGenerationBytes(store, pointer);
+    sqlDb = openImage(SQL, bytes);
+    knownGen = pointer.gen;
+  } else {
+    const legacy = loadLegacyBytes(store);
+    if (legacy) {
+      sqlDb = openImage(SQL, legacy);
+      adoptedLegacy = true;
+    } else if (hadMeta || store.get(DB_COUNT_KEY) != null) {
+      // The store was initialized before (a meta or a legacy
+      // count survives) but no loadable image exists — damaged,
+      // not fresh. Preserve everything and refuse.
+      throw new StoreRecoveryRequiredError(
+        "The stored database image is missing but other stored state exists. Your stored data was left untouched; recovery is required before the app can open.",
+      );
+    } else {
+      sqlDb = new SQL.Database();
+      fresh = true;
+    }
   }
-  writeMeta(store, meta);
+
+  // Migrations: the count of applied migrations is read from the
+  // image itself (PRAGMA user_version) and advanced inside the
+  // image as each migration runs, so the marker and the schema
+  // change are committed together by the generation persist
+  // below. The localStorage meta is never consulted here — with
+  // ONE adoption exception: a pre-v60 legacy image carries
+  // user_version 0 with its migrations already applied, and the
+  // legacy meta is the only record of how far it got, so an
+  // adopted image is stamped with the meta's count as its
+  // starting user_version. From that image's first generation
+  // persist onward, the in-image marker alone is authoritative.
+  let appliedBefore = readUserVersion(sqlDb);
+  if (adoptedLegacy && appliedBefore === 0 && meta.appliedMigrations > 0) {
+    appliedBefore = Math.min(meta.appliedMigrations, MIGRATIONS.length);
+    sqlDb.exec(`PRAGMA user_version = ${appliedBefore}`);
+  }
+  let applied = appliedBefore;
+  for (let i = applied; i < MIGRATIONS.length; i++) {
+    sqlDb.exec(MIGRATIONS[i]);
+    applied = i + 1;
+    sqlDb.exec(`PRAGMA user_version = ${applied}`);
+  }
+  meta.appliedMigrations = applied; // informational mirror only
 
   function execOne(sql: string, params: unknown[], method: ProxyMethod) {
     const stmt = sqlDb.prepare(sql);
@@ -188,17 +403,72 @@ export async function initLocalDb(
   const localDb: LocalDb = {
     db,
     meta,
+    get generation() {
+      return knownGen;
+    },
+    assertCurrent() {
+      const current = readPointer(store);
+      const currentGen = current?.gen ?? 0;
+      if (currentGen !== knownGen) {
+        throw new StaleTabError(
+          "This tab is out of date: another tab saved newer data (generation " +
+            `${currentGen}) after this tab loaded (generation ${knownGen}). ` +
+            "Reload this tab to continue — nothing was overwritten.",
+        );
+      }
+    },
     persist() {
-      saveImage(store, sqlDb.export());
+      // Stale check BEFORE writing anything: a tab may commit
+      // only on top of the generation it loaded or last wrote.
+      const current = readPointer(store);
+      const currentGen = current?.gen ?? 0;
+      if (currentGen !== knownGen) {
+        throw new StaleTabError(
+          "This tab is out of date: another tab saved newer data (generation " +
+            `${currentGen}) after this tab loaded (generation ${knownGen}). ` +
+            "Reload this tab to continue — nothing was overwritten.",
+        );
+      }
+      const bytes = sqlDb.export();
+      const gen = knownGen + 1;
+      const b64 = bytesToBase64(bytes);
+      const count = Math.max(1, Math.ceil(b64.length / CHUNK_CHARS));
+      const sha256 = imageSha256(bytes);
+      // Write the new generation's chunks. The active pointer
+      // still names the previous generation, so a throw anywhere
+      // here (quota) leaves the last good image fully active.
+      for (let i = 0; i < count; i++) {
+        store.set(
+          GEN_CHUNK_KEY(gen, i),
+          b64.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS),
+        );
+      }
+      // Verify BEFORE the pointer switch: reassemble, re-hash,
+      // and open the exact bytes the pointer will name.
+      const verified = loadGenerationBytes(store, { gen, chunks: count, sha256 });
+      const probe = openImage(SQL, verified);
+      probe.close();
+      // The commit: one small pointer write.
+      const next: GenerationPointer = { gen, chunks: count, sha256 };
+      store.set(ACTIVE_KEY, JSON.stringify(next));
+      knownGen = gen;
+      // Retain the previous generation (gen - 1) as the fallback
+      // copy; remove anything older.
+      for (let g = 1; g < gen - 1; g++) removeGeneration(store, g);
     },
     saveMeta() {
       writeMeta(store, meta);
     },
   };
-  if (image == null || meta.appliedMigrations !== migrationsBefore) {
-    // Persist the (possibly freshly migrated) image immediately so the
-    // store always holds a loadable database between sessions.
+
+  if (fresh || adoptedLegacy || applied !== appliedBefore) {
+    // Commit the (possibly freshly migrated or adopted) image as
+    // a generation so the store always holds a loadable database
+    // between sessions. Adoption removes the legacy keys only
+    // after the generation is durable.
     localDb.persist();
+    if (adoptedLegacy) removeLegacyKeys(store);
   }
+  writeMeta(store, meta);
   return localDb;
 }

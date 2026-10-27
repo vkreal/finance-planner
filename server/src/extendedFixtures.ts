@@ -210,6 +210,11 @@ type BackupPayload,
 type RestoreState,
 } from "./restoreCore";
 import {
+DATASET_TABLES,
+datasetIsEmpty,
+type DatasetPresence,
+} from "./seedGuardCore";
+import {
 bytesToHex,
 classifyBackupAuthenticity,
 computeBackupMac,
@@ -5286,6 +5291,181 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "restore-writer-illegal-fields-refused-preflight",
+    kind: "restore",
+    note: "Contract v60, packaged-parity F4 (the full sweep): starting from one complete, valid payload (controlRestores 1), EVERY backed-up field is mutated in turn to a value its ordinary writer refuses — string lengths (names, descriptions, categories, paid-by labels, notes, FITID), ranges (dueMonth 13 and 0, cash-out day 32 and Feb 31, negative amounts), enum membership (frequency, paidByType, sourceType, kind, propertyKind), flag representations (keepLightsOn 2/5, backfill −1, collapsed 2, custodial 2, archived −1), id positivity and referential integrity, a tax-bucket split on a property account's balance (writers store those whole), and the typed settings parsers. Every mutation must be refused BEFORE any write: no commit and the prior state byte-identical (allRefused / allIntact). Refusals land in the shared fieldValidators schema fragments or in preflightRestoreBackup — the same rules the writers enforce, never a second copy.",
+    expected: {
+      controlRestores: 1, allRefused: 1, allIntact: 1, atLeastFiftyMutations: 1,
+    },
+    actual: () => {
+      const T = 1700000000000;
+      const full = (): Record<string, unknown> => {
+        const raw = baseRestorePayload();
+        raw.yearlyExpenses = [{
+          id: 1, name: "Property tax", frequency: "semiannual", expectedCents: 265000,
+          dueMonth: 4, paidByType: "checking", paidByName: "Checking",
+          backfillBeforeFirstVersion: 0, category: "Taxes", keepLightsOn: 1, createdAt: T,
+        }];
+        raw.yearlyExpenseVersions = [{
+          id: 1, expenseId: 1, expectedCents: 265000, frequency: "semiannual",
+          effectiveFrom: "2025-01", createdAt: T,
+        }];
+        raw.transactions = [{
+          id: 1, date: "2025-03-01", description: "Groceries", amountCents: 5000,
+          sourceType: "checking", accountName: "Checking", kind: "spending",
+          category: "Food", yearlyExpenseId: null, fitId: null, createdAt: T,
+        }];
+        raw.monthlySummaries = [{ month: "2025-01", cashOutCents: 100000, createdAt: T, updatedAt: T }];
+        raw.monthlyBills = [{
+          id: 1, name: "Rent", amountCents: 185000, paidBy: "Checking", notes: null,
+          category: "Housing", keepLightsOn: 1, collapsed: 0, createdAt: T,
+        }];
+        raw.monthlyBillVersions = [{ id: 1, billId: 1, amountCents: 185000, effectiveFrom: "2025-01", createdAt: T }];
+        raw.monthlyOneOffs = [{ id: 1, month: "2025-01", description: "Gift", amountCents: 5000, note: null, createdAt: T }];
+        raw.monthlyCashOutItems = [{
+          id: 1, month: "2025-01", description: "Rent check", amountCents: 185000,
+          note: null, day: 1, createdAt: T,
+        }];
+        (raw.nwAccounts as Record<string, unknown>[]).push({
+          id: 2, name: "House", bucket: "Unbucketed", propertyKind: "asset",
+          custodial: 0, sortOrder: 1, archived: 0, createdAt: T,
+        });
+        (raw.nwBalances as Record<string, unknown>[]).push({
+          id: 2, snapshotId: 1, accountId: 2, balanceCents: 50000000,
+          splitHsaCents: null, splitRothCents: null, splitTaxableCents: null,
+          splitNonTaxableCents: null, split529Cents: null, splitCashCents: null,
+          splitPreTaxCents: null,
+        });
+        return raw;
+      };
+      const control = attemptRestore(restorePriorState(), full(), restoreKeyCheckValidFor(full()));
+      type Mut = (p: Record<string, unknown>) => void;
+      const row = (p: Record<string, unknown>, table: string, i = 0) =>
+        (p[table] as Record<string, unknown>[])[i] as Record<string, unknown>;
+      const long = (n: number) => "x".repeat(n);
+      const mutations: Mut[] = [
+        // yearly expense + version
+        (p) => { row(p, "yearlyExpenses").dueMonth = 13; },
+        (p) => { row(p, "yearlyExpenses").dueMonth = 0; },
+        (p) => { row(p, "yearlyExpenses").name = ""; },
+        (p) => { row(p, "yearlyExpenses").name = long(121); },
+        (p) => { row(p, "yearlyExpenses").paidByName = ""; },
+        (p) => { row(p, "yearlyExpenses").paidByName = long(61); },
+        (p) => { row(p, "yearlyExpenses").category = ""; },
+        (p) => { row(p, "yearlyExpenses").category = long(61); },
+        (p) => { row(p, "yearlyExpenses").keepLightsOn = 2; },
+        (p) => { row(p, "yearlyExpenses").backfillBeforeFirstVersion = -1; },
+        (p) => { row(p, "yearlyExpenses").expectedCents = -1; },
+        (p) => { row(p, "yearlyExpenses").frequency = "monthly"; },
+        (p) => { row(p, "yearlyExpenses").paidByType = "cash"; },
+        (p) => { row(p, "yearlyExpenseVersions").expectedCents = -1; },
+        (p) => { row(p, "yearlyExpenseVersions").frequency = "weekly"; },
+        (p) => { row(p, "yearlyExpenseVersions").effectiveFrom = "2025-13"; },
+        // transaction
+        (p) => { row(p, "transactions").date = "2025-02-31"; },
+        (p) => { row(p, "transactions").description = ""; },
+        (p) => { row(p, "transactions").description = long(201); },
+        (p) => { row(p, "transactions").accountName = ""; },
+        (p) => { row(p, "transactions").accountName = long(61); },
+        (p) => { row(p, "transactions").category = ""; },
+        (p) => { row(p, "transactions").category = long(41); },
+        (p) => { row(p, "transactions").sourceType = "cash"; },
+        (p) => { row(p, "transactions").kind = "gift"; },
+        (p) => { row(p, "transactions").fitId = ""; },
+        (p) => { row(p, "transactions").fitId = long(201); },
+        (p) => { row(p, "transactions").yearlyExpenseId = 999; },
+        (p) => { row(p, "transactions").yearlyExpenseId = 0; },
+        (p) => { row(p, "transactions").id = 0; },
+        // monthly summary
+        (p) => { row(p, "monthlySummaries").month = "2025-13"; },
+        (p) => { row(p, "monthlySummaries").cashOutCents = -1; },
+        // monthly bill + version
+        (p) => { row(p, "monthlyBills").name = ""; },
+        (p) => { row(p, "monthlyBills").name = long(121); },
+        (p) => { row(p, "monthlyBills").amountCents = -1; },
+        (p) => { row(p, "monthlyBills").paidBy = ""; },
+        (p) => { row(p, "monthlyBills").paidBy = long(61); },
+        (p) => { row(p, "monthlyBills").notes = long(301); },
+        (p) => { row(p, "monthlyBills").category = ""; },
+        (p) => { row(p, "monthlyBills").category = long(61); },
+        (p) => { row(p, "monthlyBills").keepLightsOn = 5; },
+        (p) => { row(p, "monthlyBills").collapsed = 2; },
+        (p) => { row(p, "monthlyBillVersions").amountCents = -1; },
+        (p) => { row(p, "monthlyBillVersions").effectiveFrom = "2025-1"; },
+        (p) => { row(p, "monthlyBillVersions").billId = 999; },
+        // one-off
+        (p) => { row(p, "monthlyOneOffs").month = "2025-00"; },
+        (p) => { row(p, "monthlyOneOffs").description = ""; },
+        (p) => { row(p, "monthlyOneOffs").amountCents = -1; },
+        (p) => { row(p, "monthlyOneOffs").note = long(1001); },
+        // cash-out item
+        (p) => { row(p, "monthlyCashOutItems").description = long(201); },
+        (p) => { row(p, "monthlyCashOutItems").amountCents = -1; },
+        (p) => { row(p, "monthlyCashOutItems").note = long(1001); },
+        (p) => { row(p, "monthlyCashOutItems").day = 32; },
+        (p) => { const it = row(p, "monthlyCashOutItems"); it.month = "2025-02"; it.day = 31; },
+        (p) => { row(p, "monthlyCashOutItems").month = "2025-13"; },
+        // Net Worth account / snapshot / balance
+        (p) => { row(p, "nwAccounts").name = ""; },
+        (p) => { row(p, "nwAccounts").name = long(81); },
+        (p) => { row(p, "nwAccounts").propertyKind = "liabilty"; },
+        (p) => { row(p, "nwAccounts").custodial = 2; },
+        (p) => { row(p, "nwAccounts").archived = -1; },
+        (p) => { row(p, "nwSnapshots").date = "2025-02-30"; },
+        (p) => { row(p, "nwSnapshots").note = long(501); },
+        (p) => { row(p, "nwBalances").snapshotId = 999; },
+        (p) => { row(p, "nwBalances").accountId = 999; },
+        (p) => { row(p, "nwBalances", 1).splitTaxableCents = 100; },
+        // typed settings
+        (p) => { (p.settings as Record<string, unknown>[]).push({ key: "opening_reserve_cents", value: "not-a-number" }); },
+        (p) => { (p.settings as Record<string, unknown>[]).push({ key: "nw_target_cents", value: "-5" }); },
+        (p) => { (p.settings as Record<string, unknown>[]).push({ key: "nw_target_cents", value: "0" }); },
+        (p) => { (p.settings as Record<string, unknown>[]).push({ key: "reserve_start_month", value: "Jan" }); },
+      ];
+      let refused = 0;
+      let intact = 0;
+      for (const mutate of mutations) {
+        const prior = restorePriorState();
+        const raw = full();
+        mutate(raw);
+        const res = attemptRestore(prior, raw, restoreKeyCheckValidFor(raw));
+        if (!res.ok && !res.committed) refused++;
+        if (restoreStateFingerprint(res.state) === restoreStateFingerprint(prior)) intact++;
+      }
+      return {
+        controlRestores: control.ok && control.committed ? 1 : 0,
+        allRefused: refused === mutations.length ? 1 : 0,
+        allIntact: intact === mutations.length ? 1 : 0,
+        atLeastFiftyMutations: mutations.length >= 50 ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "seed-guard-global-emptiness",
+    kind: "backup",
+    note: "Contract v60, packaged-parity F7: seedGuardCore's ONE emptiness predicate. The all-empty presence map seeds (allEmptySeeds 1); a record in ANY single dataset table blocks (everyTableBlocks — the loop flips each of the DATASET_TABLES in turn, settings included: the pre-v60 guards checked only four spending tables in one seed and only Net Worth accounts in the other, so a lone settings record let sample rows land beside real data); and unknown state fails closed — a table missing from the map, or an empty map, is NOT empty (missingTableFailsClosed / emptyMapFailsClosed).",
+    expected: {
+      allEmptySeeds: 1, everyTableBlocks: 1,
+      missingTableFailsClosed: 1, emptyMapFailsClosed: 1,
+    },
+    actual: () => {
+      const allEmpty: DatasetPresence = {};
+      for (const t of DATASET_TABLES) allEmpty[t] = false;
+      let blocked = 0;
+      for (const t of DATASET_TABLES) {
+        if (!datasetIsEmpty({ ...allEmpty, [t]: true })) blocked++;
+      }
+      const missing: DatasetPresence = { ...allEmpty };
+      delete missing.settings;
+      return {
+        allEmptySeeds: datasetIsEmpty(allEmpty) ? 1 : 0,
+        everyTableBlocks: blocked === DATASET_TABLES.length ? 1 : 0,
+        missingTableFailsClosed: datasetIsEmpty(missing) ? 0 : 1,
+        emptyMapFailsClosed: datasetIsEmpty({}) ? 0 : 1,
+      };
+    },
+  },
+  {
     id: "restore-invalid-typed-settings-refused-preflight",
     kind: "restore",
     note: "Security round-2, finding 4 (settings half — the reviewer's reproduction): a backup setting opening_reserve_cents: \"not-a-number\" passes the payload schema (settings are key/value strings) but is REFUSED by preflight, which validates it with the writer's own rule (an integer number of cents): rejected, no commit, prior byte-identical, and the reason names the setting. A fractional reserve (\"12.5\") refuses the same way; nw_target_cents refuses both \"not-a-number\" and \"0\" (its writer takes a positive integer; clearing deletes the row), and a reserve_start_month of \"not-a-month\" refuses (its writer takes YYYY-MM or blank). Controls: a payload carrying reserve \"250000\", target \"600000000\", and start month \"2026-01\" restores with all three values landing verbatim (controlRestores 1, controlValuesLand 3), and a reserve still carrying an older export's enc:v1: ciphertext is NOT refused by preflight (ciphertextReservePasses 1) — the handler's decrypt-verification guards that form, and current exports always carry the reserve decrypted.",
@@ -5341,8 +5521,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "restore-encrypted-at-rest-key-list-complete",
     kind: "restore",
-    note: "Security round-2, finding 3 regression pin: the restore handler's settings loop branches on restoreCore's isEncryptedAtRestSettingKey, whose list (ENCRYPTED_AT_REST_SETTING_KEYS) must name EXACTLY the seven settings the ordinary writers store encrypted — opening_reserve_cents, the encryption key check, retirement_calc_inputs_v1, retirement_calc_baseline_v1, roth_conversion_inputs_v1, and BOTH import-settings blobs. Before this build the handler's hand-written list omitted spending_import_settings_v1, so a restored spending-import settings value sat in the database as the backup's plaintext until a later save rewrote it; every key on the list is now re-encrypted by the restore as it stores the row. The pin is exact in both directions: all seven expected keys are listed (expectedKeysListed 7) and the list carries nothing else (listLength 7), so neither a future omission nor a silent broadening passes.",
-    expected: { expectedKeysListed: 7, listLength: 7, spendingImportListed: 1 },
+    note: "Security round-2, finding 3 regression pin, extended at contract v60: the restore handler's settings loop branches on restoreCore's isEncryptedAtRestSettingKey, whose list (ENCRYPTED_AT_REST_SETTING_KEYS) must name EXACTLY the settings the ordinary writers store encrypted — opening_reserve_cents, the encryption key check, retirement_calc_inputs_v1, retirement_calc_baseline_v1, roth_conversion_inputs_v1, BOTH import-settings blobs, and (added v60, caught by the packaged F5 cross-install acceptance) BOTH encrypted sticky entry defaults, entry_default_monthly_paid_from_v1 and entry_default_yearly_paid_name_v1, whose omission left a cross-key restore holding the source install's ciphertext and failing every later dashboard load. Before the round-2 build the handler's hand-written list omitted spending_import_settings_v1, so a restored spending-import settings value sat in the database as the backup's plaintext until a later save rewrote it; every key on the list is now re-encrypted by the restore as it stores the row. The pin is exact in both directions: all nine expected keys are listed (expectedKeysListed 9) and the list carries nothing else (listLength 9), so neither a future omission nor a silent broadening passes.",
+    expected: { expectedKeysListed: 9, listLength: 9, spendingImportListed: 1 },
     actual: () => {
       const expectedKeys = [
         "opening_reserve_cents",
@@ -5352,6 +5532,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "roth_conversion_inputs_v1",
         "spending_import_settings_v1",
         "nw_import_settings_v1",
+        "entry_default_monthly_paid_from_v1",
+        "entry_default_yearly_paid_name_v1",
       ];
       return {
         expectedKeysListed: expectedKeys.filter((k) => isEncryptedAtRestSettingKey(k)).length,

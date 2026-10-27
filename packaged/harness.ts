@@ -41,7 +41,19 @@
 // Run via packaged/run-harness.mjs (which bundles this file with the
 // same resolver seams as the browser build).
 import { createRuntime } from "./src/runtime";
-import { memoryStore, BACKUPS_KEY, RSA_PRIV_KEY } from "./src/storage";
+import {
+  memoryStore,
+  ACTIVE_KEY,
+  BACKUPS_KEY,
+  GEN_CHUNK_KEY,
+  META_KEY,
+  RSA_PRIV_KEY,
+  type KeyValueStore,
+} from "./src/storage";
+import { StoreRecoveryRequiredError } from "./src/localDb";
+import initSqlJs from "sql.js";
+import { MIGRATIONS } from "packaged-migrations";
+import { bytesToHex, sha256Bytes } from "../server/src/backupMacCore";
 // The single sources of truth the contract expectations derive
 // from (round-7 fix H-1): the same Actions map and contract
 // version constant describeApi publishes, read here directly
@@ -424,6 +436,227 @@ eq(
   [decAfter.revision, decAfter.state.ytdOtherOrdinary],
   [2, 43211],
 );
+
+// ---------- H. Packaged store protocol (contract v60, F1–F3, F5, F7) ----------
+// The generation store's acceptance cases, each on its own
+// throwaway store: quota mid-persist, a truncated chunk,
+// an interrupted migration, two tabs over one store, the
+// portable passphrase backup across installs, and the global
+// seed guard.
+
+// H-quota: a store that starts throwing partway through a
+// persist leaves the PREVIOUS generation active and intact.
+{
+  const base = memoryStore();
+  let armed = false;
+  const quotaStore: KeyValueStore = {
+    get: (k) => base.get(k),
+    set: (k, v) => {
+      if (armed) throw new Error("QuotaExceededError (simulated)");
+      base.set(k, v);
+    },
+    remove: (k) => base.remove(k),
+  };
+  const rtQuota = await createRuntime({ store: quotaStore, wasmUrl: wasmPath });
+  const nwTotalsBefore = ((await rtQuota.call<any>("getNetWorth", {})).snapshots ?? []).map(
+    (s: any) => s.totalCents,
+  );
+  armed = true;
+  const failed = await rtQuota.dispatch("addMonthlyBill", {
+    name: "Quota Bill", amountCents: 9900, effectiveFrom: "2026-08", paidBy: "Checking",
+  });
+  armed = false;
+  check("H1 quota persist failure surfaces as an error", failed.status === 500, `status ${failed.status}`);
+  const rtQuota2 = await createRuntime({ store: quotaStore, wasmUrl: wasmPath });
+  const nwTotalsAfter = ((await rtQuota2.call<any>("getNetWorth", {})).snapshots ?? []).map(
+    (s: any) => s.totalCents,
+  );
+  eq("H2 prior generation loads intact after quota failure", nwTotalsAfter, nwTotalsBefore);
+  const dashQuota = await rtQuota2.call<any>("getDashboard", { month: "2026-09" });
+  check(
+    "H3 the un-persisted bill is absent after reload",
+    !(dashQuota.monthlyBills ?? []).some((b: any) => b.name === "Quota Bill"),
+  );
+}
+
+// H-truncate: a damaged active generation is a recovery state —
+// boot refuses, writes nothing, and never substitutes an empty
+// database.
+{
+  const storeT = memoryStore();
+  const rtT = await createRuntime({ store: storeT, wasmUrl: wasmPath });
+  void rtT;
+  const pointerRaw = storeT.get(ACTIVE_KEY) as string;
+  const pointer = JSON.parse(pointerRaw) as { gen: number; chunks: number };
+  const chunkKey = GEN_CHUNK_KEY(pointer.gen, 0);
+  const fullChunk = storeT.get(chunkKey) as string;
+  const truncated = fullChunk.slice(0, Math.floor(fullChunk.length / 2));
+  storeT.set(chunkKey, truncated);
+  const metaBefore = storeT.get(META_KEY);
+  let recoveryError: unknown = null;
+  try {
+    await createRuntime({ store: storeT, wasmUrl: wasmPath });
+  } catch (err) {
+    recoveryError = err;
+  }
+  check(
+    "H4 truncated chunk refuses boot with a recovery error",
+    recoveryError instanceof StoreRecoveryRequiredError,
+    recoveryError instanceof Error ? recoveryError.name : String(recoveryError),
+  );
+  eq("H5 pointer untouched by the refused boot", storeT.get(ACTIVE_KEY), pointerRaw);
+  eq("H6 damaged chunk preserved, not overwritten", storeT.get(chunkKey), truncated);
+  eq("H7 meta untouched by the refused boot", storeT.get(META_KEY), metaBefore);
+}
+
+// H-migration: the migration marker lives inside the image. An
+// image rewound to user_version N-1 (last migration's effect
+// removed) is re-migrated on boot even though the localStorage
+// meta claims all migrations applied — the meta is not consulted.
+{
+  const storeM = memoryStore();
+  const rtM = await createRuntime({ store: storeM, wasmUrl: wasmPath });
+  void rtM;
+  const pointer = JSON.parse(storeM.get(ACTIVE_KEY) as string) as {
+    gen: number; chunks: number; sha256: string;
+  };
+  let b64 = "";
+  for (let i = 0; i < pointer.chunks; i++) b64 += storeM.get(GEN_CHUNK_KEY(pointer.gen, i));
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const SQL = await initSqlJs({ locateFile: () => wasmPath });
+  const rewound = new SQL.Database(bytes);
+  rewound.exec("ALTER TABLE monthly_cash_out_items DROP COLUMN day");
+  rewound.exec(`PRAGMA user_version = ${MIGRATIONS.length - 1}`);
+  const rewoundBytes = rewound.export();
+  rewound.close();
+  // Write the rewound image as the next generation, by hand,
+  // exactly as the store protocol would (chunks, then pointer).
+  let rb64 = "";
+  const SLICE = 0x8000;
+  for (let i = 0; i < rewoundBytes.length; i += SLICE) {
+    rb64 += String.fromCharCode(...rewoundBytes.subarray(i, i + SLICE));
+  }
+  rb64 = btoa(rb64);
+  const CH = 100_000;
+  const count = Math.max(1, Math.ceil(rb64.length / CH));
+  const gen = pointer.gen + 1;
+  for (let i = 0; i < count; i++) {
+    storeM.set(GEN_CHUNK_KEY(gen, i), rb64.slice(i * CH, (i + 1) * CH));
+  }
+  storeM.set(
+    ACTIVE_KEY,
+    JSON.stringify({ gen, chunks: count, sha256: bytesToHex(sha256Bytes(rewoundBytes)) }),
+  );
+  const meta = JSON.parse(storeM.get(META_KEY) as string);
+  meta.appliedMigrations = MIGRATIONS.length; // the lie the old protocol could persist
+  storeM.set(META_KEY, JSON.stringify(meta));
+  const rtM2 = await createRuntime({ store: storeM, wasmUrl: wasmPath });
+  const addedItem = await rtM2.call<any>("addCashOutItem", {
+    month: "2026-09", description: "Migration probe", amountCents: 100, day: 15,
+  });
+  check(
+    "H8 interrupted migration is applied on next boot (day column back)",
+    typeof addedItem.id === "number",
+    `id ${addedItem.id}`,
+  );
+}
+
+// H-stale: two runtimes over one store — the second tab's
+// read-only dispatch is refused (409) once the first tab has
+// committed, and the first tab's commit survives.
+{
+  const storeS = memoryStore();
+  const rtS1 = await createRuntime({ store: storeS, wasmUrl: wasmPath });
+  const rtS2 = await createRuntime({ store: storeS, wasmUrl: wasmPath });
+  const commit = await rtS1.call<any>("addMonthlyBill", {
+    name: "Tab A Bill", amountCents: 11100, effectiveFrom: "2026-08", paidBy: "Checking",
+  });
+  check("H9 first tab commit ok", typeof commit.id === "number", `id ${commit.id}`);
+  const staleRead = await rtS2.dispatch("getDashboard", { month: "2026-09" });
+  check(
+    "H10 stale tab read refused with 409",
+    staleRead.status === 409 && staleRead.body.includes("out of date"),
+    `status ${staleRead.status}`,
+  );
+  const rtS3 = await createRuntime({ store: storeS, wasmUrl: wasmPath });
+  const dashS3 = await rtS3.call<any>("getDashboard", { month: "2026-09" });
+  check(
+    "H11 first tab's commit intact after the stale tab's attempt",
+    (dashS3.monthlyBills ?? []).some((b: any) => b.name === "Tab A Bill"),
+  );
+}
+
+// H-portable: a passphrase-encrypted backup exported from
+// install A restores into a FRESH install B end to end; a wrong
+// passphrase is refused at decryption.
+{
+  const storeA = memoryStore();
+  const rtA = await createRuntime({ store: storeA, wasmUrl: wasmPath });
+  await rtA.call("addMonthlyBill", {
+    name: "Portable Bill", amountCents: 42400, effectiveFrom: "2026-08", paidBy: "Checking",
+  });
+  const exported = await rtA.exportPortableBackup("correct horse battery");
+  check("H12 portable export filename", exported.filename.endsWith(".mstbak"), exported.filename);
+  const env = JSON.parse(exported.contents);
+  eq("H13 portable envelope format", env.format, "mst-backup-portable");
+  const storeB = memoryStore();
+  const rtB = await createRuntime({ store: storeB, wasmUrl: wasmPath });
+  const dashB0 = await rtB.call<any>("getDashboard", { month: "2026-09" });
+  check(
+    "H14 fresh install B does not have A's bill yet",
+    !(dashB0.monthlyBills ?? []).some((b: any) => b.name === "Portable Bill"),
+  );
+  const restoredB = await rtB.importPortableBackup(exported.contents, "correct horse battery");
+  eq("H15 portable import restores ok", restoredB.ok, true);
+  eq("H16 portable import authenticated (MAC verified)", restoredB.authenticated, true);
+  const dashB = await rtB.call<any>("getDashboard", { month: "2026-09" });
+  check(
+    "H17 A's data present in install B after import",
+    (dashB.monthlyBills ?? []).some((b: any) => b.name === "Portable Bill"),
+  );
+  let wrongPassRefused = false;
+  try {
+    await rtB.importPortableBackup(exported.contents, "wrong passphrase");
+  } catch (err) {
+    wrongPassRefused =
+      err instanceof Error && err.message.includes("could not be decrypted");
+  }
+  check("H18 wrong passphrase refused at decryption", wrongPassRefused);
+}
+
+// H-seed: the global first-run guard. A store whose only record
+// is a saved planner blob (a settings record) receives NO
+// sample rows when the seeded flag is missing (the retained
+// older-store case), and re-running the boot seed over the
+// seeded sample data adds nothing.
+{
+  const storeG = memoryStore();
+  const rtG = await createRuntime({ store: storeG, wasmUrl: wasmPath });
+  const snapsSeeded = ((await rtG.call<any>("getNetWorth", {})).snapshots ?? []).length;
+  check("H19 fresh store seeded with sample snapshots", snapsSeeded > 0, `${snapsSeeded}`);
+  rtG.localDb.meta.seeded = false;
+  rtG.localDb.saveMeta();
+  const rtG2 = await createRuntime({ store: storeG, wasmUrl: wasmPath });
+  const snapsAfterReboot = ((await rtG2.call<any>("getNetWorth", {})).snapshots ?? []).length;
+  eq("H20 re-boot over sample data seeds nothing twice", snapsAfterReboot, snapsSeeded);
+
+  const storeOnly = memoryStore();
+  const rtOnly = await createRuntime({ store: storeOnly, wasmUrl: wasmPath });
+  await rtOnly.call("clearAllData", { confirm: "delete everything" });
+  await rtOnly.call("resetRothPlanner", {});
+  rtOnly.localDb.meta.seeded = false;
+  rtOnly.localDb.saveMeta();
+  const rtOnly2 = await createRuntime({ store: storeOnly, wasmUrl: wasmPath });
+  const dashOnly = await rtOnly2.call<any>("getDashboard", { month: "2026-09" });
+  const nwOnly = await rtOnly2.call<any>("getNetWorth", {});
+  check(
+    "H21 a lone settings record blocks all sample seeding",
+    dashOnly.hasAnyData === false && (nwOnly.snapshots ?? []).length === 0,
+    `hasAnyData ${dashOnly.hasAnyData}, snapshots ${(nwOnly.snapshots ?? []).length}`,
+  );
+}
 
 console.log(`\n${checks - failures}/${checks} harness checks passed`);
 process.exit(failures === 0 ? 0 : 1);
