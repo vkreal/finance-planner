@@ -10257,7 +10257,7 @@ export function RothConversion() {
                         </span>
                       </p>
                       <div className="mt-1 text-sm">
-                        {billRow("Total income", fmtCents(firstDrawYear.totalIncomeCents))}
+                        {billRow("Adjusted gross income (AGI)", fmtCents(firstDrawYear.totalIncomeCents))}
                         {billRow("Taxable income", fmtCents(firstDrawYear.taxableIncomeCents))}
                         {billRow("Federal tax", fmtCents(firstDrawYear.federalTaxCents))}
                         {firstDrawYear.acaCreditCents > 0 &&

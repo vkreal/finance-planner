@@ -826,7 +826,7 @@ export function December() {
                   </button>
                   {billIncomeOpen && (
                     <>
-                      {billRow("Total income", fmtDollars(likelyCase.totalIncomeAtHeadline))}
+                      {billRow("Adjusted gross income (AGI)", fmtDollars(likelyCase.totalIncomeAtHeadline))}
                       {billRow("MAGI", fmtDollars(likelyCase.magiAtHeadline))}
                       {billRow("Taxable income", fmtDollars(likelyCase.taxableIncomeAtHeadline))}
                     </>
@@ -844,10 +844,19 @@ export function December() {
                   {likelyCase.excessAptcRepayment != null &&
                     likelyCase.excessAptcRepayment > 0 &&
                     billRow("Advance credit to repay", fmtDollars(likelyCase.excessAptcRepayment))}
-                  {billRow(
-                    "Estimated amount to settle at filing",
-                    fmtDollars(likelyCase.netSettleAtHeadline),
-                    { bold: true, divide: true },
+                  {likelyCase.netSettleAtHeadline == null ? (
+                    <p className="mt-1 border-t border-[var(--border)] pt-1.5 text-sm">
+                      For years before 2026 the advance-credit repayment isn’t
+                      modeled, so no single settlement figure is shown.
+                    </p>
+                  ) : (
+                    billRow(
+                      likelyCase.netSettleAtHeadline < 0
+                        ? "Estimated refund at filing"
+                        : "Estimated amount to settle at filing",
+                      fmtDollars(likelyCase.netSettleAtHeadline),
+                      { bold: true, divide: true },
+                    )
                   )}
                 </div>
                 <p className="mt-2 text-xs text-[var(--dim)]">
@@ -902,12 +911,22 @@ export function December() {
                           Additional credit still due: {fmtDollars(c.creditStillDue)}
                         </p>
                       )}
-                    <p className="tnum mt-1 text-sm">
-                      Estimated amount to settle at filing:{" "}
-                      <span className="font-semibold">
-                        {fmtDollars(c.netSettleAtHeadline)}
-                      </span>
-                    </p>
+                    {c.netSettleAtHeadline == null ? (
+                      <p className="mt-1 text-sm">
+                        For years before 2026 the advance-credit repayment isn’t
+                        modeled, so no single settlement figure is shown.
+                      </p>
+                    ) : (
+                      <p className="tnum mt-1 text-sm">
+                        {c.netSettleAtHeadline < 0
+                          ? "Estimated refund at filing"
+                          : "Estimated amount to settle at filing"}
+                        :{" "}
+                        <span className="font-semibold">
+                          {fmtDollars(c.netSettleAtHeadline)}
+                        </span>
+                      </p>
+                    )}
                     {c.overCliffEvenAtZero && (
                       <p className="mt-1 text-sm font-medium text-[var(--bad)]">
                         Over the cliff even with a $0 draw.
@@ -1012,6 +1031,37 @@ export function December() {
                 to {fmtDollars(recordSum)}, while this console’s saved total is{" "}
                 {fmtDollars(savedTotal)}. This console prices its own saved total,
                 split between the owners in the record’s proportions.
+              </p>
+            );
+          })()}
+        {decQ.data?.state &&
+          !decQ.data.state.pretaxSplitExplicit &&
+          decQ.data.state.pretaxBalance != null &&
+          !balancesEdited &&
+          (() => {
+            // Round-7 fix A: the partial-cap case — exactly
+            // one record amount is known and it exceeds the
+            // saved total, so resolution caps that owner at
+            // the saved total. Name both figures, in the
+            // same one-note voice as the totals note above.
+            const facts = recordFactsOf(rothQ.data);
+            const savedTotal = decQ.data?.state?.pretaxBalance ?? null;
+            if (savedTotal == null) return null;
+            const known =
+              facts.pretaxBalancePrimary != null &&
+              facts.pretaxBalanceSpouse == null
+                ? facts.pretaxBalancePrimary
+                : facts.pretaxBalanceSpouse != null &&
+                    facts.pretaxBalancePrimary == null
+                  ? facts.pretaxBalanceSpouse
+                  : null;
+            if (known == null || known <= savedTotal + 0.01) return null;
+            return (
+              <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]" role="note">
+                Balance totals differ: your Tax Plan record shows{" "}
+                {fmtDollars(known)} for one owner, while this console’s saved
+                total is {fmtDollars(savedTotal)}. This console prices its own
+                saved total, with that owner’s share capped at the saved total.
               </p>
             );
           })()}
