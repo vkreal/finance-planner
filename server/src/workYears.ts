@@ -18,10 +18,13 @@
 //     and thresholds were global constants before). The
 //     employer share of payroll tax is NOT priced: it is
 //     never a household outlay. No ACA credit is priced in work
-//     years (employer coverage assumed) and the portfolio is
-//     never drawn — salary covers the plan's annual spending.
+//     years (employer coverage assumed); salary covers the
+//     plan's annual spending, and a year whose outgo runs past
+//     the salary draws the Taxable balance (see the deficit
+//     settlement below).
 //   · The cash surplus (salary − federal tax − state tax −
-//     FICA − spending − the employee's own contributions)
+//     FICA − spending − the employee's own contributions +
+//     any Social Security benefits already being collected)
 //     lands in Taxable at year end. Every bucket grows at the
 //     plan's expected return each year; contributions land at
 //     year end, so they earn no growth in the year they are
@@ -30,6 +33,27 @@
 //     remainder is reported as that year's shortfall (totals
 //     and the compare ledger carry the sum), the same honesty
 //     the retirement engine applies to its own shortfall years.
+//     A deficit funded from Taxable is a SALE: it realizes
+//     capital gains off the taxable basis ledger (contract
+//     v58, F1), priced into the work year itself by settling
+//     the year to a fixed point — the drawn amount and the
+//     gain it realizes agree to the cent. The basis ledger
+//     itself rolls forward in dollars alongside the balance
+//     (F2): growth adds no basis, the year's taxable yields
+//     step basis up (the march's rule), a positive surplus
+//     lands at 100% basis, and a deficit sale consumes basis
+//     in the march's sale order. The rolled plan's basis
+//     fields are rebuilt from those dollars, so the march
+//     prices the quit-age plan on the true basis.
+//   · Work-year income is the household's full mandatory
+//     income: the plan's taxable interest / dividend yields
+//     price on the year's opening Taxable balance exactly as
+//     the march prices them (F3), and Social Security
+//     benefits whose start age has been reached are deposited
+//     and taxed (§86, inside the shared priceYear) during the
+//     work years (F4). The pre-full-retirement-age earnings
+//     test is NOT modeled — no machinery for it exists
+//     anywhere in the engine — so benefits deposit in full.
 //   · After the roll, the scenario is priced with the EXISTING
 //     joint optimizer machinery at the quit age, and the
 //     all-in lifetime tax is the optimizer's net cost plus the
@@ -41,11 +65,19 @@
 //     into the compare's totalTax and all-in score exactly as
 //     the contract's score-identities text states, never
 //     merged invisibly into the federal or state figures.
-//   · A quit age equal to the window-start age means ZERO work
-//     years: the rolled inputs are the plan itself, untouched,
-//     so the result reproduces the plain optimizer run exactly.
+//   · ZERO work years (contract v58, F5): a quit age at or
+//     below the roll's first year prices no work years, and
+//     the rolled inputs are the plan with its retirement age
+//     and window-start age set to the QUIT age (balances and
+//     zero totals exactly as the plan's) — the row prices
+//     retiring AT the quit age, not at the plan's saved
+//     retirement age. The roll's first year is never in the
+//     past: it is the later of the plan's window-start age
+//     and the plan's current age (startYear − birth year),
+//     so a window start below the current age cannot invent
+//     already-past salary years on top of today's balances.
 //     A salary of $0 (or blank) prices no work years at any
-//     quit age — every quit age is the no-work run.
+//     quit age.
 //
 // All money here is in DOLLARS (the tax engine's units); the
 // law-row work-years limits are stored in cents and converted
@@ -71,6 +103,13 @@ export type WorkYearJob = {
   employer401k: number;
   // What the employer puts into the HSA per year, dollars.
   employerHsa: number;
+  // The primary's Medicare enrollment age (contract v58, F6):
+  // request-only, never persisted. In any work year at or
+  // after this age the household is HSA-ineligible — no
+  // employee or employer HSA contribution is made. Absent /
+  // null = not enrolled during the work years (the household
+  // stays HSA-eligible at every work-year age).
+  medicareAgePrimary?: number | null;
 };
 
 /* ---------------- One year's contribution stack ---------------- */
@@ -125,6 +164,16 @@ export function contributionStack(
   // a standalone price, where this year's own Box-3 wages are
   // the disclosed proxy (see the ContributionStack note).
   priorYearWages?: number | null,
+  // The primary's Medicare enrollment age (contract v58, F6):
+  // when set and this year's age is at or after it, the
+  // household is HSA-ineligible for the year — the employee
+  // HSA contribution is $0, the employer's HSA lands $0, and
+  // the HSA bucket receives $0. Everything downstream follows
+  // the stack's normal routing (taxable and FICA wages rise by
+  // the freed HSA amount; the mega-backdoor room reads the
+  // freed salary through its existing formula). Absent / null
+  // = not enrolled this year.
+  medicareAgePrimary?: number | null,
 ): ContributionStack {
   const empty: ContributionStack = {
     deferral: 0,
@@ -154,10 +203,21 @@ export function contributionStack(
   const hsaLimit =
     (filingStatus === "mfj" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 +
     (age >= 55 ? law.hsaCatchUp55 / 100 : 0);
-  const ownHsa = Math.max(
-    0,
-    Math.min(hsaLimit - employerHsa, salary - deferral - catchUp),
-  );
+  // HSA eligibility (contract v58, F6): Medicare enrollment
+  // ends HSA eligibility, so a year at or after the primary's
+  // Medicare enrollment age makes NO HSA contribution of
+  // either source. (Eligibility turns on enrollment, not on
+  // reaching 65 — a worker who lawfully delays Medicare stays
+  // eligible; the input, not the age, is the switch.)
+  const hsaEligible =
+    !(medicareAgePrimary != null && age >= medicareAgePrimary);
+  const employerHsaLanded = hsaEligible ? employerHsa : 0;
+  const ownHsa = hsaEligible
+    ? Math.max(
+        0,
+        Math.min(hsaLimit - employerHsa, salary - deferral - catchUp),
+      )
+    : 0;
   const box3ThisYear = salary - ownHsa;
   // §414(v)(7) Roth catch-up mandate (SECURE 2.0 §603): a
   // participant whose PRIOR-calendar-year §3121(a) wages from
@@ -205,7 +265,7 @@ export function contributionStack(
     0,
     Math.min(megaRoom, salary - deferral - catchUp - ownHsa),
   );
-  const hsaBucket = Math.min(hsaLimit, ownHsa + employerHsa);
+  const hsaBucket = Math.min(hsaLimit, ownHsa + employerHsaLanded);
   return {
     deferral: r2(deferral),
     catchUp: r2(catchUp),
@@ -213,7 +273,7 @@ export function contributionStack(
     mega: r2(mega),
     employer401k: r2(employerLanded),
     ownHsa: r2(ownHsa),
-    employerHsa: r2(employerHsa),
+    employerHsa: r2(employerHsaLanded),
     hsaBucket: r2(hsaBucket),
     hsaLimit: r2(hsaLimit),
   };
@@ -276,6 +336,265 @@ export function ficaTax(
   return payrollTaxBreakdown(ficaWages, filingStatus, law).total;
 }
 
+/* ---------------- The taxable basis ledger (contract v58, F2) ----------------
+   Basis DOLLARS carried alongside the Taxable balance through
+   the roll, mirroring the retirement march's ledger semantics
+   (taxEngine.ts: tier init, "highest-basis-ratio first" sale
+   order, yield step-up): balances grow with the return and
+   basis dollars do not; the year's yield steps basis up into
+   unrealized gain; a positive surplus lands as 100%-basis
+   cash; a deficit sale consumes basis in sale order. The
+   march's helpers are not exported, so the two small ones the
+   roll needs are reimplemented here on the roll's own ledger
+   shape. A blank basis (taxableBasisBlank) keeps the march's
+   posture: no tiers, and the rolled plan's basis fields are
+   left exactly as entered — the march prices a blank-basis
+   plan off its flat entered percentage, not off dollars. */
+
+export type WorkTierLedger = { bal: number; basis: number };
+
+export type TaxableLedger = {
+  // Per-tier ledger when the plan carries basis tiers;
+  // null = the single pool, whose basis dollars are `basis`.
+  tiers: WorkTierLedger[] | null;
+  // Total basis dollars (the single pool's basis, or the sum
+  // over tiers). Invariant: 0 ≤ basis ≤ balance at every step.
+  basis: number;
+  // Index of the cash tier — the FIRST tier entered at a
+  // 100% basis — or −1 when there is none. A positive surplus
+  // lands there (see landSurplusInLedger).
+  cashTierIndex: number;
+};
+
+function initTaxableLedger(plan: RothPlanInputs): TaxableLedger {
+  const tiersActive =
+    plan.taxableBasisBlank !== true &&
+    Array.isArray(plan.taxableTiers) &&
+    plan.taxableTiers.length > 0;
+  if (tiersActive) {
+    // The march's exact init: shares normalized to the whole
+    // pool, per-tier basis = tier balance × its basis %.
+    const rawTiers = plan.taxableTiers as { sharePct: number; basisPct: number }[];
+    const shareTotal = rawTiers.reduce((s, t) => s + Math.max(0, t.sharePct), 0);
+    let cashTierIndex = -1;
+    const tiers = rawTiers.map((t, i) => {
+      const share = shareTotal > 0 ? Math.max(0, t.sharePct) / shareTotal : 0;
+      const bal = plan.taxableStart * share;
+      const basisPct = Math.min(100, Math.max(0, t.basisPct));
+      if (cashTierIndex < 0 && basisPct >= 100) cashTierIndex = i;
+      return { bal, basis: bal * (basisPct / 100) };
+    });
+    return {
+      tiers,
+      basis: tiers.reduce((s, t) => s + t.basis, 0),
+      cashTierIndex,
+    };
+  }
+  const basisPct =
+    Math.min(100, Math.max(0, plan.taxableBasisPct)) / 100;
+  return { tiers: null, basis: basisPct * plan.taxableStart, cashTierIndex: -1 };
+}
+
+// The gain realized by selling `drawn` from a ledger whose
+// balance (already grown for the year) is `grownBalance`,
+// WITHOUT mutating the ledger — the F1 repricing iterations
+// price candidate sales against the year's opening ledger
+// before the roll consumes the settled sale for real.
+// Single pool: the sale is pro-rata at the pool's ratio.
+// Tiers: highest-basis-ratio first, each tier's sold slice
+// realizing sold × (1 − tierBasis/tierBal).
+function gainOnLedgerSale(
+  ledger: TaxableLedger,
+  grownBalance: number,
+  drawn: number,
+): number {
+  const sold = Math.min(Math.max(0, drawn), Math.max(0, grownBalance));
+  if (sold <= 0 || grownBalance <= 0) return 0;
+  if (!ledger.tiers) {
+    const basis = Math.min(Math.max(0, ledger.basis), grownBalance);
+    return sold * (1 - basis / grownBalance);
+  }
+  const clone = ledger.tiers.map((t) => ({ ...t }));
+  return sellFromLedgerTiers(clone, sold);
+}
+
+// Consume a settled sale of `drawn` from the ledger in place
+// (the march's sale order) and return the gain realized —
+// the same figure gainOnLedgerSale prices for the same sale.
+// A fully drained balance carries basis $0.
+function consumeLedgerSale(
+  ledger: TaxableLedger,
+  grownBalance: number,
+  drawn: number,
+): number {
+  const sold = Math.min(Math.max(0, drawn), Math.max(0, grownBalance));
+  if (sold <= 0) return 0;
+  let gain: number;
+  if (!ledger.tiers) {
+    const basis = Math.min(Math.max(0, ledger.basis), grownBalance);
+    gain = sold * (1 - basis / grownBalance);
+    ledger.basis =
+      sold >= grownBalance ? 0 : Math.max(0, ledger.basis - sold * (basis / grownBalance));
+  } else {
+    gain = sellFromLedgerTiers(ledger.tiers, sold);
+    ledger.basis = ledger.tiers.reduce((s, t) => s + t.basis, 0);
+    if (sold >= grownBalance) {
+      for (const t of ledger.tiers) t.basis = 0;
+      ledger.basis = 0;
+    }
+  }
+  return gain;
+}
+
+// Sell `amount` from tier ledgers, highest current basis
+// ratio first (the march's sellFromTiers "highest" order):
+// within a tier the sale is pro-rata, so a tier's ratio never
+// changes by selling from it. Returns the gains realized and
+// mutates the tiers passed in.
+function sellFromLedgerTiers(tiers: WorkTierLedger[], amount: number): number {
+  if (amount <= 0) return 0;
+  const ranked = tiers
+    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : null }))
+    .filter((o): o is { i: number; ratio: number } => o.ratio != null)
+    .sort((a, b) => b.ratio - a.ratio);
+  let remaining = amount;
+  let gains = 0;
+  for (const { i } of ranked) {
+    if (remaining <= 0) break;
+    const t = tiers[i]!;
+    const take = Math.min(remaining, t.bal);
+    if (take <= 0) continue;
+    const ratio = t.basis / t.bal;
+    gains += take * (1 - ratio);
+    t.basis = Math.max(0, t.basis - take * ratio);
+    t.bal -= take;
+    remaining -= take;
+  }
+  return gains;
+}
+
+// The yield step-up (the march's reinvestYieldIntoTiers /
+// single-pool basisIn cap): the year's yield cash is already
+// inside the balance (it is a component of the return), so no
+// balance moves — basis rises by the yield, filling
+// unrealized gain. Single pool: basis capped at the grown
+// balance. Tiers: lowest-basis-ratio first, capped at each
+// tier's own balance (the march's stepUpTiers).
+function stepUpLedgerForYield(
+  ledger: TaxableLedger,
+  grownBalance: number,
+  yieldTotal: number,
+): void {
+  if (yieldTotal <= 0) return;
+  if (!ledger.tiers) {
+    ledger.basis = Math.min(Math.max(0, grownBalance), ledger.basis + yieldTotal);
+    return;
+  }
+  const ranked = ledger.tiers
+    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 }))
+    .sort((a, b) => a.ratio - b.ratio);
+  let remaining = yieldTotal;
+  for (const { i } of ranked) {
+    if (remaining <= 0) break;
+    const t = ledger.tiers[i]!;
+    const room = Math.max(0, t.bal - t.basis);
+    const add = Math.min(room, remaining);
+    t.basis += add;
+    remaining -= add;
+  }
+  ledger.basis = ledger.tiers.reduce((s, t) => s + t.basis, 0);
+}
+
+// Land a positive surplus — a real inflow of after-tax cash —
+// in the ledger at 100% basis (F2). The caller moves the
+// balance; this moves basis dollars (and, on the tiers path,
+// the tier balances with them). TIER CHOICE: the surplus
+// lands in the cash tier (the first 100%-basis tier) when one
+// exists — new savings are cash-like, and the march likewise
+// keeps after-tax inflows in one identified lot. With no cash
+// tier it lands pro-rata by tier balance, each landed dollar
+// carrying 100% basis; with every tier at $0 it lands in the
+// first tier. Totals stay exact and 0 ≤ basis ≤ bal per tier.
+function landSurplusInLedger(
+  ledger: TaxableLedger,
+  grownBalance: number,
+  surplus: number,
+): void {
+  if (surplus <= 0) return;
+  if (!ledger.tiers) {
+    ledger.basis += surplus;
+    return;
+  }
+  const tiers = ledger.tiers;
+  if (ledger.cashTierIndex >= 0 && tiers[ledger.cashTierIndex]) {
+    const t = tiers[ledger.cashTierIndex]!;
+    t.bal += surplus;
+    t.basis += surplus;
+  } else if (grownBalance > 0) {
+    let landed = 0;
+    tiers.forEach((t, i) => {
+      const share =
+        i === tiers.length - 1
+          ? surplus - landed
+          : (surplus * Math.max(0, t.bal)) / grownBalance;
+      t.bal += share;
+      t.basis += share;
+      landed += share;
+    });
+  } else if (tiers[0]) {
+    tiers[0].bal += surplus;
+    tiers[0].basis += surplus;
+  }
+  ledger.basis = tiers.reduce((s, t) => s + t.basis, 0);
+}
+
+// The rolled plan's basis fields rebuilt from ledger dollars
+// (F2): tiers are re-expressed as shares of the final balance
+// (normalized to sum to exactly 100 when the balance is
+// positive — the last tier absorbs the rounding dust) with
+// each tier's basis % read off its own dollars; the single
+// pool's basis % is its dollars over its balance. A drained
+// pool keeps the plan's entered figures (there is nothing to
+// re-express, and a $0 balance prices no gains either way).
+// A blank-basis plan is returned untouched (see the section
+// note above).
+function rebuildRolledBasisFields(
+  plan: RothPlanInputs,
+  ledger: TaxableLedger,
+  finalBalance: number,
+): Pick<RothPlanInputs, "taxableBasisPct" | "taxableTiers"> {
+  if (plan.taxableBasisBlank === true) {
+    return { taxableBasisPct: plan.taxableBasisPct, taxableTiers: plan.taxableTiers };
+  }
+  if (ledger.tiers) {
+    const totalBasis = ledger.tiers.reduce((s, t) => s + t.basis, 0);
+    if (finalBalance <= 0) {
+      return { taxableBasisPct: plan.taxableBasisPct, taxableTiers: plan.taxableTiers };
+    }
+    let shareSoFar = 0;
+    const tiers = ledger.tiers.map((t, i) => {
+      const sharePct =
+        i === ledger.tiers!.length - 1
+          ? 100 - shareSoFar
+          : (100 * Math.max(0, t.bal)) / finalBalance;
+      shareSoFar += sharePct;
+      return {
+        sharePct,
+        basisPct: t.bal > 0 ? (100 * t.basis) / t.bal : 100,
+      };
+    });
+    return {
+      taxableBasisPct: (100 * totalBasis) / finalBalance,
+      taxableTiers: tiers,
+    };
+  }
+  return {
+    taxableBasisPct:
+      finalBalance > 0 ? (100 * ledger.basis) / finalBalance : plan.taxableBasisPct,
+    taxableTiers: plan.taxableTiers,
+  };
+}
+
 /* ---------------- One work year ---------------- */
 
 export type WorkYearLine = {
@@ -309,10 +628,33 @@ export type WorkYearLine = {
   payrollSocialSecurity: number;
   payrollMedicare: number;
   payrollAdditionalMedicare: number;
+  // The year's taxable interest income (contract v58, F3):
+  // the plan's interest yield % × the Taxable balance the
+  // year opens with, priced as ordinary income through the
+  // shared priceYear (the march's yield split).
+  interestIncome: number;
+  // The year's taxable dividend income (F3): the plan's
+  // dividend yield % × the opening balance, priced as
+  // qualified dividends (the march's split: the whole
+  // dividend yield rides as qualifiedDividends).
+  dividendIncome: number;
+  // Social Security benefits collected this year (F4): the
+  // household benefits whose start age has been reached,
+  // priced through priceYear's §86 taxation and deposited
+  // into the year's surplus as household cash. $0 when no
+  // benefit has started.
+  ssBenefits: number;
+  // The long-term capital gain realized by this year's
+  // deficit-funding Taxable sale (F1): priced into the year
+  // only when the roll supplies the taxable context and the
+  // year's settlement draws from Taxable; a standalone price
+  // (no balance context) realizes no sale and reports $0.
+  ltcg: number;
   // Salary − federal − state − FICA − the plan's annual
   // spending − the employee's own contributions (deferral +
   // catch-up + mega + own HSA) + the year's refundable §25A
-  // education credit. Banked into Taxable at year end.
+  // education credit + the year's Social Security benefits.
+  // Banked into Taxable at year end.
   surplus: number;
   // The part of a NEGATIVE surplus the Taxable balance could
   // not absorb (round-7 fix 1.1): the roll floors the balance
@@ -326,6 +668,22 @@ export type WorkYearLine = {
   shortfall: number;
 };
 
+// The roll's per-year taxable context (contract v58, F1/F3):
+// the Taxable balance the year opens with (the balance
+// carried into the year, before this year's growth — the
+// base the year's yields price on), the balance after this
+// year's growth (the balance a deficit sale draws from), and
+// the basis ledger in its grown state (balances grown, basis
+// dollars unmoved, the year's yield step-up applied). Absent
+// (a standalone price) the year prices its yields on
+// plan.taxableStart as the opening balance and realizes no
+// sale — there is no balance to draw from.
+export type WorkYearTaxableContext = {
+  openingBalance: number;
+  grownBalance: number;
+  ledger: TaxableLedger;
+};
+
 export function priceOneWorkYear(
   plan: RothPlanInputs,
   job: WorkYearJob,
@@ -336,6 +694,9 @@ export function priceOneWorkYear(
   // standalone price) the stack falls back to this year's own
   // Box 3 as the disclosed proxy.
   priorYearWages?: number | null,
+  // The roll's taxable context for this year (F1/F3); omitted
+  // for a standalone price.
+  taxableCtx?: WorkYearTaxableContext | null,
 ): WorkYearLine {
   const calendarYear = plan.birthYearPrimary + age;
   const law = lawForYear(calendarYear);
@@ -347,6 +708,7 @@ export function priceOneWorkYear(
     plan.filingStatus,
     law,
     priorYearWages,
+    job.medicareAgePrimary ?? null,
   );
   const catchUpPreTax = stack.catchUpIsRoth ? 0 : stack.catchUp;
   const taxableWages = r2(
@@ -354,7 +716,48 @@ export function priceOneWorkYear(
   );
   const ageSpouse =
     plan.birthYearSpouse != null ? calendarYear - plan.birthYearSpouse : null;
-  const priced = priceYear({
+  // TAXABLE YIELDS (contract v58, F3): priced exactly as the
+  // retirement march prices them — interest and dividend
+  // income on the balance the year OPENS with (in the roll,
+  // the prior year-end balance; standalone, plan.taxableStart
+  // is the year's opening balance by construction). Fixed for
+  // the year: computed once here and held constant across the
+  // F1 repricing iterations below.
+  const openingBalance = taxableCtx?.openingBalance ?? plan.taxableStart;
+  const interestIncome = r2(
+    (Math.max(0, openingBalance) * Math.max(0, plan.taxableInterestYieldPct ?? 0)) / 100,
+  );
+  const dividendIncome = r2(
+    (Math.max(0, openingBalance) * Math.max(0, plan.taxableDividendYieldPct ?? 0)) / 100,
+  );
+  // SOCIAL SECURITY ALREADY STARTED (contract v58, F4): the
+  // year's household benefits from the plan's own fields,
+  // mirroring the march's collection test — each benefit
+  // counts once its own start age is reached (the primary's
+  // against the primary's age, the spouse's against the
+  // spouse's age that year), $0 for a side declared to have
+  // no benefit. The sum prices through priceYear's §86
+  // taxation and deposits into the surplus below. The
+  // pre-full-retirement-age earnings test is NOT modeled
+  // (no machinery for it exists anywhere in the engine), so
+  // benefits deposit in full.
+  const ssPrimaryThisYear =
+    plan.ssPrimaryStartAge != null && age >= plan.ssPrimaryStartAge
+      ? plan.ssPrimaryNoBenefit
+        ? 0
+        : plan.ssPrimaryAnnual
+      : 0;
+  const ssSpouseThisYear =
+    plan.ssSpouseStartAge != null &&
+    ageSpouse != null &&
+    ageSpouse >= plan.ssSpouseStartAge
+      ? plan.ssSpouseNoBenefit
+        ? 0
+        : plan.ssSpouseAnnual
+      : 0;
+  const ssBenefits = r2(ssPrimaryThisYear + ssSpouseThisYear);
+  const priceWithGain = (ltcg: number) =>
+    priceYear({
     calendarYear,
     filingStatus: plan.filingStatus,
     agePrimary: age,
@@ -363,14 +766,17 @@ export function priceOneWorkYear(
     rmd: 0,
     conversion: 0,
     extraPreTaxDraw: 0,
-    ssBenefits: 0,
+    ssBenefits,
     taxExemptInterest: 0,
-    ltcg: 0,
+    ltcg,
+    interestIncome,
+    qualifiedDividends: dividendIncome,
     inflationPct: plan.inflationPct,
     stateRatePct: plan.stateRatePct,
-    // A work year realizes no capital gains (ltcg: 0), so a
-    // Washington residence prices $0 of excise here — the
-    // state line of a salary year is $0 either way.
+    // A work year realizes capital gains only on a
+    // deficit-funding Taxable sale (F1: the ltcg settled
+    // below); a Washington residence prices its excise on
+    // that gain through this same residenceState path.
     residenceState: plan.residenceState ?? null,
     // Itemized deductions (T5): a salary year takes the same
     // greater-of deduction as any priced year — the plan's
@@ -396,7 +802,7 @@ export function priceOneWorkYear(
     educationStudents: (plan.educationStudents ?? []).filter(
       (e) => e.year === calendarYear,
     ),
-  });
+    });
   const ficaWages = r2(job.salary - stack.ownHsa);
   const payroll = payrollTaxBreakdown(
     Math.max(0, ficaWages),
@@ -406,18 +812,71 @@ export function priceOneWorkYear(
   const fica = payroll.total;
   const ownContributions =
     stack.deferral + stack.catchUp + stack.mega + stack.ownHsa;
-  const surplus = r2(
-    job.salary -
-      priced.federalTax -
-      priced.stateTax -
-      fica -
-      plan.annualSpending -
-      ownContributions +
-      // The year's refundable §25A credit (priced.education-
-      // Refundable): cash back to the household, banked into
-      // Taxable by the roll-forward below.
-      priced.educationRefundable,
-  );
+  const surplusOf = (p: ReturnType<typeof priceYear>): number =>
+    r2(
+      job.salary -
+        p.federalTax -
+        p.stateTax -
+        fica -
+        plan.annualSpending -
+        ownContributions +
+        // The year's refundable §25A credit (p.education-
+        // Refundable): cash back to the household, banked into
+        // Taxable by the roll-forward below.
+        p.educationRefundable +
+        // The year's Social Security benefits (F4): household
+        // cash, banked into Taxable like any surplus.
+        ssBenefits,
+    );
+  // DEFICIT-FUNDING SALE SETTLEMENT (contract v58, F1): price
+  // the year first with no sale (ltcg $0). When the roll
+  // supplies the taxable context and that price runs a
+  // deficit, the deficit is funded by selling Taxable, and
+  // the sale realizes gains off the basis ledger — which
+  // raises the year's tax, which deepens the deficit. Iterate
+  // to the fixed point the way the retirement march's
+  // settlement converges: drawn from the priced deficit, gain
+  // realized on the drawn amount (capped at the grown
+  // balance), reprice with that gain, until the drawn amount
+  // and the priced gain agree to the cent (bounded; then
+  // settle on the last pricing). The final line's taxes,
+  // MAGI, and surplus all come from the FINAL converged
+  // pricing. When the grown balance cannot cover the
+  // converged deficit, the drawn amount is the whole grown
+  // balance, the gain is priced on that full sale, and the
+  // roll reports the unfunded remainder as the shortfall.
+  let priced = priceWithGain(0);
+  let surplus = surplusOf(priced);
+  let ltcg = 0;
+  if (taxableCtx && surplus < 0) {
+    let drawn = -surplus;
+    for (let i = 0; i < 100; i++) {
+      const gain = gainOnLedgerSale(
+        taxableCtx.ledger,
+        taxableCtx.grownBalance,
+        drawn,
+      );
+      const repriced = priceWithGain(gain);
+      const s2 = surplusOf(repriced);
+      const drawn2 = s2 < 0 ? -s2 : 0;
+      const gainImplied = gainOnLedgerSale(
+        taxableCtx.ledger,
+        taxableCtx.grownBalance,
+        drawn2,
+      );
+      priced = repriced;
+      surplus = s2;
+      ltcg = gain;
+      if (
+        Math.abs(drawn2 - drawn) < 0.005 &&
+        Math.abs(gainImplied - gain) < 0.005
+      ) {
+        break;
+      }
+      drawn = drawn2;
+      if (drawn <= 0) break;
+    }
+  }
   return {
     age,
     calendarYear,
@@ -433,6 +892,10 @@ export function priceOneWorkYear(
     payrollSocialSecurity: payroll.socialSecurity,
     payrollMedicare: payroll.medicare,
     payrollAdditionalMedicare: payroll.additionalMedicare,
+    interestIncome,
+    dividendIncome,
+    ssBenefits,
+    ltcg: r2(ltcg),
     surplus,
     // No balance context in a standalone price — the roll
     // computes the year's real shortfall (see WorkYearLine).
@@ -491,13 +954,21 @@ export type WorkYearRoll = {
     pretaxSpouse: number;
     roth: number;
     taxable: number;
+    // The Taxable balance's basis dollars at the quit age
+    // (contract v58, F2) — the dollars the rolled plan's
+    // basis fields are rebuilt from. Exposed for fixture
+    // pinning; the action response shape does not carry it.
+    taxableBasis: number;
     hsa: number;
   };
   // The plan inputs the optimizer prices for this quit age:
-  // the plan itself, untouched, when there are no work years;
-  // otherwise the same plan with its start / retirement /
-  // window-start ages set to the quit age and its balances
-  // replaced by the rolled balances.
+  // when there are no work years, the plan with its retirement
+  // age and window-start age set to the quit age (F5a) and
+  // every balance untouched; otherwise the same plan with its
+  // start / retirement / window-start ages set to the quit
+  // age, its balances replaced by the rolled balances, and
+  // its taxable basis fields rebuilt from the rolled basis
+  // dollars (F2).
   rolledInputs: RothPlanInputs;
 };
 
@@ -506,15 +977,24 @@ export function rollWorkYears(
   job: WorkYearJob,
   quitAge: number,
 ): WorkYearRoll {
-  const startAge = plan.windowStartAge;
+  // NEVER PRICE A PAST YEAR (contract v58, F5b): the roll's
+  // first year is the later of the plan's window-start age
+  // and the plan's CURRENT age — the ageNow derivation used
+  // across actions.ts (startYear − birth year). A window
+  // start below the current age would otherwise price
+  // already-past salary years on top of today's balances.
+  const currentAge = plan.startYear - plan.birthYearPrimary;
+  const effectiveStart = Math.max(plan.windowStartAge, currentAge);
   const count =
-    job.salary > 0 ? Math.max(0, Math.floor(quitAge) - startAge) : 0;
+    job.salary > 0 ? Math.max(0, Math.floor(quitAge) - effectiveStart) : 0;
+  const startLedger = initTaxableLedger(plan);
   const startBalances = {
     pretax: r2(plan.pretaxStart + (plan.pretaxSpouseStart ?? 0)),
     pretaxPrimary: plan.pretaxStart,
     pretaxSpouse: plan.pretaxSpouseStart ?? 0,
     roth: plan.rothStart,
     taxable: plan.taxableStart,
+    taxableBasis: r2(startLedger.basis),
     hsa: plan.hsaStart,
   };
   if (count === 0) {
@@ -541,7 +1021,17 @@ export function rollWorkYears(
         banked: 0,
       },
       balances: startBalances,
-      rolledInputs: plan,
+      // ZERO-YEAR HANDOFF (contract v58, F5a): the row prices
+      // retiring AT the quit age, so the rolled inputs carry
+      // the quit age as both the retirement age and the
+      // window-start age — not the plan's saved retirement
+      // age. Balances and every other input are the plan's
+      // own, exactly as before.
+      rolledInputs: {
+        ...plan,
+        retirementAge: Math.floor(quitAge),
+        windowStartAge: Math.floor(quitAge),
+      },
     };
   }
   // RETURN FLOOR (round-5 fix 3): the same Math.max(0, ·)
@@ -581,9 +1071,41 @@ export function rollWorkYears(
   // The first priced year has no in-model predecessor and
   // prices on the disclosed proxy (its own Box 3).
   let priorYearWages: number | null = null;
+  // The taxable basis ledger (F2), carried in dollars beside
+  // the balance through every rolled year.
+  const ledger = initTaxableLedger(plan);
   for (let i = 0; i < count; i++) {
-    const age = startAge + i;
-    const pricedLine = priceOneWorkYear(plan, job, age, priorYearWages);
+    const age = effectiveStart + i;
+    // TAXABLE LEDGER for the year (F1/F2/F3): the year opens
+    // with the balance carried in (the base the year's yields
+    // price on); the balance then grows at the plan's return
+    // while basis dollars do not move; the year's yield steps
+    // basis up into the grown balance's unrealized gain. The
+    // yield total is computed here on the opening balance
+    // with the same formula priceOneWorkYear prices it with,
+    // so the ledger and the priced year agree.
+    const openingTaxable = taxable;
+    const yieldTotal =
+      r2(
+        (Math.max(0, openingTaxable) *
+          Math.max(0, plan.taxableInterestYieldPct ?? 0)) /
+          100,
+      ) +
+      r2(
+        (Math.max(0, openingTaxable) *
+          Math.max(0, plan.taxableDividendYieldPct ?? 0)) /
+          100,
+      );
+    const grownTaxable = openingTaxable * growth;
+    if (ledger.tiers) {
+      for (const t of ledger.tiers) t.bal *= growth;
+    }
+    stepUpLedgerForYield(ledger, grownTaxable, yieldTotal);
+    const pricedLine = priceOneWorkYear(plan, job, age, priorYearWages, {
+      openingBalance: openingTaxable,
+      grownBalance: grownTaxable,
+      ledger,
+    });
     priorYearWages = pricedLine.ficaWages;
     const s = pricedLine.stack;
     const catchUpPreTax = s.catchUpIsRoth ? 0 : s.catchUp;
@@ -607,9 +1129,18 @@ export function rollWorkYears(
     // balance, manufacturing a negative asset the retirement
     // engine later floored away with no shortfall reported
     // anywhere.
-    const grownTaxable = taxable * growth;
+    // The deficit is a SALE (F1): priceOneWorkYear already
+    // priced the gain on the drawn amount into the year's
+    // taxes (its surplus is the converged figure), and the
+    // sale consumes basis here in the same order it was
+    // priced. A positive surplus lands as 100%-basis cash.
     const rawTaxable = grownTaxable + pricedLine.surplus;
     const shortfall = rawTaxable < 0 ? r2(-rawTaxable) : 0;
+    if (pricedLine.surplus >= 0) {
+      landSurplusInLedger(ledger, grownTaxable, pricedLine.surplus);
+    } else {
+      consumeLedgerSale(ledger, grownTaxable, -pricedLine.surplus);
+    }
     taxable = rawTaxable < 0 ? 0 : rawTaxable;
     const line: WorkYearLine = { ...pricedLine, shortfall };
     lines.push(line);
@@ -665,10 +1196,20 @@ export function rollWorkYears(
     pretaxSpouse: r2(pretaxSpouse),
     roth: r2(roth),
     taxable: r2(taxable),
+    taxableBasis: r2(ledger.basis),
     hsa: r2(hsa),
   };
+  // BASIS REBUILD (contract v58, F2): the rolled plan's basis
+  // fields are re-expressed from the ledger dollars the roll
+  // actually carried, so the march's own ledger initializes
+  // from the true basis — not from the entered percentage
+  // applied to a balance that has since grown, banked
+  // surpluses, and sold shares.
+  const basisFields = rebuildRolledBasisFields(plan, ledger, balances.taxable);
   const rolledInputs: RothPlanInputs = {
     ...plan,
+    taxableBasisPct: basisFields.taxableBasisPct,
+    taxableTiers: basisFields.taxableTiers,
     // IRMAA LOOKBACK SEED (Build E): the work years this roll
     // just priced, recorded with the filing status each was
     // priced under — the plan's own status, the only status
@@ -746,15 +1287,19 @@ export function runWorkYearsCompare(
   job: WorkYearJob,
   quitAges: number[],
 ): WorkYearsCompareRow[] {
-  // Identical effective plans (the zero-salary case, where
-  // every quit age is the no-work run) price the optimizer
-  // once and share the result.
+  // Identical effective plans price the optimizer once and
+  // share the result. Rolled rows key on their quit age and
+  // balances; ZERO-year rows key on the quit age itself
+  // (contract v58, F5a): a zero-year row's rolled inputs carry
+  // its own quit age as the retirement age, so two zero-year
+  // rows at different quit ages are different plans and must
+  // not share one optimizer run.
   const cache = new Map<string, { roll: WorkYearRoll; optimizer: JointOptimizerResult }>();
   return quitAges.map((quitAge) => {
     const roll = rollWorkYears(plan, job, quitAge);
     const key =
       roll.totals.years === 0
-        ? "no-work"
+        ? `no-work:${quitAge}`
         : `${quitAge}:${roll.balances.pretax}:${roll.balances.roth}:${roll.balances.taxable}:${roll.balances.hsa}`;
     let entry = cache.get(key);
     if (!entry) {
