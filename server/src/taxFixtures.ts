@@ -9261,8 +9261,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-loss-position",
     kind: "tax",
-    note: "Loss position: gift $50,000 with an $80,000 basis, sold at $50,000 (0% return) — the gain is −$30,000, a loss, so the child's tax on the sale is $0 and the net to the child is the full $50,000. (The display suppresses the step-up sentence for a loss: there is no gain for a step-up to wipe out.)",
-    expected: { value: 50000, gain: -30000, childTax: 0, netToChild: 50000 },
+    note: "Loss position under the §1015 dual basis — RE-PINNED in contract v57 (F3): gift $50,000 (the gift-date fair market value) with an $80,000 donor basis, sold at $50,000 (0% return). The gain basis is the donor's $80,000, but the LOSS basis is the lower gift-date FMV, $50,000; a sale at exactly $50,000 falls between the two bases, so the recognized gain/loss is $0. (Pre-fix the model computed value − donor basis and displayed −$30,000 — a loss §1015 does not recognize; the child's tax was already $0 because the taxed gain floors at $0, so childTax 0 and netToChild $50,000 are unchanged by the re-pin.) (The display suppresses the step-up sentence here: there is no gain for a step-up to wipe out.)",
+    expected: { value: 50000, gain: 0, childTax: 0, netToChild: 50000 },
     actual: () => {
       const cmp = computeGiftComparison(giftFixturePlan(), {
         giftAge: 56,
@@ -9301,6 +9301,221 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         gain: cmp.child.gain,
         childTax: cmp.child.childTax,
         netToChild: cmp.child.netToChild,
+      };
+    },
+  },
+  {
+    id: "gift-outflow-specific-basis",
+    kind: "tax",
+    note: "F1 (contract v57) — specific-lot basis into the march, no-spending shape (hand-derived from the audit's case): single filer, plan year 2026 at age 57, Taxable $1,000,000 at a 50% basis ($500,000 of basis dollars), no other balances or income, 0% return, no spending, Do Nothing. A $200,000 gift at 57 of shares carrying a $20,000 basis (giftOutflowBasis) removes exactly that parcel's basis: the gift year ends with Taxable $800,000 and $480,000 of basis dollars ($500,000 − $20,000). The same outflow WITHOUT giftOutflowBasis keeps the legacy pro-rata removal — $500,000 − $200,000 × ($500,000 / $1,000,000) = $400,000 — pinning the absent-field fallback as unchanged.",
+    expected: {
+      giftYearBasisEnd: 480000,
+      giftYearTaxableEnd: 800000,
+      legacyBasisEnd: 400000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearSpouse: null,
+        endAgePrimary: 57,
+        pretaxStart: 0,
+        taxableStart: 1000000,
+        taxableBasisPct: 50,
+        annualSpending: 0,
+      });
+      const specific = simulateRothPlan(
+        {
+          ...plan,
+          giftOutflowAge: 57,
+          giftOutflowAmount: 200000,
+          giftOutflowBasis: 20000,
+        },
+        DO_NOTHING,
+      );
+      const legacy = simulateRothPlan(
+        { ...plan, giftOutflowAge: 57, giftOutflowAmount: 200000 },
+        DO_NOTHING,
+      );
+      return {
+        giftYearBasisEnd: specific.years[0]?.detail.taxableBasisDollars ?? null,
+        giftYearTaxableEnd: specific.years[0]?.taxableEnd ?? null,
+        legacyBasisEnd: legacy.years[0]?.detail.taxableBasisDollars ?? null,
+      };
+    },
+  },
+  {
+    id: "gift-outflow-specific-basis-tax",
+    kind: "tax",
+    note: "F1 (contract v57) — specific-lot basis into the march, spending shape (hand-derived in the audit, from the 2026 single-filer law row): the gift-outflow-specific-basis plan with $200,000/yr of spending drawn taxable-first and tax paid from taxable, Do Nothing. In the gift year the zero-tax gains space is $16,100 (standard deduction) + $49,450 (0% LTCG top) = $65,550. With the parcel's own $20,000 basis gone, the remaining $800,000 carries $480,000 of basis — a 40% gain fraction — so the year's gains tax T solves T = 0.15 × (0.40 × ($200,000 + T) − $65,550), giving T = $2,305.85. Under the legacy pro-rata removal the gain fraction stays 50% and the same equation gives $5,586.49 — the overstatement the fix removes. The gift year's basis ledger ends at $480,000 − 0.60 × ($200,000 + $2,305.85) = $358,616.49 (the year's sales retire basis at the pool's 60% basis fraction).",
+    expected: {
+      giftYearFedTax: 2305.85,
+      giftYearBasisEnd: 358616.49,
+      legacyGiftYearFedTax: 5586.49,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearSpouse: null,
+        endAgePrimary: 58,
+        pretaxStart: 0,
+        taxableStart: 1000000,
+        taxableBasisPct: 50,
+        annualSpending: 200000,
+      });
+      const specific = simulateRothPlan(
+        {
+          ...plan,
+          giftOutflowAge: 57,
+          giftOutflowAmount: 200000,
+          giftOutflowBasis: 20000,
+        },
+        DO_NOTHING,
+      );
+      const legacy = simulateRothPlan(
+        { ...plan, giftOutflowAge: 57, giftOutflowAmount: 200000 },
+        DO_NOTHING,
+      );
+      return {
+        giftYearFedTax: specific.years[0]?.federalTax ?? null,
+        giftYearBasisEnd: specific.years[0]?.detail.taxableBasisDollars ?? null,
+        legacyGiftYearFedTax: legacy.years[0]?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "gift-outflow-specific-basis-tiers",
+    kind: "tax",
+    note: "F1 (contract v57) — the specific-basis shapes on the basis-TIERS ledger: the gift-outflow-specific-basis plans with the 50% basis carried as a single tier (100% share at a 50% basis ratio). The tier balances fall pro-rata by balance while the tier basis removal totals the parcel's own $20,000 exactly, so every figure agrees with the single-pool pins to the cent: no-spending gift year ends at Taxable $800,000 with $480,000 of basis dollars, and the spending shape's gift-year federal capital-gains tax is $2,305.85.",
+    expected: {
+      giftYearBasisEnd: 480000,
+      giftYearTaxableEnd: 800000,
+      spendingGiftYearFedTax: 2305.85,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearSpouse: null,
+        endAgePrimary: 58,
+        pretaxStart: 0,
+        taxableStart: 1000000,
+        taxableBasisPct: 50,
+        taxableTiers: [{ sharePct: 100, basisPct: 50 }],
+        annualSpending: 0,
+      });
+      const noSpend = simulateRothPlan(
+        {
+          ...plan,
+          giftOutflowAge: 57,
+          giftOutflowAmount: 200000,
+          giftOutflowBasis: 20000,
+        },
+        DO_NOTHING,
+      );
+      const spending = simulateRothPlan(
+        {
+          ...plan,
+          annualSpending: 200000,
+          giftOutflowAge: 57,
+          giftOutflowAmount: 200000,
+          giftOutflowBasis: 20000,
+        },
+        DO_NOTHING,
+      );
+      return {
+        giftYearBasisEnd: noSpend.years[0]?.detail.taxableBasisDollars ?? null,
+        giftYearTaxableEnd: noSpend.years[0]?.taxableEnd ?? null,
+        spendingGiftYearFedTax: spending.years[0]?.federalTax ?? null,
+      };
+    },
+  },
+  {
+    id: "gift-counterfactual-sale-exhausted",
+    kind: "tax",
+    note: "F6 (contract v57) — the counterfactual sale is capped at the shares the baseline still holds: single filer, $100,000 of zero-basis stock, $100,000/yr of spending taxable-first, 0% return; a gift of all $100,000 at 57 with a counterfactual sale at 60. The no-gift baseline spends the whole Taxable bucket in the first year, so at the start of the sale year it holds $0 of the shares — the capped injection is $0 and the comparison's baseline side is BIT-IDENTICAL to the plain plan run (same winner, $0 net-cost and ending-wealth differences). Pre-fix the baseline injected the full $100,000 gain at 60 and assessed $5,167.50 of tax on shares no longer owned. The child's side is untouched: the shares are worth $100,000 at sale with a $0 basis, the child (born 2000, age 29 at the 2029 sale, no kiddie gate) pays 15% on $100,000 − $16,100 − $49,450 = $34,450 of taxable gains = $5,167.50, netting $94,832.50.",
+    expected: {
+      baselineNetDiff: 0,
+      baselineWealthDiff: 0,
+      sameWinner: 1,
+      childGain: 100000,
+      childTax: 5167.5,
+      netToChild: 94832.5,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearSpouse: null,
+        endAgePrimary: 62,
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 0,
+        annualSpending: 100000,
+      });
+      const cmp = computeGiftComparison(plan, {
+        giftAge: 57,
+        amount: 100000,
+        basis: 0,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: 60,
+      });
+      const plain = runJointOptimizer(plan);
+      return {
+        baselineNetDiff:
+          Math.round((cmp.baseline.netCost - plain.winner.cost.netCost) * 100) / 100,
+        baselineWealthDiff:
+          Math.round(
+            (cmp.baseline.endingAfterTax - plain.winner.result.endingAfterTaxWealth) * 100,
+          ) / 100,
+        sameWinner: cmp.baseline.winnerName === plain.winner.spec.name ? 1 : 0,
+        childGain: cmp.child.gain,
+        childTax: cmp.child.childTax,
+        netToChild: cmp.child.netToChild,
+      };
+    },
+  },
+  {
+    id: "gift-donors-after-spouse-death",
+    kind: "tax",
+    note: "F2 (contract v57) — the exclusion's donor count follows the gift year's filing status: MFJ plan, primary born 1971 (plan starts 2026 at age 55), spouse dies in 2028 (survivor scenario on), $38,000 gift. The death year itself still files jointly: a gift at age 57 (2028) has two donors, $38,000 of exclusion, $0 over. The next year the survivor files single: a gift at age 58 (2029) has ONE donor, $19,000 of exclusion, $19,000 over the exclusion. Pre-fix the count read the plan's static MFJ status and priced two donors in both years.",
+    expected: {
+      deathYearDonors: 2,
+      deathYearAvail: 38000,
+      deathYearExcess: 0,
+      afterDonors: 1,
+      afterAvail: 19000,
+      afterExcess: 19000,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        endAgePrimary: 62,
+        retirementAge: 55,
+        windowStartAge: 55,
+        pretaxStart: 0,
+        taxableStart: 500000,
+        survivorEnabled: true,
+        survivorWho: "spouse",
+        survivorDeathYear: 2028,
+      });
+      const gift = {
+        amount: 38000,
+        basis: 5000,
+        kidBirthYear: 2000,
+        kidStudent: false,
+        kidOtherIncome: 0,
+        saleAge: null,
+      };
+      const deathYear = computeGiftComparison(plan, { ...gift, giftAge: 57 });
+      const after = computeGiftComparison(plan, { ...gift, giftAge: 58 });
+      return {
+        deathYearDonors: deathYear.giftTax.donors,
+        deathYearAvail: deathYear.giftTax.exclusionAvailable,
+        deathYearExcess: deathYear.giftTax.excess,
+        afterDonors: after.giftTax.donors,
+        afterAvail: after.giftTax.exclusionAvailable,
+        afterExcess: after.giftTax.excess,
       };
     },
   },
