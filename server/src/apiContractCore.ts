@@ -198,6 +198,11 @@ export const mcScoreIn = z.strictObject({
   windowStopAge: z.number().int().min(0).max(120),
   guardrail: z.boolean(),
   bunching: z.boolean(),
+  // Gain harvesting (contract v56): carried from an optimizer
+  // score so the check re-prices the same strategy. Optional
+  // so a score built before the field existed still validates
+  // (absence prices exactly as false).
+  gainsHarvest: z.boolean().optional(),
   ceilings: z.strictObject({
     bracketTopPct: bracketTopPctField,
     irmaaTierCap: z.number().int().nullable(),

@@ -5850,6 +5850,120 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "opt-harvest-completeness-micro",
+    kind: "tax",
+    note: "Gain-harvesting completeness (contract v56, HAND-DERIVED micro-case): single filer, birthYearPrimary 1966, start 2026, end age 61, retirement age 61, conversion window ages 60–61, annual spending $85,000, pre-tax $10,000, taxable $200,000 at 0% basis (explicitly entered, not blank), Roth $0, HSA $0, expected return 0%, inflation 0%, state other/0%, no Social Security, no other income, heir rate 20%, draw order Taxable → Pre-tax → Roth. Hand derivation: 2026 converts $10,000 tax-free under the $16,100 single standard deduction and harvests $55,550 into the 0% LTCG band (the $49,450 0% cutoff plus the $6,100 of deduction left after the conversion); the stepped-up basis makes 2027's $85,000 sale land exactly at the $49,450 cutoff, $0 tax — so the harvesting winner's net cost is exactly $0.00. Do Nothing prices $5,432.35 ($3,432.35 of tax + $2,000 terminal at the 20% heir rate on the $10,000 pre-tax left standing). Before v56 the optimizer never generated a gainsHarvest candidate, so its best on this plan was a non-harvest strategy costing over $1,400; the winner of BOTH the joint and the fixed-age search must now be a gainsHarvest strategy at $0.00, named with the harvesting phrase, and Do Nothing (never a harvest twin) must carry gainsHarvest false at $5,432.35.",
+    expected: {
+      jointWinnerHarvest: 1,
+      jointWinnerNet: 0,
+      jointWinnerNameHasHarvestPhrase: 1,
+      fixedWinnerHarvest: 1,
+      fixedWinnerNet: 0,
+      doNothingNet: 5432.35,
+      doNothingHarvest: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearPrimary: 1966,
+        birthYearSpouse: null,
+        endAgePrimary: 61,
+        retirementAge: 61,
+        windowStartAge: 60,
+        windowStopAge: 61,
+        annualSpending: 85000,
+        pretaxStart: 10000,
+        taxableStart: 200000,
+        taxableBasisPct: 0,
+        taxableBasisBlank: false,
+        rothStart: 0,
+        hsaStart: 0,
+        expectedReturnPct: 0,
+        inflationPct: 0,
+        stateRatePct: 0,
+        ssPrimaryAnnual: 0,
+        ssPrimaryStartAge: null,
+        ssSpouseAnnual: 0,
+        ssSpouseStartAge: null,
+        otherOrdinaryAnnual: 0,
+        heirRatePct: 20,
+        acaHouseholdSize: 1,
+        drawOrder: drawOrderFromKey("taxable-pretax-roth"),
+      });
+      const joint = runJointOptimizer(plan);
+      const fixed = runOptimizer(plan);
+      return {
+        jointWinnerHarvest: joint.winner.spec.gainsHarvest ? 1 : 0,
+        jointWinnerNet: joint.winner.cost.netCost,
+        jointWinnerNameHasHarvestPhrase: joint.winner.spec.name.includes(
+          "gain harvesting into the 0% bracket",
+        )
+          ? 1
+          : 0,
+        fixedWinnerHarvest: fixed.winner.spec.gainsHarvest ? 1 : 0,
+        fixedWinnerNet: fixed.winner.cost.netCost,
+        doNothingNet: joint.doNothing.cost.netCost,
+        doNothingHarvest: joint.doNothing.spec.gainsHarvest ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "claim-floor-conflict-locked",
+    kind: "tax",
+    note: "Claiming-age floor conflict honesty (contract v56): the opt-claim-locked-already-claimed plan shape (single filer born 1951, claim already started at 67, $48,000/yr) with claimAgeFloor 70 added. The claim is locked at 67 — the benefit has already started, so the entered age cannot move — and the single-combination path crowns the same claim-67 winner as before (the crowning is unchanged), but the result now reports the conflict instead of asserting compliance: claimAgeFloorMet is false, the claim-search note states the conflict plainly naming floor 70 and the winner's age 67 and gives the locked reason, the note does NOT contain the compliance assertion ('the winner is the best strategy at a claiming age of 70 or later'), and — the claim age table being empty on this path — the note never references below-floor markings in the table.",
+    expected: {
+      claimAgeFloorMetFalse: 1,
+      winnerAge: 67,
+      noteNamesFloor70: 1,
+      noteNamesWinnerAge67: 1,
+      noteStatesConflict: 1,
+      noteHasLockedReason: 1,
+      noteHasComplianceAssertion: 0,
+      noteRefsTableMarkings: 0,
+      tableEmpty: 1,
+    },
+    actual: () => {
+      const plan = basePlan({
+        filingStatus: "single",
+        birthYearPrimary: 1951,
+        birthYearSpouse: null,
+        endAgePrimary: 85,
+        retirementAge: 75,
+        windowStartAge: 75,
+        windowStopAge: 80,
+        pretaxStart: 500000,
+        taxableStart: 200000,
+        taxableBasisPct: 100,
+        annualSpending: 60000,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        acaHouseholdSize: 1,
+        claimAgeFloor: 70,
+      });
+      const joint = runJointOptimizer(plan);
+      const note = jointSearchNote(joint.jointSearch);
+      return {
+        claimAgeFloorMetFalse: joint.claimAgeFloorMet === false ? 1 : 0,
+        winnerAge: joint.winner.claimAges.primaryAge,
+        noteNamesFloor70: note.includes("70") ? 1 : 0,
+        noteNamesWinnerAge67: note.includes("67") ? 1 : 0,
+        noteStatesConflict:
+          note.includes("below your floor") && note.includes("does not meet your floor")
+            ? 1
+            : 0,
+        noteHasLockedReason:
+          note.includes("already started") && note.includes("cannot move") ? 1 : 0,
+        noteHasComplianceAssertion: note.includes(
+          "the winner is the best strategy at a claiming age of 70 or later",
+        )
+          ? 1
+          : 0,
+        noteRefsTableMarkings: note.includes("marked as below your floor") ? 1 : 0,
+        tableEmpty: joint.claimAgeTable.length === 0 ? 1 : 0,
+      };
+    },
+  },
+  {
     id: "gift-sale-gain-basis-step-up",
     kind: "tax",
     note: "Round-7 Build 3, N-2 \u2014 REPRODUCED, then fixed. Shape: MFJ, Taxable $500,000 at a 50% basis ($250,000 of basis dollars), $80,000/yr of other income, $180,000/yr of spending drawn Taxable-first, 0% return, ages 57\u201360, Do Nothing, with the parents' counterfactual sale injected at 58 (saleGain $50,000 \u2014 a $100,000 sale with a $50,000 basis). Pre-fix the synthetic gain left the basis ledger untouched, so the sale year's own tax sale and every later draw re-realized the same appreciation: sale-year gains read $106,797.30 and lifetime federal tax $30,054.06. Post-fix the sale steps the pool's basis up by the $50,000 gain at the start of the sale year (the sold shares' basis is retired; the proceeds carry sale-value basis): sale-year gains are $91,546.63 ($50,000 injected + $41,546.63 realized), the sale year ends with $177,496.39 of basis dollars, the later years' gains fall to $39,282.05, and lifetime federal tax is $27,273.48 \u2014 the double count overstated this shape's tax by $2,780.58 (the review's reported instance, a different plan shape with the same $100K/$50K sale, overstated the gift advantage by $2,213.52).",

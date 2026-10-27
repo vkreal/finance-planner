@@ -36,7 +36,14 @@
 //     stop a year's fill at the first $100 step whose effective
 //     marginal rate would exceed the strategy's own bracket rate;
 //   · the ACA bunching variant (for non-cliff ceilings): in ACA
-//     years, alternate a big conversion year with a $0 year.
+//     years, alternate a big conversion year with a $0 year;
+//   · the gain-harvesting variant (contract v56): when the
+//     plan holds a taxable balance with basis below 100%
+//     (harvestGatePasses), EVERY conversion candidate above
+//     also gets a gainsHarvest twin; when the gate fails no
+//     twins are generated and the candidate space is exactly
+//     as before. There is deliberately no separate
+//     ltcgZeroCap ceiling candidate family.
 // Do Nothing is always in the candidate set, so the winner can
 // never score worse than doing nothing on this objective.
 //
@@ -319,9 +326,40 @@ export type OptimizerCandidateSpec = {
   windowLabel: string;
   guardrail: boolean;
   bunching: boolean;
+  // Gain harvesting (contract v56): true = this candidate is
+  // the harvest twin of the same ceilings/window/variant/order
+  // — it prices with gainsHarvest on. Absent = false, so every
+  // pre-existing literal keeps its meaning. Do Nothing never
+  // carries it (the change-nothing benchmark).
+  gainsHarvest?: boolean;
   // The spending draw order this candidate is priced under.
   drawOrder: DrawOrder;
 };
+
+/* Gain-harvesting gate (contract v56): harvest twins are
+   generated only when harvesting can bind on the resolved
+   plan inputs — the resolved taxable balance is above $0 AND
+   the blended basis is below 100%. With tiers the blended
+   basis test is: any positive-share tier has basisPct < 100.
+   With no tiers it is taxableBasisPct < 100. A blank basis
+   prices harvesting as inert in the engine (no basis to step
+   up), so it never passes. When the gate fails NO twins are
+   generated and candidate counts are exactly as before —
+   harvesting is then a provable no-op. */
+export function harvestGatePasses(inputs: RothPlanInputs): boolean {
+  if (!(inputs.taxableStart > 0)) return false;
+  if (inputs.taxableBasisBlank === true) return false;
+  if (Array.isArray(inputs.taxableTiers) && inputs.taxableTiers.length > 0) {
+    return inputs.taxableTiers.some(
+      (t) =>
+        (t.sharePct ?? 0) > 0 &&
+        Math.min(100, Math.max(0, t.basisPct)) < 100,
+    );
+  }
+  return Math.min(100, Math.max(0, inputs.taxableBasisPct)) < 100;
+}
+
+export const HARVEST_NAME_PHRASE = "gain harvesting into the 0% bracket";
 
 export type ScoredCandidate = {
   spec: OptimizerCandidateSpec;
@@ -466,6 +504,44 @@ export function buildOptimizerCandidates(
   });
   const out: OptimizerCandidateSpec[] = [];
   const seen = new Set<string>();
+  const harvestGate = harvestGatePasses(inputs);
+  const addOne = (
+    ceilings: FillCeilings,
+    window: { kind: OptimizerWindowKind; stop: number },
+    guardrail: boolean,
+    bunching: boolean,
+    drawOrder: DrawOrder,
+    gainsHarvest: boolean,
+  ) => {
+    const baseKey = [
+      ceilingsKey(ceilings),
+      window.stop,
+      guardrail ? "gr" : "-",
+      bunching ? "bu" : "-",
+      drawOrderKey(drawOrder),
+    ].join(":");
+    // Non-harvest keys are exactly the pre-v56 keys, so every
+    // existing key pin on a gate-failing shape is unmoved. A
+    // harvest twin's key appends ":hv", making twins distinct
+    // for counting, candidate keys, and the total tie-break
+    // order (no two candidates compare equal on every key).
+    const key = gainsHarvest ? `${baseKey}:hv` : baseKey;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const baseName = nameForCeilings(ceilings);
+    out.push({
+      key,
+      name: gainsHarvest ? `${baseName} · ${HARVEST_NAME_PHRASE}` : baseName,
+      ceilings,
+      windowStopAge: window.stop,
+      windowKind: window.kind,
+      windowLabel: windowLabelFor(window.kind, inputs.windowStartAge, window.stop),
+      guardrail,
+      bunching,
+      gainsHarvest,
+      drawOrder,
+    });
+  };
   const add = (
     ceilings: FillCeilings,
     window: { kind: OptimizerWindowKind; stop: number },
@@ -473,26 +549,12 @@ export function buildOptimizerCandidates(
     bunching: boolean,
     drawOrder: DrawOrder,
   ) => {
-    const key = [
-      ceilingsKey(ceilings),
-      window.stop,
-      guardrail ? "gr" : "-",
-      bunching ? "bu" : "-",
-      drawOrderKey(drawOrder),
-    ].join(":");
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({
-      key,
-      name: nameForCeilings(ceilings),
-      ceilings,
-      windowStopAge: window.stop,
-      windowKind: window.kind,
-      windowLabel: windowLabelFor(window.kind, inputs.windowStartAge, window.stop),
-      guardrail,
-      bunching,
-      drawOrder,
-    });
+    addOne(ceilings, window, guardrail, bunching, drawOrder, false);
+    // Gain-harvesting twin (contract v56): EVERY generated
+    // conversion candidate also gets a gainsHarvest twin when
+    // the gate passes. Do Nothing is never generated here, so
+    // it never gets a twin.
+    if (harvestGate) addOne(ceilings, window, guardrail, bunching, drawOrder, true);
   };
   for (const set of ceilingSets()) {
     for (const window of windows) {
@@ -518,6 +580,7 @@ export function candidateStrategy(spec: OptimizerCandidateSpec): RothStrategy {
     ceilings: spec.ceilings,
     guardrail: spec.guardrail,
     bunching: spec.bunching,
+    gainsHarvest: spec.gainsHarvest ?? false,
   };
 }
 
@@ -530,6 +593,7 @@ export const DO_NOTHING_SPEC: OptimizerCandidateSpec = {
   windowLabel: "No conversions",
   guardrail: false,
   bunching: false,
+  gainsHarvest: false,
   drawOrder: DEFAULT_DRAW_ORDER,
 };
 
@@ -714,7 +778,13 @@ export function runOptimizer(
    rows are marked, not hidden — and Do Nothing (the best Do
    Nothing found, at its own best claiming ages) is unchanged.
    With no floor the crowning is the plain best-first order,
-   bit for bit as before. */
+   bit for bit as before. When no candidate can meet the floor
+   (a locked claim below it, or the single-combination path),
+   the same plain-best winner is still crowned, but the result
+   reports the conflict honestly (contract v56): the joint
+   result's claimAgeFloorMet is false and the result note
+   states the conflict plainly instead of asserting the winner
+   meets the floor. */
 
 export type JointSearchInfo = {
   searchedPrimary: boolean;
@@ -758,6 +828,23 @@ export type JointSearchInfo = {
   // The plan's draw order, kept by every combination the joint
   // search prices — named in the result note.
   drawOrderLabel: string;
+  // Floor-conflict honesty (contract v56): whether the crowned
+  // winner meets the claiming-age floor, the winner's primary
+  // claiming age, whether the winner is the floor-exempt Do
+  // Nothing benchmark, and whether the claim-age table is
+  // empty. Set by computeJointOptimizer after crowning so
+  // jointSearchNote can state a conflict plainly instead of
+  // asserting compliance, and can avoid referencing per-age
+  // table markings when there is no table. Optional for the
+  // same literal reason as the floor: absent = no conflict
+  // information, and the note then keeps its prior wording
+  // (except that an absent table state never claims markings
+  // exist when a floor sentence is built from a plain literal
+  // — see jointSearchNote).
+  claimAgeFloorMet?: boolean | null;
+  winnerPrimaryAge?: number | null;
+  winnerIsDoNothing?: boolean;
+  claimAgeTableEmpty?: boolean;
 };
 
 // One row of the per-claiming-age pricing table: the best
@@ -785,7 +872,27 @@ export type ClaimAgeRow = {
 export type JointOptimizerResult = OptimizerResult & {
   jointSearch: JointSearchInfo;
   claimAgeTable: ClaimAgeRow[];
+  // Floor-conflict honesty (contract v56): null when no
+  // claimAgeFloor is set; true when the crowned winner's
+  // primary claiming age is at or above the floor (or there
+  // is no primary claiming age to violate it, or the winner
+  // is the floor-exempt Do Nothing benchmark); false when
+  // the winner claims below the floor — including the
+  // single-combination/locked path and the no-eligible-
+  // candidate fallback. The crowning itself is unchanged.
+  claimAgeFloorMet: boolean | null;
 };
+
+export function claimAgeFloorMetFor(
+  floor: number | null,
+  winner: ScoredCandidate,
+): boolean | null {
+  if (floor == null) return null;
+  if (winner.spec.key === DO_NOTHING_SPEC.key) return true;
+  const age = winner.claimAges.primaryAge;
+  if (age == null) return true;
+  return age >= floor;
+}
 
 type ClaimCombo = {
   inputs: RothPlanInputs;
@@ -908,8 +1015,19 @@ const SCREEN_CEILINGS: FillCeilings[] = [
 ];
 
 function screenSpecs(inputs: RothPlanInputs): OptimizerCandidateSpec[] {
+  // Stage-1 screen stays harvest-free (contract v56): the
+  // screen set is built from the non-harvest candidates only.
+  // That is safe ONLY because stage 2 fully prices every
+  // combination's full candidate set — harvest twins included,
+  // via scoreAllCandidates — so screening cannot influence
+  // selection: it only orders the combinations for stage 2,
+  // and every combination is fully priced regardless of its
+  // screening score. (Verified in computeJointOptimizer: the
+  // screened list feeds nothing else — finalists are ALL
+  // combinations, and crowning, runners-up, the per-age table,
+  // and Do Nothing all read the stage-2 scored set.)
   const all = buildOptimizerCandidates(inputs, [inputs.drawOrder]).filter(
-    (s) => !s.guardrail && !s.bunching,
+    (s) => !s.guardrail && !s.bunching && !s.gainsHarvest,
   );
   const windowKind: OptimizerWindowKind = all.some((s) => s.windowKind === "stopRmd")
     ? "stopRmd"
@@ -964,7 +1082,16 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   }
   if (combos.length <= 1) {
     const res = runOptimizer(inputs);
-    return { ...res, jointSearch: info, claimAgeTable: [] };
+    // Single-combination / locked path (contract v56): this
+    // path never applied the floor eligibility filter, and it
+    // still crowns the same winner — but the floor conflict is
+    // now reported honestly via claimAgeFloorMet and the note.
+    const met = claimAgeFloorMetFor(floor, res.winner);
+    info.claimAgeFloorMet = met;
+    info.winnerPrimaryAge = res.winner.claimAges.primaryAge;
+    info.winnerIsDoNothing = res.winner.spec.key === DO_NOTHING_SPEC.key;
+    info.claimAgeTableEmpty = true;
+    return { ...res, jointSearch: info, claimAgeTable: [], claimAgeFloorMet: met };
   }
   // Stage 1 — screen every combination.
   const specs = screenSpecs(inputs);
@@ -1086,6 +1213,11 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
       });
     }
   }
+  const met = claimAgeFloorMetFor(floor, winner);
+  info.claimAgeFloorMet = met;
+  info.winnerPrimaryAge = winner.claimAges.primaryAge;
+  info.winnerIsDoNothing = winner.spec.key === DO_NOTHING_SPEC.key;
+  info.claimAgeTableEmpty = claimAgeTable.length === 0;
   return {
     candidatesTested: scoredAll.length,
     doNothing,
@@ -1094,6 +1226,7 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
     scored: scoredAll,
     jointSearch: info,
     claimAgeTable,
+    claimAgeFloorMet: met,
   };
 }
 
@@ -1157,10 +1290,40 @@ export function jointSearchNote(info: JointSearchInfo): string {
       ? "every combination priced against the full strategy set"
       : `the best ${info.finalistCombos} priced against the full strategy set`;
   // The claim floor's effect, in plain words, when one is set.
+  // Floor-conflict honesty (contract v56): when the crowned
+  // winner claims below the floor (claimAgeFloorMet === false),
+  // the note states the conflict plainly — naming the floor and
+  // the winner's actual primary claiming age, and the locked
+  // reason when the claim is locked — and never carries the
+  // compliance assertion. When the floor is met, the prior
+  // wording stands, except that the per-age-table marking
+  // clause is included only when a claim-age table exists:
+  // the note never references below-floor markings in a table
+  // when the table is empty, in any case. For a plain info
+  // literal with no conflict information, an absent table
+  // state is inferred from the searched flags (a searched
+  // primary produces a table in a real run); a literal that
+  // sets claimAgeTableEmpty explicitly governs.
+  const floorMet: boolean | null =
+    info.claimAgeFloor == null
+      ? null
+      : info.claimAgeFloorMet !== undefined
+        ? info.claimAgeFloorMet
+        : info.winnerPrimaryAge != null
+          ? info.winnerIsDoNothing === true || info.winnerPrimaryAge >= info.claimAgeFloor
+          : true;
+  const tableEmpty =
+    info.claimAgeTableEmpty !== undefined
+      ? info.claimAgeTableEmpty
+      : !info.searchedPrimary;
   const floorSentence =
-    info.claimAgeFloor != null
-      ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later, and the younger ages in the table below are marked as below your floor.`
-      : "";
+    info.claimAgeFloor == null
+      ? ""
+      : floorMet === false
+        ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}, but the winner claims at ${info.winnerPrimaryAge ?? "an age below it"}, below your floor — the winner does not meet your floor.${info.lockedPrimary === true ? ` That claim is locked at ${info.winnerPrimaryAge} because the benefit has already started, so the entered age cannot move.` : ""}`
+        : tableEmpty
+          ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later.`
+          : ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later, and the younger ages in the table below are marked as below your floor.`;
   // Locked claiming ages (N-1), in plain words, when a benefit
   // had already started at plan start. Empty when nobody is
   // locked, so an unlocked record's note is exactly as before.
@@ -1175,16 +1338,19 @@ export function jointSearchNote(info: JointSearchInfo): string {
           ? ` Your spouse's claiming age is locked at ${info.lockedSpouseAge} because their benefit has already started — a claim that is already being paid cannot be changed, so the search kept it exactly as entered.`
           : "";
   if (!info.searchedPrimary && !info.searchedSpouse) {
+    // A floor conflict is stated even on this branch (v56);
+    // a met or unset floor keeps the prior wording exactly.
+    const conflictSuffix = floorMet === false ? floorSentence : "";
     if (declaredPrimary && declaredSpouse) {
-      return "Neither person has a Social Security benefit — both are marked as having no benefit — so there are no claiming ages to search. The strategies above were priced with no Social Security benefit for either person, with all six draw orders searched as part of the strategy set.";
+      return `Neither person has a Social Security benefit — both are marked as having no benefit — so there are no claiming ages to search. The strategies above were priced with no Social Security benefit for either person, with all six draw orders searched as part of the strategy set.${conflictSuffix}`;
     }
     if (declaredSpouse && !declaredPrimary) {
-      return "The spouse has no Social Security benefit, and the primary person's benefit hasn't been entered yet, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.";
+      return `The spouse has no Social Security benefit, and the primary person's benefit hasn't been entered yet, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.${conflictSuffix}`;
     }
     if (declaredPrimary && !declaredSpouse) {
-      return "The primary person has no Social Security benefit, and the spouse's benefit hasn't been entered yet, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.";
+      return `The primary person has no Social Security benefit, and the spouse's benefit hasn't been entered yet, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.${conflictSuffix}`;
     }
-    return "No Social Security benefit is entered, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.";
+    return `No Social Security benefit is entered, so there were no claiming ages to search — the strategies above were priced at the entered ages, with all six draw orders searched as part of the strategy set.${conflictSuffix}`;
   }
   // Every searched benefit is locked (N-1): no claiming age
   // was actually varied, so the note says so plainly instead
