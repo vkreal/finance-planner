@@ -157,6 +157,19 @@ function paymentsPerYearFor(f: string): number {
   return 1;
 }
 
+/* Cumulative rounding for a smoothed bill's monthly set-aside —
+   the client mirror of the server's one implementation
+   (spendingCore's monthlyAccrualForAnnual): the set-aside for
+   calendar month n is round(annual × n/12) − round(annual ×
+   (n−1)/12), so twelve monthly set-asides sum to the annual
+   amount exactly. Used only for form previews; every displayed
+   figure comes from the server. */
+function cumulativeMonthlyCents(annualCents: number, month: string): number {
+  const n = Number(month.slice(5, 7));
+  if (!Number.isInteger(n) || n < 1 || n > 12) return Math.round(annualCents / 12);
+  return Math.round((annualCents * n) / 12) - Math.round((annualCents * (n - 1)) / 12);
+}
+
 function freqPhrase(f: string): string {
   if (f === "bimonthly") return "every other month";
   if (f === "quarterly") return "every 3 months";
@@ -927,7 +940,7 @@ function ExplorerModal({
               summary="Explore bills by month over any date range — the first 36 months of the range are shown and exported; read-only: nothing here changes your data."
             >
               <p>
-                Explore the data — bills by month over any date range. Monthly bills count at the amount in effect that month; yearly &amp; periodic bills count at their monthly set-aside. Category and Keep-the-lights-on groupings use each bill&rsquo;s current label for every month, past and present. The final Everything else row is everything else that went out that isn&rsquo;t bills, so each month totals to its True cost. Read-only: nothing here changes your data.
+                Explore the data — bills by month over any date range. Monthly bills count at the amount in effect that month; yearly &amp; periodic bills count at their monthly set-aside. Category and Keep-the-lights-on groupings use each bill&rsquo;s current label for every month, past and present. The final Other spending row is the day-to-day money that isn&rsquo;t bills, on the True cost basis, so each month totals to its True cost. (In the Month grouping, Everything else is the same day-to-day money on the cash-out basis.) Read-only: nothing here changes your data.
               </p>
             </Explainer>
           </div>
@@ -995,7 +1008,7 @@ function ExplorerModal({
                   </thead>
                   <tbody>
                     {ex.rows.map((r, rowIdx) => {
-                      const isEverythingElse = r.label === "Everything else";
+                      const isEverythingElse = r.label === "Other spending";
                       return (
                         <tr
                           key={`${r.label}-${rowIdx}`}
@@ -1005,7 +1018,7 @@ function ExplorerModal({
                             {r.label}
                             {isEverythingElse && (
                               <span className="block text-xs font-normal text-[var(--dim)]">
-                                day-to-day · not bills
+                                day-to-day · not bills · True cost basis
                               </span>
                             )}
                           </th>
@@ -1109,7 +1122,9 @@ type SpendingChartDatum = {
    a month later than the current calendar month is an ESTIMATE:
    its bars render muted and outlined, its axis label gains
    "(est.)", and it turns into a normal pair on its own once its
-   month arrives. Every bar carries its dollar value above it; the
+   month arrives — including when such a month arrives inside the
+   history itself (its row carries the server's estimate flag).
+   Every bar carries its dollar value above it; the
    two series sit on staggered label shelves coloured to match
    their bars so neighbouring labels never collide, and the legend
    names the series. No recorded months renders a plain empty
@@ -1134,9 +1149,11 @@ function SpendingTrueCostChart({
   const thisMonth = currentMonth();
   const chartData: SpendingChartDatum[] = [
     ...months.map((m) => ({
-      name: shortMonthLabel(m.month),
+      name: m.estimate
+        ? `${shortMonthLabel(m.month)} (est.)`
+        : shortMonthLabel(m.month),
       monthStr: m.month,
-      estimate: false,
+      estimate: m.estimate,
       trueCost: m.smoothedCents / 100,
       cashOut: m.cashOutCents / 100,
       trueCostCents: m.smoothedCents,
@@ -4585,7 +4602,9 @@ export function App() {
                       {monthLabel(month)} total {fmt(data.totalAnnualCents)} a
                       year → set aside {fmt(data.accrualCents)} a month for{" "}
                       {monthLabel(month)} — the sum of each in-effect bill's
-                      monthly amount, each rounded per bill, so it matches the
+                      monthly amount, each rounded per bill so the year's
+                      twelve set-asides sum to the bill's annual amount
+                      exactly, and it matches the
                       set-asides on the bill cards below exactly. When a bill is paid, record
                       it here so the actual can be checked against what you
                       expected. Amounts below are the ones in effect for{" "}
@@ -4657,7 +4676,7 @@ export function App() {
                             {cents != null && cents >= 0 ? (
                               <>
                                 That's {fmt(cents * ppy)} a year (per bill × {ppy}) —{" "}
-                                {fmt(Math.round((cents * ppy) / 12))} a month set aside.{" "}
+                                {fmt(cumulativeMonthlyCents(cents * ppy, yEffectiveFrom || currentMonth()))} a month set aside.{" "}
                               </>
                             ) : (
                               <>Enter the amount of one typical bill. </>
@@ -4776,8 +4795,8 @@ export function App() {
                           <span className="tnum text-sm text-[var(--dim)]">
                             {(() => {
                               const latestAnnual = y.latestExpectedCents * paymentsPerYearFor(y.latestFrequency);
-                              const latestMonthly = Math.round(latestAnnual / 12);
                               const earliest = y.history[y.history.length - 1];
+                              const latestMonthly = cumulativeMonthlyCents(latestAnnual, earliest?.effectiveFrom ?? currentMonth());
                               return (
                                 <>
                                   {y.latestFrequency !== "yearly"
@@ -5803,7 +5822,9 @@ function ImportPanel({
         dates — the charge dates — so an imported charge sits in its
         charge month, not the month the card payment leaves the bank; the
         bank-out rule applies to amounts you record by their payment
-        date. Currently viewing {monthLabel(month)} — imported rows land
+        date — and True cost counts every amount in the month its money
+        leaves checking, so an imported charge moves True cost in its
+        payment month, not its charge month. Currently viewing {monthLabel(month)} — imported rows land
         in their own months. Your settings and column mapping are
         remembered for next time, and the preview flags rows that look
         already recorded — and, for an OFX file, rows whose bank
