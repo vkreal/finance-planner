@@ -846,8 +846,8 @@ export function December() {
                     billRow("Advance credit to repay", fmtDollars(likelyCase.excessAptcRepayment))}
                   {likelyCase.netSettleAtHeadline == null ? (
                     <p className="mt-1 border-t border-[var(--border)] pt-1.5 text-sm">
-                      For years before 2026 the advance-credit repayment isn’t
-                      modeled, so no single settlement figure is shown.
+                      {likelyCase.netSettleNote ??
+                        "For years before 2026 the advance-credit repayment isn’t modeled, so no single settlement figure is shown."}
                     </p>
                   ) : (
                     billRow(
@@ -913,8 +913,8 @@ export function December() {
                       )}
                     {c.netSettleAtHeadline == null ? (
                       <p className="mt-1 text-sm">
-                        For years before 2026 the advance-credit repayment isn’t
-                        modeled, so no single settlement figure is shown.
+                        {c.netSettleNote ??
+                          "For years before 2026 the advance-credit repayment isn’t modeled, so no single settlement figure is shown."}
                       </p>
                     ) : (
                       <p className="tnum mt-1 text-sm">

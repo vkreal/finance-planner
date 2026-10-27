@@ -1087,15 +1087,20 @@ export type DecemberCaseResult = {
   // taken. For years before 2026 the capped-repayment rules
   // are NOT modeled: the repayment is $0 when APTC taken is
   // at or below the final credit, and null (unmodeled) when
-  // APTC taken exceeds it. Null in every year when the final
-  // credit is not priced (no benchmark entered, case under
-  // the cliff).
+  // APTC taken exceeds it. The reconciliation runs on the
+  // EFFECTIVE final credit (see computeDecemberProjection):
+  // the priced credit when there is one, a known $0 when
+  // nobody in the household can be on the marketplace (the
+  // engine's ACA branch does not apply), and null only when
+  // the credit is genuinely unpriced (a marketplace-eligible
+  // household with no benchmark entered).
   excessAptcRepayment: number | null;
   // The other side of the same reconciliation: when the APTC
   // taken is BELOW the final allowable credit, this further
-  // credit is still due at filing. max(0, final credit − APTC
-  // taken) in ALL years whenever the final credit is priced;
-  // null only when the final credit is not priced.
+  // credit is still due at filing. max(0, effective final
+  // credit − APTC taken) in ALL years whenever the effective
+  // credit is known; null only when the credit is genuinely
+  // unpriced.
   creditStillDue: number | null;
   // The headline repayment figure: excessAptcRepayment when
   // it is priced, else $0. Kept as the always-a-number field
@@ -1122,15 +1127,24 @@ export type DecemberCaseResult = {
   // the part of the final credit not already advanced
   // (creditStillDue), plus any excess advance credit to
   // repay (excessAptcRepayment) — equivalently totalTax −
-  // creditAtHeadline + APTC taken whenever the credit is
-  // priced and the repayment is modeled. Null whenever
-  // excessAptcRepayment is null (the credit is unpriced, or
-  // a pre-2026 year whose APTC exceeds its final credit,
-  // whose repayment is unmodeled) — no single settlement
-  // figure is then shown. Negative = a net refund at filing.
-  // The figure is BEFORE withholding and estimated payments,
-  // which the console does not track.
+  // effective final credit + APTC taken whenever the
+  // effective credit is known and the repayment is modeled.
+  // Null only when the repayment is unmodeled (a pre-2026
+  // year whose APTC exceeds its effective final credit) or
+  // the credit is genuinely unpriced — no single settlement
+  // figure is then shown, and netSettleNote says which.
+  // A no-marketplace year (nobody marketplace-eligible)
+  // reconciles against a known $0 credit, so its net is a
+  // number even though creditAtHeadline itself stays null.
+  // Negative = a net refund at filing. The figure is BEFORE
+  // withholding and estimated payments, which the console
+  // does not track.
   netSettleAtHeadline: number | null;
+  // Why no single settlement figure is shown: null whenever
+  // netSettleAtHeadline is a number; otherwise the reason —
+  // the credit is genuinely unpriced, or a pre-2026 excess
+  // repayment is unmodeled. The console renders it verbatim.
+  netSettleNote: string | null;
 };
 
 export type DecemberProjectionResult = {
@@ -1283,24 +1297,44 @@ export function computeDecemberProjection(
       : cappedCredit == null
         ? null
         : r2(Math.max(0, cappedCredit - coverageReduction));
-    // ACA reconciliation (round-7 fix B): creditStillDue
-    // prices in ALL years whenever the final credit is
-    // priced. The repayment: for 2026 and later there are
-    // no repayment caps (P.L. 119-21 §71305) — every excess
-    // APTC dollar is repaid, under the cliff as well as
-    // over it. Before 2026 the capped-repayment rules are
-    // not modeled: $0 when APTC taken is at or below the
-    // final credit, null (unmodeled) when it exceeds it.
+    // ACA reconciliation (round-7 fix B, contract v54):
+    // creditStillDue prices in ALL years whenever the
+    // credit is known. The repayment: for 2026 and later
+    // there are no repayment caps (P.L. 119-21 §71305) —
+    // every excess APTC dollar is repaid, under the cliff
+    // as well as over it. Before 2026 the capped-repayment
+    // rules are not modeled: $0 when APTC taken is at or
+    // below the final credit, null (unmodeled) when it
+    // exceeds it.
+    //
+    // The reconciliation runs on the EFFECTIVE final
+    // credit, which distinguishes two cases the priced
+    // credit (finalCredit, surfaced as creditAtHeadline)
+    // leaves null alike: when nobody in the household can
+    // be on the marketplace — the same test
+    // decemberBenchmarkTier applies — the allowable credit
+    // is $0 BY CONSTRUCTION (known-zero), so the
+    // reconciliation prices against $0; when someone IS
+    // marketplace-eligible but no benchmark was entered,
+    // the credit is genuinely unpriced and the
+    // reconciliation stays null. creditAtHeadline itself
+    // is unchanged: it remains the engine's priced credit.
+    const primaryOnAca = !state.onMedicarePrimary;
+    const spouseOnAca =
+      state.filingStatus === "mfj" && !state.onMedicareSpouse;
+    const acaInPlay = primaryOnAca || spouseOnAca;
+    const effectiveFinalCredit: number | null =
+      finalCredit != null ? finalCredit : acaInPlay ? null : 0;
     const creditStillDue: number | null =
-      finalCredit != null
-        ? r2(Math.max(0, finalCredit - state.aptcTaken))
+      effectiveFinalCredit != null
+        ? r2(Math.max(0, effectiveFinalCredit - state.aptcTaken))
         : null;
     const excessAptcRepayment: number | null =
-      finalCredit == null
+      effectiveFinalCredit == null
         ? null
         : state.taxYear >= 2026
-          ? r2(Math.max(0, state.aptcTaken - finalCredit))
-          : state.aptcTaken <= finalCredit
+          ? r2(Math.max(0, state.aptcTaken - effectiveFinalCredit))
+          : state.aptcTaken <= effectiveFinalCredit
             ? 0
             : null;
     // The projected tax bill's net (contract v50, round-7
@@ -1308,7 +1342,10 @@ export function computeDecemberProjection(
     // headline draw — see the field's note on
     // DecemberCaseResult. Null whenever the repayment is
     // null, so no single figure is shown for a case whose
-    // repayment is unmodeled or whose credit is unpriced.
+    // repayment is unmodeled or whose credit is unpriced;
+    // netSettleNote then names which of the two it is (the
+    // unpriced reason wins whenever the credit itself is
+    // unpriced, in any year).
     const netSettleAtHeadline: number | null =
       excessAptcRepayment == null
         ? null
@@ -1317,6 +1354,12 @@ export function computeDecemberProjection(
               (creditStillDue ?? 0) +
               excessAptcRepayment,
           );
+    const netSettleNote: string | null =
+      netSettleAtHeadline != null
+        ? null
+        : effectiveFinalCredit == null
+          ? "No benchmark premium is entered, so the ACA credit can't be priced and no single settlement figure is shown."
+          : "For years before 2026 the advance-credit repayment isn't modeled, so no single settlement figure is shown.";
     return {
       kind,
       nonDrawAcaMagi: zero.acaMagi,
@@ -1339,6 +1382,7 @@ export function computeDecemberProjection(
       taxableIncomeAtHeadline: atHeadline.taxableIncome,
       stateTaxAtHeadline: atHeadline.stateTax,
       netSettleAtHeadline,
+      netSettleNote,
     };
   });
 
@@ -3375,6 +3419,9 @@ export function runDecemberFixtures(): {
     exact(fail, "(i) excess repayment", noAptc.excessAptcRepayment, 0);
     exact(fail, "(i) federal tax", noAptc.federalTaxAtHeadline, 7743);
     exact(fail, "(i) net settle", noAptc.netSettleAtHeadline, -3757);
+    if (noAptc.netSettleNote !== null) {
+      fail(`(i) net settle note should be null, got ${JSON.stringify(noAptc.netSettleNote)}`);
+    }
     // (ii) Partial APTC $5,000: $6,500 still due,
     // repayment $0, net $7,743 − $6,500 = $1,243.
     const partialState = base2025();
@@ -3383,6 +3430,9 @@ export function runDecemberFixtures(): {
     exact(fail, "(ii) credit still due", partial.creditStillDue, 6500);
     exact(fail, "(ii) excess repayment", partial.excessAptcRepayment, 0);
     exact(fail, "(ii) net settle", partial.netSettleAtHeadline, 1243);
+    if (partial.netSettleNote !== null) {
+      fail(`(ii) net settle note should be null, got ${JSON.stringify(partial.netSettleNote)}`);
+    }
     // (iii) Excess APTC $15,000 above the $11,500 final
     // credit: pre-2026 repayment caps are not modeled, so
     // the repayment is null and the net is null; the
@@ -3396,6 +3446,113 @@ export function runDecemberFixtures(): {
     }
     if (excess.netSettleAtHeadline !== null) {
       fail(`(iii) net settle should be null, got ${excess.netSettleAtHeadline}`);
+    }
+    // The null net carries the pre-2026 reason note
+    // verbatim (contract v54): the credit WAS priced, so
+    // the unmodeled-repayment reason is the one that names
+    // the case.
+    if (
+      excess.netSettleNote !==
+      "For years before 2026 the advance-credit repayment isn't modeled, so no single settlement figure is shown."
+    ) {
+      fail(`(iii) net settle note should be the pre-2026 sentence, got ${JSON.stringify(excess.netSettleNote)}`);
+    }
+  });
+
+  run("dec-tax-bill-known-zero-credit", (fail) => {
+    // Contract v54: the reconciliation distinguishes a
+    // KNOWN-ZERO credit (nobody can be on the marketplace,
+    // so the allowable credit is $0 by construction) from
+    // a genuinely UNPRICED credit (a marketplace-eligible
+    // household with no benchmark entered). creditAtHeadline
+    // stays null in both; only the reconciliation differs.
+    const medicare2026 = (): DecemberState => {
+      const s = base();
+      s.agePrimary = 70;
+      s.ageSpouse = 68;
+      s.onMedicarePrimary = true;
+      s.onMedicareSpouse = true;
+      s.ytdOtherOrdinary = 100000;
+      s.acaBenchmarkAnnual = null;
+      s.aptcTaken = 0;
+      s.stateRatePct = 0;
+      return s;
+    };
+    // (i) Both on Medicare, no benchmark, no APTC: the
+    // credit is known-zero, so the settlement is the
+    // total tax itself. Federal tax: $100,000 less
+    // $47,500 of deductions ($32,200 standard + 2 × $1,650
+    // age-65+ add-ons + 2 × $6,000 senior deduction) =
+    // taxable $52,500 → $2,480 + 12% × $27,700 = $5,804.
+    const knownZero = computeDecemberProjection(medicare2026()).cases[1]!;
+    exact(fail, "(i) federal tax", knownZero.federalTaxAtHeadline, 5804);
+    exact(fail, "(i) taxable income", knownZero.taxableIncomeAtHeadline, 52500);
+    if (knownZero.creditAtHeadline !== null) {
+      fail(`(i) credit at headline should stay null (unpriced display), got ${knownZero.creditAtHeadline}`);
+    }
+    exact(fail, "(i) credit still due", knownZero.creditStillDue, 0);
+    exact(fail, "(i) excess repayment", knownZero.excessAptcRepayment, 0);
+    exact(fail, "(i) net settle", knownZero.netSettleAtHeadline, 5804);
+    if (knownZero.netSettleNote !== null) {
+      fail(`(i) net settle note should be null, got ${JSON.stringify(knownZero.netSettleNote)}`);
+    }
+    // (ii) Same base with $2,000 of APTC taken: 2026 has
+    // no repayment caps, so the whole advance is repaid
+    // against the known-zero credit — net $5,804 + $2,000.
+    const withAptcState = medicare2026();
+    withAptcState.aptcTaken = 2000;
+    const withAptc = computeDecemberProjection(withAptcState).cases[1]!;
+    exact(fail, "(ii) credit still due", withAptc.creditStillDue, 0);
+    exact(fail, "(ii) excess repayment", withAptc.excessAptcRepayment, 2000);
+    exact(fail, "(ii) net settle", withAptc.netSettleAtHeadline, 7804);
+    if (withAptc.netSettleNote !== null) {
+      fail(`(ii) net settle note should be null, got ${JSON.stringify(withAptc.netSettleNote)}`);
+    }
+    // (iii) Spouse NOT on Medicare (marketplace-eligible)
+    // with no benchmark entered: the credit is genuinely
+    // unpriced — every reconciliation figure stays null
+    // and the note is the unpriced-credit sentence. Income
+    // is $50,000 here so MAGI sits UNDER the cliff (at
+    // $100,000 the household would be over it and the
+    // credit would be a priced $0 by law, not unpriced).
+    const unpricedState = medicare2026();
+    unpricedState.onMedicareSpouse = false;
+    unpricedState.ytdOtherOrdinary = 50000;
+    const unpriced = computeDecemberProjection(unpricedState).cases[1]!;
+    if (unpriced.creditAtHeadline !== null) {
+      fail(`(iii) credit at headline should be null, got ${unpriced.creditAtHeadline}`);
+    }
+    if (unpriced.creditStillDue !== null) {
+      fail(`(iii) credit still due should be null, got ${unpriced.creditStillDue}`);
+    }
+    if (unpriced.excessAptcRepayment !== null) {
+      fail(`(iii) excess repayment should be null, got ${unpriced.excessAptcRepayment}`);
+    }
+    if (unpriced.netSettleAtHeadline !== null) {
+      fail(`(iii) net settle should be null, got ${unpriced.netSettleAtHeadline}`);
+    }
+    if (
+      unpriced.netSettleNote !==
+      "No benchmark premium is entered, so the ACA credit can't be priced and no single settlement figure is shown."
+    ) {
+      fail(`(iii) net settle note should be the unpriced-credit sentence, got ${JSON.stringify(unpriced.netSettleNote)}`);
+    }
+    // (v) Pre-2026 known-zero: 2025, ages 69/67, both on
+    // Medicare, no benchmark, no APTC. The known-zero
+    // credit reconciles ($0 due, $0 repayment — APTC $0 is
+    // at or below the $0 effective credit), so the net is
+    // the total tax, $5,919 (engine-priced).
+    const medicare2025State = medicare2026();
+    medicare2025State.taxYear = 2025;
+    medicare2025State.agePrimary = 69;
+    medicare2025State.ageSpouse = 67;
+    const knownZero2025 = computeDecemberProjection(medicare2025State).cases[1]!;
+    exact(fail, "(v) total tax", knownZero2025.totalTaxAtHeadline, 5919);
+    exact(fail, "(v) credit still due", knownZero2025.creditStillDue, 0);
+    exact(fail, "(v) excess repayment", knownZero2025.excessAptcRepayment, 0);
+    exact(fail, "(v) net settle", knownZero2025.netSettleAtHeadline, 5919);
+    if (knownZero2025.netSettleNote !== null) {
+      fail(`(v) net settle note should be null, got ${JSON.stringify(knownZero2025.netSettleNote)}`);
     }
   });
 
