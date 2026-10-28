@@ -4488,6 +4488,64 @@ export function Playground() {
                   `IRMAA Tier ${pg.irmaa.tier} for ${pg.irmaa.premiumYear}`,
                 );
               }
+              /* Landing-headline explainer (contract v77): the ⓘ
+                 on the landing headline, in the two-finish-lines
+                 way the question was answered in chat — every
+                 figure computed here from the priced result, no
+                 figure written in. Which text shows is decided
+                 from the priced figures alone. The ACA line is
+                 the cliff minus the typed buffer, measured on
+                 the ACA household income (pg.acaMagi) — the same
+                 basis the play strip's buffer readout measures
+                 it on, so the "on the line" / "under the line"
+                 standing foots with the figure the copy names
+                 as total income; when the two MAGI figures are
+                 the same (no untaxed Social Security) that
+                 figure is the headline's MAGI. Variant A: total
+                 income sits on the ACA line (within half a
+                 dollar, the play strip's own tolerance) with
+                 room left in the landing bracket — the ACA
+                 line stopped the money first. Variant B: total
+                 income is under the ACA line and the bracket
+                 top is the nearer line (room left no more than
+                 the distance to the ACA line) — the bracket
+                 stopped it first. Every other standing renders
+                 no ⓘ: no hard cliff (the brief's rule); the
+                 money fully sheltered or no landing bracket;
+                 no pre-tax money out; past the ACA line; the
+                 money stopping short of both lines; or the
+                 two lines coinciding (bracket filled exactly
+                 on the ACA line) — in each there is no
+                 binding-first line for the copy to name, and
+                 naming one would mislead. The Income stack
+                 heading's ⓘ below is untouched, and the
+                 headline wording itself is unchanged — the ⓘ
+                 only rides beside it. */
+              const landingExplainerText: string | null = (() => {
+                if (!pgAcaHasHardCliff) return null;
+                const cliff = pg.aca.cliff;
+                if (cliff == null) return null;
+                if (pg.conversion <= 0) return null;
+                const room = pg.landingRoomLeft;
+                if (pg.landingBracketPct == null || room == null) {
+                  return null;
+                }
+                const bufferLine = cliff - pgAcaBufferDollars;
+                const diff = bufferLine - pg.acaMagi;
+                const lineName =
+                  pgAcaBufferDollars > 0 ? "ACA line" : "ACA cliff";
+                const lineDesc =
+                  pgAcaBufferDollars > 0
+                    ? `the ACA line of ${fmtDollars(bufferLine)} (the cliff of ${fmtDollars(cliff)} minus your ${fmtDollars(pgAcaBufferDollars)} safety buffer)`
+                    : `the ACA cliff of ${fmtDollars(cliff)}`;
+                if (Math.abs(diff) <= 0.5 && room > 0.5) {
+                  return `Think of two finish lines, and the pre-tax money stops at whichever comes first. Your total income is ${fmtDollars(pg.acaMagi)}, right on ${lineDesc}. The bracket would allow ${fmtDollars(room)} more before the ${pg.landingBracketPct}% bracket ends. That ${fmtDollars(room)} is the distance between the two lines, and the ${lineName} comes first, so it stays unused.`;
+                }
+                if (diff > 0.5 && room <= diff + 0.5) {
+                  return `Think of two finish lines, and the pre-tax money stops at whichever comes first. The top of the ${pg.landingBracketPct}% bracket is the nearer finish line. Your total income is ${fmtDollars(pg.acaMagi)}, still ${fmtDollars(diff)} under ${lineDesc}. So the bracket top is the limit here, not the ${lineName}.`;
+                }
+                return null;
+              })();
               const stackRow = (
                 label: string,
                 value: string,
@@ -4648,6 +4706,44 @@ export function Playground() {
                   acaCliffLine != null &&
                   acaBufferLine != null &&
                   Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
+                /* Bracket-top axis ticks (contract v77): one small
+                   tick label for each bracket top whose guide line
+                   is drawn — the same inAxis rule the lines use,
+                   judged against the pre-headroom base axis end,
+                   so a top beyond the axis end renders nothing
+                   and a tick never names a line that is not
+                   drawn. The labels live on a row of their own
+                   below the existing axis rows (the $0/cliff/
+                   buffer rows keep their rows and offsets
+                   exactly), so a tick can never overlap the
+                   "$0 taxable" label or a cliff/buffer label
+                   however close a top sits to a marker line;
+                   within the tick row the tops sit far apart
+                   (successive tops are a whole bracket apart)
+                   and each label's centre is clamped inside the
+                   chart like the floating labels above. Rate and
+                   top are read off the same marker figures the
+                   guide lines and the heading's ⓘ use — no
+                   figure is written in. */
+                const axisBracketTicks = markers.filter((m) => m.inAxis);
+                const axisHeightCls =
+                  axisBracketTicks.length > 0
+                    ? axisLinesClose
+                      ? "h-16 sm:h-12"
+                      : acaCliffLine != null
+                        ? "h-12 sm:h-8"
+                        : "h-8"
+                    : axisLinesClose
+                      ? "h-12 sm:h-8"
+                      : acaCliffLine != null
+                        ? "h-8 sm:h-4"
+                        : "h-4";
+                const axisTickRowTop =
+                  axisLinesClose
+                    ? "top-12 sm:top-8"
+                    : acaCliffLine != null
+                      ? "top-8 sm:top-4"
+                      : "top-4";
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
                     <p className="mt-1 text-xs text-[var(--dim)]">
@@ -4875,7 +4971,7 @@ export function Playground() {
                       </div>
                     </div>
                     <div
-                      className={`relative mt-1 ${axisLinesClose ? "h-12 sm:h-8" : acaCliffLine != null ? "h-8 sm:h-4" : "h-4"}`}
+                      className={`relative mt-1 ${axisHeightCls}`}
                       aria-hidden="true"
                     >
                       <span
@@ -4927,6 +5023,18 @@ export function Playground() {
                       >
                         {fmtDollars(axisTaxableMax)}
                       </span>
+                      {axisBracketTicks.map((m) => (
+                        <span
+                          key={m.rate}
+                          className={`tnum absolute ${axisTickRowTop} text-[11px] whitespace-nowrap text-[var(--dim)]`}
+                          style={{
+                            left: `clamp(52px, ${taxX(m.to)}%, calc(100% - 52px))`,
+                            transform: "translateX(-50%)",
+                          }}
+                        >
+                          {m.rate}% · {fmtDollars(m.to)}
+                        </span>
+                      ))}
                     </div>
                     <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
                         {(
@@ -5238,6 +5346,17 @@ export function Playground() {
                 <div className="mt-4 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-4 py-3">
                   <p className="tnum text-base font-medium">
                     {takeawayParts.join(" · ")}
+                    {landingExplainerText != null && (
+                      <>
+                        {" "}
+                        <InfoNote
+                          text={landingExplainerText}
+                          ariaLabel="About the bracket top and the ACA line"
+                          align="right"
+                          viewportClamp
+                        />
+                      </>
+                    )}
                   </p>
 
                   <div className="mt-3">
