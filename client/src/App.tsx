@@ -2862,7 +2862,7 @@ export function App() {
       rel="noreferrer"
       aria-label="Finance Planner on GitHub (opens in a new tab)"
       title="View the source on GitHub"
-      className="inline-flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)] focus-visible:border-[var(--accent)] focus-visible:text-[var(--accent)]"
+      className="ml-auto inline-flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)] focus-visible:border-[var(--accent)] focus-visible:text-[var(--accent)]"
     >
       <svg
         width="20"
@@ -2880,7 +2880,7 @@ export function App() {
     <div
       role="group"
       aria-label="View"
-      className="flex flex-wrap justify-center overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]"
+      className="flex flex-wrap justify-start overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]"
     >
       <button
         type="button"
@@ -2930,14 +2930,14 @@ export function App() {
     </div>
   );
 
-  /* The top bar shared by every view: the view switcher centered,
-     with the GitHub icon button at the right end of the same row.
-     The spacer on the left mirrors the icon's footprint so the
-     switcher stays optically centered on wide screens; on narrow
-     screens the row wraps and the icon sits beside the switcher. */
+  /* The top bar shared by every view (contract v70): the pill
+     view switcher is docked to the LEFT, sharing the content
+     column's left edge with the view titles below it, and the
+     GitHub icon button sits at the far right of the same row
+     (margin-left:auto on the button keeps it at the right end
+     even when the row wraps at narrow widths). */
   const topBar = (
-    <div className="flex flex-wrap items-center justify-center gap-2 pt-4">
-      <span aria-hidden="true" className="hidden w-[38px] shrink-0 sm:block" />
+    <div className="flex flex-wrap items-center gap-2 pt-4">
       {topSwitch}
       {githubLink}
     </div>

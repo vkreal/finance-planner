@@ -3591,7 +3591,7 @@ export function NetWorthView() {
             <p className="mt-0.5 text-sm text-[var(--dim)]">{latest.note}</p>
           ) : null}
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex max-w-full min-w-0 flex-wrap gap-2">
           <button
             type="button"
             className={btnGhost}
@@ -5453,11 +5453,7 @@ export function NetWorthView() {
           summary="Encrypted backup files stored outside this app — deleting here removes the actual file."
         >
           <p>
-            Encrypted backup files stored outside this app. Deleting here
-            removes the actual file. A backup marked “Legacy folder” sits
-            in the old shared backups folder, which is read-only from
-            here — it can still be restored, but it can't be deleted from
-            this panel.
+            Encrypted backup files stored outside this app. Deleting here removes the actual file.
           </p>
         </Explainer>
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -5515,14 +5511,7 @@ export function NetWorthView() {
                         {fmtBytes(b.sizeBytes)}
                       </span>
                     </span>
-                    {b.source === "legacy" ? (
-                      <span
-                        className="shrink-0 text-xs text-[var(--dim)]"
-                        title="Stored in the old shared backups folder, which is read-only — this backup can be restored, but it can't be deleted from here."
-                      >
-                        Legacy folder — read-only
-                      </span>
-                    ) : (
+                    {b.source === "legacy" ? null : (
                       <button
                         type="button"
                         aria-label={`Delete ${b.name}`}
@@ -5561,10 +5550,6 @@ export function NetWorthView() {
                       ).length
                     }{" "}
                     backups? This cannot be undone.
-                    {(backupsQuery.data?.backups ?? []).some(
-                      (b) => b.source === "legacy",
-                    ) &&
-                      " Legacy-folder backups stay — that folder is read-only."}
                   </span>
                   <button
                     type="button"
