@@ -1755,7 +1755,14 @@ const retirementInputFields = {
   retirementAge: z.number().int().min(0).max(120).nullable(),
   endAge: z.number().int().min(0).max(130).nullable(),
   stocksPct: z.number().min(0).max(100).nullable(),
-  extraIncomeCents: z.number().int().nullable(),
+  // Unsigned money (contract v66, boundary audit F11): extra
+  // income is an income field — a negative was previously
+  // accepted here and then silently floored to $0 when priced,
+  // so the saved value was not the priced value. int≥0 at the
+  // writer, and the Math.max(0, …) floors are gone from
+  // buildSimInputs and the client, so saved = priced with no
+  // undisclosed substitution.
+  extraIncomeCents: z.number().int().min(0).nullable(),
   extraIncomeStartAge: z.number().int().min(0).max(120).nullable(),
   // RETURN FLOOR bound (round-5 fix 3): the shared
   // expectedReturnPctField (apiContractCore) — below −100%
@@ -1782,6 +1789,33 @@ const retirementInputFields = {
   // end age is valid and simply keeps the plan flat.
   phaseStartAge: z.number().int().min(0).max(130).nullable(),
   phaseDeclinePct: z.number().min(0).max(100).nullable(),
+};
+/* Cross-field save refusal (contract v66, boundary audit F6):
+   when both ages are entered, the retirement age must be
+   before the plan's end age. A plan with no retired years
+   gives the Max Spending solver no year of spending to test —
+   it used to return its search cap ($1,000,000/yr on a
+   $100,000 portfolio) as if it were the sustainable-spending
+   answer. The solver entry refuses the same combination
+   (solveMaxSpending returns its no-answer null), and this
+   refinement makes every Retirement save that feeds it refuse
+   up front, naming the problem. Either age blank is untouched
+   (the defaults are substituted downstream, as before). */
+const retirementAgesRefinement = (
+  v: { retirementAge: number | null; endAge: number | null },
+  ctx: z.RefinementCtx,
+) => {
+  if (
+    v.retirementAge != null &&
+    v.endAge != null &&
+    v.retirementAge >= v.endAge
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["retirementAge"],
+      message: `Retirement age (${v.retirementAge}) must be before the plan's end age (${v.endAge}): with no retired years there is no year of spending for the Max Spending solver to test, so it cannot give an answer. Lower the retirement age or raise the end age.`,
+    });
+  }
 };
 const retirementScenario = z.object({
   name: z.string(),
@@ -2405,7 +2439,15 @@ const rothInputFields = {
   // here: null accepted, omission rejected.
   flexCutPct: z.number().min(0).max(100).nullable(),
   flexFloorPct: z.number().min(0).max(100).nullable(),
-  annualSpendingCents: z.number().int().nullable(),
+  // Unsigned money (contract v66, boundary audit F1): annual
+  // spending is a need the march funds, never a signed flow —
+  // a negative value made the surplus sweep CREDIT the taxable
+  // balance with money from nowhere. int≥0 here, in the shared
+  // fields, so saveRothInputs AND every compute path refuse a
+  // negative together — the same treatment the itemized / loss
+  // fields below already carry. Deliberately signed fields
+  // (otherOrdinaryCents and kin) stay signed.
+  annualSpendingCents: z.number().int().min(0).nullable(),
   retirementAge: z.number().int().min(0).max(120).nullable(),
   endAge: z.number().int().min(0).max(130).nullable(),
   // RETURN FLOOR bound (round-5 fix 3): the shared
@@ -2426,7 +2468,12 @@ const rothInputFields = {
   ssSpouseStartAge: z.number().int().min(0).max(120).nullable(),
   ssSpouseNoBenefit: z.boolean().nullable(),
   otherOrdinaryCents: z.number().int().nullable(),
-  taxExemptInterestCents: z.number().int().nullable(),
+  // Unsigned money (contract v66, boundary audit F4):
+  // tax-exempt interest is interest received, never a signed
+  // gain/loss — a negative value flowed straight into MAGI and
+  // the ACA MAGI and understated both dollar for dollar.
+  // int≥0, same shared-fields treatment as annualSpendingCents.
+  taxExemptInterestCents: z.number().int().min(0).nullable(),
   convertedAlreadyCents: z.number().int().nullable(),
   windowStartAge: z.number().int().min(0).max(120).nullable(),
   windowStopAge: z.number().int().min(0).max(120).nullable(),
@@ -2505,7 +2552,15 @@ const rothInputFields = {
   // loudly here (writers and compute actions alike) — it is
   // never silently clamped.
   acaSpouseEndAge: z.number().int().min(55).max(80).nullable(),
-  inflationPct: z.number().nullable(),
+  // Inflation (contract v66, boundary audit F2): must be
+  // finite and strictly greater than −100 — at exactly −100
+  // the deflation factor divides by (1 + pct/100) = 0 and
+  // statute-fixed amounts price at Infinity. The exclusive
+  // bound lives here in the shared fields so every writer and
+  // compute path refuses together; deflationFactor also
+  // refuses a non-finite factor at its consumption sites as
+  // defense in depth.
+  inflationPct: z.number().finite().gt(-100).nullable(),
   stateRatePct: z.number().min(0).max(100).nullable(),
   // State of residence (T3 build): "WA" prices Washington's
   // capital-gains excise (RCW 82.87) instead of the flat
@@ -2815,7 +2870,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 65;
+export const API_CONTRACT_VERSION = 66;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -9896,10 +9951,12 @@ export const Actions = {
     // at. It is stripped before the compose, so it can never be
     // stored as a blob field — the revision lives as its own
     // top-level key, stamped by the compose.
-    request: z.object({
-      ...retirementInputFields,
-      baseRevision: z.number().int().nonnegative().optional(),
-    }),
+    request: z
+      .object({
+        ...retirementInputFields,
+        baseRevision: z.number().int().nonnegative().optional(),
+      })
+      .superRefine(retirementAgesRefinement),
     response: saveRetirementCalcResponse,
     async handler(ctx, args): Promise<SaveRetirementCalcResponse> {
       const db = ctx.db<typeof schema>();
@@ -10014,11 +10071,13 @@ export const Actions = {
     // writer's copy of each record was read at. Both are
     // stripped before any compose, so neither can be stored as
     // a blob field.
-    request: z.object({
-      ...retirementInputFields,
-      baseRevision: z.number().int().nonnegative().optional(),
-      baseBaselineRevision: z.number().int().nonnegative().optional(),
-    }),
+    request: z
+      .object({
+        ...retirementInputFields,
+        baseRevision: z.number().int().nonnegative().optional(),
+        baseBaselineRevision: z.number().int().nonnegative().optional(),
+      })
+      .superRefine(retirementAgesRefinement),
     response: saveRetirementBaselineResponse,
     async handler(ctx, args): Promise<SaveRetirementBaselineResponse> {
       const db = ctx.db<typeof schema>();
@@ -10361,9 +10420,11 @@ export const Actions = {
   // bumped, one re-read-and-retry on a lost race — F23).
   saveRetirementScenario: defineAction({
     privileged: [privileged.ensureEncryptionKey],
-    request: z.object({
-      ...retirementInputFields,
-    }),
+    request: z
+      .object({
+        ...retirementInputFields,
+      })
+      .superRefine(retirementAgesRefinement),
     response: retirementScenarioWriteResponse,
     async handler(ctx, args): Promise<RetirementScenarioWriteResult> {
       const db = ctx.db<typeof schema>();

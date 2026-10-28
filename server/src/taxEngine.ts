@@ -439,7 +439,20 @@ export function deflationFactor(
   inflationPct: number,
 ): number {
   const years = Math.max(0, calendarYear - lawYear);
-  return 1 / Math.pow(1 + inflationPct / 100, years);
+  const factor = 1 / Math.pow(1 + inflationPct / 100, years);
+  // Defense in depth (contract v66, boundary audit F2): the
+  // writers refuse inflationPct ≤ −100 in the shared schema,
+  // but a non-finite factor must never reach a priced amount
+  // from ANY caller — at −100% the divisor is 0 and the
+  // factor is Infinity, which would price statute-fixed
+  // amounts (the senior deduction, thresholds) at Infinity
+  // instead of refusing.
+  if (!Number.isFinite(factor)) {
+    throw new Error(
+      `deflationFactor: non-finite factor for inflationPct ${inflationPct} over ${years} year(s) — inflation must be greater than −100%.`,
+    );
+  }
+  return factor;
 }
 
 // The MAGI ceiling of IRMAA tier `tierIndex` under a law row,
