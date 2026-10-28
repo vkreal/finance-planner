@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import { usePersistedFold } from "./foldState";
 import { FoldChevron } from "./FoldChevron";
+import { ExplainerInfoTip } from "./Explainer";
 import {
 ceilChipActiveCls,
 ceilChipCls,
@@ -504,13 +505,13 @@ export function Playground() {
      loaded year while the saved template still starts the
      chart at its original year. */
   const [pgProjOpen, setPgProjOpen] = useState(false);
-  // The Projection panel's "More" expander for its longer
-  // methodology: the panel's always-visible intro is a short
-  // lead (what the panel is, plus the ACA-convention
-  // disclosure), and the mechanics live behind this toggle.
-  // The open/closed choice is remembered with the rest of the
-  // form (projHowOpen), like the Roth view's How toggles, so
-  // it comes back as the user left it.
+  // The Projection panel's longer methodology: the panel's
+  // always-visible intro is a short lead (what the panel is,
+  // plus the ACA-convention disclosure), and the mechanics
+  // live in the ⓘ beside it (contract v67 — the former "More"
+  // expander). The projHowOpen form field is retained in the
+  // remembered form state for shape compatibility and is no
+  // longer toggled.
   const [pgProjHowOpen, setPgProjHowOpen] = useState(false);
   const [pgProjToAge, setPgProjToAge] = useState("95");
   // Projection from age (start-age control): blank = the
@@ -2729,26 +2730,54 @@ export function Playground() {
               also opens the projection panel (pgProjOpen — the
               panel's own open state), which is what makes the
               projection run; switching back leaves it open. */}
-          <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Playground face">
+          {/* Face switch (contract v67): underlined text tabs in
+              the Retirement view's style, left-aligned over a
+              hairline — the app's one sub-navigation language —
+              instead of the former filled chips. */}
+          <div
+            className="mt-3 flex w-full flex-nowrap items-end border-b border-[var(--border)]"
+            role="group"
+            aria-label="Playground face"
+          >
             <button
               type="button"
               aria-label="One year face"
               aria-pressed={pgFace === "year"}
-              className={pgFace === "year" ? ceilChipActiveCls : ceilChipCls}
+              className={`relative px-3.5 py-2.5 text-sm whitespace-nowrap ${
+                pgFace === "year"
+                  ? "font-semibold text-[var(--text)]"
+                  : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
+              }`}
               onClick={() => setPgFace("year")}
             >
+              {pgFace === "year" && (
+                <span
+                  aria-hidden="true"
+                  className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
+                />
+              )}
               One year
             </button>
             <button
               type="button"
               aria-label="Projection face"
               aria-pressed={pgFace === "projection"}
-              className={pgFace === "projection" ? ceilChipActiveCls : ceilChipCls}
+              className={`relative px-3.5 py-2.5 text-sm whitespace-nowrap ${
+                pgFace === "projection"
+                  ? "font-semibold text-[var(--text)]"
+                  : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
+              }`}
               onClick={() => {
                 setPgFace("projection");
                 setPgProjOpen(true);
               }}
             >
+              {pgFace === "projection" && (
+                <span
+                  aria-hidden="true"
+                  className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
+                />
+              )}
               Projection
             </button>
           </div>
@@ -3495,61 +3524,53 @@ export function Playground() {
                   its named year — so a loaded year&rsquo;s cliff can
                   differ from the chart&rsquo;s line.
                 </p>
-                <button
-                  type="button"
-                  aria-label="More about how the projection works"
-                  aria-expanded={pgProjHowOpen}
-                  className="mt-1 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
-                  onClick={() => setPgProjHowOpen((o) => !o)}
+                <ExplainerInfoTip
+                  id="playground.projectionHow"
+                  label="how the projection works"
                 >
-                  {pgProjHowOpen ? "Less" : "More"}
-                </button>
-                {pgProjHowOpen && (
-                  <div className="mt-2 max-w-3xl space-y-2 text-sm text-[var(--dim)]">
-                    <p>
-                      The pre-tax money out repeats as entered each
-                      year — or, in “replace” mode, Social Security and
-                      RMDs replace part of it as they arrive — and it
-                      lands in Roth when the money out is a conversion,
-                      or leaves as spending when it is a draw, stopping
-                      at the stop age or pre-tax floor if one is set.
-                      Balances grow at the expected return after each
-                      year&rsquo;s money moves, and spending and taxes
-                      are not taken out of them.
-                    </p>
-                    <p>
-                      Medicare switches on at 65 for each person, Social
-                      Security starts at its claiming age, RMDs price off
-                      the balance as it walks down, the ACA household
-                      steps down in its step-down year, and ACA ends once
-                      everyone is on Medicare.
-                    </p>
-                    <p>
-                      Click any bar to load that year into the
-                      single-year view — the chart itself runs from a
-                      captured snapshot of the template year and never
-                      changes when you click, so every year stays on the
-                      chart and any bar can be clicked again to go back.
-                    </p>
-                    <p>
-                      “Projection from age” starts the window at a
-                      different age without touching the template:
-                      earlier than the template age, the walk itself
-                      starts there — the calendar years and your
-                      spouse&rsquo;s age shift back with it, the
-                      template&rsquo;s income shape repeats from that
-                      age, every age-keyed switch follows each projected
-                      year&rsquo;s own ages, and the starting balances
-                      (the template&rsquo;s pre-tax balance and the
-                      starting taxable and Roth balances below) are the
-                      balances at that first projected year. Later than
-                      the template age, the walk still runs from the
-                      template year and the charts show the years from
-                      that age on, so the first shown year&rsquo;s
-                      balances are the walked ones.
-                    </p>
-                  </div>
-                )}
+<p>
+                    The pre-tax money out repeats as entered each
+                    year — or, in “replace” mode, Social Security and
+                    RMDs replace part of it as they arrive — and it
+                    lands in Roth when the money out is a conversion,
+                    or leaves as spending when it is a draw, stopping
+                    at the stop age or pre-tax floor if one is set.
+                    Balances grow at the expected return after each
+                    year&rsquo;s money moves, and spending and taxes
+                    are not taken out of them.
+                  </p>
+                  <p>
+                    Medicare switches on at 65 for each person, Social
+                    Security starts at its claiming age, RMDs price off
+                    the balance as it walks down, the ACA household
+                    steps down in its step-down year, and ACA ends once
+                    everyone is on Medicare.
+                  </p>
+                  <p>
+                    Click any bar to load that year into the
+                    single-year view — the chart itself runs from a
+                    captured snapshot of the template year and never
+                    changes when you click, so every year stays on the
+                    chart and any bar can be clicked again to go back.
+                  </p>
+                  <p>
+                    “Projection from age” starts the window at a
+                    different age without touching the template:
+                    earlier than the template age, the walk itself
+                    starts there — the calendar years and your
+                    spouse&rsquo;s age shift back with it, the
+                    template&rsquo;s income shape repeats from that
+                    age, every age-keyed switch follows each projected
+                    year&rsquo;s own ages, and the starting balances
+                    (the template&rsquo;s pre-tax balance and the
+                    starting taxable and Roth balances below) are the
+                    balances at that first projected year. Later than
+                    the template age, the walk still runs from the
+                    template year and the charts show the years from
+                    that age on, so the first shown year&rsquo;s
+                    balances are the walked ones.
+                  </p>
+                </ExplainerInfoTip>
                 {pgProjTemplate != null && (
                   <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
                     <p role="note" className="text-[var(--dim)]">

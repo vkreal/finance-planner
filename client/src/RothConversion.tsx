@@ -73,6 +73,7 @@ import { seedRothInputs, SEED_RETIREMENT_AGE_FALLBACK } from "@space/server/roth
 import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
 import { December } from "./December";
+import { ExplainerInfoTip } from "./Explainer";
 
 // SavePayload is the plan record's writer (saveRothInputs) — the
 // only payload that carries the execution-year fields. PlanPayload
@@ -625,7 +626,6 @@ export function RothConversion() {
   const [wyResult, setWyResult] = useState<WyData | null>(null);
   const [wyFingerprint, setWyFingerprint] = useState("");
   const [wyError, setWyError] = useState("");
-  const [wyHowOpen, setWyHowOpen] = useState(false);
   /* Gift stock tab — the seven SAVED gift inputs (plan-record
      only, following the execution-fields pattern): they save
      WITH the plan record under their own gift* keys and are
@@ -648,7 +648,6 @@ export function RothConversion() {
   const [giftResult, setGiftResult] = useState<GiftData | null>(null);
   const [giftFingerprint, setGiftFingerprint] = useState("");
   const [giftError, setGiftError] = useState("");
-  const [giftHowOpen, setGiftHowOpen] = useState(false);
   const [optResult, setOptResult] = useState<OptData | null>(null);
   // "How the search works" methodology expander (display only).
   const [optHowOpen, setOptHowOpen] = useState(false);
@@ -931,8 +930,6 @@ export function RothConversion() {
     setYearTableOpen(uiq.data.yearTableOpen);
     setWatchOutsOpen(uiq.data.watchOutsOpen !== false);
     setAssumptionsOpen(uiq.data.assumptionsOpen === true);
-    setWyHowOpen(uiq.data.wyHowOpen === true);
-    setGiftHowOpen(uiq.data.giftHowOpen === true);
     setOptHowOpen(uiq.data.optHowOpen === true);
     setExecDetailOpen(uiq.data.execDetailOpen === true);
     setDetailYear(uiq.data.detailYear ?? null);
@@ -1020,20 +1017,12 @@ export function RothConversion() {
     setAssumptionsOpen(next);
     saveUiState.mutate({ assumptionsOpen: next });
   };
-  // The workspaces' "More" how-it-is-priced expanders and the
+  // The optimizer's "How the search works" expander and the
   // execution year's "Show the math" expander: each persists
   // in the Roth UI state like the folds above, so it comes
-  // back open or closed exactly as left.
-  const toggleWyHow = () => {
-    const next = !wyHowOpen;
-    setWyHowOpen(next);
-    saveUiState.mutate({ wyHowOpen: next });
-  };
-  const toggleGiftHow = () => {
-    const next = !giftHowOpen;
-    setGiftHowOpen(next);
-    saveUiState.mutate({ giftHowOpen: next });
-  };
+  // back open or closed exactly as left. (The work-years and
+  // gift "More" explainers became ⓘ tooltips at contract v67
+  // and no longer persist an open state.)
   const toggleOptHow = () => {
     const next = !optHowOpen;
     setOptHowOpen(next);
@@ -5837,6 +5826,18 @@ export function RothConversion() {
         />
       </h1>
 
+      {rq.data?.recordUnreadable && (
+        <p
+          role="alert"
+          className="mt-3 max-w-3xl rounded-[var(--radius)] border border-[var(--bad)] bg-[var(--bad-soft)] px-3 py-2 text-sm leading-relaxed"
+        >
+          <strong>Your saved record can&rsquo;t be read.</strong> A saved
+          Tax Plan exists, but it can&rsquo;t be opened — so what&rsquo;s
+          below is a fresh plan, not your saved one. Saving is paused while
+          the record is unreadable, so nothing overwrites it.
+        </p>
+      )}
+
       {/* The view's action row: the December draw entry point
           first, then the face switch. (This view's header is a
           plain title + intro with no right-hand action cluster
@@ -5851,10 +5852,20 @@ export function RothConversion() {
           December draw
         </button>
 
+      {/* Sub-navigation (contract v67): underlined text tabs in
+          the Retirement view's style — left-aligned over a
+          hairline — instead of the former filled-pill segmented
+          group, whose language competed with the main view tabs.
+          The December draw button at the left of the row keeps
+          its outline-button look: it is a jump, not a tab. On
+          phone widths the tab group wraps to its own full-width
+          line under the button (below 560px) so every tab stays
+          reachable — the three labels cannot share the row with
+          the button at 390px. */}
       <div
         role="group"
         aria-label="Tax Plan view"
-        className="inline-flex max-w-full flex-wrap gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-1"
+        className="flex w-full min-w-0 flex-nowrap items-end border-b border-[var(--border)] min-[560px]:w-auto min-[560px]:flex-1"
       >
         {(
           [
@@ -5868,13 +5879,19 @@ export function RothConversion() {
             type="button"
             aria-label={f.label}
             aria-pressed={face === f.id}
-            className={
+            className={`relative px-3.5 py-2.5 text-sm whitespace-nowrap sm:px-5 ${
               face === f.id
-                ? "rounded-[calc(var(--radius)-2px)] bg-[var(--accent)] px-3.5 py-1.5 text-sm font-medium text-white sm:px-5"
-                : "rounded-[calc(var(--radius)-2px)] px-3.5 py-1.5 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] sm:px-5"
-            }
+                ? "font-semibold text-[var(--text)]"
+                : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
+            }`}
             onClick={() => setFace(f.id)}
           >
+            {face === f.id && (
+              <span
+                aria-hidden="true"
+                className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
+              />
+            )}
             {f.label}
           </button>
         ))}
@@ -7489,7 +7506,7 @@ export function RothConversion() {
       <div
         role="group"
         aria-label="Results workspace"
-        className="mt-5 inline-flex max-w-full flex-wrap gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-1"
+        className="mt-5 flex w-full flex-nowrap items-end overflow-x-auto border-b border-[var(--border)]"
       >
         {ROTH_MODE_OPTIONS_SHOWN.map((m) => (
           <button
@@ -7497,13 +7514,19 @@ export function RothConversion() {
             type="button"
             aria-label={`${m.label} results`}
             aria-pressed={resultsMode === m.id}
-            className={
+            className={`relative shrink-0 px-3.5 py-2.5 text-sm whitespace-nowrap sm:px-5 ${
               resultsMode === m.id
-                ? "rounded-[calc(var(--radius)-2px)] bg-[var(--accent)] px-3.5 py-1.5 text-sm font-medium text-white sm:px-5"
-                : "rounded-[calc(var(--radius)-2px)] px-3.5 py-1.5 text-sm font-medium text-[var(--dim)] hover:text-[var(--text)] sm:px-5"
-            }
+                ? "font-semibold text-[var(--text)]"
+                : "font-medium text-[var(--dim)] hover:text-[var(--accent)]"
+            }`}
             onClick={() => switchResultsMode(m.id)}
           >
+            {resultsMode === m.id && (
+              <span
+                aria-hidden="true"
+                className="absolute right-2 -bottom-px left-2 h-[2px] bg-[var(--accent)]"
+              />
+            )}
             {m.label}
           </button>
         ))}
@@ -8600,67 +8623,59 @@ export function RothConversion() {
               Salary is held flat — no raises — and every limit comes from the
               app&rsquo;s law tables, with the latest row used for later years.
             </p>
-            <button
-              type="button"
-              aria-label="More about how work years are priced"
-              aria-expanded={wyHowOpen}
-              className="mt-1 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
-              onClick={toggleWyHow}
+            <ExplainerInfoTip
+              id="roth.workYearsHow"
+              label="how work years are priced"
             >
-              {wyHowOpen ? "Less" : "More"}
-            </button>
-            {wyHowOpen && (
-              <div className="mt-2 max-w-3xl space-y-2 text-sm text-[var(--dim)]">
-                <p>
-                  Work years assume employer health coverage, so no ACA premium
-                  credit is priced for those years, and an HSA-eligible plan, so
-                  the HSA limit applies — the family limit for joint filers,
-                  the self-only limit for single and head-of-household
-                  filers. That is a simplification: a head of household with
-                  family coverage can legally use the family limit. Salary
-                  covers the plan&rsquo;s annual spending in work years; the
-                  portfolio is not drawn.
-                </p>
-                <p>
-                  Contributions stack to the legal caps each year: the 401(k)
-                  deferral, the catch-up (the larger 60–63 limit in those
-                  years), employer money, and the mega backdoor — the
-                  after-tax room left under the overall cap, which assumes
-                  your plan allows after-tax contributions. Employer money
-                  fills the same caps, so it replaces mega-backdoor room
-                  dollar for dollar rather than adding on top.
-                </p>
-                <p>
-                  At higher pay the law requires catch-ups to be Roth; that
-                  rule keys on the prior year&rsquo;s wages, and this model
-                  uses the salary you entered as the wage proxy. Payroll tax
-                  is the employee share: Social Security up to the
-                  year&rsquo;s wage base, Medicare on all wages, and the
-                  additional Medicare tax over $250,000 (joint) or $200,000
-                  (single). The salary years are taxed at your plan&rsquo;s
-                  state tax rate, the same rate the conversion years use.
-                </p>
-                <p>
-                  If a work year&rsquo;s spending and tax run past the salary,
-                  the Taxable balance covers the gap down to $0 — it never
-                  goes negative — and whatever is left uncovered is reported
-                  as a shortfall next to that row&rsquo;s ledger, not folded
-                  silently into the balances the retirement years start from.
-                </p>
-                <p>
-                  Your Social Security benefit is held at the amount on your
-                  plan — extra work years do not raise it here. Ending wealth
-                  is in age-95 nominal dollars at your plan&rsquo;s return
-                  assumption, after the tax on the pre-tax balance still
-                  standing.
-                </p>
-                <p>
-                  The work years are priced with both spouses living. If your
-                  plan has a survivor scenario turned on, it applies to the
-                  conversion years after work stops.
-                </p>
-              </div>
-            )}
+<p>
+                Work years assume employer health coverage, so no ACA premium
+                credit is priced for those years, and an HSA-eligible plan, so
+                the HSA limit applies — the family limit for joint filers,
+                the self-only limit for single and head-of-household
+                filers. That is a simplification: a head of household with
+                family coverage can legally use the family limit. Salary
+                covers the plan&rsquo;s annual spending in work years; the
+                portfolio is not drawn.
+              </p>
+              <p>
+                Contributions stack to the legal caps each year: the 401(k)
+                deferral, the catch-up (the larger 60–63 limit in those
+                years), employer money, and the mega backdoor — the
+                after-tax room left under the overall cap, which assumes
+                your plan allows after-tax contributions. Employer money
+                fills the same caps, so it replaces mega-backdoor room
+                dollar for dollar rather than adding on top.
+              </p>
+              <p>
+                At higher pay the law requires catch-ups to be Roth; that
+                rule keys on the prior year&rsquo;s wages, and this model
+                uses the salary you entered as the wage proxy. Payroll tax
+                is the employee share: Social Security up to the
+                year&rsquo;s wage base, Medicare on all wages, and the
+                additional Medicare tax over $250,000 (joint) or $200,000
+                (single). The salary years are taxed at your plan&rsquo;s
+                state tax rate, the same rate the conversion years use.
+              </p>
+              <p>
+                If a work year&rsquo;s spending and tax run past the salary,
+                the Taxable balance covers the gap down to $0 — it never
+                goes negative — and whatever is left uncovered is reported
+                as a shortfall next to that row&rsquo;s ledger, not folded
+                silently into the balances the retirement years start from.
+              </p>
+              <p>
+                Your Social Security benefit is held at the amount on your
+                plan — extra work years do not raise it here. Ending wealth
+                is in age-95 nominal dollars at your plan&rsquo;s return
+                assumption, after the tax on the pre-tax balance still
+                standing.
+              </p>
+              <p>
+                The work years are priced with both spouses living. If your
+                plan has a survivor scenario turned on, it applies to the
+                conversion years after work stops.
+              </p>
+            </ExplainerInfoTip>
           </div>
         </section>
       )}
@@ -8955,53 +8970,45 @@ export function RothConversion() {
               balance and draw-order effect — here is exactly what is and
               isn&rsquo;t priced.
             </p>
-            <button
-              type="button"
-              aria-label="More about how the gift comparison is priced"
-              aria-expanded={giftHowOpen}
-              className="mt-1 px-1 py-1 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)]"
-              onClick={toggleGiftHow}
+            <ExplainerInfoTip
+              id="roth.giftHow"
+              label="how the gift comparison is priced"
             >
-              {giftHowOpen ? "Less" : "More"}
-            </button>
-            {giftHowOpen && (
-              <div className="mt-2 max-w-3xl space-y-2 text-sm text-[var(--dim)]">
-                <p>
-                  How the gifted shares&rsquo; yield is priced depends on
-                  the dividend and interest yields entered on your plan.
-                  When no yields are entered, no yearly yield is priced
-                  anywhere — so the gifted shares&rsquo; dividends are NOT
-                  priced as income removed from your return. When dividend
-                  or interest yields are entered, your priced yield income
-                  is worked out each year on your Taxable balance after
-                  the gift — so from the gift year onward, the gifted
-                  shares no longer generate priced yield income for you.
-                  What is priced on your side either way is the gain you
-                  avoid when a sale year is set (that gain would otherwise
-                  have stacked into the sale year&rsquo;s brackets, NIIT,
-                  and ACA / IRMAA MAGI, and taken room from that
-                  year&rsquo;s conversion), plus the balance and draw-order
-                  effect of the shares leaving your Taxable bucket at the
-                  gift year.
-                </p>
-                <p>
-                  The gifted shares are grown at your plan&rsquo;s expected
-                  return from the gift year to the sale year, for both the
-                  sale you avoid and your child&rsquo;s sale. Your
-                  child&rsquo;s tax is the tax on the sale itself: their
-                  standalone federal return priced with the gain and again
-                  without it, and the difference reported — so the tax on
-                  their other income is never counted as the sale&rsquo;s
-                  tax. No state tax is priced for the child.
-                </p>
-                <p>
-                  Estate tax is not priced — the gift-tax ledger reports the
-                  annual exclusion and the lifetime-exemption use only. One
-                  gift to one child per run: for several children or several
-                  years of gifts, run the comparison once per gift.
-                </p>
-              </div>
-            )}
+<p>
+                How the gifted shares&rsquo; yield is priced depends on
+                the dividend and interest yields entered on your plan.
+                When no yields are entered, no yearly yield is priced
+                anywhere — so the gifted shares&rsquo; dividends are NOT
+                priced as income removed from your return. When dividend
+                or interest yields are entered, your priced yield income
+                is worked out each year on your Taxable balance after
+                the gift — so from the gift year onward, the gifted
+                shares no longer generate priced yield income for you.
+                What is priced on your side either way is the gain you
+                avoid when a sale year is set (that gain would otherwise
+                have stacked into the sale year&rsquo;s brackets, NIIT,
+                and ACA / IRMAA MAGI, and taken room from that
+                year&rsquo;s conversion), plus the balance and draw-order
+                effect of the shares leaving your Taxable bucket at the
+                gift year.
+              </p>
+              <p>
+                The gifted shares are grown at your plan&rsquo;s expected
+                return from the gift year to the sale year, for both the
+                sale you avoid and your child&rsquo;s sale. Your
+                child&rsquo;s tax is the tax on the sale itself: their
+                standalone federal return priced with the gain and again
+                without it, and the difference reported — so the tax on
+                their other income is never counted as the sale&rsquo;s
+                tax. No state tax is priced for the child.
+              </p>
+              <p>
+                Estate tax is not priced — the gift-tax ledger reports the
+                annual exclusion and the lifetime-exemption use only. One
+                gift to one child per run: for several children or several
+                years of gifts, run the comparison once per gift.
+              </p>
+            </ExplainerInfoTip>
           </div>
         </section>
       )}

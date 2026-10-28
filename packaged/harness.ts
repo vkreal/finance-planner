@@ -61,6 +61,14 @@
 //      plus the F21 remainder: after a saveRetirementBaseline
 //      refusal, the fresh revisions the refusal carries complete
 //      the baseline write on retry.
+//   N. Result-honesty (contract v67, F04/F06/F07/F08/F09): a
+//      PRESENT but unreadable record (planted by restoring a
+//      MAC-stripped export whose settings value for the record's
+//      key is replaced with unparseable text) surfaces its
+//      getter's unreadable marker, every writer refuses against
+//      it, and the stored bytes survive untouched — while an
+//      absent record and a normal record behave exactly as
+//      before.
 //
 // Run via packaged/run-harness.mjs (which bundles this file with the
 // same resolver seams as the browser build).
@@ -1442,6 +1450,179 @@ eq(
     [retFinal.baseline?.spendingCents, retFinal.saved?.spendingCents],
     [11000000, 11000000],
   );
+}
+
+// ---------- N. Result-honesty: unreadable present records (contract v67) ----------
+// Corruption is planted honestly: export the store, strip the
+// MAC (the pre-MAC restore shape section D already exercises),
+// replace ONE settings value with unparseable text, and restore.
+// The restore stores that value verbatim (opaque settings blobs
+// ride unvalidated), so the record on disk is exactly the
+// damaged bytes a real corruption would leave — and a later
+// export reads them back for the byte-intact checks.
+{
+  const storeN = memoryStore();
+  const rtN = await createRuntime({ store: storeN, wasmUrl: wasmPath });
+  await rtN.call("clearAllData", { confirm: "delete everything" });
+
+  // Absent records: no markers, null reads — unchanged behaviour.
+  const absentRet = await rtN.call<any>("getRetirementCalc", {});
+  eq("N1 absent Retirement record carries no unreadable markers",
+    [absentRet.saved, absentRet.savedUnreadable, absentRet.baselineUnreadable],
+    [null, false, false]);
+  const absentRoth = await rtN.call<any>("getRothPlanner", {});
+  eq("N2 absent Roth record carries no unreadable marker",
+    [absentRoth.saved, absentRoth.recordUnreadable], [null, false]);
+  const absentDec = await rtN.call<any>("getDecemberProjection", {});
+  eq("N3 absent December record is unstored and readable-shaped",
+    [absentDec.hasStored, absentDec.storedUnreadable], [false, false]);
+  const absentBase = await rtN.call<any>("getRetirementBaselineResults", {
+    mcSeed: 1, solverEngine: "historical", solverTarget: 95,
+  });
+  eq("N4 absent baseline is not unreadable", absentBase.baselineUnreadable, false);
+
+  // Normal records: written through the real writers, read back
+  // with no markers — the baseline the corruption legs compare to.
+  const retFieldsN = {
+    portfolioCents: 10000000, spendingCents: 8000000, currentAge: 55,
+    retirementAge: 60, endAge: 90, stocksPct: 60, extraIncomeCents: null,
+    extraIncomeStartAge: null, expectedReturnPct: 5, volatilityPct: 10,
+    strategy: "constant", percentOfPortfolio: null, guardrailsCutPct: null,
+    guardrailsRaisePct: null, guardrailsAdjustmentPct: null,
+    phaseStartAge: null, phaseDeclinePct: null,
+  };
+  const retSaveN = await rtN.call<any>("saveRetirementCalc", { ...retFieldsN, baseRevision: 0 });
+  eq("N5 normal Retirement save ok", retSaveN.ok, true);
+  const baseSaveN = await rtN.call<any>("saveRetirementBaseline", {
+    ...retFieldsN, baseRevision: 1, baseBaselineRevision: 0,
+  });
+  eq("N6 normal baseline save ok", baseSaveN.ok, true);
+  const resetN = await rtN.call<any>("resetRothPlanner", {});
+  eq("N7 normal Roth record materialized by reset", resetN.ok, true);
+  const decSaveN = await rtN.call<any>("saveDecemberProjection", {
+    state: absentDec.state, baseRevision: 0,
+  });
+  eq("N8 normal December save ok", decSaveN.ok, true);
+  const normalRet = await rtN.call<any>("getRetirementCalc", {});
+  eq("N9 normal records read with no markers",
+    [normalRet.saved?.spendingCents, normalRet.savedUnreadable, normalRet.baselineUnreadable],
+    [8000000, false, false]);
+
+  const CORRUPT = "corrupt{{{not-json";
+  const cleanPayload = await rtN.call<any>("exportbackup", {});
+  const corruptedPayload = (key: string) => {
+    const pl = JSON.parse(JSON.stringify(cleanPayload));
+    delete pl.authenticityMac;
+    pl.settings = pl.settings.map((s: any) =>
+      s.key === key ? { ...s, value: CORRUPT } : s,
+    );
+    return pl;
+  };
+  const storedValue = async (key: string) => {
+    const pl = await rtN.call<any>("exportbackup", {});
+    return pl.settings.find((s: any) => s.key === key)?.value;
+  };
+
+  // F06: unreadable Retirement inputs record.
+  const resRet = await rtN.call<any>("restorebackup", corruptedPayload("retirement_calc_inputs_v1"));
+  eq("N10 corrupt Retirement restore accepted (pre-MAC shape)", resRet.ok, true);
+  const corRet = await rtN.call<any>("getRetirementCalc", {});
+  eq("N11 unreadable Retirement record is marked, not fresh",
+    [corRet.saved, corRet.savedUnreadable], [null, true]);
+  const corRetSave = await rtN.call<any>("saveRetirementCalc", { ...retFieldsN, baseRevision: 0 });
+  eq("N12 save against the unreadable record is refused",
+    [corRetSave.ok, corRetSave.conflict], [false, true]);
+  eq("N13 stored Retirement bytes intact after the refused save",
+    await storedValue("retirement_calc_inputs_v1"), CORRUPT);
+
+  // F07: unreadable baseline record (inputs record valid again).
+  const resBase = await rtN.call<any>("restorebackup", corruptedPayload("retirement_calc_baseline_v1"));
+  eq("N14 corrupt baseline restore accepted", resBase.ok, true);
+  const corBase = await rtN.call<any>("getRetirementCalc", {});
+  eq("N15 unreadable baseline is marked, not missing",
+    [corBase.baseline, corBase.baselineUnreadable, corBase.savedUnreadable],
+    [null, true, false]);
+  const corBaseResults = await rtN.call<any>("getRetirementBaselineResults", {
+    mcSeed: 1, solverEngine: "historical", solverTarget: 95,
+  });
+  eq("N16 baseline results carry the unreadable marker",
+    [corBaseResults.baselineKind, corBaseResults.baselineUnreadable], [null, true]);
+  const corBaseSave = await rtN.call<any>("saveRetirementBaseline", {
+    ...retFieldsN,
+    baseRevision: corBase.revision,
+    baseBaselineRevision: corBase.baselineRevision,
+  });
+  eq("N17 baseline save against the unreadable record is refused", corBaseSave.ok, false);
+  eq("N18 stored baseline bytes intact after the refused save",
+    await storedValue("retirement_calc_baseline_v1"), CORRUPT);
+
+  // F08: unreadable Roth plan record — the strict writer's
+  // existing refusal engages on the reader's honest state.
+  const resRoth = await rtN.call<any>("restorebackup", corruptedPayload("roth_conversion_inputs_v1"));
+  eq("N19 corrupt Roth restore accepted", resRoth.ok, true);
+  const corRoth = await rtN.call<any>("getRothPlanner", {});
+  eq("N20 unreadable Roth record is marked, not fresh",
+    [corRoth.saved, corRoth.recordUnreadable], [null, true]);
+  const goodRoth = JSON.parse(JSON.stringify(cleanPayload));
+  const goodPlannerState = goodRoth.settings.find((s: any) => s.key === "roth_conversion_inputs_v1");
+  check("N21 clean payload carries a Roth record to rebuild save args from", !!goodPlannerState);
+  const corRothSave = await rtN.call<any>("saveRothInputs", {
+    ...JSON.parse(goodPlannerState.value).inputs,
+    baseRevision: 0,
+  });
+  eq("N22 saveRothInputs against the unreadable record is refused",
+    [corRothSave.ok, corRothSave.conflict], [false, true]);
+  const corRothReset = await rtN.call<any>("resetRothPlanner", {});
+  eq("N23 reset against the unreadable record is refused", corRothReset.ok, false);
+  eq("N24 stored Roth bytes intact after the refused saves",
+    await storedValue("roth_conversion_inputs_v1"), CORRUPT);
+
+  // F09: unparseable December record.
+  const resDec = await rtN.call<any>("restorebackup", corruptedPayload("december_projection_v1"));
+  eq("N25 corrupt December restore accepted", resDec.ok, true);
+  const corDec = await rtN.call<any>("getDecemberProjection", {});
+  eq("N26 unparseable December record is flagged beside hasStored",
+    [corDec.hasStored, corDec.storedUnreadable], [true, true]);
+  const corDecSave = await rtN.call<any>("saveDecemberProjection", {
+    state: corDec.state, baseRevision: corDec.revision,
+  });
+  eq("N27 December save on an unparseable base is refused as a conflict",
+    [corDecSave.ok, corDecSave.conflict, corDecSave.storedUnreadable], [false, true, true]);
+  eq("N28 stored December bytes intact after the refused save",
+    await storedValue("december_projection_v1"), CORRUPT);
+
+  // F04: the one-off editor's server shape — a missing id is a
+  // data refusal ({ ok: false, reason }), the exact result the
+  // client guard now keys on; a real id updates fine.
+  const oneOffAdd = await rtN.call<any>("addMonthlyOneOff", {
+    month: "2026-10", description: "Honesty check", amountCents: 12345, note: null,
+  });
+  const oneOffMissing = await rtN.call<any>("updateMonthlyOneOff", {
+    id: 999999, month: "2026-10", description: "Honesty check", amountCents: 12345, note: null,
+  });
+  eq("N29 updateMonthlyOneOff on a missing id refuses with a reason",
+    [oneOffMissing.ok, oneOffMissing.reason],
+    [false, "That one-off expense was not found."]);
+  const oneOffOk = await rtN.call<any>("updateMonthlyOneOff", {
+    id: oneOffAdd.id, month: "2026-10", description: "Honesty check edited", amountCents: 23456, note: null,
+  });
+  eq("N30 updateMonthlyOneOff on a real id succeeds", oneOffOk.ok, true);
+
+  // Clean restore: the normal records read and price again.
+  const cleanStripped = JSON.parse(JSON.stringify(cleanPayload));
+  delete cleanStripped.authenticityMac;
+  const resClean = await rtN.call<any>("restorebackup", cleanStripped);
+  eq("N31 clean restore ok", resClean.ok, true);
+  const backRet = await rtN.call<any>("getRetirementCalc", {});
+  eq("N32 restored Retirement record reads normally",
+    [backRet.saved?.spendingCents, backRet.savedUnreadable, backRet.baselineUnreadable],
+    [8000000, false, false]);
+  const backRoth = await rtN.call<any>("getRothPlanner", {});
+  eq("N33 restored Roth record reads normally",
+    [backRoth.saved != null, backRoth.recordUnreadable], [true, false]);
+  const backDec = await rtN.call<any>("getDecemberProjection", {});
+  eq("N34 restored December record reads normally",
+    [backDec.hasStored, backDec.storedUnreadable], [true, false]);
 }
 
 console.log(`\n${checks - failures}/${checks} harness checks passed`);

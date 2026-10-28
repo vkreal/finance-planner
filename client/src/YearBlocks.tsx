@@ -1,7 +1,7 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
-import { usePersistedFold } from "./foldState";
+import { ExplainerInfoTip } from "./Explainer";
 
 /* Blocks dissolved out of the former Year Summary view:
    - YearInSpendingBlock: the old page's Spending section, now a
@@ -52,39 +52,33 @@ function fmtDateLong(date: string): string {
 const btnGhost =
   "rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-medium text-[var(--text)]";
 
-/* The Net Worth anchor note with its reconciliation remainder
-   behind a quiet local "More" toggle: the endpoints sentence
-   stays visible; the remainder renders verbatim in place when
-   expanded, so first + " " + rest is byte-identical to the
-   note as previously printed in full. The visible first part
-   is a dynamic string, so the server-persisted Explainer does
-   not fit here; the open/closed state itself persists in the
-   generic fold store ("nw.trendAnchor") instead, so the note
-   comes back expanded or collapsed exactly as left. The
-   toggle is a real button with aria-expanded / aria-controls,
-   styled like the Explainer's. */
-function AnchorNote({ first, rest }: { first: string; rest: string }) {
-  const [open, setOpen] = usePersistedFold("nw.trendAnchor");
-  const rawId = useId();
-  const regionId = `ys-anchor-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
+/* The Net Worth anchor reconciliation (contract v67): the full
+   computed note — first + " " + rest, byte-identical to the
+   paragraph that used to print below the Trend table — now
+   lives in the ⓘ on the "Trend — all years" title and in the
+   ⓘ on the one-line hint that stays under the table. The text
+   is a dynamic string (computed dates and movement), so it
+   rides the children-based ExplainerInfoTip rather than a
+   persisted fold; nothing about its wording or computation
+   changed. */
+function AnchorInfoTip({ first, rest }: { first: string; rest: string }) {
   return (
-    <p className="mt-3 text-sm leading-relaxed text-[var(--dim)]">
-      {first}
-      {open && <span id={regionId}> {rest}</span>}{" "}
-      <button
-        type="button"
-        aria-label={
-          open
-            ? "Less about the year change anchor"
-            : "More about the year change anchor"
-        }
-        aria-expanded={open}
-        aria-controls={regionId}
-        onClick={() => setOpen(!open)}
-        className="font-medium whitespace-nowrap text-[var(--accent)] underline underline-offset-2"
-      >
-        {open ? "Less" : "More"}
-      </button>
+    <ExplainerInfoTip id="nw.trendAnchor" label="the year change anchor">
+      <p>
+        {first} {rest}
+      </p>
+    </ExplainerInfoTip>
+  );
+}
+
+function AnchorHint({ first, rest }: { first: string; rest: string }) {
+  return (
+    <p className="mt-3 flex flex-wrap items-center gap-x-1.5 text-sm leading-relaxed text-[var(--dim)]">
+      <span>
+        Measured first-to-last snapshot this year · differs from Net
+        Worth&rsquo;s Year to date
+      </span>
+      <AnchorInfoTip first={first} rest={rest} />
     </p>
   );
 }
@@ -461,7 +455,15 @@ export function TrendBlock() {
       className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5 print:break-inside-avoid"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="display text-xl font-semibold">Trend — all years</h3>
+        <h3 className="display flex items-center gap-1.5 text-xl font-semibold">
+          Trend — all years
+          {nwAnchorParts && (
+            <AnchorInfoTip
+              first={nwAnchorParts.first}
+              rest={nwAnchorParts.rest}
+            />
+          )}
+        </h3>
         <YearPicker
           id="trend-year"
           ariaLabel="Select year for year detail"
@@ -536,7 +538,7 @@ export function TrendBlock() {
           </div>
 
           {nwAnchorParts && (
-            <AnchorNote
+            <AnchorHint
               first={nwAnchorParts.first}
               rest={nwAnchorParts.rest}
             />
@@ -608,12 +610,17 @@ export function TrendBlock() {
                 </div>
 
                 {(gains.length > 0 || declines.length > 0) && (
-                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div
+                    className={`mt-4 grid grid-cols-1 gap-4 ${
+                      gains.length > 0 && declines.length > 0
+                        ? "sm:grid-cols-2"
+                        : ""
+                    }`}
+                  >
+                    {gains.length > 0 && (
                     <div>
                       <h5 className="text-base font-semibold">Biggest gains</h5>
-                      {gains.length === 0 ? (
-                        <p className="mt-2 text-sm text-[var(--dim)]">No accounts gained this year.</p>
-                      ) : (
+                      {
                         <ul className="mt-2 space-y-2">
                           {gains.map((m) => (
                             <li
@@ -633,13 +640,13 @@ export function TrendBlock() {
                             </li>
                           ))}
                         </ul>
-                      )}
+                      }
                     </div>
+                    )}
+                    {declines.length > 0 && (
                     <div>
                       <h5 className="text-base font-semibold">Biggest declines</h5>
-                      {declines.length === 0 ? (
-                        <p className="mt-2 text-sm text-[var(--dim)]">No accounts declined this year.</p>
-                      ) : (
+                      {
                         <ul className="mt-2 space-y-2">
                           {declines.map((m) => (
                             <li
@@ -659,8 +666,9 @@ export function TrendBlock() {
                             </li>
                           ))}
                         </ul>
-                      )}
+                      }
                     </div>
+                    )}
                   </div>
                 )}
                 {gains.length === 0 && declines.length === 0 && (

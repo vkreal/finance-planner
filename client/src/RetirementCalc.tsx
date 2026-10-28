@@ -2304,6 +2304,28 @@ export function RetirementCalc() {
   return (
     <div className="mt-5">
       <h2 className="display text-3xl font-semibold">Retirement calculator</h2>
+      {data?.savedUnreadable && (
+        <p
+          role="alert"
+          className="mt-3 max-w-2xl rounded-[var(--radius)] border border-[var(--bad)] bg-[var(--bad-soft)] px-3 py-2 text-sm leading-relaxed"
+        >
+          <strong>Your saved record can&rsquo;t be read.</strong> A saved
+          Retirement plan exists, but it can&rsquo;t be opened — so the
+          figures below are the defaults, not your plan. Saving is paused
+          while the record is unreadable, so nothing overwrites it.
+        </p>
+      )}
+      {data?.baselineUnreadable && (
+        <p
+          role="alert"
+          className="mt-3 max-w-2xl rounded-[var(--radius)] border border-[var(--bad)] bg-[var(--bad-soft)] px-3 py-2 text-sm leading-relaxed"
+        >
+          <strong>Your saved baseline can&rsquo;t be read.</strong> A
+          comparison baseline exists, but it can&rsquo;t be opened — the
+          comparisons below treat it as missing, and saving a new baseline
+          is paused while it is unreadable.
+        </p>
+      )}
       <Explainer
         id="retirement.intro"
         label="Retirement calculator"

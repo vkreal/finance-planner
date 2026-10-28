@@ -1,92 +1,28 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./api";
 
-/* One-line summary + "More" pattern for long section intros.
-   The visible text is ONE tight summary line (the `summary` prop);
-   a small "More" control expands the section's FULL ORIGINAL TEXT
-   (the children) in place, verbatim — the original wording is never
-   rewritten or deleted, it just lives behind the expander. "Less"
-   collapses it again. Expanded/collapsed state persists per section
-   in the app's settings (server-side, via getExplainerState /
-   setExplainerExpanded), like the existing section collapse states;
-   the default is collapsed (summary line only). All instances share
-   one react-query cache entry, so toggling one section never
-   refetches another's data. */
-function explainerRegionId(id: string): string {
-  return `explainer-${id.replace(/[^a-zA-Z0-9]+/g, "-")}`;
-}
+/* One-line summary + ⓘ pattern for long section intros.
+   The visible text is ONE tight summary line (the `summary`
+   prop); the section's FULL ORIGINAL TEXT (the children) lives
+   in the ⓘ tooltip beside it, verbatim — the original wording
+   is never rewritten or deleted, it just lives behind the info
+   affordance. (Contract v67 retired the former "More"/"Less"
+   in-place fold app-wide: every Explainer now renders this
+   shape, and the persisted expanded/collapsed state the fold
+   used is no longer read here.) */
 
-/* Shared expanded/collapsed state for one explainer id, backed by
-   the same persisted settings store the in-place Explainer uses.
-   Lets a section header's control cluster carry the "More" toggle
-   (ExplainerToggle) while the Explainer itself renders only the
-   expanded text below the header — one state, two render spots. */
-export function useExplainerToggle(id: string) {
-  const queryClient = useQueryClient();
-  const state = useQuery({
-    queryKey: ["explainerState"],
-    queryFn: () => api.getExplainerState({}),
-  });
-  const expanded = state.data?.expanded[id] === true;
-  const setExpanded = useMutation({
-    mutationFn: (next: boolean) =>
-      api.setExplainerExpanded({ id, expanded: next }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["explainerState"] });
-    },
-  });
-  return { expanded, setExpanded };
-}
-
-/* The "More"/"Less" toggle as a compact link for a section header's
-   control cluster — same persisted state, accessible name, and
-   expanded region as the paired in-place Explainer (rendered with
-   hideToggle below the header). */
-export function ExplainerToggle({
-  id,
-  label,
-}: {
-  /** Stable per-section id, matching the paired Explainer. */
-  id: string;
-  /** Section name used in the control's accessible label. */
-  label: string;
-}) {
-  const { expanded, setExpanded } = useExplainerToggle(id);
-  return (
-    <button
-      type="button"
-      aria-label={expanded ? `Less about ${label}` : `More about ${label}`}
-      aria-expanded={expanded}
-      aria-controls={explainerRegionId(id)}
-      disabled={setExpanded.isPending}
-      onClick={() => setExpanded.mutate(!expanded)}
-      className="inline-flex min-h-9 items-center px-1 text-sm font-medium whitespace-nowrap text-[var(--accent)] underline underline-offset-2"
-    >
-      {expanded ? "Less" : "More"}
-    </button>
-  );
-}
-
-/* The former "More" link as the app's compact ⓘ info affordance,
-   for section headers whose explainer text now lives in a tooltip
-   instead of expanding in place (2026-10-25: the underlined
-   "More" word in every Spending header looked a mess). It follows
-   the app's existing info controls exactly (InfoTip in App.tsx,
-   BucketHelp in NetWorth.tsx): an 18px circled-i button; hovering
-   or focusing it shows the bubble, tapping or clicking pins it
-   open, tapping outside or pressing Escape closes a pinned bubble.
-   The bubble carries the section's FULL explainer text (the
-   children) verbatim — the same content the "More" link used to
-   expand below the header, word for word; only where it appears
-   changed. The bubble opens right-aligned under the button so it
-   stays inside the page at the header's right edge. */
+/* The ⓘ info affordance for a section's explainer text: an 18px
+   circled-i button; hovering or focusing it shows the bubble,
+   tapping or clicking pins it open, tapping outside or pressing
+   Escape closes a pinned bubble. The bubble carries the
+   section's FULL explainer text (the children) verbatim. The
+   bubble opens right-aligned under the button so it stays
+   inside the page at the header's right edge. */
 export function ExplainerInfoTip({
   id,
   label,
   children,
 }: {
-  /** Stable per-section id, matching the explainer it replaces. */
+  /** Stable per-section id, matching the explainer it serves. */
   id: string;
   /** Section name used in the control's accessible label. */
   label: string;
@@ -97,7 +33,7 @@ export function ExplainerInfoTip({
   const [hovered, setHovered] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const rawId = useId();
-  const tipId = `${explainerRegionId(id)}-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
+  const tipId = `explainer-${id.replace(/[^a-zA-Z0-9]+/g, "-")}-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
   const show = pinned || hovered;
 
   useEffect(() => {
@@ -177,61 +113,39 @@ export function Explainer({
   summary,
   className = "",
   small = false,
-  hideToggle = false,
   children,
 }: {
   /** Stable per-section id, e.g. "spending.keepLightsOn". */
   id: string;
-  /** Section name used in the control's accessible label. */
+  /** Section name used in the info control's accessible label. */
   label: string;
-  /** The one-line summary that stays visible. Omit it when the
-      section's face carries no summary sentence — the "More" control
-      then stands alone and the full text still lives behind it. */
+  /** The one-line summary that stays visible. Omit it (or pass an
+      empty string) when the section's face carries no summary
+      sentence — the ⓘ then stands alone and the full text still
+      lives in its tooltip. */
   summary?: ReactNode;
   /** Wrapper classes (margins) carried over from the original block. */
   className?: string;
   /** Render at the smaller field-note size (text-xs) instead of text-sm. */
   small?: boolean;
-  /** Render no toggle of its own — the section header's control
-      cluster carries an ExplainerToggle for this id instead. The
-      summary (if any) and the expanded text still render here. */
+  /** Accepted for call-site compatibility with the retired
+      header-toggle pattern; the ⓘ now always renders with the
+      summary, so no separate toggle exists and this is ignored. */
   hideToggle?: boolean;
-  /** The full original text, rendered verbatim when expanded. */
+  /** The full original text, carried verbatim in the ⓘ tooltip. */
   children: ReactNode;
 }) {
-  const { expanded, setExpanded } = useExplainerToggle(id);
-  const regionId = explainerRegionId(id);
   const sizeCls = small ? "text-xs" : "text-sm";
+  const hasSummary =
+    summary !== undefined && summary !== null && summary !== "";
   return (
     <div className={className}>
-      {(summary || !hideToggle) && (
-        <p className={`${sizeCls} leading-relaxed text-[var(--dim)]`}>
-          {summary ? <>{summary} </> : null}
-          {!hideToggle && (
-            <button
-              type="button"
-              aria-label={
-                expanded ? `Less about ${label}` : `More about ${label}`
-              }
-              aria-expanded={expanded}
-              aria-controls={regionId}
-              disabled={setExpanded.isPending}
-              onClick={() => setExpanded.mutate(!expanded)}
-              className="font-medium whitespace-nowrap text-[var(--accent)] underline underline-offset-2"
-            >
-              {expanded ? "Less" : "More"}
-            </button>
-          )}
-        </p>
-      )}
-      {expanded && (
-        <div
-          id={regionId}
-          className={`mt-1 space-y-2 ${sizeCls} leading-relaxed text-[var(--dim)]`}
-        >
+      <p className={`${sizeCls} leading-relaxed text-[var(--dim)]`}>
+        {hasSummary ? <>{summary} </> : null}
+        <ExplainerInfoTip id={id} label={label}>
           {children}
-        </div>
-      )}
+        </ExplainerInfoTip>
+      </p>
     </div>
   );
 }
