@@ -2925,7 +2925,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 67;
+export const API_CONTRACT_VERSION = 68;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
