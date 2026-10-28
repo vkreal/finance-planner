@@ -370,6 +370,13 @@ export function December() {
       // unanswered second beneficiary fact in that state
       // resolves from the Tax Plan record exactly as at
       // first load (display only — nothing is written).
+      // The reloaded form is NOT a user edit: clear the
+      // dirty flag before replacing it, or the autosave
+      // effect would immediately cycle "Saving…" over the
+      // conflict note below and re-save the stored state
+      // (contract v63, December save-note fix — the note
+      // must survive until the user's next real edit).
+      dirtyRef.current = false;
       revisionRef.current = res.revision;
       storedProvenanceRef.current = decemberStoredProvenanceOf(res.state);
       setBeneficiaryEdited(false);
@@ -616,7 +623,19 @@ export function December() {
           },
         ),
         {
-          onSuccess: () => setSaveNote("Saved"),
+          // Guarded on res.ok (contract v63, December save-note
+          // fix): a CAS conflict RESOLVES as data (ok: false), so
+          // this per-call success callback fires for conflicts
+          // too — and in @tanstack/query-core it runs AFTER the
+          // mutation-level onSuccess above (Mutation.execute
+          // awaits the options callback before dispatching the
+          // success that notifies the mutate callbacks), so an
+          // unguarded "Saved" here overwrote the conflict note
+          // the mutation-level handler had just set, in the same
+          // completion. Only a real save may say "Saved".
+          onSuccess: (res) => {
+            if (res.ok) setSaveNote("Saved");
+          },
           onError: () => setSaveNote("Could not save — your entries stay on this screen."),
         },
       );

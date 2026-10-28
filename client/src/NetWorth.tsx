@@ -3243,24 +3243,40 @@ export function NetWorthView() {
   })();
 
   /* ----- current bucket mix (latest snapshot only) -----
-     One segment per nonzero bucket, largest first, fed by the
-     same bucket subtotals the History grid shows for the latest
-     snapshot (bucketTotalForSnapshot: property accounts are
-     always outside the buckets, custodial accounts never count).
-     Shares are of the segments' own sum, so they always add to
-     100%; with property excluded from the snapshot total the
-     segment sum IS the headline total. When property is included
-     and has a balance, the mix covers only the bucketed part of
-     net worth, and the section says so (see below). */
-  const bucketMix: { bucket: NwBucket; cents: number }[] = latest
+     One bar segment per POSITIVE bucket, largest first, fed by
+     the same bucket subtotals the History grid shows for the
+     latest snapshot (bucketTotalForSnapshot: property accounts
+     are always outside the buckets, custodial accounts never
+     count). Bar shares are of the positive segments' own sum,
+     so they always add to 100%. The section HEADLINE and the
+     "% of target" figure, however, use the SIGNED sum of every
+     bucket (contract v63, F1): a negative bucket (a split part
+     can be negative) is real money owed against the others, so
+     it must reduce the headline even though it cannot draw as
+     a bar segment — negative buckets render as their own lines
+     under the bar instead, so the displayed parts (positive
+     legend amounts plus the negative lines) foot exactly to
+     the headline. With every bucket positive the two sums are
+     equal and the section renders exactly as before. When
+     property is included and has a balance, the mix covers
+     only the bucketed part of net worth, and the section says
+     so (see below). */
+  const bucketEntries: { bucket: NwBucket; cents: number }[] = latest
     ? NW_BUCKETS.map((bucket) => ({
         bucket,
         cents: bucketTotalForSnapshot(latest, bucket, kindById, custodialIds) ?? 0,
-      }))
-        .filter((s) => s.cents > 0)
-        .sort((a, b) => b.cents - a.cents)
+      })).filter((s) => s.cents !== 0)
     : [];
+  const bucketMix: { bucket: NwBucket; cents: number }[] = bucketEntries
+    .filter((s) => s.cents > 0)
+    .sort((a, b) => b.cents - a.cents);
+  const bucketNegative: { bucket: NwBucket; cents: number }[] = bucketEntries
+    .filter((s) => s.cents < 0)
+    .sort((a, b) => Math.abs(b.cents) - Math.abs(a.cents));
+  // The bar's own total (positive segments only — the bar
+  // denominator) and the headline's signed total.
   const bucketMixTotal = bucketMix.reduce((sum, s) => sum + s.cents, 0);
+  const bucketSignedTotal = bucketEntries.reduce((sum, s) => sum + s.cents, 0);
   // Property included in the totals with a nonzero net: the one
   // case where the mix's total and the headline total differ.
   const bucketMixPropertyNet =
@@ -3772,22 +3788,23 @@ export function NetWorthView() {
                 : ""}
             </p>
           </div>
-          {bucketMix.length > 0 && (
+          {bucketEntries.length > 0 && (
             <div className="text-right">
               <p className="tnum display text-xl font-semibold whitespace-nowrap sm:text-2xl">
-                {fmt(bucketMixTotal)}
+                {fmt(bucketSignedTotal)}
               </p>
               {targetCents != null && targetCents > 0 && (
                 <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
-                  {((bucketMixTotal / targetCents) * 100).toFixed(1)}% of the{" "}
+                  {((bucketSignedTotal / targetCents) * 100).toFixed(1)}% of the{" "}
                   {fmt(targetCents)} target
                 </p>
               )}
             </div>
           )}
         </div>
-        {bucketMix.length > 0 ? (
+        {bucketEntries.length > 0 ? (
           <>
+            {bucketMix.length > 0 && (
             <div
               className="mt-3 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
               role="img"
@@ -3815,6 +3832,7 @@ export function NetWorthView() {
                 </div>
               ))}
             </div>
+            )}
             <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
               {bucketMix.map((s) => (
                 <li
@@ -3838,6 +3856,28 @@ export function NetWorthView() {
                 </li>
               ))}
             </ul>
+            {bucketNegative.length > 0 && (
+              <ul className="mt-2 space-y-1.5" aria-label="Negative buckets">
+                {bucketNegative.map((s) => (
+                  <li
+                    key={s.bucket}
+                    className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+                      style={{ background: BUCKET_COLORS[s.bucket] }}
+                    />
+                    <span className="font-medium">{bucketLabel(s.bucket)}</span>
+                    <span>{fmt(s.cents)}</span>
+                    <span className="text-[var(--dim)]">
+                      — below zero, so it is not in the bar above; it is
+                      counted in the total at the top
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
             {bucketMixPropertyNet != null && (
               <p className="mt-2 text-sm text-[var(--dim)]">
                 Property net {fmt(bucketMixPropertyNet)} is counted in net
