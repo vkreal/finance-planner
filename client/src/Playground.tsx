@@ -4706,6 +4706,22 @@ export function Playground() {
                   acaCliffLine != null &&
                   acaBufferLine != null &&
                   Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
+                /* Line-tag fallback (contract v78): the one-row
+                   hug tags extend OUTWARD from their lines —
+                   Buffer left of its line, Cliff right of its
+                   line — so they can only crowd each other when
+                   the lines are effectively coincident. The
+                   fallback triggers when the gap between the
+                   lines is under 1.25% of the track — about 4px
+                   of daylight at the narrowest chart width, so
+                   below it the two tags and their dashed lines
+                   read as one cluster and the staggered rows
+                   keep them legible. Wider gaps stay on one
+                   row, at desktop and phone widths alike. */
+                const lineTagsClose =
+                  acaCliffLine != null &&
+                  acaBufferLine != null &&
+                  Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 1.25;
                 /* Bracket-top axis ticks (contract v77): one small
                    tick label for each bracket top whose guide line
                    is drawn — the same inAxis rule the lines use,
@@ -4801,50 +4817,84 @@ export function Playground() {
                         )}
                       </div>
                     )}
-                    {/* Line tags (contract v76): short tags attached
+                    {/* Line tags (contract v78): short tags attached
                         to the dashed lines on the chart itself —
                         "Buffer" on the buffer line, "Cliff" on the
                         cliff line, each in its line's own colour —
                         so the lines read without the axis rows
-                        below. Each tag sits on its own row, the
-                        buffer tag above the cliff tag, centred on
-                        its line with its centre clamped inside the
-                        chart, on rows distinct from the floating
-                        labels above — so a tag can never overlap a
-                        floating label or the other tag, however
-                        close the two lines sit. A tag renders only
-                        when its line renders: the strip needs a
-                        cliff line, and the buffer tag needs a
-                        buffer line (a buffer above $0). The
-                        two-row axis labels below are unchanged. */}
+                        below. On ONE row, each tag hugs its own
+                        line: Buffer's right edge touches its line
+                        (the tag sits left of the line) and Cliff's
+                        left edge touches its line (the tag sits
+                        right of the line); the edge clamps only
+                        keep a tag inside the chart when its line
+                        sits within a tag-width of an edge. When
+                        the lines are so close the tags would
+                        crowd (lineTagsClose above), the tags fall
+                        back to the v76 staggered two-row
+                        arrangement — buffer tag above, cliff tag
+                        below, each centred on its line — rather
+                        than overlapping. A tag renders only when
+                        its line renders: the strip needs a cliff
+                        line, and the buffer tag needs a buffer
+                        line (a buffer above $0). The two-row axis
+                        labels below are unchanged. */}
                     {acaCliffLine != null && (
                       <div aria-hidden="true">
-                        {acaBufferLine != null && (
+                        {lineTagsClose ? (
+                          <>
+                            {acaBufferLine != null && (
+                              <div className="relative h-[16px]">
+                                <span
+                                  className="tnum absolute text-[11px] font-medium whitespace-nowrap"
+                                  style={{
+                                    color: "var(--dim)",
+                                    left: `clamp(22px, ${acaBufferLine.xPct}%, calc(100% - 22px))`,
+                                    transform: "translateX(-50%)",
+                                  }}
+                                >
+                                  Buffer
+                                </span>
+                              </div>
+                            )}
+                            <div className="relative h-[16px]">
+                              <span
+                                className="tnum absolute text-[11px] font-medium whitespace-nowrap"
+                                style={{
+                                  color: "var(--warn)",
+                                  left: `clamp(18px, ${acaCliffLine.xPct}%, calc(100% - 18px))`,
+                                  transform: "translateX(-50%)",
+                                }}
+                              >
+                                Cliff
+                              </span>
+                            </div>
+                          </>
+                        ) : (
                           <div className="relative h-[16px]">
+                            {acaBufferLine != null && (
+                              <span
+                                className="tnum absolute text-[11px] font-medium whitespace-nowrap"
+                                style={{
+                                  color: "var(--dim)",
+                                  left: `clamp(44px, ${acaBufferLine.xPct}%, 100%)`,
+                                  transform: "translateX(-100%)",
+                                }}
+                              >
+                                Buffer
+                              </span>
+                            )}
                             <span
                               className="tnum absolute text-[11px] font-medium whitespace-nowrap"
                               style={{
-                                color: "var(--dim)",
-                                left: `clamp(22px, ${acaBufferLine.xPct}%, calc(100% - 22px))`,
-                                transform: "translateX(-50%)",
+                                color: "var(--warn)",
+                                left: `clamp(0px, ${acaCliffLine.xPct}%, calc(100% - 32px))`,
                               }}
                             >
-                              Buffer
+                              Cliff
                             </span>
                           </div>
                         )}
-                        <div className="relative h-[16px]">
-                          <span
-                            className="tnum absolute text-[11px] font-medium whitespace-nowrap"
-                            style={{
-                              color: "var(--warn)",
-                              left: `clamp(18px, ${acaCliffLine.xPct}%, calc(100% - 18px))`,
-                              transform: "translateX(-50%)",
-                            }}
-                          >
-                            Cliff
-                          </span>
-                        </div>
                       </div>
                     )}
                     <div className="relative">
