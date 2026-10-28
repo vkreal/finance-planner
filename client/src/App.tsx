@@ -5455,6 +5455,36 @@ function ImportPanel({
   // (each batch is its own committed call) and the preview is replaced
   // with just the rows that did not land, so retrying imports only
   // those — never a duplicate of the rows already in.
+  //
+  // Batch idempotency keys (contract v64, F02): each 500-row batch
+  // is offered under ONE key, generated when the batch is first
+  // offered and REUSED when the same batch (the same row objects,
+  // re-offered whole from the remaining preview) is retried after a
+  // failure. That closes the response-loss hole: a batch that
+  // committed on the server but whose success response never
+  // arrived is re-offered under its original key, and the server
+  // returns its original count inserting zero additional rows. A
+  // fresh preview builds fresh row objects, so a genuinely new
+  // import of identical rows gets fresh keys and inserts normally.
+  const pendingBatchKeyRef = useRef<{ rows: TxnInput[]; key: string } | null>(
+    null,
+  );
+  function batchKeyFor(batch: TxnInput[]): string {
+    const pending = pendingBatchKeyRef.current;
+    if (
+      pending &&
+      pending.rows.length === batch.length &&
+      pending.rows.every((r, j) => r === batch[j])
+    ) {
+      return pending.key;
+    }
+    const key =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    pendingBatchKeyRef.current = { rows: batch, key };
+    return key;
+  }
   const importer = useMutation({
     mutationFn: async (
       rows: TxnInput[],
@@ -5467,9 +5497,15 @@ function ImportPanel({
       let imported = 0;
       for (let i = 0; i < rows.length; i += BATCH) {
         const batch = rows.slice(i, i + BATCH);
+        const batchKey = batchKeyFor(batch);
         try {
-          const r = await api.importTransactions({ rows: batch });
+          const r = await api.importTransactions({ rows: batch, batchKey });
           imported += r.imported;
+          // This batch is acknowledged; the next batch offered
+          // (in this run or a retry) generates a fresh key.
+          if (pendingBatchKeyRef.current?.key === batchKey) {
+            pendingBatchKeyRef.current = null;
+          }
         } catch (e) {
           return {
             imported,
