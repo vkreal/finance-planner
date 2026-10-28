@@ -52,6 +52,15 @@
 //      a new key inserts identical rows again; the same key with
 //      different rows is refused; unkeyed imports are unchanged;
 //      the recorded key survives a reload.
+//   M. CAS sweep (contract v65, group B of the write-path audit):
+//      every full-record editor family — transaction, cash-out
+//      item, month summary, monthly bill + amount version, yearly
+//      expense, reserve settings, NW snapshot + balance + account
+//      rename, Roth scenario — refuses a stale-base save with the
+//      stored newer value intact and accepts a fresh-base save;
+//      plus the F21 remainder: after a saveRetirementBaseline
+//      refusal, the fresh revisions the refusal carries complete
+//      the baseline write on retry.
 //
 // Run via packaged/run-harness.mjs (which bundles this file with the
 // same resolver seams as the browser build).
@@ -525,7 +534,7 @@ eq(
 }
 
 // H-migration: the migration marker lives inside the image. An
-// image rewound to user_version N-2 (the last two migrations'
+// image rewound to user_version N-3 (the last three migrations'
 // effects removed by hand) is re-migrated on boot even though
 // the localStorage meta claims all migrations applied — the
 // meta is not consulted.
@@ -543,15 +552,17 @@ eq(
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const SQL = await initSqlJs({ locateFile: () => wasmPath });
   const rewound = new SQL.Database(bytes);
-  // Rewind the last TWO migrations' effects: 0024's day column
-  // and 0025's three composite unique indexes (contract v64) —
-  // the image claims MIGRATIONS.length - 2, so boot must re-run
-  // both, exactly as it re-ran the single last migration before.
+  // Rewind the last THREE migrations' effects: 0024's day column,
+  // 0025's three composite unique indexes (contract v64), and
+  // 0026's snapshot revision column (contract v65) — the image
+  // claims MIGRATIONS.length - 3, so boot must re-run all three,
+  // exactly as it re-ran the last two before v65 added 0026.
   rewound.exec("ALTER TABLE monthly_cash_out_items DROP COLUMN day");
   rewound.exec("DROP INDEX IF EXISTS nw_balances_snapshot_account_unique");
   rewound.exec("DROP INDEX IF EXISTS monthly_bill_versions_bill_effective_unique");
   rewound.exec("DROP INDEX IF EXISTS yearly_expense_versions_expense_effective_unique");
-  rewound.exec(`PRAGMA user_version = ${MIGRATIONS.length - 2}`);
+  rewound.exec("ALTER TABLE nw_snapshots DROP COLUMN revision");
+  rewound.exec(`PRAGMA user_version = ${MIGRATIONS.length - 3}`);
   const rewoundBytes = rewound.export();
   rewound.close();
   // Write the rewound image as the next generation, by hand,
@@ -1103,6 +1114,333 @@ eq(
     "L13 the surviving version is one writer's amount",
     [20000, 30000].includes(octVersions[0]?.amountCents),
     `amount ${octVersions[0]?.amountCents}`,
+  );
+}
+
+// ---------- M. CAS sweep (contract v65) ----------
+// Every family follows the same script on a fresh store: load a
+// record, move it with a newer (base-less, legacy-tolerated)
+// write, then prove (a) a stale-base save is refused with
+// conflict: true and the stored newer value intact, and (b) a
+// fresh-base save on the current value succeeds.
+{
+  const storeM = memoryStore();
+  const rtM = await createRuntime({ store: storeM, wasmUrl: wasmPath });
+  await rtM.call("clearAllData", { confirm: "delete everything" });
+  const dash = (month: string) => rtM.call<any>("getDashboard", { month });
+
+  // --- F13: transaction guarded update ---
+  const txnAdd = await rtM.call<any>("addTransaction", {
+    date: "2026-10-05",
+    description: "CAS Groceries",
+    amountCents: 10000,
+    sourceType: "checking",
+    accountName: "Checking",
+    kind: "spending",
+    category: "Other",
+    yearlyExpenseId: null,
+    fitId: null,
+  });
+  check("M1 transaction added", typeof txnAdd.id === "number", JSON.stringify(txnAdd));
+  const txnOf = async () =>
+    (await dash("2026-10")).monthTransactions.find((t: any) => t.id === txnAdd.id);
+  const t0 = await txnOf();
+  const txnBase = {
+    date: t0.date,
+    description: t0.description,
+    amountCents: t0.amountCents,
+    sourceType: t0.sourceType,
+    accountName: t0.accountName,
+    kind: t0.kind,
+    category: t0.category,
+    yearlyExpenseId: t0.yearlyExpenseId ?? null,
+  };
+  const txnNewer = await rtM.call<any>("updateTransaction", {
+    id: txnAdd.id, ...txnBase, amountCents: 20000, fitId: null,
+  });
+  eq("M2 newer base-less transaction write lands", txnNewer.ok, true);
+  const txnStale = await rtM.call<any>("updateTransaction", {
+    id: txnAdd.id, ...txnBase, amountCents: 15000, fitId: null, base: txnBase,
+  });
+  eq("M3 stale transaction save refused as conflict", [txnStale.ok, txnStale.conflict], [false, true]);
+  eq("M4 stored transaction keeps the newer value", (await txnOf())?.amountCents, 20000);
+  const txnBase2 = { ...txnBase, amountCents: 20000 };
+  const txnFresh = await rtM.call<any>("updateTransaction", {
+    id: txnAdd.id, ...txnBase2, amountCents: 25000, fitId: null, base: txnBase2,
+  });
+  eq("M5 fresh-base transaction save succeeds", txnFresh.ok, true);
+  eq("M6 fresh value stored", (await txnOf())?.amountCents, 25000);
+
+  // --- F14: cash-out item guarded update ---
+  const itemAdd = await rtM.call<any>("addCashOutItem", {
+    month: "2026-10", day: 3, description: "CAS Item", amountCents: 7500, note: null,
+  });
+  const itemOf = async () =>
+    (await dash("2026-10")).cashOutItems.find((i: any) => i.id === itemAdd.id);
+  const i0 = await itemOf();
+  const itemBase = {
+    month: i0.month, description: i0.description, amountCents: i0.amountCents,
+    note: i0.note ?? null, day: i0.day,
+  };
+  await rtM.call("updateCashOutItem", { id: itemAdd.id, ...itemBase, amountCents: 10000 });
+  const itemStale = await rtM.call<any>("updateCashOutItem", {
+    id: itemAdd.id, ...itemBase, amountCents: 8000, base: itemBase,
+  });
+  eq("M7 stale cash-out item save refused as conflict", [itemStale.ok, itemStale.conflict], [false, true]);
+  eq("M8 stored item keeps the newer value", (await itemOf())?.amountCents, 10000);
+  const itemBase2 = { ...itemBase, amountCents: 10000 };
+  const itemFresh = await rtM.call<any>("updateCashOutItem", {
+    id: itemAdd.id, ...itemBase2, amountCents: 11000, base: itemBase2,
+  });
+  eq("M9 fresh-base item save succeeds", itemFresh.ok, true);
+
+  // --- F15: monthly summary base ---
+  const sumNew = await rtM.call<any>("upsertMonthlySummary", {
+    month: "2026-11", cashOutCents: 30000, base: { cashOutCents: null },
+  });
+  eq("M10 summary save on a null base (no stored total) succeeds", sumNew.ok, true);
+  const sumFresh = await rtM.call<any>("upsertMonthlySummary", {
+    month: "2026-11", cashOutCents: 50000, base: { cashOutCents: 30000 },
+  });
+  eq("M11 fresh-base summary save succeeds", sumFresh.ok, true);
+  const sumStale = await rtM.call<any>("upsertMonthlySummary", {
+    month: "2026-11", cashOutCents: 45000, base: { cashOutCents: 30000 },
+  });
+  eq("M12 stale summary save refused as conflict", [sumStale.ok, sumStale.conflict], [false, true]);
+  const sumStored = (await dash("2026-11")).summaries.find((s: any) => s.month === "2026-11");
+  eq("M13 stored month total keeps the newer value", sumStored?.cashOutCents, 50000);
+
+  // --- F18 + F16: monthly bill fields and amount version ---
+  const billAdd = await rtM.call<any>("addMonthlyBill", {
+    name: "CAS Bill", amountCents: 10000, effectiveFrom: "2026-10", paidBy: "Checking",
+  });
+  const billOf = async () =>
+    (await dash("2026-10")).monthlyBills.find((b: any) => b.id === billAdd.id);
+  const b0 = await billOf();
+  const billBase = {
+    name: b0.name, paidBy: b0.paidBy, notes: b0.notes ?? null,
+    category: b0.category, keepLightsOn: b0.keepLightsOn,
+  };
+  await rtM.call("updateMonthlyBill", { id: billAdd.id, ...billBase, keepLightsOn: true });
+  const billStale = await rtM.call<any>("updateMonthlyBill", {
+    id: billAdd.id, ...billBase, name: "CAS Bill Renamed", base: billBase,
+  });
+  eq("M14 stale bill save refused as conflict", [billStale.ok, billStale.conflict], [false, true]);
+  const bAfter = await billOf();
+  eq("M15 stored bill keeps the newer fields", [bAfter?.name, bAfter?.keepLightsOn], ["CAS Bill", true]);
+  const billBase2 = { ...billBase, keepLightsOn: true };
+  const billFresh = await rtM.call<any>("updateMonthlyBill", {
+    id: billAdd.id, ...billBase2, name: "CAS Bill Renamed", base: billBase2,
+  });
+  eq("M16 fresh-base bill save succeeds", billFresh.ok, true);
+  const amtFresh = await rtM.call<any>("setMonthlyBillAmount", {
+    billId: billAdd.id, amountCents: 20000, effectiveFrom: "2026-10",
+    base: { amountCents: 10000 },
+  });
+  eq("M17 fresh-base amount save succeeds", amtFresh.ok, true);
+  const amtStale = await rtM.call<any>("setMonthlyBillAmount", {
+    billId: billAdd.id, amountCents: 15000, effectiveFrom: "2026-10",
+    base: { amountCents: 10000 },
+  });
+  eq("M18 stale amount save refused as conflict", [amtStale.ok, amtStale.conflict], [false, true]);
+  const octVersion = (await billOf())?.history.find((h: any) => h.effectiveFrom === "2026-10");
+  eq("M19 stored version keeps the newer amount", octVersion?.amountCents, 20000);
+
+  // --- F17: yearly expense parent + version ---
+  const yrAdd = await rtM.call<any>("addYearlyExpense", {
+    name: "CAS Insurance", frequency: "yearly", expectedCents: 120000,
+    dueMonth: 6, paidByType: "checking", paidByName: "Checking",
+    category: "Insurance", keepLightsOn: true, effectiveFrom: "2026-01",
+  });
+  check("M20 yearly expense added", typeof yrAdd.id === "number", JSON.stringify(yrAdd));
+  const yrOf = async () =>
+    (await dash("2026-10")).yearly.find((y: any) => y.id === yrAdd.id);
+  const yrBase = {
+    name: "CAS Insurance", dueMonth: 6, paidByType: "checking",
+    paidByName: "Checking", category: "Insurance", keepLightsOn: true,
+    version: { expectedCents: 120000, frequency: "yearly" },
+  };
+  const yrNewer = await rtM.call<any>("updateYearlyExpense", {
+    id: yrAdd.id, name: "CAS Insurance", frequency: "yearly",
+    expectedCents: 240000, dueMonth: 6, paidByType: "checking",
+    paidByName: "Checking", category: "Insurance", keepLightsOn: true,
+    effectiveFrom: "2026-01",
+  });
+  eq("M21 newer base-less yearly write lands", yrNewer.ok, true);
+  const yrStale = await rtM.call<any>("updateYearlyExpense", {
+    id: yrAdd.id, name: "CAS Insurance", frequency: "yearly",
+    expectedCents: 240000, dueMonth: 6, paidByType: "checking",
+    paidByName: "Checking", category: "Insurance", keepLightsOn: true,
+    effectiveFrom: "2026-01", base: yrBase,
+  });
+  eq("M22 stale yearly save refused (same-month version moved)", [yrStale.ok, yrStale.conflict], [false, true]);
+  eq("M23 stored version keeps the newer amount", (await yrOf())?.latestExpectedCents, 240000);
+  const yrBase2 = { ...yrBase, version: { expectedCents: 240000, frequency: "yearly" as const } };
+  const yrFresh = await rtM.call<any>("updateYearlyExpense", {
+    id: yrAdd.id, name: "CAS Insurance", frequency: "yearly",
+    expectedCents: 240000, dueMonth: 6, paidByType: "checking",
+    paidByName: "Checking", category: "Taxes", keepLightsOn: true,
+    effectiveFrom: "2026-01", base: yrBase2,
+  });
+  eq("M24 fresh-base yearly save succeeds", yrFresh.ok, true);
+  eq("M25 fresh category stored", (await yrOf())?.category, "Taxes");
+
+  // --- F26: reserve settings pair ---
+  await rtM.call("updateSettings", { openingReserveCents: 100000, reserveStartMonth: "2026-01" });
+  const setStale = await rtM.call<any>("updateSettings", {
+    openingReserveCents: 150000, reserveStartMonth: "2026-01",
+    base: { openingReserveCents: 50000, reserveStartMonth: null },
+  });
+  eq("M26 stale settings save refused as conflict", [setStale.ok, setStale.conflict], [false, true]);
+  eq("M27 stored opening reserve intact", (await dash("2026-10")).openingReserveCents, 100000);
+  const setFresh = await rtM.call<any>("updateSettings", {
+    openingReserveCents: 200000, reserveStartMonth: "2026-01",
+    base: { openingReserveCents: 100000, reserveStartMonth: "2026-01" },
+  });
+  eq("M28 fresh-base settings save succeeds", setFresh.ok, true);
+  eq("M29 fresh reserve stored", (await dash("2026-10")).openingReserveCents, 200000);
+
+  // --- F11 + F12: NW snapshot revision counter ---
+  const acctM = await rtM.call<any>("addNwAccount", { name: "CAS Bank" });
+  const snapM = await rtM.call<any>("addNwSnapshot", {
+    date: "2026-10-01", note: null,
+    balances: [{ accountId: acctM.id, balanceCents: 10000000, splits: null }],
+  });
+  check("M30 snapshot added", snapM.ok === true, snapM.reason);
+  const nwOf = async () =>
+    (await rtM.call<any>("getNetWorth", {})).snapshots.find((s: any) => s.id === snapM.id);
+  const rev0 = (await nwOf())?.revision;
+  eq("M31 a new snapshot starts at revision 0", rev0, 0);
+  const balSave = await rtM.call<any>("updateNwBalance", {
+    snapshotId: snapM.id, accountId: acctM.id, balanceCents: 15000000,
+    splits: null, baseRevision: rev0,
+  });
+  eq("M32 balance save at the loaded revision succeeds and bumps it", [balSave.ok, balSave.revision], [true, 1]);
+  const snapStale = await rtM.call<any>("updateNwSnapshot", {
+    id: snapM.id, date: "2026-10-01", note: "stale edit",
+    balances: [{ accountId: acctM.id, balanceCents: 10000000, splits: null }],
+    baseRevision: rev0,
+  });
+  eq("M33 stale whole-snapshot save refused as conflict", [snapStale.ok, snapStale.conflict], [false, true]);
+  const nwAfterStale = await nwOf();
+  eq("M34 stored snapshot keeps the corrected balance and revision", [nwAfterStale?.totalCents, nwAfterStale?.revision], [15000000, 1]);
+  const balStale = await rtM.call<any>("updateNwBalance", {
+    snapshotId: snapM.id, accountId: acctM.id, balanceCents: 10000000,
+    splits: null, baseRevision: rev0,
+  });
+  eq("M35 stale balance save refused as conflict", [balStale.ok, balStale.conflict], [false, true]);
+  const snapFresh = await rtM.call<any>("updateNwSnapshot", {
+    id: snapM.id, date: "2026-10-01", note: "fresh edit",
+    balances: [{ accountId: acctM.id, balanceCents: 15000000, splits: null }],
+    baseRevision: 1,
+  });
+  eq("M36 fresh whole-snapshot save succeeds and bumps the revision", [snapFresh.ok, snapFresh.revision], [true, 2]);
+
+  // --- F19: account rename guard ---
+  await rtM.call("renameNwAccount", { id: acctM.id, name: "CAS Bank 2" });
+  const acctBaseStale = { name: "CAS Bank", propertyKind: "none" as const, custodial: false };
+  const renStale = await rtM.call<any>("renameNwAccount", {
+    id: acctM.id, name: "CAS Bank Stale", propertyKind: "none", custodial: false,
+    base: acctBaseStale,
+  });
+  eq("M37 stale rename refused as conflict", [renStale.ok, renStale.conflict], [false, true]);
+  const acctOf = async () =>
+    (await rtM.call<any>("getNetWorth", {})).accounts.find((a: any) => a.id === acctM.id);
+  eq("M38 stored account keeps the newer name", (await acctOf())?.name, "CAS Bank 2");
+  const renFresh = await rtM.call<any>("renameNwAccount", {
+    id: acctM.id, name: "CAS Bank 3", propertyKind: "none", custodial: false,
+    base: { name: "CAS Bank 2", propertyKind: "none", custodial: false },
+  });
+  eq("M39 fresh-base rename succeeds", renFresh.ok, true);
+
+  // --- F22: Roth scenario-level CAS ---
+  await rtM.call("resetRothPlanner", {});
+  const planner0 = await rtM.call<any>("getRothPlanner", {});
+  check("M40 planner defaults present after reset", planner0.saved != null);
+  const scSave = await rtM.call<any>("saveRothScenario", { ...planner0.saved });
+  eq("M41 scenario saved", scSave.ok, true);
+  const scName = scSave.scenarios[0]?.name;
+  const planner1 = await rtM.call<any>("getRothPlanner", {});
+  const sc0 = planner1.scenarios.find((s: any) => s.name === scName);
+  const { name: _scName, ...scBase } = sc0;
+  const scNewer = await rtM.call<any>("updateRothScenario", {
+    name: scName, ...scBase, annualSpendingCents: 9000000,
+  });
+  eq("M42 newer base-less scenario write lands", scNewer.ok, true);
+  const scStale = await rtM.call<any>("updateRothScenario", {
+    name: scName, ...scBase, annualSpendingCents: 8000000, baseScenario: scBase,
+  });
+  eq("M43 stale scenario save refused as conflict", [scStale.ok, scStale.conflict], [false, true]);
+  const planner2 = await rtM.call<any>("getRothPlanner", {});
+  eq(
+    "M44 stored scenario keeps the newer payload",
+    planner2.scenarios.find((s: any) => s.name === scName)?.annualSpendingCents,
+    9000000,
+  );
+  const scBase2 = { ...scBase, annualSpendingCents: 9000000 };
+  const scFresh = await rtM.call<any>("updateRothScenario", {
+    name: scName, ...scBase2, annualSpendingCents: 9500000, baseScenario: scBase2,
+  });
+  eq("M45 fresh-base scenario save succeeds", scFresh.ok, true);
+  // A write to a DIFFERENT scenario moves the blob but must not
+  // refuse a save whose own scenario base is still current.
+  const scSave2 = await rtM.call<any>("saveRothScenario", { ...planner0.saved });
+  eq("M46 second scenario saved", scSave2.ok, true);
+  const scBase3 = { ...scBase2, annualSpendingCents: 9500000 };
+  const scUnrelated = await rtM.call<any>("updateRothScenario", {
+    name: scName, ...scBase3, annualSpendingCents: 9600000, baseScenario: scBase3,
+  });
+  eq("M47 save succeeds after an unrelated scenario write moved the blob", scUnrelated.ok, true);
+
+  // --- F21 remainder: baseline retry after a refusal ---
+  // Verdict evidence: a saveRetirementBaseline refused for stale
+  // bases carries the lite record with BOTH fresh revisions, and
+  // a retry using ONLY those carried revisions completes the
+  // baseline write — no code change was needed. (A stage-
+  // "baseline" conflict itself needs two writers racing between
+  // the pair's two commits and cannot be forced sequentially
+  // through the public actions; the retry path it depends on is
+  // the one exercised here.)
+  const retFields = {
+    portfolioCents: 10000000, spendingCents: 8000000, currentAge: 55,
+    retirementAge: 60, endAge: 90, stocksPct: 60, extraIncomeCents: null,
+    extraIncomeStartAge: null, expectedReturnPct: 5, volatilityPct: 10,
+    strategy: "constant", percentOfPortfolio: null, guardrailsCutPct: null,
+    guardrailsRaisePct: null, guardrailsAdjustmentPct: null,
+    phaseStartAge: null, phaseDeclinePct: null,
+  };
+  const retSave = await rtM.call<any>("saveRetirementCalc", {
+    ...retFields, baseRevision: 0,
+  });
+  eq("M48 retirement inputs saved at revision 1", [retSave.ok, retSave.revision], [true, 1]);
+  const baseSave = await rtM.call<any>("saveRetirementBaseline", {
+    ...retFields, spendingCents: 10000000, baseRevision: 1, baseBaselineRevision: 0,
+  });
+  eq("M49 baseline pair save completes", [baseSave.ok, baseSave.baselineKind, baseSave.baseline?.spendingCents], [true, "saved", 10000000]);
+  const retSave2 = await rtM.call<any>("saveRetirementCalc", {
+    ...retFields, spendingCents: 11000000, baseRevision: 2,
+  });
+  eq("M50 working inputs advance to revision 3 (baseline now behind)", [retSave2.ok, retSave2.revision], [true, 3]);
+  const retryStale = await rtM.call<any>("saveRetirementBaseline", {
+    ...retFields, spendingCents: 11000000, baseRevision: 1, baseBaselineRevision: 0,
+  });
+  eq("M51 retry with the original bases is refused", retryStale.ok, false);
+  eq(
+    "M52 the refusal carries both fresh revisions",
+    [retryStale.record?.revision, retryStale.record?.baselineRevision],
+    [3, 1],
+  );
+  const retryFresh = await rtM.call<any>("saveRetirementBaseline", {
+    ...retFields, spendingCents: 11000000,
+    baseRevision: retryStale.record.revision,
+    baseBaselineRevision: retryStale.record.baselineRevision,
+  });
+  eq("M53 retry on the carried revisions completes the pair", [retryFresh.ok, retryFresh.baselineKind, retryFresh.baseline?.spendingCents], [true, "saved", 11000000]);
+  const retFinal = await rtM.call<any>("getRetirementCalc", {});
+  eq(
+    "M54 baseline now equals the working inputs",
+    [retFinal.baseline?.spendingCents, retFinal.saved?.spendingCents],
+    [11000000, 11000000],
   );
 }
 
