@@ -577,444 +577,6 @@ function Sparkline({ series, color }: { series: SeriesPoint[]; color: string }) 
   );
 }
 
-/* ---------------- net worth over time — growth area chart ----------------
-   Contract v68: the simple Boldin-style growth picture picked
-   from the October chart menu — ONE area + line of total
-   net worth, one point per snapshot on record.
-   DATA RULE (the chart can never disagree with the headline):
-   every point is plotted from the snapshot's `totalCents`
-   VERBATIM — the same field the stat strip, the main chart and
-   the History grid read. getNetWorth computes it server-side
-   (nwCore's snapshotTotals) under exactly the view's rules:
-   custodial accounts never count, and property counts only
-   while the "Include house & mortgage" toggle is on. This
-   component recomputes nothing, so flipping the toggle reloads
-   totalCents and the chart follows it automatically.
-   RENDERING (the app's chart rules): an area fill under a line in
-   the main chart's Total idiom (TOTAL_COLOR, fillOpacity 0.16);
-   a value label at EVERY point — abbreviated (fmtCompact) for
-   intermediate points, the full figure on the latest point; a
-   y-axis scale with gridlines and dollar labels; x-axis
-   date/year labels thinned the Tax-by-year way (contract v62)
-   when points crowd. No step/waterfall forms, and no horizontal
-   scrolling at phone width: the plot is a fluid %/px layout,
-   crowded point labels stagger over three rows (the latest
-   point's full-figure label on a fourth row of its own) and
-   every label row is spread against the measured plot width
-   so dense time clusters stay readable instead of widening
-   the card. With fewer than two snapshots
-   there is no line to draw, so the card renders its empty
-   state instead of a broken axis. */
-
-// Compact point label: fmtCompact with the minus sign in front
-// of the dollar sign (−$1.23M, not $-1.23M).
-function fmtPointLabel(cents: number): string {
-  return cents < 0 ? `−${fmtCompact(-cents)}` : fmtCompact(cents);
-}
-
-// Finer "nice" axis ceiling for this chart's y scale: the
-// shared niceCeilDollars steps (1, 2, 2.5, 5, 10 × a power of
-// ten) would put a $5.41M maximum on a $10M axis and flatten
-// the line into the bottom half, so this chart rounds up to
-// the next of 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5, 8, 10 instead —
-// the five gridline ticks stay evenly spaced either way.
-function niceCeilChartDollars(rawDollars: number): number {
-  if (!Number.isFinite(rawDollars) || rawDollars <= 0) return 100;
-  const mag = Math.pow(10, Math.floor(Math.log10(rawDollars)));
-  const norm = rawDollars / mag;
-  const steps = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5, 8, 10];
-  const nice = steps.find((s) => norm <= s) ?? 10;
-  return nice * mag;
-}
-
-/* Label-collision spreading for one row of chart labels:
-   given each label's point position (px) and estimated width,
-   clamp every label inside the plot and push neighbours apart
-   (forward pass, then a backward pass if the row overflows
-   the right edge) so no two labels on the row overlap. Labels
-   keep their order and stay as close to their points as the
-   crowding allows — the standard way dense time clusters
-   (e.g. three snapshots in one week) stay readable at phone
-   width, where their points sit only a few px apart. */
-function spreadLabelCenters(
-  items: { idx: number; xPx: number; w: number }[],
-  width: number,
-): Map<number, number> {
-  const out = new Map<number, number>();
-  if (items.length === 0) return out;
-  const sorted = [...items].sort((a, b) => a.xPx - b.xPx);
-  const centers = sorted.map((it) =>
-    Math.min(Math.max(it.xPx, it.w / 2), Math.max(width - it.w / 2, it.w / 2)),
-  );
-  for (let k = 1; k < sorted.length; k++) {
-    const prev = sorted[k - 1];
-    const cur = sorted[k];
-    if (!prev || !cur) continue;
-    const minC = (centers[k - 1] ?? 0) + prev.w / 2 + cur.w / 2 + 3;
-    if ((centers[k] ?? 0) < minC) centers[k] = minC;
-  }
-  const lastK = sorted.length - 1;
-  const lastIt = sorted[lastK];
-  if (lastIt && (centers[lastK] ?? 0) + lastIt.w / 2 > width) {
-    centers[lastK] = Math.max(width - lastIt.w / 2, lastIt.w / 2);
-    for (let k = lastK - 1; k >= 0; k--) {
-      const next = sorted[k + 1];
-      const cur = sorted[k];
-      if (!next || !cur) continue;
-      const maxC = (centers[k + 1] ?? 0) - next.w / 2 - cur.w / 2 - 3;
-      if ((centers[k] ?? 0) > maxC) centers[k] = maxC;
-    }
-  }
-  sorted.forEach((it, k) => out.set(it.idx, centers[k] ?? it.xPx));
-  return out;
-}
-
-// X-axis date label: a short "Jan 6" inside one calendar year,
-// "Jan 2026" when the snapshots span more than one year.
-function fmtChartDate(date: string, multiYear: boolean): string {
-  if (multiYear) return fmtMonthYear(date);
-  const m = Number(date.slice(5, 7));
-  const d = Number(date.slice(8, 10));
-  return `${MONTH_SHORT[m - 1] ?? ""} ${d}`;
-}
-
-function NetWorthGrowthChart({ snapshots }: { snapshots: NwSnapshot[] }) {
-  // Measured plot width (px) driving the label spreading
-  // below; 0 until the first measure lands, in which case the
-  // labels fall back to their %-anchored positions for a frame.
-  const plotRef = useRef<HTMLDivElement>(null);
-  const [plotW, setPlotW] = useState(0);
-  const hasLine = snapshots.length >= 2;
-  useEffect(() => {
-    if (!hasLine) return;
-    const el = plotRef.current;
-    if (!el) return;
-    const update = () => setPlotW(el.clientWidth);
-    update();
-    if (typeof ResizeObserver === "undefined") {
-      window.addEventListener("resize", update);
-      return () => window.removeEventListener("resize", update);
-    }
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [hasLine]);
-  const first = snapshots[0] ?? null;
-  const last = snapshots[snapshots.length - 1] ?? null;
-  const header = (
-    <div className="flex flex-wrap items-center">
-      <h3 className="display text-lg font-semibold">Net worth over time</h3>
-      <InfoNote
-        text="Each point is one snapshot's total net worth, plotted from the same totals as the figures beside it: custodial accounts never count, and property counts only while “Include house & mortgage” is on — so this chart follows that toggle."
-        ariaLabel="About the net worth over time growth chart"
-        align="left"
-      />
-    </div>
-  );
-  if (!first || !last || snapshots.length < 2) {
-    return (
-      <section
-        aria-label="Net worth over time — growth chart"
-        className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
-      >
-        {header}
-        <p className="mt-2 text-sm text-[var(--dim)]">
-          {first
-            ? "Only one snapshot so far — a line needs at least two snapshots. Add another snapshot and the chart will build itself from those records."
-            : "No snapshots yet — the chart starts with the first snapshot you record."}
-        </p>
-      </section>
-    );
-  }
-
-  const n = snapshots.length;
-  const staggered = n > 7;
-  // Fixed plot height: the label zone above the plot holds the
-  // point labels (three staggered rows when points crowd, one
-  // row otherwise); the axis itself always spans the same plot
-  // height beneath it, so labels can never clip into the title.
-  const TOTAL_H = 288;
-  const LABEL_ZONE = staggered ? 70 : 36;
-  const PLOT_H = TOTAL_H - LABEL_ZONE - 4;
-
-  const tMin = tsOf(first.date);
-  const tMax = tsOf(last.date);
-  const tSpan = tMax - tMin || 1;
-  const dollars = snapshots.map((s) => s.totalCents / 100);
-  const maxDollars = Math.max(...dollars);
-  const minDollars = Math.min(...dollars);
-  let yMax = maxDollars > 0 ? niceCeilChartDollars(maxDollars) : 0;
-  const yMin = minDollars < 0 ? -niceCeilChartDollars(-minDollars) : 0;
-  if (yMax - yMin <= 0) yMax = yMin + 100;
-  const yRange = yMax - yMin;
-  const yTopPx = (vDollars: number) =>
-    LABEL_ZONE + ((yMax - vDollars) / yRange) * PLOT_H;
-  const yTicks = [0, 1, 2, 3, 4].map((i) => yMax - (yRange * i) / 4);
-
-  const points = snapshots.map((s, i) => {
-    const isLastPt = i === n - 1;
-    return {
-      date: s.date,
-      cents: s.totalCents,
-      xPct: ((tsOf(s.date) - tMin) / tSpan) * 100,
-      yPx: yTopPx(s.totalCents / 100),
-      // Point labels stagger over three rows when points crowd,
-      // so neighbours never sit on the same line at phone width;
-      // the latest point's full-figure label gets a fourth row
-      // of its own above them, so it can never run into the
-      // abbreviated label of a nearby earlier point.
-      labelOffsetPx: !staggered
-        ? 8
-        : isLastPt
-          ? 51
-          : 6 + (i % 3) * 15,
-      isLast: isLastPt,
-    };
-  });
-  const linePath = points
-    .map((p, i) => `${i === 0 ? "M" : "L"}${p.xPct.toFixed(2)} ${p.yPx.toFixed(2)}`)
-    .join(" ");
-  const areaPath = `${linePath} L${(points[n - 1]?.xPct ?? 0).toFixed(2)} ${(LABEL_ZONE + PLOT_H).toFixed(2)} L${(points[0]?.xPct ?? 0).toFixed(2)} ${(LABEL_ZONE + PLOT_H).toFixed(2)} Z`;
-  const multiYear = first.date.slice(0, 4) !== last.date.slice(0, 4);
-  // X labels, thinned the Tax-by-year way (contract v62) when
-  // points crowd: with few points every date is labelled; once
-  // crowded, labels are the first point, the last point and
-  // every fifth point, any label fewer than three points after
-  // the previous kept label is dropped, and the final point
-  // wins over a crowding tick.
-  const labelIdxSet: Set<number> = (() => {
-    if (n <= 7) return new Set(points.map((_, i) => i));
-    const wanted = new Set<number>([0, n - 1]);
-    points.forEach((_, i) => {
-      if (i % 5 === 0) wanted.add(i);
-    });
-    const sorted = [...wanted].sort((a, b) => a - b);
-    const kept: number[] = [];
-    for (const idx of sorted) {
-      const prev = kept[kept.length - 1];
-      if (prev != null && idx - prev < 3) {
-        if (idx === n - 1 && prev !== 0) kept[kept.length - 1] = idx;
-        continue;
-      }
-      kept.push(idx);
-    }
-    return new Set(kept);
-  })();
-  // Edge labels anchor inward so they never run past the plot's
-  // ends (and into the y-axis column or off the card) at phone
-  // width; middle labels centre on their point.
-  const edgeTransform = (i: number) =>
-    i === 0
-      ? "translateX(-8%)"
-      : i === n - 1
-        ? "translateX(-92%)"
-        : "translateX(-50%)";
-  /* Label centres, spread per row against the measured plot
-     width (see spreadLabelCenters): point labels spread within
-     their stagger row (the latest point's label is its own
-     fourth row when staggered, matching labelOffsetPx above),
-     and the kept x labels spread within their row — one row,
-     or two alternating rows when staggered. Null until the
-     plot has been measured; the renders then use the
-     %-anchored fallback positions instead. */
-  const pointLabelText = points.map((p) =>
-    p.isLast ? fmt(p.cents) : fmtPointLabel(p.cents),
-  );
-  const spreadByRow = (
-    entries: { idx: number; row: number; xPct: number; text: string; charPx: number }[],
-  ): Map<number, number> => {
-    const merged = new Map<number, number>();
-    const rows = new Map<number, { idx: number; xPx: number; w: number }[]>();
-    for (const e of entries) {
-      const arr = rows.get(e.row) ?? [];
-      arr.push({
-        idx: e.idx,
-        xPx: (e.xPct / 100) * plotW,
-        w: e.text.length * e.charPx + 6,
-      });
-      rows.set(e.row, arr);
-    }
-    for (const arr of rows.values()) {
-      for (const [idx, c] of spreadLabelCenters(arr, plotW)) merged.set(idx, c);
-    }
-    return merged;
-  };
-  const pointCenters: Map<number, number> | null =
-    plotW > 0
-      ? spreadByRow(
-          points.map((p, i) => ({
-            idx: i,
-            row: !staggered ? 0 : p.isLast ? 3 : i % 3,
-            xPct: p.xPct,
-            text: pointLabelText[i] ?? "",
-            charPx: 6.4,
-          })),
-        )
-      : null;
-  const keptIdx = [...labelIdxSet].sort((a, b) => a - b);
-  const xLabelText = keptIdx.map((i) =>
-    fmtChartDate(points[i]?.date ?? "", multiYear),
-  );
-  const xCenters: Map<number, number> | null =
-    plotW > 0
-      ? spreadByRow(
-          keptIdx.map((idx, order) => ({
-            idx,
-            row: staggered ? order % 2 : 0,
-            xPct: points[idx]?.xPct ?? 0,
-            text: xLabelText[order] ?? "",
-            charPx: 5.9,
-          })),
-        )
-      : null;
-
-  return (
-    <section
-      aria-label="Net worth over time — growth chart"
-      className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
-    >
-      {header}
-      <ul className="sr-only">
-        {points.map((p) => (
-          <li key={p.date}>
-            {fmtDateLong(p.date)}: {fmt(p.cents)}
-          </li>
-        ))}
-      </ul>
-      <div className="mt-2 flex gap-2">
-        <div
-          className="relative w-14 shrink-0"
-          style={{ height: TOTAL_H }}
-          aria-hidden="true"
-        >
-          {yTicks.map((v) => (
-            <span
-              key={v}
-              className="tnum absolute right-0 text-[10px] whitespace-nowrap text-[var(--dim)]"
-              style={{ top: yTopPx(v), transform: "translateY(-50%)" }}
-            >
-              {fmtPointLabel(Math.round(v * 100))}
-            </span>
-          ))}
-        </div>
-        <div
-          ref={plotRef}
-          className="relative min-w-0 flex-1"
-          style={{ height: TOTAL_H }}
-          role="img"
-          aria-label={`Area chart of total net worth from ${fmt(first.totalCents)} on ${fmtDateLong(first.date)} to ${fmt(last.totalCents)} on ${fmtDateLong(last.date)}, one point per snapshot.`}
-        >
-          {yTicks.map((v) => (
-            <div
-              key={v}
-              aria-hidden="true"
-              className="absolute right-0 left-0 border-t border-[var(--border)]"
-              style={{ top: yTopPx(v) }}
-            />
-          ))}
-          {yMin < 0 && (
-            <div
-              aria-hidden="true"
-              className="absolute right-0 left-0 border-t border-[var(--dim)]"
-              style={{ top: yTopPx(0) }}
-            />
-          )}
-          <svg
-            className="absolute inset-0 h-full w-full"
-            viewBox={`0 0 100 ${TOTAL_H}`}
-            preserveAspectRatio="none"
-            aria-hidden="true"
-          >
-            <path d={areaPath} fill={TOTAL_COLOR} fillOpacity={0.16} />
-            <path
-              d={linePath}
-              fill="none"
-              stroke={TOTAL_COLOR}
-              strokeWidth={2.2}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-          {/* Dots first, labels second (two passes): a later
-              point's dot must never paint over an earlier
-              point's label in a dense cluster. */}
-          {points.map((p) => (
-            <span
-              key={p.date}
-              aria-hidden="true"
-              className="absolute block h-[9px] w-[9px] rounded-full"
-              style={{
-                left: `${p.xPct}%`,
-                top: p.yPx,
-                transform: "translate(-50%, -50%)",
-                background: TOTAL_COLOR,
-                boxShadow: "0 0 0 2px var(--surface)",
-              }}
-            />
-          ))}
-          {points.map((p, i) => (
-            <span
-              key={p.date}
-              aria-hidden="true"
-              className={`tnum absolute text-[11px] font-semibold whitespace-nowrap ${
-                p.isLast ? "text-[var(--accent)]" : "text-[var(--text)]"
-              }`}
-              style={{
-                left:
-                  pointCenters != null
-                    ? `${pointCenters.get(i) ?? 0}px`
-                    : `${p.xPct}%`,
-                top: p.yPx - p.labelOffsetPx - 13,
-                transform:
-                  pointCenters != null
-                    ? "translateX(-50%)"
-                    : edgeTransform(i),
-                // A surface halo so a label stays readable
-                // where the line itself passes behind it in a
-                // dense cluster.
-                textShadow:
-                  "0 0 4px var(--surface), 0 0 4px var(--surface), 0 0 4px var(--surface)",
-              }}
-            >
-              {pointLabelText[i] ?? ""}
-            </span>
-          ))}
-        </div>
-      </div>
-      <div className="mt-1 flex gap-2" aria-hidden="true">
-        <div className="w-14 shrink-0" />
-        <div
-          className="relative min-w-0 flex-1"
-          style={{ height: staggered ? 34 : 20 }}
-        >
-          {keptIdx.map((idx, order) => {
-            const p = points[idx];
-            if (!p) return null;
-            return (
-              <span
-                key={p.date}
-                className="absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
-                style={{
-                  left:
-                    xCenters != null
-                      ? `${xCenters.get(idx) ?? 0}px`
-                      : `${p.xPct}%`,
-                  top: staggered ? (order % 2) * 16 : 0,
-                  transform:
-                    xCenters != null ? "translateX(-50%)" : edgeTransform(idx),
-                }}
-              >
-                {xLabelText[order] ?? ""}
-              </span>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 /* ---------------- snapshot editor ---------------- */
 
 function SnapshotEditor({
@@ -4234,268 +3796,6 @@ export function NetWorthView() {
         </div>
       </section>
 
-      {/* net worth over time — the simple growth area chart
-          (contract v68), directly under the headline total it
-          charts: one labelled point per snapshot, plotted from
-          each snapshot's totalCents verbatim, so it follows the
-          include-property toggle exactly as the strip above does.
-          The detailed multi-mode chart further down is unchanged. */}
-      <NetWorthGrowthChart snapshots={snapshots} />
-
-      {/* current bucket mix — one stacked bar from the latest
-          snapshot's bucket subtotals */}
-      <section
-        aria-label="Current buckets"
-        className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4"
-      >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="display text-lg font-semibold">Current buckets</h3>
-            <p className="mt-0.5 text-sm text-[var(--dim)]">
-              {latest
-                ? `From the ${fmtDateLong(latest.date)} snapshot`
-                : ""}
-            </p>
-          </div>
-          {bucketEntries.length > 0 && (
-            <div className="text-right">
-              <p className="tnum display text-xl font-semibold whitespace-nowrap sm:text-2xl">
-                {fmt(bucketSignedTotal)}
-              </p>
-              {targetCents != null && targetCents > 0 && (
-                <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
-                  {((bucketSignedTotal / targetCents) * 100).toFixed(1)}% of the{" "}
-                  {fmt(targetCents)} target
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-        {bucketEntries.length > 0 ? (
-          <>
-            {bucketMix.length > 0 && (
-            <div
-              className="mt-3 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
-              role="img"
-              aria-label={`Bucket mix: ${bucketMix
-                .map(
-                  (s) =>
-                    `${bucketLabel(s.bucket)} ${fmt(s.cents)}, ${bucketMixTotal > 0 ? ((s.cents / bucketMixTotal) * 100).toFixed(1) : "0.0"} percent`,
-                )
-                .join("; ")}`}
-            >
-              {bucketMix.map((s) => (
-                <div
-                  key={s.bucket}
-                  className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
-                  style={{
-                    width: `${bucketMixTotal > 0 ? (s.cents / bucketMixTotal) * 100 : 0}%`,
-                    background: BUCKET_COLORS[s.bucket],
-                  }}
-                >
-                  {(s.cents / bucketMixTotal) * 100 >= 7 && (
-                    <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
-                      {bucketLabel(s.bucket)}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-            )}
-            <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
-              {bucketMix.map((s) => (
-                <li
-                  key={s.bucket}
-                  className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
-                    style={{ background: BUCKET_COLORS[s.bucket] }}
-                  />
-                  <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                  <span>{fmt(s.cents)}</span>
-                  <span className="text-[var(--dim)]">
-                    ·{" "}
-                    {bucketMixTotal > 0
-                      ? ((s.cents / bucketMixTotal) * 100).toFixed(1)
-                      : "0.0"}
-                    %
-                  </span>
-                </li>
-              ))}
-            </ul>
-            {bucketNegative.length > 0 && (
-              <ul className="mt-2 space-y-1.5" aria-label="Negative buckets">
-                {bucketNegative.map((s) => (
-                  <li
-                    key={s.bucket}
-                    className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
-                      style={{ background: BUCKET_COLORS[s.bucket] }}
-                    />
-                    <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                    <span>{fmt(s.cents)}</span>
-                    <span className="text-[var(--dim)]">
-                      — below zero, so it is not in the bar above; it is
-                      counted in the total at the top
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {bucketMixPropertyNet != null && (
-              <p className="mt-2 text-sm text-[var(--dim)]">
-                Property net {fmt(bucketMixPropertyNet)} is counted in net
-                worth, outside the buckets — so this mix covers the bucketed
-                part of the total.
-              </p>
-            )}
-          </>
-        ) : (
-          <p className="mt-2 text-sm text-[var(--dim)]">
-            No bucket amounts recorded in the latest snapshot yet.
-          </p>
-        )}
-      </section>
-
-      {/* net worth target */}
-      <section
-        aria-label="Net worth target"
-        className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4"
-      >
-        {targetCents == null && !editingTarget ? (
-          <div className="flex flex-wrap items-center gap-3">
-            <p className="text-sm text-[var(--dim)]">No target set yet.</p>
-            <button
-              type="button"
-              aria-label="Set a net worth target"
-              className="text-sm font-medium text-[var(--accent)] underline underline-offset-2 hover:underline"
-              onClick={() => {
-                setTargetInput("");
-                setTargetError("");
-                setEditingTarget(true);
-              }}
-            >
-              Set a net worth target
-            </button>
-          </div>
-        ) : editingTarget ? (
-          <form
-            className="flex flex-wrap items-end gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const parsed = parseBalanceInput(targetInput);
-              if (parsed === undefined || parsed == null || parsed <= 0) {
-                setTargetError("Enter a target amount above $0, e.g. 6000000");
-                return;
-              }
-              setNwTarget.mutate(parsed);
-            }}
-          >
-            <div className="min-w-52 flex-1">
-              <label htmlFor="nw-target-input" className={labelCls}>
-                Net worth target ($)
-              </label>
-              <input
-                id="nw-target-input"
-                type="text"
-                inputMode="decimal"
-                className={inputCls}
-                value={targetInput}
-                onChange={(e) => setTargetInput(e.target.value)}
-                placeholder="e.g. 6,000,000"
-              />
-            </div>
-            <button
-              type="submit"
-              className={btnPrimary}
-              disabled={setNwTarget.isPending}
-            >
-              {setNwTarget.isPending ? "Saving…" : "Save target"}
-            </button>
-            <button
-              type="button"
-              className={btnGhost}
-              onClick={() => {
-                setEditingTarget(false);
-                setTargetError("");
-              }}
-            >
-              Cancel
-            </button>
-            {targetCents != null && (
-              <button
-                type="button"
-                aria-label="Clear net worth target"
-                className="rounded-[var(--radius)] border border-[var(--bad)] px-3 py-2 text-sm font-medium text-[var(--bad)] disabled:opacity-50"
-                disabled={setNwTarget.isPending}
-                onClick={() => setNwTarget.mutate(null)}
-              >
-                Clear target
-              </button>
-            )}
-            {targetError && (
-              <p className="w-full text-sm text-[var(--bad)]">{targetError}</p>
-            )}
-          </form>
-        ) : (
-          <div>
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase">
-                  Net worth target
-                </p>
-                <p className="tnum display mt-1.5 text-xl font-semibold sm:text-2xl">
-                  {fmt(targetCents ?? 0)}
-                </p>
-                <p className="tnum mt-1 text-sm text-[var(--dim)]">
-                  {targetProgressFrac != null
-                    ? `${(targetProgressFrac * 100).toFixed(1)}% reached`
-                    : ""}
-                  {targetRemainingCents != null
-                    ? ` · ${targetRemainingCents === 0 ? "Target reached" : `${fmt(targetRemainingCents)} remaining`}`
-                    : ""}
-                </p>
-                <p className="mt-1 text-sm text-[var(--dim)]">
-                  Rough ETA (pace-based estimate from up to the trailing 12 months):{" "}
-                  <span className="tnum font-medium text-[var(--text)]">
-                    {targetEtaLabel}
-                  </span>
-                </p>
-              </div>
-              <button
-                type="button"
-                aria-label="Edit net worth target"
-                className={btnGhost}
-                onClick={() => {
-                  setTargetInput(String((targetCents ?? 0) / 100));
-                  setTargetError("");
-                  setEditingTarget(true);
-                }}
-              >
-                Edit target
-              </button>
-            </div>
-            <div
-              className="mt-3 h-3 w-full overflow-hidden rounded-full bg-[var(--surface-alt)]"
-              role="img"
-              aria-label={`Progress toward net worth target: ${targetProgressFrac != null ? (targetProgressFrac * 100).toFixed(1) : "0"} percent`}
-            >
-              <div
-                className="h-full rounded-full bg-[var(--accent)]"
-                style={{
-                  width: `${targetProgressFrac != null ? Math.min(Math.max(targetProgressFrac * 100, 0), 100) : 0}%`,
-                }}
-              />
-            </div>
-          </div>
-        )}
-      </section>
-
       {/* main chart */}
       <section
         aria-label="Net worth over time"
@@ -5122,6 +4422,260 @@ export function NetWorthView() {
             </ResponsiveContainer>
           </div>
         </div>
+      </section>
+
+      {/* current bucket mix — one stacked bar from the latest
+          snapshot's bucket subtotals */}
+      <section
+        aria-label="Current buckets"
+        className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="display text-lg font-semibold">Current buckets</h3>
+            <p className="mt-0.5 text-sm text-[var(--dim)]">
+              {latest
+                ? `From the ${fmtDateLong(latest.date)} snapshot`
+                : ""}
+            </p>
+          </div>
+          {bucketEntries.length > 0 && (
+            <div className="text-right">
+              <p className="tnum display text-xl font-semibold whitespace-nowrap sm:text-2xl">
+                {fmt(bucketSignedTotal)}
+              </p>
+              {targetCents != null && targetCents > 0 && (
+                <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
+                  {((bucketSignedTotal / targetCents) * 100).toFixed(1)}% of the{" "}
+                  {fmt(targetCents)} target
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+        {bucketEntries.length > 0 ? (
+          <>
+            {bucketMix.length > 0 && (
+            <div
+              className="mt-3 flex h-9 w-full overflow-hidden rounded-[var(--radius)]"
+              role="img"
+              aria-label={`Bucket mix: ${bucketMix
+                .map(
+                  (s) =>
+                    `${bucketLabel(s.bucket)} ${fmt(s.cents)}, ${bucketMixTotal > 0 ? ((s.cents / bucketMixTotal) * 100).toFixed(1) : "0.0"} percent`,
+                )
+                .join("; ")}`}
+            >
+              {bucketMix.map((s) => (
+                <div
+                  key={s.bucket}
+                  className="flex h-full min-w-0 items-center justify-center overflow-hidden px-1"
+                  style={{
+                    width: `${bucketMixTotal > 0 ? (s.cents / bucketMixTotal) * 100 : 0}%`,
+                    background: BUCKET_COLORS[s.bucket],
+                  }}
+                >
+                  {(s.cents / bucketMixTotal) * 100 >= 7 && (
+                    <span className="text-xs font-semibold whitespace-nowrap text-white [text-shadow:0_1px_2px_rgba(0,0,0,0.45)]">
+                      {bucketLabel(s.bucket)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            )}
+            <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+              {bucketMix.map((s) => (
+                <li
+                  key={s.bucket}
+                  className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+                    style={{ background: BUCKET_COLORS[s.bucket] }}
+                  />
+                  <span className="font-medium">{bucketLabel(s.bucket)}</span>
+                  <span>{fmt(s.cents)}</span>
+                  <span className="text-[var(--dim)]">
+                    ·{" "}
+                    {bucketMixTotal > 0
+                      ? ((s.cents / bucketMixTotal) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {bucketNegative.length > 0 && (
+              <ul className="mt-2 space-y-1.5" aria-label="Negative buckets">
+                {bucketNegative.map((s) => (
+                  <li
+                    key={s.bucket}
+                    className="tnum flex items-baseline gap-1.5 text-sm whitespace-nowrap"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full"
+                      style={{ background: BUCKET_COLORS[s.bucket] }}
+                    />
+                    <span className="font-medium">{bucketLabel(s.bucket)}</span>
+                    <span>{fmt(s.cents)}</span>
+                    <span className="text-[var(--dim)]">
+                      — below zero, so it is not in the bar above; it is
+                      counted in the total at the top
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {bucketMixPropertyNet != null && (
+              <p className="mt-2 text-sm text-[var(--dim)]">
+                Property net {fmt(bucketMixPropertyNet)} is counted in net
+                worth, outside the buckets — so this mix covers the bucketed
+                part of the total.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="mt-2 text-sm text-[var(--dim)]">
+            No bucket amounts recorded in the latest snapshot yet.
+          </p>
+        )}
+      </section>
+
+      {/* net worth target */}
+      <section
+        aria-label="Net worth target"
+        className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3.5 sm:p-4"
+      >
+        {targetCents == null && !editingTarget ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-[var(--dim)]">No target set yet.</p>
+            <button
+              type="button"
+              aria-label="Set a net worth target"
+              className="text-sm font-medium text-[var(--accent)] underline underline-offset-2 hover:underline"
+              onClick={() => {
+                setTargetInput("");
+                setTargetError("");
+                setEditingTarget(true);
+              }}
+            >
+              Set a net worth target
+            </button>
+          </div>
+        ) : editingTarget ? (
+          <form
+            className="flex flex-wrap items-end gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const parsed = parseBalanceInput(targetInput);
+              if (parsed === undefined || parsed == null || parsed <= 0) {
+                setTargetError("Enter a target amount above $0, e.g. 6000000");
+                return;
+              }
+              setNwTarget.mutate(parsed);
+            }}
+          >
+            <div className="min-w-52 flex-1">
+              <label htmlFor="nw-target-input" className={labelCls}>
+                Net worth target ($)
+              </label>
+              <input
+                id="nw-target-input"
+                type="text"
+                inputMode="decimal"
+                className={inputCls}
+                value={targetInput}
+                onChange={(e) => setTargetInput(e.target.value)}
+                placeholder="e.g. 6,000,000"
+              />
+            </div>
+            <button
+              type="submit"
+              className={btnPrimary}
+              disabled={setNwTarget.isPending}
+            >
+              {setNwTarget.isPending ? "Saving…" : "Save target"}
+            </button>
+            <button
+              type="button"
+              className={btnGhost}
+              onClick={() => {
+                setEditingTarget(false);
+                setTargetError("");
+              }}
+            >
+              Cancel
+            </button>
+            {targetCents != null && (
+              <button
+                type="button"
+                aria-label="Clear net worth target"
+                className="rounded-[var(--radius)] border border-[var(--bad)] px-3 py-2 text-sm font-medium text-[var(--bad)] disabled:opacity-50"
+                disabled={setNwTarget.isPending}
+                onClick={() => setNwTarget.mutate(null)}
+              >
+                Clear target
+              </button>
+            )}
+            {targetError && (
+              <p className="w-full text-sm text-[var(--bad)]">{targetError}</p>
+            )}
+          </form>
+        ) : (
+          <div>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[10.5px] leading-tight font-medium tracking-[0.02em] text-[var(--dim)] uppercase">
+                  Net worth target
+                </p>
+                <p className="tnum display mt-1.5 text-xl font-semibold sm:text-2xl">
+                  {fmt(targetCents ?? 0)}
+                </p>
+                <p className="tnum mt-1 text-sm text-[var(--dim)]">
+                  {targetProgressFrac != null
+                    ? `${(targetProgressFrac * 100).toFixed(1)}% reached`
+                    : ""}
+                  {targetRemainingCents != null
+                    ? ` · ${targetRemainingCents === 0 ? "Target reached" : `${fmt(targetRemainingCents)} remaining`}`
+                    : ""}
+                </p>
+                <p className="mt-1 text-sm text-[var(--dim)]">
+                  Rough ETA (pace-based estimate from up to the trailing 12 months):{" "}
+                  <span className="tnum font-medium text-[var(--text)]">
+                    {targetEtaLabel}
+                  </span>
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Edit net worth target"
+                className={btnGhost}
+                onClick={() => {
+                  setTargetInput(String((targetCents ?? 0) / 100));
+                  setTargetError("");
+                  setEditingTarget(true);
+                }}
+              >
+                Edit target
+              </button>
+            </div>
+            <div
+              className="mt-3 h-3 w-full overflow-hidden rounded-full bg-[var(--surface-alt)]"
+              role="img"
+              aria-label={`Progress toward net worth target: ${targetProgressFrac != null ? (targetProgressFrac * 100).toFixed(1) : "0"} percent`}
+            >
+              <div
+                className="h-full rounded-full bg-[var(--accent)]"
+                style={{
+                  width: `${targetProgressFrac != null ? Math.min(Math.max(targetProgressFrac * 100, 0), 100) : 0}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
       </section>
 
       {/* trend — all years (dissolved in from the former Year
