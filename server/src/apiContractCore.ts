@@ -412,6 +412,21 @@ export const updateMonthlyBillIn = z.object({
   notes: z.string().max(300).nullable().optional(),
   category: z.string().min(1).max(60).optional(),
   keepLightsOn: z.boolean().optional(),
+  // Contract v65 (CAS sweep, F18): the bill's five form fields as
+  // the editor loaded them. The live form sends all five fields on
+  // every save, so the handler refuses when any field it would
+  // replace differs from its loaded base in storage. Optional:
+  // omitting it keeps the legacy unchecked behaviour (named in
+  // DATA-PLAN).
+  base: z
+    .object({
+      name: z.string().min(1).max(120),
+      paidBy: z.string().min(1).max(60),
+      notes: z.string().max(300).nullable(),
+      category: z.string().min(1).max(60),
+      keepLightsOn: z.boolean(),
+    })
+    .optional(),
 });
 export type UpdateMonthlyBillArgs = z.infer<typeof updateMonthlyBillIn>;
 

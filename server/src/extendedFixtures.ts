@@ -115,6 +115,12 @@ applyUiFoldSet,
 parseUiFoldState,
 } from "./uiFoldCore";
 import {
+casCanonical,
+casDeepEqual,
+casFieldMismatch,
+decideCasRevision,
+} from "./casCore";
+import {
 appendRetirementScenario,
 commitGuardedRothBlobWrite,
 composeRetirementBaselineBlob,
@@ -5559,6 +5565,86 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       return {
         phrasesFound: phrases.filter((p) => RESTORE_VALIDATION_SEMANTICS.includes(p))
           .length,
+      };
+    },
+  },
+  {
+    id: "api-cas-core-deep-equal",
+    kind: "apicontract",
+    note: "Contract v65 (CAS sweep): the pure comparison seam every guarded writer shares (server/src/casCore.ts). casDeepEqual is key-order independent (object key order carries no meaning across a JSON round trip), treats an absent member and an undefined member as the same, treats -0 as 0, is ARRAY-order sensitive (a reordered list is a different value), distinguishes null from a missing value, and recurses into nested objects. casCanonical is the stable stringify behind it: equal values canonicalize identically regardless of key order.",
+    expected: {
+      keyOrderIgnored: 1,
+      undefinedEqualsAbsent: 1,
+      negativeZeroEqualsZero: 1,
+      arrayOrderMatters: 1,
+      nullDiffersFromAbsent: 1,
+      nestedEqual: 1,
+      nestedDiffers: 1,
+      canonicalStable: 1,
+    },
+    actual: () => ({
+      keyOrderIgnored: casDeepEqual({ a: 1, b: 2 }, { b: 2, a: 1 }) ? 1 : 0,
+      undefinedEqualsAbsent: casDeepEqual({ a: 1, b: undefined }, { a: 1 }) ? 1 : 0,
+      negativeZeroEqualsZero: casDeepEqual({ a: -0 }, { a: 0 }) ? 1 : 0,
+      arrayOrderMatters: casDeepEqual([1, 2], [2, 1]) ? 0 : 1,
+      nullDiffersFromAbsent: casDeepEqual({ a: null }, {}) ? 0 : 1,
+      nestedEqual: casDeepEqual(
+        { ceilings: { bracketTopPct: 22, flags: [true, false] } },
+        { ceilings: { flags: [true, false], bracketTopPct: 22 } },
+      )
+        ? 1
+        : 0,
+      nestedDiffers: casDeepEqual(
+        { ceilings: { bracketTopPct: 22 } },
+        { ceilings: { bracketTopPct: 24 } },
+      )
+        ? 0
+        : 1,
+      canonicalStable:
+        casCanonical({ b: [1, { d: 4, c: 3 }], a: "x" }) ===
+        casCanonical({ a: "x", b: [1, { c: 3, d: 4 }] })
+          ? 1
+          : 0,
+    }),
+  },
+  {
+    id: "api-cas-core-field-mismatch-and-revision",
+    kind: "apicontract",
+    note: "Contract v65 (CAS sweep): casFieldMismatch reports a mismatch only for a LISTED field whose stored value differs from its base — an unlisted field may differ freely (partial writers guard only what they write), a listed field absent from the base counts as a mismatch, and null compares as a value. decideCasRevision mirrors the blob CAS decision: a missing base is the tolerated legacy path (allowed, next = stored + 1), a matching base is allowed at stored + 1, and a stale base is refused with next = stored.",
+    expected: {
+      listedDiffers: 1,
+      listedSame: 0,
+      unlistedDiffersIgnored: 0,
+      listedAbsentFromBase: 1,
+      nullMatchesNull: 0,
+      nullDiffersFromValue: 1,
+      missingBaseAllowed: 1,
+      missingBaseNext: 6,
+      matchingAllowed: 1,
+      matchingNext: 6,
+      staleRefused: 0,
+      staleStored: 5,
+    },
+    actual: () => {
+      const stored = { name: "A", notes: null as string | null, n: 5 };
+      const missing = decideCasRevision(5, undefined);
+      const matching = decideCasRevision(5, 5);
+      const stale = decideCasRevision(5, 3);
+      return {
+        listedDiffers: casFieldMismatch(stored, { name: "B" }, ["name"]) ? 1 : 0,
+        listedSame: casFieldMismatch(stored, { name: "A" }, ["name"]) ? 1 : 0,
+        unlistedDiffersIgnored: casFieldMismatch(stored, { name: "A", n: 9 }, ["name"])
+          ? 1
+          : 0,
+        listedAbsentFromBase: casFieldMismatch(stored, {}, ["name"]) ? 1 : 0,
+        nullMatchesNull: casFieldMismatch(stored, { notes: null }, ["notes"]) ? 1 : 0,
+        nullDiffersFromValue: casFieldMismatch(stored, { notes: "x" }, ["notes"]) ? 1 : 0,
+        missingBaseAllowed: missing.allowed ? 1 : 0,
+        missingBaseNext: missing.allowed ? missing.nextRevision : -1,
+        matchingAllowed: matching.allowed ? 1 : 0,
+        matchingNext: matching.allowed ? matching.nextRevision : -1,
+        staleRefused: stale.allowed ? 1 : 0,
+        staleStored: stale.allowed ? -1 : stale.storedRevision,
       };
     },
   },

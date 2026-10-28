@@ -1639,6 +1639,11 @@ export function App() {
   /* transaction form state */
   const [showTxnForm, setShowTxnForm] = useState(false);
   const [editingTxnId, setEditingTxnId] = useState<number | null>(null);
+  // Contract v65 (F13): the transaction as loaded when the editor
+  // opened — sent back as the update's CAS base.
+  const [editingTxnBase, setEditingTxnBase] = useState<
+    ApiRequest<typeof api, "updateTransaction">["base"] | null
+  >(null);
   const [tDate, setTDate] = useState(todayStr());
   const [tDesc, setTDesc] = useState("");
   const [tDollars, setTDollars] = useState("");
@@ -1653,6 +1658,10 @@ export function App() {
   /* yearly form state */
   const [showYearlyForm, setShowYearlyForm] = useState(false);
   const [editingYearlyId, setEditingYearlyId] = useState<number | null>(null);
+  // Contract v65 (F17): the expense exactly as loaded when the
+  // editor opened — the save's CAS base (parent fields plus the
+  // version stored for the save's effective month).
+  const [editingYearly, setEditingYearly] = useState<Yearly | null>(null);
   const [yName, setYName] = useState("");
   const [yFrequency, setYFrequency] = useState<"yearly" | "bimonthly" | "quarterly" | "semiannual">("yearly");
   const [yDollars, setYDollars] = useState("");
@@ -1669,6 +1678,14 @@ export function App() {
   /* monthly summary (one cash-out number) state */
   const [showSummaryForm, setShowSummaryForm] = useState(false);
   const [sMonth, setSMonth] = useState(currentMonth());
+  // Contract v65 (F15): the month + stored total as loaded when
+  // the summary form opened — the save's CAS base. If the user
+  // changes the month in the form, the base is recomputed from
+  // the loaded dashboard for that month instead.
+  const [summaryBase, setSummaryBase] = useState<{
+    month: string;
+    cashOutCents: number | null;
+  } | null>(null);
   const [sDollars, setSDollars] = useState("");
   const [summaryError, setSummaryError] = useState("");
 
@@ -1696,6 +1713,11 @@ export function App() {
   };
   const [showItemForm, setShowItemForm] = useState(false);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
+  // Contract v65 (F14): the cash-out item as loaded when the
+  // editor opened — sent back as the update's CAS base.
+  const [editingItemBase, setEditingItemBase] = useState<
+    ApiRequest<typeof api, "updateCashOutItem">["base"] | null
+  >(null);
   const [iDate, setIDate] = useState(() => `${currentMonth()}-01`);
   const [iDesc, setIDesc] = useState("");
   const [iDollars, setIDollars] = useState("");
@@ -1705,6 +1727,11 @@ export function App() {
   /* monthly bills state */
   const [showBillForm, setShowBillForm] = useState(false);
   const [editingBillId, setEditingBillId] = useState<number | null>(null);
+  // Contract v65 (F18/F16): the bill exactly as loaded when the
+  // editor opened — the CAS bases for the metadata save (all five
+  // fields) and the chained amount save (the version stored for
+  // the chosen effective month).
+  const [editingBill, setEditingBill] = useState<Bill | null>(null);
   const [bName, setBName] = useState("");
   const [bDollars, setBDollars] = useState("");
   const [bEffectiveFrom, setBEffectiveFrom] = useState(currentMonth());
@@ -1854,9 +1881,17 @@ export function App() {
     onError: (e) => setFormError(String(e)),
   });
   const updateTxn = useMutation({
-    mutationFn: (input: TxnInput & { id: number }) =>
-      api.updateTransaction(input),
-    onSuccess: () => {
+    mutationFn: (input: TxnInput & { id: number } & {
+      base?: ApiRequest<typeof api, "updateTransaction">["base"];
+    }) => api.updateTransaction(input),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // CAS refusal (contract v65, F13): the stored row moved
+        // since this form loaded — keep the form open and show
+        // why instead of resetting over the newer value.
+        setFormError(r.reason ?? "That transaction could not be updated.");
+        return;
+      }
       invalidate();
       resetTxnForm();
     },
@@ -1881,7 +1916,13 @@ export function App() {
   const updateYearly = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateYearlyExpense">) =>
       api.updateYearlyExpense(input),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // CAS refusal (contract v65, F17): keep the form open and
+        // show why instead of resetting over the newer value.
+        setYearlyError(r.reason ?? "That expense could not be updated.");
+        return;
+      }
       invalidate();
       resetYearlyForm();
     },
@@ -1922,7 +1963,13 @@ export function App() {
   const upsertSummary = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "upsertMonthlySummary">) =>
       api.upsertMonthlySummary(input),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // CAS refusal (contract v65, F15): keep the form open and
+        // show why instead of closing over the newer value.
+        setSummaryError(r.reason ?? "That month's total could not be saved.");
+        return;
+      }
       invalidate();
       setShowSummaryForm(false);
       setSDollars("");
@@ -1947,7 +1994,13 @@ export function App() {
   const updateCashOutItem = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateCashOutItem">) =>
       api.updateCashOutItem(input),
-    onSuccess: (_r, input) => {
+    onSuccess: (r, input) => {
+      if (!r.ok) {
+        // CAS refusal (contract v65, F14): keep the form open and
+        // show why instead of resetting over the newer value.
+        setItemError(r.reason ?? "That item could not be updated.");
+        return;
+      }
       invalidate();
       resetItemForm();
       setCashOutMonthExpanded(input.month, true);
@@ -1973,7 +2026,13 @@ export function App() {
   const updateBill = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateMonthlyBill">) =>
       api.updateMonthlyBill(input),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // CAS refusal (contract v65, F18): keep the form open and
+        // show why — the chained amount save must NOT run either.
+        setBillError(r.reason ?? "That bill could not be updated.");
+        return;
+      }
       invalidate();
       resetBillForm();
     },
@@ -1986,7 +2045,13 @@ export function App() {
   const setBillAmount = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillAmount">) =>
       api.setMonthlyBillAmount(input),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // CAS refusal (contract v65, F16): show why instead of
+        // resetting the form over the newer stored amount.
+        setBillError(r.reason ?? "That bill amount could not be saved.");
+        return;
+      }
       invalidate();
       resetBillForm();
     },
@@ -2069,6 +2134,7 @@ export function App() {
   function resetTxnForm() {
     setShowTxnForm(false);
     setEditingTxnId(null);
+    setEditingTxnBase(null);
     setTDesc("");
     setTDollars("");
     setTRefund(false);
@@ -2092,6 +2158,22 @@ export function App() {
 
   function openEditTxn(t: Txn) {
     setEditingTxnId(t.id);
+    // Contract v65 (F13): the row as loaded — the CAS base the
+    // save carries back so a stale form can't overwrite a newer
+    // stored value.
+    setEditingTxnBase({
+      date: t.date,
+      description: t.description,
+      amountCents: t.amountCents,
+      sourceType: t.sourceType === "card" ? "card" : "checking",
+      accountName: t.accountName,
+      kind:
+        t.kind === "card_payment" || t.kind === "transfer"
+          ? t.kind
+          : "spending",
+      category: t.category,
+      yearlyExpenseId: t.yearlyExpenseId ?? null,
+    });
     setShowTxnForm(true);
     setTDate(t.date);
     setTDesc(t.description);
@@ -2132,13 +2214,19 @@ export function App() {
         tKind === "spending" && tYearlyId ? Number(tYearlyId) : null,
       fitId: null,
     };
-    if (editingTxnId) updateTxn.mutate({ ...input, id: editingTxnId });
+    if (editingTxnId)
+      updateTxn.mutate({
+        ...input,
+        id: editingTxnId,
+        ...(editingTxnBase ? { base: editingTxnBase } : {}),
+      });
     else addTxn.mutate(input);
   }
 
   function resetYearlyForm() {
     setShowYearlyForm(false);
     setEditingYearlyId(null);
+    setEditingYearly(null);
     setYName("");
     // New-bill entry defaults: frequency starts on Yearly, the due
     // month starts on the current month, and Paid from starts on the
@@ -2162,6 +2250,7 @@ export function App() {
 
   function openEditYearly(y: Yearly) {
     setEditingYearlyId(y.id);
+    setEditingYearly(y);
     setShowYearlyForm(true);
     setYName(y.name);
     setYFrequency(
@@ -2211,13 +2300,48 @@ export function App() {
       keepLightsOn: yKeepLightsOn,
       effectiveFrom: yEffectiveFrom,
     };
-    if (editingYearlyId) updateYearly.mutate({ ...input, id: editingYearlyId });
-    else addYearly.mutate(input);
+    if (editingYearlyId) {
+      // Contract v65 (F17): carry the loaded expense as the CAS
+      // base — parent fields plus the version stored for the
+      // chosen effective month (null when that month has none).
+      const freqOf = (
+        f: string,
+      ): "yearly" | "bimonthly" | "quarterly" | "semiannual" =>
+        f === "bimonthly" || f === "quarterly" || f === "semiannual"
+          ? f
+          : "yearly";
+      const base = editingYearly
+        ? {
+            name: editingYearly.name,
+            dueMonth: editingYearly.dueMonth ?? null,
+            paidByType: (editingYearly.paidByType === "card"
+              ? "card"
+              : "checking") as "checking" | "card",
+            paidByName: editingYearly.paidByName,
+            category: editingYearly.category,
+            keepLightsOn: editingYearly.keepLightsOn,
+            version: (() => {
+              const v = editingYearly.history.find(
+                (h) => h.effectiveFrom === yEffectiveFrom,
+              );
+              return v
+                ? { expectedCents: v.expectedCents, frequency: freqOf(v.frequency) }
+                : null;
+            })(),
+          }
+        : undefined;
+      updateYearly.mutate({
+        ...input,
+        id: editingYearlyId,
+        ...(base ? { base } : {}),
+      });
+    } else addYearly.mutate(input);
   }
 
   function openSummaryForm(forMonth: string, existingCents?: number) {
     setSMonth(forMonth);
     setSDollars(existingCents != null ? String(existingCents / 100) : "");
+    setSummaryBase({ month: forMonth, cashOutCents: existingCents ?? null });
     setSummaryError("");
     setShowSummaryForm(true);
   }
@@ -2233,12 +2357,27 @@ export function App() {
       setSummaryError("Enter the month's total cash out, e.g. 3850.00");
       return;
     }
-    upsertSummary.mutate({ month: sMonth, cashOutCents: cents });
+    // Contract v65 (F15): the base is the stored total for the
+    // month being saved as loaded — the value captured when the
+    // form opened for that month, or, if the month was changed
+    // in the form, the loaded dashboard's stored total for the
+    // new month (null when none is stored).
+    const baseCents =
+      summaryBase && summaryBase.month === sMonth
+        ? summaryBase.cashOutCents
+        : (data?.summaries.find((s) => s.month === sMonth)?.cashOutCents ??
+          null);
+    upsertSummary.mutate({
+      month: sMonth,
+      cashOutCents: cents,
+      base: { cashOutCents: baseCents },
+    });
   }
 
   function resetItemForm() {
     setShowItemForm(false);
     setEditingItemId(null);
+    setEditingItemBase(null);
     setIDate(`${currentMonth()}-01`);
     setIDesc("");
     setIDollars("");
@@ -2255,6 +2394,13 @@ export function App() {
 
   function openEditItem(it: CashOutItem) {
     setEditingItemId(it.id);
+    setEditingItemBase({
+      month: it.month,
+      description: it.description,
+      amountCents: it.amountCents,
+      note: it.note ?? null,
+      day: it.day,
+    });
     setShowItemForm(true);
     setIDate(`${it.month}-${String(it.day).padStart(2, "0")}`);
     setIDesc(it.description);
@@ -2298,7 +2444,12 @@ export function App() {
       amountCents: cents,
       note: iNote.trim() ? iNote.trim() : null,
     };
-    if (editingItemId) updateCashOutItem.mutate({ ...input, id: editingItemId });
+    if (editingItemId)
+      updateCashOutItem.mutate({
+        ...input,
+        id: editingItemId,
+        ...(editingItemBase ? { base: editingItemBase } : {}),
+      });
     else addCashOutItem.mutate(input);
   }
 
@@ -2309,6 +2460,7 @@ export function App() {
   function resetBillForm() {
     setShowBillForm(false);
     setEditingBillId(null);
+    setEditingBill(null);
     setBName("");
     setBDollars("");
     setBEffectiveFrom(currentMonth());
@@ -2327,6 +2479,7 @@ export function App() {
 
   function openEditBill(b: Bill) {
     setEditingBillId(b.id);
+    setEditingBill(b);
     setShowBillForm(true);
     setBName(b.name);
     setBDollars(String(b.latestAmountCents / 100));
@@ -2358,15 +2511,38 @@ export function App() {
     const notes = bNotes.trim() ? bNotes.trim() : null;
     const paidBy = bPaidBy.trim() || "Checking";
     if (editingBillId) {
+      // Contract v65 (F18/F16): both saves carry their loaded
+      // bases, and the amount save chains ONLY when the metadata
+      // save actually landed (a CAS refusal stops the chain).
+      const billBase = editingBill
+        ? {
+            name: editingBill.name,
+            paidBy: editingBill.paidBy,
+            notes: editingBill.notes ?? null,
+            category: editingBill.category,
+            keepLightsOn: editingBill.keepLightsOn,
+          }
+        : undefined;
+      const amountBase = editingBill
+        ? {
+            amountCents:
+              editingBill.history.find(
+                (h) => h.effectiveFrom === bEffectiveFrom,
+              )?.amountCents ?? null,
+          }
+        : undefined;
       updateBill.mutate(
-        { id: editingBillId, name: bName.trim(), paidBy, notes, category: bCategory.trim() || "Uncategorized", keepLightsOn: bKeepLightsOn },
+        { id: editingBillId, name: bName.trim(), paidBy, notes, category: bCategory.trim() || "Uncategorized", keepLightsOn: bKeepLightsOn, ...(billBase ? { base: billBase } : {}) },
         {
-          onSuccess: () =>
+          onSuccess: (r) => {
+            if (!r.ok) return;
             setBillAmount.mutate({
               billId: editingBillId,
               amountCents: cents,
               effectiveFrom: bEffectiveFrom,
-            }),
+              ...(amountBase ? { base: amountBase } : {}),
+            });
+          },
         },
       );
     } else {
@@ -5149,13 +5325,26 @@ function ReserveSettings({
   const [opening, setOpening] = useState("");
   const [start, setStart] = useState("");
   const [msg, setMsg] = useState("");
+  // Contract v65 (F26): the settings pair as loaded when the fold
+  // opened — the save's CAS base.
+  const [base, setBase] = useState<{
+    openingReserveCents: number;
+    reserveStartMonth: string | null;
+  } | null>(null);
   const save = useMutation({
     mutationFn: () =>
       api.updateSettings({
         openingReserveCents: parseDollars(opening) ?? 0,
         reserveStartMonth: start ? start : null,
+        ...(base ? { base } : {}),
       }),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // CAS refusal (contract v65, F26): show why instead of
+        // "Saved." over a newer stored value.
+        setMsg(r.reason ?? "Those settings could not be saved.");
+        return;
+      }
       onSaved();
       setMsg("Saved.");
     },
@@ -5170,6 +5359,10 @@ function ReserveSettings({
         onClick={() => {
           setOpening(String(data.openingReserveCents / 100));
           setStart(data.reserveStartMonth ?? "");
+          setBase({
+            openingReserveCents: data.openingReserveCents,
+            reserveStartMonth: data.reserveStartMonth ?? null,
+          });
           setMsg("");
           setOpen(true);
         }}
@@ -5839,10 +6032,20 @@ function ImportPanel({
           note: null,
         });
       }
-      await api.upsertMonthlySummary({
+      // Contract v65 (F15): the base is the month's recorded
+      // entered total as this comparison loaded it — a refused
+      // (conflicted) save throws into the proposal error path
+      // below instead of silently overwriting a newer total.
+      const summaryRes = await api.upsertMonthlySummary({
         month: p.month,
         cashOutCents: p.totalCents,
+        base: { cashOutCents: rec?.enteredCashOutCents ?? null },
       });
+      if (!summaryRes.ok) {
+        throw new Error(
+          summaryRes.reason ?? "That month's total could not be saved.",
+        );
+      }
       setSavedMonths((prev) => ({ ...prev, [p.month]: true }));
       onCashOutSaved?.(p.month);
       // Refresh the recorded state so the comparison now reads

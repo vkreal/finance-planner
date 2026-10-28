@@ -289,6 +289,13 @@ export const nwSnapshots = sqliteTable("nw_snapshots", {
   // the user records one. Unique: one snapshot per date.
   date: text("date").notNull().unique(),
   note: text("note"),
+  // Whole-snapshot revision counter (contract v65, CAS sweep F11/F12):
+  // bumped by BOTH updateNwSnapshot (whole-snapshot replacement) and
+  // updateNwBalance (single-balance correction), so either editor's
+  // stale save — identified by the baseRevision it loaded — is refused
+  // instead of overwriting the newer stored snapshot. Existing
+  // snapshots read as revision 0 (migration 0026 default).
+  revision: integer("revision").notNull().default(0),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .$defaultFn(() => new Date()),

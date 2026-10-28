@@ -134,6 +134,12 @@ type RetirementScenarioTransform,
 type RothBlobRevisionState,
 } from "./rothRevisionCore";
 import {
+  casConflictReason,
+  casDeepEqual,
+  casFieldMismatch,
+  decideCasRevision,
+} from "./casCore";
+import {
 BACKUP_AUTHENTICITY_SEMANTICS,
 RESTORE_VALIDATION_SEMANTICS,
 BALANCE_SEMANTICS,
@@ -684,7 +690,22 @@ const cashOutItemFields = {
 const cashOutItemInput = z.object(cashOutItemFields).superRefine(refineCashOutDay);
 
 const cashOutItemUpdateInput = z
-  .object({ ...cashOutItemFields, id: z.number().int().positive() })
+  .object({
+    ...cashOutItemFields,
+    id: z.number().int().positive(),
+    // Contract v65 (CAS sweep, F14): the item as the editor loaded
+    // it — see updateCashOutItem. Optional: omitting it keeps the
+    // legacy unchecked write (named in DATA-PLAN).
+    base: z
+      .object({
+        month: z.string().regex(monthRe),
+        description: descriptionField,
+        amountCents: z.number().int().nonnegative(),
+        note: longNoteField.nullable(),
+        day: z.number().int().min(1).max(31),
+      })
+      .optional(),
+  })
   .superRefine(refineCashOutDay);
 
 const billVersionOut = z.object({
@@ -1428,6 +1449,13 @@ const nwMutationOut = z.object({
   ok: z.boolean(),
   reason: z.string(),
   id: z.number().nullable(),
+  // Contract v65 (CAS sweep): present (true) when the write was
+  // refused because the caller's loaded base no longer matches the
+  // stored record — a newer copy was saved elsewhere. `revision`
+  // carries the snapshot's stored revision after the attempt on
+  // the snapshot/balance writers, so the caller can re-base.
+  conflict: z.boolean().optional(),
+  revision: z.number().int().nonnegative().optional(),
 });
 
 /* The spending family's mutation result (API follow-on 3,
@@ -1437,8 +1465,26 @@ const nwMutationOut = z.object({
    { ok: true } success for a write that touched nothing. The
    same shape deleteMonthlyBillVersion / deleteYearlyExpenseVersion
    already published. */
-const okReasonResponse = z.object({ ok: z.boolean(), reason: z.string() });
+const okReasonResponse = z.object({
+  ok: z.boolean(),
+  reason: z.string(),
+  // Contract v65 (CAS sweep): present (true) when the write was
+  // refused because the caller's loaded base no longer matches the
+  // stored record — a newer copy was saved elsewhere and the stored
+  // newer value is intact.
+  conflict: z.boolean().optional(),
+});
 type OkReason = z.infer<typeof okReasonResponse>;
+
+/* The settings/summary writers' result (contract v65): success is
+   { ok: true }; a CAS refusal is { ok: false, conflict: true,
+   reason } with the December-style newer-copy message. */
+const casOkResponse = z.object({
+  ok: z.boolean(),
+  conflict: z.boolean().optional(),
+  reason: z.string().optional(),
+});
+type CasOk = z.infer<typeof casOkResponse>;
 
 /* ---------------- Backup / restore ----------------
    exportbackup returns the COMPLETE dataset as one payload: every
@@ -2769,7 +2815,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 64;
+export const API_CONTRACT_VERSION = 65;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -2870,6 +2916,12 @@ const rothScenarioWriteResponse = z.object({
   reason: z.string(),
   scenarios: z.array(rothScenario),
   revision: z.number().int().nonnegative(),
+  // Contract v65 (CAS sweep, F22): present (true) when an
+  // updateRothScenario write was refused at the SCENARIO level —
+  // the named scenario's stored payload no longer matches the
+  // editor's loaded base payload, even though the record blob
+  // itself committed fine for other writers.
+  conflict: z.boolean().optional(),
 });
 type RothInputs = z.infer<typeof rothSavedInputs>;
 type RothScenario = z.infer<typeof rothScenario>;
@@ -5271,7 +5323,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   getYearView: "One calendar year's spending: monthly true cost and cash out, totals, and the year's bills.",
   getExplorer: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range.",
   addTransaction: "Record one spending transaction (checking or card).",
-  updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
+  updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write.",
   deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
   importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given. BATCH IDEMPOTENCY KEY (contract v64, F02): the optional batchKey makes one batch retry-safe against a lost response — a completed keyed batch is recorded durably (a settings row holding the batch's rows hash and count, committed in the SAME batch as the rows), and a repeat call with the same key and the same rows returns the original { imported } count inserting ZERO additional rows; the same key with DIFFERENT rows is refused with a clear error and inserts nothing; a genuinely new import under a new key inserts identical rows normally (the key guards retries, not content). Requests without a key behave exactly as before. The import panel generates one key per 500-row batch and reuses it when re-offering that batch after a failure.",
   getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
@@ -5279,7 +5331,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
   saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored.",
   addYearlyExpense: "Add a yearly or periodic (smoothed) expense bill. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted.",
-  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64).",
+  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the parent fields as loaded, plus the version stored for the save's effective month — null when none existed), the write is refused with { ok: false, conflict: true, reason } when any of those no longer matches storage, checked before any write so the parent and every version stay intact. Omitting `base` keeps the legacy unchecked write.",
   setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist. The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64).",
   deleteYearlyExpense: "Delete a yearly/periodic expense and its versions. Returns { ok: false, reason } when the id does not exist.",
   deleteYearlyExpenseVersion: "Remove one version from a yearly/periodic expense's history.",
@@ -5288,13 +5340,13 @@ const ACTION_PURPOSES: Record<string, string> = {
   updateMonthlyOneOff: "Edit a recorded one-off expense. Returns { ok: false, reason } when the id does not exist.",
   deleteMonthlyOneOff: "Delete a recorded one-off expense. Returns { ok: false, reason } when the id does not exist.",
   addCashOutItem: "Add an itemized cash-out line to a month.",
-  updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist.",
+  updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the item as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write.",
   deleteCashOutItem: "Delete an itemized cash-out line from a month. Returns { ok: false, reason } when the id does not exist.",
-  updateSettings: "Update spending settings (opening reserve).",
-  upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions).",
+  updateSettings: "Update spending settings (opening reserve and reserve start month). Compare-and-swap (contract v65): when the caller supplies `base` (both stored keys as loaded), the write is refused with { ok: false, conflict: true, reason } when either stored key no longer matches its base, and both stored values stay intact. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }.",
+  upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions). Compare-and-swap (contract v65): when the caller supplies `base` (the stored month total as loaded, null when none was stored), the write is refused with { ok: false, conflict: true, reason } when the stored total differs from the base. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }.",
   deleteMonthlySummary: "Remove a month's entered cash-out total. Returns { ok: false, reason } when no total is recorded for that month.",
   addMonthlyBill: "Add a monthly bill.",
-  updateMonthlyBill: "Edit a monthly bill's details. Only the fields actually sent are written: notes, category, and keepLightsOn are optional with no defaults, so an absent field preserves the stored value, while an explicitly sent notes: null clears the notes. Returns { ok: false, reason } when the id does not exist.",
+  updateMonthlyBill: "Edit a monthly bill's details. Only the fields actually sent are written: notes, category, and keepLightsOn are optional with no defaults, so an absent field preserves the stored value, while an explicitly sent notes: null clears the notes. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the bill's five form fields as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save would replace no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write.",
   setMonthlyBillCategory: "Set a monthly bill's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist.",
   setYearlyCategory: "Set a yearly/periodic expense's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist.",
   setMonthlyBillKeepLightsOn: "Toggle a monthly bill's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
@@ -5307,14 +5359,14 @@ const ACTION_PURPOSES: Record<string, string> = {
   getUiFoldState: "Read the generic fold state: the open/closed map for the Spending and Net Worth collapsible pieces not owned by a more specific store (per-month cash-out item lists, the import panels, the reserve settings fold, the Trend anchor note). Only folds left open are carried; an absent id is that fold's default (closed).",
   setUiFoldState: "Persist one generic fold's open/closed state (see getUiFoldState). Display-only; setting a fold closed removes its entry, since every fold in this store defaults to closed.",
   setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
-  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist. The version write is an atomic upsert on the (bill, effective month) pair, which the database enforces as unique (contract v64).",
+  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist. The version write is an atomic upsert on the (bill, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the amount stored for that effective month as loaded — null when no version existed for it), the write is refused with { ok: false, conflict: true, reason } when the stored amount for that month differs from the base. Omitting `base` keeps the legacy unchecked write.",
   deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist.",
   deleteMonthlyBillVersion: "Remove one version from a monthly bill's history.",
   seedExamples: "Seed the example spending dataset. Refused unless the WHOLE dataset is empty — every dataset table, settings included (the one global first-run emptiness check, seedGuardCore): a tracker holding any real record receives no sample rows. The seed commits as ONE atomic batch (contract v64): a failure mid-seed leaves the dataset empty and a plain retry can succeed.",
   seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (contract v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
   clearAllData: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state. Requires confirm to carry the exact phrase \"delete everything\"; any other confirmation deletes nothing.",
   seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table. The seed commits as ONE atomic batch (contract v64), like seedExamples.",
-  getNetWorth: "Net Worth view: accounts, snapshots, totals, bucket split subtotals, and target progress.",
+  getNetWorth: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress.",
   setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals.",
   setNwTarget: "Set the Net Worth target amount.",
   getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results.",
@@ -5332,7 +5384,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   setRothUiState: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current blob and its revision instead of overwriting it.",
   saveRothInputs: "Save the Roth plan record (inputs plus execution-year, MC-volatility, gift, and tax-return blocks). Writers are strict: a complete record is required, and baseRevision is required on every call. Revision-checked (CAS): a write whose baseRevision is missing, or no longer matches the stored revision, is refused with the current record and its revision instead of overwriting it — there is no unchecked write path — and every accepted write bumps the revision and returns it. " + SAVE_FLATTENING_SENTENCE + " " + CONVERTED_ALREADY_DISTINCTION_SENTENCE,
   saveRothScenario: "Save the given plan inputs as a new named Roth scenario (complete record required).",
-  updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
+  updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept). Scenario-level compare-and-swap (contract v65): when the caller supplies `baseScenario` (the named scenario's complete payload as loaded), the write is refused with { ok: false, conflict: true, reason } when the named scenario's stored payload no longer matches that base — inside the record blob's own raw-value CAS, which by itself proves only that the blob is fresh, not that this scenario is. A concurrent write to a different scenario or to the working inputs does not refuse this save. Omitting `baseScenario` keeps the legacy blob-CAS-only behaviour.",
   deleteRothScenario: "Delete a saved Roth scenario by name.",
   renameRothScenario: "Rename a saved Roth scenario.",
   runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). The searched candidate space includes gain-harvesting variants of every conversion candidate when the plan holds a taxable balance with basis below 100% (and is unchanged otherwise): each conversion candidate also gets a gainsHarvest twin, Do Nothing never does, and there is no separate ltcgZeroCap ceiling candidate family. Every scored candidate in the response (winner, runnersUp, doNothing, orderWinner, orderRunnersUp, orderDoNothing, claim-age table best entries, and the sensitivity entries) exposes its gainsHarvest state as a boolean, and a harvest twin's name carries the harvesting phrase (gain harvesting into the 0% bracket). Claiming-age floor conflicts are reported via claimAgeFloorMet and an explicit note rather than asserted away: claimAgeFloorMet is null when no claimAgeFloor is set, true when the crowned winner claims at or above the floor (or has no primary claiming age to violate it, or is the floor-exempt Do Nothing benchmark), and false when the winner claims below the floor — including a locked claim and the no-eligible-candidate fallback — in which case claimSearchNote states the conflict plainly, naming the floor and the winner's actual claiming age (and the locked reason when the claim is locked), and does not assert the winner meets the floor; the note never references below-floor markings in the per-age table when the claim age table is empty. Compute-only; saves nothing.",
@@ -5349,11 +5401,11 @@ const ACTION_PURPOSES: Record<string, string> = {
   setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state.",
   setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
   addNwSnapshot: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
-  updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances.",
-  updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot.",
+  updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the replacement is refused with { ok: false, conflict: true, revision, reason } when the stored revision has moved — by either snapshot writer — and the stored snapshot stays intact; an accepted write bumps the revision and returns it. Omitting `baseRevision` keeps the legacy unchecked write.",
+  updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the write is refused with { ok: false, conflict: true, revision, reason } when the snapshot's revision has moved, and an accepted write bumps that same revision — so a whole-snapshot editor holding the older revision conflicts instead of restoring the old balance. Omitting `baseRevision` keeps the legacy unchecked write.",
   deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist.",
   addNwAccount: "Add a Net Worth account (ordinary, property, or custodial). An absent propertyKind defaults to \"none\"; an unknown propertyKind value is rejected, never defaulted.",
-  renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist.",
+  renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the account's name, propertyKind, and custodial flag as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save writes no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write.",
   setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
   deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
   exportbackup: "Export the complete dataset as one decrypted backup payload. The payload carries an authenticityMac — a keyed MAC over its contents — which restorebackup verifies before restoring.",
@@ -7261,27 +7313,118 @@ export const Actions = {
 
   updateTransaction: defineAction({
     privileged: [privileged.ensureEncryptionKey],
-    request: txnInput.extend({ id: z.number().int().positive() }),
+    // Contract v65 (CAS sweep, F13): `base` is the transaction as
+    // the editor loaded it. When supplied, the write is a GUARDED
+    // update: it applies only where the stored row still equals
+    // the base fields (compared decrypted, then re-checked against
+    // the raw stored values inside the UPDATE's WHERE, so a write
+    // landing between the read and the commit also refuses). A
+    // mismatch returns the conflict shape and the stored newer
+    // value stays intact. A call omitting `base` keeps the legacy
+    // unchecked behaviour (named in DATA-PLAN).
+    request: txnInput.extend({
+      id: z.number().int().positive(),
+      base: z
+        .object({
+          date: dateString,
+          description: descriptionField,
+          amountCents: z.number().int(),
+          sourceType,
+          accountName: paidByField,
+          kind: txnKind,
+          category: txnCategoryField,
+          yearlyExpenseId: z.number().int().positive().nullable(),
+        })
+        .optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      const { base, ...fields } = args;
+      let guardRaw: typeof schema.transactions.$inferSelect | undefined;
+      if (base !== undefined) {
+        const [raw] = await db
+          .select()
+          .from(schema.transactions)
+          .where(eq(schema.transactions.id, args.id));
+        if (!raw) {
+          return { ok: false, reason: "That transaction was not found." };
+        }
+        const stored = {
+          date: raw.date,
+          description: await decryptStr(key, raw.description),
+          amountCents: await decryptNum(key, raw.amountCents as unknown),
+          sourceType: raw.sourceType,
+          accountName: await decryptStr(key, raw.accountName),
+          kind: raw.kind,
+          category: await decryptStr(key, raw.category),
+          yearlyExpenseId: raw.yearlyExpenseId ?? null,
+        };
+        const mismatch = casFieldMismatch(stored, base, [
+          "date",
+          "description",
+          "amountCents",
+          "sourceType",
+          "accountName",
+          "kind",
+          "category",
+          "yearlyExpenseId",
+        ]);
+        if (mismatch) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("transaction"),
+          };
+        }
+        guardRaw = raw;
+      }
       const updated = await db
         .update(schema.transactions)
         .set({
-          date: args.date,
-          description: await encryptStr(key, args.description),
-          amountCents: await encryptNum(key, args.amountCents),
-          sourceType: args.sourceType,
-          accountName: await encryptStr(key, args.accountName),
-          kind: args.kind,
-          category: await encryptStr(key, args.category),
-          yearlyExpenseId: args.yearlyExpenseId,
+          date: fields.date,
+          description: await encryptStr(key, fields.description),
+          amountCents: await encryptNum(key, fields.amountCents),
+          sourceType: fields.sourceType,
+          accountName: await encryptStr(key, fields.accountName),
+          kind: fields.kind,
+          category: await encryptStr(key, fields.category),
+          yearlyExpenseId: fields.yearlyExpenseId,
         })
-        .where(eq(schema.transactions.id, args.id))
+        .where(
+          guardRaw
+            ? and(
+                eq(schema.transactions.id, args.id),
+                eq(schema.transactions.date, guardRaw.date),
+                eq(schema.transactions.description, guardRaw.description),
+                eq(schema.transactions.amountCents, guardRaw.amountCents),
+                eq(schema.transactions.sourceType, guardRaw.sourceType),
+                eq(schema.transactions.accountName, guardRaw.accountName),
+                eq(schema.transactions.kind, guardRaw.kind),
+                eq(schema.transactions.category, guardRaw.category),
+                guardRaw.yearlyExpenseId == null
+                  ? isNull(schema.transactions.yearlyExpenseId)
+                  : eq(schema.transactions.yearlyExpenseId, guardRaw.yearlyExpenseId),
+              )
+            : eq(schema.transactions.id, args.id),
+        )
         .returning({ id: schema.transactions.id });
       if (updated.length === 0) {
+        if (guardRaw) {
+          const [stillThere] = await db
+            .select({ id: schema.transactions.id })
+            .from(schema.transactions)
+            .where(eq(schema.transactions.id, args.id));
+          if (stillThere) {
+            return {
+              ok: false,
+              conflict: true,
+              reason: casConflictReason("transaction"),
+            };
+          }
+        }
         return { ok: false, reason: "That transaction was not found." };
       }
       ctx.invalidateQueries();
@@ -7760,6 +7903,15 @@ export const Actions = {
 
   updateYearlyExpense: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F17): `base` is the expense as the
+    // editor loaded it — the parent fields AND the version stored
+    // for the save's effective month (null = no version existed
+    // for that month). When supplied, the write is refused when
+    // any parent field the form replaces, or that month's version,
+    // differs from its loaded base in storage; both checks run
+    // before ANY write, so a refusal leaves the parent and every
+    // version intact. Omitting `base` keeps the legacy unchecked
+    // behaviour (named in DATA-PLAN).
     request: z.object({
       id: z.number().int().positive(),
       name: billNameField,
@@ -7771,6 +7923,22 @@ export const Actions = {
       category: category60Field.default("Uncategorized"),
       keepLightsOn: z.boolean().default(false),
       effectiveFrom: z.string().regex(monthRe).optional(),
+      base: z
+        .object({
+          name: billNameField,
+          dueMonth: dueMonthField,
+          paidByType: sourceType,
+          paidByName: paidByField,
+          category: category60Field,
+          keepLightsOn: z.boolean(),
+          version: z
+            .object({
+              expectedCents: z.number().int().nonnegative(),
+              frequency: yearlyFrequency,
+            })
+            .nullable(),
+        })
+        .optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -7782,11 +7950,61 @@ export const Actions = {
       // flow updated zero rows and then went on to INSERT version
       // rows for the bogus id.
       const [existingExpense] = await db
-        .select({ id: schema.yearlyExpenses.id })
+        .select()
         .from(schema.yearlyExpenses)
         .where(eq(schema.yearlyExpenses.id, args.id));
       if (!existingExpense) {
         return { ok: false, reason: "That yearly expense was not found." };
+      }
+      // The effective month is resolved BEFORE the CAS checks:
+      // the version base is the version stored for THIS month.
+      const now = new Date();
+      const eff =
+        args.effectiveFrom ??
+        `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      if (args.base !== undefined) {
+        const storedParent = {
+          name: await decryptStr(key, existingExpense.name),
+          dueMonth: existingExpense.dueMonth ?? null,
+          paidByType: existingExpense.paidByType,
+          paidByName: await decryptStr(key, existingExpense.paidByName),
+          category: await decryptStr(key, existingExpense.category),
+          keepLightsOn: existingExpense.keepLightsOn === 1,
+        };
+        const parentMismatch = casFieldMismatch(storedParent, args.base, [
+          "name",
+          "dueMonth",
+          "paidByType",
+          "paidByName",
+          "category",
+          "keepLightsOn",
+        ]);
+        const [versionRow] = await db
+          .select()
+          .from(schema.yearlyExpenseVersions)
+          .where(
+            and(
+              eq(schema.yearlyExpenseVersions.expenseId, args.id),
+              eq(schema.yearlyExpenseVersions.effectiveFrom, eff),
+            ),
+          );
+        const storedVersion = versionRow
+          ? {
+              expectedCents: await decryptNum(
+                key,
+                versionRow.expectedCents as unknown,
+              ),
+              frequency: versionRow.frequency,
+            }
+          : null;
+        const versionMismatch = !casDeepEqual(storedVersion, args.base.version);
+        if (parentMismatch || versionMismatch) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("yearly expense"),
+          };
+        }
       }
       const encExpectedArg = await encryptNum(key, args.expectedCents);
       // Metadata (name, due month, paid-by, keep-the-lights-on flag)
@@ -7807,8 +8025,6 @@ export const Actions = {
           keepLightsOn: args.keepLightsOn ? 1 : 0,
         })
         .where(eq(schema.yearlyExpenses.id, args.id));
-      const now = new Date();
-      const eff = args.effectiveFrom ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
       // Atomic upsert on the (expenseId, effectiveFrom) pair
       // (contract v64, A1): see setMonthlyBillAmount. This one
       // statement covers both cases the old read-then-write
@@ -8123,24 +8339,90 @@ export const Actions = {
 
   updateCashOutItem: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F14): `base` is the item as the
+    // editor loaded it. When supplied, the write is a GUARDED
+    // update in the same shape as updateTransaction (F13): it
+    // applies only where the stored row still equals the base
+    // fields, and a mismatch returns the conflict shape with the
+    // stored newer value intact. Omitting `base` keeps the legacy
+    // unchecked behaviour (named in DATA-PLAN).
     request: cashOutItemUpdateInput,
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      const { base, ...fields } = args;
+      let guardRaw: typeof schema.monthlyCashOutItems.$inferSelect | undefined;
+      if (base !== undefined) {
+        const [raw] = await db
+          .select()
+          .from(schema.monthlyCashOutItems)
+          .where(eq(schema.monthlyCashOutItems.id, args.id));
+        if (!raw) {
+          return { ok: false, reason: "That cash-out item was not found." };
+        }
+        const stored = {
+          month: raw.month,
+          description: await decryptStr(key, raw.description),
+          amountCents: await decryptNum(key, raw.amountCents as unknown),
+          note: await decryptNullable(key, raw.note),
+          day: raw.day,
+        };
+        const mismatch = casFieldMismatch(stored, base, [
+          "month",
+          "description",
+          "amountCents",
+          "note",
+          "day",
+        ]);
+        if (mismatch) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("cash-out item"),
+          };
+        }
+        guardRaw = raw;
+      }
       const updated = await db
         .update(schema.monthlyCashOutItems)
         .set({
-          month: args.month,
-          description: await encryptStr(key, args.description),
-          amountCents: await encryptNum(key, args.amountCents),
-          note: await encryptNullable(key, args.note),
-          day: args.day,
+          month: fields.month,
+          description: await encryptStr(key, fields.description),
+          amountCents: await encryptNum(key, fields.amountCents),
+          note: await encryptNullable(key, fields.note),
+          day: fields.day,
         })
-        .where(eq(schema.monthlyCashOutItems.id, args.id))
+        .where(
+          guardRaw
+            ? and(
+                eq(schema.monthlyCashOutItems.id, args.id),
+                eq(schema.monthlyCashOutItems.month, guardRaw.month),
+                eq(schema.monthlyCashOutItems.description, guardRaw.description),
+                eq(schema.monthlyCashOutItems.amountCents, guardRaw.amountCents),
+                guardRaw.note == null
+                  ? isNull(schema.monthlyCashOutItems.note)
+                  : eq(schema.monthlyCashOutItems.note, guardRaw.note),
+                eq(schema.monthlyCashOutItems.day, guardRaw.day),
+              )
+            : eq(schema.monthlyCashOutItems.id, args.id),
+        )
         .returning({ id: schema.monthlyCashOutItems.id });
       if (updated.length === 0) {
+        if (guardRaw) {
+          const [stillThere] = await db
+            .select({ id: schema.monthlyCashOutItems.id })
+            .from(schema.monthlyCashOutItems)
+            .where(eq(schema.monthlyCashOutItems.id, args.id));
+          if (stillThere) {
+            return {
+              ok: false,
+              conflict: true,
+              reason: casConflictReason("cash-out item"),
+            };
+          }
+        }
         return { ok: false, reason: "That cash-out item was not found." };
       }
       ctx.invalidateQueries();
@@ -8167,15 +8449,52 @@ export const Actions = {
 
   updateSettings: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F26): `base` is the settings pair
+    // as the settings form loaded it. When supplied, the write is
+    // refused when EITHER stored key (opening reserve, reserve
+    // start month) no longer matches its loaded base — both keys
+    // are checked before either is written, so a refusal leaves
+    // both stored values intact. Omitting `base` keeps the legacy
+    // unchecked behaviour (named in DATA-PLAN).
     request: z.object({
       openingReserveCents: z.number().int(),
       reserveStartMonth: z.string().regex(monthRe).nullable().default(null),
+      base: z
+        .object({
+          openingReserveCents: z.number().int(),
+          reserveStartMonth: z.string().regex(monthRe).nullable(),
+        })
+        .optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: casOkResponse,
+    async handler(ctx, args): Promise<CasOk> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      if (args.base !== undefined) {
+        const rows = await db.select().from(schema.settings);
+        const rawReserve = rows.find(
+          (r) => r.key === "opening_reserve_cents",
+        )?.value;
+        const storedReserve =
+          rawReserve == null
+            ? 0
+            : Number(await decryptStr(key, rawReserve));
+        const rawStart = rows.find(
+          (r) => r.key === "reserve_start_month",
+        )?.value;
+        const storedStart = rawStart == null || rawStart === "" ? null : rawStart;
+        if (
+          storedReserve !== args.base.openingReserveCents ||
+          storedStart !== args.base.reserveStartMonth
+        ) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("reserve settings"),
+          };
+        }
+      }
       const encReserve = await encryptStr(key, String(args.openingReserveCents));
       await db
         .insert(schema.settings)
@@ -8204,15 +8523,43 @@ export const Actions = {
 
   upsertMonthlySummary: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F15): `base` is the month total as
+    // the editor loaded it (null = no total was stored for the
+    // month). When supplied, the write is refused when the stored
+    // month total differs from the base — the month primary key
+    // prevented duplication but not stale replacement. Omitting
+    // `base` keeps the legacy unchecked behaviour (named in
+    // DATA-PLAN).
     request: z.object({
       month: z.string().regex(monthRe),
       cashOutCents: z.number().int().nonnegative(),
+      base: z
+        .object({
+          cashOutCents: z.number().int().nonnegative().nullable(),
+        })
+        .optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: casOkResponse,
+    async handler(ctx, args): Promise<CasOk> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      if (args.base !== undefined) {
+        const [row] = await db
+          .select()
+          .from(schema.monthlySummaries)
+          .where(eq(schema.monthlySummaries.month, args.month));
+        const storedCents = row
+          ? await decryptNum(key, row.cashOutCents as unknown)
+          : null;
+        if (storedCents !== args.base.cashOutCents) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("month's cash-out total"),
+          };
+        }
+      }
       const now = new Date();
       const encCashOut = await encryptNum(key, args.cashOutCents);
       await db
@@ -8303,11 +8650,34 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       // Existence preflight (finding F22).
       const [existingBill] = await db
-        .select({ id: schema.monthlyBills.id })
+        .select()
         .from(schema.monthlyBills)
         .where(eq(schema.monthlyBills.id, args.id));
       if (!existingBill) {
         return { ok: false, reason: "That monthly bill was not found." };
+      }
+      // CAS guard (contract v65, F18): when the caller supplied
+      // the loaded base, refuse if any field this save would
+      // replace no longer matches its base in storage — checked
+      // before any write, so the stored newer bill stays intact.
+      if (args.base !== undefined) {
+        const storedBill = {
+          name: await decryptStr(key, existingBill.name),
+          paidBy: await decryptStr(key, existingBill.paidBy),
+          notes: await decryptNullable(key, existingBill.notes),
+          category: await decryptStr(key, existingBill.category),
+          keepLightsOn: existingBill.keepLightsOn === 1,
+        };
+        const sentFields = (
+          ["name", "paidBy", "notes", "category", "keepLightsOn"] as const
+        ).filter((f) => args[f] !== undefined);
+        if (casFieldMismatch(storedBill, args.base, sentFields)) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("monthly bill"),
+          };
+        }
       }
       // Write ONLY the fields the caller actually sent (finding
       // F18): monthlyBillUpdateSet (spendingCore) builds the set
@@ -8701,10 +9071,22 @@ export const Actions = {
   // the explicit way to correct a past month.
   setMonthlyBillAmount: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F16): `base` is the amount stored
+    // for (bill, effectiveFrom) as the editor loaded it (null = no
+    // version existed for that month). When supplied, the write is
+    // refused when the stored amount for that effective month
+    // differs from the base, on top of v64's atomic upsert.
+    // Omitting `base` keeps the legacy unchecked behaviour (named
+    // in DATA-PLAN).
     request: z.object({
       billId: z.number().int().positive(),
       amountCents: z.number().int().nonnegative(),
       effectiveFrom: z.string().regex(monthRe),
+      base: z
+        .object({
+          amountCents: z.number().int().nonnegative().nullable(),
+        })
+        .optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -8719,6 +9101,27 @@ export const Actions = {
         .where(eq(schema.monthlyBills.id, args.billId));
       if (!existingBill) {
         return { ok: false, reason: "That monthly bill was not found." };
+      }
+      if (args.base !== undefined) {
+        const [versionRow] = await db
+          .select()
+          .from(schema.monthlyBillVersions)
+          .where(
+            and(
+              eq(schema.monthlyBillVersions.billId, args.billId),
+              eq(schema.monthlyBillVersions.effectiveFrom, args.effectiveFrom),
+            ),
+          );
+        const storedAmount = versionRow
+          ? await decryptNum(key, versionRow.amountCents as unknown)
+          : null;
+        if (storedAmount !== args.base.amountCents) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("monthly bill amount"),
+          };
+        }
       }
       const encAmountArg = await encryptNum(key, args.amountCents);
       // Atomic upsert on the (billId, effectiveFrom) pair
@@ -9056,6 +9459,10 @@ export const Actions = {
           id: z.number(),
           date: z.string(),
           note: z.string().nullable(),
+          // Whole-snapshot revision (contract v65, F11/F12): the
+          // CAS base the snapshot and single-balance editors pass
+          // back as baseRevision when saving.
+          revision: z.number(),
           // Grand total for this snapshot, respecting the toggle:
           // property accounts contribute nothing when it is off;
           // when on, property assets add and property liabilities
@@ -9169,6 +9576,7 @@ export const Actions = {
             id: s.id,
             date: s.date,
             note: s.note ?? null,
+            revision: s.revision ?? 0,
             totalCents: totals.totalCents,
             propertyNetCents: totals.propertyNetCents,
             custodialTotalCents: totals.custodialTotalCents,
@@ -10575,18 +10983,46 @@ export const Actions = {
      exactly like the other scenario writers. */
   updateRothScenario: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F22): `baseScenario` is the named
+    // scenario's complete payload as the editor loaded it. When
+    // supplied, the transform refuses — at the SCENARIO level,
+    // inside the blob's own raw-value CAS — when the named
+    // scenario's stored payload no longer deep-equals the base:
+    // blob freshness alone does not prove the scenario the editor
+    // saw is still the scenario being replaced (another writer
+    // may have edited THIS scenario while leaving the blob's
+    // other scenarios, and the record's working inputs, alone).
+    // The check re-runs on the mutate retry against the fresh
+    // blob, so a concurrent write to a DIFFERENT scenario (or to
+    // the working inputs) does not refuse this save. Omitting
+    // `baseScenario` keeps the legacy blob-CAS-only behaviour
+    // (named in DATA-PLAN).
     request: z.object({
       name: z.string().min(1).max(120),
       ...rothInputFields,
+      baseScenario: z.object(rothInputFields).optional(),
     }),
     response: rothScenarioWriteResponse,
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
-      const { name, ...record } = args;
+      const { name, baseScenario, ...record } = args;
+      let scenarioConflict = false;
       const res = await mutateRothScenarios(db, key, (scenarios) => {
-        if (!scenarios.some((s) => s.name === name)) {
+        const stored = scenarios.find((s) => s.name === name);
+        if (!stored) {
           return { write: false, ok: false, reason: "That scenario no longer exists." };
+        }
+        if (baseScenario !== undefined) {
+          const { name: _storedName, ...storedPayload } = stored;
+          if (!casDeepEqual(storedPayload, baseScenario)) {
+            scenarioConflict = true;
+            return {
+              write: false,
+              ok: false,
+              reason: casConflictReason("saved strategy"),
+            };
+          }
         }
         const normalized = normalizeSsDeclarations(record);
         return {
@@ -10599,7 +11035,7 @@ export const Actions = {
         };
       });
       if (res.ok) ctx.invalidateQueries();
-      return res;
+      return scenarioConflict ? { ...res, conflict: true as const } : res;
     },
   }),
 
@@ -12494,7 +12930,17 @@ export const Actions = {
 
   updateNwSnapshot: defineAction({
     privileged: [privileged.ensureEncryptionKey],
-    request: nwSnapshotInput.extend({ id: z.number().int().positive() }),
+    // Contract v65 (CAS sweep, F11): `baseRevision` is the
+    // snapshot revision the editor loaded (from getNetWorth). When
+    // supplied, the whole-snapshot replacement is refused when the
+    // stored revision has moved — whether the move came from
+    // another updateNwSnapshot or from an updateNwBalance, both of
+    // which bump the same counter. Omitting it keeps the legacy
+    // unchecked behaviour (named in DATA-PLAN).
+    request: nwSnapshotInput.extend({
+      id: z.number().int().positive(),
+      baseRevision: z.number().int().nonnegative().optional(),
+    }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
       const db = ctx.db<typeof schema>();
@@ -12505,6 +12951,20 @@ export const Actions = {
         .from(schema.nwSnapshots)
         .where(eq(schema.nwSnapshots.id, args.id));
       if (!target) return { ok: false, reason: "That snapshot was not found.", id: null };
+      const revisionDecision = decideCasRevision(
+        target.revision ?? 0,
+        args.baseRevision,
+      );
+      if (!revisionDecision.allowed) {
+        return {
+          ok: false,
+          conflict: true,
+          revision: target.revision ?? 0,
+          reason: casConflictReason("snapshot"),
+          id: null,
+        };
+      }
+      const nextRevision = revisionDecision.nextRevision;
       if (isFutureSnapshotDate(args.date, todayDateString())) {
         return {
           ok: false,
@@ -12577,7 +13037,7 @@ export const Actions = {
           case "updateSnapshot":
             return db
               .update(schema.nwSnapshots)
-              .set({ date: stmt.date, note: stmt.note })
+              .set({ date: stmt.date, note: stmt.note, revision: nextRevision })
               .where(eq(schema.nwSnapshots.id, stmt.snapshotId));
           case "deleteBalances":
             return db
@@ -12597,7 +13057,7 @@ export const Actions = {
       });
       await db.batch(statements as [BatchItem, ...BatchItem[]]);
       ctx.invalidateQueries();
-      return { ok: true, reason: "Snapshot saved.", id: args.id };
+      return { ok: true, reason: "Snapshot saved.", id: args.id, revision: nextRevision };
     },
   }),
 
@@ -12609,8 +13069,17 @@ export const Actions = {
   // from the snapshot, as if it had never been recorded on that date.
   updateNwBalance: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F12, folded into F11's counter):
+    // `baseRevision` is the SNAPSHOT revision the editor loaded.
+    // When supplied, the write is refused when the snapshot's
+    // revision has moved since (by either snapshot writer), and an
+    // accepted write bumps that same revision — so a whole-snapshot
+    // editor holding the pre-correction revision conflicts instead
+    // of silently restoring the old balance. Omitting it keeps the
+    // legacy unchecked behaviour (named in DATA-PLAN).
     request: nwBalanceEntry.extend({
       snapshotId: z.number().int().positive(),
+      baseRevision: z.number().int().nonnegative().optional(),
     }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
@@ -12624,6 +13093,26 @@ export const Actions = {
       if (!snapshot) {
         return { ok: false, reason: "That snapshot was not found.", id: null };
       }
+      const revisionDecision = decideCasRevision(
+        snapshot.revision ?? 0,
+        args.baseRevision,
+      );
+      if (!revisionDecision.allowed) {
+        return {
+          ok: false,
+          conflict: true,
+          revision: snapshot.revision ?? 0,
+          reason: casConflictReason("snapshot"),
+          id: null,
+        };
+      }
+      const nextRevision = revisionDecision.nextRevision;
+      const bumpSnapshotRevision = async () => {
+        await db
+          .update(schema.nwSnapshots)
+          .set({ revision: nextRevision })
+          .where(eq(schema.nwSnapshots.id, args.snapshotId));
+      };
       const [account] = await db
         .select()
         .from(schema.nwAccounts)
@@ -12661,11 +13150,13 @@ export const Actions = {
               eq(schema.nwBalances.accountId, args.accountId),
             ),
           );
+        await bumpSnapshotRevision();
         ctx.invalidateQueries();
         return {
           ok: true,
           reason: "Balance removed from that snapshot.",
           id: args.snapshotId,
+          revision: nextRevision,
         };
       }
       // Atomic upsert on the (snapshotId, accountId) pair
@@ -12687,8 +13178,9 @@ export const Actions = {
           target: [schema.nwBalances.snapshotId, schema.nwBalances.accountId],
           set: values,
         });
+      await bumpSnapshotRevision();
       ctx.invalidateQueries();
-      return { ok: true, reason: "Balance saved.", id: args.snapshotId };
+      return { ok: true, reason: "Balance saved.", id: args.snapshotId, revision: nextRevision };
     },
   }),
 
@@ -12760,6 +13252,13 @@ export const Actions = {
 
   renameNwAccount: defineAction({
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v65 (CAS sweep, F19): `base` is the account's
+    // (name, propertyKind, custodial) as the editor loaded them.
+    // When supplied, the write is refused when any field this save
+    // writes no longer matches its base in storage — the name
+    // always; propertyKind / custodial only when this save sends
+    // them (they remain optional writes). Omitting `base` keeps
+    // the legacy unchecked behaviour (named in DATA-PLAN).
     request: z.object({
       id: z.number().int().positive(),
       name: nwAccountNameField,
@@ -12771,6 +13270,13 @@ export const Actions = {
       // custodial forces its propertyKind to "none" (a custodial
       // account is never a property account).
       custodial: z.boolean().optional(),
+      base: z
+        .object({
+          name: nwAccountNameField,
+          propertyKind: nwPropertyKindEnum,
+          custodial: z.boolean(),
+        })
+        .optional(),
     }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
@@ -12787,8 +13293,29 @@ export const Actions = {
       for (const a of allRaw) all.push({ ...a, name: await decryptStr(key, a.name) });
       // Existence check (finding F22): renaming a missing account
       // must not report success for an update that touched nothing.
-      if (!all.some((a) => a.id === args.id)) {
+      const targetAccount = all.find((a) => a.id === args.id);
+      if (!targetAccount) {
         return { ok: false, reason: "That account was not found.", id: null };
+      }
+      if (args.base !== undefined) {
+        const storedAccount = {
+          name: targetAccount.name,
+          propertyKind: propertyKindOf(targetAccount),
+          custodial: isCustodialAccount(targetAccount),
+        };
+        const guardedFields: string[] = ["name"];
+        if (args.propertyKind !== undefined || args.custodial === true) {
+          guardedFields.push("propertyKind");
+        }
+        if (args.custodial !== undefined) guardedFields.push("custodial");
+        if (casFieldMismatch(storedAccount, args.base, guardedFields)) {
+          return {
+            ok: false,
+            conflict: true,
+            reason: casConflictReason("account"),
+            id: null,
+          };
+        }
       }
       if (
         all.some(

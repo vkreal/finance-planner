@@ -678,7 +678,14 @@ function SnapshotEditor({
       }[];
     }) =>
       isEdit && snapshot
-        ? api.updateNwSnapshot({ id: snapshot.id, ...input })
+        ? // Contract v65 (F11): the revision this editor loaded is
+          // the CAS base — a stale whole-snapshot save is refused
+          // with the conflict reason, shown below via setError.
+          api.updateNwSnapshot({
+            id: snapshot.id,
+            ...input,
+            baseRevision: snapshot.revision,
+          })
         : api.addNwSnapshot(input),
     onSuccess: (r) => {
       if (!r.ok) {
@@ -1065,6 +1072,9 @@ function BalanceEditor({
       api.updateNwBalance({
         snapshotId: snapshot.id,
         accountId: account.id,
+        // Contract v65 (F12): the snapshot revision this editor
+        // loaded is the CAS base — a refusal shows via setError.
+        baseRevision: snapshot.revision,
         ...input,
       }),
     onSuccess: (r) => {
@@ -2944,12 +2954,25 @@ export function NetWorthView() {
     onError: (e) => setAccountError(String(e)),
   });
   const renameAccount = useMutation({
-    mutationFn: (input: { id: number; name: string; type: NwAccountType }) =>
+    mutationFn: (input: {
+      id: number;
+      name: string;
+      type: NwAccountType;
+      // Contract v65 (F19): the account's fields as loaded when
+      // the rename row opened — the save's CAS base; a refusal
+      // surfaces through setRenameError below.
+      base: {
+        name: string;
+        propertyKind: "none" | "asset" | "liability";
+        custodial: boolean;
+      };
+    }) =>
       api.renameNwAccount({
         id: input.id,
         name: input.name,
         propertyKind: input.type === "custodial" ? "none" : input.type,
         custodial: input.type === "custodial",
+        base: input.base,
       }),
     onSuccess: (r) => {
       if (!r.ok) {
@@ -5074,6 +5097,11 @@ export function NetWorthView() {
                                 id: a.id,
                                 name: renameName,
                                 type: renameType,
+                                base: {
+                                  name: a.name,
+                                  propertyKind: a.propertyKind,
+                                  custodial: a.custodial,
+                                },
                               })
                             }
                           >

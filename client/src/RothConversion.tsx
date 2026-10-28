@@ -2812,6 +2812,11 @@ export function RothConversion() {
   };
   const saveLabEditor = (sc: ScenarioRow) => {
     const { name, ...rest } = sc;
+    // Contract v65 (F22): the scenario payload exactly as loaded
+    // is the save's scenario-level CAS base — the server refuses
+    // when the stored scenario no longer matches it, and the
+    // refusal reason surfaces via setScenarioMsg in the mutation's
+    // onSuccess while the editor stays open.
     const age = (s: string): number | null => {
       const n = parseIntField(s);
       return n == null ? null : Math.min(120, Math.max(0, n));
@@ -2823,6 +2828,7 @@ export function RothConversion() {
     updateScenario.mutate({
       ...rest,
       name,
+      baseScenario: rest,
       ceilings: {
         bracketTopPct: edBracket === "" ? null : Number(edBracket),
         irmaaTierCap: edIrmaa === "" ? null : Number(edIrmaa),
