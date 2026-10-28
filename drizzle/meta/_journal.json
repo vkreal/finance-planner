@@ -169,6 +169,13 @@
       "when": 1792866886599,
       "tag": "0024_add_cash_out_item_day",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1793154070283,
+      "tag": "0025_composite_unique_indexes",
+      "breakpoints": true
     }
   ]
 }

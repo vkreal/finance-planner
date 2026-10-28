@@ -69,7 +69,7 @@ z,
 type ActionsModule,
 type Ctx,
 } from "@hatch/space-sdk";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { privileged } from "@space/privileged";
 import * as schema from "./schema";
 import {
@@ -340,6 +340,7 @@ type ClearAllTable,
 import {
 classifyBackupAuthenticity,
 computeBackupMac,
+sha256Hex,
 } from "./backupMacCore";
 import {
 ENC_PREFIX,
@@ -788,6 +789,12 @@ async function loadAll(ctx: Ctx) {
 
   // Decrypt every row; any legacy plaintext field is encrypted and
   // written back in place (migration, idempotent via the prefix).
+  // Contract v64 (A4): every migration write in this loader is
+  // COMPARE-AND-WRITE — its WHERE clause also requires every field
+  // it rewrites to still hold the exact raw value read above, so a
+  // legitimate update that landed between the read and this write
+  // wins and the migration rewrite touches zero rows instead of
+  // restoring the stale plaintext-era values (audit F25).
   const txns: TxnRow[] = [];
   for (const r of rawTxns) {
     const plain: TxnRow = {
@@ -806,7 +813,16 @@ async function loadAll(ctx: Ctx) {
         accountName: await encryptStr(key, plain.accountName),
         category: await encryptStr(key, plain.category),
         fitId: await encryptNullable(key, plain.fitId),
-      }).where(eq(schema.transactions.id, r.id));
+      }).where(and(
+        eq(schema.transactions.id, r.id),
+        eq(schema.transactions.description, r.description),
+        eq(schema.transactions.amountCents, r.amountCents),
+        eq(schema.transactions.accountName, r.accountName),
+        eq(schema.transactions.category, r.category),
+        r.fitId == null
+          ? isNull(schema.transactions.fitId)
+          : eq(schema.transactions.fitId, r.fitId),
+      ));
     }
   }
   const yearly: YearlyRow[] = [];
@@ -825,7 +841,13 @@ async function loadAll(ctx: Ctx) {
         expectedCents: await encryptNum(key, plain.expectedCents),
         paidByName: await encryptStr(key, plain.paidByName),
         category: await encryptStr(key, plain.category),
-      }).where(eq(schema.yearlyExpenses.id, r.id));
+      }).where(and(
+        eq(schema.yearlyExpenses.id, r.id),
+        eq(schema.yearlyExpenses.name, r.name),
+        eq(schema.yearlyExpenses.expectedCents, r.expectedCents),
+        eq(schema.yearlyExpenses.paidByName, r.paidByName),
+        eq(schema.yearlyExpenses.category, r.category),
+      ));
     }
   }
   const yearlyVersions: YearlyVersionRow[] = [];
@@ -835,7 +857,10 @@ async function loadAll(ctx: Ctx) {
     if (!isEncrypted(r.expectedCents)) {
       await db.update(schema.yearlyExpenseVersions).set({
         expectedCents: await encryptNum(key, plain.expectedCents),
-      }).where(eq(schema.yearlyExpenseVersions.id, r.id));
+      }).where(and(
+        eq(schema.yearlyExpenseVersions.id, r.id),
+        eq(schema.yearlyExpenseVersions.expectedCents, r.expectedCents),
+      ));
     }
   }
   const summaries: SummaryRow[] = [];
@@ -845,7 +870,10 @@ async function loadAll(ctx: Ctx) {
     if (!isEncrypted(r.cashOutCents)) {
       await db.update(schema.monthlySummaries).set({
         cashOutCents: await encryptNum(key, plain.cashOutCents),
-      }).where(eq(schema.monthlySummaries.month, r.month));
+      }).where(and(
+        eq(schema.monthlySummaries.month, r.month),
+        eq(schema.monthlySummaries.cashOutCents, r.cashOutCents),
+      ));
     }
   }
   const bills: MonthlyBillRow[] = [];
@@ -866,7 +894,16 @@ async function loadAll(ctx: Ctx) {
         paidBy: await encryptStr(key, plain.paidBy),
         notes: await encryptNullable(key, plain.notes),
         category: await encryptStr(key, plain.category),
-      }).where(eq(schema.monthlyBills.id, r.id));
+      }).where(and(
+        eq(schema.monthlyBills.id, r.id),
+        eq(schema.monthlyBills.name, r.name),
+        eq(schema.monthlyBills.amountCents, r.amountCents),
+        eq(schema.monthlyBills.paidBy, r.paidBy),
+        r.notes == null
+          ? isNull(schema.monthlyBills.notes)
+          : eq(schema.monthlyBills.notes, r.notes),
+        eq(schema.monthlyBills.category, r.category),
+      ));
     }
   }
   const billVersions: BillVersionRow[] = [];
@@ -876,7 +913,10 @@ async function loadAll(ctx: Ctx) {
     if (!isEncrypted(r.amountCents)) {
       await db.update(schema.monthlyBillVersions).set({
         amountCents: await encryptNum(key, plain.amountCents),
-      }).where(eq(schema.monthlyBillVersions.id, r.id));
+      }).where(and(
+        eq(schema.monthlyBillVersions.id, r.id),
+        eq(schema.monthlyBillVersions.amountCents, r.amountCents),
+      ));
     }
   }
   const oneOffs: OneOffRow[] = [];
@@ -893,7 +933,14 @@ async function loadAll(ctx: Ctx) {
         description: await encryptStr(key, plain.description),
         amountCents: await encryptNum(key, plain.amountCents),
         note: await encryptNullable(key, plain.note),
-      }).where(eq(schema.monthlyOneOffs.id, r.id));
+      }).where(and(
+        eq(schema.monthlyOneOffs.id, r.id),
+        eq(schema.monthlyOneOffs.description, r.description),
+        eq(schema.monthlyOneOffs.amountCents, r.amountCents),
+        r.note == null
+          ? isNull(schema.monthlyOneOffs.note)
+          : eq(schema.monthlyOneOffs.note, r.note),
+      ));
     }
   }
   const cashOutItems: CashOutItemRow[] = [];
@@ -910,7 +957,14 @@ async function loadAll(ctx: Ctx) {
         description: await encryptStr(key, plain.description),
         amountCents: await encryptNum(key, plain.amountCents),
         note: await encryptNullable(key, plain.note),
-      }).where(eq(schema.monthlyCashOutItems.id, r.id));
+      }).where(and(
+        eq(schema.monthlyCashOutItems.id, r.id),
+        eq(schema.monthlyCashOutItems.description, r.description),
+        eq(schema.monthlyCashOutItems.amountCents, r.amountCents),
+        r.note == null
+          ? isNull(schema.monthlyCashOutItems.note)
+          : eq(schema.monthlyCashOutItems.note, r.note),
+      ));
     }
   }
   // Settings: only the opening reserve is financial content — decrypt
@@ -923,7 +977,12 @@ async function loadAll(ctx: Ctx) {
       settingsMap.set(r.key, plainVal);
       if (!isEncrypted(r.value) && r.value !== "") {
         const enc = await encryptStr(key, plainVal);
-        await db.update(schema.settings).set({ value: enc }).where(eq(schema.settings.key, r.key));
+        // Compare-and-write (contract v64, A4): only while the
+        // stored value is still the one read here.
+        await db.update(schema.settings).set({ value: enc }).where(and(
+          eq(schema.settings.key, r.key),
+          eq(schema.settings.value, r.value),
+        ));
       }
     } else {
       settingsMap.set(r.key, r.value);
@@ -2710,7 +2769,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 63;
+export const API_CONTRACT_VERSION = 64;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3215,6 +3274,26 @@ async function insertRothBlobValueIfAbsent(db: any, enc: string): Promise<boolea
   const rows = await db
     .insert(schema.settings)
     .values({ key: ROTH_INPUTS_KEY, value: enc })
+    .onConflictDoNothing()
+    .returning({ key: schema.settings.key });
+  return rows.length === 1;
+}
+
+/* The generalized insert-only first write for a settings-keyed
+   blob (contract v64, A2): INSERT … ON CONFLICT DO NOTHING
+   against the given settings key, branched on the returned row
+   count — true means this invocation established the row; false
+   means a row appeared between the caller's read and this
+   commit and this invocation wrote nothing. The Retirement
+   records' CAS writers (saveRetirementCalc /
+   saveRetirementBaseline) use it for their first write when a
+   baseRevision was supplied, mirroring saveRothInputs'
+   rothFirstWritePlan insert-only outcome (audit F20). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function insertSettingsValueIfAbsent(db: any, settingsKey: string, enc: string): Promise<boolean> {
+  const rows = await db
+    .insert(schema.settings)
+    .values({ key: settingsKey, value: enc })
     .onConflictDoNothing()
     .returning({ key: schema.settings.key });
   return rows.length === 1;
@@ -5194,14 +5273,14 @@ const ACTION_PURPOSES: Record<string, string> = {
   addTransaction: "Record one spending transaction (checking or card).",
   updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
   deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
-  importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given.",
-  getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place.",
+  importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given. BATCH IDEMPOTENCY KEY (contract v64, F02): the optional batchKey makes one batch retry-safe against a lost response — a completed keyed batch is recorded durably (a settings row holding the batch's rows hash and count, committed in the SAME batch as the rows), and a repeat call with the same key and the same rows returns the original { imported } count inserting ZERO additional rows; the same key with DIFFERENT rows is refused with a clear error and inserts nothing; a genuinely new import under a new key inserts identical rows normally (the key guards retries, not content). Requests without a key behave exactly as before. The import panel generates one key per 500-row batch and reuses it when re-offering that batch after a failure.",
+  getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
   saveImportSettings: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an import-settings blob (importParseCore); anything else is refused and nothing is stored.",
-  getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Read-only apart from migrating a legacy plaintext setup value to encrypted in place.",
+  getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
   saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored.",
   addYearlyExpense: "Add a yearly or periodic (smoothed) expense bill. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted.",
-  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched).",
-  setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist.",
+  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64).",
+  setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist. The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64).",
   deleteYearlyExpense: "Delete a yearly/periodic expense and its versions. Returns { ok: false, reason } when the id does not exist.",
   deleteYearlyExpenseVersion: "Remove one version from a yearly/periodic expense's history.",
   setYearlyDueMonth: "Set the due month of a yearly expense. Returns { ok: false, reason } when the id does not exist.",
@@ -5228,21 +5307,21 @@ const ACTION_PURPOSES: Record<string, string> = {
   getUiFoldState: "Read the generic fold state: the open/closed map for the Spending and Net Worth collapsible pieces not owned by a more specific store (per-month cash-out item lists, the import panels, the reserve settings fold, the Trend anchor note). Only folds left open are carried; an absent id is that fold's default (closed).",
   setUiFoldState: "Persist one generic fold's open/closed state (see getUiFoldState). Display-only; setting a fold closed removes its entry, since every fold in this store defaults to closed.",
   setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
-  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist.",
+  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist. The version write is an atomic upsert on the (bill, effective month) pair, which the database enforces as unique (contract v64).",
   deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist.",
   deleteMonthlyBillVersion: "Remove one version from a monthly bill's history.",
-  seedExamples: "Seed the example spending dataset. Refused unless the WHOLE dataset is empty — every dataset table, settings included (the one global first-run emptiness check, seedGuardCore): a tracker holding any real record receives no sample rows.",
-  seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
+  seedExamples: "Seed the example spending dataset. Refused unless the WHOLE dataset is empty — every dataset table, settings included (the one global first-run emptiness check, seedGuardCore): a tracker holding any real record receives no sample rows. The seed commits as ONE atomic batch (contract v64): a failure mid-seed leaves the dataset empty and a plain retry can succeed.",
+  seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (contract v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
   clearAllData: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state. Requires confirm to carry the exact phrase \"delete everything\"; any other confirmation deletes nothing.",
-  seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table.",
+  seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table. The seed commits as ONE atomic batch (contract v64), like seedExamples.",
   getNetWorth: "Net Worth view: accounts, snapshots, totals, bucket split subtotals, and target progress.",
   setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals.",
   setNwTarget: "Set the Net Worth target amount.",
   getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results.",
   setRetirementAssumptionsCollapsed: "Persist the Retirement assumptions section's collapsed state.",
   setRetirementSpendingUnit: "Persist the Retirement annual-spending entry unit (per year / per month).",
-  saveRetirementCalc: "Save the Retirement calculator inputs. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current lite record (saved inputs, scenarios, baseline, and both revisions) instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it.",
-  saveRetirementBaseline: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan'). Revision-checked (CAS) on BOTH records: a write whose baseRevision or baseBaselineRevision no longer matches the stored revision is refused before anything is written, with the current lite record and both revisions; a baseline commit that loses a commit-time race is retried once against the fresh baseline, and a second loss returns a stage \"baseline\" conflict (the working inputs were saved; the baseline did not move). Writes with no bases keep the legacy unchecked behaviour, and every accepted write bumps both revisions and returns them.",
+  saveRetirementCalc: "Save the Retirement calculator inputs. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current lite record (saved inputs, scenarios, baseline, and both revisions) instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. FIRST WRITE (contract v64): when no record exists yet and a baseRevision is supplied, the write is insert-if-absent — if a first save from elsewhere landed between the read and the write, this write is refused with the same conflict shape instead of overwriting it, so two overlapping first saves at base 0 produce exactly one success and one conflict.",
+  saveRetirementBaseline: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan'). Revision-checked (CAS) on BOTH records: a write whose baseRevision or baseBaselineRevision no longer matches the stored revision is refused before anything is written, with the current lite record and both revisions; a baseline commit that loses a commit-time race is retried once against the fresh baseline, and a second loss returns a stage \"baseline\" conflict (the working inputs were saved; the baseline did not move). Writes with no bases keep the legacy unchecked behaviour, and every accepted write bumps both revisions and returns them. FIRST WRITE (contract v64): when a record does not exist yet and its base is supplied, that record's write is insert-if-absent — a landed concurrent first save refuses this write (an inputs-stage conflict when the working record landed, a stage \"baseline\" conflict when only the baseline landed) instead of being overwritten.",
   getRetirementBaselineResults: "Price the saved Retirement baselines against the current defaults.",
   saveRetirementScenario: "Save a Retirement scenario.",
   deleteRetirementScenario: "Delete a saved Retirement scenario.",
@@ -5271,7 +5350,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
   addNwSnapshot: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
   updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances.",
-  updateNwBalance: "Correct one account's balance in one snapshot (null removes it).",
+  updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot.",
   deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist.",
   addNwAccount: "Add a Net Worth account (ordinary, property, or custodial). An absent propertyKind defaults to \"none\"; an unknown propertyKind value is rejected, never defaulted.",
   renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist.",
@@ -5514,12 +5593,36 @@ async function loadDatasetPresence(
   };
 }
 
-async function seedExamplesBody(
-  ctx: Ctx,
+/* The next explicit id for a seed insert: one past the table's
+   current maximum (contract v64, A3). The seed builders assign
+   ids themselves because the statements commit as ONE db.batch,
+   which cannot hand back inserted ids — and version / payment /
+   balance rows must reference their parents' ids. The first-run
+   guard guarantees the tables are empty when a seed runs, but
+   deriving from the live maximum stays correct even when a
+   table's autoincrement sequence has advanced past deleted rows
+   (e.g. a re-seed after clearAllData). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function nextSeedId(db: any, table: any): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (await db.select({ id: table.id }).from(table)) as { id: number }[];
+  return rows.reduce((m, r) => Math.max(m, r.id), 0) + 1;
+}
+
+/* Build the sample-spending seed's insert statements WITHOUT
+   executing any of them (contract v64, A3 — audit F23/F24): the
+   caller commits them as ONE db.batch, so a failure anywhere in
+   the seed lands NONE of it and a plain retry can succeed. All
+   three seed actions share this builder (and its Net Worth
+   sibling): seedExamples / seedNetWorth batch their own dataset,
+   and seedFirstRun batches BOTH builders' statements as a
+   single all-or-nothing commit. */
+async function seedExamplesStatements(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: any,
   key: CryptoKey,
-): Promise<{ ok: boolean; reason: string }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<{ ok: boolean; reason: string; statements: any[] }> {
   /* SAMPLE DATA — a complete sample household for a fresh
      install (this is what the public demo loads). Twelve
      months ending in the current month, recorded the way
@@ -5571,31 +5674,41 @@ async function seedExamplesBody(
       : b.amountCents;
   const monthlyTotalAt = (offset: number): number =>
     monthlySeed.reduce((s, b) => s + monthlyAmountAt(b, offset), 0);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const statements: any[] = [];
+  let nextBillId = await nextSeedId(db, schema.monthlyBills);
+  let nextBillVersionId = await nextSeedId(db, schema.monthlyBillVersions);
   for (const b of monthlySeed) {
     const latestCents = monthlyAmountAt(b, MONTH_COUNT - 1);
-    const [row] = await db
-      .insert(schema.monthlyBills)
-      .values({
+    const billId = nextBillId++;
+    statements.push(
+      db.insert(schema.monthlyBills).values({
+        id: billId,
         name: await encryptStr(key, b.name),
         amountCents: await encryptNum(key, latestCents),
         paidBy: await encryptStr(key, b.paidBy),
         notes: null,
         category: await encryptStr(key, b.category),
         keepLightsOn: b.keepLightsOn ? 1 : 0,
-      })
-      .returning({ id: schema.monthlyBills.id });
-    if (!row) continue;
-    await db.insert(schema.monthlyBillVersions).values({
-      billId: row.id,
-      amountCents: await encryptNum(key, b.amountCents),
-      effectiveFrom: startMonth,
-    });
+      }),
+    );
+    statements.push(
+      db.insert(schema.monthlyBillVersions).values({
+        id: nextBillVersionId++,
+        billId,
+        amountCents: await encryptNum(key, b.amountCents),
+        effectiveFrom: startMonth,
+      }),
+    );
     if (b.bumpedAmountCents != null) {
-      await db.insert(schema.monthlyBillVersions).values({
-        billId: row.id,
-        amountCents: await encryptNum(key, b.bumpedAmountCents),
-        effectiveFrom: monthAt(BUMP_OFFSET),
-      });
+      statements.push(
+        db.insert(schema.monthlyBillVersions).values({
+          id: nextBillVersionId++,
+          billId,
+          amountCents: await encryptNum(key, b.bumpedAmountCents),
+          effectiveFrom: monthAt(BUMP_OFFSET),
+        }),
+      );
     }
   }
 
@@ -5623,11 +5736,15 @@ async function seedExamplesBody(
     { name: "Cloud backup", expectedCents: 12000, frequency: "yearly", dueMonth: 12, category: "Subscriptions", keepLightsOn: false },
   ];
   const smoothedIds = new Map<string, number>();
+  let nextExpenseId = await nextSeedId(db, schema.yearlyExpenses);
+  let nextExpenseVersionId = await nextSeedId(db, schema.yearlyExpenseVersions);
   for (const y of smoothedSeed) {
     const encExpected = await encryptNum(key, y.expectedCents);
-    const [row] = await db
-      .insert(schema.yearlyExpenses)
-      .values({
+    const expenseId = nextExpenseId++;
+    smoothedIds.set(y.name, expenseId);
+    statements.push(
+      db.insert(schema.yearlyExpenses).values({
+        id: expenseId,
         name: await encryptStr(key, y.name),
         expectedCents: encExpected,
         dueMonth: y.dueMonth,
@@ -5637,17 +5754,17 @@ async function seedExamplesBody(
         backfillBeforeFirstVersion: 0,
         frequency: y.frequency,
         keepLightsOn: y.keepLightsOn ? 1 : 0,
-      })
-      .returning({ id: schema.yearlyExpenses.id });
-    if (row) {
-      smoothedIds.set(y.name, row.id);
-      await db.insert(schema.yearlyExpenseVersions).values({
-        expenseId: row.id,
+      }),
+    );
+    statements.push(
+      db.insert(schema.yearlyExpenseVersions).values({
+        id: nextExpenseVersionId++,
+        expenseId,
         expectedCents: encExpected,
         frequency: y.frequency,
         effectiveFrom: startMonth,
-      });
-    }
+      }),
+    );
   }
   // The smoothed payments recorded in one month: every bill
   // whose due pattern lands in that calendar month, at its
@@ -5679,27 +5796,33 @@ async function seedExamplesBody(
   // Entered cash-out totals (the checking-account outflow
   // for the month) — the month's spending base.
   for (let i = 0; i < MONTH_COUNT; i++) {
-    await db.insert(schema.monthlySummaries).values({
-      month: monthAt(i),
-      cashOutCents: await encryptNum(key, cashOutAt(i)),
-      createdAt: now,
-      updatedAt: now,
-    });
+    statements.push(
+      db.insert(schema.monthlySummaries).values({
+        month: monthAt(i),
+        cashOutCents: await encryptNum(key, cashOutAt(i)),
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
   }
   // The recorded smoothed-bill payments themselves.
+  let nextTxnId = await nextSeedId(db, schema.transactions);
   for (let i = 0; i < MONTH_COUNT; i++) {
     const m = monthAt(i);
     for (const p of paymentsAt(i)) {
-      await db.insert(schema.transactions).values({
-        date: `${m}-10`,
-        description: await encryptStr(key, `${p.seed.name} payment`),
-        amountCents: await encryptNum(key, p.amountCents),
-        sourceType: "checking",
-        accountName: await encryptStr(key, "Checking"),
-        kind: "spending",
-        category: await encryptStr(key, p.seed.category),
-        yearlyExpenseId: smoothedIds.get(p.seed.name) ?? null,
-      });
+      statements.push(
+        db.insert(schema.transactions).values({
+          id: nextTxnId++,
+          date: `${m}-10`,
+          description: await encryptStr(key, `${p.seed.name} payment`),
+          amountCents: await encryptNum(key, p.amountCents),
+          sourceType: "checking",
+          accountName: await encryptStr(key, "Checking"),
+          kind: "spending",
+          category: await encryptStr(key, p.seed.category),
+          yearlyExpenseId: smoothedIds.get(p.seed.name) ?? null,
+        }),
+      );
     }
   }
   // Two one-offs, already counted in their months' cash out:
@@ -5708,13 +5831,17 @@ async function seedExamplesBody(
     { offset: 5, description: "Water heater replacement", amountCents: 64800 },
     { offset: 9, description: "Weekend trip", amountCents: 51200 },
   ];
+  let nextOneOffId = await nextSeedId(db, schema.monthlyOneOffs);
   for (const o of oneOffSeed) {
-    await db.insert(schema.monthlyOneOffs).values({
-      month: monthAt(o.offset),
-      description: await encryptStr(key, o.description),
-      amountCents: await encryptNum(key, o.amountCents),
-      note: await encryptNullable(key, "One-off — already counted in that month's cash out."),
-    });
+    statements.push(
+      db.insert(schema.monthlyOneOffs).values({
+        id: nextOneOffId++,
+        month: monthAt(o.offset),
+        description: await encryptStr(key, o.description),
+        amountCents: await encryptNum(key, o.amountCents),
+        note: await encryptNullable(key, "One-off — already counted in that month's cash out."),
+      }),
+    );
   }
   // The current month's cash out, itemized: the bill groups,
   // that month's smoothed payments, and the remainder. The
@@ -5741,53 +5868,69 @@ async function seedExamplesBody(
       })),
       { description: "Everything else — day-to-day spending", amountCents: everythingElse[offset] ?? 115000 },
     ];
+    let nextItemId = await nextSeedId(db, schema.monthlyCashOutItems);
     for (const it of items) {
-      await db.insert(schema.monthlyCashOutItems).values({
-        month: m,
-        description: await encryptStr(key, it.description),
-        amountCents: await encryptNum(key, it.amountCents),
-        note: null,
-        day: 1,
-      });
+      statements.push(
+        db.insert(schema.monthlyCashOutItems).values({
+          id: nextItemId++,
+          month: m,
+          description: await encryptStr(key, it.description),
+          amountCents: await encryptNum(key, it.amountCents),
+          note: null,
+          day: 1,
+        }),
+      );
     }
   }
   // The smoothed-bill reserve opens with $2,500 already set
   // aside, so the reserve and the Coming up forecast start
   // from a realistic, positive position.
-  await db
-    .insert(schema.settings)
-    .values({ key: "opening_reserve_cents", value: await encryptStr(key, "250000") })
-    .onConflictDoNothing();
-  await db
-    .insert(schema.settings)
-    .values({ key: "reserve_start_month", value: startMonth })
-    .onConflictDoNothing();
-  ctx.invalidateQueries();
-  return { ok: true, reason: "Sample household loaded — twelve months of bills, smoothed expenses, and cash-out totals." };
+  statements.push(
+    db
+      .insert(schema.settings)
+      .values({ key: "opening_reserve_cents", value: await encryptStr(key, "250000") })
+      .onConflictDoNothing(),
+  );
+  statements.push(
+    db
+      .insert(schema.settings)
+      .values({ key: "reserve_start_month", value: startMonth })
+      .onConflictDoNothing(),
+  );
+  return { ok: true, reason: "Sample household loaded — twelve months of bills, smoothed expenses, and cash-out totals.", statements };
 }
 
-async function seedNetWorthBody(
-  ctx: Ctx,
+
+/* Build the sample Net Worth seed's insert statements WITHOUT
+   executing any of them (contract v64, A3): see
+   seedExamplesStatements — the caller commits them as ONE
+   db.batch (alone, or together with the spending seed's
+   statements in seedFirstRun's single all-or-nothing commit). */
+async function seedNetWorthStatements(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: any,
   key: CryptoKey,
-): Promise<{ ok: boolean; seeded: boolean; reason: string }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<{ ok: boolean; seeded: boolean; reason: string; statements: any[] }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const statements: any[] = [];
+  let nextAccountId = await nextSeedId(db, schema.nwAccounts);
   const accountIds: number[] = [];
   for (let i = 0; i < NW_SEED_ACCOUNTS.length; i++) {
     const acct = NW_SEED_ACCOUNTS[i];
     if (!acct) continue;
-    const [row] = await db
-      .insert(schema.nwAccounts)
-      .values({
+    const accountId = nextAccountId++;
+    accountIds.push(accountId);
+    statements.push(
+      db.insert(schema.nwAccounts).values({
+        id: accountId,
         name: await encryptStr(key, acct.name),
         sortOrder: i,
         archived: 0,
         propertyKind: acct.propertyKind,
         custodial: acct.custodial ? 1 : 0,
-      })
-      .returning({ id: schema.nwAccounts.id });
-    if (!row) throw new Error("seed account insert failed");
-    accountIds.push(row.id);
+      }),
+    );
   }
   // Twelve monthly snapshots ending in the current month, on
   // the 1st — the same relative window seedExamples uses for
@@ -5795,17 +5938,19 @@ async function seedNetWorthBody(
   const now = new Date();
   const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const startMonth = shiftMonth(curMonth, -(NW_SEED_VALUES.length - 1));
+  let nextSnapshotId = await nextSeedId(db, schema.nwSnapshots);
+  let nextBalanceId = await nextSeedId(db, schema.nwBalances);
   for (let s = 0; s < NW_SEED_VALUES.length; s++) {
     const values = NW_SEED_VALUES[s];
     if (!values) continue;
-    const [srow] = await db
-      .insert(schema.nwSnapshots)
-      .values({
+    const snapshotId = nextSnapshotId++;
+    statements.push(
+      db.insert(schema.nwSnapshots).values({
+        id: snapshotId,
         date: `${shiftMonth(startMonth, s)}-01`,
         note: await encryptNullable(key, NW_SEED_NOTES[s] ?? null),
-      })
-      .returning({ id: schema.nwSnapshots.id });
-    if (!srow) throw new Error("seed snapshot insert failed");
+      }),
+    );
     for (let i = 0; i < accountIds.length; i++) {
       const dollars = values[i];
       const accountId = accountIds[i];
@@ -5840,21 +5985,120 @@ async function seedNetWorthBody(
         noSplit,
       );
       if (!rowValues) continue;
-      await db.insert(schema.nwBalances).values({
-        snapshotId: srow.id,
-        accountId,
-        ...rowValues,
-      });
+      statements.push(
+        db.insert(schema.nwBalances).values({
+          id: nextBalanceId++,
+          snapshotId,
+          accountId,
+          ...rowValues,
+        }),
+      );
     }
   }
   // The sample target, only when no target is stored yet.
-  await db
-    .insert(schema.settings)
-    .values({ key: NW_TARGET_KEY, value: String(NW_SEED_TARGET_CENTS) })
-    .onConflictDoNothing();
-  ctx.invalidateQueries();
-  return { ok: true, seeded: true, reason: "Net Worth history seeded from the sample dataset." };
+  statements.push(
+    db
+      .insert(schema.settings)
+      .values({ key: NW_TARGET_KEY, value: String(NW_SEED_TARGET_CENTS) })
+      .onConflictDoNothing(),
+  );
+  return { ok: true, seeded: true, reason: "Net Worth history seeded from the sample dataset.", statements };
 }
+
+
+/* ---------------- Import batch idempotency (contract v64, F02) ----------------
+   importTransactions accepts an OPTIONAL client-supplied batch
+   key. The completed batch is recorded as ONE settings row —
+   key "import_batch_v1:<batchKey>", value a small JSON record
+   { hash, imported } holding only the SHA-256 of the batch's
+   canonical row list and the imported count (no financial
+   content). Settings storage is deliberate: the row lives in the
+   same dataset as the transactions it guards, in BOTH the hosted
+   and packaged stores (the same settings table), rides the
+   encrypted backup/restore path automatically (settings rows are
+   carried in the backup payload and replaced with the dataset on
+   restore, so a key and the rows it recorded can never drift
+   apart), and is erased by clearAllData together with those
+   rows. The claim row is inserted in the SAME db.batch as the
+   transaction rows, so a completed batch and its claim commit
+   atomically — there is no state where the rows landed but the
+   key was not recorded, or the reverse.
+
+   Semantics: a repeat call with the same key and the SAME rows
+   (same hash) is a no-op returning the original { imported }
+   count — the response-loss retry. The same key with DIFFERENT
+   rows (a different hash) is refused with a clear error and
+   inserts nothing — a key never silently stands for two
+   different batches. A new key with identical rows inserts
+   normally: the key guards retries, not content. Requests with
+   no key behave exactly as before (no claim is read or written).
+   A batch refused by preflight (the reserved-prefix plan)
+   records no claim, so fixing the rows and retrying the same
+   key is a fresh batch. */
+const IMPORT_BATCH_KEY_PREFIX = "import_batch_v1:";
+const IMPORT_BATCH_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const importBatchKeyField = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(IMPORT_BATCH_KEY_RE)
+  .optional();
+
+type ImportBatchClaim = { hash: string; imported: number };
+
+function importBatchRowsHash(
+  rows: {
+    date: string;
+    description: string;
+    amountCents: number;
+    sourceType: string;
+    accountName: string;
+    kind: string;
+    category: string;
+    yearlyExpenseId: number | null;
+    fitId: string | null;
+  }[],
+): string {
+  return sha256Hex(
+    JSON.stringify(
+      rows.map((r) => [
+        r.date,
+        r.description,
+        r.amountCents,
+        r.sourceType,
+        r.accountName,
+        r.kind,
+        r.category,
+        r.yearlyExpenseId ?? null,
+        r.fitId ?? null,
+      ]),
+    ),
+  );
+}
+
+function parseImportBatchClaim(
+  value: string,
+): ImportBatchClaim | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed == null || typeof parsed !== "object") return null;
+    const rec = parsed as Record<string, unknown>;
+    if (
+      typeof rec.hash !== "string" ||
+      typeof rec.imported !== "number" ||
+      !Number.isInteger(rec.imported) ||
+      rec.imported < 0
+    ) {
+      return null;
+    }
+    return { hash: rec.hash, imported: rec.imported };
+  } catch {
+    return null;
+  }
+}
+
+const IMPORT_BATCH_COLLISION_MESSAGE =
+  "This import batch key was already used for a different set of rows, so nothing was imported. Start a fresh preview to import these rows as a new batch.";
 
 export const Actions = {
   // Machine-readable API contract (model-friendly API, Piece 1):
@@ -7119,12 +7363,19 @@ export const Actions = {
       if (row && row.value !== "") {
         settingsJson = await decryptSettingValue(key, row.value);
         // Migrate a legacy plaintext value to encrypted in place
-        // (the loadAll opening-reserve pattern).
+        // (the loadAll opening-reserve pattern). Compare-and-write
+        // (contract v64, A4): the update applies only while the
+        // stored value still equals the value read here, so a
+        // concurrent saveImportSettings write wins over this
+        // migration rewrite.
         if (settingsJson != null && !isEncrypted(row.value)) {
           await db
             .update(schema.settings)
             .set({ value: await encryptStr(key, settingsJson) })
-            .where(eq(schema.settings.key, IMPORT_SETTINGS_KEY));
+            .where(and(
+              eq(schema.settings.key, IMPORT_SETTINGS_KEY),
+              eq(schema.settings.value, row.value),
+            ));
         }
       }
       const existing: {
@@ -7246,11 +7497,15 @@ export const Actions = {
       let settingsJson: string | null = null;
       if (row && row.value !== "") {
         settingsJson = await decryptSettingValue(key, row.value);
+        // Compare-and-write (contract v64, A4): see getImportData.
         if (settingsJson != null && !isEncrypted(row.value)) {
           await db
             .update(schema.settings)
             .set({ value: await encryptStr(key, settingsJson) })
-            .where(eq(schema.settings.key, NW_IMPORT_SETTINGS_KEY));
+            .where(and(
+              eq(schema.settings.key, NW_IMPORT_SETTINGS_KEY),
+              eq(schema.settings.value, row.value),
+            ));
         }
       }
       return { settingsJson };
@@ -7311,6 +7566,10 @@ export const Actions = {
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       rows: z.array(txnInput).min(1).max(1000),
+      // Optional batch idempotency key (contract v64, F02) — see
+      // the import-batch note above the Actions map. Absent =
+      // the pre-v64 behaviour exactly.
+      batchKey: importBatchKeyField,
     }),
     response: z.object({ imported: z.number() }),
     async handler(ctx, args) {
@@ -7350,6 +7609,28 @@ export const Actions = {
           throw new Error(RESERVED_ENC_PREFIX_MESSAGE);
         }
       }
+      // Batch-key idempotency (contract v64, F02): with a key,
+      // look for the recorded claim BEFORE building any write. A
+      // claim whose rows hash matches is a completed batch being
+      // retried after its success response was lost — return the
+      // original count and insert ZERO rows. A claim with a
+      // different hash (or an unreadable claim record) is the key
+      // reused for different rows — refuse and insert nothing.
+      const batchKey = args.batchKey;
+      const rowsHash =
+        batchKey !== undefined ? importBatchRowsHash(args.rows) : null;
+      if (batchKey !== undefined && rowsHash !== null) {
+        const claimRow = (await db.select().from(schema.settings)).find(
+          (r: { key: string }) => r.key === IMPORT_BATCH_KEY_PREFIX + batchKey,
+        );
+        if (claimRow) {
+          const claim = parseImportBatchClaim(claimRow.value);
+          if (!claim || claim.hash !== rowsHash) {
+            throw new Error(IMPORT_BATCH_COLLISION_MESSAGE);
+          }
+          return { imported: claim.imported };
+        }
+      }
       // Build EVERY row's encrypted insert statement before any
       // write executes, then run them as ONE db.batch: any
       // failure throws with its reason and zero rows from this
@@ -7376,7 +7657,44 @@ export const Actions = {
           }),
         );
       }
-      await db.batch(statements as [BatchItem, ...BatchItem[]]);
+      if (batchKey !== undefined && rowsHash !== null) {
+        // The claim rides the SAME batch as the rows (a plain
+        // insert — its primary-key conflict fails the whole batch
+        // atomically), so rows and claim always commit together.
+        statements.push(
+          db.insert(schema.settings).values({
+            key: IMPORT_BATCH_KEY_PREFIX + batchKey,
+            value: JSON.stringify({
+              hash: rowsHash,
+              imported: args.rows.length,
+            }),
+          }),
+        );
+      }
+      try {
+        await db.batch(statements as [BatchItem, ...BatchItem[]]);
+      } catch (err) {
+        // The batch failed. If a claim for this key now exists, a
+        // concurrent dispatch of the same batch completed first:
+        // same rows → report its success; different rows (or an
+        // unreadable claim) → the collision refusal. No claim →
+        // the failure is this call's own; rethrow it untouched.
+        if (batchKey !== undefined && rowsHash !== null) {
+          const claimRow = (await db.select().from(schema.settings)).find(
+            (r: { key: string }) =>
+              r.key === IMPORT_BATCH_KEY_PREFIX + batchKey,
+          );
+          if (claimRow) {
+            const claim = parseImportBatchClaim(claimRow.value);
+            if (claim && claim.hash === rowsHash) {
+              ctx.invalidateQueries();
+              return { imported: claim.imported };
+            }
+            throw new Error(IMPORT_BATCH_COLLISION_MESSAGE);
+          }
+        }
+        throw err;
+      }
       ctx.invalidateQueries();
       return { imported: args.rows.length };
     },
@@ -7491,40 +7809,27 @@ export const Actions = {
         .where(eq(schema.yearlyExpenses.id, args.id));
       const now = new Date();
       const eff = args.effectiveFrom ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-      const existingRaw = await db
-        .select()
-        .from(schema.yearlyExpenseVersions)
-        .where(eq(schema.yearlyExpenseVersions.expenseId, args.id));
-      const existing: YearlyVersionRow[] = [];
-      for (const v of existingRaw) existing.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
-      if (existing.length === 0) {
-        // Legacy row with no versions: seed its current stored values as
-        // the baseline version (effective far in the past via its own
-        // row values are unknown here, so use the chosen month as the
-        // baseline too) then apply the new version if different — the
-        // simplest correct path is a single version at eff.
-        await db.insert(schema.yearlyExpenseVersions).values({
+      // Atomic upsert on the (expenseId, effectiveFrom) pair
+      // (contract v64, A1): see setMonthlyBillAmount. This one
+      // statement covers both cases the old read-then-write
+      // branched on — a legacy expense with no versions yet (the
+      // upsert inserts its first version at eff) and an existing
+      // version for the same month (the upsert updates it).
+      await db
+        .insert(schema.yearlyExpenseVersions)
+        .values({
           expenseId: args.id,
           expectedCents: encExpectedArg,
           frequency: args.frequency,
           effectiveFrom: eff,
+        })
+        .onConflictDoUpdate({
+          target: [
+            schema.yearlyExpenseVersions.expenseId,
+            schema.yearlyExpenseVersions.effectiveFrom,
+          ],
+          set: { expectedCents: encExpectedArg, frequency: args.frequency },
         });
-      } else {
-        const sameMonth = existing.find((v) => v.effectiveFrom === eff);
-        if (sameMonth) {
-          await db
-            .update(schema.yearlyExpenseVersions)
-            .set({ expectedCents: encExpectedArg, frequency: args.frequency })
-            .where(eq(schema.yearlyExpenseVersions.id, sameMonth.id));
-        } else {
-          await db.insert(schema.yearlyExpenseVersions).values({
-            expenseId: args.id,
-            expectedCents: encExpectedArg,
-            frequency: args.frequency,
-            effectiveFrom: eff,
-          });
-        }
-      }
       const allRaw = await db
         .select()
         .from(schema.yearlyExpenseVersions)
@@ -7577,24 +7882,23 @@ export const Actions = {
         return { ok: false, reason: "That yearly expense was not found." };
       }
       const encExpectedArg = await encryptNum(key, args.expectedCents);
-      const existing = await db
-        .select()
-        .from(schema.yearlyExpenseVersions)
-        .where(eq(schema.yearlyExpenseVersions.expenseId, args.expenseId));
-      const sameMonth = existing.find((v) => v.effectiveFrom === args.effectiveFrom);
-      if (sameMonth) {
-        await db
-          .update(schema.yearlyExpenseVersions)
-          .set({ expectedCents: encExpectedArg, frequency: args.frequency })
-          .where(eq(schema.yearlyExpenseVersions.id, sameMonth.id));
-      } else {
-        await db.insert(schema.yearlyExpenseVersions).values({
+      // Atomic upsert on the (expenseId, effectiveFrom) pair
+      // (contract v64, A1): see setMonthlyBillAmount.
+      await db
+        .insert(schema.yearlyExpenseVersions)
+        .values({
           expenseId: args.expenseId,
           expectedCents: encExpectedArg,
           frequency: args.frequency,
           effectiveFrom: args.effectiveFrom,
+        })
+        .onConflictDoUpdate({
+          target: [
+            schema.yearlyExpenseVersions.expenseId,
+            schema.yearlyExpenseVersions.effectiveFrom,
+          ],
+          set: { expectedCents: encExpectedArg, frequency: args.frequency },
         });
-      }
       const allRaw = await db
         .select()
         .from(schema.yearlyExpenseVersions)
@@ -8417,25 +8721,26 @@ export const Actions = {
         return { ok: false, reason: "That monthly bill was not found." };
       }
       const encAmountArg = await encryptNum(key, args.amountCents);
-      const existing = await db
-        .select()
-        .from(schema.monthlyBillVersions)
-        .where(eq(schema.monthlyBillVersions.billId, args.billId));
-      const sameMonth = existing.find(
-        (v) => v.effectiveFrom === args.effectiveFrom,
-      );
-      if (sameMonth) {
-        await db
-          .update(schema.monthlyBillVersions)
-          .set({ amountCents: encAmountArg })
-          .where(eq(schema.monthlyBillVersions.id, sameMonth.id));
-      } else {
-        await db.insert(schema.monthlyBillVersions).values({
+      // Atomic upsert on the (billId, effectiveFrom) pair
+      // (contract v64, A1): the composite unique index (schema +
+      // migration 0025) makes the pair a real conflict target, so
+      // two overlapping writes for the same month can never insert
+      // duplicate version rows — the second updates the pair's
+      // single row instead.
+      await db
+        .insert(schema.monthlyBillVersions)
+        .values({
           billId: args.billId,
           amountCents: encAmountArg,
           effectiveFrom: args.effectiveFrom,
+        })
+        .onConflictDoUpdate({
+          target: [
+            schema.monthlyBillVersions.billId,
+            schema.monthlyBillVersions.effectiveFrom,
+          ],
+          set: { amountCents: encAmountArg },
         });
-      }
       const allRaw = await db
         .select()
         .from(schema.monthlyBillVersions)
@@ -8554,7 +8859,19 @@ export const Actions = {
           reason: `Example data only loads into a completely empty tracker — this tracker already has data (${nonEmptyDatasetTables(presence).join(", ")}). Nothing was seeded.`,
         };
       }
-      return seedExamplesBody(ctx, db, key);
+      // Atomic seed (contract v64, A3): the builder only BUILDS
+      // the insert statements; they commit as ONE db.batch, so a
+      // failure mid-seed lands nothing and a retry can succeed.
+      const built = await seedExamplesStatements(db, key);
+      if (!built.ok) {
+        return { ok: false, reason: built.reason };
+      }
+      type BatchItem = Parameters<typeof db.batch>[0][number];
+      if (built.statements.length > 0) {
+        await db.batch(built.statements as [BatchItem, ...BatchItem[]]);
+      }
+      ctx.invalidateQueries();
+      return { ok: true, reason: built.reason };
     },
   }),
 
@@ -8631,7 +8948,17 @@ export const Actions = {
           reason: `Dataset is not empty (${nonEmptyDatasetTables(presence).join(", ")}) — nothing seeded.`,
         };
       }
-      return seedNetWorthBody(ctx, db, key);
+      // Atomic seed (contract v64, A3): see seedExamples.
+      const built = await seedNetWorthStatements(db, key);
+      if (!built.seeded) {
+        return { ok: false, seeded: false, reason: built.reason };
+      }
+      type BatchItem = Parameters<typeof db.batch>[0][number];
+      if (built.statements.length > 0) {
+        await db.batch(built.statements as [BatchItem, ...BatchItem[]]);
+      }
+      ctx.invalidateQueries();
+      return { ok: true, seeded: true, reason: built.reason };
     },
   }),
 
@@ -8659,14 +8986,30 @@ export const Actions = {
           reason: `Dataset is not empty (${nonEmptyDatasetTables(presence).join(", ")}) — nothing seeded.`,
         };
       }
-      const spending = await seedExamplesBody(ctx, db, key);
+      // All-or-nothing, as this action's contract has always
+      // claimed (contract v64, A3 — audit F23/F24): BOTH builders
+      // only BUILD their statements, and the two sets commit as
+      // ONE db.batch. A failure anywhere — including the second
+      // dataset's statements — lands NOTHING from either, leaving
+      // an empty dataset a plain retry can seed; and two
+      // overlapping dispatches cannot double the roster, because
+      // the loser's batch collides on the builders' explicit ids
+      // and rolls back whole (its emptiness read raced, its batch
+      // cannot land).
+      const spending = await seedExamplesStatements(db, key);
       if (!spending.ok) {
         return { ok: false, seeded: false, reason: spending.reason };
       }
-      const nw = await seedNetWorthBody(ctx, db, key);
+      const nw = await seedNetWorthStatements(db, key);
       if (!nw.seeded) {
         return { ok: false, seeded: false, reason: nw.reason };
       }
+      type BatchItem = Parameters<typeof db.batch>[0][number];
+      const all = [...spending.statements, ...nw.statements];
+      if (all.length > 0) {
+        await db.batch(all as [BatchItem, ...BatchItem[]]);
+      }
+      ctx.invalidateQueries();
       return { ok: true, seeded: true, reason: "Sample data loaded." };
     },
   }),
@@ -9185,16 +9528,43 @@ export const Actions = {
           composeRetirementInputsBlob(fields, state.scenarios, nextRevision),
         ),
       );
-      if (baseRevision === undefined || state.storedRaw === undefined) {
-        // Legacy unchecked write (no baseRevision), or the
-        // first write establishing the row: unconditional
+      if (baseRevision === undefined) {
+        // Legacy unchecked write (no baseRevision): unconditional
         // upsert, as before — except the write still bumps the
-        // revision and returns it. A CAS base > 0 against an
-        // absent row never reaches here: the decision above
-        // already refused it (absent reads as revision 0).
+        // revision and returns it.
         await upsertRetirementBlobValue(db, enc);
         ctx.invalidateQueries();
         return { ok: true as const, revision: nextRevision };
+      }
+      if (state.storedRaw === undefined) {
+        // First write WITH a CAS base (contract v64, A2 — audit
+        // F20): insert-if-absent, mirroring saveRothInputs'
+        // insert-only first write. Two overlapping first saves
+        // both read "no record" and both pass the decision above
+        // at base 0; the loser's insert is a no-op here and it is
+        // refused with the current lite record instead of
+        // overwriting the winner's save — exactly one success
+        // and one conflict, never two revision-1 successes. A
+        // CAS base > 0 against an absent row never reaches here:
+        // the decision above already refused it (absent reads as
+        // revision 0).
+        const inserted = await insertSettingsValueIfAbsent(
+          db,
+          RETIREMENT_KEY,
+          enc,
+        );
+        if (inserted) {
+          ctx.invalidateQueries();
+          return { ok: true as const, revision: nextRevision };
+        }
+        const record = await loadRetirementLiteRecord(db, key);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          baselineRevision: record.baselineRevision,
+          record,
+        };
       }
       // CAS write against an existing row: commit with ONE
       // guarded UPDATE on the stored raw value. 0 affected rows
@@ -9294,9 +9664,20 @@ export const Actions = {
         ),
       );
       let inputsCommitted: boolean;
-      if (baseRevision === undefined || blobState.storedRaw === undefined) {
+      if (baseRevision === undefined) {
         await upsertRetirementBlobValue(db, enc1);
         inputsCommitted = true;
+      } else if (blobState.storedRaw === undefined) {
+        // First write WITH a CAS base (contract v64, A2 — audit
+        // F20): insert-if-absent, exactly as saveRetirementCalc.
+        // A landed concurrent first save makes this a no-op, and
+        // the refusal below returns the inputs-conflict shape
+        // with NOTHING of this invocation written to either blob.
+        inputsCommitted = await insertSettingsValueIfAbsent(
+          db,
+          RETIREMENT_KEY,
+          enc1,
+        );
       } else {
         inputsCommitted = await commitSettingsValueGuarded(
           db,
@@ -9331,10 +9712,7 @@ export const Actions = {
           baseline: fields,
           baselineKind: "saved" as const,
         }) satisfies SaveRetirementBaselineResponse;
-      if (
-        baseBaselineRevision === undefined ||
-        baselineState?.storedRaw === undefined
-      ) {
+      if (baseBaselineRevision === undefined) {
         const nextBaselineRevision = baselineDecision.allowed
           ? baselineDecision.nextRevision
           : baselineStored + 1;
@@ -9353,6 +9731,46 @@ export const Actions = {
         );
         ctx.invalidateQueries();
         return successShape(nextBaselineRevision);
+      }
+      if (baselineState?.storedRaw === undefined) {
+        // First baseline write WITH a CAS base (contract v64,
+        // A2 — audit F20): insert-if-absent, exactly as blob 1's
+        // first write above. A landed concurrent first baseline
+        // makes this a no-op; blob 1 IS committed and is NOT
+        // rolled back (a rollback write would itself be an
+        // unguarded clobber), so the refusal is the honest
+        // stage: "baseline" conflict — the working inputs were
+        // saved; the baseline did not move.
+        const nextBaselineRevision = baselineDecision.allowed
+          ? baselineDecision.nextRevision
+          : baselineStored + 1;
+        const inserted = await insertSettingsValueIfAbsent(
+          db,
+          RETIREMENT_BASELINE_KEY,
+          await encryptStr(
+            key,
+            JSON.stringify(
+              composeRetirementBaselineBlob(
+                "saved",
+                fields,
+                nextBaselineRevision,
+              ),
+            ),
+          ),
+        );
+        if (inserted) {
+          ctx.invalidateQueries();
+          return successShape(nextBaselineRevision);
+        }
+        const record = await loadRetirementLiteRecord(db, key);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          stage: "baseline" as const,
+          revision: record.revision,
+          baselineRevision: record.baselineRevision,
+          record,
+        };
       }
       const nextBaselineRevision = baselineDecision.allowed
         ? baselineDecision.nextRevision
@@ -12231,21 +12649,18 @@ export const Actions = {
         isPropertyKind(account.propertyKind as NwPropertyKind) ||
           isCustodialAccount(account),
       );
-      const [existing] = await db
-        .select()
-        .from(schema.nwBalances)
-        .where(
-          and(
-            eq(schema.nwBalances.snapshotId, args.snapshotId),
-            eq(schema.nwBalances.accountId, args.accountId),
-          ),
-        );
       if (!values) {
-        if (existing) {
-          await db
-            .delete(schema.nwBalances)
-            .where(eq(schema.nwBalances.id, existing.id));
-        }
+        // Removal targets the (snapshot, account) pair directly —
+        // at most one row can exist for it (the composite unique
+        // index below), so no read is needed to find it.
+        await db
+          .delete(schema.nwBalances)
+          .where(
+            and(
+              eq(schema.nwBalances.snapshotId, args.snapshotId),
+              eq(schema.nwBalances.accountId, args.accountId),
+            ),
+          );
         ctx.invalidateQueries();
         return {
           ok: true,
@@ -12253,18 +12668,25 @@ export const Actions = {
           id: args.snapshotId,
         };
       }
-      if (existing) {
-        await db
-          .update(schema.nwBalances)
-          .set(values)
-          .where(eq(schema.nwBalances.id, existing.id));
-      } else {
-        await db.insert(schema.nwBalances).values({
+      // Atomic upsert on the (snapshotId, accountId) pair
+      // (contract v64, A1 — audit F09): the composite unique
+      // index (schema + migration 0025) makes the pair a real
+      // conflict target, so this ONE statement inserts or updates
+      // the pair's single row. The old read-then-insert path let
+      // two overlapping writes both see "no row yet" and insert
+      // two balance rows for one account in one snapshot, double-
+      // counting it in the snapshot total (which sums rows).
+      await db
+        .insert(schema.nwBalances)
+        .values({
           snapshotId: args.snapshotId,
           accountId: args.accountId,
           ...values,
+        })
+        .onConflictDoUpdate({
+          target: [schema.nwBalances.snapshotId, schema.nwBalances.accountId],
+          set: values,
         });
-      }
       ctx.invalidateQueries();
       return { ok: true, reason: "Balance saved.", id: args.snapshotId };
     },

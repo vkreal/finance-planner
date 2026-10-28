@@ -306,25 +306,38 @@ export async function createRuntime(opts: {
 
   // First boot on a fresh store: seed the sample data through the
   // app's own first-run seed action — ONE global emptiness check
-  // over every dataset table, then both sample datasets (contract
-  // v60, F7; before v60 the two seed actions were called in
-  // sequence, their incomplete per-action guards never inspected).
-  // The seeded flag is set only from the action's own result: when
-  // the seed ran (seeded: true), or when the dataset already holds
-  // real records (ok: true, seeded: false — this store is not a
-  // seed candidate, and re-checking every boot would be noise).
-  // A FAILED seed leaves the flag unset so a later boot retries,
-  // and the failure is reported, not hidden. The flag survives
-  // clearAllData, so a user who wipes their data is not re-seeded.
+  // over every dataset table, then both sample datasets as one
+  // atomic batch (contract v60, F7; contract v64, A3; before v60
+  // the two seed actions were called in sequence, their
+  // incomplete per-action guards never inspected).
+  // The seeded flag follows the action's SEEDED verdict, never
+  // ok alone (contract v64, A3 — audit F23): it is set ONLY when
+  // the seed actually ran (seeded: true). A refused seed
+  // (ok: true, seeded: false — the dataset already holds records,
+  // so this store is not a seed candidate) and a FAILED seed
+  // (ok: false — e.g. its atomic batch rolled back, leaving the
+  // dataset empty) both leave the flag UNSET: the next boot
+  // re-runs the check, which refuses again harmlessly over real
+  // records and retries the seed over the empty dataset a failed
+  // attempt left behind. (Before v64 this caller marked seeded
+  // on any ok: true, so a boot whose predecessor had died
+  // mid-seed was marked seeded off the retry's not-empty refusal
+  // and the partial dataset was stranded with no Net Worth
+  // snapshot.) The flag survives clearAllData, so a user who
+  // wipes their data is not re-seeded.
   if (!localDb.meta.seeded) {
     try {
       const seed = await call<{ ok: boolean; seeded: boolean; reason: string }>(
         "seedFirstRun",
         {},
       );
-      if (seed.ok) {
+      if (seed.seeded) {
         localDb.meta.seeded = true;
         localDb.saveMeta();
+      } else if (seed.ok) {
+        console.log(
+          `Packaged first-run seed skipped: ${seed.reason}`,
+        );
       } else {
         console.error(`Packaged first-run seed failed: ${seed.reason}`);
       }

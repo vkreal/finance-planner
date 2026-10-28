@@ -42,6 +42,16 @@
 //      reach; the path that shipped broken 2026-10-26 when the
 //      handler passed the wrong handle to the guarded commit),
 //      and a stale save refused with the stored state intact.
+//   J. Atomic seeding + honest boot flag (contract v64, A3): a
+//      boot over a nonempty dataset does not mark meta.seeded on
+//      ok alone; a seed whose persist fails leaves no partial
+//      rows and a plain retry seeds cleanly; overlapping
+//      seedFirstRun dispatches land exactly one roster.
+//   K. Import batch idempotency keys (contract v64, F02): same
+//      key + same rows is a no-op returning the original count;
+//      a new key inserts identical rows again; the same key with
+//      different rows is refused; unkeyed imports are unchanged;
+//      the recorded key survives a reload.
 //
 // Run via packaged/run-harness.mjs (which bundles this file with the
 // same resolver seams as the browser build).
@@ -515,9 +525,10 @@ eq(
 }
 
 // H-migration: the migration marker lives inside the image. An
-// image rewound to user_version N-1 (last migration's effect
-// removed) is re-migrated on boot even though the localStorage
-// meta claims all migrations applied — the meta is not consulted.
+// image rewound to user_version N-2 (the last two migrations'
+// effects removed by hand) is re-migrated on boot even though
+// the localStorage meta claims all migrations applied — the
+// meta is not consulted.
 {
   const storeM = memoryStore();
   const rtM = await createRuntime({ store: storeM, wasmUrl: wasmPath });
@@ -532,8 +543,15 @@ eq(
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const SQL = await initSqlJs({ locateFile: () => wasmPath });
   const rewound = new SQL.Database(bytes);
+  // Rewind the last TWO migrations' effects: 0024's day column
+  // and 0025's three composite unique indexes (contract v64) —
+  // the image claims MIGRATIONS.length - 2, so boot must re-run
+  // both, exactly as it re-ran the single last migration before.
   rewound.exec("ALTER TABLE monthly_cash_out_items DROP COLUMN day");
-  rewound.exec(`PRAGMA user_version = ${MIGRATIONS.length - 1}`);
+  rewound.exec("DROP INDEX IF EXISTS nw_balances_snapshot_account_unique");
+  rewound.exec("DROP INDEX IF EXISTS monthly_bill_versions_bill_effective_unique");
+  rewound.exec("DROP INDEX IF EXISTS yearly_expense_versions_expense_effective_unique");
+  rewound.exec(`PRAGMA user_version = ${MIGRATIONS.length - 2}`);
   const rewoundBytes = rewound.export();
   rewound.close();
   // Write the rewound image as the next generation, by hand,
@@ -741,6 +759,350 @@ eq(
     "I7 stale-tab refusal does NOT engage the persist lockout",
     staleRes.status === 409 && rtB.sessionLocked === false,
     `status ${staleRes.status}, locked ${rtB.sessionLocked}`,
+  );
+}
+
+// ---------- J. Atomic seeding + honest boot flag (contract v64, A3) ----------
+// (F23) The boot caller marks meta.seeded ONLY on seeded: true —
+// a boot over a NONEMPTY dataset (seedFirstRun refuses with
+// ok: true, seeded: false) leaves the flag unset, where the
+// pre-v64 caller marked it on ok alone and stranded any partial
+// dataset. (F23/F24) A seed whose persist fails leaves NO
+// partial rows in the durable store, and a plain retry seeds
+// cleanly. Overlapping seedFirstRun dispatches cannot double
+// the bill roster: the loser either sees the winner's data at
+// its emptiness check or its ONE batch collides (explicit seed
+// ids / the monthly-summaries primary key) and rolls back whole.
+{
+  const storeF = memoryStore();
+  const rtF = await createRuntime({ store: storeF, wasmUrl: wasmPath });
+  check("J0 fresh boot marks seeded", rtF.localDb.meta.seeded === true);
+  const metaF = JSON.parse(storeF.get(META_KEY) as string);
+  metaF.seeded = false;
+  storeF.set(META_KEY, JSON.stringify(metaF));
+  const rtF2 = await createRuntime({ store: storeF, wasmUrl: wasmPath });
+  check(
+    "J1 boot over a nonempty dataset does NOT mark seeded on ok alone",
+    rtF2.localDb.meta.seeded === false,
+    `seeded ${rtF2.localDb.meta.seeded}`,
+  );
+  const nwF2 = await rtF2.call<any>("getNetWorth", {});
+  eq("J2 the refused boot changed nothing", (nwF2.snapshots ?? []).length, 12);
+}
+{
+  const base = memoryStore();
+  let armed = false;
+  const quotaStore: KeyValueStore = {
+    get: (k) => base.get(k),
+    set: (k, v) => {
+      if (armed) throw new Error("QuotaExceededError (simulated)");
+      base.set(k, v);
+    },
+    remove: (k) => base.remove(k),
+  };
+  const rtQ = await createRuntime({ store: quotaStore, wasmUrl: wasmPath });
+  await rtQ.call("clearAllData", { confirm: "delete everything" });
+  armed = true;
+  const failedSeed = await rtQ.dispatch("seedFirstRun", {});
+  armed = false;
+  check(
+    "J3 seed dispatch with a failing persist surfaces an error",
+    failedSeed.status === 500,
+    `status ${failedSeed.status}`,
+  );
+  const rtQ2 = await createRuntime({ store: quotaStore, wasmUrl: wasmPath });
+  const dashQ = await rtQ2.call<any>("getDashboard", { month: "2026-09" });
+  const nwQ = await rtQ2.call<any>("getNetWorth", {});
+  check(
+    "J4 failed seed left NO partial rows in the durable store",
+    dashQ.hasAnyData === false && (nwQ.snapshots ?? []).length === 0,
+    `hasAnyData ${dashQ.hasAnyData}, snapshots ${(nwQ.snapshots ?? []).length}`,
+  );
+  const seededRetry = await rtQ2.call<any>("seedFirstRun", {});
+  eq(
+    "J5 plain retry seeds cleanly after the failed attempt",
+    [seededRetry.ok, seededRetry.seeded],
+    [true, true],
+  );
+  const nwQ2 = await rtQ2.call<any>("getNetWorth", {});
+  eq("J6 retry landed the full NW history", (nwQ2.snapshots ?? []).length, 12);
+  eq(
+    "J7 retry last snapshot total is the seeded total",
+    (nwQ2.snapshots ?? []).at(-1)?.totalCents,
+    306250000,
+  );
+}
+{
+  const storeC = memoryStore();
+  const rtC = await createRuntime({ store: storeC, wasmUrl: wasmPath });
+  await rtC.call("clearAllData", { confirm: "delete everything" });
+  const [d1, d2] = await Promise.all([
+    rtC.dispatch("seedFirstRun", {}),
+    rtC.dispatch("seedFirstRun", {}),
+  ]);
+  const successes = [d1, d2].filter((d) => d.status === 200).length;
+  check(
+    "J8 overlapping seedFirstRun dispatches: at least one succeeds",
+    successes >= 1,
+    `statuses ${d1.status}/${d2.status}`,
+  );
+  const nwC = await rtC.call<any>("getNetWorth", {});
+  eq(
+    "J9 overlapping seeds landed exactly ONE NW history",
+    (nwC.snapshots ?? []).length,
+    12,
+  );
+  eq(
+    "J10 overlapping seeds: last snapshot total is the single-seed total",
+    (nwC.snapshots ?? []).at(-1)?.totalCents,
+    306250000,
+  );
+  const nowD = new Date();
+  const curMonthStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, "0")}`;
+  const dashC = await rtC.call<any>("getDashboard", { month: curMonthStr });
+  eq(
+    "J11 overlapping seeds landed exactly ONE bill roster",
+    (dashC.monthlyBills ?? []).length,
+    12,
+  );
+  const again = await rtC.call<any>("seedFirstRun", {});
+  eq(
+    "J12 a later seedFirstRun is refused as not empty",
+    [again.ok, again.seeded],
+    [true, false],
+  );
+}
+
+// ---------- K. Import batch idempotency keys (contract v64, F02) ----------
+// Same key + same rows twice → the second call is a no-op
+// returning the original count; key A then key B with the same
+// rows → both insert; same key with different rows → refused
+// with nothing inserted; no key → the pre-v64 behaviour. The
+// claim is durable: it still dedupes after a reload.
+{
+  const storeK = memoryStore();
+  const rtK = await createRuntime({ store: storeK, wasmUrl: wasmPath });
+  await rtK.call("clearAllData", { confirm: "delete everything" });
+  const row = (description: string, amountCents: number) => ({
+    date: "2026-09-15",
+    description,
+    amountCents,
+    sourceType: "checking",
+    accountName: "Checking",
+    kind: "spending",
+    category: "Other",
+    yearlyExpenseId: null,
+    fitId: null,
+  });
+  const rowsA = [row("Key Batch One", 1100), row("Key Batch Two", 2200)];
+  const keyBatchCount = async (rt: PackagedRuntimeShape) => {
+    const data = await rt.call<any>("getImportData", { months: ["2026-09"] });
+    return (data.existing ?? []).filter((t: any) =>
+      String(t.description).startsWith("Key Batch"),
+    ).length;
+  };
+  type PackagedRuntimeShape = typeof rtK;
+  const first = await rtK.call<any>("importTransactions", {
+    rows: rowsA,
+    batchKey: "harness-key-a",
+  });
+  eq("K1 first keyed import imports all rows", first.imported, 2);
+  const retry = await rtK.call<any>("importTransactions", {
+    rows: rowsA,
+    batchKey: "harness-key-a",
+  });
+  eq("K2 same key + same rows returns the original count", retry.imported, 2);
+  eq("K3 the retry inserted ZERO additional rows", await keyBatchCount(rtK), 2);
+  const secondKey = await rtK.call<any>("importTransactions", {
+    rows: rowsA,
+    batchKey: "harness-key-b",
+  });
+  eq("K4 a new key with identical rows inserts again", secondKey.imported, 2);
+  eq("K5 both keyed batches are recorded", await keyBatchCount(rtK), 4);
+  const collision = await rtK.dispatch("importTransactions", {
+    rows: [row("Key Batch Changed", 3300)],
+    batchKey: "harness-key-a",
+  });
+  check(
+    "K6 same key + different rows is refused with a clear error",
+    collision.status === 500 &&
+      collision.body.includes("different set of rows"),
+    `status ${collision.status}`,
+  );
+  eq("K7 the collision inserted nothing", await keyBatchCount(rtK), 4);
+  const unkeyed = await rtK.call<any>("importTransactions", { rows: rowsA });
+  eq("K8 an unkeyed import behaves as before (inserts)", unkeyed.imported, 2);
+  eq("K9 unkeyed rows are recorded", await keyBatchCount(rtK), 6);
+  const rtK2 = await createRuntime({ store: storeK, wasmUrl: wasmPath });
+  const retryAfterReload = await rtK2.call<any>("importTransactions", {
+    rows: rowsA,
+    batchKey: "harness-key-a",
+  });
+  eq(
+    "K10 the recorded key still dedupes after a reload",
+    retryAfterReload.imported,
+    2,
+  );
+  eq("K11 the post-reload retry inserted nothing", await keyBatchCount(rtK2), 6);
+}
+
+// ---------- L. v64 structural write paths (A1 upserts, A2 first-write) ----------
+// A2: two overlapping first saves of the Retirement record, both
+// at baseRevision 0 against an absent record, produce exactly
+// ONE success and ONE conflict refusal — never two revision-1
+// successes (audit F20). Either interleaving lands there: the
+// loser is refused by the read-time decision (if it read after
+// the winner committed) or by insert-if-absent (if it read
+// before). A1: overlapping upserts on the (snapshot, account)
+// NW balance pair and on a bill's (bill, effective month)
+// version pair each leave exactly ONE row for the pair.
+{
+  const storeL = memoryStore();
+  const rtL = await createRuntime({ store: storeL, wasmUrl: wasmPath });
+  await rtL.call("clearAllData", { confirm: "delete everything" });
+  const retFields = {
+    portfolioCents: 10000000,
+    spendingCents: 5000000,
+    currentAge: 55,
+    retirementAge: 60,
+    endAge: 90,
+    stocksPct: 60,
+    extraIncomeCents: null,
+    extraIncomeStartAge: null,
+    expectedReturnPct: 5,
+    volatilityPct: 10,
+    strategy: "constant",
+    percentOfPortfolio: null,
+    guardrailsCutPct: null,
+    guardrailsRaisePct: null,
+    guardrailsAdjustmentPct: null,
+    phaseStartAge: null,
+    phaseDeclinePct: null,
+  };
+  const [s1, s2] = await Promise.all([
+    rtL.dispatch("saveRetirementCalc", {
+      ...retFields,
+      spendingCents: 5000000,
+      baseRevision: 0,
+    }),
+    rtL.dispatch("saveRetirementCalc", {
+      ...retFields,
+      spendingCents: 8000000,
+      baseRevision: 0,
+    }),
+  ]);
+  const sBodies = [s1, s2].map((s) => {
+    try {
+      return JSON.parse(s.body) as { data?: { ok?: boolean } };
+    } catch {
+      return {};
+    }
+  });
+  const sOks = sBodies.filter((b) => b.data?.ok === true).length;
+  const sConflicts = sBodies.filter((b) => b.data?.ok === false).length;
+  check(
+    "L1 overlapping Retirement first saves: exactly one success",
+    sOks === 1,
+    `statuses ${s1.status}/${s2.status}, oks ${sOks}`,
+  );
+  check(
+    "L2 overlapping Retirement first saves: exactly one conflict refusal",
+    sConflicts === 1,
+    `conflicts ${sConflicts}`,
+  );
+  const retAfter = await rtL.call<any>("getRetirementCalc", {});
+  eq("L3 the landed first save is at revision 1", retAfter.revision, 1);
+  check(
+    "L4 the landed spending is one writer's value (not a blend)",
+    [5000000, 8000000].includes(retAfter.saved?.spendingCents),
+    `spending ${retAfter.saved?.spendingCents}`,
+  );
+  const third = await rtL.dispatch("saveRetirementCalc", {
+    ...retFields,
+    spendingCents: 6000000,
+    baseRevision: 0,
+  });
+  const thirdBody = JSON.parse(third.body) as { data?: { ok?: boolean } };
+  check(
+    "L5 a later base-0 save against the revision-1 record is refused",
+    thirdBody.data?.ok === false,
+    `status ${third.status}`,
+  );
+  const retFinal = await rtL.call<any>("getRetirementCalc", {});
+  eq("L6 revision still 1 after the refused save", retFinal.revision, 1);
+
+  // A1 — NW balance pair: two overlapping updateNwBalance writes
+  // for a (snapshot, account) pair with no row yet.
+  const acct = await rtL.call<any>("addNwAccount", { name: "Race Account" });
+  check("L7 account added", acct.ok === true, acct.reason);
+  const snap = await rtL.call<any>("addNwSnapshot", {
+    date: "2026-09-01",
+    note: null,
+    balances: [],
+  });
+  check("L8 snapshot added", snap.ok === true, snap.reason);
+  const balArgs = {
+    snapshotId: snap.id,
+    accountId: acct.id,
+    balanceCents: 1234500,
+    splits: null,
+  };
+  const [b1, b2] = await Promise.all([
+    rtL.dispatch("updateNwBalance", balArgs),
+    rtL.dispatch("updateNwBalance", balArgs),
+  ]);
+  check(
+    "L9 both overlapping balance upserts report success",
+    b1.status === 200 && b2.status === 200,
+    `statuses ${b1.status}/${b2.status}`,
+  );
+  const nwL = await rtL.call<any>("getNetWorth", {});
+  const snapL = (nwL.snapshots ?? []).find((s: any) => s.id === snap.id);
+  eq(
+    "L10 the pair holds ONE row: snapshot total counts it once",
+    snapL?.totalCents,
+    1234500,
+  );
+
+  // A1 — bill version pair: two overlapping setMonthlyBillAmount
+  // writes for the same (bill, effective month).
+  const bill = await rtL.call<any>("addMonthlyBill", {
+    name: "Race Bill",
+    amountCents: 10000,
+    effectiveFrom: "2026-08",
+    paidBy: "Checking",
+  });
+  const [v1, v2] = await Promise.all([
+    rtL.dispatch("setMonthlyBillAmount", {
+      billId: bill.id,
+      amountCents: 20000,
+      effectiveFrom: "2026-10",
+    }),
+    rtL.dispatch("setMonthlyBillAmount", {
+      billId: bill.id,
+      amountCents: 30000,
+      effectiveFrom: "2026-10",
+    }),
+  ]);
+  check(
+    "L11 both overlapping version upserts report success",
+    v1.status === 200 && v2.status === 200,
+    `statuses ${v1.status}/${v2.status}`,
+  );
+  const dashL = await rtL.call<any>("getDashboard", { month: "2026-10" });
+  const billL = (dashL.monthlyBills ?? []).find((b: any) => b.id === bill.id);
+  const octVersions = (billL?.history ?? []).filter(
+    (h: any) => h.effectiveFrom === "2026-10",
+  );
+  eq(
+    "L12 the (bill, month) pair holds exactly ONE version",
+    octVersions.length,
+    1,
+  );
+  check(
+    "L13 the surviving version is one writer's amount",
+    [20000, 30000].includes(octVersions[0]?.amountCents),
+    `amount ${octVersions[0]?.amountCents}`,
   );
 }
 

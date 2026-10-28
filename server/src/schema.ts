@@ -8,7 +8,7 @@
 // in that data layer. Structural fields (ids, months/dates,
 // effective-from, frequencies, due months, booleans, foreign keys)
 // stay plaintext so the server can query/sort on them.
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const yearlyExpenses = sqliteTable("yearly_expenses", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -58,27 +58,40 @@ export const yearlyExpenses = sqliteTable("yearly_expenses", {
     .$defaultFn(() => new Date()),
 });
 
-export const yearlyExpenseVersions = sqliteTable("yearly_expense_versions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  expenseId: integer("expense_id")
-    .notNull()
-    .references(() => yearlyExpenses.id),
-  expectedCents: text("expected_cents").notNull(),
-  frequency: text("frequency", {
-    enum: ["yearly", "bimonthly", "quarterly", "semiannual"],
-  })
-    .notNull()
-    .default("yearly"),
-  // First month (YYYY-MM) this amount + frequency applies to. A month's
-  // set-aside uses the latest version with effectiveFrom <= that month.
-  // Months before the earliest version contribute zero, unless the bill
-  // is flagged legacy/backfill (see yearlyExpenses.backfillBeforeFirstVersion),
-  // in which case they fall back to the earliest version.
-  effectiveFrom: text("effective_from").notNull(),
-  createdAt: integer("created_at", { mode: "timestamp_ms" })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
+export const yearlyExpenseVersions = sqliteTable(
+  "yearly_expense_versions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    expenseId: integer("expense_id")
+      .notNull()
+      .references(() => yearlyExpenses.id),
+    expectedCents: text("expected_cents").notNull(),
+    frequency: text("frequency", {
+      enum: ["yearly", "bimonthly", "quarterly", "semiannual"],
+    })
+      .notNull()
+      .default("yearly"),
+    // First month (YYYY-MM) this amount + frequency applies to. A month's
+    // set-aside uses the latest version with effectiveFrom <= that month.
+    // Months before the earliest version contribute zero, unless the bill
+    // is flagged legacy/backfill (see yearlyExpenses.backfillBeforeFirstVersion),
+    // in which case they fall back to the earliest version.
+    effectiveFrom: text("effective_from").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [
+    // One version per (expense, effective month) — enforced by the
+    // database (contract v64, A1; migration 0025), so the version
+    // writers' upserts on this pair can never create a duplicate
+    // history entry even when two writes overlap.
+    uniqueIndex("yearly_expense_versions_expense_effective_unique").on(
+      t.expenseId,
+      t.effectiveFrom,
+    ),
+  ],
+);
 
 export const transactions = sqliteTable("transactions", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -154,20 +167,33 @@ export const monthlyBills = sqliteTable("monthly_bills", {
     .$defaultFn(() => new Date()),
 });
 
-export const monthlyBillVersions = sqliteTable("monthly_bill_versions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  billId: integer("bill_id")
-    .notNull()
-    .references(() => monthlyBills.id),
-  amountCents: text("amount_cents").notNull(),
-  // First month (YYYY-MM) this amount applies to. A month's breakdown
-  // uses the latest version with effectiveFrom <= that month, so editing
-  // an amount from today forward never changes earlier months.
-  effectiveFrom: text("effective_from").notNull(),
-  createdAt: integer("created_at", { mode: "timestamp_ms" })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
+export const monthlyBillVersions = sqliteTable(
+  "monthly_bill_versions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    billId: integer("bill_id")
+      .notNull()
+      .references(() => monthlyBills.id),
+    amountCents: text("amount_cents").notNull(),
+    // First month (YYYY-MM) this amount applies to. A month's breakdown
+    // uses the latest version with effectiveFrom <= that month, so editing
+    // an amount from today forward never changes earlier months.
+    effectiveFrom: text("effective_from").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [
+    // One version per (bill, effective month) — enforced by the
+    // database (contract v64, A1; migration 0025), so
+    // setMonthlyBillAmount's upsert on this pair can never create
+    // a duplicate history entry even when two writes overlap.
+    uniqueIndex("monthly_bill_versions_bill_effective_unique").on(
+      t.billId,
+      t.effectiveFrom,
+    ),
+  ],
+);
 
 export const monthlyOneOffs = sqliteTable("monthly_one_offs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -268,37 +294,52 @@ export const nwSnapshots = sqliteTable("nw_snapshots", {
     .$defaultFn(() => new Date()),
 });
 
-export const nwBalances = sqliteTable("nw_balances", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  snapshotId: integer("snapshot_id")
-    .notNull()
-    .references(() => nwSnapshots.id),
-  accountId: integer("account_id")
-    .notNull()
-    .references(() => nwAccounts.id),
-  // Signed cents: balances may be negative (a debt account) and count
-  // into the snapshot total as entered. When the balance is split
-  // across tax buckets (the six split_* columns below), this total is
-  // ALWAYS the sum of the split parts — the server recomputes it from
-  // the parts on every write, so the two can never disagree.
-  balanceCents: text("balance_cents").notNull(),
-  // Optional per-bucket split of this snapshot balance, in encrypted
-  // cents like every other amount. All six null = no split: the whole
-  // balance counts as Unbucketed. When any split column is non-null,
-  // the balance is split — a null column among them means $0 entered
-  // for that bucket (not stored as a split part).
-  splitHsaCents: text("split_hsa_cents"),
-  splitRothCents: text("split_roth_cents"),
-  splitTaxableCents: text("split_taxable_cents"),
-  splitNonTaxableCents: text("split_non_taxable_cents"),
-  split529Cents: text("split_529_cents"),
-  splitCashCents: text("split_cash_cents"),
-  // 7th split bucket (added for the Roth Conversion view): pre-tax
-  // (Traditional IRA / 401(k)) money. Same rule as the other split
-  // columns — null among a split means $0 entered for that bucket;
-  // all seven null = no split (whole balance is Unbucketed).
-  splitPreTaxCents: text("split_pre_tax_cents"),
-});
+export const nwBalances = sqliteTable(
+  "nw_balances",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    snapshotId: integer("snapshot_id")
+      .notNull()
+      .references(() => nwSnapshots.id),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => nwAccounts.id),
+    // Signed cents: balances may be negative (a debt account) and count
+    // into the snapshot total as entered. When the balance is split
+    // across tax buckets (the six split_* columns below), this total is
+    // ALWAYS the sum of the split parts — the server recomputes it from
+    // the parts on every write, so the two can never disagree.
+    balanceCents: text("balance_cents").notNull(),
+    // Optional per-bucket split of this snapshot balance, in encrypted
+    // cents like every other amount. All six null = no split: the whole
+    // balance counts as Unbucketed. When any split column is non-null,
+    // the balance is split — a null column among them means $0 entered
+    // for that bucket (not stored as a split part).
+    splitHsaCents: text("split_hsa_cents"),
+    splitRothCents: text("split_roth_cents"),
+    splitTaxableCents: text("split_taxable_cents"),
+    splitNonTaxableCents: text("split_non_taxable_cents"),
+    split529Cents: text("split_529_cents"),
+    splitCashCents: text("split_cash_cents"),
+    // 7th split bucket (added for the Roth Conversion view): pre-tax
+    // (Traditional IRA / 401(k)) money. Same rule as the other split
+    // columns — null among a split means $0 entered for that bucket;
+    // all seven null = no split (whole balance is Unbucketed).
+    splitPreTaxCents: text("split_pre_tax_cents"),
+  },
+  (t) => [
+    // One balance row per (snapshot, account) — enforced by the
+    // database (contract v64, A1; migration 0025), so
+    // updateNwBalance's atomic upsert on this pair can never
+    // double-count an account in a snapshot even when two writes
+    // overlap (the snapshot total sums balance rows, so a
+    // duplicate row would inflate it directly).
+    uniqueIndex("nw_balances_snapshot_account_unique").on(
+      t.snapshotId,
+      t.accountId,
+    ),
+  ],
+);
 
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
