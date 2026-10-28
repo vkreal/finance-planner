@@ -413,14 +413,17 @@ export function Playground() {
   const [pgAcaSize, setPgAcaSize] = useState("");
   const [pgBenchmark, setPgBenchmark] = useState("");
   /* ACA cliff buffer — the "Buffer below the ACA cliff"
-     guide dial (ACA buffer guide build): how far under the
-     400%-of-FPL cliff the cliff − buffer fill aims, and the
-     line the play strip's landing readout measures MAGI
-     against. Defaults to $5,000 (the December cushion) and
-     is remembered with the rest of the form like every other
-     dial. A GUIDE value only: it is never an input to
-     buildPgInputs, so it never enters pricing — for any
-     fixed set of dials the year prices exactly as before. */
+     dial (ACA buffer guide build; contract v71): how far
+     under the 400%-of-FPL cliff the ACA target sits. The
+     ACA cliff chip, Hold's "aca" target, and the
+     cliff − buffer fill all aim at cliff − buffer, and the
+     play strip's landing readout measures MAGI against
+     that line. Defaults to $5,000 (the December cushion)
+     and is remembered with the rest of the form like every
+     other dial. It is never an input to buildPgInputs, so
+     it never enters pricing — for any fixed set of dials
+     the year prices exactly as before; it only steers the
+     fill solves that choose the conversion amount. */
   const [pgAcaBuffer, setPgAcaBuffer] = useState("5000");
   /* Benchmark source record — remembered with the rest of the
      form, like every other playground dial: what the most
@@ -470,7 +473,8 @@ export function Playground() {
      While pgHoldOn && pgHeldTarget != null, any change to
      another dial re-solves the conversion for that target (see
      the hold effect below) so the year stays on the bracket top
-     or on the ACA cliff. Typing in the conversion dial releases
+     or on the ACA cliff − buffer (Hold's "aca" target IS
+     cliff − buffer, contract v71). Typing in the conversion dial releases
      the hold (pgHoldOn off; the target is kept as the
      last-tapped target, so toggling Hold back on resumes it);
      switching Hold off also releases while keeping the target.
@@ -1416,42 +1420,49 @@ export function Playground() {
   };
 
   // ACA cliff chip: the same quick-set pattern aimed at the
-  // ACA cliff instead of a bracket top — set the conversion
-  // dial to the exact amount that lands the year's ACA MAGI on
-  // the 400%-of-FPL cliff, solved through the shared engine
-  // (solvePlaygroundAcaCliffFill) against every other dial as
-  // currently typed, the stock sale's gain included. Tapping
-  // it ALSO records "aca" as the held target, exactly like a
-  // bracket chip, so Hold re-solves to the cliff. When the
-  // priced year has no hard cliff the chip is disabled (see
-  // pgAcaCliffNote below) and this never runs; the null guard
-  // is the backstop.
+  // ACA target instead of a bracket top — set the conversion
+  // dial to the exact amount that lands the year's ACA MAGI
+  // on cliff − buffer (the 400%-of-FPL cliff minus the typed
+  // buffer; contract v71 — Hold's "aca" target IS
+  // cliff − buffer, so the chip and Hold share one target,
+  // the landing the December console targets), solved
+  // through the shared engine (solvePlaygroundAcaCliffFill)
+  // against every other dial as currently typed, the stock
+  // sale's gain included. Tapping it ALSO records "aca" as
+  // the held target, exactly like a bracket chip, so Hold
+  // re-solves to cliff − buffer. When the priced year has
+  // no hard cliff the chip is disabled (see pgAcaCliffNote
+  // below) and this never runs; the null guard is the
+  // backstop.
   const applyPgAcaCliffFill = () => {
     if (pgAgePNum == null || pgAgePNum <= 0) return;
-    const fill = solvePlaygroundAcaCliffFill(buildPgInputs(0));
+    const fill = solvePlaygroundAcaCliffFill(buildPgInputs(0), pgAcaBufferDollars);
     if (fill == null) return;
     setPgHeldTarget("aca");
     setPgConversion(fmtMoneyInput(fill));
   };
 
-  /* The buffer guide (ACA buffer guide build): the typed
-     buffer read as dollars — blank or negative reads as $0,
-     like the money dials' clamp at buildPgInputs. It feeds
-     ONLY the fill below and the play strip's landing readout;
-     it is never an input to pricing. */
+  /* The buffer (ACA buffer guide build; contract v71): the
+     typed buffer read as dollars — blank or negative reads
+     as $0, like the money dials' clamp at buildPgInputs.
+     It feeds the ACA solves — the cliff chip, Hold's "aca"
+     re-solve, and the fill below all aim at cliff − buffer —
+     and the play strip's landing readout; it is never an
+     input to pricing. NOTE: this const is declared AFTER
+     applyPgAcaCliffFill above, whose body reads it only
+     when tapped (after render), never during render. */
   const pgAcaBufferDollars = Math.max(0, parseDollars(pgAcaBuffer) ?? 0);
-  // "Fill conversion to cliff − buffer": the ACA cliff chip's
-  // own solve aimed at cliff − buffer instead of the cliff —
-  // it sets the conversion dial so the year's priced ACA MAGI
-  // lands exactly on that line (verified against the engine
+  // "Fill conversion to cliff − buffer": the same solve the
+  // ACA cliff chip performs (contract v71) — it sets the
+  // conversion dial so the year's priced ACA MAGI lands
+  // exactly on cliff − buffer (verified against the engine
   // by the tax suite's playground-aca-buffer-fill fixtures).
   // When the year's other income already puts MAGI past the
   // line at $0 of conversion, the solve returns $0 — the dial
   // is set to $0, never negative, and the strip's readout
   // shows the year over the line. Unlike the cliff chip this
-  // does NOT record a held target: Hold's "aca" target is the
-  // cliff itself, and a held year re-solves to the cliff, so
-  // the buffer fill stays a one-tap guide.
+  // does NOT record a held target; it sits beside the buffer
+  // field as the buffer's own one-tap fill.
   const applyPgAcaBufferFill = () => {
     if (pgAgePNum == null || pgAgePNum <= 0) return;
     const fill = solvePlaygroundAcaCliffFill(buildPgInputs(0), pgAcaBufferDollars);
@@ -1464,7 +1475,10 @@ export function Playground() {
      buildPgInputs except the conversion itself) re-solves the
      conversion for the held target and updates the conversion
      dial, so the year stays on that bracket top — or, for the
-     ACA cliff target, ACA MAGI stays on the cliff — and the
+     ACA target, ACA MAGI stays on cliff − buffer (Hold's
+     "aca" target IS cliff − buffer, contract v71; the buffer
+     dial is a trigger too, so editing the buffer while Hold
+     is on re-solves to the new line) — and the
      stacking chart below re-renders from the same priced
      result, so the conversion segment's end stays glued to the
      held line. The solve is
@@ -1478,12 +1492,12 @@ export function Playground() {
     if (!pgHoldOn || pgHeldTarget == null) return;
     if (pgAgePNum == null || pgAgePNum <= 0) return;
     // The held target picks the solver: a bracket pct re-solves
-    // to that bracket top; "aca" re-solves to the ACA cliff (a
-    // null cliff solve — the year no longer has a hard cliff —
-    // leaves the dial exactly as it stands).
+    // to that bracket top (unbuffered); "aca" re-solves to
+    // cliff − buffer (a null cliff solve — the year no longer
+    // has a hard cliff — leaves the dial exactly as it stands).
     let fill: number | null;
     if (pgHeldTarget === "aca") {
-      fill = solvePlaygroundAcaCliffFill(buildPgInputs(0));
+      fill = solvePlaygroundAcaCliffFill(buildPgInputs(0), pgAcaBufferDollars);
     } else {
       fill = solvePlaygroundBracketFill(buildPgInputs(0), pgHeldTarget);
     }
@@ -1496,10 +1510,14 @@ export function Playground() {
     // listed below; pgConversion is read for the idempotence
     // guard but deliberately NOT a trigger — a solver write
     // must not re-trigger the solve (the guard would stop it,
-    // but there is nothing new to solve).
+    // but there is nothing new to solve). pgAcaBuffer IS a
+    // trigger (contract v71): Hold's "aca" target is
+    // cliff − buffer, so a buffer edit re-solves; for a
+    // bracket target the extra solve is idempotent and the
+    // guard above leaves the dial untouched.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    pgHoldOn, pgHeldTarget,
+    pgHoldOn, pgHeldTarget, pgAcaBuffer,
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
@@ -2116,7 +2134,8 @@ export function Playground() {
      while balance-capped requires it to be under the target
      with the held conversion sitting exactly at the balance
      cap (balance − RMD) — its shortfall measured to the same
-     target (bracket top, or cliff − priced ACA MAGI). A typed
+     target (bracket top, or the ACA target — cliff − buffer —
+     minus the priced ACA MAGI). A typed
      $0 balance with income under the target lands in the capped
      case (cap $0); with no balance typed, a $0 fill from
      income alone is the past-the-target case. */
@@ -2134,10 +2153,26 @@ export function Playground() {
     playgroundResult != null &&
     playgroundResult.aca.applies &&
     playgroundResult.aca.cliff != null;
-  const pgHeldCliffDollars: number | null =
-    pgHeldTarget === "aca"
-      ? (pgZeroResult?.aca.cliff ?? playgroundResult?.aca.cliff ?? null)
-      : null;
+  /* The held ACA target in dollars: cliff − buffer
+     (contract v71 — Hold's "aca" target IS cliff − buffer,
+     so this is the buffered target the captions name, not
+     the cliff itself; a $0 buffer makes it the cliff,
+     exactly as before). */
+  const pgHeldCliffDollars: number | null = (() => {
+    if (pgHeldTarget !== "aca") return null;
+    const cliff =
+      pgZeroResult?.aca.cliff ?? playgroundResult?.aca.cliff ?? null;
+    return cliff == null ? null : cliff - pgAcaBufferDollars;
+  })();
+  /* The held ACA target named in words, with the buffer
+     figured in whenever one is set — the captions below
+     read "Holding at the ACA cliff − $… buffer — $…" with
+     a buffer and "Holding at the ACA cliff — $…" without
+     one (every figure computed from state). */
+  const pgAcaTargetPhrase =
+    pgAcaBufferDollars > 0
+      ? `the ACA cliff − ${fmtDollars(pgAcaBufferDollars)} buffer`
+      : "the ACA cliff";
   /* Why the ACA cliff chip cannot be used right now — shown
      under the fill chips whenever an age is entered (so a year
      is priced) but the priced year has no hard cliff. Null
@@ -2164,24 +2199,34 @@ export function Playground() {
     if (!pgHoldActive || pgHeldTarget == null) return null;
     if (playgroundResult == null || pgZeroResult == null) return null;
     if (pgHeldTarget === "aca") {
-      // The cliff can't-hold captions mirror the bracket ones:
+      // The ACA can't-hold captions mirror the bracket ones:
       // the overage comes from the zero-pre-tax pricing, and
       // the cap is the typed balance after the RMD, as today.
+      // Both are measured against the held target —
+      // cliff − buffer (contract v71) — so a year already
+      // past the buffer line at $0 out, or capped short of
+      // it, says so; with a $0 buffer the target is the
+      // cliff and the captions read exactly as before.
       if (!pgAcaHasHardCliff) return null;
       const cliff = pgZeroResult.aca.cliff;
       if (cliff == null) return null;
+      const target = cliff - pgAcaBufferDollars;
       const zeroAca = pgZeroResult.acaMagi;
-      if (zeroAca > cliff + 0.005) {
-        return `Already past the ACA cliff without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - cliff)} over the ACA cliff.`;
+      if (zeroAca > target + 0.005) {
+        return pgAcaBufferDollars > 0
+          ? `Already past ${pgAcaTargetPhrase} without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - target)} over that line.`
+          : `Already past the ACA cliff without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - target)} over the ACA cliff.`;
       }
       const balRaw = parseDollars(pgPretax);
       if (balRaw != null) {
         const bal = Math.max(0, balRaw);
         const cap = Math.max(0, bal - playgroundResult.rmd);
         const conv = parseDollars(pgConversion) ?? 0;
-        const short = cliff - playgroundResult.acaMagi;
+        const short = target - playgroundResult.acaMagi;
         if (Math.abs(conv - cap) <= 0.01 && short > 0.5) {
-          return `Pre-tax balance caps the fill at ${fmtDollars(cap)} — ${fmtDollars(short)} short of the ACA cliff.`;
+          return pgAcaBufferDollars > 0
+            ? `Pre-tax balance caps the fill at ${fmtDollars(cap)} — ${fmtDollars(short)} short of ${pgAcaTargetPhrase}.`
+            : `Pre-tax balance caps the fill at ${fmtDollars(cap)} — ${fmtDollars(short)} short of the ACA cliff.`;
         }
       }
       return null;
@@ -2204,15 +2249,17 @@ export function Playground() {
     }
     return null;
   })();
-  /* The held-at-the-cliff readout: while the ACA cliff target
+  /* The held-at-the-target readout: while the ACA target
      is held (and no can't-hold caption applies — the render
      shows this only when pgHoldCantCaption is null), the
-     caption names the target it is holding, in the same place
-     and style as the can't-hold captions. */
+     caption names the target it is holding — cliff − buffer
+     while a buffer is set (contract v71), the cliff itself
+     at a $0 buffer — in the same place and style as the
+     can't-hold captions. */
   const pgHoldCliffCaption: string | null = (() => {
     if (!pgHoldActive || pgHeldTarget !== "aca") return null;
     if (!pgAcaHasHardCliff || pgHeldCliffDollars == null) return null;
-    return `Holding at the ACA cliff — ${fmtDollars(pgHeldCliffDollars)}`;
+    return `Holding at ${pgAcaTargetPhrase} — ${fmtDollars(pgHeldCliffDollars)}`;
   })();
 
   /* Benchmark source caption — display ONLY, rendered under
@@ -3329,7 +3376,7 @@ export function Playground() {
               hint: pgHoldActive && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
                 ? pgHeldTarget === "aca"
                   ? pgHeldCliffDollars != null
-                    ? `Auto — holding at the ACA cliff — ${fmtDollars(pgHeldCliffDollars)}`
+                    ? `Auto — holding at ${pgAcaTargetPhrase} — ${fmtDollars(pgHeldCliffDollars)}`
                     : "Auto — holding the ACA cliff"
                   : `Auto — holding the ${pgHeldTarget}% top`
                 : "The dial: type how much leaves the pre-tax account this year — drawn to spend or converted to Roth, it is taxed the same — and watch where the year lands below.",
@@ -3354,7 +3401,7 @@ export function Playground() {
             <span className="flex items-center text-sm text-[var(--dim)]">
               Fill to:
               <InfoNote
-                text="Sets the pre-tax money out amount for you: exactly enough to fill this tax bracket — or, with the ACA cliff chip, to land ACA household income exactly on the 400% poverty-line cliff — given everything else you've typed. The bracket tops are the ceilings of the 10%, 12%, 22% and 24% brackets."
+                text="Sets the pre-tax money out amount for you: exactly enough to fill this tax bracket — or, with the ACA cliff chip, to land ACA household income exactly on the ACA target: the 400% poverty-line cliff minus the buffer set in ACA & state below — given everything else you've typed. The bracket tops are the ceilings of the 10%, 12%, 22% and 24% brackets."
                 ariaLabel="About fill to"
               />
             </span>
@@ -3391,7 +3438,11 @@ export function Playground() {
             <span className="flex items-center text-xs text-[var(--dim)]">
               Hold keeps the fill on the tapped target as other dials change.
               <InfoNote
-                text="With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff. Typing an amount yourself, or switching Hold off, releases it."
+                text={
+                  pgAcaBufferDollars > 0
+                    ? `With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff − ${fmtDollars(pgAcaBufferDollars)} buffer (the buffer set in ACA & state below; editing the buffer re-solves too). Typing an amount yourself, or switching Hold off, releases it.`
+                    : "With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff (the ACA target is the cliff minus the buffer set in ACA & state below, currently $0). Typing an amount yourself, or switching Hold off, releases it."
+                }
                 ariaLabel="About hold the fill"
               />
             </span>
@@ -3464,8 +3515,8 @@ export function Playground() {
             {pgAcaHasHardCliff && (
               <div>
                 {moneyField("Buffer below the ACA cliff", pgAcaBuffer, setPgAcaBuffer, {
-                  hint: "A safety cushion under the cliff — a guide for sizing the pre-tax money out, never part of the pricing.",
-                  info: "How far below the 400% poverty-line cliff you aim ACA MAGI, to leave room for year-end income landing higher than expected. It only helps choose the pre-tax money out amount — the tax and credit price exactly as before for whatever amount is dialed.",
+                  hint: "A safety cushion under the cliff — the ACA cliff fill and Hold aim this far under it. Never part of the pricing.",
+                  info: "How far below the 400% poverty-line cliff you aim ACA MAGI, to leave room for year-end income landing higher than expected. The ACA cliff chip, Hold's ACA target, and the fill below all aim at cliff − buffer — editing the buffer while Hold is on re-solves to the new line. It only helps choose the pre-tax money out amount — the tax and credit price exactly as before for whatever amount is dialed.",
                 })}
                 <button
                   type="button"
