@@ -143,14 +143,50 @@ function buildStackModel(
   // ordinary stack reaches into — the smallest bracket top at or
   // above the ordinary taxable income — so a fill into a higher
   // bracket extends the axis by construction. Only when the
-  // ordinary stack passes the 24% top does the axis fall back to
-  // covering the full taxable income (gains included).
-  const axisTaxableMax = (() => {
+  // ordinary stack passes the 24% top does the base axis fall
+  // back to covering the full taxable income (gains included).
+  const axisBaseMax = (() => {
     const reached = tops.find(
       (t) => t != null && pg.ordinaryTaxableIncome <= t,
     );
     return reached != null ? reached : Math.max(top24, pg.taxableIncome);
   })();
+  /* Axis headroom (contract v76): the drawn axis extends a
+     margin past the rightmost plotted landmark, so landmarks
+     that map just past the landing bracket's top — the stack
+     end including gains, and the ACA cliff line's taxable-axis
+     position — are drawn on the chart instead of piling up
+     against (or falling off) its right edge, and the cliff /
+     buffer lines are inside the drawn axis by construction.
+     The rightmost landmark is the largest of the base axis
+     end, the stack end including gains (taxable income), and
+     the cliff line's position when the priced year carries a
+     hard cliff (the same taxable-axis construction the cliff
+     line itself uses: cliff − (ACA MAGI − taxable income);
+     the buffer line sits left of the cliff line, so it is
+     never the rightmost). The axis end is then set so that
+     landmark sits at 86% of the track — the track is the axis
+     offset by deductions, so the 86% is measured in track
+     coordinates, not taxable coordinates — rounded up to the
+     nearest $100 so the axis-end label stays a round figure.
+     Only the scale's end moves: no priced figure, stack
+     proportion, or marker position relative to the stack
+     changes. */
+  const cliffTaxablePos =
+    pgYearNum >= 2026 && pg.aca.applies && pg.aca.cliff != null
+      ? pg.aca.cliff - (pg.acaMagi - pg.taxableIncome)
+      : null;
+  const rightmostTaxable = Math.max(
+    axisBaseMax,
+    pg.taxableIncome,
+    cliffTaxablePos ?? Number.NEGATIVE_INFINITY,
+  );
+  const axisTaxableMax = Math.max(
+    axisBaseMax,
+    Math.ceil(
+      ((deductions + rightmostTaxable) / 0.86 - deductions) / 100,
+    ) * 100,
+  );
   const trackMax = Math.max(deductions + axisTaxableMax, grossTotal);
   const pct = (trackVal: number) =>
     trackMax > 0 ? Math.max(0, Math.min(100, (trackVal / trackMax) * 100)) : 0;
@@ -165,11 +201,13 @@ function buildStackModel(
     room: b.to - ordinaryTaxable,
     // The marker's one colour (line, top label, legend text —
     // both charts) and whether its top falls inside the axis:
-    // a marker beyond the axis cap draws no line (the ACA-line
-    // precedent), though its label stays, pinned at the chart's
-    // right edge.
+    // a marker beyond the base axis cap draws no line (the
+    // ACA-line precedent), though its label stays, pinned at
+    // the chart's right edge. Headroom (contract v76) does
+    // not promote a higher bracket's line: inAxis is judged
+    // against the base axis end, before headroom is added.
     color: STACK_MARKER_COLORS[i] ?? "var(--dim)",
-    inAxis: b.to <= axisTaxableMax,
+    inAxis: b.to <= axisBaseMax,
   }));
   let cum = 0;
   const ordPos: StackSegPos[] = visibleOrdSegs.map((s) => {
@@ -4590,6 +4628,26 @@ export function Playground() {
                 const landingMarker =
                   markers.find((m) => m.room >= 0) ?? null;
                 const showGainsEndLabel = gainsTotal > 0;
+                /* Axis-row stacking (contract v76): whether the
+                   cliff and buffer axis labels sit close enough
+                   to need two rows. On narrow screens the
+                   axis-end figure also needs its own row: at
+                   phone width the cliff label and the axis-end
+                   figure share the first row and collide (the
+                   cliff label is long and its line sits near
+                   the right edge, now that headroom draws it
+                   on the chart), so below the small-screen
+                   breakpoint the axis-end figure drops to a
+                   row of its own — a third row when both
+                   marker labels are present, a second row
+                   when only the cliff label is — while at
+                   desktop widths the rows are exactly as
+                   before. The marker labels' wording and
+                   positions are unchanged at every width. */
+                const axisLinesClose =
+                  acaCliffLine != null &&
+                  acaBufferLine != null &&
+                  Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
                     <p className="mt-1 text-xs text-[var(--dim)]">
@@ -4645,6 +4703,52 @@ export function Playground() {
                             </span>
                           </div>
                         )}
+                      </div>
+                    )}
+                    {/* Line tags (contract v76): short tags attached
+                        to the dashed lines on the chart itself —
+                        "Buffer" on the buffer line, "Cliff" on the
+                        cliff line, each in its line's own colour —
+                        so the lines read without the axis rows
+                        below. Each tag sits on its own row, the
+                        buffer tag above the cliff tag, centred on
+                        its line with its centre clamped inside the
+                        chart, on rows distinct from the floating
+                        labels above — so a tag can never overlap a
+                        floating label or the other tag, however
+                        close the two lines sit. A tag renders only
+                        when its line renders: the strip needs a
+                        cliff line, and the buffer tag needs a
+                        buffer line (a buffer above $0). The
+                        two-row axis labels below are unchanged. */}
+                    {acaCliffLine != null && (
+                      <div aria-hidden="true">
+                        {acaBufferLine != null && (
+                          <div className="relative h-[16px]">
+                            <span
+                              className="tnum absolute text-[11px] font-medium whitespace-nowrap"
+                              style={{
+                                color: "var(--dim)",
+                                left: `clamp(22px, ${acaBufferLine.xPct}%, calc(100% - 22px))`,
+                                transform: "translateX(-50%)",
+                              }}
+                            >
+                              Buffer
+                            </span>
+                          </div>
+                        )}
+                        <div className="relative h-[16px]">
+                          <span
+                            className="tnum absolute text-[11px] font-medium whitespace-nowrap"
+                            style={{
+                              color: "var(--warn)",
+                              left: `clamp(18px, ${acaCliffLine.xPct}%, calc(100% - 18px))`,
+                              transform: "translateX(-50%)",
+                            }}
+                          >
+                            Cliff
+                          </span>
+                        </div>
                       </div>
                     )}
                     <div className="relative">
@@ -4771,7 +4875,7 @@ export function Playground() {
                       </div>
                     </div>
                     <div
-                      className={`relative mt-1 ${acaCliffLine != null && acaBufferLine != null && Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30 ? "h-8" : "h-4"}`}
+                      className={`relative mt-1 ${axisLinesClose ? "h-12 sm:h-8" : acaCliffLine != null ? "h-8 sm:h-4" : "h-4"}`}
                       aria-hidden="true"
                     >
                       <span
@@ -4803,7 +4907,7 @@ export function Playground() {
                       )}
                       {acaBufferLine != null && (
                         <span
-                          className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${acaCliffLine != null && Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30 ? "top-4" : ""}`}
+                          className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisLinesClose ? "top-4" : ""}`}
                           style={{
                             left: `${acaBufferLine.xPct}%`,
                             transform:
@@ -4818,7 +4922,7 @@ export function Playground() {
                         </span>
                       )}
                       <span
-                        className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
+                        className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisLinesClose ? "top-8 sm:top-0" : acaCliffLine != null ? "top-4 sm:top-0" : ""}`}
                         style={{ right: 0 }}
                       >
                         {fmtDollars(axisTaxableMax)}
