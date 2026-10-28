@@ -778,10 +778,11 @@ export function RetirementCalc() {
       retirementAge: clampAge(retirementAge, 120),
       endAge: clampAge(endAge, 130),
       stocksPct: stocksN != null ? Math.min(100, Math.max(0, stocksN)) : null,
-      // Clamped to 0 exactly as the live engines clamp it, so the
-      // saved value is the value the engines run (a negative
-      // "income" is a typo, never a plan).
-      extraIncomeCents: Math.max(0, parseMoney(extraIncome) ?? 0),
+      // No silent floor (contract v66, boundary audit F11):
+      // the typed value is the saved value — a negative is
+      // refused by the writer (an income field is int≥0), never
+      // quietly saved and priced as $0.
+      extraIncomeCents: parseMoney(extraIncome) ?? 0,
       extraIncomeStartAge: clampAge(extraStartAge, 120),
       expectedReturnPct: parseNum(expectedPct),
       volatilityPct: volN != null ? Math.max(0, volN) : null,
@@ -979,9 +980,12 @@ export function RetirementCalc() {
     const retAge = clampAgeLive(ret, 120);
     const endAgeC = clampAgeLive(end, 130);
     if (endAgeC <= curAge) return null;
-    // A negative "income" is a typo, not a plan: clamp it to 0 so
-    // it cannot silently inflate withdrawals via spending − income.
-    const extraCents = Math.max(0, parseMoney(extraIncome) ?? 0);
+    // No silent floor (contract v66, boundary audit F11): the
+    // live engines price the typed value as-is, exactly what a
+    // save would store — the old clamp priced $0 for a typed
+    // negative without saying so (the writer now refuses a
+    // negative outright).
+    const extraCents = parseMoney(extraIncome) ?? 0;
     const extraStart = parseNum(extraStartAge);
     const pct = parseNum(percentOfPortfolio);
     return {
@@ -3537,7 +3541,9 @@ export function RetirementCalc() {
             </div>
           ) : (
             <p className="mt-4 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
-              {parseNum(solverTarget) == null
+              {inputs.retirementAge >= inputs.endAge
+                ? `No retired years to solve against: the retirement age (${inputs.retirementAge}) is not before the plan's end age (${inputs.endAge}), so no year's spending is ever tested. Lower the retirement age or raise the end age for a Max Spending answer.`
+                : parseNum(solverTarget) == null
                 ? "Enter a target success % above to solve."
                 : solverEngine === "historical"
                   ? "No historical run fits this plan, so there is nothing to solve against — shorten the span (a later current age or an earlier end age), or switch the solver engine to Monte Carlo."

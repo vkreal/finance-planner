@@ -243,6 +243,16 @@ function stateFromForm(f: DecForm): DecemberState {
     likely: parseMoney(r.likely),
     high: parseMoney(r.high),
   });
+  // The unsigned remaining-income ranges (contract v66,
+  // boundary audit F5): the same clamp0 the unsigned YTD
+  // fields below already get — interest, dividends, and
+  // capital distributions still to come are never negative.
+  // remOtherOrdinary keeps rg: it is signed by design.
+  const rg0 = (r: RangeForm) => ({
+    low: clamp0(parseMoney(r.low)),
+    likely: clamp0(parseMoney(r.likely)),
+    high: clamp0(parseMoney(r.high)),
+  });
   const st = (x: StrayForm): DecemberStray => ({
     status: x.status,
     amount: clamp0(parseMoney(x.amount)),
@@ -269,10 +279,10 @@ function stateFromForm(f: DecForm): DecemberState {
     ytdCapitalGain: parseMoney(f.ytdCapitalGain),
     ytdSsPrimary: clamp0(parseMoney(f.ytdSsPrimary)),
     ytdSsSpouse: f.filingStatus === "mfj" ? clamp0(parseMoney(f.ytdSsSpouse)) : 0,
-    remCapDist: rg(f.remCapDist),
-    remInterest: rg(f.remInterest),
-    remOrdinaryDividends: rg(f.remOrdinaryDividends),
-    remQualifiedDividends: rg(f.remQualifiedDividends),
+    remCapDist: rg0(f.remCapDist),
+    remInterest: rg0(f.remInterest),
+    remOrdinaryDividends: rg0(f.remOrdinaryDividends),
+    remQualifiedDividends: rg0(f.remQualifiedDividends),
     remOtherOrdinary: rg(f.remOtherOrdinary),
     acaHouseholdSize: size != null && size >= 1 && size <= 20 ? size : null,
     acaBenchmarkAnnual: (() => {

@@ -860,29 +860,8 @@ function solveGuardrailsScan(
     }
     return succ >= needed;
   };
-  // With no retired years at all, spending never leaves the
-  // portfolio, so every spending has the $0-spending success rate
-  // (already known to meet the target — the caller checked) and
-  // the cap binds, exactly as in the binary-search path. Scanning
-  // to the cap step by step would only waste the time.
-  if (base.retirementAge >= base.endAge) {
-    const winner = evaluatePlan(
-      { ...base, spendingCents: capSteps * STEP },
-      stocksPct,
-      expected,
-      vol,
-      engine,
-      mcSeed,
-    );
-    if (!winner) return null;
-    return {
-      maxSpendingCents: capSteps * STEP,
-      successRate: winner.successRate,
-      medianEnding: winner.medianEnding,
-      percent: null,
-      approximate,
-    };
-  }
+  // (The no-retired-years case never reaches this scan:
+  // solveMaxSpending refuses it at entry — contract v66, F6.)
   // Proven ceiling (see the solver note above): no spending
   // strictly above the best balance at retirement plus the extra
   // income can succeed, but the spending exactly AT that ceiling
@@ -948,6 +927,16 @@ export function solveMaxSpending(
   targetPct: number,
   mcSeed: number = MONTE_CARLO_TAB_SEED_DEFAULT,
 ): SolverResult | null {
+  // No retired years (contract v66, boundary audit F6): when
+  // the retirement age is at or past the plan's end age, no
+  // modeled year ever withdraws the solved spending, so every
+  // candidate "succeeds" and the search returns its cap as if
+  // it were a sustainable-spending answer. Refuse instead —
+  // null here is the solver's named no-answer result (the
+  // client renders it as "no sustainable spending could be
+  // solved", with the ages explanation), and the save schema
+  // refuses the same combination up front.
+  if (base.retirementAge >= base.endAge) return null;
   const approximate = engine === "montecarlo";
   const STEP = 10000; // $100 in cents
 
@@ -1046,10 +1035,10 @@ export function solveMaxSpending(
 
 // Build simulation inputs from a stored input set (a saved scenario),
 // applying the same clamps and fallbacks as the main inputs: ages
-// clamped to the save schema's ranges, a negative income clamped to
-// 0, and an income amount with no start age counting from the
-// retirement age. Null portfolio / spending fall back to the live
-// defaults, null expected return / volatility to the blend, and
+// clamped to the save schema's ranges, and an income amount with
+// no start age counting from the retirement age. Null portfolio /
+// spending fall back to the live defaults, null expected return /
+// volatility to the blend, and
 // null guardrails knobs to the professional defaults (120/80/10).
 // The phased knobs are OPTIONAL in the raw set: records and
 // scenarios stored before the phased strategy existed do not
@@ -1097,7 +1086,11 @@ export function buildSimInputs(
   if (start < 0 || spend < 0) return null;
   if (endAge <= curAge) return null;
   const stocks = Math.min(100, Math.max(0, raw.stocksPct ?? STOCKS_PCT_DEFAULT));
-  const extraCents = Math.max(0, raw.extraIncomeCents ?? 0);
+  // No floor (contract v66, boundary audit F11): the writer
+  // refuses a negative extraIncomeCents (int≥0), so the value
+  // priced here is the value saved — the old Math.max(0, …)
+  // silently substituted $0 for a saved negative.
+  const extraCents = raw.extraIncomeCents ?? 0;
   return {
     inputs: {
       startCents: start,

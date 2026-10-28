@@ -67,6 +67,20 @@ export const decemberRange = z.object({
   high: z.number().finite(),
 });
 export type DecemberRange = z.infer<typeof decemberRange>;
+/* The UNSIGNED variant (contract v66, boundary audit F5): the
+   remaining interest / dividend / capital-distribution lines
+   are income still to come, never signed flows — a negative
+   in any of them lowered the projected AGI (and a negative
+   capital distribution split into fake stock-sale figures).
+   Each point carries the same min(0) the unsigned YTD fields
+   in the state schema below already carry, so a crafted save
+   refuses. remOtherOrdinary keeps the signed decemberRange —
+   it mirrors the signed ytdOtherOrdinary by design. */
+export const decemberUnsignedRange = z.object({
+  low: z.number().finite().min(0),
+  likely: z.number().finite().min(0),
+  high: z.number().finite().min(0),
+});
 const rangeDefault = (): DecemberRange => ({ low: 0, likely: 0, high: 0 });
 
 /* The console's saved inputs — all money in DOLLARS (the
@@ -93,10 +107,12 @@ export const decemberState = z.object({
   ytdSsPrimary: z.number().finite().min(0),
   ytdSsSpouse: z.number().finite().min(0),
   // Remaining expected income (December stragglers), per line.
-  remCapDist: decemberRange,
-  remInterest: decemberRange,
-  remOrdinaryDividends: decemberRange,
-  remQualifiedDividends: decemberRange,
+  // The four unsigned lines use decemberUnsignedRange (v66,
+  // F5); remOtherOrdinary stays signed by design.
+  remCapDist: decemberUnsignedRange,
+  remInterest: decemberUnsignedRange,
+  remOrdinaryDividends: decemberUnsignedRange,
+  remQualifiedDividends: decemberUnsignedRange,
   remOtherOrdinary: decemberRange,
   // ACA block.
   acaHouseholdSize: z.number().int().min(1).max(20).nullable(),

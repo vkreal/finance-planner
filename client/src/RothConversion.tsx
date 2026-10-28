@@ -4257,6 +4257,38 @@ export function RothConversion() {
           (r) => r.name === savedTaxData.baselineName,
         ) ?? null)
       : null;
+  /* The Tax by year section's net-cost explainer (contract
+     v66): it now lives in the ⓘ on the section's title row
+     instead of a paragraph under it — the SAME computed string
+     the paragraph rendered, built from the same saved row:
+     the score's remainder (state tax + pre-59½ penalties +
+     tax on the ending pre-tax balance − refundable education
+     credit) named component by component, so the headline
+     composition still foots exactly in cents. */
+  const taxByYearExplainer = ((): string | null => {
+    if (!savedTaxRow) return null;
+    const remainder =
+      savedTaxRow.stateTaxCents +
+      savedTaxRow.penaltyCents +
+      savedTaxRow.terminalCents -
+      savedTaxRow.educationRefundableCents;
+    const remainderParts: string[] = [];
+    if (savedTaxRow.stateTaxCents !== 0)
+      remainderParts.push(`state tax ${fmtCents(savedTaxRow.stateTaxCents)}`);
+    if (savedTaxRow.penaltyCents !== 0)
+      remainderParts.push(`pre-59½ penalties ${fmtCents(savedTaxRow.penaltyCents)}`);
+    if (savedTaxRow.terminalCents !== 0)
+      remainderParts.push(
+        `tax on the ending pre-tax balance ${fmtCents(savedTaxRow.terminalCents)}`,
+      );
+    if (savedTaxRow.educationRefundableCents !== 0)
+      remainderParts.push(
+        `less the refundable education credit ${fmtCents(savedTaxRow.educationRefundableCents)}`,
+      );
+    return remainderParts.length > 0
+      ? `Net cost is federal tax + IRMAA − ACA credits kept, plus the rest of the score: ${remainderParts.join(", ")} — ${fmtCents(remainder)} in all. Priced from the saved record — edits not yet saved do not move these figures.`
+      : "For this plan, net cost is exactly federal tax + IRMAA − ACA credits kept — there is no state tax, penalty, ending pre-tax tax, or refundable education credit in the score. Priced from the saved record — edits not yet saved do not move these figures.";
+  })();
 
   // Years where someone is on the ACA marketplace but no benchmark
   // premium has been entered, so the credit cannot be priced.
@@ -4529,8 +4561,12 @@ export function RothConversion() {
      displayed amounts, so the sentence foots with the numbers
      inside it. Compare mode renders no line: the comparison
      table has no single natural subject and is itself the
-     summary. */
-  const takeawayText: string | null = (() => {
+     summary. The PLAN branch returns { full, short } (contract
+     v66): the visible line is the one-line short form generated
+     from the same priced figures, and the full sentence —
+     unchanged, word for word — rides the line's ⓘ. The other
+     modes still return their plain sentence string. */
+  const takeawayText: string | { full: string; short: string } | null = (() => {
     const joinAnd = (parts: string[]): string => {
       if (parts.length === 0) return "";
       if (parts.length === 1) return parts[0]!;
@@ -4642,9 +4678,24 @@ export function RothConversion() {
           ? `lifetime net cost ${fmtDollars(planNet)}, the same as Do Nothing`
           : `lifetime net cost ${fmtDollars(planNet)} vs Do Nothing ${fmtDollars(dnNet)}`;
       const ending = endingFor(mainResult.endingPretax, planBd);
-      return reason
-        ? `This plan converts nothing (${reason}) — ${middle} → ${ending}.`
-        : `This plan converts nothing in the window years — ${middle} → ${ending}.`;
+      // Short line (contract v66): the visible line under the
+      // ending strip is ONE line generated from the same
+      // priced figures (the displayed-figure delta above);
+      // the full sentence rides the line's ⓘ verbatim.
+      const deltaPhrase =
+        displayedDiff > 0
+          ? `saves ${fmtDollars(displayedDiff)} vs Do Nothing`
+          : displayedDiff < 0
+            ? `costs ${fmtDollars(Math.abs(displayedDiff))} more than Do Nothing`
+            : "the same net cost as Do Nothing";
+      return {
+        full: reason
+          ? `This plan converts nothing (${reason}) — ${middle} → ${ending}.`
+          : `This plan converts nothing in the window years — ${middle} → ${ending}.`,
+        short: reason
+          ? `Converts nothing (${reason}) · ${deltaPhrase}`
+          : `Converts nothing in the window years · ${deltaPhrase}`,
+      };
     }
     // Normal converting plan.
     const ceilingParts: string[] = [];
@@ -4735,7 +4786,21 @@ export function RothConversion() {
     } else {
       endingClause = endingFor(mainResult.endingPretax, planBd);
     }
-    return `Convert from age ${planInputs.windowStartAge} to ${planInputs.windowStopAge}, filling to ${ceilingPhrase}${qualifiers}${bindingClause} — lifetime net cost ${fmtDollars(planNet)}, ${savingClause(planNet, dnNet)} → ${endingClause}.`;
+    // Short line (contract v66), same treatment as the
+    // converts-nothing branch: the conversion fact and the
+    // exact delta vs Do Nothing on one line, the full
+    // sentence verbatim in the line's ⓘ.
+    const displayedDiff = Math.round(dnNet) - Math.round(planNet);
+    const deltaPhrase =
+      displayedDiff > 0
+        ? `saves ${fmtDollars(displayedDiff)} vs Do Nothing`
+        : displayedDiff < 0
+          ? `costs ${fmtDollars(Math.abs(displayedDiff))} more than Do Nothing`
+          : "the same net cost as Do Nothing";
+    return {
+      full: `Convert from age ${planInputs.windowStartAge} to ${planInputs.windowStopAge}, filling to ${ceilingPhrase}${qualifiers}${bindingClause} — lifetime net cost ${fmtDollars(planNet)}, ${savingClause(planNet, dnNet)} → ${endingClause}.`,
+      short: `Converts ${fmtDollars(totalAdditional)} from age ${planInputs.windowStartAge} to ${planInputs.windowStopAge} · ${deltaPhrase}`,
+    };
   })();
 
   // Heir-rate sensitivity strip: the optimizer re-run at heir
@@ -5764,14 +5829,13 @@ export function RothConversion() {
 
   return (
     <div>
-      <h1 className="pt-5 text-xl font-semibold">Tax Plan</h1>
-      <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-        Plans year-by-year Roth conversions in the lower-income years after
-        retirement, before RMDs begin. Every year is priced with the real rules —
-        RMDs first, then the conversion, Social Security by the provisional-income
-        formula, IRMAA on the two-year lookback, and the ACA credit while anyone is
-        on the marketplace.
-      </p>
+      <h1 className="pt-5 text-xl font-semibold">
+        Tax Plan
+        <InfoNote
+          ariaLabel="About the Tax Plan view"
+          text="Plans year-by-year Roth conversions in the lower-income years after retirement, before RMDs begin. Every year is priced with the real rules — RMDs first, then the conversion, Social Security by the provisional-income formula, IRMAA on the two-year lookback, and the ACA credit while anyone is on the marketplace."
+        />
+      </h1>
 
       {/* The view's action row: the December draw entry point
           first, then the face switch. (This view's header is a
@@ -5956,13 +6020,13 @@ export function RothConversion() {
 
       {face === "change" && (
         <section className={sectionCls} aria-label="Change the plan">
-          <h2 className="text-base font-semibold">Change the plan</h2>
-          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-            Five plain questions. Your answers are filled in from your saved
-            plan, and changing one saves it automatically — these are the same
-            fields the full form under All settings edits, so anything you
-            change here shows there too, marked “Changed” until it saves.
-          </p>
+          <h2 className="text-base font-semibold">
+            Change the plan
+            <InfoNote
+              ariaLabel="About changing the plan"
+              text="Five plain questions. Your answers are filled in from your saved plan, and changing one saves it automatically — these are the same fields the full form under All settings edits, so anything you change here shows there too, marked “Changed” until it saves."
+            />
+          </h2>
 
           <h3 className="mt-5 text-sm font-semibold">1. When do you stop work?</h3>
           <div className="mt-2 max-w-xs">
@@ -7236,25 +7300,25 @@ export function RothConversion() {
 
       {face === "plan" && (
         <section className={sectionCls} aria-label="What-if questions">
-          <h2 className="text-base font-semibold">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
             <button
               type="button"
               aria-expanded={whatIfOpen}
               aria-controls="roth-what-if-panel"
-              className="flex w-full items-center justify-between gap-3 text-left"
+              className="flex flex-1 items-center justify-between gap-3 text-left"
               onClick={() => setWhatIfFolded(whatIfOpen)}
             >
               <span>What if…</span>
               <FoldChevron open={whatIfOpen} />
             </button>
+            <InfoNote
+              ariaLabel="About what-if questions"
+              align="right"
+              text="One change at a time, priced from your saved plan through the scenario comparison. Asking a question changes nothing and saves nothing — it just shows how the ending moves."
+            />
           </h2>
           {whatIfOpen && (
             <div id="roth-what-if-panel">
-          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-            One change at a time, priced from your saved plan through the
-            scenario comparison. Asking a question changes nothing and saves
-            nothing — it just shows how the ending moves.
-          </p>
           {whatIfDefs.length === 0 ? (
             <p className="mt-3 text-sm text-[var(--dim)]">
               No questions yet — the plan needs a retirement age and yearly
@@ -7446,25 +7510,36 @@ export function RothConversion() {
       </div>
       )}
 
-      {takeawayText && (
-        <p
-          aria-label="Plan summary"
-          className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
-        >
-          {takeawayText}
-        </p>
-      )}
+      {takeawayText &&
+        (typeof takeawayText === "string" ? (
+          <p
+            aria-label="Plan summary"
+            className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
+          >
+            {takeawayText}
+          </p>
+        ) : (
+          <p
+            aria-label="Plan summary"
+            className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
+          >
+            {takeawayText.short}
+            <InfoNote
+              ariaLabel="The full plan summary sentence"
+              text={takeawayText.full}
+            />
+          </p>
+        ))}
 
       {face === "settings" && resultsMode === "thisYear" && (
         <section className={sectionCls} aria-label={`This year — ${startYear}`}>
-          <h2 className="text-base font-semibold">This year — {startYear}</h2>
-          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-            Prices {startYear} on its own, through the same engine and the
-            plan&rsquo;s ceilings: income already received and conversions already
-            made this year count first. It answers one question — how much more can
-            still be converted before Dec 31, {startYear}, and what will it cost?
-            Every figure here is for {startYear} only.
-          </p>
+          <h2 className="text-base font-semibold">
+            This year — {startYear}
+            <InfoNote
+              ariaLabel={`About this year — ${startYear}`}
+              text={`Prices ${startYear} on its own, through the same engine and the plan's ceilings: income already received and conversions already made this year count first. It answers one question — how much more can still be converted before Dec 31, ${startYear}, and what will it cost? Every figure here is for ${startYear} only.`}
+            />
+          </h2>
           {execRolledOver && execClearedYear != null && (
             <p className="mt-3 text-sm" role="note">
               <strong>New year, clean slate:</strong> the {execClearedYear} actuals
@@ -7911,17 +7986,13 @@ export function RothConversion() {
 
       {face === "settings" && resultsMode === "proof" && (
         <section className={sectionCls} aria-label="Pretax Spending — pre-tax to age 110">
-          <h2 className="text-base font-semibold">Pretax Spending — how long the pre-tax money lasts</h2>
-          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-            Your plan, re-run to age {PROOF_END_AGE}. Start from your plan&rsquo;s
-            numbers, or change the starting balances, the yearly spending, or
-            where taxes are paid from in the try-it numbers below — everything
-            else (fill ceilings, draw order, return, Social Security) stays as
-            your plan has it. This is the year-by-year evidence behind the claim
-            that the pre-tax bucket lasts: every year&rsquo;s funding split and
-            every year&rsquo;s ending balances, from the same engine that prices
-            the Plan tab.
-          </p>
+          <h2 className="text-base font-semibold">
+            Pretax Spending — how long the pre-tax money lasts
+            <InfoNote
+              ariaLabel="About Pretax Spending"
+              text={`Your plan, re-run to age ${PROOF_END_AGE}. Start from your plan's numbers, or change the starting balances, the yearly spending, or where taxes are paid from in the try-it numbers below — everything else (fill ceilings, draw order, return, Social Security) stays as your plan has it. This is the year-by-year evidence behind the claim that the pre-tax bucket lasts: every year's funding split and every year's ending balances, from the same engine that prices the Plan tab.`}
+            />
+          </h2>
           <p className="mt-3 rounded-[var(--radius)] border border-[var(--accent)] bg-[var(--bg)] px-3 py-2 text-sm" role="note">
             <strong>Pretax Spending only — nothing is saved.</strong> The run to
             age {PROOF_END_AGE} and any numbers you type below happen in memory
@@ -7931,13 +8002,13 @@ export function RothConversion() {
           </p>
 
           <div className="mt-4 border-t border-[var(--border)] pt-4">
-            <h3 className="text-base font-semibold">Try different numbers — this tab only</h3>
-            <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-              Type a different starting balance or spending amount, or switch
-              where the tax bill is paid from, and the verdict, tiles, chart,
-              and year table below re-run right away. A blank field uses your
-              plan&rsquo;s value — it is shown under each field.
-            </p>
+            <h3 className="text-base font-semibold">
+              Try different numbers — this tab only
+              <InfoNote
+                ariaLabel="About trying different numbers"
+                text="Type a different starting balance or spending amount, or switch where the tax bill is paid from, and the verdict, tiles, chart, and year table below re-run right away. A blank field uses your plan's value — it is shown under each field."
+              />
+            </h3>
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
               {moneyField("Starting pre-tax — You", proofPretax, setProofPretax, {
                 idLabel: "Pretax Spending starting pre-tax — You",
@@ -8217,14 +8288,11 @@ export function RothConversion() {
 
               <h3 className="mt-5 text-base font-semibold">
                 Every year to age {PROOF_END_AGE} — funding split and ending balances
+                <InfoNote
+                  ariaLabel="About the year-by-year funding table"
+                  text="One row per priced year. Spending is what the year needed for living costs; the funding columns are what actually paid the year's needs (spending plus its tax bill and Medicare premiums), in the engine's own ledger — so a year with no shortfall is funded in full by the columns shown."
+                />
               </h3>
-              <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-                One row per priced year. Spending is what the year needed for
-                living costs; the funding columns are what actually paid the
-                year&rsquo;s needs (spending plus its tax bill and Medicare
-                premiums), in the engine&rsquo;s own ledger — so a year with no
-                shortfall is funded in full by the columns shown.
-              </p>
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -8599,16 +8667,13 @@ export function RothConversion() {
 
       {face === "settings" && resultsMode === "gift" && (
         <section className={sectionCls} aria-label="Gift stock">
-          <h2 className="text-base font-semibold">Gift stock to a child</h2>
-          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-            Describe one gift of appreciated stock to one child. The plan is
-            priced twice with the same optimizer as the Optimize tab — as
-            saved, and with the gifted shares gone from your Taxable bucket
-            from the gift year — and the side effects are reported as their
-            own ledgers: what your child nets when they sell, the gift-tax
-            exclusion, and the step-up you give up. The gift is a what-if:
-            it never changes your saved plan&rsquo;s own runs.
-          </p>
+          <h2 className="text-base font-semibold">
+            Gift stock to a child
+            <InfoNote
+              ariaLabel="About gifting stock to a child"
+              text="Describe one gift of appreciated stock to one child. The plan is priced twice with the same optimizer as the Optimize tab — as saved, and with the gifted shares gone from your Taxable bucket from the gift year — and the side effects are reported as their own ledgers: what your child nets when they sell, the gift-tax exclusion, and the step-up you give up. The gift is a what-if: it never changes your saved plan's own runs."
+            />
+          </h2>
 
           <h3 className="mt-5 border-b border-[var(--border)] pb-2 text-base font-semibold">
             The gift
@@ -9043,9 +9108,17 @@ export function RothConversion() {
               : ""}
           </p>
           <p className="mt-1 text-xs text-[var(--dim)]" aria-live="polite">
-            {diffLabels.length === 0
-              ? "These are the seeded defaults for this view."
-              : `Custom inputs — differs from the seeded defaults in: ${diffLabels.join(", ")}.`}
+            {diffLabels.length === 0 ? (
+              "These are the seeded defaults for this view."
+            ) : (
+              <>
+                Custom inputs — differs from the seeded defaults
+                <InfoNote
+                  ariaLabel="Which inputs differ from the seeded defaults"
+                  text={`Custom inputs — differs from the seeded defaults in: ${diffLabels.join(", ")}.`}
+                />
+              </>
+            )}
           </p>
         </div>
       )}
@@ -9090,7 +9163,13 @@ export function RothConversion() {
 
       {face === "settings" && resultsMode === "optimize" && planInputs && (
         <section className={sectionCls} aria-label="Lifetime-tax optimizer">
-          <h2 className="text-base font-semibold">Lifetime-tax optimizer</h2>
+          <h2 className="text-base font-semibold">
+            Lifetime-tax optimizer
+            <InfoNote
+              ariaLabel="About how the optimizer searches"
+              text="The search screens every claiming-age combination, then fully prices every combination against every combination of fill ceiling, conversion window, guardrail, and bunching — each candidate a full lifetime simulation. Do Nothing is always a candidate, so the winner can never score worse than doing nothing. Running the search changes nothing saved — save a result as a scenario to keep it."
+            />
+          </h2>
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
             The optimizer searches for the fill strategy with the lowest{" "}
             <strong>lifetime net cost</strong>, in today&rsquo;s dollars: lifetime
@@ -9104,14 +9183,6 @@ export function RothConversion() {
             term matters — unconverted pre-tax money is taxed eventually, through late
             RMDs or by heirs, so without it the search would convert too little.
             Ties on cost are broken by ending wealth.
-          </p>
-          <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]">
-            The search screens every claiming-age combination, then fully prices
-            every combination against every combination of fill ceiling, conversion
-            window, guardrail, and bunching — each candidate a full lifetime
-            simulation. Do Nothing is always a candidate, so the winner can never
-            score worse than doing nothing. Running the search changes nothing
-            saved — save a result as a scenario to keep it.
           </p>
           <button
             type="button"
@@ -9323,17 +9394,11 @@ export function RothConversion() {
                 <div className="mt-5">
                   <h3 className="text-base font-semibold">
                     Best strategy at each claiming age
+                    <InfoNote
+                      ariaLabel="About the claiming-age table"
+                      text={`Every claiming age, fully priced: the best strategy found at that age, its lifetime net cost, and the Social Security it collects. The last column is the yearly benefit a surviving spouse would keep at that claim age — the larger of the two claimed benefits.${optResult.claimAgeFloor != null ? ` Ages below your earliest claiming age to consider (${optResult.claimAgeFloor}) are marked as below your floor — priced and shown, but the winner is chosen from the ages at or above it.` : ""}`}
+                    />
                   </h3>
-                  <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-                    Every claiming age, fully priced: the best strategy found at
-                    that age, its lifetime net cost, and the Social Security it
-                    collects. The last column is the yearly benefit a surviving
-                    spouse would keep at that claim age — the larger of the two
-                    claimed benefits.
-                    {optResult.claimAgeFloor != null
-                      ? ` Ages below your earliest claiming age to consider (${optResult.claimAgeFloor}) are marked as below your floor — priced and shown, but the winner is chosen from the ages at or above it.`
-                      : ""}
-                  </p>
                   <div className="mt-3 overflow-x-auto">
                     <table className="w-full min-w-[680px] text-sm">
                       <thead>
@@ -9444,14 +9509,11 @@ export function RothConversion() {
                 <div className="mt-5 border-t border-[var(--border)] pt-4">
                   <h3 className="text-base font-semibold">
                     Draw order at your entered claiming ages
+                    <InfoNote
+                      ariaLabel="About the draw-order search"
+                      text={`The claiming-age search above kept your draw order for every combination. This search holds the claiming ages at the ones entered above and prices all six draw orders against the same strategy set — ${optResult.orderTested} candidates, Do Nothing included — so the order itself competes.`}
+                    />
                   </h3>
-                  <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-                    The claiming-age search above kept your draw order for every
-                    combination. This search holds the claiming ages at the ones
-                    entered above and prices all six draw orders against the same
-                    strategy set — {optResult.orderTested} candidates, Do Nothing
-                    included — so the order itself competes.
-                  </p>
                   {optResult.orderWinnerIsDoNothing ? (
                     <p className="mt-3 text-sm text-[var(--dim)]">
                       Do Nothing wins here too: at your entered claiming ages, no
@@ -9636,7 +9698,15 @@ export function RothConversion() {
           )}
           {optResult?.ok && optResult.winner && optResult.doNothing && (
             <div className="mt-5 border-t border-[var(--border)] pt-4">
-              <h3 className="text-base font-semibold">Market-uncertainty check</h3>
+              <h3 className="text-base font-semibold">
+                Market-uncertainty check
+                {!winnerDegenerate && (
+                  <InfoNote
+                    ariaLabel="About the market-uncertainty check"
+                    text="The winner above was picked on one steady return path — the expected return, earned the same every year. This check re-prices the winning strategy and Do Nothing across many varied return paths (both strategies on the same path), to show how robust the win is when returns bounce around."
+                  />
+                )}
+              </h3>
               {winnerDegenerate ? (
                 <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
                   The optimizer&rsquo;s winner is Do Nothing on these inputs, so
@@ -9644,13 +9714,6 @@ export function RothConversion() {
                 </p>
               ) : (
                 <>
-                  <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-                    The winner above was picked on one steady return path — the
-                    expected return, earned the same every year. This check
-                    re-prices the winning strategy and Do Nothing across many
-                    varied return paths (both strategies on the same path), to
-                    show how robust the win is when returns bounce around.
-                  </p>
                   <div className="mt-3 flex flex-wrap items-end gap-3">
                     <div>
                       <label className={labelCls} htmlFor="roth-mc-volatility">
@@ -9941,16 +10004,11 @@ export function RothConversion() {
             <h2 className="text-base font-semibold">
               Income stack by year — ages {planYears[0]?.agePrimary} to{" "}
               {planYears[n - 1]?.agePrimary}
+              <InfoNote
+                ariaLabel="About the income stack chart"
+                text="One bar per plan year, stacking the priced income pieces from the year-by-year table below — the money out and RMD columns, taxable Social Security, and the other income in that year's math. The line across the top is each year's MAGI from the table; the dashed line is the ACA cliff while someone is on the marketplace. Pick a bar to open that year's math under the table."
+              />
             </h2>
-            <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-              One bar per plan year, stacking the priced income pieces from
-              the year-by-year table below — the money out and RMD columns,
-              taxable Social Security, and the other income in that
-              year&rsquo;s math. The line across the top is each
-              year&rsquo;s MAGI from the table; the dashed line is the ACA
-              cliff while someone is on the marketplace. Pick a bar to open
-              that year&rsquo;s math under the table.
-            </p>
             <div className="relative mt-3 h-56">
               <div className="absolute inset-0 flex items-end gap-[2px]">
                 {planYears.map((y) => {
@@ -10083,34 +10141,25 @@ export function RothConversion() {
           the remainder, where the remainder (state tax +
           pre-59½ penalties + tax on the ending pre-tax
           balance − refundable education credit) is named
-          component by component underneath, never folded
+          component by component in the title row's ⓘ
+          (taxByYearExplainer, contract v66), never folded
           silently into the headline figures. */}
       {showPlanWorkspace && savedPlanPayload && (
         <section className={sectionCls} aria-label="Tax by year">
-          <h2 className="text-base font-semibold">Tax by year</h2>
+          <h2 className="text-base font-semibold">
+            Tax by year
+            {taxByYearExplainer && (
+              <InfoNote
+                ariaLabel="About the Tax by year figures"
+                text={taxByYearExplainer}
+              />
+            )}
+          </h2>
           {savedTaxQ.isPending ? (
             <p className="mt-1 text-sm text-[var(--dim)]">Pricing the saved plan…</p>
           ) : savedTaxRow ? (
             (() => {
               const planYears = savedTaxRow.years;
-              const remainder =
-                savedTaxRow.stateTaxCents +
-                savedTaxRow.penaltyCents +
-                savedTaxRow.terminalCents -
-                savedTaxRow.educationRefundableCents;
-              const remainderParts: string[] = [];
-              if (savedTaxRow.stateTaxCents !== 0)
-                remainderParts.push(`state tax ${fmtCents(savedTaxRow.stateTaxCents)}`);
-              if (savedTaxRow.penaltyCents !== 0)
-                remainderParts.push(`pre-59½ penalties ${fmtCents(savedTaxRow.penaltyCents)}`);
-              if (savedTaxRow.terminalCents !== 0)
-                remainderParts.push(
-                  `tax on the ending pre-tax balance ${fmtCents(savedTaxRow.terminalCents)}`,
-                );
-              if (savedTaxRow.educationRefundableCents !== 0)
-                remainderParts.push(
-                  `less the refundable education credit ${fmtCents(savedTaxRow.educationRefundableCents)}`,
-                );
               const rawMax = Math.max(0, ...planYears.map((y) => y.federalTaxCents));
               const niceMax = (() => {
                 if (rawMax <= 0) return 100;
@@ -10177,25 +10226,6 @@ export function RothConversion() {
                       : fmtCents(savedTaxRow.acaCreditCents)}{" "}
                     · IRMAA {fmtCents(savedTaxRow.irmaaCents)} · Lifetime net cost{" "}
                     {fmtCents(savedTaxRow.netCostCents)}
-                  </p>
-                  <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-                    {remainderParts.length > 0 ? (
-                      <>
-                        Net cost is federal tax + IRMAA − ACA credits kept, plus the
-                        rest of the score: {remainderParts.join(", ")} —{" "}
-                        {fmtCents(remainder)} in all. Priced from the saved
-                        record — edits not yet saved do not move these
-                        figures.
-                      </>
-                    ) : (
-                      <>
-                        For this plan, net cost is exactly federal tax + IRMAA − ACA
-                        credits kept — there is no state tax, penalty, ending
-                        pre-tax tax, or refundable education credit in the score.
-                        Priced from the saved record — edits not yet saved
-                        do not move these figures.
-                      </>
-                    )}
                   </p>
                   {rawMax <= 0 ? (
                     <p className="mt-3 text-sm text-[var(--dim)]">
@@ -10288,7 +10318,7 @@ export function RothConversion() {
                   )}
                   {firstDrawYear && (
                     <div
-                      className="mt-4 max-w-xl rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3"
+                      className="mx-auto mt-4 max-w-xl rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3"
                       aria-label="First draw year tax bill"
                     >
                       <p className="text-sm font-semibold">
@@ -10474,16 +10504,13 @@ export function RothConversion() {
 
       {face === "settings" && resultsMode === "compare" && (
         <section className={sectionCls} aria-label="Strategy Lab">
-          <h2 className="text-base font-semibold">Strategy Lab</h2>
-          <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
-            Your library of saved strategies, priced side by side in one
-            ranked list — together with your current plan, Do Nothing, and
-            four built-in fill rules of the plan you have loaded. The
-            built-ins re-price from the loaded plan whenever it changes;
-            they are never saved. Add more options whenever a new idea
-            comes up — duplicate a row and edit it, or save the current
-            plan as a new strategy. Up to 50 strategies can be kept.
-          </p>
+          <h2 className="text-base font-semibold">
+            Strategy Lab
+            <InfoNote
+              ariaLabel="About the Strategy Lab"
+              text="Your library of saved strategies, priced side by side in one ranked list — together with your current plan, Do Nothing, and four built-in fill rules of the plan you have loaded. The built-ins re-price from the loaded plan whenever it changes; they are never saved. Add more options whenever a new idea comes up — duplicate a row and edit it, or save the current plan as a new strategy. Up to 50 strategies can be kept."
+            />
+          </h2>
 
           <button
             type="button"
