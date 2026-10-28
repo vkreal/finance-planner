@@ -402,6 +402,32 @@ export function RetirementCalc() {
     "retirement.inputsFolded",
   );
   const inputsOpen = !inputsFolded;
+  /* Jump-and-highlight (contract v69): the provenance-tap
+     mechanism modelled on Spending's scrollToSection — open
+     the plan-inputs fold first when it is folded, scroll on a
+     later frame, then flash an outline on the field for
+     ~1.6s (applied to the element directly and restored
+     afterwards). */
+  const rcFlashTimer = useRef<number | null>(null);
+  const jumpToRcField = (fieldId: string) => {
+    if (inputsFolded) setInputsFolded(false);
+    window.setTimeout(() => {
+      const el = document.getElementById(fieldId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const prevOutline = el.style.outline;
+      const prevOffset = el.style.outlineOffset;
+      el.style.outline = "2px solid var(--accent)";
+      el.style.outlineOffset = "2px";
+      if (rcFlashTimer.current != null) {
+        window.clearTimeout(rcFlashTimer.current);
+      }
+      rcFlashTimer.current = window.setTimeout(() => {
+        el.style.outline = prevOutline;
+        el.style.outlineOffset = prevOffset;
+      }, 1600);
+    }, 150);
+  };
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -3563,9 +3589,31 @@ export function RetirementCalc() {
             </div>
           ) : (
             <p className="mt-4 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
-              {inputs.retirementAge >= inputs.endAge
-                ? `No retired years to solve against: the retirement age (${inputs.retirementAge}) is not before the plan's end age (${inputs.endAge}), so no year's spending is ever tested. Lower the retirement age or raise the end age for a Max Spending answer.`
-                : parseNum(solverTarget) == null
+              {inputs.retirementAge >= inputs.endAge ? (
+                <>
+                  No retired years to solve against: the retirement age (
+                  <button
+                    type="button"
+                    aria-label="Go to the Retirement age field"
+                    className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                    onClick={() => jumpToRcField("rc-retirement-age")}
+                  >
+                    {inputs.retirementAge}
+                  </button>
+                  ) is not before the plan&rsquo;s end age (
+                  <button
+                    type="button"
+                    aria-label="Go to the End age field"
+                    className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                    onClick={() => jumpToRcField("rc-end-age")}
+                  >
+                    {inputs.endAge}
+                  </button>
+                  ), so no year&rsquo;s spending is ever tested. Lower the
+                  retirement age or raise the end age for a Max Spending
+                  answer.
+                </>
+              ) : parseNum(solverTarget) == null
                 ? "Enter a target success % above to solve."
                 : solverEngine === "historical"
                   ? "No historical run fits this plan, so there is nothing to solve against — shorten the span (a later current age or an earlier end age), or switch the solver engine to Monte Carlo."

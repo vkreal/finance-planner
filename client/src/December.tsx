@@ -670,6 +670,34 @@ export function December() {
     [state],
   );
 
+  /* Jump-and-highlight (contract v69): the provenance-tap
+     mechanism modelled on Spending's scrollToSection — scroll
+     on a later frame, then flash an outline on the field for
+     ~1.6s (applied to the element directly and restored
+     afterwards). The console's fields are in always-rendered
+     sections, so no fold needs opening. */
+  const decFlashTimer = useRef<number | null>(null);
+  const jumpToDecField = (fieldId: string) => {
+    window.setTimeout(() => {
+      const el = document.getElementById(fieldId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const prevOutline = el.style.outline;
+      const prevOffset = el.style.outlineOffset;
+      el.style.outline = "2px solid var(--accent)";
+      el.style.outlineOffset = "2px";
+      if (decFlashTimer.current != null) {
+        window.clearTimeout(decFlashTimer.current);
+      }
+      decFlashTimer.current = window.setTimeout(() => {
+        el.style.outline = prevOutline;
+        el.style.outlineOffset = prevOffset;
+      }, 1600);
+    }, 60);
+  };
+  const decTapCls =
+    "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
+
   if (decQ.error && !form) {
     return (
       <p className="py-10 text-center text-[var(--bad)]">
@@ -695,7 +723,7 @@ export function December() {
     (state.stateRatePct > 0 || likelyCase.stateTaxAtHeadline > 0);
   const billRow = (
     label: string,
-    value: string,
+    value: ReactNode,
     opts?: { bold?: boolean; divide?: boolean },
   ) => (
     <div
@@ -841,7 +869,16 @@ export function December() {
             {result.cliff != null && (
               <p className="mt-1 text-sm text-[var(--dim)]">
                 Cliff {fmtDollars(result.cliff)} · aim at {fmtDollars(result.targetMagi ?? 0)}{" "}
-                (cliff − {fmtDollars(state.bufferDollars)} buffer)
+                (cliff −{" "}
+                <button
+                  type="button"
+                  aria-label="Go to the Buffer below the cliff field"
+                  className={decTapCls}
+                  onClick={() => jumpToDecField("roth-December-cliff-buffer")}
+                >
+                  {fmtDollars(state.bufferDollars)}
+                </button>{" "}
+                buffer)
               </p>
             )}
             {likelyCase && (
@@ -885,7 +922,17 @@ export function December() {
                     )}
                   {likelyCase.excessAptcRepayment != null &&
                     likelyCase.excessAptcRepayment > 0 &&
-                    billRow("Advance credit to repay", fmtDollars(likelyCase.excessAptcRepayment))}
+                    billRow(
+                      "Advance credit to repay",
+                      <button
+                        type="button"
+                        aria-label="Go to the Advance credit (APTC) already taken field"
+                        className={decTapCls}
+                        onClick={() => jumpToDecField("roth-December-APTC-taken")}
+                      >
+                        {fmtDollars(likelyCase.excessAptcRepayment)}
+                      </button>,
+                    )}
                   {likelyCase.netSettleAtHeadline == null ? (
                     <p className="mt-1 border-t border-[var(--border)] pt-1.5 text-sm">
                       {likelyCase.netSettleNote ??
@@ -939,11 +986,34 @@ export function December() {
                     </p>
                     {result.cliff != null && state.aptcTaken > 0 && (
                       <p className="tnum mt-1 text-sm">
-                        {c.overCliffAtHeadline
-                          ? `Excess APTC repayment: repay the full ${fmtDollars(c.repaymentExposure)} of advance credit taken`
-                          : c.excessAptcRepayment != null
-                            ? `Excess APTC repayment: ${fmtDollars(c.excessAptcRepayment)}`
-                            : "Excess APTC repayment: not priced — enter the benchmark premium"}
+                        {c.overCliffAtHeadline ? (
+                          <>
+                            Excess APTC repayment: repay the full{" "}
+                            <button
+                              type="button"
+                              aria-label="Go to the Advance credit (APTC) already taken field"
+                              className={decTapCls}
+                              onClick={() => jumpToDecField("roth-December-APTC-taken")}
+                            >
+                              {fmtDollars(c.repaymentExposure)}
+                            </button>{" "}
+                            of advance credit taken
+                          </>
+                        ) : c.excessAptcRepayment != null ? (
+                          <>
+                            Excess APTC repayment:{" "}
+                            <button
+                              type="button"
+                              aria-label="Go to the Advance credit (APTC) already taken field"
+                              className={decTapCls}
+                              onClick={() => jumpToDecField("roth-December-APTC-taken")}
+                            >
+                              {fmtDollars(c.excessAptcRepayment)}
+                            </button>
+                          </>
+                        ) : (
+                          "Excess APTC repayment: not priced — enter the benchmark premium"
+                        )}
                       </p>
                     )}
                     {result.cliff != null &&

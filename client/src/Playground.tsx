@@ -653,6 +653,37 @@ export function Playground() {
       </button>
     </h3>
   );
+  /* Jump-and-highlight (contract v69): the provenance-tap
+     mechanism modelled on Spending's scrollToSection — open
+     the target's face, group, and section first, scroll on a
+     later frame, then flash an outline on the field itself
+     for ~1.6s (applied to the element directly and restored
+     afterwards, so the shared field helpers do not change). */
+  const pgFlashTimer = useRef<number | null>(null);
+  const jumpToPgField = (fieldId: string) => {
+    setPgFace("year");
+    setPgGroupOpen((p) => ({ ...p, single: true }));
+    setPgOpenSections((p) => ({ ...p, aca: true }));
+    window.setTimeout(() => {
+      const el = document.getElementById(fieldId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const prevOutline = el.style.outline;
+      const prevOffset = el.style.outlineOffset;
+      el.style.outline = "2px solid var(--accent)";
+      el.style.outlineOffset = "2px";
+      if (pgFlashTimer.current != null) {
+        window.clearTimeout(pgFlashTimer.current);
+      }
+      pgFlashTimer.current = window.setTimeout(() => {
+        el.style.outline = prevOutline;
+        el.style.outlineOffset = prevOffset;
+      }, 1600);
+    }, 150);
+  };
+  const pgTapCls =
+    "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
+
   /* Two faces (two-faces redesign) — the view shows ONE tool
      at a time: the "One year" face carries the single-year
      dials, the plain-English year sentence, the sticky play
@@ -2421,7 +2452,7 @@ export function Playground() {
             const pg = playgroundResult;
             const stripYearNum =
               parseIntField(pgYear) ?? new Date().getFullYear();
-            const statuses: { key: string; text: string; warn: boolean }[] = [];
+            const statuses: { key: string; text: string; warn: boolean; node?: ReactNode }[] = [];
             if (pg != null && pg.conversion > 0) {
               // The bracket landing, in the readout takeaway's
               // own terms — read off the priced result, like
@@ -2489,22 +2520,57 @@ export function Playground() {
               // the buffer dial and its fill in ACA & state.
               const line = pg.aca.cliff - pgAcaBufferDollars;
               const diff = line - pg.acaMagi;
+              // Reworded (contract v69) so the line cannot be
+              // misread as "over the cliff": MAGI is measured
+              // against the BUFFER line, and the buffer figure
+              // itself is a provenance tap to the "Buffer below
+              // the ACA cliff" field in ACA & state.
+              const bufferTap = (
+                <button
+                  type="button"
+                  aria-label="Go to the Buffer below the ACA cliff field"
+                  className={pgTapCls}
+                  onClick={() =>
+                    jumpToPgField("roth-Buffer-below-the-ACA-cliff")
+                  }
+                >
+                  {fmtDollars(pgAcaBufferDollars)}
+                </button>
+              );
               if (Math.abs(diff) < 0.5) {
                 statuses.push({
                   key: "acaBuffer",
-                  text: `MAGI ${fmtDollars(pg.acaMagi)} — right at cliff − buffer`,
+                  text: `MAGI ${fmtDollars(pg.acaMagi)} — right at your buffer line (cliff − ${fmtDollars(pgAcaBufferDollars)})`,
+                  node: (
+                    <>
+                      MAGI {fmtDollars(pg.acaMagi)} — right at your buffer
+                      line (cliff − {bufferTap})
+                    </>
+                  ),
                   warn: false,
                 });
               } else if (diff > 0) {
                 statuses.push({
                   key: "acaBuffer",
-                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(diff)} under the cliff − buffer line`,
+                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(diff)} under your buffer line (cliff − ${fmtDollars(pgAcaBufferDollars)})`,
+                  node: (
+                    <>
+                      MAGI {fmtDollars(pg.acaMagi)} — {fmtDollars(diff)} under
+                      your buffer line (cliff − {bufferTap})
+                    </>
+                  ),
                   warn: false,
                 });
               } else {
                 statuses.push({
                   key: "acaBuffer",
-                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(-diff)} over the cliff − buffer line`,
+                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(-diff)} past your buffer line (cliff − ${fmtDollars(pgAcaBufferDollars)})`,
+                  node: (
+                    <>
+                      MAGI {fmtDollars(pg.acaMagi)} — {fmtDollars(-diff)} past
+                      your buffer line (cliff − {bufferTap})
+                    </>
+                  ),
                   warn: true,
                 });
               }
@@ -2689,7 +2755,7 @@ export function Playground() {
                             : "text-[var(--dim)]"
                         }
                       >
-                        {s.text}
+                        {s.node ?? s.text}
                       </span>
                     </span>
                   ))}
@@ -2855,14 +2921,23 @@ export function Playground() {
               and the Load inputs button. The "Start from my
               numbers" button and "Reset playground" link above
               stay outside the fold, always visible. */}
-          <div className="mt-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label
-                className="block text-sm font-medium text-[var(--text)]"
-                htmlFor="roth-pg-paste"
-              >
-                Load inputs from a paste
-              </label>
+          <section className={sectionCls} aria-label="Load inputs from a paste">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <span>
+                <label
+                  className="block text-base font-semibold"
+                  htmlFor="roth-pg-paste"
+                >
+                  Load inputs from a paste
+                </label>
+                <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                  {pgPasteLoaded
+                    ? "Inputs loaded from the paste"
+                    : pgPasteText.trim() !== ""
+                      ? "Paste entered — not loaded yet"
+                      : "Nothing pasted yet"}
+                </span>
+              </span>
               <button
                 type="button"
                 aria-label={
@@ -2917,7 +2992,7 @@ export function Playground() {
                 )}
               </div>
             )}
-          </div>
+          </section>
 
           {/* Known starting points — preset cards that load the
               dials (see the loaders above). Loading a preset
@@ -2928,11 +3003,17 @@ export function Playground() {
               toggle the Spending section folds use (see
               knownPointsFolded above): expanded by default, and
               folded shut it leaves only this header row. */}
-          <div className="mt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-medium text-[var(--text)]">
-                Start from a known point
-              </p>
+          <section className={sectionCls} aria-label="Start from a known point">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <span>
+                <span className="block text-base font-semibold">
+                  Start from a known point
+                </span>
+                <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                  {pgPresetNote ??
+                    "My 2026 as filed · a year from my saved plan · a blank year"}
+                </span>
+              </span>
               <button
                 type="button"
                 aria-label={
@@ -3041,18 +3122,41 @@ export function Playground() {
                 </button>
               </div>
             </div>
-            {pgPresetNote && (
-              <p className="mt-2 text-sm text-[var(--dim)]" role="note">
-                {pgPresetNote}
-              </p>
-            )}
               </div>
             )}
-          </div>
+          </section>
 
           {pgFace === "year" && (
             <>
-          {pgGroupHeader("single", "Single-year dials", "One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below.")}
+          {/* Single-year dials (contract v69): the group gets
+              the same outer shell as the section cards inside
+              it, but quieter — a dashed border on the page
+              background instead of a filled surface card — and
+              its explainer sentence rides the title's ⓘ. */}
+          <section
+            className="mt-4 rounded-[var(--radius)] border border-dashed border-[var(--border)] px-3 py-3"
+            aria-label="Single-year dials"
+          >
+            <h3>
+              <button
+                type="button"
+                aria-expanded={pgGroupOpen.single}
+                aria-label="Single-year dials group"
+                className="flex w-full items-start justify-between gap-3 pr-1 text-left"
+                onClick={() => togglePgGroup("single")}
+              >
+                <span className="flex items-center">
+                  <span className="text-base font-semibold">
+                    Single-year dials
+                  </span>
+                  <InfoNote
+                    text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
+                    ariaLabel="About the single-year dials"
+                  />
+                </span>
+                <FoldChevron open={!!pgGroupOpen.single} className="mt-0.5" />
+              </button>
+            </h3>
           {pgGroupOpen.single && (
             <>
           {pgSectionCard("year", "The year", pgYearSummary, (
@@ -3487,6 +3591,7 @@ export function Playground() {
           ))}
             </>
           )}
+          </section>
 
             </>
           )}
@@ -4320,6 +4425,33 @@ export function Playground() {
                  Every figure is read straight off the priced
                  result (`pg`, pricePlaygroundYear's own fields);
                  see buildStackModel's comment for the sourcing. */
+              const stackModel = buildStackModel(pg, pgYearNum, pgFiling);
+              /* Bracket-by-bracket status (contract v69): the
+                 text the chart's legend used to print under the
+                 bar — every bracket top with its passed-by /
+                 room-left standing, and the 0% gains line — now
+                 computed once as this one string and carried by
+                 the Income stack heading's ⓘ, verbatim from the
+                 same figures the legend printed. */
+              const bracketStatusText = [
+                ...stackModel.markers.map(
+                  (m) =>
+                    `${m.rate}% top ${fmtDollars(m.to)} — ${
+                      m.room > 0.5
+                        ? `${fmtDollars(m.room)} left`
+                        : m.room >= -0.5
+                          ? "filled exactly"
+                          : `passed by ${fmtDollars(-m.room)}`
+                    }`,
+                ),
+                `0% gains end ${fmtDollars(stackModel.zeroTop)} — ${
+                  stackModel.zeroTop - stackModel.ordinaryTaxable > 0.5
+                    ? `${fmtDollars(stackModel.zeroTop - stackModel.ordinaryTaxable)} left`
+                    : stackModel.zeroTop - stackModel.ordinaryTaxable >= -0.5
+                      ? "filled exactly"
+                      : `passed by ${fmtDollars(stackModel.ordinaryTaxable - stackModel.zeroTop)}`
+                } · only taxable-account gains and qualified dividends get the 0% rate`,
+              ].join(" · ");
               const stackChart = (() => {
                 const {
                   bands,
@@ -4339,7 +4471,7 @@ export function Playground() {
                   pct,
                   taxX,
                   hatchStyle,
-                } = buildStackModel(pg, pgYearNum, pgFiling);
+                } = stackModel;
                 /* ACA cliff line — presentation ONLY, derived
                    from the priced result in the chart's own
                    coordinates: the line sits at the taxable-axis
@@ -4367,6 +4499,25 @@ export function Playground() {
                   }
                   return { xPct: taxX(taxablePos), cliff: pg.aca.cliff };
                 })();
+                /* Buffer line (contract v69): the same
+                   construction aimed at cliff − buffer — the
+                   MAGI the dials actually target. Drawn only
+                   when a hard cliff applies (the same rule as
+                   the cliff line) and a buffer above $0 is
+                   entered, and only inside the drawn axis. */
+                const acaBufferLine = (() => {
+                  if (acaCliffLine == null) return null;
+                  if (!pgAcaHasHardCliff || pgAcaBufferDollars <= 0) {
+                    return null;
+                  }
+                  const target = pg.aca.cliff! - pgAcaBufferDollars;
+                  const taxablePos =
+                    target - (pg.acaMagi - pg.taxableIncome);
+                  if (taxablePos < 0 || taxablePos > axisTaxableMax) {
+                    return null;
+                  }
+                  return { xPct: taxX(taxablePos), magi: target };
+                })();
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
                     <p className="mt-1 text-xs text-[var(--dim)]">
@@ -4379,74 +4530,6 @@ export function Playground() {
                         : ""}
                       .
                     </p>
-                    <div className="relative mt-1 h-11" aria-hidden="true">
-                      {markers.map((m, i) => (
-                        <span
-                          key={m.rate}
-                          className="tnum absolute text-[11px] whitespace-nowrap"
-                          style={{
-                            color: m.color,
-                            left: m.inAxis ? `${taxX(m.to)}%` : "100%",
-                            top: i % 2 === 0 ? 0 : 18,
-                            transform: !m.inAxis
-                              ? "translateX(-92%)"
-                              : i === 0
-                                ? "translateX(-8%)"
-                                : i === markers.length - 1
-                                  ? "translateX(-92%)"
-                                  : "translateX(-50%)",
-                          }}
-                        >
-                          {m.rate}% ·{" "}
-                          {m.room > 0.5
-                            ? `${fmtDollars(m.room)} left`
-                            : m.room >= -0.5
-                              ? "filled"
-                              : "passed"}
-                        </span>
-                      ))}
-                    </div>
-                    {gainsTotal > 0 && (
-                      <div className="relative h-4">
-                        <span
-                          className="absolute inline-flex items-center whitespace-nowrap"
-                          style={{
-                            left: `${taxX(zeroTop)}%`,
-                            transform:
-                              taxX(zeroTop) > 85
-                                ? "translateX(-92%)"
-                                : taxX(zeroTop) < 15
-                                  ? "translateX(-8%)"
-                                  : "translateX(-50%)",
-                          }}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className="tnum text-[11px]"
-                            style={{ color: "#65a30d" }}
-                          >
-                            0% gains end · {fmtDollars(zeroTop)}
-                          </span>
-                          <InfoNote
-                            text={`Long-term gains and qualified dividends in the taxable account are taxed at 0% while total taxable income stays under ${fmtDollars(zeroTop)}. Past that line they price at 15%, and at 20% once taxable income passes ${fmtDollars(floor20)}.`}
-                            ariaLabel="About the 0% gains line"
-                            align={taxX(zeroTop) > 60 ? "right" : "left"}
-                          />
-                        </span>
-                        {show20 && (
-                          <span
-                            aria-hidden="true"
-                            className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
-                            style={{
-                              left: `${taxX(floor20)}%`,
-                              transform: "translateX(-92%)",
-                            }}
-                          >
-                            20% from {fmtDollars(floor20)}
-                          </span>
-                        )}
-                      </div>
-                    )}
                     <div className="relative">
                       <div className="absolute inset-0" aria-hidden="true">
                         {bands.map((b, i) => (
@@ -4559,9 +4642,21 @@ export function Playground() {
                             }}
                           />
                         )}
+                        {acaBufferLine != null && (
+                          <div
+                            className="absolute top-0 bottom-0 border-l border-dashed"
+                            style={{
+                              left: `${acaBufferLine.xPct}%`,
+                              borderColor: "var(--dim)",
+                            }}
+                          />
+                        )}
                       </div>
                     </div>
-                    <div className="relative mt-1 h-4" aria-hidden="true">
+                    <div
+                      className={`relative mt-1 ${acaCliffLine != null && acaBufferLine != null && Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30 ? "h-8" : "h-4"}`}
+                      aria-hidden="true"
+                    >
                       <span
                         className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
                         style={{
@@ -4589,6 +4684,22 @@ export function Playground() {
                           ACA cliff · MAGI {fmtDollars(acaCliffLine.cliff)}
                         </span>
                       )}
+                      {acaBufferLine != null && (
+                        <span
+                          className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${acaCliffLine != null && Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30 ? "top-4" : ""}`}
+                          style={{
+                            left: `${acaBufferLine.xPct}%`,
+                            transform:
+                              acaBufferLine.xPct > 85
+                                ? "translateX(-92%)"
+                                : acaBufferLine.xPct < 15
+                                  ? "translateX(-8%)"
+                                  : "translateX(-50%)",
+                          }}
+                        >
+                          Buffer · MAGI {fmtDollars(acaBufferLine.magi)}
+                        </span>
+                      )}
                       <span
                         className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
                         style={{ right: 0 }}
@@ -4596,8 +4707,20 @@ export function Playground() {
                         {fmtDollars(axisTaxableMax)}
                       </span>
                     </div>
-                    {legendSegs.length > 0 && (
-                      <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                    <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                        {(
+                          <span className="inline-flex items-center gap-1.5">
+                            <span
+                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
+                              style={hatchStyle}
+                              aria-hidden="true"
+                            />
+                            Deductions{" "}
+                            <span className="tnum font-medium text-[var(--text)]">
+                              −{fmtDollars(deductions)}
+                            </span>
+                          </span>
+                        )}
                         {legendSegs.map((s) => (
                           <span key={s.key} className="inline-flex items-center gap-1.5">
                             <span
@@ -4611,49 +4734,6 @@ export function Playground() {
                             </span>
                           </span>
                         ))}
-                      </p>
-                    )}
-                    <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span
-                          className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
-                          style={hatchStyle}
-                          aria-hidden="true"
-                        />
-                        Deductions{" "}
-                        <span className="font-medium text-[var(--text)]">
-                          −{fmtDollars(deductions)}
-                        </span>
-                      </span>
-                      {markers.map((m) => (
-                        <span key={m.rate} style={{ color: m.color }}>
-                          {m.rate}% top {fmtDollars(m.to)} —{" "}
-                          {m.room > 0.5
-                            ? `${fmtDollars(m.room)} left`
-                            : m.room >= -0.5
-                              ? "filled exactly"
-                              : `passed by ${fmtDollars(-m.room)}`}
-                        </span>
-                      ))}
-                      {/* The 0% gains line's caption, in the same
-                          idiom as the bracket captions above: its
-                          room uses their comparator — the top
-                          minus the ORDINARY taxable income — so
-                          "passed by"/"left" says how the ordinary
-                          stack alone stands against the line,
-                          before the gains stack on top is priced
-                          (the Gains stack panel below carries the
-                          post-gains room). It also carries the
-                          plain-words scope note the user asked for. */}
-                      <span style={{ color: "#65a30d" }}>
-                        0% gains end {fmtDollars(zeroTop)} —{" "}
-                        {zeroTop - ordinaryTaxable > 0.5
-                          ? `${fmtDollars(zeroTop - ordinaryTaxable)} left`
-                          : zeroTop - ordinaryTaxable >= -0.5
-                            ? "filled exactly"
-                            : `passed by ${fmtDollars(ordinaryTaxable - zeroTop)}`}{" "}
-                        · only taxable-account gains and qualified dividends get the 0% rate
-                      </span>
                     </p>
                     {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
                       <p className="mt-1 text-xs text-[var(--dim)]" role="note">
@@ -4940,7 +5020,13 @@ export function Playground() {
                   </p>
 
                   <div className="mt-3">
-                    <h3 className="text-sm font-semibold">Income stack</h3>
+                    <h3 className="text-sm font-semibold">
+                      Income stack
+                      <InfoNote
+                        text={bracketStatusText}
+                        ariaLabel="Bracket-by-bracket status for the income stack"
+                      />
+                    </h3>
                   </div>
 
                   {stackChart}
@@ -4994,7 +5080,17 @@ export function Playground() {
                   ) : (
                     <p className="mt-1 text-sm">
                       ACA cliff for a household of {pg.aca.householdSize}:{" "}
-                      {fmtDollars(pg.aca.cliff)} (400% of the poverty line).{" "}
+                      <button
+                        type="button"
+                        aria-label="Go to the ACA household size field"
+                        className={pgTapCls}
+                        onClick={() =>
+                          jumpToPgField("roth-ACA-household-size")
+                        }
+                      >
+                        {fmtDollars(pg.aca.cliff)}
+                      </button>{" "}
+                      (400% of the poverty line).{" "}
                       {pg.aca.overCliff
                         ? `ACA household income is over the cliff by ${fmtDollars(-(pg.aca.positionDollars ?? 0))} — the premium credit is $0 at the cliff.`
                         : `ACA household income is under the cliff by ${fmtDollars(pg.aca.positionDollars ?? 0)}`}
@@ -5113,6 +5209,20 @@ export function Playground() {
                         "MAGI plus the untaxed part of Social Security",
                       )}
                   </dl>
+                  {pg.conversion > 0 && (
+                    <p className="mt-2 text-sm">
+                      The pre-tax money out itself costs{" "}
+                      <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
+                      of federal tax —{" "}
+                      {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
+                      of the amount taken out
+                      {pg.conversionTotalCost !== pg.conversionFederalCost
+                        ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
+                        : ""}
+                      . That&rsquo;s the year&rsquo;s tax with the pre-tax money out minus
+                      the same year priced at $0 of pre-tax money out.
+                    </p>
+                  )}
                   {pg.saleAfterTax != null && (
                     <p className="mt-2 text-sm" role="note">
                       {(() => {
@@ -5153,74 +5263,84 @@ export function Playground() {
                     {stackBlock}
                   </section>
 
-                  <section className={sectionCls} aria-label="Bracket landing">
-                  <h3 className="text-sm font-semibold">Bracket landing</h3>
-                  {pg.conversion > 0 && pg.landingBracketPct != null ? (
-                    <p className="mt-1 text-sm">
-                      The last dollar of pre-tax money out lands in the{" "}
-                      {pg.landingBracketPct}% bracket
-                      {pg.landingBracketTop != null
-                        ? ` (top ${fmtDollars(pg.landingBracketTop)})`
-                        : " (the top bracket — no ceiling)"}
-                      {pg.landingExactlyFilled
-                        ? " — filled exactly, $0 of room left."
-                        : pg.landingRoomLeft != null
-                          ? ` — ${fmtDollars(pg.landingRoomLeft)} of room left in the bracket.`
-                          : "."}
-                    </p>
-                  ) : pg.conversion > 0 ? (
-                    <p className="mt-1 text-sm">
-                      None of the pre-tax money out is taxed — the year&rsquo;s deductions
-                      shelter all of it.
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-sm">
-                      No pre-tax money out typed — type an amount above to see where it would
-                      land.
-                    </p>
-                  )}
-                  {pg.conversion > 0 && (
-                    <p className="mt-1 text-sm">
-                      The pre-tax money out itself costs{" "}
-                      <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
-                      of federal tax —{" "}
-                      {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
-                      of the amount taken out
-                      {pg.conversionTotalCost !== pg.conversionFederalCost
-                        ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
-                        : ""}
-                      . That&rsquo;s the year&rsquo;s tax with the pre-tax money out minus
-                      the same year priced at $0 of pre-tax money out.
-                    </p>
-                  )}
-                  {pg.bracketLayers.length > 0 && (
-                    <p className="mt-1 text-sm text-[var(--dim)]">
-                      Ordinary income is taxed as:{" "}
-                      {pg.bracketLayers
-                        .map((l) => `${l.ratePct}% × ${fmtDollars(l.amount)}`)
-                        .join(" + ")}
-                      .
-                    </p>
-                  )}
-
-                  </section>
-
                   <section className={sectionCls} aria-label="Gains stack">
-                  <h3 className="text-sm font-semibold">Gains stack</h3>
-                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-                    {stackRow("Taxed at 0%", fmtDollars(pg.gainsAt0))}
-                    {stackRow("Taxed at 15%", fmtDollars(pg.gainsAt15))}
-                    {stackRow("Taxed at 20%", fmtDollars(pg.gainsAt20))}
-                    {stackRow(
-                      "0% gains room left",
-                      fmtDollars(pg.gainsZeroRoomLeft),
-                    )}
-                    {stackRow(
-                      "Net investment income tax",
-                      fmtDollars(pg.niit),
-                      "Priced on interest, dividends and gains — the net investment income base",
-                    )}
-                  </dl>
+                  <h3 className="text-sm font-semibold">
+                    Gains stack
+                    <InfoNote
+                      text="Net investment income tax is priced on interest, dividends and gains — the net investment income base."
+                      ariaLabel="About the gains stack and the net investment income tax"
+                    />
+                  </h3>
+                  {(() => {
+                    // Gains stack as a horizontal stacked bar
+                    // (contract v69), in the income stack's visual
+                    // language: one segment per rate tier sized by
+                    // the dollars taxed there, with the unused 0%
+                    // room drawn first as an empty hatched segment
+                    // when there is any. Every figure is the priced
+                    // result's own (pg.gainsAt0 / At15 / At20 and
+                    // pg.gainsZeroRoomLeft).
+                    const segs = [
+                      { key: "room", label: "0% gains room left", amount: pg.gainsZeroRoomLeft, color: "", empty: true },
+                      { key: "at0", label: "Taxed at 0%", amount: pg.gainsAt0, color: "#65a30d", empty: false },
+                      { key: "at15", label: "Taxed at 15%", amount: pg.gainsAt15, color: "#5f6caf", empty: false },
+                      { key: "at20", label: "Taxed at 20%", amount: pg.gainsAt20, color: "#7a5c8f", empty: false },
+                    ].filter((g) => g.amount > 0);
+                    const total = segs.reduce((a, g) => a + g.amount, 0);
+                    if (total <= 0) {
+                      return (
+                        <p className="mt-1 text-sm text-[var(--dim)]">
+                          No gains priced for this year.
+                        </p>
+                      );
+                    }
+                    return (
+                      <>
+                        <div
+                          className="mt-2 flex h-6 w-full overflow-hidden rounded-sm"
+                          role="img"
+                          aria-label={`Gains stack bar: ${segs.map((g) => `${g.label} ${fmtDollars(g.amount)}`).join(", ")}`}
+                        >
+                          {segs.map((g) => (
+                            <div
+                              key={g.key}
+                              className="flex h-full min-w-0 items-center justify-center overflow-hidden border-r border-[var(--bg)]"
+                              style={{
+                                width: `${(g.amount / total) * 100}%`,
+                                background: g.empty ? undefined : g.color,
+                                ...(g.empty ? STACK_HATCH_STYLE : {}),
+                              }}
+                            >
+                              {(g.amount / total) * 100 >= 14 && (
+                                <span className={`truncate px-1 text-[11px] font-medium ${g.empty ? "text-[var(--text)]" : "text-white"}`}>
+                                  {fmtDollars(g.amount)}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                          {segs.map((g) => (
+                            <span key={g.key} className="inline-flex items-center gap-1.5">
+                              <span
+                                className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
+                                style={g.empty ? STACK_HATCH_STYLE : { background: g.color }}
+                                aria-hidden="true"
+                              />
+                              {g.label}{" "}
+                              <span className="tnum font-medium text-[var(--text)]">
+                                {fmtDollars(g.amount)}
+                              </span>
+                            </span>
+                          ))}
+                        </p>
+                      </>
+                    );
+                  })()}
+                  <p className="tnum mt-2 text-sm">
+                    Net investment income tax{" "}
+                    <span className="font-medium">{fmtDollars(pg.niit)}</span>
+                  </p>
 
                   </section>
                 </div>

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 Area,
@@ -3910,51 +3910,74 @@ export function RothConversion() {
      themselves, and a clause with no value behind it is simply
      left out). Display only: it reads the same state the
      fields edit and never touches pricing. */
-  const plainSummary = ((): string => {
-    const parts: string[] = [];
+  /* The summary's clauses (contract v69): each clause that
+     names one editable field is a provenance tap — it jumps
+     to that field in the All settings face (see jumpToField).
+     The plain string below is the same clauses joined, for
+     any reader that needs the sentence whole. */
+  type SummaryClause = {
+    text: string;
+    fieldId?: string;
+    section?: RothSectionId;
+    fieldLabel?: string;
+  };
+  const plainSummaryClauses = ((): SummaryClause[] => {
+    const parts: SummaryClause[] = [];
     const retire = parseIntField(retirementAge);
-    if (retire != null) parts.push(`Retire at ${retire}`);
+    if (retire != null)
+      parts.push({ text: `Retire at ${retire}`, fieldId: "roth-Retirement-age", section: "household", fieldLabel: "Retirement age" });
     const spendD = parseDollars(spending);
-    if (spendD != null) parts.push(`spend ${fmtDollars(spendD)}/yr`);
-    parts.push(
-      `draw ${drawOrderLabel(drawOrderFromKey(drawOrder)).toLowerCase()} first`,
-    );
+    if (spendD != null)
+      parts.push({ text: `spend ${fmtDollars(spendD)}/yr`, fieldId: "roth-Annual-spending", section: "household", fieldLabel: "Annual spending" });
+    parts.push({
+      text: `draw ${drawOrderLabel(drawOrderFromKey(drawOrder)).toLowerCase()} first`,
+      fieldId: "roth-draworder",
+      section: "household",
+      fieldLabel: "Spending draw order",
+    });
     const fillParts: string[] = [];
     if (ceilBracket !== "") fillParts.push(`the top of the ${ceilBracket}% bracket`);
     if (ceilIrmaa !== "") fillParts.push(`IRMAA Tier ${ceilIrmaa}`);
     if (ceilLtcg) fillParts.push("the top of the 0% capital-gains space");
     if (ceilAca) fillParts.push("the ACA cliff");
     if (parseDollars(magiCap) != null) fillParts.push(`a MAGI cap of ${fmtDollars(parseDollars(magiCap)!)}`);
-    if (fillParts.length > 0) parts.push(`fill up to ${fillParts.join(" and ")}`);
-    else parts.push("no conversions (no ceiling set)");
-    parts.push(
-      payTaxFrom === "taxable"
-        ? "taxes paid from taxable"
-        : "taxes withheld from the conversion",
-    );
+    if (fillParts.length > 0)
+      parts.push({ text: `fill up to ${fillParts.join(" and ")}`, fieldId: "roth-ceil-bracket", section: "advanced", fieldLabel: "Fill ceiling" });
+    else
+      parts.push({ text: "no conversions (no ceiling set)", fieldId: "roth-ceil-bracket", section: "advanced", fieldLabel: "Fill ceiling" });
+    parts.push({
+      text:
+        payTaxFrom === "taxable"
+          ? "taxes paid from taxable"
+          : "taxes withheld from the conversion",
+      fieldId: "roth-payfrom",
+      section: "household",
+      fieldLabel: "Pay conversion tax from",
+    });
     if (ssPrimaryNoBenefit && ssSpouseNoBenefit) {
-      parts.push("no Social Security benefit");
+      parts.push({ text: "no Social Security benefit", fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
     } else if (ssPrimaryNoBenefit) {
       const a = parseIntField(ssSAge);
-      parts.push(a != null ? `spouse Social Security at ${a}` : "Social Security not set");
+      parts.push({ text: a != null ? `spouse Social Security at ${a}` : "Social Security not set", fieldId: "roth-Spouse-SS-start-age", section: "income", fieldLabel: "Spouse SS start age" });
     } else if (ssSpouseNoBenefit) {
       const a = parseIntField(ssPAge);
-      parts.push(a != null ? `Social Security at ${a}` : "Social Security not set");
+      parts.push({ text: a != null ? `Social Security at ${a}` : "Social Security not set", fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
     } else {
       const aP = parseIntField(ssPAge);
       const aS = parseIntField(ssSAge);
       if (aP != null && aS != null && aP !== aS)
-        parts.push(`Social Security at ${aP} and ${aS}`);
-      else if (aP != null) parts.push(`Social Security at ${aP}`);
-      else if (aS != null) parts.push(`spouse Social Security at ${aS}`);
+        parts.push({ text: `Social Security at ${aP} and ${aS}`, fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
+      else if (aP != null) parts.push({ text: `Social Security at ${aP}`, fieldId: "roth-Your-SS-start-age", section: "income", fieldLabel: "Your SS start age" });
+      else if (aS != null) parts.push({ text: `spouse Social Security at ${aS}`, fieldId: "roth-Spouse-SS-start-age", section: "income", fieldLabel: "Spouse SS start age" });
     }
     if (survivorOn) {
-      parts.push(
-        `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"}${survivorDeathYear ? ` in ${survivorDeathYear}` : ""}`,
-      );
+      parts.push({
+        text: `survivor scenario: ${survivorWho === "primary" ? "you die" : "spouse dies"}${survivorDeathYear ? ` in ${survivorDeathYear}` : ""}`,
+      });
     }
-    return parts.join(" · ");
+    return parts;
   })();
+
 
   /* -------- The saved plan as a pricing payload (plan face) --------
      The plan face's ending figures and its what-if questions
@@ -4432,6 +4455,7 @@ export function RothConversion() {
   }, [mainResult, planInputs, ceilings]);
 
   /* ---------------- render ---------------- */
+  const fieldFlashTimer = useRef<number | null>(null);
   if (rq.isLoading || retq.isLoading || uiq.isLoading) {
     return <p className="pt-6 text-[var(--dim)]">Loading the Tax Plan planner…</p>;
   }
@@ -5628,6 +5652,37 @@ export function RothConversion() {
     }, 80);
   };
 
+  /* Jump-and-highlight (contract v69): the provenance-tap
+     mechanism modelled on Spending's scrollToSection — open
+     the target's fold first, scroll on a later frame, then
+     flash an outline on the field itself for ~1.6s. The flash
+     is applied to the field element directly (its outline is
+     restored afterwards) so any field the form renders can be
+     a target without the shared field helpers changing. */
+  const jumpToField = (fieldId: string, section?: RothSectionId) => {
+    setFace("settings");
+    if (section && !openSections[section]) {
+      setOpenSections((p) => ({ ...p, [section]: true }));
+      saveUiState.mutate({ section, open: true });
+    }
+    window.setTimeout(() => {
+      const el = document.getElementById(fieldId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const prevOutline = el.style.outline;
+      const prevOffset = el.style.outlineOffset;
+      el.style.outline = "2px solid var(--accent)";
+      el.style.outlineOffset = "2px";
+      if (fieldFlashTimer.current != null) {
+        window.clearTimeout(fieldFlashTimer.current);
+      }
+      fieldFlashTimer.current = window.setTimeout(() => {
+        el.style.outline = prevOutline;
+        el.style.outlineOffset = prevOffset;
+      }, 1600);
+    }, 150);
+  };
+
   // Social Security "No benefit" handlers (mutual exclusion):
   // typing an amount clears that person's declaration; declaring
   // clears that person's amount. Un-declaring leaves the amount
@@ -5903,7 +5958,23 @@ export function RothConversion() {
           aria-label="Plan summary in plain English"
           className="mt-3 max-w-3xl text-base leading-relaxed font-medium text-[var(--text)]"
         >
-          {plainSummary}
+          {plainSummaryClauses.map((c, i) => (
+            <Fragment key={i}>
+              {i > 0 && " · "}
+              {c.fieldId ? (
+                <button
+                  type="button"
+                  aria-label={`Go to the ${c.fieldLabel ?? c.text} field`}
+                  className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                  onClick={() => jumpToField(c.fieldId!, c.section)}
+                >
+                  {c.text}
+                </button>
+              ) : (
+                c.text
+              )}
+            </Fragment>
+          ))}
         </p>
       )}
 
@@ -9390,6 +9461,74 @@ export function RothConversion() {
                     </button>
 
                   </>
+                )}
+              </div>
+              {/* Priced levers (contract v69): the top distinct
+                  strategies the search priced that beat the
+                  saved plan, each with its exact gain vs the
+                  saved plan from the optimizer's own figures
+                  (gainVsSavedPlan = savedPlan.netCost −
+                  candidate.netCost, computed server-side) and
+                  the same Save-as-scenario action the runner-up
+                  rows use. Improvements only — no score. When
+                  nothing priced beats the saved plan, or Do
+                  Nothing won, one line says so instead. */}
+              <div className="mt-5">
+                <h3 className="text-base font-semibold">
+                  What would improve this plan
+                </h3>
+                {optResult.winnerIsDoNothing ||
+                optResult.improvements.length === 0 ? (
+                  <p className="mt-1 text-sm text-[var(--dim)]">
+                    {optResult.winnerIsDoNothing
+                      ? "Do Nothing won the search — and no strategy it priced beats your saved plan."
+                      : "Your saved plan is the best the search found — no strategy it priced beats it."}
+                  </p>
+                ) : (
+                  <ul className="mt-2 space-y-2">
+                    {optResult.improvements.map((s) => (
+                      <li
+                        key={s.name + s.windowStopAge + String(s.guardrail) + String(s.bunching) + String(s.claimPrimaryAge) + String(s.claimSpouseAge) + s.drawOrder}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5"
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">
+                            {s.name}
+                          </span>
+                          <span className="block text-xs text-[var(--dim)]">
+                            {s.windowLabel}
+                            {s.guardrail ? " · guardrail" : ""}
+                            {s.bunching ? " · bunching" : ""}
+                            {" · Draw order: "}
+                            {s.drawOrderLabel}
+                          </span>
+                          {s.claimLabel && (
+                            <span className="block text-xs font-medium text-[var(--text)]">
+                              {s.claimLabel}
+                            </span>
+                          )}
+                        </span>
+                        <span className="flex flex-wrap items-center gap-3">
+                          <span className="tnum text-sm font-medium">
+                            {fmtDollars(s.gainVsSavedPlan)} less than your
+                            saved plan
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={`Save ${s.name} as a scenario`}
+                            className="rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm hover:text-[var(--accent)] disabled:opacity-50"
+                            disabled={
+                              saveScenario.isPending ||
+                              data.scenarios.length >= 50
+                            }
+                            onClick={() => saveOptimizerScenario(s)}
+                          >
+                            Save as scenario
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
               {optResult.claimSearchNote && (

@@ -143,11 +143,14 @@ rothFirstWritePlan,
 withRothBlobRevision,
 } from "./rothRevisionCore";
 import {
+DO_NOTHING_SPEC,
 joinRothBlob,
+optimizerImprovements,
 runRothCompare,
 splitRothBlob,
 type RothCompareBaseSaved,
 type RothCompareOverrides,
+type ScoredCandidate,
 } from "./rothOptimizer";
 import {
 DEFAULT_DRAW_ORDER,
@@ -5648,6 +5651,85 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
       };
     },
   },
+  {
+    id: "api-optimizer-improvements-selection",
+    kind: "apicontract",
+    note: "Contract v69 (priced levers): optimizerImprovements selects the candidates the optimizer response publishes as improvements over the entered plan. Pins, on synthetic scored stubs (net costs in dollars): Do Nothing is excluded even when it beats the plan; a candidate whose gain rounds below one cent is excluded; the same lever (name, window stop, claiming ages, draw order) priced by both runs collapses to its cheapest pricing; ordering is lowest net cost first; the gain is savedPlanNetCost − netCost rounded to the cent; and the list caps at three.",
+    expected: {
+      count: 3,
+      firstGainCents: 50000,
+      secondGainCents: 25000,
+      thirdGainCents: 10000,
+      dupKeptCheapestGainCents: 50000,
+      doNothingExcluded: 1,
+      subCentExcluded: 1,
+    },
+    actual: () => {
+      const ceilings = {
+        bracketTopPct: 22,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        acaCliffCapFamilyOnly: false,
+        magiCap: null,
+        acaCliffBuffer: null,
+      };
+      const stub = (
+        key: string,
+        name: string,
+        netCost: number,
+        claimPrimaryAge: number | null = 67,
+      ): ScoredCandidate =>
+        ({
+          spec: {
+            key,
+            name,
+            ceilings,
+            windowStopAge: 75,
+            windowKind: "throughRmd",
+            windowLabel: "",
+            guardrail: false,
+            bunching: false,
+            gainsHarvest: false,
+            drawOrder: DEFAULT_DRAW_ORDER,
+          },
+          result: { endingAfterTaxWealth: 0 },
+          cost: { netCost },
+          claimAges: {
+            primaryAge: claimPrimaryAge,
+            spouseAge: null,
+            primaryAnnual: 0,
+            spouseAnnual: 0,
+            searchedPrimary: false,
+            searchedSpouse: false,
+          },
+        }) as unknown as ScoredCandidate;
+      const saved = 100000;
+      const joint = [
+        stub("a", "Fill to the top of the 22% bracket", 99600),
+        stub("b", "Fill to the top of the 12% bracket", 99750),
+        stub(DO_NOTHING_SPEC.key, "Do Nothing", 90000),
+        stub("c", "Fill to IRMAA Tier 1", 99999.996),
+      ];
+      const fixed = [
+        stub("a2", "Fill to the top of the 22% bracket", 99500),
+        stub("d", "Fill to the top of the 24% bracket", 99900),
+        stub("e", "Fill to the top of the 10% bracket", 99950),
+      ];
+      const out = optimizerImprovements([joint, fixed], saved);
+      const gains = out.map((o) => Math.round(o.gainVsSavedPlan * 100));
+      return {
+        count: out.length,
+        firstGainCents: gains[0] ?? null,
+        secondGainCents: gains[1] ?? null,
+        thirdGainCents: gains[2] ?? null,
+        dupKeptCheapestGainCents: gains[0] ?? null,
+        doNothingExcluded: out.some((o) => o.candidate.spec.key === DO_NOTHING_SPEC.key) ? 0 : 1,
+        subCentExcluded: out.some((o) => o.candidate.spec.key === "c") ? 0 : 1,
+      };
+    },
+  }
+
 ];
 
 /* ------------------------- The runner ------------------------- */

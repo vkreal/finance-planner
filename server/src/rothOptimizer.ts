@@ -716,6 +716,61 @@ export type OptimizerResult = {
   scored: ScoredCandidate[];
 };
 
+/* ---------------- Priced levers vs the entered plan (contract v69) ----
+   The "What would improve this plan" list: the top few DISTINCT
+   candidates the search priced whose lifetime net cost BEATS the
+   entered plan's own priced net cost. The entered plan is priced
+   as its own fixed strategy (its saved ceilings / window / draw
+   order / claiming ages) by the caller; this selector only
+   compares the search's own scored figures against that cost —
+   the gain is savedPlanNetCost − candidate netCost, rounded to
+   the cent, and a candidate counts only when that gain is at
+   least one cent. Do Nothing is never a lever (it is the
+   benchmark, not a change), and duplicates — the same lever
+   (name, window stop, claiming ages, draw order) priced by both
+   the joint and the fixed-age runs — collapse to their cheapest
+   pricing. Ordering is the winner ordering (lowest net cost,
+   ending wealth breaking ties). */
+export type OptimizerImprovement = {
+  candidate: ScoredCandidate;
+  gainVsSavedPlan: number;
+};
+
+export function optimizerImprovements(
+  scoredLists: ScoredCandidate[][],
+  savedPlanNetCost: number,
+  limit = 3,
+): OptimizerImprovement[] {
+  const byLever = new Map<string, ScoredCandidate>();
+  for (const list of scoredLists) {
+    for (const s of list) {
+      if (s.spec.key === DO_NOTHING_SPEC.key) continue;
+      const gain = Math.round((savedPlanNetCost - s.cost.netCost) * 100) / 100;
+      if (gain < 0.01) continue;
+      const leverKey = [
+        s.spec.name,
+        s.spec.windowStopAge,
+        s.claimAges.primaryAge ?? "",
+        s.claimAges.spouseAge ?? "",
+        drawOrderKey(s.spec.drawOrder),
+      ].join("|");
+      const prev = byLever.get(leverKey);
+      if (!prev || s.cost.netCost < prev.cost.netCost) byLever.set(leverKey, s);
+    }
+  }
+  const distinct = [...byLever.values()];
+  distinct.sort(
+    (a, b) =>
+      a.cost.netCost - b.cost.netCost ||
+      b.result.endingAfterTaxWealth - a.result.endingAfterTaxWealth,
+  );
+  return distinct.slice(0, limit).map((candidate) => ({
+    candidate,
+    gainVsSavedPlan:
+      Math.round((savedPlanNetCost - candidate.cost.netCost) * 100) / 100,
+  }));
+}
+
 export function runOptimizer(
   inputs: RothPlanInputs,
   opts?: { searchOrders?: boolean },
