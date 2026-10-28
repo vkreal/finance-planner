@@ -3074,35 +3074,42 @@ export function RetirementCalc() {
 
       {inputs && tab === "projection" && projection && (
         <section aria-label="Projection results" className={`mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${flashCls}`}>
-          <div className={`grid grid-cols-2 gap-2.5 sm:gap-3 ${inputs.strategy === "percent" && projection.finalYearSpending != null ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
+          {/* Stat strip (contract v70): the same figures the
+              bordered tiles used to carry — ending balance,
+              assumed return, lasts-to, and the percent strategy's
+              final-year spending — in ONE compact wrapping row,
+              so the chart below sits higher on the page. The
+              delta line and the runs-out note stay with their
+              figures as quiet inline text. */}
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Ending balance at {inputs.endAge}</p>
               {projectionAtRisk ? (
-                <p className="mt-1.5"><AtRiskEndingPill lastsToAge={projection.lastsToAge} endAge={inputs.endAge} /></p>
+                <AtRiskEndingPill lastsToAge={projection.lastsToAge} endAge={inputs.endAge} />
               ) : (
-                <p className="tnum display mt-1.5 text-xl font-semibold">{fmt(projection.ending)}</p>
+                <p className="tnum display text-base font-semibold">{fmt(projection.ending)}</p>
               )}
               {projDeltaText && (
-                <p className="mt-1 text-xs font-medium text-[var(--dim)]">{projDeltaText}</p>
+                <p className="text-xs font-medium text-[var(--dim)]">{projDeltaText}</p>
               )}
             </div>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Assumed real return</p>
-              <p className="tnum display mt-1.5 text-xl font-semibold">{(expected * 100).toFixed(2)}% / yr</p>
+              <p className="tnum display text-base font-semibold">{(expected * 100).toFixed(2)}% / yr</p>
             </div>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Money lasts to</p>
-              <p className="tnum display mt-1.5 text-xl font-semibold">
+              <p className="tnum display text-base font-semibold">
                 {projection.lastsToAge != null ? `Age ${projection.lastsToAge}` : `Age ${inputs.endAge}+`}
               </p>
               {projection.lastsToAge != null && (
-                <p className="mt-1 text-xs text-[var(--dim)]">The portfolio runs out at this age at a steady {(expected * 100).toFixed(2)}% real return.</p>
+                <p className="text-xs text-[var(--dim)]">The portfolio runs out at this age at a steady {(expected * 100).toFixed(2)}% real return.</p>
               )}
             </div>
             {inputs.strategy === "percent" && projection.finalYearSpending != null && (
-              <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
                 <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Final-year spending (age {projection.finalYearAge})</p>
-                <p className="tnum display mt-1.5 text-xl font-semibold">{fmt(projection.finalYearSpending)}</p>
+                <p className="tnum display text-base font-semibold">{fmt(projection.finalYearSpending)}</p>
               </div>
             )}
           </div>
