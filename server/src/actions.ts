@@ -90,6 +90,7 @@ DECEMBER_STATE_KEY,
 computeDecemberProjection,
 decemberState,
 decideDecemberWrite,
+isDecemberStateUnparseable,
 parseDecemberRevision,
 parseDecemberState,
 runDecemberFixtures,
@@ -1842,24 +1843,50 @@ async function readRetirementBlobState(
   scenarios: RetirementScenario[];
   revision: number;
   storedRaw: string | undefined;
+  // Result-honesty (contract v67, F06): the record's presence /
+  // readability, in the rothRevisionCore idiom — a PRESENT but
+  // unreadable record reports { present: true, valid: false }
+  // instead of masquerading as an absent one ({ present: false,
+  // valid: true } is reserved for "no row stored").
+  revisionState: { present: boolean; valid: boolean };
 }> {
   const rows = await db.select().from(schema.settings);
   const raw = rows.find((r: { key: string }) => r.key === RETIREMENT_KEY)?.value;
-  if (!raw) return { blob: null, scenarios: [], revision: 0, storedRaw: undefined };
+  if (!raw)
+    return {
+      blob: null,
+      scenarios: [],
+      revision: 0,
+      storedRaw: undefined,
+      revisionState: { present: false, valid: true },
+    };
   try {
     const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
     const parsed = JSON.parse(plain) as unknown;
     if (parsed == null || typeof parsed !== "object")
-      return { blob: null, scenarios: [], revision: 0, storedRaw: raw };
+      return {
+        blob: null,
+        scenarios: [],
+        revision: 0,
+        storedRaw: raw,
+        revisionState: { present: true, valid: false },
+      };
     const blob = parsed as RetirementBlob;
     return {
       blob,
       scenarios: parseRetirementScenarios(blob),
       revision: parseRothBlobRevision(plain),
       storedRaw: raw,
+      revisionState: { present: true, valid: true },
     };
   } catch {
-    return { blob: null, scenarios: [], revision: 0, storedRaw: raw };
+    return {
+      blob: null,
+      scenarios: [],
+      revision: 0,
+      storedRaw: raw,
+      revisionState: { present: true, valid: false },
+    };
   }
 }
 
@@ -1969,72 +1996,88 @@ function retirementInputsFromRecord(
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function readRetirementBaseline(
-  db: any,
-  key: CryptoKey,
-): Promise<{ kind: RetirementBaselineKind; inputs: RetirementInputs } | null> {
-  const rows = await db.select().from(schema.settings);
-  const raw = rows.find(
-    (r: { key: string }) => r.key === RETIREMENT_BASELINE_KEY,
-  )?.value;
-  if (!raw) return null;
-  try {
-    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
-    const parsed = JSON.parse(plain) as unknown;
-    if (parsed == null || typeof parsed !== "object") return null;
-    const blob = parsed as Record<string, unknown>;
-    if (blob.inputs == null || typeof blob.inputs !== "object") return null;
-    return {
-      kind: blob.kind === "saved" ? "saved" : "session",
-      inputs: retirementInputsFromRecord(
-        blob.inputs as Record<string, unknown>,
-      ),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/* The blob-2 state read (API follow-on F23): the baseline as
-   readRetirementBaseline returns it, plus the record's write
-   revision (the same lenient read — absent, non-integer, or
-   negative counts as 0) and the stored raw value exactly as
-   read, or undefined's sibling null when there is no usable
-   baseline. Returns null exactly when readRetirementBaseline
-   does (no row, or an unreadable / inputs-less document). */
+/* The blob-2 state read (API follow-on F23 + result-honesty
+   contract v67, F07): the parsed baseline (null when there is no
+   usable one), the record's write revision (the same lenient
+   read — absent, non-integer, or negative counts as 0), the
+   stored raw value exactly as read (undefined when no row
+   exists), and the record's presence / readability in the
+   rothRevisionCore idiom: a PRESENT but unreadable baseline
+   (malformed, not an object, or carrying no inputs object)
+   reports { present: true, valid: false } with baseline null —
+   it is NOT "no baseline". */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function readRetirementBaselineState(
   db: any,
   key: CryptoKey,
 ): Promise<{
-  kind: RetirementBaselineKind;
-  inputs: RetirementInputs;
+  baseline: { kind: RetirementBaselineKind; inputs: RetirementInputs } | null;
   revision: number;
-  storedRaw: string;
-} | null> {
+  storedRaw: string | undefined;
+  present: boolean;
+  valid: boolean;
+}> {
   const rows = await db.select().from(schema.settings);
   const raw = rows.find(
     (r: { key: string }) => r.key === RETIREMENT_BASELINE_KEY,
   )?.value;
-  if (!raw) return null;
+  if (!raw)
+    return {
+      baseline: null,
+      revision: 0,
+      storedRaw: undefined,
+      present: false,
+      valid: true,
+    };
   try {
     const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
     const parsed = JSON.parse(plain) as unknown;
-    if (parsed == null || typeof parsed !== "object") return null;
+    if (parsed == null || typeof parsed !== "object")
+      return {
+        baseline: null,
+        revision: 0,
+        storedRaw: raw,
+        present: true,
+        valid: false,
+      };
     const blob = parsed as Record<string, unknown>;
-    if (blob.inputs == null || typeof blob.inputs !== "object") return null;
+    if (blob.inputs == null || typeof blob.inputs !== "object")
+      return {
+        baseline: null,
+        revision: 0,
+        storedRaw: raw,
+        present: true,
+        valid: false,
+      };
     return {
-      kind: blob.kind === "saved" ? "saved" : "session",
-      inputs: retirementInputsFromRecord(
-        blob.inputs as Record<string, unknown>,
-      ),
+      baseline: {
+        kind: blob.kind === "saved" ? "saved" : "session",
+        inputs: retirementInputsFromRecord(
+          blob.inputs as Record<string, unknown>,
+        ),
+      },
       revision: parseRothBlobRevision(plain),
       storedRaw: raw,
+      present: true,
+      valid: true,
     };
   } catch {
-    return null;
+    return {
+      baseline: null,
+      revision: 0,
+      storedRaw: raw,
+      present: true,
+      valid: false,
+    };
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readRetirementBaseline(
+  db: any,
+  key: CryptoKey,
+): Promise<{ kind: RetirementBaselineKind; inputs: RetirementInputs } | null> {
+  return (await readRetirementBaselineState(db, key)).baseline;
 }
 
 /* The legacy unconditional blob-2 commit (a pre-encrypted
@@ -2141,10 +2184,10 @@ async function loadRetirementLiteRecord(
       ? retirementInputsFromRecord(blobState.blob)
       : null,
     scenarios: blobState.scenarios,
-    baseline: baselineState?.inputs ?? null,
-    baselineKind: baselineState?.kind ?? null,
+    baseline: baselineState.baseline?.inputs ?? null,
+    baselineKind: baselineState.baseline?.kind ?? null,
     revision: blobState.revision,
-    baselineRevision: baselineState?.revision ?? 0,
+    baselineRevision: baselineState.revision,
   };
 }
 
@@ -2178,6 +2221,18 @@ async function mutateRetirementScenarios(
 ): Promise<RetirementScenarioWriteResult> {
   let state = await readRetirementBlobState(db, key);
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    // Result-honesty (contract v67, F06): never compose a
+    // successor over a PRESENT but unreadable record — that
+    // would replace the damaged bytes with an empty document.
+    if (state.revisionState.present && !state.revisionState.valid) {
+      return {
+        ok: false,
+        reason:
+          "Your saved Retirement record can't be read, so the scenarios were not changed.",
+        scenarios: state.scenarios,
+        revision: state.revision,
+      };
+    }
     const t = transform(state.scenarios);
     if (!t.write) {
       return {
@@ -2870,7 +2925,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 66;
+export const API_CONTRACT_VERSION = 67;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3316,7 +3371,9 @@ async function readRothBlob(
     const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
     const parsed = JSON.parse(plain) as unknown;
     if (parsed == null || typeof parsed !== "object")
-      return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
+      // Result-honesty (contract v67, F08): a PRESENT record whose
+      // document is not an object is present-but-invalid, not absent.
+      return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: true, valid: false }, storedRaw: raw };
     const blob = parsed as Record<string, unknown>;
     // Execution inputs are consumed HERE, at load: a shape whose
     // year stamp is not the current calendar year comes back
@@ -3358,7 +3415,12 @@ async function readRothBlob(
       storedRaw: raw,
     };
   } catch {
-    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: raw };
+    // Result-honesty (contract v67, F08): an unreadable PRESENT
+    // record reports { present: true, valid: false } with the
+    // stored bytes retained — decideRothBlobWriteChecked then
+    // refuses every save against it, so the damaged record can
+    // never be silently replaced by a fresh-looking one.
+    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: true, valid: false }, storedRaw: raw };
   }
 }
 
@@ -3462,25 +3524,31 @@ async function readRothBlobRaw(
   scenarios: RothScenario[];
   revision: number;
   storedRaw: string | undefined;
+  // Result-honesty (contract v67, F08): false when a row EXISTS
+  // but its document cannot be split (unparseable / not an
+  // object) — the scenario writers must refuse rather than
+  // compose a successor over the damaged bytes.
+  valid: boolean;
 }> {
   const rows = await db.select().from(schema.settings);
   const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
   if (!raw)
-    return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: undefined };
+    return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: undefined, valid: true };
   try {
     const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
     const split = splitRothBlob(plain);
     if (!split)
-      return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: raw };
+      return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: raw, valid: false };
     return {
       inputsRaw: split.inputsRaw,
       scenariosRaw: split.scenariosRaw,
       scenarios: parseRothScenarios(split.scenariosRaw),
       revision: rothBlobRevisionValue(split.revisionRaw),
       storedRaw: raw,
+      valid: true,
     };
   } catch {
-    return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: raw };
+    return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: raw, valid: false };
   }
 }
 
@@ -3518,6 +3586,17 @@ async function mutateRothScenarios(
 ): Promise<RothScenarioWriteResult> {
   let blob = await readRothBlobRaw(db, key);
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    // Result-honesty (contract v67, F08): a PRESENT but
+    // unreadable record is never composed over.
+    if (!blob.valid) {
+      return {
+        ok: false,
+        reason:
+          "Your saved Tax Plan record can't be read, so the strategies were not changed.",
+        scenarios: blob.scenarios,
+        revision: blob.revision,
+      };
+    }
     const t = transform(blob.scenarios);
     if (!t.write) {
       return { ok: t.ok, reason: t.reason, scenarios: blob.scenarios, revision: blob.revision };
@@ -3616,21 +3695,26 @@ async function readRothBlobRawState(
   scenariosRaw: unknown;
   revision: number;
   storedRaw: string | undefined;
+  // Result-honesty (contract v67, F08): false when a row EXISTS
+  // but cannot be split — the reset writer refuses against it
+  // instead of reseeding over the damaged bytes.
+  valid: boolean;
 }> {
   const rows = await db.select().from(schema.settings);
   const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
-  if (!raw) return { scenariosRaw: [], revision: 0, storedRaw: undefined };
+  if (!raw) return { scenariosRaw: [], revision: 0, storedRaw: undefined, valid: true };
   try {
     const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
     const split = splitRothBlob(plain);
-    if (!split) return { scenariosRaw: [], revision: 0, storedRaw: raw };
+    if (!split) return { scenariosRaw: [], revision: 0, storedRaw: raw, valid: false };
     return {
       scenariosRaw: split.scenariosRaw,
       revision: rothBlobRevisionValue(split.revisionRaw),
       storedRaw: raw,
+      valid: true,
     };
   } catch {
-    return { scenariosRaw: [], revision: 0, storedRaw: raw };
+    return { scenariosRaw: [], revision: 0, storedRaw: raw, valid: false };
   }
 }
 
@@ -4165,6 +4249,12 @@ const getDecemberProjectionResponse = z.object({
   state: decemberState,
   hasStored: z.boolean(),
   revision: z.number(),
+  // Result-honesty flag (contract v67, F09): true when a blob
+  // IS stored (hasStored) but cannot be parsed as a state
+  // document — state then carries the factory defaults the
+  // lenient parse falls back to, and this flag is the only
+  // thing distinguishing that from a genuinely fresh console.
+  storedUnreadable: z.boolean(),
 });
 
 const saveDecemberProjectionResponse = z.union([
@@ -4175,6 +4265,11 @@ const saveDecemberProjectionResponse = z.union([
     revision: z.number(),
     state: decemberState,
     hasStored: z.boolean(),
+    // Result-honesty flag (contract v67, F09): true when this
+    // refusal is because the stored record cannot be parsed —
+    // an unparseable stored record is a conflict, never a
+    // revision-0 base the save may build on.
+    storedUnreadable: z.boolean(),
   }),
 ]);
 
@@ -5424,16 +5519,16 @@ const ACTION_PURPOSES: Record<string, string> = {
   getNetWorth: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress.",
   setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals.",
   setNwTarget: "Set the Net Worth target amount.",
-  getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results.",
+  getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results. Also carries savedUnreadable / baselineUnreadable markers (contract v67): true when the saved inputs record / baseline record exists but cannot be read — in that state saved / baseline read as null exactly as an absent record would, and the markers are the distinction.",
   setRetirementAssumptionsCollapsed: "Persist the Retirement assumptions section's collapsed state.",
   setRetirementSpendingUnit: "Persist the Retirement annual-spending entry unit (per year / per month).",
   saveRetirementCalc: "Save the Retirement calculator inputs. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current lite record (saved inputs, scenarios, baseline, and both revisions) instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. FIRST WRITE (contract v64): when no record exists yet and a baseRevision is supplied, the write is insert-if-absent — if a first save from elsewhere landed between the read and the write, this write is refused with the same conflict shape instead of overwriting it, so two overlapping first saves at base 0 produce exactly one success and one conflict.",
   saveRetirementBaseline: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan'). Revision-checked (CAS) on BOTH records: a write whose baseRevision or baseBaselineRevision no longer matches the stored revision is refused before anything is written, with the current lite record and both revisions; a baseline commit that loses a commit-time race is retried once against the fresh baseline, and a second loss returns a stage \"baseline\" conflict (the working inputs were saved; the baseline did not move). Writes with no bases keep the legacy unchecked behaviour, and every accepted write bumps both revisions and returns them. FIRST WRITE (contract v64): when a record does not exist yet and its base is supplied, that record's write is insert-if-absent — a landed concurrent first save refuses this write (an inputs-stage conflict when the working record landed, a stage \"baseline\" conflict when only the baseline landed) instead of being overwritten.",
-  getRetirementBaselineResults: "Price the saved Retirement baselines against the current defaults.",
+  getRetirementBaselineResults: "Price the saved Retirement baselines against the current defaults. Carries baselineUnreadable (contract v67): true when a baseline record exists but cannot be read, distinct from no baseline.",
   saveRetirementScenario: "Save a Retirement scenario.",
   deleteRetirementScenario: "Delete a saved Retirement scenario.",
   renameRetirementScenario: "Rename a saved Retirement scenario.",
-  getRothPlanner: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, tax-return actuals block, and the latest Net Worth snapshot subtotals.",
+  getRothPlanner: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, tax-return actuals block, and the latest Net Worth snapshot subtotals. Carries recordUnreadable (contract v67): true when the saved plan record exists but cannot be read — saved then reads as null exactly as an absent record would.",
   resetRothPlanner: "Reset the Roth plan record (plan inputs plus the execution-year, gift, MC-volatility, and tax-return blocks) to the seeded fresh-user defaults; saved scenarios pass through untouched. The reset commits against the record it read, retrying against the freshest record a bounded number of times if another save lands first; if it keeps losing that race it is refused with the current record — the same conflict shape saveRothInputs returns — instead of overwriting the newer save.",
   getRothUiState: "Read the Roth view's UI state (open sections, year table, workspace mode) plus the Playground form's remembered dial state, with the blob's current write revision.",
   setRothUiState: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current blob and its revision instead of overwriting it.",
@@ -5470,8 +5565,8 @@ const ACTION_PURPOSES: Record<string, string> = {
   deleteAllBackups: "Delete every backup file in this space's own backups folder. Legacy-folder backups are never deleted.",
   createBackupNow: "Create an encrypted backup file now from the current dataset (same payload as exportbackup).",
   runAccuracySelfCheck: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, data integrity, the replay reproducibility diagnostic, or the December console fixtures) per call.",
-  getDecemberProjection: "Read the December projection console's saved inputs. Returns {state, hasStored, revision}: state is the console's complete input set (one settings blob, parsed leniently field by field — see saveDecemberProjection for the state fields' meanings, including the per-owner pre-tax balances, rmdAlreadyReceived, acaEnrollmentPremiumAnnual, and the stray character splits); hasStored says whether a blob was ever saved (a first open can preseed from the saved Tax Plan record); revision is the blob's write revision — pass it back as baseRevision when saving, and a blob written before revisions existed reads as revision 0. Read-only.",
-  saveDecemberProjection: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision. REQUEST: {state, baseRevision} — baseRevision is REQUIRED and must equal the revision the caller's copy was read at (from getDecemberProjection; 0 when nothing is stored). RESPONSES: success is {ok:true, revision} with the NEW revision (the next save must pass it); a stale base is NOT an error throw — it returns the machine-readable conflict object {ok:false, conflict:true, revision, state, hasStored} carrying the currently stored revision and state, and writes nothing, so the caller reloads state instead of overwriting it. STATE FIELDS (all dollars, all lenient on read — a missing field reads at its inert default): pretaxBalancePrimary / pretaxBalanceSpouse are the two owners' SEPARATE prior-Dec-31 pre-tax balances (null = not entered for that owner); each owner's RMD is computed on their own age from their own balance, and each owner's table is selected by THAT owner's own beneficiary fact — the two facts are separate and neither is read for the other owner: spouseSoleBeneficiary states the spouse is the sole beneficiary of the PRIMARY's pre-tax accounts and selects ONLY the primary's table, while primarySoleBeneficiaryOfSpouse states the primary is the sole beneficiary of the SPOUSE's pre-tax accounts and selects ONLY the spouse's table — that field is TRI-STATE (boolean or null): true / false are explicit answers, and null = UNANSWERED (a blob written before that field existed parses a missing key as null, never as false); at load an unanswered console value is resolved from the saved Tax Plan record's value for the same fact when the record answers (an explicit console value is never overwritten, and the resolution writes nothing — the blob changes only when the user saves in the console), and only an explicit true selects the Joint table, so null and false both price the spouse's RMD on the Uniform table. FORMAT MARKER (contract v52): every save writes decemberStateFormat 3 beside the state fields; a blob WITHOUT the marker is pre-marker format — a stored false for primarySoleBeneficiaryOfSpouse in it is a STORED ANSWER and stands (the record overlay never overrides it), but it parses with legacyBeneficiaryAnswerUnconfirmed set, the console asks the user to confirm it, and the flag clears only when the user changes that control; a with-marker false is likewise a genuine answer; a stored true in a pre-marker blob stays true, and a missing key or explicit null still reads as UNANSWERED (null). RESOLUTION IS AN OVERLAY (v52): the record-resolved value is displayed and priced, but a save persists the console's OWN value for this field — still null while unanswered — unless the user changed that control in the console; the first-open preseed likewise stores the field unanswered. An owner's table is the Joint and Last Survivor table when that owner's fact is true and their spouse is more than 10 years younger, otherwise the Uniform Lifetime table. A balance entered as 0 is a REAL balance, distinct from null: it prices that owner's RMD as $0 and caps the draw at what the entered balances hold (a $0 total caps the draw at $0), while null caps nothing. pretaxBalance is the legacy combined total — writers set it to the split's sum when a split is explicit. A stored blob carrying only pretaxBalance (its split keys hold no amount for either owner) has balance ownership UNANSWERED (v52): the parsed state carries pretaxSplitExplicit=false with null split fields and the combined amount preserved — at load, when the Tax Plan record supplies BOTH owner amounts with a positive sum, resolution allocates the SAVED combined total across the owners by the record split's proportions (each share rounded to cents, the residual to the larger rounded share, tie to the primary) and never changes the total; when the record supplies EXACTLY ONE owner amount, that owner receives min(known, saved total) and the other owner receives the remainder (saved total minus that), both as numbers, so the total is still preserved exactly; a totals mismatch over $0.01 between the record split's sum and the saved total surfaces a console note naming both totals, and the partial-cap case (exactly one amount known and that amount above the saved total by more than $0.01) likewise surfaces a note naming the record figure and the saved total; the combined-to-primary assignment survives only as the last-resort fallback when the record has no usable split (neither amount known, or a both-known record sum of $0), an explicit blob split always governs over the record, and a save persists the stored provenance until the user edits either balance field in the console. rmdAlreadyReceived is the part of this year's RMD already paid AND already included in ytdOtherOrdinary — it is netted from the computed RMD (floored at $0) so a paid RMD is never counted twice. acaEnrollmentPremiumAnnual is the annual premium of the plan actually enrolled in (null = blank = NO cap, the benchmark-based credit stands); when entered, each case's final credit is capped at min(benchmark-based credit, this premium) BEFORE any coverage-month reduction. Stray character splits: strayROC is return of capital that is income OVER BASIS (a capital gain — rides the gains stack) while strayROCOrdinary is return of capital RECLASSIFIED AS AN ORDINARY DIVIDEND (rides ordinary dividends); strayJanPaid is the total of fund distributions paid in January but deemed received Dec 31 (§852(b)(7)), and strayJanPaidQualifiedAmount is the qualified-dividends PORTION of that total (a portion, clamped to the total). LEGACY CHARACTER PROVENANCE (contract v52): format-3 blobs carry the flags (legacyRocSplitUnconfirmed / legacyJanPaidSplitUnconfirmed) as stored — authoritative; pre-format-3 blobs derive them (a strayROC amount whose strayROCOrdinary key is absent or still at its default, or a strayJanPaid amount whose strayJanPaidQualifiedAmount key is absent or still $0). The flags change no pricing, and each flag clears ONLY when the user edits the matching control (the ROC ordinary split, the January-paid qualified amount) — an unrelated save no longer clears them. strayDependent's amount counts toward the ACA household MAGI ONLY — never the parents' AGI, taxable income, or tax. strayK1 is the one SIGNED stray: a negative amount is a deductible K-1 loss and reduces ordinary income; every other stray amount is non-negative. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view. (Pricing is runDecemberProjection's: its settlement reconciliation treats a no-marketplace year — nobody marketplace-eligible on the console's Medicare facts — as a $0 credit while creditAtHeadline itself stays null, and a null net carries a netSettleNote reason; see runDecemberProjection.)",
+  getDecemberProjection: "Read the December projection console's saved inputs. Returns {state, hasStored, revision, storedUnreadable}: storedUnreadable (contract v67) is true when a blob is stored but cannot be parsed as a state document — state then carries the lenient-parse defaults, and the flag is the distinction from a fresh console. The other fields: state is the console's complete input set (one settings blob, parsed leniently field by field — see saveDecemberProjection for the state fields' meanings, including the per-owner pre-tax balances, rmdAlreadyReceived, acaEnrollmentPremiumAnnual, and the stray character splits); hasStored says whether a blob was ever saved (a first open can preseed from the saved Tax Plan record); revision is the blob's write revision — pass it back as baseRevision when saving, and a blob written before revisions existed reads as revision 0. Read-only.",
+  saveDecemberProjection: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision. Contract v67: a save whose stored record cannot be parsed is refused as a conflict carrying storedUnreadable: true — an unparseable stored record is never treated as a revision-0 base, and its bytes are left intact; the conflict shape also carries storedUnreadable on its other refusals (false there). REQUEST: {state, baseRevision} — baseRevision is REQUIRED and must equal the revision the caller's copy was read at (from getDecemberProjection; 0 when nothing is stored). RESPONSES: success is {ok:true, revision} with the NEW revision (the next save must pass it); a stale base is NOT an error throw — it returns the machine-readable conflict object {ok:false, conflict:true, revision, state, hasStored} carrying the currently stored revision and state, and writes nothing, so the caller reloads state instead of overwriting it. STATE FIELDS (all dollars, all lenient on read — a missing field reads at its inert default): pretaxBalancePrimary / pretaxBalanceSpouse are the two owners' SEPARATE prior-Dec-31 pre-tax balances (null = not entered for that owner); each owner's RMD is computed on their own age from their own balance, and each owner's table is selected by THAT owner's own beneficiary fact — the two facts are separate and neither is read for the other owner: spouseSoleBeneficiary states the spouse is the sole beneficiary of the PRIMARY's pre-tax accounts and selects ONLY the primary's table, while primarySoleBeneficiaryOfSpouse states the primary is the sole beneficiary of the SPOUSE's pre-tax accounts and selects ONLY the spouse's table — that field is TRI-STATE (boolean or null): true / false are explicit answers, and null = UNANSWERED (a blob written before that field existed parses a missing key as null, never as false); at load an unanswered console value is resolved from the saved Tax Plan record's value for the same fact when the record answers (an explicit console value is never overwritten, and the resolution writes nothing — the blob changes only when the user saves in the console), and only an explicit true selects the Joint table, so null and false both price the spouse's RMD on the Uniform table. FORMAT MARKER (contract v52): every save writes decemberStateFormat 3 beside the state fields; a blob WITHOUT the marker is pre-marker format — a stored false for primarySoleBeneficiaryOfSpouse in it is a STORED ANSWER and stands (the record overlay never overrides it), but it parses with legacyBeneficiaryAnswerUnconfirmed set, the console asks the user to confirm it, and the flag clears only when the user changes that control; a with-marker false is likewise a genuine answer; a stored true in a pre-marker blob stays true, and a missing key or explicit null still reads as UNANSWERED (null). RESOLUTION IS AN OVERLAY (v52): the record-resolved value is displayed and priced, but a save persists the console's OWN value for this field — still null while unanswered — unless the user changed that control in the console; the first-open preseed likewise stores the field unanswered. An owner's table is the Joint and Last Survivor table when that owner's fact is true and their spouse is more than 10 years younger, otherwise the Uniform Lifetime table. A balance entered as 0 is a REAL balance, distinct from null: it prices that owner's RMD as $0 and caps the draw at what the entered balances hold (a $0 total caps the draw at $0), while null caps nothing. pretaxBalance is the legacy combined total — writers set it to the split's sum when a split is explicit. A stored blob carrying only pretaxBalance (its split keys hold no amount for either owner) has balance ownership UNANSWERED (v52): the parsed state carries pretaxSplitExplicit=false with null split fields and the combined amount preserved — at load, when the Tax Plan record supplies BOTH owner amounts with a positive sum, resolution allocates the SAVED combined total across the owners by the record split's proportions (each share rounded to cents, the residual to the larger rounded share, tie to the primary) and never changes the total; when the record supplies EXACTLY ONE owner amount, that owner receives min(known, saved total) and the other owner receives the remainder (saved total minus that), both as numbers, so the total is still preserved exactly; a totals mismatch over $0.01 between the record split's sum and the saved total surfaces a console note naming both totals, and the partial-cap case (exactly one amount known and that amount above the saved total by more than $0.01) likewise surfaces a note naming the record figure and the saved total; the combined-to-primary assignment survives only as the last-resort fallback when the record has no usable split (neither amount known, or a both-known record sum of $0), an explicit blob split always governs over the record, and a save persists the stored provenance until the user edits either balance field in the console. rmdAlreadyReceived is the part of this year's RMD already paid AND already included in ytdOtherOrdinary — it is netted from the computed RMD (floored at $0) so a paid RMD is never counted twice. acaEnrollmentPremiumAnnual is the annual premium of the plan actually enrolled in (null = blank = NO cap, the benchmark-based credit stands); when entered, each case's final credit is capped at min(benchmark-based credit, this premium) BEFORE any coverage-month reduction. Stray character splits: strayROC is return of capital that is income OVER BASIS (a capital gain — rides the gains stack) while strayROCOrdinary is return of capital RECLASSIFIED AS AN ORDINARY DIVIDEND (rides ordinary dividends); strayJanPaid is the total of fund distributions paid in January but deemed received Dec 31 (§852(b)(7)), and strayJanPaidQualifiedAmount is the qualified-dividends PORTION of that total (a portion, clamped to the total). LEGACY CHARACTER PROVENANCE (contract v52): format-3 blobs carry the flags (legacyRocSplitUnconfirmed / legacyJanPaidSplitUnconfirmed) as stored — authoritative; pre-format-3 blobs derive them (a strayROC amount whose strayROCOrdinary key is absent or still at its default, or a strayJanPaid amount whose strayJanPaidQualifiedAmount key is absent or still $0). The flags change no pricing, and each flag clears ONLY when the user edits the matching control (the ROC ordinary split, the January-paid qualified amount) — an unrelated save no longer clears them. strayDependent's amount counts toward the ACA household MAGI ONLY — never the parents' AGI, taxable income, or tax. strayK1 is the one SIGNED stray: a negative amount is a deductible K-1 loss and reduces ordinary income; every other stray amount is non-negative. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view. (Pricing is runDecemberProjection's: its settlement reconciliation treats a no-marketplace year — nobody marketplace-eligible on the console's Medicare facts — as a $0 credit while creditAtHeadline itself stays null, and a null net carries a netSettleNote reason; see runDecemberProjection.)",
   runDecemberProjection: "Price the December year-end projection from the given console inputs (same state shape as saveDecemberProjection) through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver. Compute-only; reads and writes nothing. RESPONSE FIELDS: priced=false with reason set means the year cannot be priced (no primary age entered) and every other field is inert. cliff is the year's 400%-of-FPL line in dollars, or null when NO cliff applies — nobody on the marketplace, or a pre-2026 tax year (the enhanced-credit years have no cliff; headlineText then reads 'No ACA cliff this year — the draw is not cliff-constrained.'). targetMagi is cliff − bufferDollars (null when cliff is null). headlineDraw is the maximum safe December pre-tax draw for the LIKELY case landing MAGI at targetMagi: null means 'not cliff-constrained' (cliff is null — no draw limit from the cliff), while 0 means a cliff EXISTS but no draw is safe — the room under cliff − buffer is already used up, income already posted is over the cliff at a $0 draw (zeroDrawOverCliff=true, and headlineText says no draw can fix that year), or the entered pre-tax balance is $0 so there is nothing to draw (headlineText then says exactly that, whenever the empty balance is the sole binding reason and income room otherwise exists). headlineText is the plain-language headline and always disambiguates the null/0 cases and names the binding reason for a $0 draw. PER CASE (low / likely / high range cases, all priced AT the headline draw): nonDrawAcaMagi is the case's ACA household MAGI before any draw; maxDraw is that case's OWN maximum safe draw (null when cliff is null); magiAtHeadline is the case's MAGI at the headline draw; distanceAtHeadline is cliff − magiAtHeadline (negative = over the cliff; null when cliff is null); overCliffAtHeadline / overCliffEvenAtZero say whether the case is over at the headline draw / even at $0. creditAtHeadline is the case's final allowable credit — the benchmark-based credit capped at acaEnrollmentPremiumAnnual when entered, less any coverage-month reduction, $0 when over the cliff — or null when no benchmark premium was entered (credit not priced). The ACA reconciliation runs on the case's EFFECTIVE final credit (contract v54): the priced credit when there is one; $0 when the priced credit is null because nobody in the household can be on the marketplace on the console's Medicare facts (a known-zero credit — the allowable credit is $0 by construction); null only when the priced credit is null AND someone is marketplace-eligible but no benchmark premium was entered (genuinely unpriced). creditAtHeadline itself is unchanged — it remains the engine's priced credit, null in both null cases. creditStillDue is max(0, effective final credit − aptcTaken) whenever the effective credit is known, in ALL years; it is null only when the credit is genuinely unpriced. excessAptcRepayment: for 2026 and later it is max(0, aptcTaken − effective final credit) — after 2025 there are no repayment caps (P.L. 119-21 §71305), so any APTC taken above the final credit is repaid in full in EVERY case, under the cliff as well as over it (over the cliff the final credit is $0 and the whole APTC taken is repaid); before 2026 it is $0 when aptcTaken is at or below the effective final credit and null when aptcTaken exceeds it (repayment genuinely unmodeled — pre-2026 caps are not modeled); it is null in every year when the credit is genuinely unpriced. repaymentExposure is excessAptcRepayment as an always-a-number field ($0 when unpriced). federalTaxAtHeadline / totalTaxAtHeadline are the case's taxes at the headline draw. PROJECTED TAX BILL (contract v50): each case also carries the priced year's bill readouts at the headline draw — totalIncomeAtHeadline (the year's adjusted gross income (AGI) — the figure the bill labels 'Adjusted gross income (AGI)'; the December assembly nets its above-the-line reducers into income itself, so AGI is the figure this readout carries), taxableIncomeAtHeadline (the year's taxable income), stateTaxAtHeadline (the state component inside totalTaxAtHeadline — $0 at a 0% flat rate, the Washington capital-gains excise when residenceState prices it), and netSettleAtHeadline (nullable): when non-null it is totalTaxAtHeadline − creditStillDue + excessAptcRepayment, equivalently totalTaxAtHeadline − effective final credit + aptcTaken whenever the effective credit is known and the repayment is modeled — so a no-marketplace (known-zero) year produces a number (the total tax, plus any repayment) even though creditAtHeadline stays null; the net is null only when the repayment is unmodeled (pre-2026 APTC above the effective final credit) or the credit is genuinely unpriced, and each case also carries netSettleNote (string | null): null whenever the net is a number, otherwise the reason no single settlement figure is shown, naming which of the two null cases applies (the unpriced-credit reason wins whenever the credit itself is unpriced, in any year). A negative netSettleAtHeadline is an estimated refund at filing (the console labels it 'Estimated refund at filing'; a non-negative net is labeled 'Estimated amount to settle at filing'). The net is an estimate BEFORE withholding and estimated payments, which the console does not track. All four are readouts of the same priced year — no pricing changed. warnings lists input problems priced as entered (e.g. a range whose low/likely/high are out of order) and, when the state's legacy character-provenance flags are set (legacyRocSplitUnconfirmed / legacyJanPaidSplitUnconfirmed), a warning naming the unconfirmed tax character — the flags change no priced figure.",
   describeApi: "Return the machine-readable API contract for every published action, generated live from the actions' own zod schemas, with version stamps and conventions.",
 };
@@ -5601,6 +5696,12 @@ const rothPlannerResponse = z.object({
   // refused instead of silently overwriting a newer one. 0 for
   // a record written before revisions existed.
   revision: z.number().int().nonnegative(),
+  // Result-honesty marker (contract v67, F08): true when the
+  // saved plan record EXISTS but cannot be read. saved then
+  // reads as null exactly as an absent record would — this
+  // marker is how the view tells "your saved record can't be
+  // read" apart from "no record yet".
+  recordUnreadable: z.boolean(),
 });
 type RothPlannerResponse = z.infer<typeof rothPlannerResponse>;
 
@@ -5665,6 +5766,7 @@ async function loadRothPlannerResponse(ctx: Ctx): Promise<RothPlannerResponse> {
     gift: blob.gift,
     taxReturn: blob.taxReturn,
     revision: blob.revision,
+    recordUnreadable: blob.revisionState.present && !blob.revisionState.valid,
   };
 }
 
@@ -9776,6 +9878,15 @@ export const Actions = {
       // written before revisions existed, and for an absent row.
       revision: z.number().int().nonnegative(),
       baselineRevision: z.number().int().nonnegative(),
+      // Result-honesty markers (contract v67, F06/F07): true when
+      // the saved inputs record / the baseline record EXISTS but
+      // cannot be read. In that state saved / baseline read as
+      // null exactly as an absent record would — these markers
+      // are how the view tells "your saved record can't be read"
+      // apart from "no record yet" instead of pricing the
+      // defaults as a fresh plan.
+      savedUnreadable: z.boolean(),
+      baselineUnreadable: z.boolean(),
       // Assumptions group UI state: true when the Retirement
       // view's Assumptions group (Expected return, Volatility) is
       // collapsed. Persisted server-side in settings like the
@@ -9839,11 +9950,15 @@ export const Actions = {
       let baselineRec: {
         kind: RetirementBaselineKind;
         inputs: RetirementInputs;
-      } | null = baselineState
-        ? { kind: baselineState.kind, inputs: baselineState.inputs }
-        : null;
-      let baselineRevision = baselineState?.revision ?? 0;
-      if (!baselineRec && saved) {
+      } | null = baselineState.baseline;
+      let baselineRevision = baselineState.revision;
+      // Result-honesty (contract v67, F07): a baseline that exists
+      // but cannot be read is NOT "no baseline" — the capture below
+      // must not run against it (its insert-if-absent would no-op
+      // anyway, but the marker is what the view renders from).
+      const baselineUnreadable =
+        baselineState.present && !baselineState.valid;
+      if (!baselineRec && saved && !baselineUnreadable) {
         const settingRowsNow = await db.select().from(schema.settings);
         const baselineExists = settingRowsNow.some(
           (r: { key: string }) => r.key === RETIREMENT_BASELINE_KEY,
@@ -9860,8 +9975,8 @@ export const Actions = {
             .values({ key: RETIREMENT_BASELINE_KEY, value: enc })
             .onConflictDoNothing();
           const after = await readRetirementBaselineState(db, key);
-          if (after) {
-            baselineRec = { kind: after.kind, inputs: after.inputs };
+          if (after.baseline) {
+            baselineRec = after.baseline;
             baselineRevision = after.revision;
           }
         }
@@ -9885,7 +10000,7 @@ export const Actions = {
           ? ("year" as const)
           : ("month" as const);
 
-      return { defaultPortfolioCents, nwTotalCents, bucket529Cents, latestSnapshotHasAnySplit, defaultSpendingAnnualCents, defaultSpendingWindowStart, defaultSpendingWindowEnd, defaultSpendingMonths, includeProperty, defaultCurrentAge, defaultCurrentAgeFromBirthYear, saved, scenarios, baseline: baselineRec?.inputs ?? null, baselineKind: baselineRec?.kind ?? null, revision: blobState.revision, baselineRevision, assumptionsCollapsed, spendingUnit };
+      return { defaultPortfolioCents, nwTotalCents, bucket529Cents, latestSnapshotHasAnySplit, defaultSpendingAnnualCents, defaultSpendingWindowStart, defaultSpendingWindowEnd, defaultSpendingMonths, includeProperty, defaultCurrentAge, defaultCurrentAgeFromBirthYear, saved, scenarios, baseline: baselineRec?.inputs ?? null, baselineKind: baselineRec?.kind ?? null, revision: blobState.revision, baselineRevision, savedUnreadable: blobState.revisionState.present && !blobState.revisionState.valid, baselineUnreadable, assumptionsCollapsed, spendingUnit };
     },
   }),
 
@@ -9964,6 +10079,20 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const { baseRevision, ...fields } = args;
       const state = await readRetirementBlobState(db, key);
+      // Result-honesty (contract v67, F06): a PRESENT but
+      // unreadable record is never overwritten — refuse with the
+      // lite record, exactly like a CAS conflict, and leave the
+      // stored bytes intact.
+      if (state.revisionState.present && !state.revisionState.valid) {
+        const record = await loadRetirementLiteRecord(db, key);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          baselineRevision: record.baselineRevision,
+          record,
+        };
+      }
       // Fast-path CAS check on the decrypted read (mirrors
       // saveRothInputs): a writer whose base is already stale
       // (or from a "future" revision, or positive against an
@@ -10086,7 +10215,23 @@ export const Actions = {
       const { baseRevision, baseBaselineRevision, ...fields } = args;
       const blobState = await readRetirementBlobState(db, key);
       const baselineState = await readRetirementBaselineState(db, key);
-      const baselineStored = baselineState?.revision ?? 0;
+      const baselineStored = baselineState.revision;
+      // Result-honesty (contract v67, F06/F07): if EITHER record
+      // exists but cannot be read, refuse with NEITHER blob
+      // written — an unreadable record is never overwritten.
+      if (
+        (blobState.revisionState.present && !blobState.revisionState.valid) ||
+        (baselineState.present && !baselineState.valid)
+      ) {
+        const record = await loadRetirementLiteRecord(db, key);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          baselineRevision: record.baselineRevision,
+          record,
+        };
+      }
       // Decide BOTH bases up front, on the decrypted reads: a
       // refusal on either returns the inputs-conflict shape
       // with NEITHER blob written (the pair-commit decision
@@ -10347,6 +10492,10 @@ export const Actions = {
     }),
     response: z.object({
       baselineKind: z.enum(["saved", "session"]).nullable(),
+      // Result-honesty marker (contract v67, F07): true when a
+      // baseline record EXISTS but cannot be read — distinct
+      // from "no baseline" (baselineKind null, marker false).
+      baselineUnreadable: z.boolean(),
       projectionEndingCents: z.number().nullable(),
       historicalSuccessRate: z.number().nullable(),
       historicalMedianCents: z.number().nullable(),
@@ -10357,6 +10506,7 @@ export const Actions = {
     async handler(ctx, args) {
       const empty = {
         baselineKind: null,
+        baselineUnreadable: false,
         projectionEndingCents: null,
         historicalSuccessRate: null,
         historicalMedianCents: null,
@@ -10367,8 +10517,13 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      const baselineState = await readRetirementBaselineState(db, key);
       const baselineRec = await readRetirementBaseline(db, key);
-      if (!baselineRec) return { ...empty };
+      if (!baselineRec)
+        return {
+          ...empty,
+          baselineUnreadable: baselineState.present && !baselineState.valid,
+        };
       const { defaultPortfolioCents, defaultSpendingAnnualCents, defaultCurrentAge } =
         await computeRetirementDefaults(ctx, db, key);
       const built = buildRetirementSimInputs(baselineRec.inputs, {
@@ -10403,6 +10558,7 @@ export const Actions = {
       );
       return {
         baselineKind: baselineRec.kind,
+        baselineUnreadable: false,
         projectionEndingCents: projPath[projPath.length - 1] ?? null,
         historicalSuccessRate: hist?.neverOutSuccessRate ?? null,
         historicalMedianCents: hist?.medianEnding ?? null,
@@ -10531,6 +10687,17 @@ export const Actions = {
       const key = await getCryptoKey(ctx);
       const stored = await seedRothStoredInputs(ctx, db, key);
       let state = await readRothBlobRawState(db, key);
+      // Result-honesty (contract v67, F08): a reset never
+      // reseeds over a PRESENT but unreadable record.
+      if (state.storedRaw !== undefined && !state.valid) {
+        const record = await loadRothPlannerResponse(ctx);
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: record.revision,
+          record,
+        };
+      }
       let lost = 0;
       for (;;) {
         const enc = await encryptStr(
@@ -12148,6 +12315,7 @@ export const Actions = {
         state: parseDecemberState(raw, new Date().getUTCFullYear()),
         hasStored: raw !== undefined,
         revision: parseDecemberRevision(raw),
+        storedUnreadable: isDecemberStateUnparseable(raw),
       };
     },
   }),
@@ -12163,6 +12331,20 @@ export const Actions = {
       const rows = await db.select().from(schema.settings);
       const current = rows.find((r) => r.key === DECEMBER_STATE_KEY);
       const storedRevision = parseDecemberRevision(current?.value);
+      // Result-honesty (contract v67, F09): a save whose base was
+      // read from an UNPARSEABLE stored record is refused as a
+      // conflict — the damaged bytes are left intact, never
+      // treated as a revision-0 record the save may build on.
+      if (isDecemberStateUnparseable(current?.value)) {
+        return {
+          ok: false as const,
+          conflict: true as const,
+          revision: storedRevision,
+          state: parseDecemberState(current?.value, new Date().getUTCFullYear()),
+          hasStored: true,
+          storedUnreadable: true,
+        };
+      }
       const decision = decideDecemberWrite(storedRevision, args.baseRevision);
       if (!decision.allowed) {
         return {
@@ -12171,6 +12353,7 @@ export const Actions = {
           revision: storedRevision,
           state: parseDecemberState(current?.value, new Date().getUTCFullYear()),
           hasStored: current !== undefined,
+          storedUnreadable: false,
         };
       }
       const blob = serializeDecemberState(args.state, decision.nextRevision);
@@ -12193,6 +12376,7 @@ export const Actions = {
             revision: parseDecemberRevision(afterRaw),
             state: parseDecemberState(afterRaw, new Date().getUTCFullYear()),
             hasStored: afterRaw !== undefined,
+            storedUnreadable: isDecemberStateUnparseable(afterRaw),
           };
         }
       } else {
@@ -12219,6 +12403,7 @@ export const Actions = {
             revision: parseDecemberRevision(afterRaw),
             state: parseDecemberState(afterRaw, new Date().getUTCFullYear()),
             hasStored: afterRaw !== undefined,
+            storedUnreadable: isDecemberStateUnparseable(afterRaw),
           };
         }
       }

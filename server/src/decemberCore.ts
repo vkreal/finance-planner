@@ -312,6 +312,30 @@ export function defaultDecemberState(currentYear: number): DecemberState {
    style: any field of the wrong type or out of range falls back
    to its default, so a partial or malformed blob can never
    break the console — it just opens closer to blank. */
+/* Result-honesty (contract v67, F09): whether a PRESENT stored
+   December blob cannot be parsed as a state document at all —
+   malformed JSON, or JSON that is not a plain object. The lenient
+   field-by-field parse above silently defaults in exactly these
+   cases, so without this flag a damaged record was
+   indistinguishable from a fresh one even though hasStored
+   reported true. An absent blob (undefined) is NOT unparseable,
+   and a parseable object with individual bad fields is NOT
+   unparseable either (those fields still default leniently, as
+   before). The get action surfaces this as storedUnreadable and
+   the save action refuses to build on an unparseable read. */
+export function isDecemberStateUnparseable(
+  raw: string | undefined,
+): boolean {
+  if (raw === undefined) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return true;
+  }
+  return parsed == null || typeof parsed !== "object" || Array.isArray(parsed);
+}
+
 export function parseDecemberState(
   raw: string | undefined,
   currentYear: number,

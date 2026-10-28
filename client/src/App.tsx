@@ -62,7 +62,7 @@ ofxAccountDisplay,
 ofxAccountKey,
 parseOfx,
 } from "./ofxCore";
-import { Explainer, ExplainerInfoTip, ExplainerToggle } from "./Explainer";
+import { Explainer, ExplainerInfoTip } from "./Explainer";
 import {
   useFoldStateMap,
   usePersistedFold,
@@ -2069,7 +2069,14 @@ export function App() {
   const updateOneOff = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "updateMonthlyOneOff">) =>
       api.updateMonthlyOneOff(input),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // Result-honesty (contract v67, F04): a refused edit keeps
+        // the editor open with the edit intact and shows why —
+        // the same guard its four sibling editors carry.
+        setOneOffError(r.reason ?? "That one-off could not be updated.");
+        return;
+      }
       invalidate();
       resetOneOffForm();
     },
@@ -3342,8 +3349,9 @@ export function App() {
               </p>
               {/* The section's one explainer door: the definition
                   sentence that used to print here now lives in the
-                  True cost tile's ⓘ, so only the "More" link remains
-                  under the number. Its expanded text carries both
+                  True cost tile's ⓘ, so only this section's ⓘ remains
+                  under the number (contract v67: the former "More"
+                  link is the ⓘ now). Its tooltip text carries both
                   this explainer's original paragraph and the full
                   text of the former footer "How this math works"
                   explainer, folded in here so the method is explained
@@ -3817,7 +3825,6 @@ export function App() {
                   <button type="button" className={btnAdd} onClick={openNewOneOff}>
                     + Add one-off
                   </button>
-                  <ExplainerToggle id="spending.largeOneOffs" label="Large one-offs" />
                 </div>
               </div>
               <Explainer
@@ -4041,7 +4048,6 @@ export function App() {
                   >
                     {data.isSummaryMonth ? "Edit this month's total" : "+ Enter a month's total"}
                   </button>
-                  <ExplainerToggle id="spending.cashOut" label="Monthly cash out" />
                 </div>
               </div>
               <Explainer

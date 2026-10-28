@@ -399,7 +399,9 @@ export function December() {
         ),
       );
       setSaveNote(
-        "These entries were changed in another tab or on another device, so your last edit wasn’t saved over them — the saved entries are shown now.",
+        res.storedUnreadable
+          ? "Your saved December entries can’t be read, so this edit wasn’t saved over them — the stored record is left exactly as it is."
+          : "These entries were changed in another tab or on another device, so your last edit wasn’t saved over them — the saved entries are shown now.",
       );
     },
   });
@@ -807,6 +809,17 @@ export function December() {
         year under the ACA cliff, with a safety buffer. Priced by the same single-year tax
         engine as the Playground.
       </p>
+      {decQ.data?.storedUnreadable && (
+        <p
+          role="alert"
+          className="mt-2 max-w-3xl rounded-[var(--radius)] border border-[var(--bad)] bg-[var(--bad-soft)] px-3 py-2 text-sm leading-relaxed"
+        >
+          <strong>Your saved December entries can&rsquo;t be read.</strong>{" "}
+          A saved record exists, but it can&rsquo;t be opened — the entries
+          below are the starting defaults, not your saved ones. Saving is
+          paused while the record is unreadable, so nothing overwrites it.
+        </p>
+      )}
       {saveNote && (
         <p className="mt-1 text-xs text-[var(--dim)]" role="status">
           {saveNote} — entries are saved as you type and reopen where you left them.
