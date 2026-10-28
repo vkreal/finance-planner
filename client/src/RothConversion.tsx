@@ -10065,17 +10065,17 @@ export function RothConversion() {
           never the working form: an unsaved edit cannot move
           these figures, exactly like the strip. The composition
           line foots to the row's net cost EXACTLY, in cents:
-          net cost = federal tax + IRMAA \u2212 ACA credits kept +
+          net cost = federal tax + IRMAA − ACA credits kept +
           the remainder, where the remainder (state tax +
-          pre-59\u00bd penalties + tax on the ending pre-tax
-          balance \u2212 refundable education credit) is named
+          pre-59½ penalties + tax on the ending pre-tax
+          balance − refundable education credit) is named
           component by component underneath, never folded
           silently into the headline figures. */}
       {showPlanWorkspace && savedPlanPayload && (
         <section className={sectionCls} aria-label="Tax by year">
           <h2 className="text-base font-semibold">Tax by year</h2>
           {savedTaxQ.isPending ? (
-            <p className="mt-1 text-sm text-[var(--dim)]">Pricing the saved plan\u2026</p>
+            <p className="mt-1 text-sm text-[var(--dim)]">Pricing the saved plan…</p>
           ) : savedTaxRow ? (
             (() => {
               const planYears = savedTaxRow.years;
@@ -10088,7 +10088,7 @@ export function RothConversion() {
               if (savedTaxRow.stateTaxCents !== 0)
                 remainderParts.push(`state tax ${fmtCents(savedTaxRow.stateTaxCents)}`);
               if (savedTaxRow.penaltyCents !== 0)
-                remainderParts.push(`pre-59\u00bd penalties ${fmtCents(savedTaxRow.penaltyCents)}`);
+                remainderParts.push(`pre-59½ penalties ${fmtCents(savedTaxRow.penaltyCents)}`);
               if (savedTaxRow.terminalCents !== 0)
                 remainderParts.push(
                   `tax on the ending pre-tax balance ${fmtCents(savedTaxRow.terminalCents)}`,
@@ -10106,6 +10106,34 @@ export function RothConversion() {
                 return nice * pow;
               })();
               const gridFracs = [1, 0.75, 0.5, 0.25, 0];
+              // X-axis year labels: the first year, the last
+              // year, and every fifth year — thinned so no two
+              // kept labels sit fewer than three years apart.
+              // At the bar widths this chart renders, adjacent
+              // labels collide (the 2065 tick against the final
+              // 2066 in Kyle's screenshot); when the final year
+              // crowds the tick before it, the final year wins
+              // and the tick is dropped.
+              const labelYearSet = (() => {
+                const wanted = new Set<number>();
+                const firstYr = planYears[0]?.year;
+                const lastYr = planYears[planYears.length - 1]?.year;
+                if (firstYr != null) wanted.add(firstYr);
+                for (const y of planYears) if (y.year % 5 === 0) wanted.add(y.year);
+                if (lastYr != null) wanted.add(lastYr);
+                const sorted = [...wanted].sort((a, b) => a - b);
+                const kept: number[] = [];
+                for (const yr of sorted) {
+                  const prev = kept[kept.length - 1];
+                  if (prev != null && yr - prev < 3) {
+                    if (yr === lastYr && prev !== firstYr)
+                      kept[kept.length - 1] = yr;
+                    continue;
+                  }
+                  kept.push(yr);
+                }
+                return new Set(kept);
+              })();
               // The first year the saved plan takes pre-tax
               // money out by choice — a conversion or a pre-tax
               // draw for spending (an RMD alone is not a draw
@@ -10129,28 +10157,28 @@ export function RothConversion() {
               return (
                 <>
                   <p className="tnum mt-1 max-w-3xl text-sm">
-                    Lifetime federal tax {fmtCents(savedTaxRow.federalTaxCents)} \u00b7 ACA credits kept{" "}
+                    Lifetime federal tax {fmtCents(savedTaxRow.federalTaxCents)} · ACA credits kept{" "}
                     {savedTaxRow.acaCreditCents > 0
-                      ? `\u2212${fmtCents(savedTaxRow.acaCreditCents)}`
+                      ? `−${fmtCents(savedTaxRow.acaCreditCents)}`
                       : fmtCents(savedTaxRow.acaCreditCents)}{" "}
-                    \u00b7 IRMAA {fmtCents(savedTaxRow.irmaaCents)} \u00b7 Lifetime net cost{" "}
+                    · IRMAA {fmtCents(savedTaxRow.irmaaCents)} · Lifetime net cost{" "}
                     {fmtCents(savedTaxRow.netCostCents)}
                   </p>
                   <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
                     {remainderParts.length > 0 ? (
                       <>
-                        Net cost is federal tax + IRMAA \u2212 ACA credits kept, plus the
-                        rest of the score: {remainderParts.join(", ")} \u2014{" "}
+                        Net cost is federal tax + IRMAA − ACA credits kept, plus the
+                        rest of the score: {remainderParts.join(", ")} —{" "}
                         {fmtCents(remainder)} in all. Priced from the saved
-                        record \u2014 edits not yet saved do not move these
+                        record — edits not yet saved do not move these
                         figures.
                       </>
                     ) : (
                       <>
-                        For this plan, net cost is exactly federal tax + IRMAA \u2212 ACA
-                        credits kept \u2014 there is no state tax, penalty, ending
+                        For this plan, net cost is exactly federal tax + IRMAA − ACA
+                        credits kept — there is no state tax, penalty, ending
                         pre-tax tax, or refundable education credit in the score.
-                        Priced from the saved record \u2014 edits not yet saved
+                        Priced from the saved record — edits not yet saved
                         do not move these figures.
                       </>
                     )}
@@ -10217,11 +10245,7 @@ export function RothConversion() {
                               key={y.year}
                               className="min-w-0 flex-1 text-center text-[10px] whitespace-nowrap text-[var(--dim)]"
                             >
-                              {y.year % 5 === 0 ||
-                              y.year === planYears[0]?.year ||
-                              y.year === planYears[planYears.length - 1]?.year
-                                ? y.year
-                                : ""}
+                              {labelYearSet.has(y.year) ? y.year : ""}
                             </span>
                           ))}
                         </div>
@@ -10231,11 +10255,11 @@ export function RothConversion() {
                   <button
                     type="button"
                     aria-expanded={taxYearNumbersOpen}
-                    aria-label="Federal tax by year \u2014 numbers"
+                    aria-label="Federal tax by year — numbers"
                     className="mt-2 flex items-center gap-2 text-sm font-medium text-[var(--accent)]"
                     onClick={() => setTaxYearNumbersOpen(!taxYearNumbersOpen)}
                   >
-                    Federal tax by year \u2014 numbers
+                    Federal tax by year — numbers
                     <FoldChevron open={taxYearNumbersOpen} />
                   </button>
                   {taxYearNumbersOpen && (
@@ -10254,7 +10278,7 @@ export function RothConversion() {
                       aria-label="First draw year tax bill"
                     >
                       <p className="text-sm font-semibold">
-                        First draw year \u2014 {firstDrawYear.year}
+                        First draw year — {firstDrawYear.year}
                         <span className="font-normal text-[var(--dim)]">
                           {" "}(ages {firstDrawYear.agePrimary}
                           {firstDrawYear.ageSpouse != null ? `/${firstDrawYear.ageSpouse}` : ""})
@@ -10267,7 +10291,7 @@ export function RothConversion() {
                         {firstDrawYear.acaCreditCents > 0 &&
                           billRow(
                             "ACA premium credit",
-                            `\u2212${fmtCents(firstDrawYear.acaCreditCents)}`,
+                            `−${fmtCents(firstDrawYear.acaCreditCents)}`,
                           )}
                         {billRow(
                           "Net tax",
@@ -10278,7 +10302,7 @@ export function RothConversion() {
                       {firstDrawYear.irmaaCents > 0 && (
                         <p className="tnum mt-2 text-sm text-[var(--dim)]">
                           Medicare premium surcharges (IRMAA) paid that year:{" "}
-                          {fmtCents(firstDrawYear.irmaaCents)} \u2014 premiums, not tax, so
+                          {fmtCents(firstDrawYear.irmaaCents)} — premiums, not tax, so
                           they are not part of the net tax above.
                         </p>
                       )}
