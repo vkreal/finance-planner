@@ -578,8 +578,8 @@ function Sparkline({ series, color }: { series: SeriesPoint[]; color: string }) 
 }
 
 /* ---------------- net worth over time — growth area chart ----------------
-   Contract v68: the simple Boldin-style growth picture Kyle
-   picked from his October chart menu — ONE area + line of total
+   Contract v68: the simple Boldin-style growth picture picked
+   from the October chart menu — ONE area + line of total
    net worth, one point per snapshot on record.
    DATA RULE (the chart can never disagree with the headline):
    every point is plotted from the snapshot's `totalCents`
@@ -590,7 +590,7 @@ function Sparkline({ series, color }: { series: SeriesPoint[]; color: string }) 
    while the "Include house & mortgage" toggle is on. This
    component recomputes nothing, so flipping the toggle reloads
    totalCents and the chart follows it automatically.
-   RENDERING (Kyle's chart rules): an area fill under a line in
+   RENDERING (the app's chart rules): an area fill under a line in
    the main chart's Total idiom (TOTAL_COLOR, fillOpacity 0.16);
    a value label at EVERY point — abbreviated (fmtCompact) for
    intermediate points, the full figure on the latest point; a
