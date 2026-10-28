@@ -4569,6 +4569,27 @@ export function Playground() {
                   }
                   return { xPct: taxX(taxablePos), magi: target };
                 })();
+                /* Floating landmark labels (contract v75): exactly
+                   TWO of the pre-v69 floating labels return — the
+                   LANDING bracket's top label (the first bracket
+                   whose top is at or above the ordinary taxable
+                   total, in the pre-v69 "rate · room left" idiom,
+                   from the same marker figures the heading's ⓘ
+                   status string uses) and the "0% gains end" label
+                   at its tick, in its pre-v69 form with its small
+                   ⓘ. No labels for passed or higher brackets.
+                   Collision discipline: when both labels are
+                   present they sit on TWO distinct rows — gains
+                   end on the upper row, the landing bracket on
+                   the row below it — so their text can never
+                   overlap however close their ticks sit; each
+                   label stays anchored at its tick, with its
+                   centre clamped inside the chart (a tick at the
+                   right edge right-aligns its label) so neither
+                   label can overflow the card at any width. */
+                const landingMarker =
+                  markers.find((m) => m.room >= 0) ?? null;
+                const showGainsEndLabel = gainsTotal > 0;
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
                     <p className="mt-1 text-xs text-[var(--dim)]">
@@ -4581,6 +4602,51 @@ export function Playground() {
                         : ""}
                       .
                     </p>
+                    {(landingMarker != null || showGainsEndLabel) && (
+                      <div className="relative mt-1">
+                        {showGainsEndLabel && (
+                          <div className="relative h-[18px]">
+                            <span
+                              className="absolute inline-flex items-center whitespace-nowrap"
+                              style={{
+                                left: `clamp(78px, ${taxX(zeroTop)}%, calc(100% - 78px))`,
+                                transform: "translateX(-50%)",
+                              }}
+                            >
+                              <span
+                                aria-hidden="true"
+                                className="tnum text-[11px]"
+                                style={{ color: "#65a30d" }}
+                              >
+                                0% gains end · {fmtDollars(zeroTop)}
+                              </span>
+                              <InfoNote
+                                text={`Long-term gains and qualified dividends in the taxable account are taxed at 0% while total taxable income stays under ${fmtDollars(zeroTop)}. Past that line they price at 15%, and at 20% once taxable income passes ${fmtDollars(floor20)}.`}
+                                ariaLabel="About the 0% gains line"
+                                align={taxX(zeroTop) > 60 ? "right" : "left"}
+                              />
+                            </span>
+                          </div>
+                        )}
+                        {landingMarker != null && (
+                          <div className="relative h-[18px]" aria-hidden="true">
+                            <span
+                              className="tnum absolute text-[11px] whitespace-nowrap"
+                              style={{
+                                color: landingMarker.color,
+                                left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
+                                transform: "translateX(-50%)",
+                              }}
+                            >
+                              {landingMarker.rate}% ·{" "}
+                              {landingMarker.room > 0.5
+                                ? `${fmtDollars(landingMarker.room)} left`
+                                : "filled"}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="relative">
                       <div className="absolute inset-0" aria-hidden="true">
                         {bands.map((b, i) => (
