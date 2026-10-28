@@ -30,6 +30,11 @@
 //      identical state (the localStorage chunk round trip).
 //   F. CAS spot check: a stale-revision saveRothInputs is refused
 //      and leaves the stored record untouched.
+//   I. Persist lockout (contract v63, F5): a non-stale persist
+//      failure locks the session — further dispatches refused
+//      with a reload-required error — and a fresh load reads the
+//      prior committed generation intact; the stale-tab 409 does
+//      not engage the lock.
 //   G. December CAS end-to-end: saveDecemberProjection through
 //      the real dispatcher and store — first write (insert-only),
 //      a second save at the current revision on the EXISTING blob
@@ -655,6 +660,87 @@ eq(
     "H21 a lone settings record blocks all sample seeding",
     dashOnly.hasAnyData === false && (nwOnly.snapshots ?? []).length === 0,
     `hasAnyData ${dashOnly.hasAnyData}, snapshots ${(nwOnly.snapshots ?? []).length}`,
+  );
+}
+
+// ---------- I. Packaged persist lockout (contract v63, F5) ----------
+// A NON-STALE persist failure (here: quota, thrown after the
+// handler mutated the in-memory image) locks the session: every
+// further dispatch is refused with a reload-required error, so
+// the failed action's writes can never be silently committed by
+// a later successful persist. A fresh load reads the prior
+// committed generation intact. The stale-tab refusal (409) does
+// NOT engage the lock — it is governed by the generation check.
+{
+  const base = memoryStore();
+  let armed = false;
+  const quotaStore: KeyValueStore = {
+    get: (k) => base.get(k),
+    set: (k, v) => {
+      if (armed) throw new Error("QuotaExceededError (simulated)");
+      base.set(k, v);
+    },
+    remove: (k) => base.remove(k),
+  };
+  const rtLock = await createRuntime({ store: quotaStore, wasmUrl: wasmPath });
+  const nwTotalsCommitted = ((await rtLock.call<any>("getNetWorth", {})).snapshots ?? []).map(
+    (s: any) => s.totalCents,
+  );
+  check("I0 session starts unlocked", rtLock.sessionLocked === false);
+  armed = true;
+  const failed = await rtLock.dispatch("addMonthlyBill", {
+    name: "Lockout Bill", amountCents: 7700, effectiveFrom: "2026-08", paidBy: "Checking",
+  });
+  armed = false;
+  check("I1 quota persist failure surfaces as an error", failed.status === 500, `status ${failed.status}`);
+  check(
+    "I2 lockout engaged by the non-stale persist failure",
+    rtLock.sessionLocked === true &&
+      typeof rtLock.sessionLockReason === "string" &&
+      rtLock.sessionLockReason.includes("Reload the page"),
+    rtLock.sessionLockReason ?? "(no reason)",
+  );
+  const refusedRead = await rtLock.dispatch("getDashboard", { month: "2026-09" });
+  check(
+    "I3 subsequent read dispatch refused with the reload-required error",
+    refusedRead.status === 500 &&
+      refusedRead.body.includes("locked") &&
+      refusedRead.body.includes("Reload the page"),
+    `status ${refusedRead.status}`,
+  );
+  const refusedWrite = await rtLock.dispatch("addMonthlyBill", {
+    name: "After Lock Bill", amountCents: 100, effectiveFrom: "2026-08", paidBy: "Checking",
+  });
+  check(
+    "I4 subsequent write dispatch refused while locked (no silent commit path)",
+    refusedWrite.status === 500 && refusedWrite.body.includes("locked"),
+    `status ${refusedWrite.status}`,
+  );
+  const rtLockFresh = await createRuntime({ store: quotaStore, wasmUrl: wasmPath });
+  const nwTotalsAfter = ((await rtLockFresh.call<any>("getNetWorth", {})).snapshots ?? []).map(
+    (s: any) => s.totalCents,
+  );
+  eq("I5 fresh load reads the prior committed generation intact", nwTotalsAfter, nwTotalsCommitted);
+  const dashAfter = await rtLockFresh.call<any>("getDashboard", { month: "2026-09" });
+  check(
+    "I6 neither the failed write nor the refused write reached the durable store",
+    !(dashAfter.monthlyBills ?? []).some(
+      (b: any) => b.name === "Lockout Bill" || b.name === "After Lock Bill",
+    ),
+  );
+}
+{
+  const storeS2 = memoryStore();
+  const rtA = await createRuntime({ store: storeS2, wasmUrl: wasmPath });
+  const rtB = await createRuntime({ store: storeS2, wasmUrl: wasmPath });
+  await rtA.call<any>("addMonthlyBill", {
+    name: "Lockout Exempt Bill", amountCents: 5100, effectiveFrom: "2026-08", paidBy: "Checking",
+  });
+  const staleRes = await rtB.dispatch("getDashboard", { month: "2026-09" });
+  check(
+    "I7 stale-tab refusal does NOT engage the persist lockout",
+    staleRes.status === 409 && rtB.sessionLocked === false,
+    `status ${staleRes.status}, locked ${rtB.sessionLocked}`,
   );
 }
 

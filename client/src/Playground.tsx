@@ -227,6 +227,24 @@ function buildStackModel(
   };
 }
 
+/* Cent-precision dollar formatting for the engine's own total
+   tax (pg.totalTax — federal + state summed at cent precision
+   by the engine, contract v63 F2). The "Total tax" figures
+   OUTSIDE the sale-after-tax readout print this value as-is, so
+   a $0.60 federal / $0.42 state year reads $1.02 — the engine's
+   total — not $2 (the sum of the separately rounded components).
+   The sale-after-tax readout keeps its own deliberate
+   component-first rounding (see pgSaleLeftoverSegment and the
+   engine's saleAfterTax), untouched by this convention. */
+function fmtDollarsExact(dollars: number): string {
+  const neg = dollars < 0;
+  const s = `$${Math.abs(dollars).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  return neg ? `−${s}` : s;
+}
+
 /* The play strip's sale-leftover segment — derived from the
    sale and the year's total tax alone, using the
    engine-composed sale-after-tax leftover itself. Returns
@@ -2301,10 +2319,10 @@ export function Playground() {
      ONLY, at normal text size, carrying just the figures
      needed at a glance. The One year line reads
      playgroundResult's own fields (the same figures the
-     readout and the play strip print — the total tax at the
-     same displayed rounding the strip's sale figure uses,
-     round(federal) + round(state)) and names only the year's
-     tax, MAGI, and the bracket landing. The Projection line
+     readout and the play strip print — the total tax is the
+     engine's own total, pg.totalTax, at cent precision) and
+     names only the year's tax, MAGI, and the bracket landing.
+     The Projection line
      reads the projection's setup dials and, while the panel
      is open and priced, pgProjection's own ending balances:
      which template year repeats, the age span, the return,
@@ -2323,10 +2341,8 @@ export function Playground() {
       // naming what is missing.
       return `For ${pgTaxYearNum} — enter your age for that year to price it.`;
     }
-    const totalTaxDisplayed =
-      Math.round(pg.federalTax) + Math.round(pg.stateTax);
     const bits: string[] = [
-      `${pgTaxYearNum} tax ${fmtDollars(totalTaxDisplayed)}`,
+      `${pgTaxYearNum} tax ${fmtDollarsExact(pg.totalTax)}`,
       `MAGI ${fmtDollars(pg.magi)}`,
     ];
     if (pg.conversion > 0) {
@@ -2634,9 +2650,7 @@ export function Playground() {
                       <span>
                         Total tax{" "}
                         <span className="font-bold text-[var(--accent)]">
-                          {fmtDollars(
-                            Math.round(pg.federalTax) + Math.round(pg.stateTax),
-                          )}
+                          {fmtDollarsExact(pg.totalTax)}
                         </span>
                       </span>
                     </span>

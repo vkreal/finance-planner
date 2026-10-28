@@ -4794,15 +4794,54 @@ export function App() {
                         {y.inEffectForMonth === false ? (
                           <span className="tnum text-sm text-[var(--dim)]">
                             {(() => {
-                              const latestAnnual = y.latestExpectedCents * paymentsPerYearFor(y.latestFrequency);
-                              const earliest = y.history[y.history.length - 1];
-                              const latestMonthly = cumulativeMonthlyCents(latestAnnual, earliest?.effectiveFrom ?? currentMonth());
+                              // Pre-start preview (contract v63, F3):
+                              // every figure comes from the version
+                              // in force at the START month — the
+                              // earliest version (history is newest
+                              // first, so it is the last entry): its
+                              // amount, its frequency, its start. The
+                              // previous pairing (the LATEST version's
+                              // amount with the EARLIEST version's
+                              // start, and a monthly figure mixing
+                              // the two) could show an amount the bill
+                              // never has at its start beside that
+                              // start date. When a later version
+                              // changes the amount or frequency, the
+                              // change is named as a note instead.
+                              const startVersion = y.history[y.history.length - 1];
+                              const startExpected = startVersion?.expectedCents ?? y.latestExpectedCents;
+                              const startFrequency = startVersion?.frequency ?? y.latestFrequency;
+                              const startAnnual = startVersion?.annualCents ?? startExpected * paymentsPerYearFor(startFrequency);
+                              const startMonthly = startVersion?.monthlyAccrualCents ?? cumulativeMonthlyCents(startAnnual, startVersion?.effectiveFrom ?? currentMonth());
+                              // The first later version (chronologically)
+                              // whose amount or frequency differs from
+                              // the start version's.
+                              const laterChange = y.history
+                                .filter(
+                                  (h) =>
+                                    h !== startVersion &&
+                                    (h.expectedCents !== startExpected || h.frequency !== startFrequency),
+                                )
+                                .sort((a, b) =>
+                                  a.effectiveFrom === b.effectiveFrom
+                                    ? a.id - b.id
+                                    : a.effectiveFrom < b.effectiveFrom
+                                      ? -1
+                                      : 1,
+                                )[0];
                               return (
                                 <>
-                                  {y.latestFrequency !== "yearly"
-                                    ? `${fmt(y.latestExpectedCents)}/bill · ${freqPhrase(y.latestFrequency)} · ${fmt(latestAnnual)}/yr · ${fmt(latestMonthly)}/mo set aside`
-                                    : `${fmt(y.latestExpectedCents)}/yr · ${fmt(latestMonthly)}/mo set aside`}
-                                  {earliest ? ` · starts ${monthLabel(earliest.effectiveFrom)}` : ""}
+                                  {startFrequency !== "yearly"
+                                    ? `${fmt(startExpected)}/bill · ${freqPhrase(startFrequency)} · ${fmt(startAnnual)}/yr · ${fmt(startMonthly)}/mo set aside`
+                                    : `${fmt(startExpected)}/yr · ${fmt(startMonthly)}/mo set aside`}
+                                  {startVersion ? ` · starts ${monthLabel(startVersion.effectiveFrom)}` : ""}
+                                  {laterChange
+                                    ? ` · changes to ${
+                                        laterChange.frequency !== "yearly"
+                                          ? `${fmt(laterChange.expectedCents)}/bill · ${freqPhrase(laterChange.frequency)} · ${fmt(laterChange.annualCents)}/yr`
+                                          : `${fmt(laterChange.expectedCents)}/yr`
+                                      } from ${monthLabel(laterChange.effectiveFrom)}`
+                                    : ""}
                                   {" · paid by "}
                                   {y.paidByName}
                                   {" — not yet in effect for "}

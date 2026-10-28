@@ -7708,6 +7708,9 @@ export function RothConversion() {
                     <th scope="col" className="px-2 py-2 text-right font-medium">Other income</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Interest yield</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Dividend yield</th>
+                    {yfResult.years.some((y) => y.cashSpendCents > 0) && (
+                      <th scope="col" className="px-2 py-2 text-right font-medium">Cash sleeve used for spending</th>
+                    )}
                     <th scope="col" className="px-2 py-2 text-right font-medium">Pre-tax draw</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Taxable — spending</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Taxable — tax bill</th>
@@ -7753,6 +7756,9 @@ export function RothConversion() {
                         <td className="tnum px-2 py-2 text-right">{cell(r.otherIncomeCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.interestYieldCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.dividendYieldCents)}</td>
+                        {yfResult.years.some((y) => y.cashSpendCents > 0) && (
+                          <td className="tnum px-2 py-2 text-right">{cell(r.cashSpendCents)}</td>
+                        )}
                         <td className="tnum px-2 py-2 text-right">{cell(r.pretaxDrawCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.taxableSoldForSpendingCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.taxableSoldForTaxCents)}</td>
@@ -7808,6 +7814,8 @@ export function RothConversion() {
                     {needRow("Other income", r.otherIncomeCents)}
                     {needRow("Taxable interest yield", r.interestYieldCents)}
                     {needRow("Taxable dividend yield", r.dividendYieldCents)}
+                    {r.cashSpendCents > 0 &&
+                      needRow("Cash sleeve used for spending", r.cashSpendCents)}
                     {needRow("Pre-tax draw", r.pretaxDrawCents)}
                     {needRow("Taxable sold — for spending", r.taxableSoldForSpendingCents)}
                     {needRow("Taxable sold — for the tax bill", r.taxableSoldForTaxCents)}

@@ -58,6 +58,12 @@ export interface PackagedRuntime {
       restorebackup over the payload. Throws on a wrong
       passphrase or a refused restore. */
   importPortableBackup(contents: string, passphrase: string): Promise<{ ok: boolean; reason: string; authenticated: boolean }>;
+  /** Session lockout (contract v63, F5): true once a NON-STALE
+      persist failure has locked this session (see dispatch).
+      While locked, every dispatch is refused with the
+      reload-required error in sessionLockReason. */
+  readonly sessionLocked: boolean;
+  readonly sessionLockReason: string | null;
   localDb: LocalDb;
   store: KeyValueStore;
 }
@@ -86,7 +92,29 @@ export async function createRuntime(opts: {
   >;
   const actions = Actions as unknown as Record<string, ActionDef>;
 
+  // Session lockout state (contract v63, F5). Set when a persist
+  // fails for a NON-STALE reason (quota, image verification —
+  // anything thrown after the handler mutated the in-memory
+  // image): the in-memory database then holds writes the durable
+  // store does not, and a later successful persist would silently
+  // commit them beside whatever it was actually saving. The
+  // durable store itself stays generation-safe — the previous
+  // generation is intact — so the fail-closed remedy mirrors the
+  // store's philosophy: lock the session and require a reload,
+  // which re-reads the last committed generation. The stale-tab
+  // refusal is EXCLUDED: it throws before the persist writes
+  // anything (and the dispatch gate refuses a stale tab before
+  // any action runs), so a stale tab's session state is already
+  // governed by the generation check, not this lock.
+  let sessionLockReason: string | null = null;
+
   async function dispatch(action: string, args: unknown): Promise<DispatchResult> {
+    if (sessionLockReason != null) {
+      return {
+        status: 500,
+        body: JSON.stringify({ error: sessionLockReason }),
+      };
+    }
     const def = actions[action];
     if (!def || typeof def.handler !== "function") {
       return {
@@ -179,17 +207,31 @@ export async function createRuntime(opts: {
     // write that is not durable would be a silent data loss. The
     // generation protocol leaves the previous generation active
     // in both cases.
+    // A NON-STALE persist failure additionally LOCKS the session
+    // (contract v63, F5): the in-memory image now diverges from
+    // the durable store by this action's writes, so letting the
+    // session continue would let a later successful persist
+    // silently commit them. Every further dispatch is refused
+    // with a reload-required error until the page reloads onto
+    // the last committed generation.
     try {
       localDb.persist();
     } catch (err) {
       if (err instanceof StaleTabError) {
         return { status: 409, body: JSON.stringify({ error: err.message }) };
       }
+      const cause = err instanceof Error ? err.message : String(err);
+      if (sessionLockReason == null) {
+        sessionLockReason =
+          `This tab is locked: a change could not be saved to this browser's storage (${cause}), ` +
+          "so this tab will not save anything else — saving again here could mix the unsaved change into a later save. " +
+          "Reload the page to continue: your previously saved data is unchanged, and reloading returns to it.";
+      }
       if (result.status === 200) {
         return {
           status: 500,
           body: JSON.stringify({
-            error: `The change could not be saved to this browser's storage (${err instanceof Error ? err.message : String(err)}). The previously saved data is unchanged.`,
+            error: `The change could not be saved to this browser's storage (${cause}). The previously saved data is unchanged. This tab is now locked — reload the page to continue.`,
           }),
         };
       }
@@ -252,6 +294,12 @@ export async function createRuntime(opts: {
     call,
     exportPortableBackup,
     importPortableBackup,
+    get sessionLocked() {
+      return sessionLockReason != null;
+    },
+    get sessionLockReason() {
+      return sessionLockReason;
+    },
     localDb,
     store,
   };
