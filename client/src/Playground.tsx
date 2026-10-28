@@ -4476,6 +4476,33 @@ export function Playground() {
                  Every figure is read straight off the priced
                  result (`pg`, pricePlaygroundYear's own fields);
                  see buildStackModel's comment for the sourcing. */
+              const stackModel = buildStackModel(pg, pgYearNum, pgFiling);
+              /* Bracket-by-bracket status (contract v69): the
+                 text the chart's legend used to print under the
+                 bar — every bracket top with its passed-by /
+                 room-left standing, and the 0% gains line — now
+                 computed once as this one string and carried by
+                 the Income stack heading's ⓘ, verbatim from the
+                 same figures the legend printed. */
+              const bracketStatusText = [
+                ...stackModel.markers.map(
+                  (m) =>
+                    `${m.rate}% top ${fmtDollars(m.to)} — ${
+                      m.room > 0.5
+                        ? `${fmtDollars(m.room)} left`
+                        : m.room >= -0.5
+                          ? "filled exactly"
+                          : `passed by ${fmtDollars(-m.room)}`
+                    }`,
+                ),
+                `0% gains end ${fmtDollars(stackModel.zeroTop)} — ${
+                  stackModel.zeroTop - stackModel.ordinaryTaxable > 0.5
+                    ? `${fmtDollars(stackModel.zeroTop - stackModel.ordinaryTaxable)} left`
+                    : stackModel.zeroTop - stackModel.ordinaryTaxable >= -0.5
+                      ? "filled exactly"
+                      : `passed by ${fmtDollars(stackModel.ordinaryTaxable - stackModel.zeroTop)}`
+                } · only taxable-account gains and qualified dividends get the 0% rate`,
+              ].join(" · ");
               const stackChart = (() => {
                 const {
                   bands,
@@ -4495,7 +4522,7 @@ export function Playground() {
                   pct,
                   taxX,
                   hatchStyle,
-                } = buildStackModel(pg, pgYearNum, pgFiling);
+                } = stackModel;
                 /* ACA cliff line — presentation ONLY, derived
                    from the priced result in the chart's own
                    coordinates: the line sits at the taxable-axis
@@ -4554,74 +4581,6 @@ export function Playground() {
                         : ""}
                       .
                     </p>
-                    <div className="relative mt-1 h-11" aria-hidden="true">
-                      {markers.map((m, i) => (
-                        <span
-                          key={m.rate}
-                          className="tnum absolute text-[11px] whitespace-nowrap"
-                          style={{
-                            color: m.color,
-                            left: m.inAxis ? `${taxX(m.to)}%` : "100%",
-                            top: i % 2 === 0 ? 0 : 18,
-                            transform: !m.inAxis
-                              ? "translateX(-92%)"
-                              : i === 0
-                                ? "translateX(-8%)"
-                                : i === markers.length - 1
-                                  ? "translateX(-92%)"
-                                  : "translateX(-50%)",
-                          }}
-                        >
-                          {m.rate}% ·{" "}
-                          {m.room > 0.5
-                            ? `${fmtDollars(m.room)} left`
-                            : m.room >= -0.5
-                              ? "filled"
-                              : "passed"}
-                        </span>
-                      ))}
-                    </div>
-                    {gainsTotal > 0 && (
-                      <div className="relative h-4">
-                        <span
-                          className="absolute inline-flex items-center whitespace-nowrap"
-                          style={{
-                            left: `${taxX(zeroTop)}%`,
-                            transform:
-                              taxX(zeroTop) > 85
-                                ? "translateX(-92%)"
-                                : taxX(zeroTop) < 15
-                                  ? "translateX(-8%)"
-                                  : "translateX(-50%)",
-                          }}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className="tnum text-[11px]"
-                            style={{ color: "#65a30d" }}
-                          >
-                            0% gains end · {fmtDollars(zeroTop)}
-                          </span>
-                          <InfoNote
-                            text={`Long-term gains and qualified dividends in the taxable account are taxed at 0% while total taxable income stays under ${fmtDollars(zeroTop)}. Past that line they price at 15%, and at 20% once taxable income passes ${fmtDollars(floor20)}.`}
-                            ariaLabel="About the 0% gains line"
-                            align={taxX(zeroTop) > 60 ? "right" : "left"}
-                          />
-                        </span>
-                        {show20 && (
-                          <span
-                            aria-hidden="true"
-                            className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
-                            style={{
-                              left: `${taxX(floor20)}%`,
-                              transform: "translateX(-92%)",
-                            }}
-                          >
-                            20% from {fmtDollars(floor20)}
-                          </span>
-                        )}
-                      </div>
-                    )}
                     <div className="relative">
                       <div className="absolute inset-0" aria-hidden="true">
                         {bands.map((b, i) => (
@@ -4799,8 +4758,20 @@ export function Playground() {
                         {fmtDollars(axisTaxableMax)}
                       </span>
                     </div>
-                    {legendSegs.length > 0 && (
-                      <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                    <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
+                        {(
+                          <span className="inline-flex items-center gap-1.5">
+                            <span
+                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
+                              style={hatchStyle}
+                              aria-hidden="true"
+                            />
+                            Deductions{" "}
+                            <span className="tnum font-medium text-[var(--text)]">
+                              −{fmtDollars(deductions)}
+                            </span>
+                          </span>
+                        )}
                         {legendSegs.map((s) => (
                           <span key={s.key} className="inline-flex items-center gap-1.5">
                             <span
@@ -4814,49 +4785,6 @@ export function Playground() {
                             </span>
                           </span>
                         ))}
-                      </p>
-                    )}
-                    <p className="tnum mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span
-                          className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--dim)]"
-                          style={hatchStyle}
-                          aria-hidden="true"
-                        />
-                        Deductions{" "}
-                        <span className="font-medium text-[var(--text)]">
-                          −{fmtDollars(deductions)}
-                        </span>
-                      </span>
-                      {markers.map((m) => (
-                        <span key={m.rate} style={{ color: m.color }}>
-                          {m.rate}% top {fmtDollars(m.to)} —{" "}
-                          {m.room > 0.5
-                            ? `${fmtDollars(m.room)} left`
-                            : m.room >= -0.5
-                              ? "filled exactly"
-                              : `passed by ${fmtDollars(-m.room)}`}
-                        </span>
-                      ))}
-                      {/* The 0% gains line's caption, in the same
-                          idiom as the bracket captions above: its
-                          room uses their comparator — the top
-                          minus the ORDINARY taxable income — so
-                          "passed by"/"left" says how the ordinary
-                          stack alone stands against the line,
-                          before the gains stack on top is priced
-                          (the Gains stack panel below carries the
-                          post-gains room). It also carries the
-                          plain-words scope note the user asked for. */}
-                      <span style={{ color: "#65a30d" }}>
-                        0% gains end {fmtDollars(zeroTop)} —{" "}
-                        {zeroTop - ordinaryTaxable > 0.5
-                          ? `${fmtDollars(zeroTop - ordinaryTaxable)} left`
-                          : zeroTop - ordinaryTaxable >= -0.5
-                            ? "filled exactly"
-                            : `passed by ${fmtDollars(ordinaryTaxable - zeroTop)}`}{" "}
-                        · only taxable-account gains and qualified dividends get the 0% rate
-                      </span>
                     </p>
                     {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
                       <p className="mt-1 text-xs text-[var(--dim)]" role="note">
@@ -5143,7 +5071,13 @@ export function Playground() {
                   </p>
 
                   <div className="mt-3">
-                    <h3 className="text-sm font-semibold">Income stack</h3>
+                    <h3 className="text-sm font-semibold">
+                      Income stack
+                      <InfoNote
+                        text={bracketStatusText}
+                        ariaLabel="Bracket-by-bracket status for the income stack"
+                      />
+                    </h3>
                   </div>
 
                   {stackChart}
