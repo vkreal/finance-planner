@@ -4732,48 +4732,60 @@ export function Playground() {
                       ? `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left before the ${nextMarker.rate}% bracket starts.`
                       : `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left in it.`;
                 const showGainsEndLabel = gainsTotal > 0;
-                /* Axis-row stacking (contract v76): whether the
-                   cliff and buffer axis labels sit close enough
-                   to need two rows. On narrow screens the
-                   axis-end figure also needs its own row: at
-                   phone width the cliff label and the axis-end
-                   figure share the first row and collide (the
-                   cliff label is long and its line sits near
-                   the right edge, now that headroom draws it
-                   on the chart), so below the small-screen
-                   breakpoint the axis-end figure drops to a
-                   row of its own — a third row when both
-                   marker labels are present, a second row
-                   when only the cliff label is — while at
-                   desktop widths the rows are exactly as
-                   before. The marker labels' wording and
-                   positions are unchanged at every width. */
+                /* Axis-row stacking (contract v76, reordered
+                   contract v83): the bracket-top tick labels now
+                   sit on the FIRST row, directly under the bar,
+                   and the $0 / cliff / buffer marker labels sit
+                   on the row(s) BELOW them — their rows and
+                   offsets relative to each other are unchanged,
+                   only shifted one row down while ticks are
+                   present, so a tick can never overlap a marker
+                   label however close a top sits to a marker
+                   line. Whether the cliff and buffer axis labels
+                   sit close enough to need two rows is unchanged.
+                   On narrow screens the axis-end figure also
+                   needs its own row: at phone width the cliff
+                   label and the axis-end figure share the first
+                   marker row and collide (the cliff label is
+                   long and its line sits near the right edge,
+                   now that headroom draws it on the chart), so
+                   below the small-screen breakpoint the axis-end
+                   figure drops to a row of its own — a third
+                   marker row when both marker labels are
+                   present, a second marker row when only the
+                   cliff label is — while at desktop widths the
+                   rows are exactly as before. The marker
+                   labels' wording and positions relative to
+                   each other are unchanged at every width; with
+                   no ticks present every row is exactly as
+                   before v83. */
                 const axisLinesClose =
                   acaCliffLine != null &&
                   acaBufferLine != null &&
                   Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
-                /* Bracket-top axis ticks (contract v77): one small
+                /* Bracket-top axis ticks (contract v77, anchored
+                   contract v79, moved up contract v83): one small
                    tick label for each bracket top whose guide line
                    is drawn — the same inAxis rule the lines use,
                    judged against the pre-headroom base axis end,
                    so a top beyond the axis end renders nothing
                    and a tick never names a line that is not
-                   drawn. The labels live on a row of their own
-                   below the existing axis rows (the $0/cliff/
-                   buffer rows keep their rows and offsets
-                   exactly), so a tick can never overlap the
-                   "$0 taxable" label or a cliff/buffer label
-                   however close a top sits to a marker line;
-                   within the tick row the tops sit far apart
-                   (successive tops are a whole bracket apart)
-                   and each label's centre sits exactly on its
-                   line (contract v79, second amendment — the
-                   clamp bound is the card-edge bound the tick
-                   labels themselves carry, not the floating
-                   labels' chart-edge bound). Rate and
-                   top are read off the same marker figures the
-                   guide lines and the heading's ⓘ use — no
-                   figure is written in. */
+                   drawn. The labels live on the FIRST row below
+                   the bar, directly under the bar's bottom edge
+                   (the $0 / cliff / buffer rows keep their rows
+                   relative to each other, shifted one row down
+                   below the tick row), so a tick can never
+                   overlap the "$0 taxable" label or a cliff/
+                   buffer label however close a top sits to a
+                   marker line; within the tick row the tops sit
+                   far apart (successive tops are a whole bracket
+                   apart) and each label's centre sits exactly on
+                   its line (contract v79 — the clamp bound is
+                   the card-edge bound the tick labels themselves
+                   carry, not the floating labels' chart-edge
+                   bound). Rate and top are read off the same
+                   marker figures the guide lines and the
+                   heading's ⓘ use — no figure is written in. */
                 const axisBracketTicks = markers.filter((m) => m.inAxis);
                 const axisHeightCls =
                   axisBracketTicks.length > 0
@@ -4787,12 +4799,34 @@ export function Playground() {
                       : acaCliffLine != null
                         ? "h-8 sm:h-4"
                         : "h-4";
-                const axisTickRowTop =
-                  axisLinesClose
-                    ? "top-12 sm:top-8"
+                /* Row offsets (contract v83): the tick row is
+                   row 0; the marker rows below it keep their
+                   v76/v77 relative order, shifted down one row
+                   (16px) while ticks are present, so the total
+                   row count — and therefore axisHeightCls above
+                   — is unchanged. With no ticks present every
+                   offset is exactly as before v83. */
+                const hasAxisTicks = axisBracketTicks.length > 0;
+                const axisTickRowTop = "top-0";
+                const axisMagiRowTop = hasAxisTicks ? "top-4" : "";
+                const axisBufferRowTop = hasAxisTicks
+                  ? axisLinesClose
+                    ? "top-8"
+                    : "top-4"
+                  : axisLinesClose
+                    ? "top-4"
+                    : "";
+                const axisEndRowTop = hasAxisTicks
+                  ? axisLinesClose
+                    ? "top-12 sm:top-4"
                     : acaCliffLine != null
                       ? "top-8 sm:top-4"
-                      : "top-4";
+                      : "top-4"
+                  : axisLinesClose
+                    ? "top-8 sm:top-0"
+                    : acaCliffLine != null
+                      ? "top-4 sm:top-0"
+                      : "";
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
                     <p className="mt-1 text-xs text-[var(--dim)]">
@@ -5141,7 +5175,7 @@ export function Playground() {
                       aria-hidden="true"
                     >
                       <span
-                        className="tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)]"
+                        className={`tnum absolute ${axisMagiRowTop} text-[11px] whitespace-nowrap text-[var(--dim)]`}
                         style={{
                           left: `${taxX(0)}%`,
                           transform:
@@ -5152,7 +5186,7 @@ export function Playground() {
                       </span>
                       {acaCliffLine != null && (
                         <span
-                          className="tnum absolute text-[11px] font-medium whitespace-nowrap"
+                          className={`tnum absolute ${axisMagiRowTop} text-[11px] font-medium whitespace-nowrap`}
                           style={{
                             left: `${acaCliffLine.xPct}%`,
                             color: "var(--warn)",
@@ -5169,7 +5203,7 @@ export function Playground() {
                       )}
                       {acaBufferLine != null && (
                         <span
-                          className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisLinesClose ? "top-4" : ""}`}
+                          className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisBufferRowTop}`}
                           style={{
                             left: `${acaBufferLine.xPct}%`,
                             transform:
@@ -5184,25 +5218,28 @@ export function Playground() {
                         </span>
                       )}
                       <span
-                        className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisLinesClose ? "top-8 sm:top-0" : acaCliffLine != null ? "top-4 sm:top-0" : ""}`}
+                        className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
                         style={{ right: 0 }}
                       >
                         {fmtDollars(axisTaxableMax)}
                       </span>
-                      {/* Bracket-top tick labels (contract v79,
-                          second amendment): each label's CENTRE
-                          sits exactly on its guide line — the
-                          same taxX(m.to) the overlay line uses,
-                          centred with translateX(-50%) — so a
-                          label can never sit visibly left of its
-                          line. The clamp bound is 24px: the
-                          widest tick label (~76px at 11px) is
-                          ~38px from centre
-                          to edge, and the card carries 16px of
+                      {/* Bracket-top tick labels (contract v83):
+                          the tick row is the FIRST row below the
+                          bar, directly under its bottom edge.
+                          Each label's CENTRE sits exactly on its
+                          guide line — the same taxX(m.to) the
+                          overlay line uses, centred with
+                          translateX(-50%) — so a label can never
+                          sit visibly left of its line. The clamp
+                          bound is 24px: the widest tick label
+                          (~76px at 11px) is ~38px from centre to
+                          edge, and the card carries 16px of
                           padding past the chart, so a 24px bound
                           keeps every label inside the card while
                           leaving centres exact everywhere except
-                          within 24px of an axis extreme. */}
+                          within 24px of an axis extreme. The
+                          $0 / cliff / buffer labels sit on the
+                          row below this one. */}
                       {axisBracketTicks.map((m) => (
                         <span
                           key={m.rate}
