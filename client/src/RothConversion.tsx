@@ -287,7 +287,7 @@ const ROTH_MODE_OPTIONS_SHOWN = ROTH_MODE_OPTIONS.filter(
    Playground collapsible-sections pattern: the heading itself is a
    toggle button carrying aria-expanded and the app's shared chip
    chevron (FoldChevron), and the heading stays visible when folded. The heading
-   always shows the warning count ("Watch-outs (2)") so a folded
+   always shows the grouped-row count ("Watch-outs (2)") so a folded
    panel still signals what is inside it, and the heading text is
    red so the panel reads as a warning at a glance; the items
    themselves are neutral advisory rows (body text on the card,
@@ -297,21 +297,65 @@ const ROTH_MODE_OPTIONS_SHOWN = ROTH_MODE_OPTIONS.filter(
    absent, so warnings are never hidden by default, and a collapse
    the user chooses stays collapsed across reloads and devices.
    Folding is visual only: the warnings are computed by the caller
-   exactly as before and rendered unchanged when open. */
+   exactly as before and rendered unchanged when open.
+   GROUPING (presentation only — the engine's watch-out generation
+   is untouched): warnings whose full rendered text is identical,
+   figures included, collapse into one row, in first-appearance
+   order, headed by the years and ages they cover. A group whose
+   years run consecutively is headed by its first–last range; a
+   group whose years do not run consecutively lists each year and
+   age, so the heading never claims a year the warning did not
+   fire in. A warning that occurs once renders exactly as before,
+   with its single year and age. No warning text changes, no
+   warning is dropped, and severity and icon are unchanged. */
 const watchOutItemCls =
   "tnum inline-flex max-w-full items-start gap-1.5 rounded-[var(--radius)] border border-[var(--border)] px-2.5 py-1.5 text-xs text-[var(--text)] sm:text-sm";
+type WatchOutWarning = { year: number; age: number; kind: string; text: string };
+type GroupedWatchOut = { text: string; years: number[]; ages: number[] };
+function groupWatchOuts(warnings: WatchOutWarning[]): GroupedWatchOut[] {
+  const groups: GroupedWatchOut[] = [];
+  const byText = new Map<string, GroupedWatchOut>();
+  for (const w of warnings) {
+    const existing = byText.get(w.text);
+    if (existing) {
+      existing.years.push(w.year);
+      existing.ages.push(w.age);
+    } else {
+      const group: GroupedWatchOut = { text: w.text, years: [w.year], ages: [w.age] };
+      byText.set(w.text, group);
+      groups.push(group);
+    }
+  }
+  return groups;
+}
+function watchOutHeading(group: GroupedWatchOut): string {
+  const firstYear = group.years[0];
+  const lastYear = group.years[group.years.length - 1];
+  const firstAge = group.ages[0];
+  const lastAge = group.ages[group.ages.length - 1];
+  if (firstYear === undefined || lastYear === undefined || firstAge === undefined || lastAge === undefined) {
+    return "";
+  }
+  if (group.years.length === 1) return `${firstYear} (age ${firstAge}):`;
+  const consecutive = group.years.every(
+    (year, i) => i === 0 || year === (group.years[i - 1] ?? year) + 1,
+  );
+  if (consecutive) return `${firstYear}–${lastYear} (ages ${firstAge}–${lastAge}):`;
+  return `${group.years.join(", ")} (ages ${group.ages.join(", ")}):`;
+}
 function WatchOutsPanel({
   warnings,
   open,
   onToggle,
 }: {
-  warnings: { year: number; age: number; kind: string; text: string }[];
+  warnings: WatchOutWarning[];
   open: boolean;
   onToggle: () => void;
 }) {
   const rawId = useId();
   const panelId = `roth-watchouts-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
-  if (warnings.length === 0) return null;
+  const groups = groupWatchOuts(warnings);
+  if (groups.length === 0) return null;
   return (
     <section className={sectionCls} aria-label="Cliff warnings">
       <h2 className="text-base font-semibold">
@@ -322,20 +366,18 @@ function WatchOutsPanel({
           className="flex w-full items-center justify-between gap-3 text-left"
           onClick={onToggle}
         >
-          <span className="text-[var(--bad)]">Watch-outs ({warnings.length})</span>
+          <span className="text-[var(--bad)]">Watch-outs ({groups.length})</span>
           <FoldChevron open={open} />
         </button>
       </h2>
       {open && (
         <div id={panelId} className="mt-3 flex flex-col gap-2">
-          {warnings.map((w, i) => (
-            <span key={`${w.year}-${w.kind}-${i}`} className={watchOutItemCls}>
+          {groups.map((g, i) => (
+            <span key={`${g.years[0] ?? i}-${i}`} className={watchOutItemCls}>
               <span aria-hidden="true">⚠</span>
               <span>
-                <strong>
-                  {w.year} (age {w.age}):
-                </strong>{" "}
-                {w.text}
+                <strong>{watchOutHeading(g)}</strong>{" "}
+                {g.text}
               </span>
             </span>
           ))}
