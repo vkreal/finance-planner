@@ -1,5 +1,9 @@
 # Data Plan
 
+## Contract v81 (2026-10-28): Tax Plan Watch-outs — identical warnings collapse into one row per distinct message, headed by the year range and ages
+
+All user-entered data, no external source; presentation only in client/src/RothConversion.tsx — no engine, pricing, server, or stored-data change beyond the version stamp. The Watch-outs panel groups its rows at render: warnings whose full rendered text is identical, figures included, collapse into ONE row in first-appearance order, headed by the years and ages they cover; a group whose years run consecutively is headed by its first–last range, and a group whose years do not run consecutively lists each year and age, so the heading never claims a year the warning did not fire in. A warning that occurs once renders exactly as before, with its single year and age. The card title count follows the GROUPED row count. No warning text changes, no warning is dropped, no severity or icon change, and the underlying watch-out generation (engine) is untouched — grouping is presentation-only, applied at render in a pure helper keyed on the full text. The fold toggle, its persisted open state, and every other part of the panel are unchanged. The added text contains no first names and no hard-coded dollar figure — every figure in a grouped row's text and heading is composed at render from the priced result. API_CONTRACT_VERSION 80 → 81.
+
 Core tracker data is user-entered via the app's own actions (no external source).
 
 ## Contract v80 (2026-10-28): Playground play strip — "Est. ACA credit" as the final segment of the figures line
