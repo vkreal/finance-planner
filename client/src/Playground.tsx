@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import { usePersistedFold } from "./foldState";
@@ -109,6 +109,130 @@ type StackSegPos = StackSeg & {
   widthPct: number;
   wide: boolean;
 };
+
+/* Bracket-top tick labels at the top ends of their guide lines
+   (contract v84, de-collision fix within v84): the strip
+   above the bar carries one label per bracket top, each
+   centred on its own dashed line. The labels are laid out
+   on a single row — but at phone width two neighbouring
+   tops can sit close enough that their label boxes touch
+   or overlap, and the later label then paints over the
+   earlier one's tail. So this strip MEASURES its real
+   spans (offsetLeft is the visual centre, because each
+   span is centred with translateX(-50%); offsetWidth is
+   the real width, edge clamp included) and drops a label
+   to a second row whenever its left edge would come
+   within 2px of the previous label on the first row —
+   still centred on its own line, one row lower, with the
+   strip growing to hold both rows and everything below
+   flowing down. Where labels do not collide, nothing
+   changes: one row, same geometry as before. Measuring
+   (not a character-width model) keeps the rule true
+   whatever the figures or the rendered font. */
+type TickLabel = { rate: number; to: number };
+
+const EMPTY_STAGGERED: ReadonlySet<number> = new Set();
+
+function TickStrip({
+  ticks,
+  taxX,
+}: {
+  ticks: TickLabel[];
+  taxX: (value: number) => number;
+}) {
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const spanRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const [staggered, setStaggered] =
+    useState<ReadonlySet<number>>(EMPTY_STAGGERED);
+  /* The positions the stagger decision is judged from, as
+     one key: the effect re-measures whenever a label's
+     centre moves, and the ResizeObserver re-measures
+     whenever the strip's width changes. */
+  const measureKey = ticks
+    .map((m) => `${m.rate}:${taxX(m.to).toFixed(2)}`)
+    .join("|");
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (strip == null) return;
+    let cancelled = false;
+    const measure = () => {
+      if (cancelled) return;
+      const items: Array<{ rate: number; left: number; right: number }> = [];
+      ticks.forEach((m, i) => {
+        const el = spanRefs.current[i];
+        if (el == null) return;
+        const half = el.offsetWidth / 2;
+        items.push({
+          rate: m.rate,
+          left: el.offsetLeft - half,
+          right: el.offsetLeft + half,
+        });
+      });
+      items.sort((a, b) => a.left - b.left);
+      let row1End = -Infinity;
+      let row2End = -Infinity;
+      const next = new Set<number>();
+      for (const it of items) {
+        if (it.left >= row1End + 2) {
+          row1End = it.right;
+        } else if (it.left >= row2End + 2) {
+          next.add(it.rate);
+          row2End = it.right;
+        } else {
+          /* Nowhere to stagger to — stay on the first row,
+             no worse than the pre-fix layout. */
+          row1End = Math.max(row1End, it.right);
+        }
+      }
+      setStaggered((prev) => {
+        if (
+          prev.size === next.size &&
+          [...next].every((rate) => prev.has(rate))
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(strip);
+    void document.fonts.ready.then(() => {
+      measure();
+    });
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ticks/taxX are captured through measureKey.
+  }, [measureKey]);
+  return (
+    <>
+      <div
+        ref={stripRef}
+        className={`relative mt-1 ${staggered.size > 0 ? "h-8" : "h-4"}`}
+        aria-hidden="true"
+      >
+        {ticks.map((m, i) => (
+          <span
+            key={m.rate}
+            ref={(el) => {
+              spanRefs.current[i] = el;
+            }}
+            className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${staggered.has(m.rate) ? "top-4" : "top-0"}`}
+            style={{
+              left: `clamp(24px, ${taxX(m.to)}%, calc(100% - 24px))`,
+              transform: "translateX(-50%)",
+            }}
+          >
+            {m.rate}% · {fmtDollars(m.to)}
+          </span>
+        ))}
+      </div>
+      <div className="h-[10px]" aria-hidden="true" />
+    </>
+  );
+}
 
 function buildStackModel(
   pg: PlaygroundYearResult,
@@ -4732,101 +4856,104 @@ export function Playground() {
                       ? `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left before the ${nextMarker.rate}% bracket starts.`
                       : `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left in it.`;
                 const showGainsEndLabel = gainsTotal > 0;
-                /* Axis-row stacking (contract v76, reordered
-                   contract v83): the bracket-top tick labels now
-                   sit on the FIRST row, directly under the bar,
-                   and the $0 / cliff / buffer marker labels sit
-                   on the row(s) BELOW them — their rows and
-                   offsets relative to each other are unchanged,
-                   only shifted one row down while ticks are
-                   present, so a tick can never overlap a marker
-                   label however close a top sits to a marker
-                   line. Whether the cliff and buffer axis labels
-                   sit close enough to need two rows is unchanged.
-                   On narrow screens the axis-end figure also
-                   needs its own row: at phone width the cliff
-                   label and the axis-end figure share the first
-                   marker row and collide (the cliff label is
-                   long and its line sits near the right edge,
-                   now that headroom draws it on the chart), so
-                   below the small-screen breakpoint the axis-end
-                   figure drops to a row of its own — a third
-                   marker row when both marker labels are
-                   present, a second marker row when only the
-                   cliff label is — while at desktop widths the
-                   rows are exactly as before. The marker
-                   labels' wording and positions relative to
-                   each other are unchanged at every width; with
-                   no ticks present every row is exactly as
-                   before v83. */
+                /* Axis-row stacking (contract v76): whether the
+                   cliff and buffer axis labels sit close enough
+                   to need two rows. On narrow screens the
+                   axis-end figure also needs its own row: at
+                   phone width the cliff label and the axis-end
+                   figure share the first row and collide (the
+                   cliff label is long and its line sits near
+                   the right edge, now that headroom draws it
+                   on the chart), so below the small-screen
+                   breakpoint the axis-end figure drops to a
+                   row of its own — a third row when both
+                   marker labels are present, a second row
+                   when only the cliff label is — while at
+                   desktop widths the rows are exactly as
+                   before. The marker labels' wording and
+                   positions are unchanged at every width.
+                   Contract v84: the bracket-top tick labels
+                   no longer live below the bar at all (see
+                   below), so the axis block below the bar is
+                   back to exactly these pre-v83 rows — the
+                   $0 / cliff / buffer labels sit on the row
+                   directly under the bar, as they did before
+                   the tick row existed. */
                 const axisLinesClose =
                   acaCliffLine != null &&
                   acaBufferLine != null &&
                   Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
-                /* Bracket-top axis ticks (contract v77, anchored
-                   contract v79, moved up contract v83): one small
-                   tick label for each bracket top whose guide line
-                   is drawn — the same inAxis rule the lines use,
-                   judged against the pre-headroom base axis end,
-                   so a top beyond the axis end renders nothing
-                   and a tick never names a line that is not
-                   drawn. The labels live on the FIRST row below
-                   the bar, directly under the bar's bottom edge
-                   (the $0 / cliff / buffer rows keep their rows
-                   relative to each other, shifted one row down
-                   below the tick row), so a tick can never
-                   overlap the "$0 taxable" label or a cliff/
-                   buffer label however close a top sits to a
-                   marker line; within the tick row the tops sit
-                   far apart (successive tops are a whole bracket
-                   apart) and each label's centre sits exactly on
-                   its line (contract v79 — the clamp bound is
-                   the card-edge bound the tick labels themselves
-                   carry, not the floating labels' chart-edge
-                   bound). Rate and top are read off the same
-                   marker figures the guide lines and the
-                   heading's ⓘ use — no figure is written in. */
+                /* Bracket-top tick labels (contract v77, anchored
+                   contract v79, moved to the line tops contract
+                   v84): one small tick label for each bracket
+                   top whose guide line is drawn — the same
+                   inAxis rule the lines use, judged against
+                   the pre-headroom base axis end, so a top
+                   beyond the axis end renders nothing and a
+                   tick never names a line that is not drawn.
+                   The labels live ABOVE the bar, at the top
+                   ends of their own dashed guide lines: a
+                   16px strip at the top of the chart block
+                   carries them, each label's centre exactly
+                   on its line (the same taxX(m.to) the
+                   overlay line uses, centred with
+                   translateX(-50%)), with the same 24px edge
+                   clamp as before (the card-edge bound the
+                   tick labels themselves carry, not the
+                   floating labels' chart-edge bound). Below
+                   the strip a 10px spacer carries the dashed
+                   lines up past the gains track, so each
+                   label sits above the gains segment with
+                   its line visibly running up to it — the
+                   strip and spacer are flow content above
+                   the bar area, and the lines, the band
+                   tints, and the white-line ⓘ live in the
+                   bar-area wrapper below them, starting 4px
+                   above the bar's top (the same absolute
+                   spot the old 26px offset put them) while
+                   ticks are present, and at the bar's top
+                   exactly as before when no tick is drawn.
+                   COLLISION: neighbouring labels that would
+                   touch at phone width are staggered by the
+                   strip itself (see TickStrip) — a label
+                   drops to a second row, still centred on
+                   its line, and the flow layout carries the
+                   bar down with it. CLEARANCE: the tick strip is a flow
+                   row below the floating labels and the
+                   bracket row above the bar, so a tick label
+                   can never overlap a floating label however
+                   close a bracket top sits to the landing or
+                   gains-end tick — the bracket row stands
+                   between them when a hard cliff applies, and
+                   the strip's own top margin keeps 4px of
+                   daylight when it does not. Within the strip
+                   the tops sit a whole bracket apart. Rate
+                   and top are read off the same marker
+                   figures the guide lines and the heading's
+                   ⓘ use — no figure is written in. */
                 const axisBracketTicks = markers.filter((m) => m.inAxis);
-                const axisHeightCls =
-                  axisBracketTicks.length > 0
-                    ? axisLinesClose
-                      ? "h-16 sm:h-12"
-                      : acaCliffLine != null
-                        ? "h-12 sm:h-8"
-                        : "h-8"
-                    : axisLinesClose
-                      ? "h-12 sm:h-8"
-                      : acaCliffLine != null
-                        ? "h-8 sm:h-4"
-                        : "h-4";
-                /* Row offsets (contract v83): the tick row is
-                   row 0; the marker rows below it keep their
-                   v76/v77 relative order, shifted down one row
-                   (16px) while ticks are present, so the total
-                   row count — and therefore axisHeightCls above
-                   — is unchanged. With no ticks present every
-                   offset is exactly as before v83. */
                 const hasAxisTicks = axisBracketTicks.length > 0;
-                const axisTickRowTop = "top-0";
-                const axisMagiRowTop = hasAxisTicks ? "top-4" : "";
-                const axisBufferRowTop = hasAxisTicks
-                  ? axisLinesClose
-                    ? "top-8"
-                    : "top-4"
-                  : axisLinesClose
-                    ? "top-4"
+                /* The bar-area overlays start 4px above the
+                   bar's top while ticks are present (the
+                   strip + spacer sit above the bar-area
+                   wrapper, so this is the same absolute
+                   spot the old 26px-from-the-chart-top
+                   offset put them); 0 when no tick is
+                   drawn, so a tickless chart is
+                   pixel-identical to before v84. */
+                const barOverlayTopPx = hasAxisTicks ? -4 : 0;
+                const axisHeightCls = axisLinesClose
+                  ? "h-12 sm:h-8"
+                  : acaCliffLine != null
+                    ? "h-8 sm:h-4"
+                    : "h-4";
+                const axisMagiRowTop = "";
+                const axisBufferRowTop = axisLinesClose ? "top-4" : "";
+                const axisEndRowTop = axisLinesClose
+                  ? "top-8 sm:top-0"
+                  : acaCliffLine != null
+                    ? "top-4 sm:top-0"
                     : "";
-                const axisEndRowTop = hasAxisTicks
-                  ? axisLinesClose
-                    ? "top-12 sm:top-4"
-                    : acaCliffLine != null
-                      ? "top-8 sm:top-4"
-                      : "top-4"
-                  : axisLinesClose
-                    ? "top-8 sm:top-0"
-                    : acaCliffLine != null
-                      ? "top-4 sm:top-0"
-                      : "";
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
                     <p className="mt-1 text-xs text-[var(--dim)]">
@@ -4989,7 +5116,24 @@ export function Playground() {
                       </div>
                     )}
                     <div className="relative">
-                      <div className="absolute inset-0" aria-hidden="true">
+                      {/* Bracket-top tick labels at the top ends
+                          of their guide lines (contract v84):
+                          the strip above the bar, then the
+                          10px spacer the dashed lines run up
+                          through to meet the labels. Both render
+                          only while a tick is drawn; the strip
+                          staggers colliding labels to a second
+                          row itself, and the bar-area wrapper
+                          below flows down with it. */}
+                      {hasAxisTicks && (
+                        <TickStrip ticks={axisBracketTicks} taxX={taxX} />
+                      )}
+                      <div className="relative">
+                      <div
+                        className="absolute right-0 bottom-0 left-0"
+                        style={{ top: barOverlayTopPx }}
+                        aria-hidden="true"
+                      >
                         {bands.map((b, i) => (
                           <div
                             key={b.rate}
@@ -5068,7 +5212,11 @@ export function Playground() {
                           />
                         )}
                       </div>
-                      <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+                      <div
+                        className="pointer-events-none absolute right-0 bottom-0 left-0"
+                        style={{ top: barOverlayTopPx }}
+                        aria-hidden="true"
+                      >
                         {markers
                           .filter((m) => m.inAxis)
                           .map((m) => (
@@ -5142,8 +5290,17 @@ export function Playground() {
                           capped to the viewport, so it stays on
                           screen at phone width. */}
                       <div
-                        className="absolute top-0 z-10"
+                        className="absolute z-10"
                         style={{
+                          /* Contract v84: the marker sits at the
+                             top of the BAR area — below the tick
+                             strip and dash spacer while ticks are
+                             present, at the chart's top as before
+                             when none are. The bar-area wrapper
+                             starts below the strip, so 4px above
+                             the bar is the same spot as the old
+                             offset. */
+                          top: barOverlayTopPx,
                           left: `clamp(11px, ${taxX(0)}%, calc(100% - 11px))`,
                           /* Centre on the line with a negative
                              margin, NOT a translateX transform:
@@ -5168,6 +5325,7 @@ export function Playground() {
                           ariaLabel="About the $0 taxable line"
                           align={taxX(0) > 60 ? "right" : "left"}
                         />
+                      </div>
                       </div>
                     </div>
                     <div
@@ -5223,35 +5381,10 @@ export function Playground() {
                       >
                         {fmtDollars(axisTaxableMax)}
                       </span>
-                      {/* Bracket-top tick labels (contract v83):
-                          the tick row is the FIRST row below the
-                          bar, directly under its bottom edge.
-                          Each label's CENTRE sits exactly on its
-                          guide line — the same taxX(m.to) the
-                          overlay line uses, centred with
-                          translateX(-50%) — so a label can never
-                          sit visibly left of its line. The clamp
-                          bound is 24px: the widest tick label
-                          (~76px at 11px) is ~38px from centre to
-                          edge, and the card carries 16px of
-                          padding past the chart, so a 24px bound
-                          keeps every label inside the card while
-                          leaving centres exact everywhere except
-                          within 24px of an axis extreme. The
-                          $0 / cliff / buffer labels sit on the
-                          row below this one. */}
-                      {axisBracketTicks.map((m) => (
-                        <span
-                          key={m.rate}
-                          className={`tnum absolute ${axisTickRowTop} text-[11px] whitespace-nowrap text-[var(--dim)]`}
-                          style={{
-                            left: `clamp(24px, ${taxX(m.to)}%, calc(100% - 24px))`,
-                            transform: "translateX(-50%)",
-                          }}
-                        >
-                          {m.rate}% · {fmtDollars(m.to)}
-                        </span>
-                      ))}
+                      {/* Contract v84: the bracket-top tick labels
+                          moved to the top ends of their guide
+                          lines, above the bar — nothing renders
+                          for them in this below-bar block. */}
                     </div>
                     <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
                         {(
