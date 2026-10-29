@@ -4707,8 +4707,30 @@ export function Playground() {
                    centre clamped inside the chart (a tick at the
                    right edge right-aligns its label) so neither
                    label can overflow the card at any width. */
+                const landingIndex = markers.findIndex(
+                  (m) => m.room >= 0,
+                );
                 const landingMarker =
-                  markers.find((m) => m.room >= 0) ?? null;
+                  landingIndex >= 0 ? (markers[landingIndex] ?? null) : null;
+                /* Landing-bracket explainer (contract v82): ONE
+                   sentence composed live from the priced result —
+                   the ordinary taxable total, the landing
+                   bracket's rate, the room left in it, and the
+                   next bracket's rate when there is a next
+                   bracket (the landing bracket is the last one
+                   modelled when there is none, so the sentence
+                   names the room in it instead of a next
+                   bracket it does not have — still one
+                   sentence, nothing hard-coded). The label
+                   text itself is unchanged. */
+                const nextMarker =
+                  landingIndex >= 0 ? markers[landingIndex + 1] : undefined;
+                const landingExplainerText =
+                  landingMarker == null
+                    ? null
+                    : nextMarker != null
+                      ? `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left before the ${nextMarker.rate}% bracket starts.`
+                      : `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left in it.`;
                 const showGainsEndLabel = gainsTotal > 0;
                 /* Axis-row stacking (contract v76): whether the
                    cliff and buffer axis labels sit close enough
@@ -4809,23 +4831,78 @@ export function Playground() {
                             </span>
                           </div>
                         )}
-                        {landingMarker != null && (
-                          <div className="relative h-[18px]" aria-hidden="true">
-                            <span
-                              className="tnum absolute text-[11px] whitespace-nowrap"
-                              style={{
-                                color: landingMarker.color,
-                                left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
-                                transform: "translateX(-50%)",
-                              }}
-                            >
-                              {landingMarker.rate}% ·{" "}
-                              {landingMarker.room > 0.5
-                                ? `${fmtDollars(landingMarker.room)} left`
-                                : "filled"}
-                            </span>
-                          </div>
-                        )}
+                        {landingMarker != null &&
+                          landingExplainerText != null && (
+                            <div className="relative h-[18px]">
+                              {/* Landing-bracket ⓘ (contract v82):
+                                  the shared InfoNote beside the
+                                  label, on the same gate as the
+                                  label and following its position
+                                  — the label text is unchanged and
+                                  stays aria-hidden (its figures
+                                  are already in the chart's
+                                  accessible description), while
+                                  the ⓘ button itself stays
+                                  reachable. The bubble opens
+                                  ABOVE the label, lifted clear of
+                                  the gains-end row above it when
+                                  that row is present (24px: the
+                                  18px row plus the gap), so it can
+                                  never cover the bracket row or
+                                  the bar below; it opens to the
+                                  left when the tick sits right of
+                                  centre, keeping the 224px bubble
+                                  inside the viewport at phone
+                                  width. Plain absolute bubble, not
+                                  the viewport-clamped variant —
+                                  the centring transform on this
+                                  label's wrapper would capture
+                                  fixed positioning (the v79
+                                  white-line lesson). */}
+                              <span
+                                className="absolute inline-flex items-center whitespace-nowrap"
+                                style={{
+                                  color: landingMarker.color,
+                                  left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
+                                  transform: "translateX(-50%)",
+                                  /* Lift this label's stacking context
+                                     above the sticky play strip
+                                     (z-30): the centring transform
+                                     traps the bubble's own z-40
+                                     inside this span, so without a
+                                     z-index here the strip paints
+                                     over the top lines of an
+                                     above-opening bubble when the
+                                     chart sits high in the
+                                     viewport. The label itself sits
+                                     below the strip, so nothing
+                                     else moves. */
+                                  zIndex: 31,
+                                }}
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="tnum text-[11px]"
+                                >
+                                  {landingMarker.rate}% ·{" "}
+                                  {landingMarker.room > 0.5
+                                    ? `${fmtDollars(landingMarker.room)} left`
+                                    : "filled"}
+                                </span>
+                                <InfoNote
+                                  text={landingExplainerText}
+                                  ariaLabel="About the landing bracket label"
+                                  placement="above"
+                                  liftPx={showGainsEndLabel ? 24 : 0}
+                                  align={
+                                    taxX(landingMarker.to) > 40
+                                      ? "right"
+                                      : "left"
+                                  }
+                                />
+                              </span>
+                            </div>
+                          )}
                       </div>
                     )}
                     {/* Buffer bracket (contract v79): ONE bracket

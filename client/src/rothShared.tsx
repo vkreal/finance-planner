@@ -106,19 +106,26 @@ export {
    clamped inside the viewport's edges, so the whole note stays
    readable at phone width wherever the table is scrolled to;
    the bubble's look and the tap/hover/Escape behavior are
-   unchanged, and it follows the button on scroll and resize. */
+   unchanged, and it follows the button on scroll and resize.
+   `liftPx` (contract v82, used by one caller) adds extra clear
+   space between an above-placed bubble and its button, so the
+   bubble can clear a neighbouring row above the button — the
+   default 0 keeps every existing caller's geometry exactly. */
 export function InfoNote({
   text,
   ariaLabel,
   align = "left",
   placement = "below",
   viewportClamp = false,
+  liftPx = 0,
 }: {
   text: string;
   ariaLabel: string;
   align?: "left" | "right";
   placement?: "below" | "above";
   viewportClamp?: boolean;
+  /** Extra px of gap above the button for an above-placed bubble. */
+  liftPx?: number;
 }) {
   const [pinned, setPinned] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -161,7 +168,10 @@ export function InfoNote({
       let left = align === "right" ? r.right - width : r.left;
       left = Math.min(Math.max(left, 8), Math.max(8, vw - width - 8));
       if (placement === "above") {
-        setBubblePos({ left, bottom: window.innerHeight - r.top + 6 });
+        setBubblePos({
+          left,
+          bottom: window.innerHeight - r.top + 6 + liftPx,
+        });
       } else {
         setBubblePos({ left, top: r.bottom + 6 });
       }
@@ -173,7 +183,7 @@ export function InfoNote({
       window.removeEventListener("resize", update);
       document.removeEventListener("scroll", update, true);
     };
-  }, [show, viewportClamp, align, placement]);
+  }, [show, viewportClamp, align, placement, liftPx]);
 
   return (
     <span
@@ -234,6 +244,11 @@ export function InfoNote({
         <span
           id={tipId}
           role="tooltip"
+          style={
+            placement === "above" && liftPx > 0
+              ? { marginBottom: 6 + liftPx }
+              : undefined
+          }
           className={`absolute z-40 block w-56 max-w-[calc(100vw-3rem)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-2.5 text-xs leading-relaxed font-normal whitespace-normal text-[var(--text)] shadow-lg ${
             placement === "above" ? "bottom-full mb-1.5" : "top-full mt-1.5"
           } ${align === "right" ? "right-0" : "left-0"}`}
