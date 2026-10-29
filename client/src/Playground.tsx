@@ -2866,6 +2866,30 @@ export function Playground() {
                       </span>
                     </span>
                   )}
+                  {/* Est. ACA credit (contract v80): the final
+                      segment of the figures line, read live off
+                      the priced year's own ACA premium credit
+                      (pg.aca.credit — null when no benchmark
+                      premium was entered, $0 over the cliff),
+                      rounded to whole dollars by fmtDollars like
+                      the tax figure beside it. It renders only
+                      when the priced credit is above $0, so an
+                      over-the-cliff year shows nothing here.
+                      "Est." stays: the actual credit is capped
+                      at the enrolled plan's premium, so the
+                      benchmark-based figure is an estimate. */}
+                  {pg != null &&
+                    pg.aca.credit != null &&
+                    pg.aca.credit > 0 && (
+                      <span className="contents">
+                        <span aria-hidden="true" className="text-[var(--dim)]">
+                          ·
+                        </span>
+                        <span>
+                          Est. ACA credit {fmtDollars(pg.aca.credit)}
+                        </span>
+                      </span>
+                    )}
                 </p>
               </div>
             );
