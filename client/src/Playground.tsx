@@ -4920,10 +4920,10 @@ export function Playground() {
                    its line, and the flow layout carries the
                    bar down with it. CLEARANCE: the tick strip is a flow
                    row below the floating labels and the
-                   bracket row above the bar, so a tick label
+                   Buffer label row above the bar, so a tick label
                    can never overlap a floating label however
                    close a bracket top sits to the landing or
-                   gains-end tick — the bracket row stands
+                   gains-end tick — the Buffer label row stands
                    between them when a hard cliff applies, and
                    the strip's own top margin keeps 4px of
                    daylight when it does not. Within the strip
@@ -5009,7 +5009,7 @@ export function Playground() {
                                   the gains-end row above it when
                                   that row is present (24px: the
                                   18px row plus the gap), so it can
-                                  never cover the bracket row or
+                                  never cover the Buffer label row or
                                   the bar below; it opens to the
                                   left when the tick sits right of
                                   centre, keeping the 224px bubble
@@ -5066,29 +5066,29 @@ export function Playground() {
                           )}
                       </div>
                     )}
-                    {/* Buffer bracket (contract v79): ONE bracket
-                        above the bar spanning from the buffer
-                        dashed line to the cliff dashed line,
-                        labeled "Buffer $…" with the figure
-                        composed live from the typed buffer
-                        dollars — never written in. The brace's
-                        end ticks sit exactly on the two lines'
-                        positions and the label is centred on the
-                        span, its centre clamped inside the chart
+                    {/* Buffer label (contract v85): the v79
+                        bracket's label WITHOUT the brace — the
+                        tinted buffer span below (see the chart
+                        area) now marks the zone, so the brace
+                        with its end ticks is gone. The label
+                        itself stays, centred on the span at the
+                        same horizontal centre the bracket label
+                        used, its centre clamped inside the chart
                         so a narrow span (a small buffer) or a
-                        span near an edge never overflows. The
-                        bracket lives on a row of its own below
-                        the floating labels above, so it can
-                        never overlap them however the landing
-                        label sits against the span. It renders
-                        only when both lines render: a hard cliff
-                        applies and the buffer is above $0 (at $0
-                        the lines coincide and there is no span to
-                        bracket — the single line is identified by
-                        the axis label alone); with no hard cliff
-                        nothing renders, as before. The dashed
-                        lines themselves and the two-row axis
-                        labels below are unchanged. */}
+                        span near an edge never overflows. It
+                        lives on a row of its own below the
+                        floating labels above, so it can never
+                        overlap them. It renders only when both
+                        lines render: a hard cliff applies and
+                        the buffer is above $0 (at $0 the lines
+                        coincide and there is no span — the
+                        single line is identified by the axis
+                        label alone); with no hard cliff nothing
+                        renders, as before. The figure is composed
+                        live from the typed buffer dollars —
+                        never written in. The dashed lines
+                        themselves and the two-row axis labels
+                        below are unchanged. */}
                     {acaCliffLine != null && acaBufferLine != null && (
                       <div aria-hidden="true" className="relative h-[26px]">
                         <span
@@ -5101,21 +5101,46 @@ export function Playground() {
                         >
                           Buffer {fmtDollars(pgAcaBufferDollars)}
                         </span>
-                        <div
-                          className="absolute"
-                          style={{
-                            left: `${acaBufferLine.xPct}%`,
-                            width: `${Math.max(0, acaCliffLine.xPct - acaBufferLine.xPct)}%`,
-                            top: "18px",
-                            height: "6px",
-                            borderBottom: "1.5px solid var(--dim)",
-                            borderLeft: "1.5px solid var(--dim)",
-                            borderRight: "1.5px solid var(--dim)",
-                          }}
-                        />
                       </div>
                     )}
                     <div className="relative">
+                      {/* Buffer-span tint (contract v85): the
+                          region between the buffer dashed line
+                          and the cliff dashed line, filled with
+                          a translucent tint in the cliff line's
+                          colour (var(--warn)), running the full
+                          height of the chart area — from the top
+                          of the tick-label strip, through the
+                          bar, to the axis. It renders on exactly
+                          the gate the v79 bracket used: both
+                          lines render (a hard cliff applies and
+                          the buffer is above $0); at a $0 buffer
+                          or with no hard cliff there is no tint,
+                          as there was no bracket. It is the
+                          FIRST child of this wrapper and
+                          absolutely positioned, so it paints
+                          BEHIND everything in the chart area —
+                          the tick labels, the bar segments, the
+                          dashed lines, and the white-line ⓘ all
+                          sit in later siblings and paint over
+                          it — and it takes no space in flow, so
+                          it changes no measured geometry: the
+                          TickStrip stagger measurement still
+                          sees the real label spans. Pointer
+                          events pass straight through it, so it
+                          can never swallow a tap on the ⓘ. */}
+                      {acaCliffLine != null && acaBufferLine != null && (
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute top-0 bottom-0"
+                          style={{
+                            left: `${acaBufferLine.xPct}%`,
+                            width: `${Math.max(0, acaCliffLine.xPct - acaBufferLine.xPct)}%`,
+                            background:
+                              "color-mix(in srgb, var(--warn) 15%, transparent)",
+                          }}
+                        />
+                      )}
                       {/* Bracket-top tick labels at the top ends
                           of their guide lines (contract v84):
                           the strip above the bar, then the
