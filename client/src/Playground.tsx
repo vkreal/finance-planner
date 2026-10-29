@@ -4706,22 +4706,6 @@ export function Playground() {
                   acaCliffLine != null &&
                   acaBufferLine != null &&
                   Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
-                /* Line-tag fallback (contract v78): the one-row
-                   hug tags extend OUTWARD from their lines —
-                   Buffer left of its line, Cliff right of its
-                   line — so they can only crowd each other when
-                   the lines are effectively coincident. The
-                   fallback triggers when the gap between the
-                   lines is under 1.25% of the track — about 4px
-                   of daylight at the narrowest chart width, so
-                   below it the two tags and their dashed lines
-                   read as one cluster and the staggered rows
-                   keep them legible. Wider gaps stay on one
-                   row, at desktop and phone widths alike. */
-                const lineTagsClose =
-                  acaCliffLine != null &&
-                  acaBufferLine != null &&
-                  Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 1.25;
                 /* Bracket-top axis ticks (contract v77): one small
                    tick label for each bracket top whose guide line
                    is drawn — the same inAxis rule the lines use,
@@ -4736,8 +4720,11 @@ export function Playground() {
                    however close a top sits to a marker line;
                    within the tick row the tops sit far apart
                    (successive tops are a whole bracket apart)
-                   and each label's centre is clamped inside the
-                   chart like the floating labels above. Rate and
+                   and each label's centre sits exactly on its
+                   line (contract v79, second amendment — the
+                   clamp bound is the card-edge bound the tick
+                   labels themselves carry, not the floating
+                   labels' chart-edge bound). Rate and
                    top are read off the same marker figures the
                    guide lines and the heading's ⓘ use — no
                    figure is written in. */
@@ -4817,84 +4804,53 @@ export function Playground() {
                         )}
                       </div>
                     )}
-                    {/* Line tags (contract v78): short tags attached
-                        to the dashed lines on the chart itself —
-                        "Buffer" on the buffer line, "Cliff" on the
-                        cliff line, each in its line's own colour —
-                        so the lines read without the axis rows
-                        below. On ONE row, each tag hugs its own
-                        line: Buffer's right edge touches its line
-                        (the tag sits left of the line) and Cliff's
-                        left edge touches its line (the tag sits
-                        right of the line); the edge clamps only
-                        keep a tag inside the chart when its line
-                        sits within a tag-width of an edge. When
-                        the lines are so close the tags would
-                        crowd (lineTagsClose above), the tags fall
-                        back to the v76 staggered two-row
-                        arrangement — buffer tag above, cliff tag
-                        below, each centred on its line — rather
-                        than overlapping. A tag renders only when
-                        its line renders: the strip needs a cliff
-                        line, and the buffer tag needs a buffer
-                        line (a buffer above $0). The two-row axis
+                    {/* Buffer bracket (contract v79): ONE bracket
+                        above the bar spanning from the buffer
+                        dashed line to the cliff dashed line,
+                        labeled "Buffer $…" with the figure
+                        composed live from the typed buffer
+                        dollars — never written in. The brace's
+                        end ticks sit exactly on the two lines'
+                        positions and the label is centred on the
+                        span, its centre clamped inside the chart
+                        so a narrow span (a small buffer) or a
+                        span near an edge never overflows. The
+                        bracket lives on a row of its own below
+                        the floating labels above, so it can
+                        never overlap them however the landing
+                        label sits against the span. It renders
+                        only when both lines render: a hard cliff
+                        applies and the buffer is above $0 (at $0
+                        the lines coincide and there is no span to
+                        bracket — the single line is identified by
+                        the axis label alone); with no hard cliff
+                        nothing renders, as before. The dashed
+                        lines themselves and the two-row axis
                         labels below are unchanged. */}
-                    {acaCliffLine != null && (
-                      <div aria-hidden="true">
-                        {lineTagsClose ? (
-                          <>
-                            {acaBufferLine != null && (
-                              <div className="relative h-[16px]">
-                                <span
-                                  className="tnum absolute text-[11px] font-medium whitespace-nowrap"
-                                  style={{
-                                    color: "var(--dim)",
-                                    left: `clamp(22px, ${acaBufferLine.xPct}%, calc(100% - 22px))`,
-                                    transform: "translateX(-50%)",
-                                  }}
-                                >
-                                  Buffer
-                                </span>
-                              </div>
-                            )}
-                            <div className="relative h-[16px]">
-                              <span
-                                className="tnum absolute text-[11px] font-medium whitespace-nowrap"
-                                style={{
-                                  color: "var(--warn)",
-                                  left: `clamp(18px, ${acaCliffLine.xPct}%, calc(100% - 18px))`,
-                                  transform: "translateX(-50%)",
-                                }}
-                              >
-                                Cliff
-                              </span>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="relative h-[16px]">
-                            {acaBufferLine != null && (
-                              <span
-                                className="tnum absolute text-[11px] font-medium whitespace-nowrap"
-                                style={{
-                                  color: "var(--dim)",
-                                  left: `clamp(44px, ${acaBufferLine.xPct}%, 100%)`,
-                                  transform: "translateX(-100%)",
-                                }}
-                              >
-                                Buffer
-                              </span>
-                            )}
-                            <span
-                              className="tnum absolute text-[11px] font-medium whitespace-nowrap"
-                              style={{
-                                color: "var(--warn)",
-                                left: `clamp(0px, ${acaCliffLine.xPct}%, calc(100% - 32px))`,
-                              }}
-                            >
-                              Cliff
-                            </span>
-                          </div>
-                        )}
+                    {acaCliffLine != null && acaBufferLine != null && (
+                      <div aria-hidden="true" className="relative h-[26px]">
+                        <span
+                          className="tnum absolute top-0 text-[11px] font-medium whitespace-nowrap"
+                          style={{
+                            color: "var(--dim)",
+                            left: `clamp(40px, ${(acaBufferLine.xPct + acaCliffLine.xPct) / 2}%, calc(100% - 40px))`,
+                            transform: "translateX(-50%)",
+                          }}
+                        >
+                          Buffer {fmtDollars(pgAcaBufferDollars)}
+                        </span>
+                        <div
+                          className="absolute"
+                          style={{
+                            left: `${acaBufferLine.xPct}%`,
+                            width: `${Math.max(0, acaCliffLine.xPct - acaBufferLine.xPct)}%`,
+                            top: "18px",
+                            height: "6px",
+                            borderBottom: "1.5px solid var(--dim)",
+                            borderLeft: "1.5px solid var(--dim)",
+                            borderRight: "1.5px solid var(--dim)",
+                          }}
+                        />
                       </div>
                     )}
                     <div className="relative">
@@ -5019,6 +4975,38 @@ export function Playground() {
                           />
                         )}
                       </div>
+                      {/* White-line ⓘ (contract v79, amendment): the
+                          shared InfoNote ⓘ at the top of the solid
+                          $0 line, where the deductions hatch ends.
+                          Its copy is plain English composed live
+                          from the priced deductions total — never
+                          written in — and names the line the way
+                          it reads on screen, the white line. The
+                          marker sits inside the bar at the line's
+                          top, clear of the floating labels and the
+                          bracket row above, with its centre
+                          clamped inside the chart so a $0 line at
+                          an edge never overflows. It renders
+                          whenever the $0 line renders — the line
+                          is unconditional in this chart, so the
+                          marker is too. The bubble opens below
+                          the marker with the viewport clamp the
+                          headline ⓘ uses, so it stays on screen
+                          at phone width. */}
+                      <div
+                        className="absolute top-0 z-10"
+                        style={{
+                          left: `clamp(11px, ${taxX(0)}%, calc(100% - 11px))`,
+                          transform: "translateX(-50%)",
+                        }}
+                      >
+                        <InfoNote
+                          text={`Taxable income starts at the white line. The ${fmtDollars(deductions)} to the left is deductions — income the tax doesn't touch. Everything to the right of the white line counts, starting at $0.`}
+                          ariaLabel="About the $0 taxable line"
+                          align={taxX(0) > 60 ? "right" : "left"}
+                          viewportClamp
+                        />
+                      </div>
                     </div>
                     <div
                       className={`relative mt-1 ${axisHeightCls}`}
@@ -5073,12 +5061,26 @@ export function Playground() {
                       >
                         {fmtDollars(axisTaxableMax)}
                       </span>
+                      {/* Bracket-top tick labels (contract v79,
+                          second amendment): each label's CENTRE
+                          sits exactly on its guide line — the
+                          same taxX(m.to) the overlay line uses,
+                          centred with translateX(-50%) — so a
+                          label can never sit visibly left of its
+                          line. The clamp bound is 24px: the
+                          widest tick label (~76px at 11px) is
+                          ~38px from centre
+                          to edge, and the card carries 16px of
+                          padding past the chart, so a 24px bound
+                          keeps every label inside the card while
+                          leaving centres exact everywhere except
+                          within 24px of an axis extreme. */}
                       {axisBracketTicks.map((m) => (
                         <span
                           key={m.rate}
                           className={`tnum absolute ${axisTickRowTop} text-[11px] whitespace-nowrap text-[var(--dim)]`}
                           style={{
-                            left: `clamp(52px, ${taxX(m.to)}%, calc(100% - 52px))`,
+                            left: `clamp(24px, ${taxX(m.to)}%, calc(100% - 24px))`,
                             transform: "translateX(-50%)",
                           }}
                         >
