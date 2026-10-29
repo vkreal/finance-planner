@@ -128,8 +128,11 @@ type StackSegPos = StackSeg & {
    flowing down. Where labels do not collide, nothing
    changes: one row, same geometry as before. Measuring
    (not a character-width model) keeps the rule true
-   whatever the figures or the rendered font. */
-type TickLabel = { rate: number; to: number };
+   whatever the figures or the rendered font. COLOR RULE
+   (contract v86): each label takes the exact colour of the
+   dashed guide line it names — the marker's `color`, carried
+   through the TickLabel — never a per-label hard-coded hex. */
+type TickLabel = { rate: number; to: number; color: string };
 
 const EMPTY_STAGGERED: ReadonlySet<number> = new Set();
 
@@ -219,10 +222,11 @@ function TickStrip({
             ref={(el) => {
               spanRefs.current[i] = el;
             }}
-            className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${staggered.has(m.rate) ? "top-4" : "top-0"}`}
+            className={`tnum absolute text-[11px] whitespace-nowrap ${staggered.has(m.rate) ? "top-4" : "top-0"}`}
             style={{
               left: `clamp(24px, ${taxX(m.to)}%, calc(100% - 24px))`,
               transform: "translateX(-50%)",
+              color: m.color,
             }}
           >
             {m.rate}% · {fmtDollars(m.to)}
@@ -3010,7 +3014,10 @@ export function Playground() {
                           ·
                         </span>
                         <span>
-                          Est. ACA credit {fmtDollars(pg.aca.credit)}
+                          Est. ACA credit{" "}
+                          <span className="font-bold text-[var(--accent)]">
+                            {fmtDollars(pg.aca.credit)}
+                          </span>
                         </span>
                       </span>
                     )}
@@ -4975,6 +4982,18 @@ export function Playground() {
                               style={{
                                 left: `clamp(78px, ${taxX(zeroTop)}%, calc(100% - 78px))`,
                                 transform: "translateX(-50%)",
+                                /* Lift this label's stacking context
+                                   above the chart-area wrapper below
+                                   (contract v87, mirroring the v82
+                                   landing-label lift): the centring
+                                   transform traps the bubble's own
+                                   z-index inside this span, so
+                                   without a z-index here the later
+                                   chart-area sibling — bars, tick
+                                   labels, guide lines, tint, and
+                                   the z-1 gains track — paints over
+                                   the downward-opening bubble. */
+                                zIndex: 31,
                               }}
                             >
                               <span
@@ -5231,7 +5250,7 @@ export function Playground() {
                         ))}
                         {deductions > 0 && (
                           <div
-                            className="pointer-events-none absolute top-0 h-10 border-r-2 border-dashed border-[var(--text)]"
+                            className="pointer-events-none absolute top-0 h-10"
                             style={{ left: 0, width: `${pct(deductions)}%`, ...hatchStyle }}
                             aria-hidden="true"
                           />
@@ -5288,8 +5307,9 @@ export function Playground() {
                           $0 line, where the deductions hatch ends.
                           Its copy is plain English composed live
                           from the priced deductions total — never
-                          written in — and names the line the way
-                          it reads on screen, the white line. The
+                          written in — and names it simply
+                          "the line", with no colour claim
+                          (contract v88). The
                           marker sits inside the bar at the line's
                           top, clear of the floating labels and the
                           bracket row above, with its centre
@@ -5346,7 +5366,7 @@ export function Playground() {
                         }}
                       >
                         <InfoNote
-                          text={`Taxable income starts at the white line. The ${fmtDollars(deductions)} to the left is deductions — income the tax doesn't touch. Everything to the right of the white line counts, starting at $0.`}
+                          text={`Taxable income starts at the line. The ${fmtDollars(deductions)} to the left is deductions — income the tax doesn't touch. Everything to the right of the line counts, starting at $0.`}
                           ariaLabel="About the $0 taxable line"
                           align={taxX(0) > 60 ? "right" : "left"}
                         />
