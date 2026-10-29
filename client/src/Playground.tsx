@@ -4989,22 +4989,49 @@ export function Playground() {
                           an edge never overflows. It renders
                           whenever the $0 line renders — the line
                           is unconditional in this chart, so the
-                          marker is too. The bubble opens below
-                          the marker with the viewport clamp the
-                          headline ⓘ uses, so it stays on screen
-                          at phone width. */}
+                          marker is too. The bubble is the plain
+                          absolute one the other chart ⓘs use,
+                          opening below the marker — NOT the
+                          viewport-clamped variant: that variant
+                          positions fixed against the viewport,
+                          and a centring transform on this
+                          marker's wrapper would capture fixed
+                          positioning and land the bubble far
+                          from the marker (verified live in the
+                          rendered pass: the clamped bubble
+                          never appeared near the marker). The
+                          wrapper therefore centres with a
+                          negative margin and carries no
+                          transform at all. The plain bubble's align flips
+                          near the right edge and its width is
+                          capped to the viewport, so it stays on
+                          screen at phone width. */}
                       <div
                         className="absolute top-0 z-10"
                         style={{
                           left: `clamp(11px, ${taxX(0)}%, calc(100% - 11px))`,
-                          transform: "translateX(-50%)",
+                          /* Centre on the line with a negative
+                             margin, NOT a translateX transform:
+                             the marker's wrapper must carry no
+                             transform — with the old viewport-
+                             clamped bubble, the centring
+                             transform captured its fixed
+                             positioning and landed it far from
+                             the marker (verified live in the
+                             rendered pass). Margin centring
+                             keeps every transform out of the
+                             marker's ancestry, and the plain
+                             bubble below is verified painting.
+                             The span is 22px wide (18px button +
+                             the 4px ml-1), so −11px centres it
+                             exactly as translateX(-50%) did. */
+                          marginLeft: "-11px",
                         }}
                       >
                         <InfoNote
                           text={`Taxable income starts at the white line. The ${fmtDollars(deductions)} to the left is deductions — income the tax doesn't touch. Everything to the right of the white line counts, starting at $0.`}
                           ariaLabel="About the $0 taxable line"
                           align={taxX(0) > 60 ? "right" : "left"}
-                          viewportClamp
                         />
                       </div>
                     </div>
