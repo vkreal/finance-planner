@@ -32,11 +32,10 @@ import { z } from "@hatch/space-sdk";
    refused, and there is no unchecked path into this record.
    Either way, an accepted write stores revision + 1.
 
-   The commit is atomic, not just checked — but the UI-state
-   blob's SQL guard cannot be copied verbatim: that blob is
-   plain JSON, so SQL can json_extract its revision, while the
-   Roth blob is ciphertext (enc:v1:…) and SQL can see nothing
-   inside it. The guarded commit for this blob therefore
+   The commit is atomic, not just checked — and it uses the
+   same guard shape as the UI-state blob's commit (contract
+   v90: both blobs are ciphertext, so SQL can see inside
+   neither). The guarded commit for this blob therefore
    predicates on the one value SQL can compare: the stored raw
    value itself. The handler issues ONE UPDATE … WHERE key =
    'roth_conversion_inputs_v1' AND value = :storedRawCiphertext

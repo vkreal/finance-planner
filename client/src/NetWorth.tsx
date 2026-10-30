@@ -583,15 +583,25 @@ function SnapshotEditor({
   snapshot,
   accounts,
   snapshots,
+  restoreEpoch,
   onClose,
 }: {
   snapshot: NwSnapshot | null; // null = add mode
   accounts: NwAccount[];
   snapshots: NwSnapshot[];
+  restoreEpoch: number;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const isEdit = snapshot != null;
+  // The restore epoch this editor observed, frozen at mount:
+  // restoreEpoch arrives from the live query, so reading the
+  // prop at save time would re-base the editor if a refetch
+  // landed while it was open — a restore plus a refetch must
+  // not launder a stale editor into a fresh one. The snapshot
+  // revision already travels frozen in the snapshot object;
+  // the epoch travels frozen the same way.
+  const [observedEpoch] = useState(restoreEpoch);
   // Entry form accounts: active accounts, plus (when editing) any
   // archived account that has a recorded balance in this snapshot.
   const formAccounts = useMemo(() => {
@@ -685,6 +695,10 @@ function SnapshotEditor({
             id: snapshot.id,
             ...input,
             baseRevision: snapshot.revision,
+            // Contract v93 (F5): the restore epoch this editor
+            // observed — a restore since the load refuses the save
+            // even when the revision numbers match.
+            baseEpoch: observedEpoch,
           })
         : api.addNwSnapshot(input),
     onSuccess: (r) => {
@@ -1009,13 +1023,19 @@ function SnapshotEditor({
 function BalanceEditor({
   account,
   snapshot,
+  restoreEpoch,
   onClose,
 }: {
   account: NwAccount;
   snapshot: NwSnapshot;
+  restoreEpoch: number;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  // Frozen at mount, like the snapshot editor's: the live
+  // restoreEpoch prop must not re-base this editor on a refetch
+  // while it is open (see SnapshotEditor).
+  const [observedEpoch] = useState(restoreEpoch);
   const existing =
     snapshot.balances.find((b) => b.accountId === account.id) ?? null;
   // Property and custodial accounts never carry a split.
@@ -1075,6 +1095,9 @@ function BalanceEditor({
         // Contract v65 (F12): the snapshot revision this editor
         // loaded is the CAS base — a refusal shows via setError.
         baseRevision: snapshot.revision,
+        // Contract v93 (F5): the restore epoch this editor
+        // observed, checked like the revision.
+        baseEpoch: observedEpoch,
         ...input,
       }),
     onSuccess: (r) => {
@@ -5586,6 +5609,7 @@ export function NetWorthView() {
           snapshot={editorSnapshot}
           accounts={accounts}
           snapshots={snapshots}
+          restoreEpoch={data?.restoreEpoch ?? 0}
           onClose={() => setEditorOpen(false)}
         />
       )}
@@ -5593,6 +5617,7 @@ export function NetWorthView() {
         <BalanceEditor
           account={balanceEdit.account}
           snapshot={balanceEdit.snapshot}
+          restoreEpoch={data?.restoreEpoch ?? 0}
           onClose={() => setBalanceEdit(null)}
         />
       )}

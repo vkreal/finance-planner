@@ -174,6 +174,13 @@ export async function createRuntime(opts: {
       },
     };
     let result: DispatchResult;
+    // Set only when this dispatch is a SUCCESSFUL clearAllData
+    // (handler ran, response validated, ok: true): the purge
+    // flag for the persist below. A refused wipe (ok: false),
+    // a handler throw, and a response-validation failure all
+    // leave it false, so the gen - 1 fallback — and any data a
+    // failed wipe left behind — is never purged by mistake.
+    let successfulWipe = false;
     try {
       const value = await def.handler(ctx, parsed.data);
       const checked = def.response.safeParse(value);
@@ -185,6 +192,9 @@ export async function createRuntime(opts: {
           }),
         };
       } else {
+        successfulWipe =
+          action === "clearAllData" &&
+          (checked.data as { ok?: unknown } | undefined)?.ok === true;
         result = { status: 200, body: JSON.stringify({ data: checked.data }) };
       }
     } catch (err) {
@@ -207,6 +217,18 @@ export async function createRuntime(opts: {
     // write that is not durable would be a silent data loss. The
     // generation protocol leaves the previous generation active
     // in both cases.
+    // WIPE PURGE (contract v92, stored-data finding F4): a
+    // successful clearAllData persists the empty image through
+    // this same call, with the purge flag — the persist removes
+    // every prior generation, including the retained fallback,
+    // which is the pre-wipe image. Every other dispatch,
+    // including a refused or failed wipe, persists normally and
+    // keeps the fallback. This dispatch is the ONLY persist
+    // after an action in the packaged runtime (the other
+    // persist call is initLocalDb's boot commit, which never
+    // follows a wipe), so no persist-after-wipe path can
+    // re-retain a pre-wipe image; see the Q harness section for
+    // the refused-wipe and ordinary-persist legs.
     // A NON-STALE persist failure additionally LOCKS the session
     // (contract v63, F5): the in-memory image now diverges from
     // the durable store by this action's writes, so letting the
@@ -215,7 +237,9 @@ export async function createRuntime(opts: {
     // with a reload-required error until the page reloads onto
     // the last committed generation.
     try {
-      localDb.persist();
+      localDb.persist(
+        successfulWipe ? { purgeAllPriorGenerations: true } : undefined,
+      );
     } catch (err) {
       if (err instanceof StaleTabError) {
         return { status: 409, body: JSON.stringify({ error: err.message }) };

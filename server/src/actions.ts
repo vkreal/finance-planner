@@ -138,7 +138,11 @@ import {
   casConflictReason,
   casDeepEqual,
   casFieldMismatch,
+  casRestoreEpochConflictReason,
   decideCasRevision,
+  nextRestoreEpoch,
+  NW_RESTORE_EPOCH_SETTING,
+  parseRestoreEpoch,
 } from "./casCore";
 import {
 BACKUP_AUTHENTICITY_SEMANTICS,
@@ -387,7 +391,21 @@ const dateString = z
    tolerate legacy plaintext (pre-encryption rows) and migrate them
    in place, exactly once — the marker prefix makes migration
    idempotent. This is app-level encryption only: the server still
-   decrypts to compute and display, exactly as before. */
+   decrypts to compute and display, exactly as before.
+
+   Contract v91 (stored-data finding F1): every ciphertext is bound
+   to its field through AES-GCM associated data (see aadFor /
+   settingContext below). A valid ciphertext copied verbatim into a
+   different field no longer decrypts there — the GCM tag covers
+   the field identity as well as the value — so the reviewer's
+   transplant (a yearly-expense amount copied into a monthly
+   summary) is refused instead of silently changing the number.
+   Ciphertext stored before this build has no binding; reads
+   dual-read (bound form first, legacy no-AAD form second) and
+   the loaders re-encrypt legacy rows in place on first load, so
+   no stored record is bricked. See DATA-PLAN.md for the exact
+   AAD construction, the stability argument, and the residual
+   window. */
 const KEY_CHECK_SETTING = "encryption_key_check_v1";
 const KEY_CHECK_PLAINTEXT = "hatch-encryption-check-v1";
 let cachedKeyBase64: string | null = null;
@@ -429,27 +447,35 @@ async function getCryptoKey(ctx: Ctx): Promise<CryptoKey> {
   );
   return cachedCryptoKey;
 }
-async function encryptStr(key: CryptoKey, plain: string): Promise<string> {
+async function encryptStr(key: CryptoKey, plain: string, context: string): Promise<string> {
   // Reserved-prefix guard (cluster E, see ./encPrefixCore): a value
   // starting with ENC_PREFIX is stored as-is ONLY when it verifies
-  // as genuine ciphertext under this key (an internal path
-  // re-storing a value it just read). A user-typed value that merely
-  // starts with those characters is not ciphertext — storing it
-  // verbatim would poison the row and break the next data load — so
-  // it is refused here, before any write, with the reserved message.
+  // as genuine ciphertext under this key FOR THIS FIELD (an
+  // internal path re-storing a value it just read). A user-typed
+  // value that merely starts with those characters is not
+  // ciphertext — storing it verbatim would poison the row and
+  // break the next data load — so it is refused here, before any
+  // write, with the reserved message. Contract v91: the verify is
+  // STRICT (bound form only). A legacy no-AAD ciphertext for this
+  // field verifies only under the legacy branch, so it is
+  // decrypted and falls through to fresh encryption below,
+  // gaining the field binding instead of perpetuating unbound
+  // bytes; a ciphertext bound to ANOTHER field verifies under
+  // neither branch and is refused, exactly like typed text.
   if (hasReservedEncPrefix(plain)) {
-    try {
-      await decryptStr(key, plain);
-      return plain;
-    } catch {
+    const strict = await tryDecryptPrefixed(key, plain, context, false);
+    if (strict !== null) return plain;
+    const legacy = await tryDecryptPrefixed(key, plain, context, true);
+    if (legacy === null) {
       throw new Error(RESERVED_ENC_PREFIX_MESSAGE);
     }
+    plain = legacy;
   }
   const nonce = new Uint8Array(12);
   globalThis.crypto.getRandomValues(nonce);
   const ct = new Uint8Array(
     await globalThis.crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: nonce },
+      { name: "AES-GCM", iv: nonce, additionalData: aadFor(context) },
       key,
       new TextEncoder().encode(plain),
     ),
@@ -459,46 +485,163 @@ async function encryptStr(key: CryptoKey, plain: string): Promise<string> {
   combined.set(ct, nonce.length);
   return ENC_PREFIX + bytesToBase64(combined);
 }
-async function decryptStr(key: CryptoKey, value: string): Promise<string> {
-  if (!isEncrypted(value)) return value;
-  try {
-    const combined = base64ToBytes(value.slice(ENC_PREFIX.length));
-    const nonce = combined.subarray(0, 12);
-    const ct = combined.subarray(12);
-    const plain = await globalThis.crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: nonce },
-      key,
-      ct,
-    );
-    return new TextDecoder().decode(plain);
-  } catch {
-    throw new Error(
-      "Encrypted data cannot be decrypted — the encryption key may be missing or incorrect.",
-    );
-  }
+async function decryptStr(key: CryptoKey, value: string, context: string): Promise<string> {
+  return decryptWithContext(key, value, context, true);
 }
-async function decryptNum(key: CryptoKey, raw: unknown): Promise<number> {
+async function decryptNum(key: CryptoKey, raw: unknown, context: string): Promise<number> {
   if (typeof raw === "number") return raw;
-  const s = await decryptStr(key, String(raw ?? "0"));
+  const s = await decryptStr(key, String(raw ?? "0"), context);
   const n = Number.parseInt(s, 10);
   return Number.isFinite(n) ? n : 0;
 }
-async function encryptNum(key: CryptoKey, cents: number): Promise<string> {
-  return encryptStr(key, String(Math.trunc(cents)));
+async function encryptNum(key: CryptoKey, cents: number, context: string): Promise<string> {
+  return encryptStr(key, String(Math.trunc(cents)), context);
 }
 async function decryptNullable(
   key: CryptoKey,
   value: string | null | undefined,
+  context: string,
 ): Promise<string | null> {
   if (value == null) return null;
-  return decryptStr(key, value);
+  return decryptStr(key, value, context);
 }
 async function encryptNullable(
   key: CryptoKey,
   value: string | null | undefined,
+  context: string,
 ): Promise<string | null> {
   if (value == null) return null;
-  return encryptStr(key, value);
+  return encryptStr(key, value, context);
+}
+// Field-binding contexts (contract v91, stored-data finding F1).
+// The AES-GCM associated data for a field is the UTF-8 encoding of
+// "fp-aad-v1:" + its context string: "table.column" for row values
+// (the database's own table and column names, via the literals at
+// each call site) and "settings:<key>" for settings values (via
+// settingContext). The "fp-aad-v1:" namespace means a future
+// scheme revision can never collide with this binding. Row
+// identity is deliberately NOT part of the binding: encryption
+// happens before the row exists (seed, import, restore, and every
+// insert encrypt before the database assigns an id), and
+// legitimate flows move a plaintext value between rows — a
+// version row's amount is denormalised into its parent bill row,
+// and restore re-encrypts every value into freshly inserted
+// rows — while field identity is stable across all of those.
+// The residual a database writer keeps is a transplant within
+// the SAME column across rows, which no pre-insert scheme can
+// bind; cross-field transplants, the reviewer's reproduction,
+// are refused. The context literals are the contract: an
+// encrypt/decrypt pair for one field must use the identical
+// string, and the harness section P round-trips every field
+// family through the real actions to prove the pairs match.
+function aadFor(context: string): Uint8Array {
+  return new TextEncoder().encode(`fp-aad-v1:${context}`);
+}
+function settingContext(settingKey: string): string {
+  return `settings:${settingKey}`;
+}
+async function tryAesGcmDecrypt(
+  key: CryptoKey,
+  combined: Uint8Array,
+  additionalData: Uint8Array | undefined,
+): Promise<string | null> {
+  if (combined.length < 12) return null;
+  try {
+    const iv = combined.subarray(0, 12);
+    const data = combined.subarray(12);
+    const plain =
+      additionalData === undefined
+        ? await globalThis.crypto.subtle.decrypt(
+            { name: "AES-GCM", iv },
+            key,
+            data,
+          )
+        : await globalThis.crypto.subtle.decrypt(
+            { name: "AES-GCM", iv, additionalData },
+            key,
+            data,
+          );
+    return new TextDecoder().decode(plain);
+  } catch {
+    return null;
+  }
+}
+// One prefixed-value decrypt attempt: the bound (v91) form first,
+// then — only when allowLegacy is set — the legacy no-AAD form.
+// Returns null for every failure mode (malformed base64, short
+// payload, tag mismatch), so callers decide the error; never
+// returns a silently wrong value.
+async function tryDecryptPrefixed(
+  key: CryptoKey,
+  value: string,
+  context: string,
+  allowLegacy: boolean,
+): Promise<string | null> {
+  if (!isEncrypted(value)) return null;
+  let combined: Uint8Array;
+  try {
+    combined = base64ToBytes(value.slice(ENC_PREFIX.length));
+  } catch {
+    return null;
+  }
+  const bound = await tryAesGcmDecrypt(key, combined, aadFor(context));
+  if (bound !== null) return bound;
+  if (!allowLegacy) return null;
+  return tryAesGcmDecrypt(key, combined, undefined);
+}
+// Decrypt a stored value in its field context: the bound form
+// first, the legacy no-AAD form second (dual-read migration for
+// pre-v91 ciphertext). Anything else — a ciphertext bound to
+// another field, a forged value, a malformed value — throws the
+// generic undecryptable error, never a wrong value. Non-prefixed
+// (legacy plaintext) values still read as themselves, as before.
+async function decryptWithContext(
+  key: CryptoKey,
+  value: string,
+  context: string,
+  allowLegacy: boolean,
+): Promise<string> {
+  if (!isEncrypted(value)) return value;
+  const plain = await tryDecryptPrefixed(key, value, context, allowLegacy);
+  if (plain !== null) return plain;
+  throw new Error(
+    "Encrypted data cannot be decrypted — the encryption key may be missing or incorrect.",
+  );
+}
+// True iff the stored field value still needs binding: legacy
+// plaintext (no prefix) or legacy no-AAD ciphertext for this
+// field. The load-time migration writers use this one condition
+// for both, so a row is re-encrypted with the field binding on
+// first load after the upgrade whichever legacy form it holds.
+// Null (an unrecorded nullable field) never needs a rewrite.
+async function needsRebind(
+  key: CryptoKey,
+  value: string | null | undefined,
+  context: string,
+): Promise<boolean> {
+  if (value == null) return false;
+  if (!isEncrypted(value)) return true;
+  return isLegacyCiphertext(key, value, context);
+}
+// True iff the stored value is legacy (pre-v91, no-AAD)
+// ciphertext for this field: it decrypts without associated data
+// but NOT with the field binding.
+async function isLegacyCiphertext(
+  key: CryptoKey,
+  value: string,
+  context: string,
+): Promise<boolean> {
+  if (!isEncrypted(value)) return false;
+  let combined: Uint8Array;
+  try {
+    combined = base64ToBytes(value.slice(ENC_PREFIX.length));
+  } catch {
+    return false;
+  }
+  if ((await tryAesGcmDecrypt(key, combined, aadFor(context))) !== null) {
+    return false;
+  }
+  return (await tryAesGcmDecrypt(key, combined, undefined)) !== null;
 }
 // Verify (or create) the key-check value. Fails loudly on a wrong key.
 async function ensureKeyCheck(
@@ -509,15 +652,34 @@ async function ensureKeyCheck(
   const rows = await db.select().from(schema.settings);
   const check = rows.find((r: any) => r.key === KEY_CHECK_SETTING);
   if (check) {
-    const plain = await decryptStr(key, check.value);
+    const plain = await decryptStr(key, check.value, settingContext(KEY_CHECK_SETTING));
     if (plain !== KEY_CHECK_PLAINTEXT) {
       throw new Error(
         "Encryption key check failed — the stored key does not match this data. Refusing to read or write encrypted data.",
       );
     }
+    // Load-time migration (contract v91): a legacy no-AAD
+    // key-check value is re-encrypted with the field binding,
+    // compare-and-write so a concurrent write wins.
+    if (
+      isEncrypted(check.value) &&
+      (await isLegacyCiphertext(key, check.value, settingContext(KEY_CHECK_SETTING)))
+    ) {
+      await db
+        .update(schema.settings)
+        .set({
+          value: await encryptStr(key, KEY_CHECK_PLAINTEXT, settingContext(KEY_CHECK_SETTING)),
+        })
+        .where(
+          and(
+            eq(schema.settings.key, KEY_CHECK_SETTING),
+            eq(schema.settings.value, check.value),
+          ),
+        );
+    }
     return;
   }
-  const encrypted = await encryptStr(key, KEY_CHECK_PLAINTEXT);
+  const encrypted = await encryptStr(key, KEY_CHECK_PLAINTEXT, settingContext(KEY_CHECK_SETTING));
   await db
     .insert(schema.settings)
     .values({ key: KEY_CHECK_SETTING, value: encrypted })
@@ -813,8 +975,10 @@ async function loadAll(ctx: Ctx) {
     );
   const settingRows = await db.select().from(schema.settings);
 
-  // Decrypt every row; any legacy plaintext field is encrypted and
-  // written back in place (migration, idempotent via the prefix).
+  // Decrypt every row; any legacy plaintext field, or any legacy
+  // no-AAD ciphertext field (contract v91), is encrypted with
+  // the field binding and written back in place (migration,
+  // idempotent via the prefix and the binding check).
   // Contract v64 (A4): every migration write in this loader is
   // COMPARE-AND-WRITE — its WHERE clause also requires every field
   // it rewrites to still hold the exact raw value read above, so a
@@ -825,20 +989,20 @@ async function loadAll(ctx: Ctx) {
   for (const r of rawTxns) {
     const plain: TxnRow = {
       ...r,
-      description: await decryptStr(key, r.description),
-      amountCents: await decryptNum(key, r.amountCents as unknown),
-      accountName: await decryptStr(key, r.accountName),
-      category: await decryptStr(key, r.category),
-      fitId: await decryptNullable(key, r.fitId),
+      description: await decryptStr(key, r.description, "transactions.description"),
+      amountCents: await decryptNum(key, r.amountCents as unknown, "transactions.amount_cents"),
+      accountName: await decryptStr(key, r.accountName, "transactions.account_name"),
+      category: await decryptStr(key, r.category, "transactions.category"),
+      fitId: await decryptNullable(key, r.fitId, "transactions.fit_id"),
     };
     txns.push(plain);
-    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || !isEncrypted(r.accountName) || !isEncrypted(r.category) || (r.fitId != null && !isEncrypted(r.fitId))) {
+    if ((await needsRebind(key, r.description, "transactions.description")) || (await needsRebind(key, r.amountCents, "transactions.amount_cents")) || (await needsRebind(key, r.accountName, "transactions.account_name")) || (await needsRebind(key, r.category, "transactions.category")) || (await needsRebind(key, r.fitId, "transactions.fit_id"))) {
       await db.update(schema.transactions).set({
-        description: await encryptStr(key, plain.description),
-        amountCents: await encryptNum(key, plain.amountCents),
-        accountName: await encryptStr(key, plain.accountName),
-        category: await encryptStr(key, plain.category),
-        fitId: await encryptNullable(key, plain.fitId),
+        description: await encryptStr(key, plain.description, "transactions.description"),
+        amountCents: await encryptNum(key, plain.amountCents, "transactions.amount_cents"),
+        accountName: await encryptStr(key, plain.accountName, "transactions.account_name"),
+        category: await encryptStr(key, plain.category, "transactions.category"),
+        fitId: await encryptNullable(key, plain.fitId, "transactions.fit_id"),
       }).where(and(
         eq(schema.transactions.id, r.id),
         eq(schema.transactions.description, r.description),
@@ -855,18 +1019,18 @@ async function loadAll(ctx: Ctx) {
   for (const r of rawYearly) {
     const plain: YearlyRow = {
       ...r,
-      name: await decryptStr(key, r.name),
-      expectedCents: await decryptNum(key, r.expectedCents as unknown),
-      paidByName: await decryptStr(key, r.paidByName),
-      category: await decryptStr(key, r.category),
+      name: await decryptStr(key, r.name, "yearly_expenses.name"),
+      expectedCents: await decryptNum(key, r.expectedCents as unknown, "yearly_expenses.expected_cents"),
+      paidByName: await decryptStr(key, r.paidByName, "yearly_expenses.paid_by_name"),
+      category: await decryptStr(key, r.category, "yearly_expenses.category"),
     };
     yearly.push(plain);
-    if (!isEncrypted(r.name) || !isEncrypted(r.expectedCents) || !isEncrypted(r.paidByName) || !isEncrypted(r.category)) {
+    if ((await needsRebind(key, r.name, "yearly_expenses.name")) || (await needsRebind(key, r.expectedCents, "yearly_expenses.expected_cents")) || (await needsRebind(key, r.paidByName, "yearly_expenses.paid_by_name")) || (await needsRebind(key, r.category, "yearly_expenses.category"))) {
       await db.update(schema.yearlyExpenses).set({
-        name: await encryptStr(key, plain.name),
-        expectedCents: await encryptNum(key, plain.expectedCents),
-        paidByName: await encryptStr(key, plain.paidByName),
-        category: await encryptStr(key, plain.category),
+        name: await encryptStr(key, plain.name, "yearly_expenses.name"),
+        expectedCents: await encryptNum(key, plain.expectedCents, "yearly_expenses.expected_cents"),
+        paidByName: await encryptStr(key, plain.paidByName, "yearly_expenses.paid_by_name"),
+        category: await encryptStr(key, plain.category, "yearly_expenses.category"),
       }).where(and(
         eq(schema.yearlyExpenses.id, r.id),
         eq(schema.yearlyExpenses.name, r.name),
@@ -878,11 +1042,11 @@ async function loadAll(ctx: Ctx) {
   }
   const yearlyVersions: YearlyVersionRow[] = [];
   for (const r of rawYearlyVersions) {
-    const plain: YearlyVersionRow = { ...r, expectedCents: await decryptNum(key, r.expectedCents as unknown) };
+    const plain: YearlyVersionRow = { ...r, expectedCents: await decryptNum(key, r.expectedCents as unknown, "yearly_expense_versions.expected_cents") };
     yearlyVersions.push(plain);
-    if (!isEncrypted(r.expectedCents)) {
+    if (await needsRebind(key, r.expectedCents, "yearly_expense_versions.expected_cents")) {
       await db.update(schema.yearlyExpenseVersions).set({
-        expectedCents: await encryptNum(key, plain.expectedCents),
+        expectedCents: await encryptNum(key, plain.expectedCents, "yearly_expense_versions.expected_cents"),
       }).where(and(
         eq(schema.yearlyExpenseVersions.id, r.id),
         eq(schema.yearlyExpenseVersions.expectedCents, r.expectedCents),
@@ -891,11 +1055,11 @@ async function loadAll(ctx: Ctx) {
   }
   const summaries: SummaryRow[] = [];
   for (const r of rawSummaries) {
-    const plain: SummaryRow = { ...r, cashOutCents: await decryptNum(key, r.cashOutCents as unknown) };
+    const plain: SummaryRow = { ...r, cashOutCents: await decryptNum(key, r.cashOutCents as unknown, "monthly_summaries.cash_out_cents") };
     summaries.push(plain);
-    if (!isEncrypted(r.cashOutCents)) {
+    if (await needsRebind(key, r.cashOutCents, "monthly_summaries.cash_out_cents")) {
       await db.update(schema.monthlySummaries).set({
-        cashOutCents: await encryptNum(key, plain.cashOutCents),
+        cashOutCents: await encryptNum(key, plain.cashOutCents, "monthly_summaries.cash_out_cents"),
       }).where(and(
         eq(schema.monthlySummaries.month, r.month),
         eq(schema.monthlySummaries.cashOutCents, r.cashOutCents),
@@ -906,20 +1070,20 @@ async function loadAll(ctx: Ctx) {
   for (const r of rawBills) {
     const plain: MonthlyBillRow = {
       ...r,
-      name: await decryptStr(key, r.name),
-      amountCents: await decryptNum(key, r.amountCents as unknown),
-      paidBy: await decryptStr(key, r.paidBy),
-      notes: await decryptNullable(key, r.notes),
-      category: await decryptStr(key, r.category),
+      name: await decryptStr(key, r.name, "monthly_bills.name"),
+      amountCents: await decryptNum(key, r.amountCents as unknown, "monthly_bills.amount_cents"),
+      paidBy: await decryptStr(key, r.paidBy, "monthly_bills.paid_by"),
+      notes: await decryptNullable(key, r.notes, "monthly_bills.notes"),
+      category: await decryptStr(key, r.category, "monthly_bills.category"),
     };
     bills.push(plain);
-    if (!isEncrypted(r.name) || !isEncrypted(r.amountCents) || !isEncrypted(r.paidBy) || (r.notes != null && !isEncrypted(r.notes)) || !isEncrypted(r.category)) {
+    if ((await needsRebind(key, r.name, "monthly_bills.name")) || (await needsRebind(key, r.amountCents, "monthly_bills.amount_cents")) || (await needsRebind(key, r.paidBy, "monthly_bills.paid_by")) || (await needsRebind(key, r.notes, "monthly_bills.notes")) || (await needsRebind(key, r.category, "monthly_bills.category"))) {
       await db.update(schema.monthlyBills).set({
-        name: await encryptStr(key, plain.name),
-        amountCents: await encryptNum(key, plain.amountCents),
-        paidBy: await encryptStr(key, plain.paidBy),
-        notes: await encryptNullable(key, plain.notes),
-        category: await encryptStr(key, plain.category),
+        name: await encryptStr(key, plain.name, "monthly_bills.name"),
+        amountCents: await encryptNum(key, plain.amountCents, "monthly_bills.amount_cents"),
+        paidBy: await encryptStr(key, plain.paidBy, "monthly_bills.paid_by"),
+        notes: await encryptNullable(key, plain.notes, "monthly_bills.notes"),
+        category: await encryptStr(key, plain.category, "monthly_bills.category"),
       }).where(and(
         eq(schema.monthlyBills.id, r.id),
         eq(schema.monthlyBills.name, r.name),
@@ -934,11 +1098,11 @@ async function loadAll(ctx: Ctx) {
   }
   const billVersions: BillVersionRow[] = [];
   for (const r of rawBillVersions) {
-    const plain: BillVersionRow = { ...r, amountCents: await decryptNum(key, r.amountCents as unknown) };
+    const plain: BillVersionRow = { ...r, amountCents: await decryptNum(key, r.amountCents as unknown, "monthly_bill_versions.amount_cents") };
     billVersions.push(plain);
-    if (!isEncrypted(r.amountCents)) {
+    if (await needsRebind(key, r.amountCents, "monthly_bill_versions.amount_cents")) {
       await db.update(schema.monthlyBillVersions).set({
-        amountCents: await encryptNum(key, plain.amountCents),
+        amountCents: await encryptNum(key, plain.amountCents, "monthly_bill_versions.amount_cents"),
       }).where(and(
         eq(schema.monthlyBillVersions.id, r.id),
         eq(schema.monthlyBillVersions.amountCents, r.amountCents),
@@ -949,16 +1113,16 @@ async function loadAll(ctx: Ctx) {
   for (const r of rawOneOffs) {
     const plain: OneOffRow = {
       ...r,
-      description: await decryptStr(key, r.description),
-      amountCents: await decryptNum(key, r.amountCents as unknown),
-      note: await decryptNullable(key, r.note),
+      description: await decryptStr(key, r.description, "monthly_one_offs.description"),
+      amountCents: await decryptNum(key, r.amountCents as unknown, "monthly_one_offs.amount_cents"),
+      note: await decryptNullable(key, r.note, "monthly_one_offs.note"),
     };
     oneOffs.push(plain);
-    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || (r.note != null && !isEncrypted(r.note))) {
+    if ((await needsRebind(key, r.description, "monthly_one_offs.description")) || (await needsRebind(key, r.amountCents, "monthly_one_offs.amount_cents")) || (await needsRebind(key, r.note, "monthly_one_offs.note"))) {
       await db.update(schema.monthlyOneOffs).set({
-        description: await encryptStr(key, plain.description),
-        amountCents: await encryptNum(key, plain.amountCents),
-        note: await encryptNullable(key, plain.note),
+        description: await encryptStr(key, plain.description, "monthly_one_offs.description"),
+        amountCents: await encryptNum(key, plain.amountCents, "monthly_one_offs.amount_cents"),
+        note: await encryptNullable(key, plain.note, "monthly_one_offs.note"),
       }).where(and(
         eq(schema.monthlyOneOffs.id, r.id),
         eq(schema.monthlyOneOffs.description, r.description),
@@ -973,16 +1137,16 @@ async function loadAll(ctx: Ctx) {
   for (const r of rawCashOutItems) {
     const plain: CashOutItemRow = {
       ...r,
-      description: await decryptStr(key, r.description),
-      amountCents: await decryptNum(key, r.amountCents as unknown),
-      note: await decryptNullable(key, r.note),
+      description: await decryptStr(key, r.description, "monthly_cash_out_items.description"),
+      amountCents: await decryptNum(key, r.amountCents as unknown, "monthly_cash_out_items.amount_cents"),
+      note: await decryptNullable(key, r.note, "monthly_cash_out_items.note"),
     };
     cashOutItems.push(plain);
-    if (!isEncrypted(r.description) || !isEncrypted(r.amountCents) || (r.note != null && !isEncrypted(r.note))) {
+    if ((await needsRebind(key, r.description, "monthly_cash_out_items.description")) || (await needsRebind(key, r.amountCents, "monthly_cash_out_items.amount_cents")) || (await needsRebind(key, r.note, "monthly_cash_out_items.note"))) {
       await db.update(schema.monthlyCashOutItems).set({
-        description: await encryptStr(key, plain.description),
-        amountCents: await encryptNum(key, plain.amountCents),
-        note: await encryptNullable(key, plain.note),
+        description: await encryptStr(key, plain.description, "monthly_cash_out_items.description"),
+        amountCents: await encryptNum(key, plain.amountCents, "monthly_cash_out_items.amount_cents"),
+        note: await encryptNullable(key, plain.note, "monthly_cash_out_items.note"),
       }).where(and(
         eq(schema.monthlyCashOutItems.id, r.id),
         eq(schema.monthlyCashOutItems.description, r.description),
@@ -999,10 +1163,10 @@ async function loadAll(ctx: Ctx) {
   const settingsMap = new Map<string, string>();
   for (const r of settingRows) {
     if (r.key === "opening_reserve_cents") {
-      const plainVal = isEncrypted(r.value) ? await decryptStr(key, r.value) : r.value;
+      const plainVal = isEncrypted(r.value) ? await decryptStr(key, r.value, settingContext("opening_reserve_cents")) : r.value;
       settingsMap.set(r.key, plainVal);
-      if (!isEncrypted(r.value) && r.value !== "") {
-        const enc = await encryptStr(key, plainVal);
+      if (r.value !== "" && (await needsRebind(key, r.value, settingContext("opening_reserve_cents")))) {
+        const enc = await encryptStr(key, plainVal, settingContext("opening_reserve_cents"));
         // Compare-and-write (contract v64, A4): only while the
         // stored value is still the one read here.
         await db.update(schema.settings).set({ value: enc }).where(and(
@@ -1230,7 +1394,8 @@ const nwPropertyKindEnum = nwPropertyKind;
 const NW_INCLUDE_PROPERTY_KEY = "nw_include_property";
 const NW_TARGET_KEY = "nw_target_cents";
 
-// Decrypt Net Worth rows; legacy plaintext migrates in place (once).
+// Decrypt Net Worth rows; legacy plaintext, and legacy no-AAD
+// ciphertext (contract v91), migrates in place (once).
 async function loadNetWorthDecrypted(ctx: Ctx, db: any, key: CryptoKey) {
   await ensureKeyCheck(ctx, db, key);
   const rawAccounts = await db
@@ -1244,26 +1409,26 @@ async function loadNetWorthDecrypted(ctx: Ctx, db: any, key: CryptoKey) {
   const rawBalances = await db.select().from(schema.nwBalances);
   const accounts = [];
   for (const a of rawAccounts) {
-    const name = await decryptStr(key, a.name);
+    const name = await decryptStr(key, a.name, "nw_accounts.name");
     accounts.push({ ...a, name, propertyKind: propertyKindOf(a as { propertyKind?: string | null }), custodial: isCustodialAccount(a as { custodial?: number | null }) });
-    if (!isEncrypted(a.name)) {
+    if (await needsRebind(key, a.name, "nw_accounts.name")) {
       await db
         .update(schema.nwAccounts)
-        .set({ name: await encryptStr(key, name) })
+        .set({ name: await encryptStr(key, name, "nw_accounts.name") })
         .where(eq(schema.nwAccounts.id, a.id));
     }
   }
   const snapshots = [];
   for (const s of rawSnaps) {
-    const note = await decryptNullable(key, s.note);
+    const note = await decryptNullable(key, s.note, "nw_snapshots.note");
     snapshots.push({ ...s, note });
-    if (s.note != null && !isEncrypted(s.note)) {
-      await db.update(schema.nwSnapshots).set({ note: await encryptNullable(key, note) }).where(eq(schema.nwSnapshots.id, s.id));
+    if (await needsRebind(key, s.note, "nw_snapshots.note")) {
+      await db.update(schema.nwSnapshots).set({ note: await encryptNullable(key, note, "nw_snapshots.note") }).where(eq(schema.nwSnapshots.id, s.id));
     }
   }
   const balances: NwBalanceRow[] = [];
   for (const b of rawBalances) {
-    const balanceCents = await decryptNum(key, b.balanceCents as unknown);
+    const balanceCents = await decryptNum(key, b.balanceCents as unknown, "nw_balances.balance_cents");
     const rawSplitHsa = (b as { splitHsaCents?: string | null }).splitHsaCents ?? null;
     const rawSplitRoth = (b as { splitRothCents?: string | null }).splitRothCents ?? null;
     const rawSplitTaxable = (b as { splitTaxableCents?: string | null }).splitTaxableCents ?? null;
@@ -1271,33 +1436,33 @@ async function loadNetWorthDecrypted(ctx: Ctx, db: any, key: CryptoKey) {
     const rawSplit529 = (b as { split529Cents?: string | null }).split529Cents ?? null;
     const rawSplitCash = (b as { splitCashCents?: string | null }).splitCashCents ?? null;
     const rawSplitPreTax = (b as { splitPreTaxCents?: string | null }).splitPreTaxCents ?? null;
-    const splitHsaCents = rawSplitHsa == null ? null : await decryptNum(key, rawSplitHsa as unknown);
-    const splitRothCents = rawSplitRoth == null ? null : await decryptNum(key, rawSplitRoth as unknown);
-    const splitTaxableCents = rawSplitTaxable == null ? null : await decryptNum(key, rawSplitTaxable as unknown);
-    const splitNonTaxableCents = rawSplitNonTaxable == null ? null : await decryptNum(key, rawSplitNonTaxable as unknown);
-    const split529Cents = rawSplit529 == null ? null : await decryptNum(key, rawSplit529 as unknown);
-    const splitCashCents = rawSplitCash == null ? null : await decryptNum(key, rawSplitCash as unknown);
-    const splitPreTaxCents = rawSplitPreTax == null ? null : await decryptNum(key, rawSplitPreTax as unknown);
+    const splitHsaCents = rawSplitHsa == null ? null : await decryptNum(key, rawSplitHsa as unknown, "nw_balances.split_hsa_cents");
+    const splitRothCents = rawSplitRoth == null ? null : await decryptNum(key, rawSplitRoth as unknown, "nw_balances.split_roth_cents");
+    const splitTaxableCents = rawSplitTaxable == null ? null : await decryptNum(key, rawSplitTaxable as unknown, "nw_balances.split_taxable_cents");
+    const splitNonTaxableCents = rawSplitNonTaxable == null ? null : await decryptNum(key, rawSplitNonTaxable as unknown, "nw_balances.split_non_taxable_cents");
+    const split529Cents = rawSplit529 == null ? null : await decryptNum(key, rawSplit529 as unknown, "nw_balances.split_529_cents");
+    const splitCashCents = rawSplitCash == null ? null : await decryptNum(key, rawSplitCash as unknown, "nw_balances.split_cash_cents");
+    const splitPreTaxCents = rawSplitPreTax == null ? null : await decryptNum(key, rawSplitPreTax as unknown, "nw_balances.split_pre_tax_cents");
     balances.push({ ...b, balanceCents, splitHsaCents, splitRothCents, splitTaxableCents, splitNonTaxableCents, split529Cents, splitCashCents, splitPreTaxCents });
     if (
-      !isEncrypted(b.balanceCents) ||
-      (rawSplitHsa != null && !isEncrypted(rawSplitHsa)) ||
-      (rawSplitRoth != null && !isEncrypted(rawSplitRoth)) ||
-      (rawSplitTaxable != null && !isEncrypted(rawSplitTaxable)) ||
-      (rawSplitNonTaxable != null && !isEncrypted(rawSplitNonTaxable)) ||
-      (rawSplit529 != null && !isEncrypted(rawSplit529)) ||
-      (rawSplitCash != null && !isEncrypted(rawSplitCash)) ||
-      (rawSplitPreTax != null && !isEncrypted(rawSplitPreTax))
+      (await needsRebind(key, b.balanceCents, "nw_balances.balance_cents")) ||
+      (await needsRebind(key, rawSplitHsa, "nw_balances.split_hsa_cents")) ||
+      (await needsRebind(key, rawSplitRoth, "nw_balances.split_roth_cents")) ||
+      (await needsRebind(key, rawSplitTaxable, "nw_balances.split_taxable_cents")) ||
+      (await needsRebind(key, rawSplitNonTaxable, "nw_balances.split_non_taxable_cents")) ||
+      (await needsRebind(key, rawSplit529, "nw_balances.split_529_cents")) ||
+      (await needsRebind(key, rawSplitCash, "nw_balances.split_cash_cents")) ||
+      (await needsRebind(key, rawSplitPreTax, "nw_balances.split_pre_tax_cents"))
     ) {
       await db.update(schema.nwBalances).set({
-        balanceCents: await encryptNum(key, balanceCents),
-        splitHsaCents: splitHsaCents == null ? null : await encryptNum(key, splitHsaCents),
-        splitRothCents: splitRothCents == null ? null : await encryptNum(key, splitRothCents),
-        splitTaxableCents: splitTaxableCents == null ? null : await encryptNum(key, splitTaxableCents),
-        splitNonTaxableCents: splitNonTaxableCents == null ? null : await encryptNum(key, splitNonTaxableCents),
-        split529Cents: split529Cents == null ? null : await encryptNum(key, split529Cents),
-        splitCashCents: splitCashCents == null ? null : await encryptNum(key, splitCashCents),
-        splitPreTaxCents: splitPreTaxCents == null ? null : await encryptNum(key, splitPreTaxCents),
+        balanceCents: await encryptNum(key, balanceCents, "nw_balances.balance_cents"),
+        splitHsaCents: splitHsaCents == null ? null : await encryptNum(key, splitHsaCents, "nw_balances.split_hsa_cents"),
+        splitRothCents: splitRothCents == null ? null : await encryptNum(key, splitRothCents, "nw_balances.split_roth_cents"),
+        splitTaxableCents: splitTaxableCents == null ? null : await encryptNum(key, splitTaxableCents, "nw_balances.split_taxable_cents"),
+        splitNonTaxableCents: splitNonTaxableCents == null ? null : await encryptNum(key, splitNonTaxableCents, "nw_balances.split_non_taxable_cents"),
+        split529Cents: split529Cents == null ? null : await encryptNum(key, split529Cents, "nw_balances.split_529_cents"),
+        splitCashCents: splitCashCents == null ? null : await encryptNum(key, splitCashCents, "nw_balances.split_cash_cents"),
+        splitPreTaxCents: splitPreTaxCents == null ? null : await encryptNum(key, splitPreTaxCents, "nw_balances.split_pre_tax_cents"),
       }).where(eq(schema.nwBalances.id, b.id));
     }
   }
@@ -1426,17 +1591,24 @@ async function nwBalanceRowValues(
 } | null> {
   const plain = nwBalanceRowPlain(entry, noSplit);
   if (!plain) return null;
-  const enc = async (v: number | null): Promise<string | null> =>
-    v == null ? null : encryptNum(key, v);
+  // Each split column binds its own field identity (contract v91),
+  // so the helper takes the destination context per call — one
+  // shared ciphertext across split columns would decrypt in none
+  // of them.
+  const enc = async (
+    v: number | null,
+    context: string,
+  ): Promise<string | null> =>
+    v == null ? null : encryptNum(key, v, context);
   return {
-    balanceCents: await encryptNum(key, plain.balanceCents),
-    splitHsaCents: await enc(plain.splitHsaCents),
-    splitRothCents: await enc(plain.splitRothCents),
-    splitTaxableCents: await enc(plain.splitTaxableCents),
-    splitNonTaxableCents: await enc(plain.splitNonTaxableCents),
-    split529Cents: await enc(plain.split529Cents),
-    splitCashCents: await enc(plain.splitCashCents),
-    splitPreTaxCents: await enc(plain.splitPreTaxCents),
+    balanceCents: await encryptNum(key, plain.balanceCents, "nw_balances.balance_cents"),
+    splitHsaCents: await enc(plain.splitHsaCents, "nw_balances.split_hsa_cents"),
+    splitRothCents: await enc(plain.splitRothCents, "nw_balances.split_roth_cents"),
+    splitTaxableCents: await enc(plain.splitTaxableCents, "nw_balances.split_taxable_cents"),
+    splitNonTaxableCents: await enc(plain.splitNonTaxableCents, "nw_balances.split_non_taxable_cents"),
+    split529Cents: await enc(plain.split529Cents, "nw_balances.split_529_cents"),
+    splitCashCents: await enc(plain.splitCashCents, "nw_balances.split_cash_cents"),
+    splitPreTaxCents: await enc(plain.splitPreTaxCents, "nw_balances.split_pre_tax_cents"),
   };
 }
 
@@ -1575,8 +1747,7 @@ async function buildBackupPayload(
       name: a.name,
       bucket: await decryptStr(
         key,
-        (a as { bucket?: string }).bucket ?? "Unbucketed",
-      ),
+        (a as { bucket?: string }).bucket ?? "Unbucketed", "nw_accounts.bucket"),
       propertyKind: propertyKindOf(a),
       custodial: isCustodialAccount(a) ? 1 : 0,
       sortOrder: a.sortOrder,
@@ -1597,24 +1768,35 @@ async function buildBackupPayload(
       // as ciphertext and a cross-key restore dropped the saved
       // inputs while every other figure survived). The CSV
       // import setup blobs (IMPORT_SETTINGS_KEY and
+      // The CSV import setup blobs (IMPORT_SETTINGS_KEY and
       // NW_IMPORT_SETTINGS_KEY) get the same treatment for the
       // same reason, as do the encrypted sticky entry defaults
       // (ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY and
       // ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY — added at contract
       // v60 when the packaged cross-install restore caught them
-      // travelling as source-install ciphertext). All remaining settings
-      // (UI flags, the include-property toggle, the reserve
-      // start month) are stored plaintext already and are
-      // carried exactly as stored. A legacy plaintext import
-      // setup value decrypts to itself via the lenient reader.
+      // travelling as source-install ciphertext), and — contract
+      // v90, stored-data findings F2/F3 — the December
+      // projection blob and the Roth/Playground UI-state blob,
+      // which their writers now store encrypted: without this
+      // branch they would travel as the source install's
+      // ciphertext and break every load after a cross-key
+      // restore, the same omission class as v60. All remaining
+      // settings (UI flags, the include-property toggle, the
+      // reserve start month) are stored plaintext already and
+      // are carried exactly as stored. A legacy plaintext
+      // import setup value decrypts to itself via the lenient
+      // reader, as does a legacy plaintext December / UI-state
+      // blob through decryptStr below.
       value:
         r.key === "opening_reserve_cents"
           ? (settingsMap.get(r.key) ?? r.value)
           : r.key === KEY_CHECK_SETTING ||
               r.key === "retirement_calc_inputs_v1" ||
               r.key === "retirement_calc_baseline_v1" ||
-              r.key === "roth_conversion_inputs_v1"
-            ? await decryptStr(key, r.value)
+              r.key === "roth_conversion_inputs_v1" ||
+              r.key === DECEMBER_STATE_KEY ||
+              r.key === ROTH_UI_STATE_KEY
+            ? await decryptStr(key, r.value, settingContext(r.key))
             : r.key === IMPORT_SETTINGS_KEY ||
                 r.key === NW_IMPORT_SETTINGS_KEY ||
                 // The encrypted sticky entry defaults (contract
@@ -1627,7 +1809,7 @@ async function buildBackupPayload(
                 // exports as itself.)
                 r.key === ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY ||
                 r.key === ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY
-              ? ((await decryptSettingValue(key, r.value)) ?? r.value)
+              ? ((await decryptSettingValue(key, r.value, r.key)) ?? r.value)
               : r.value,
     });
   }
@@ -1865,7 +2047,7 @@ async function readRetirementBlobState(
       revisionState: { present: false, valid: true },
     };
   try {
-    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw, settingContext(RETIREMENT_KEY)) : raw;
     const parsed = JSON.parse(plain) as unknown;
     if (parsed == null || typeof parsed !== "object")
       return {
@@ -2034,7 +2216,7 @@ async function readRetirementBaselineState(
       valid: true,
     };
   try {
-    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw, settingContext(RETIREMENT_BASELINE_KEY)) : raw;
     const parsed = JSON.parse(plain) as unknown;
     if (parsed == null || typeof parsed !== "object")
       return {
@@ -2255,8 +2437,7 @@ async function mutateRetirementScenarios(
           t.scenarios,
           nextRevision,
         ),
-      ),
-    );
+      ), settingContext(RETIREMENT_KEY));
     if (state.storedRaw === undefined) {
       // No row yet: the first write establishes revision 1.
       await upsertRetirementBlobValue(db, enc);
@@ -2929,7 +3110,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 88;
+export const API_CONTRACT_VERSION = 94;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -3372,7 +3553,7 @@ async function readRothBlob(
   if (!raw)
     return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: undefined };
   try {
-    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw, settingContext(ROTH_INPUTS_KEY)) : raw;
     const parsed = JSON.parse(plain) as unknown;
     if (parsed == null || typeof parsed !== "object")
       // Result-honesty (contract v67, F08): a PRESENT record whose
@@ -3539,7 +3720,7 @@ async function readRothBlobRaw(
   if (!raw)
     return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: undefined, valid: true };
   try {
-    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw, settingContext(ROTH_INPUTS_KEY)) : raw;
     const split = splitRothBlob(plain);
     if (!split)
       return { inputsRaw: null, scenariosRaw: [], scenarios: [], revision: 0, storedRaw: raw, valid: false };
@@ -3608,8 +3789,7 @@ async function mutateRothScenarios(
     const nextRevision = blob.revision + 1;
     const enc = await encryptStr(
       key,
-      joinRothBlob(blob.inputsRaw, t.scenarios, nextRevision),
-    );
+      joinRothBlob(blob.inputsRaw, t.scenarios, nextRevision), settingContext(ROTH_INPUTS_KEY));
     if (blob.storedRaw === undefined) {
       // No row yet: the first write establishes revision 1,
       // insert-only so a concurrent first write is not eaten.
@@ -3708,7 +3888,7 @@ async function readRothBlobRawState(
   const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
   if (!raw) return { scenariosRaw: [], revision: 0, storedRaw: undefined, valid: true };
   try {
-    const plain = isEncrypted(raw) ? await decryptStr(key, raw) : raw;
+    const plain = isEncrypted(raw) ? await decryptStr(key, raw, settingContext(ROTH_INPUTS_KEY)) : raw;
     const split = splitRothBlob(plain);
     if (!split) return { scenariosRaw: [], revision: 0, storedRaw: raw, valid: false };
     return {
@@ -5181,12 +5361,48 @@ async function upsertPlainSetting(db: any, settingKey: string, value: string): P
     });
 }
 
+// Decrypt one stored settings value in its own field context.
+// `settingKey` is the BARE settings key (e.g. DECEMBER_STATE_KEY) —
+// this function applies settingContext itself, so callers must NOT
+// wrap it: a double-prefixed context decrypts nothing the writers
+// wrote (contract v91 fix-up: every call site once did).
 async function decryptSettingValue(
   key: CryptoKey,
   raw: string | undefined,
+  settingKey: string,
 ): Promise<string | null> {
   if (raw == null || raw === "") return null;
-  return isEncrypted(raw) ? decryptStr(key, raw) : raw;
+  return isEncrypted(raw)
+    ? decryptStr(key, raw, settingContext(settingKey))
+    : raw;
+}
+
+/* Dual-read for an encrypted JSON settings blob (contract v90,
+   stored-data findings F2/F3: the December projection blob and
+   the Roth/Playground UI-state blob). `settingKey` is the BARE
+   settings key — settingContext is applied here, never by the
+   caller (see decryptSettingValue). Writers encrypt with
+   encryptStr; a record stored before encryption reads as legacy
+   plaintext JSON and parses exactly as before — the prefix is
+   the whole distinction, the same dual-read decryptStr already
+   gives every other encrypted value. A ciphertext record that
+   does not decrypt under this key is NOT silently treated as
+   absent: undecryptable is true and plain is undefined, so the
+   caller can surface / refuse on the damaged record instead of
+   building a fresh write on top of bytes it cannot read. */
+type StoredBlobRead = { plain: string | undefined; undecryptable: boolean };
+async function readStoredBlob(
+  key: CryptoKey,
+  raw: string | undefined,
+  settingKey: string,
+): Promise<StoredBlobRead> {
+  if (raw === undefined) return { plain: undefined, undecryptable: false };
+  if (!isEncrypted(raw)) return { plain: raw, undecryptable: false };
+  try {
+    return { plain: await decryptStr(key, raw, settingContext(settingKey)), undecryptable: false };
+  } catch {
+    return { plain: undefined, undecryptable: true };
+  }
 }
 
 /* ---------------- Retirement defaults ----------------
@@ -5520,7 +5736,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (contract v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
   clearAllData: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state. Requires confirm to carry the exact phrase \"delete everything\"; any other confirmation deletes nothing.",
   seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table. The seed commits as ONE atomic batch (contract v64), like seedExamples.",
-  getNetWorth: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress.",
+  getNetWorth: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress. restoreEpoch (contract v93) is the dataset's current restore generation — the epoch base the snapshot editors pass back alongside baseRevision, so an editor whose view predates a backup restore is refused.",
   setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals.",
   setNwTarget: "Set the Net Worth target amount.",
   getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results. Also carries savedUnreadable / baselineUnreadable markers (contract v67): true when the saved inputs record / baseline record exists but cannot be read — in that state saved / baseline read as null exactly as an absent record would, and the markers are the distinction.",
@@ -5555,15 +5771,15 @@ const ACTION_PURPOSES: Record<string, string> = {
   setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state.",
   setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
   addNwSnapshot: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
-  updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the replacement is refused with { ok: false, conflict: true, revision, reason } when the stored revision has moved — by either snapshot writer — and the stored snapshot stays intact; an accepted write bumps the revision and returns it. Omitting `baseRevision` keeps the legacy unchecked write.",
-  updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the write is refused with { ok: false, conflict: true, revision, reason } when the snapshot's revision has moved, and an accepted write bumps that same revision — so a whole-snapshot editor holding the older revision conflicts instead of restoring the old balance. Omitting `baseRevision` keeps the legacy unchecked write.",
+  updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the replacement is refused with { ok: false, conflict: true, revision, reason } when the stored revision has moved — by either snapshot writer — and the stored snapshot stays intact; an accepted write bumps the revision and returns it. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the replacement is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match; an editor that loaded after the restore succeeds normally. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
+  updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the write is refused with { ok: false, conflict: true, revision, reason } when the snapshot's revision has moved, and an accepted write bumps that same revision — so a whole-snapshot editor holding the older revision conflicts instead of restoring the old balance. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
   deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist.",
   addNwAccount: "Add a Net Worth account (ordinary, property, or custodial). An absent propertyKind defaults to \"none\"; an unknown propertyKind value is rejected, never defaulted.",
   renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the account's name, propertyKind, and custodial flag as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save writes no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write.",
   setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
   deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
   exportbackup: "Export the complete dataset as one decrypted backup payload. The payload carries an authenticityMac — a keyed MAC over its contents — which restorebackup verifies before restoring.",
-  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative; every backed-up field's own writer rule holds (string lengths for names, descriptions, categories, paid-by labels and notes; the yearly dueMonth within 1–12 or null; every stored flag a 0/1 value; row ids and foreign keys positive; no tax-bucket split on a property or custodial account's balance — the field rules are the shared fieldValidators fragments the writers themselves use); and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes. Named exclusions: settings values other than those three scalar typed settings ride as opaque blobs (their writers validate structured objects at save time and their readers parse leniently), the Net Worth account bucket field is a legacy column no current writer writes, and server-assigned values (sortOrder, createdAt timestamps) are carried without range checks; transaction amounts and Net Worth balances stay signed because their writers accept negatives. Every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes.",
+  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative; every backed-up field's own writer rule holds (string lengths for names, descriptions, categories, paid-by labels and notes; the yearly dueMonth within 1–12 or null; every stored flag a 0/1 value; row ids and foreign keys positive; no tax-bucket split on a property or custodial account's balance — the field rules are the shared fieldValidators fragments the writers themselves use); and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes. Named exclusions: settings values other than those three scalar typed settings ride as opaque blobs (their writers validate structured objects at save time and their readers parse leniently), and server-assigned values (sortOrder, createdAt timestamps) are carried without range checks; transaction amounts and Net Worth balances stay signed because their writers accept negatives. The Net Worth account bucket field is a legacy column no current writer writes, and it is validated, not excluded: a bucket value carrying the enc:v1: prefix is refused at preflight unless it genuinely decrypts under this app's encryption key in the bucket field's own context (the context the export path decrypts it under) — an undecryptable prefixed bucket would otherwise be stored verbatim and break every later export — while a plaintext bucket always restores. Every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes. Restore epoch (contract v93): every restore advances the stored restore epoch by one in the same atomic batch — a carried epoch value in the payload is ignored, so old backups still advance it — and any snapshot editor holding a pre-restore epoch is refused afterwards.",
   listBackups: "List the encrypted backup files the Backups panel shows: this space's own backups folder unioned with the legacy shared folder. Each entry's source says which folder it resolved to — \"own\" (deletable from the app) or \"legacy\" (exists only in the legacy folder, which is read-only: listed and restorable, never deletable from here).",
   deleteBackup: "Delete one backup-*.mstbak file from this space's own backups folder. A backup that exists only in the legacy shared folder is refused — that folder is read-only.",
   deleteAllBackups: "Delete every backup file in this space's own backups folder. Legacy-folder backups are never deleted.",
@@ -5897,11 +6113,11 @@ async function seedExamplesStatements(
     statements.push(
       db.insert(schema.monthlyBills).values({
         id: billId,
-        name: await encryptStr(key, b.name),
-        amountCents: await encryptNum(key, latestCents),
-        paidBy: await encryptStr(key, b.paidBy),
+        name: await encryptStr(key, b.name, "monthly_bills.name"),
+        amountCents: await encryptNum(key, latestCents, "monthly_bills.amount_cents"),
+        paidBy: await encryptStr(key, b.paidBy, "monthly_bills.paid_by"),
         notes: null,
-        category: await encryptStr(key, b.category),
+        category: await encryptStr(key, b.category, "monthly_bills.category"),
         keepLightsOn: b.keepLightsOn ? 1 : 0,
       }),
     );
@@ -5909,7 +6125,7 @@ async function seedExamplesStatements(
       db.insert(schema.monthlyBillVersions).values({
         id: nextBillVersionId++,
         billId,
-        amountCents: await encryptNum(key, b.amountCents),
+        amountCents: await encryptNum(key, b.amountCents, "monthly_bill_versions.amount_cents"),
         effectiveFrom: startMonth,
       }),
     );
@@ -5918,7 +6134,7 @@ async function seedExamplesStatements(
         db.insert(schema.monthlyBillVersions).values({
           id: nextBillVersionId++,
           billId,
-          amountCents: await encryptNum(key, b.bumpedAmountCents),
+          amountCents: await encryptNum(key, b.bumpedAmountCents, "monthly_bill_versions.amount_cents"),
           effectiveFrom: monthAt(BUMP_OFFSET),
         }),
       );
@@ -5952,18 +6168,18 @@ async function seedExamplesStatements(
   let nextExpenseId = await nextSeedId(db, schema.yearlyExpenses);
   let nextExpenseVersionId = await nextSeedId(db, schema.yearlyExpenseVersions);
   for (const y of smoothedSeed) {
-    const encExpected = await encryptNum(key, y.expectedCents);
+    const encExpected = await encryptNum(key, y.expectedCents, "yearly_expenses.expected_cents");
     const expenseId = nextExpenseId++;
     smoothedIds.set(y.name, expenseId);
     statements.push(
       db.insert(schema.yearlyExpenses).values({
         id: expenseId,
-        name: await encryptStr(key, y.name),
+        name: await encryptStr(key, y.name, "yearly_expenses.name"),
         expectedCents: encExpected,
         dueMonth: y.dueMonth,
         paidByType: "checking" as const,
-        paidByName: await encryptStr(key, "Checking"),
-        category: await encryptStr(key, y.category),
+        paidByName: await encryptStr(key, "Checking", "yearly_expenses.paid_by_name"),
+        category: await encryptStr(key, y.category, "yearly_expenses.category"),
         backfillBeforeFirstVersion: 0,
         frequency: y.frequency,
         keepLightsOn: y.keepLightsOn ? 1 : 0,
@@ -5973,7 +6189,11 @@ async function seedExamplesStatements(
       db.insert(schema.yearlyExpenseVersions).values({
         id: nextExpenseVersionId++,
         expenseId,
-        expectedCents: encExpected,
+        // Contract v91: the version row gets its OWN encryption of
+        // the same figure, bound to the version column — reusing
+        // the parent row's ciphertext would decrypt in neither
+        // column's context.
+        expectedCents: await encryptNum(key, y.expectedCents, "yearly_expense_versions.expected_cents"),
         frequency: y.frequency,
         effectiveFrom: startMonth,
       }),
@@ -6012,7 +6232,7 @@ async function seedExamplesStatements(
     statements.push(
       db.insert(schema.monthlySummaries).values({
         month: monthAt(i),
-        cashOutCents: await encryptNum(key, cashOutAt(i)),
+        cashOutCents: await encryptNum(key, cashOutAt(i), "monthly_summaries.cash_out_cents"),
         createdAt: now,
         updatedAt: now,
       }),
@@ -6027,12 +6247,12 @@ async function seedExamplesStatements(
         db.insert(schema.transactions).values({
           id: nextTxnId++,
           date: `${m}-10`,
-          description: await encryptStr(key, `${p.seed.name} payment`),
-          amountCents: await encryptNum(key, p.amountCents),
+          description: await encryptStr(key, `${p.seed.name} payment`, "transactions.description"),
+          amountCents: await encryptNum(key, p.amountCents, "transactions.amount_cents"),
           sourceType: "checking",
-          accountName: await encryptStr(key, "Checking"),
+          accountName: await encryptStr(key, "Checking", "transactions.account_name"),
           kind: "spending",
-          category: await encryptStr(key, p.seed.category),
+          category: await encryptStr(key, p.seed.category, "transactions.category"),
           yearlyExpenseId: smoothedIds.get(p.seed.name) ?? null,
         }),
       );
@@ -6050,9 +6270,9 @@ async function seedExamplesStatements(
       db.insert(schema.monthlyOneOffs).values({
         id: nextOneOffId++,
         month: monthAt(o.offset),
-        description: await encryptStr(key, o.description),
-        amountCents: await encryptNum(key, o.amountCents),
-        note: await encryptNullable(key, "One-off — already counted in that month's cash out."),
+        description: await encryptStr(key, o.description, "monthly_one_offs.description"),
+        amountCents: await encryptNum(key, o.amountCents, "monthly_one_offs.amount_cents"),
+        note: await encryptNullable(key, "One-off — already counted in that month's cash out.", "monthly_one_offs.note"),
       }),
     );
   }
@@ -6087,8 +6307,8 @@ async function seedExamplesStatements(
         db.insert(schema.monthlyCashOutItems).values({
           id: nextItemId++,
           month: m,
-          description: await encryptStr(key, it.description),
-          amountCents: await encryptNum(key, it.amountCents),
+          description: await encryptStr(key, it.description, "monthly_cash_out_items.description"),
+          amountCents: await encryptNum(key, it.amountCents, "monthly_cash_out_items.amount_cents"),
           note: null,
           day: 1,
         }),
@@ -6101,7 +6321,7 @@ async function seedExamplesStatements(
   statements.push(
     db
       .insert(schema.settings)
-      .values({ key: "opening_reserve_cents", value: await encryptStr(key, "250000") })
+      .values({ key: "opening_reserve_cents", value: await encryptStr(key, "250000", settingContext("opening_reserve_cents")) })
       .onConflictDoNothing(),
   );
   statements.push(
@@ -6137,7 +6357,7 @@ async function seedNetWorthStatements(
     statements.push(
       db.insert(schema.nwAccounts).values({
         id: accountId,
-        name: await encryptStr(key, acct.name),
+        name: await encryptStr(key, acct.name, "nw_accounts.name"),
         sortOrder: i,
         archived: 0,
         propertyKind: acct.propertyKind,
@@ -6161,7 +6381,7 @@ async function seedNetWorthStatements(
       db.insert(schema.nwSnapshots).values({
         id: snapshotId,
         date: `${shiftMonth(startMonth, s)}-01`,
-        note: await encryptNullable(key, NW_SEED_NOTES[s] ?? null),
+        note: await encryptNullable(key, NW_SEED_NOTES[s] ?? null, "nw_snapshots.note"),
       }),
     );
     for (let i = 0; i < accountIds.length; i++) {
@@ -6312,6 +6532,21 @@ function parseImportBatchClaim(
 
 const IMPORT_BATCH_COLLISION_MESSAGE =
   "This import batch key was already used for a different set of rows, so nothing was imported. Start a fresh preview to import these rows as a new batch.";
+
+/* ---- Restore epoch (contract v93, stored-data finding F5) ----
+   The single stored restore generation: getNetWorth publishes it
+   alongside the snapshots, the two snapshot CAS writers compare
+   the editor's observed epoch against it, and restorebackup
+   advances it on every restore. One lenient read shared by the
+   writers: a missing or unparseable stored value is epoch 0,
+   the era before any restore stamped one. */
+async function readStoredRestoreEpoch(db: any): Promise<number> {
+  const [row] = await db
+    .select()
+    .from(schema.settings)
+    .where(eq(schema.settings.key, NW_RESTORE_EPOCH_SETTING));
+  return parseRestoreEpoch(row?.value);
+}
 
 export const Actions = {
   // Machine-readable API contract (model-friendly API, Piece 1):
@@ -6589,8 +6824,7 @@ export const Actions = {
       // first-ever use, before anything has been stored).
       const storedMonthlyPaidFrom = await decryptSettingValue(
         key,
-        settingsMap.get(ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY),
-      );
+        settingsMap.get(ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY), ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY);
       const lastMonthlyPaidFrom =
         storedMonthlyPaidFrom && storedMonthlyPaidFrom.trim() !== ""
           ? storedMonthlyPaidFrom
@@ -6602,8 +6836,7 @@ export const Actions = {
         storedYearlyPaidType === "card" ? "card" : "checking";
       const storedYearlyPaidName = await decryptSettingValue(
         key,
-        settingsMap.get(ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY),
-      );
+        settingsMap.get(ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY), ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY);
       const lastYearlyPaidByName =
         storedYearlyPaidName && storedYearlyPaidName.trim() !== ""
           ? storedYearlyPaidName
@@ -7457,12 +7690,12 @@ export const Actions = {
         .insert(schema.transactions)
         .values({
           date: args.date,
-          description: await encryptStr(key, args.description),
-          amountCents: await encryptNum(key, args.amountCents),
+          description: await encryptStr(key, args.description, "transactions.description"),
+          amountCents: await encryptNum(key, args.amountCents, "transactions.amount_cents"),
           sourceType: args.sourceType,
-          accountName: await encryptStr(key, args.accountName),
+          accountName: await encryptStr(key, args.accountName, "transactions.account_name"),
           kind: args.kind,
-          category: await encryptStr(key, args.category),
+          category: await encryptStr(key, args.category, "transactions.category"),
           yearlyExpenseId: args.yearlyExpenseId,
         })
         .returning({ id: schema.transactions.id });
@@ -7515,12 +7748,12 @@ export const Actions = {
         }
         const stored = {
           date: raw.date,
-          description: await decryptStr(key, raw.description),
-          amountCents: await decryptNum(key, raw.amountCents as unknown),
+          description: await decryptStr(key, raw.description, "transactions.description"),
+          amountCents: await decryptNum(key, raw.amountCents as unknown, "transactions.amount_cents"),
           sourceType: raw.sourceType,
-          accountName: await decryptStr(key, raw.accountName),
+          accountName: await decryptStr(key, raw.accountName, "transactions.account_name"),
           kind: raw.kind,
-          category: await decryptStr(key, raw.category),
+          category: await decryptStr(key, raw.category, "transactions.category"),
           yearlyExpenseId: raw.yearlyExpenseId ?? null,
         };
         const mismatch = casFieldMismatch(stored, base, [
@@ -7546,12 +7779,12 @@ export const Actions = {
         .update(schema.transactions)
         .set({
           date: fields.date,
-          description: await encryptStr(key, fields.description),
-          amountCents: await encryptNum(key, fields.amountCents),
+          description: await encryptStr(key, fields.description, "transactions.description"),
+          amountCents: await encryptNum(key, fields.amountCents, "transactions.amount_cents"),
           sourceType: fields.sourceType,
-          accountName: await encryptStr(key, fields.accountName),
+          accountName: await encryptStr(key, fields.accountName, "transactions.account_name"),
           kind: fields.kind,
-          category: await encryptStr(key, fields.category),
+          category: await encryptStr(key, fields.category, "transactions.category"),
           yearlyExpenseId: fields.yearlyExpenseId,
         })
         .where(
@@ -7665,17 +7898,17 @@ export const Actions = {
       );
       let settingsJson: string | null = null;
       if (row && row.value !== "") {
-        settingsJson = await decryptSettingValue(key, row.value);
+        settingsJson = await decryptSettingValue(key, row.value, IMPORT_SETTINGS_KEY);
         // Migrate a legacy plaintext value to encrypted in place
         // (the loadAll opening-reserve pattern). Compare-and-write
         // (contract v64, A4): the update applies only while the
         // stored value still equals the value read here, so a
         // concurrent saveImportSettings write wins over this
         // migration rewrite.
-        if (settingsJson != null && !isEncrypted(row.value)) {
+        if (settingsJson != null && (await needsRebind(key, row.value, settingContext(IMPORT_SETTINGS_KEY)))) {
           await db
             .update(schema.settings)
-            .set({ value: await encryptStr(key, settingsJson) })
+            .set({ value: await encryptStr(key, settingsJson, settingContext(IMPORT_SETTINGS_KEY)) })
             .where(and(
               eq(schema.settings.key, IMPORT_SETTINGS_KEY),
               eq(schema.settings.value, row.value),
@@ -7763,7 +7996,7 @@ export const Actions = {
       // Round-trip through the shared parser so what lands is
       // exactly the shape the panel reads back.
       const blob = parseImportSettings(args.settingsJson);
-      const value = await encryptStr(key, JSON.stringify(blob));
+      const value = await encryptStr(key, JSON.stringify(blob), settingContext(IMPORT_SETTINGS_KEY));
       await db
         .insert(schema.settings)
         .values({ key: IMPORT_SETTINGS_KEY, value })
@@ -7800,12 +8033,12 @@ export const Actions = {
       );
       let settingsJson: string | null = null;
       if (row && row.value !== "") {
-        settingsJson = await decryptSettingValue(key, row.value);
+        settingsJson = await decryptSettingValue(key, row.value, NW_IMPORT_SETTINGS_KEY);
         // Compare-and-write (contract v64, A4): see getImportData.
-        if (settingsJson != null && !isEncrypted(row.value)) {
+        if (settingsJson != null && (await needsRebind(key, row.value, settingContext(NW_IMPORT_SETTINGS_KEY)))) {
           await db
             .update(schema.settings)
-            .set({ value: await encryptStr(key, settingsJson) })
+            .set({ value: await encryptStr(key, settingsJson, settingContext(NW_IMPORT_SETTINGS_KEY)) })
             .where(and(
               eq(schema.settings.key, NW_IMPORT_SETTINGS_KEY),
               eq(schema.settings.value, row.value),
@@ -7853,7 +8086,7 @@ export const Actions = {
       // Round-trip through the shared parser so what lands is
       // exactly the shape the panel reads back.
       const blob = parseNwImportSettings(args.settingsJson);
-      const value = await encryptStr(key, JSON.stringify(blob));
+      const value = await encryptStr(key, JSON.stringify(blob), settingContext(NW_IMPORT_SETTINGS_KEY));
       await db
         .insert(schema.settings)
         .values({ key: NW_IMPORT_SETTINGS_KEY, value })
@@ -7889,14 +8122,30 @@ export const Actions = {
       // (one decrypt attempt per distinct prefixed value) so the
       // pure plan sees a synchronous verifier.
       const verified = new Set<string>();
+      // Contract v91: a value verifies as genuine ciphertext when
+      // it decrypts under ANY of the three transaction text-field
+      // bindings — the preflight cannot know which field the
+      // value was bound to, and a ciphertext bound to one of
+      // them is genuine; the writers then bind it to its actual
+      // destination field on insert. A value bound to no field
+      // (or to no field at all) verifies under none and the plan
+      // refuses below.
+      const txnTextContexts = [
+        "transactions.description",
+        "transactions.account_name",
+        "transactions.category",
+      ];
       for (const r of args.rows) {
         for (const value of [r.description, r.accountName, r.category]) {
           if (hasReservedEncPrefix(value) && !verified.has(value)) {
-            try {
-              await decryptStr(key, value);
-              verified.add(value);
-            } catch {
-              // Not genuine ciphertext: the plan refuses below.
+            for (const context of txnTextContexts) {
+              try {
+                await decryptStr(key, value, context);
+                verified.add(value);
+                break;
+              } catch {
+                // Not genuine ciphertext for this field: try the next.
+              }
             }
           }
         }
@@ -7950,14 +8199,14 @@ export const Actions = {
         statements.push(
           db.insert(schema.transactions).values({
             date: r.date,
-            description: await encryptStr(key, r.description),
-            amountCents: await encryptNum(key, r.amountCents),
+            description: await encryptStr(key, r.description, "transactions.description"),
+            amountCents: await encryptNum(key, r.amountCents, "transactions.amount_cents"),
             sourceType: r.sourceType,
-            accountName: await encryptStr(key, r.accountName),
+            accountName: await encryptStr(key, r.accountName, "transactions.account_name"),
             kind: r.kind,
-            category: await encryptStr(key, r.category),
+            category: await encryptStr(key, r.category, "transactions.category"),
             yearlyExpenseId: r.yearlyExpenseId,
-            fitId: await encryptNullable(key, r.fitId),
+            fitId: await encryptNullable(key, r.fitId, "transactions.fit_id"),
           }),
         );
       }
@@ -8022,17 +8271,17 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      const encExpected = await encryptNum(key, args.expectedCents);
+      const encExpected = await encryptNum(key, args.expectedCents, "yearly_expenses.expected_cents");
       const [row] = await db
         .insert(schema.yearlyExpenses)
         .values({
-          name: await encryptStr(key, args.name),
+          name: await encryptStr(key, args.name, "yearly_expenses.name"),
           frequency: args.frequency,
           expectedCents: encExpected,
           dueMonth: args.dueMonth,
           paidByType: args.paidByType,
-          paidByName: await encryptStr(key, args.paidByName),
-          category: await encryptStr(key, args.category),
+          paidByName: await encryptStr(key, args.paidByName, "yearly_expenses.paid_by_name"),
+          category: await encryptStr(key, args.category, "yearly_expenses.category"),
           keepLightsOn: args.keepLightsOn ? 1 : 0,
           // New bills never backfill: months before their first version
           // contribute zero. Only the 0007 migration sets this to 1,
@@ -8045,7 +8294,11 @@ export const Actions = {
       const eff = args.effectiveFrom ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
       await db.insert(schema.yearlyExpenseVersions).values({
         expenseId: row.id,
-        expectedCents: encExpected,
+        // Contract v91: the version row gets its OWN encryption of
+        // the same figure, bound to the version column — reusing
+        // the parent row's ciphertext would decrypt in neither
+        // column's context.
+        expectedCents: await encryptNum(key, args.expectedCents, "yearly_expense_versions.expected_cents"),
         frequency: args.frequency,
         effectiveFrom: eff,
       });
@@ -8055,7 +8308,7 @@ export const Actions = {
       await upsertPlainSetting(
         db,
         ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY,
-        await encryptStr(key, args.paidByName),
+        await encryptStr(key, args.paidByName, settingContext(ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY)),
       );
       ctx.invalidateQueries();
       return { id: row.id };
@@ -8125,11 +8378,11 @@ export const Actions = {
         `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
       if (args.base !== undefined) {
         const storedParent = {
-          name: await decryptStr(key, existingExpense.name),
+          name: await decryptStr(key, existingExpense.name, "yearly_expenses.name"),
           dueMonth: existingExpense.dueMonth ?? null,
           paidByType: existingExpense.paidByType,
-          paidByName: await decryptStr(key, existingExpense.paidByName),
-          category: await decryptStr(key, existingExpense.category),
+          paidByName: await decryptStr(key, existingExpense.paidByName, "yearly_expenses.paid_by_name"),
+          category: await decryptStr(key, existingExpense.category, "yearly_expenses.category"),
           keepLightsOn: existingExpense.keepLightsOn === 1,
         };
         const parentMismatch = casFieldMismatch(storedParent, args.base, [
@@ -8153,8 +8406,7 @@ export const Actions = {
           ? {
               expectedCents: await decryptNum(
                 key,
-                versionRow.expectedCents as unknown,
-              ),
+                versionRow.expectedCents as unknown, "yearly_expense_versions.expected_cents"),
               frequency: versionRow.frequency,
             }
           : null;
@@ -8167,7 +8419,10 @@ export const Actions = {
           };
         }
       }
-      const encExpectedArg = await encryptNum(key, args.expectedCents);
+      // The version upsert below is the ONLY use of this value: it
+      // is bound to the version column, not the parent column
+      // (contract v91 — the two columns must never share bytes).
+      const encExpectedArg = await encryptNum(key, args.expectedCents, "yearly_expense_versions.expected_cents");
       // Metadata (name, due month, paid-by, keep-the-lights-on flag)
       // updates in place. Amount and
       // frequency are versioned: a change creates / upserts a version
@@ -8178,11 +8433,11 @@ export const Actions = {
       await db
         .update(schema.yearlyExpenses)
         .set({
-          name: await encryptStr(key, args.name),
+          name: await encryptStr(key, args.name, "yearly_expenses.name"),
           dueMonth: args.dueMonth,
           paidByType: args.paidByType,
-          paidByName: await encryptStr(key, args.paidByName),
-          category: await encryptStr(key, args.category),
+          paidByName: await encryptStr(key, args.paidByName, "yearly_expenses.paid_by_name"),
+          category: await encryptStr(key, args.category, "yearly_expenses.category"),
           keepLightsOn: args.keepLightsOn ? 1 : 0,
         })
         .where(eq(schema.yearlyExpenses.id, args.id));
@@ -8212,12 +8467,12 @@ export const Actions = {
         .from(schema.yearlyExpenseVersions)
         .where(eq(schema.yearlyExpenseVersions.expenseId, args.id));
       const all: YearlyVersionRow[] = [];
-      for (const v of allRaw) all.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
+      for (const v of allRaw) all.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown, "yearly_expense_versions.expected_cents") });
       const latest = latestYearlyVersion(all);
       if (latest) {
         await db
           .update(schema.yearlyExpenses)
-          .set({ expectedCents: await encryptNum(key, latest.expectedCents), frequency: latest.frequency })
+          .set({ expectedCents: await encryptNum(key, latest.expectedCents, "yearly_expenses.expected_cents"), frequency: latest.frequency })
           .where(eq(schema.yearlyExpenses.id, args.id));
       }
       // Remember this Paid from as the sticky default for the next
@@ -8226,7 +8481,7 @@ export const Actions = {
       await upsertPlainSetting(
         db,
         ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY,
-        await encryptStr(key, args.paidByName),
+        await encryptStr(key, args.paidByName, settingContext(ENTRY_DEFAULT_YEARLY_PAID_NAME_KEY)),
       );
       ctx.invalidateQueries();
       return { ok: true, reason: "Yearly expense updated." };
@@ -8258,7 +8513,7 @@ export const Actions = {
       if (!existingExpense) {
         return { ok: false, reason: "That yearly expense was not found." };
       }
-      const encExpectedArg = await encryptNum(key, args.expectedCents);
+      const encExpectedArg = await encryptNum(key, args.expectedCents, "yearly_expense_versions.expected_cents");
       // Atomic upsert on the (expenseId, effectiveFrom) pair
       // (contract v64, A1): see setMonthlyBillAmount.
       await db
@@ -8281,12 +8536,12 @@ export const Actions = {
         .from(schema.yearlyExpenseVersions)
         .where(eq(schema.yearlyExpenseVersions.expenseId, args.expenseId));
       const all: YearlyVersionRow[] = [];
-      for (const v of allRaw) all.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
+      for (const v of allRaw) all.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown, "yearly_expense_versions.expected_cents") });
       const latest = latestYearlyVersion(all);
       if (latest) {
         await db
           .update(schema.yearlyExpenses)
-          .set({ expectedCents: await encryptNum(key, latest.expectedCents), frequency: latest.frequency })
+          .set({ expectedCents: await encryptNum(key, latest.expectedCents, "yearly_expenses.expected_cents"), frequency: latest.frequency })
           .where(eq(schema.yearlyExpenses.id, args.expenseId));
       }
       ctx.invalidateQueries();
@@ -8369,13 +8624,13 @@ export const Actions = {
           eq(schema.yearlyExpenseVersions.expenseId, target.expenseId),
         );
       const remaining: YearlyVersionRow[] = [];
-      for (const v of remainingRaw) remaining.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown) });
+      for (const v of remainingRaw) remaining.push({ ...v, expectedCents: await decryptNum(key, v.expectedCents as unknown, "yearly_expense_versions.expected_cents") });
       const latest = latestYearlyVersion(remaining);
       if (latest) {
         await db
           .update(schema.yearlyExpenses)
           .set({
-            expectedCents: await encryptNum(key, latest.expectedCents),
+            expectedCents: await encryptNum(key, latest.expectedCents, "yearly_expenses.expected_cents"),
             frequency: latest.frequency,
           })
           .where(eq(schema.yearlyExpenses.id, target.expenseId));
@@ -8420,9 +8675,9 @@ export const Actions = {
         .insert(schema.monthlyOneOffs)
         .values({
           month: args.month,
-          description: await encryptStr(key, args.description),
-          amountCents: await encryptNum(key, args.amountCents),
-          note: await encryptNullable(key, args.note),
+          description: await encryptStr(key, args.description, "monthly_one_offs.description"),
+          amountCents: await encryptNum(key, args.amountCents, "monthly_one_offs.amount_cents"),
+          note: await encryptNullable(key, args.note, "monthly_one_offs.note"),
         })
         .returning({ id: schema.monthlyOneOffs.id });
       if (!row) throw new Error("insert failed");
@@ -8443,9 +8698,9 @@ export const Actions = {
         .update(schema.monthlyOneOffs)
         .set({
           month: args.month,
-          description: await encryptStr(key, args.description),
-          amountCents: await encryptNum(key, args.amountCents),
-          note: await encryptNullable(key, args.note),
+          description: await encryptStr(key, args.description, "monthly_one_offs.description"),
+          amountCents: await encryptNum(key, args.amountCents, "monthly_one_offs.amount_cents"),
+          note: await encryptNullable(key, args.note, "monthly_one_offs.note"),
         })
         .where(eq(schema.monthlyOneOffs.id, args.id))
         .returning({ id: schema.monthlyOneOffs.id });
@@ -8486,9 +8741,9 @@ export const Actions = {
         .insert(schema.monthlyCashOutItems)
         .values({
           month: args.month,
-          description: await encryptStr(key, args.description),
-          amountCents: await encryptNum(key, args.amountCents),
-          note: await encryptNullable(key, args.note),
+          description: await encryptStr(key, args.description, "monthly_cash_out_items.description"),
+          amountCents: await encryptNum(key, args.amountCents, "monthly_cash_out_items.amount_cents"),
+          note: await encryptNullable(key, args.note, "monthly_cash_out_items.note"),
           day: args.day,
         })
         .returning({ id: schema.monthlyCashOutItems.id });
@@ -8525,9 +8780,9 @@ export const Actions = {
         }
         const stored = {
           month: raw.month,
-          description: await decryptStr(key, raw.description),
-          amountCents: await decryptNum(key, raw.amountCents as unknown),
-          note: await decryptNullable(key, raw.note),
+          description: await decryptStr(key, raw.description, "monthly_cash_out_items.description"),
+          amountCents: await decryptNum(key, raw.amountCents as unknown, "monthly_cash_out_items.amount_cents"),
+          note: await decryptNullable(key, raw.note, "monthly_cash_out_items.note"),
           day: raw.day,
         };
         const mismatch = casFieldMismatch(stored, base, [
@@ -8550,9 +8805,9 @@ export const Actions = {
         .update(schema.monthlyCashOutItems)
         .set({
           month: fields.month,
-          description: await encryptStr(key, fields.description),
-          amountCents: await encryptNum(key, fields.amountCents),
-          note: await encryptNullable(key, fields.note),
+          description: await encryptStr(key, fields.description, "monthly_cash_out_items.description"),
+          amountCents: await encryptNum(key, fields.amountCents, "monthly_cash_out_items.amount_cents"),
+          note: await encryptNullable(key, fields.note, "monthly_cash_out_items.note"),
           day: fields.day,
         })
         .where(
@@ -8640,7 +8895,7 @@ export const Actions = {
         const storedReserve =
           rawReserve == null
             ? 0
-            : Number(await decryptStr(key, rawReserve));
+            : Number(await decryptStr(key, rawReserve, settingContext("opening_reserve_cents")));
         const rawStart = rows.find(
           (r) => r.key === "reserve_start_month",
         )?.value;
@@ -8656,7 +8911,7 @@ export const Actions = {
           };
         }
       }
-      const encReserve = await encryptStr(key, String(args.openingReserveCents));
+      const encReserve = await encryptStr(key, String(args.openingReserveCents), settingContext("opening_reserve_cents"));
       await db
         .insert(schema.settings)
         .values({
@@ -8711,7 +8966,7 @@ export const Actions = {
           .from(schema.monthlySummaries)
           .where(eq(schema.monthlySummaries.month, args.month));
         const storedCents = row
-          ? await decryptNum(key, row.cashOutCents as unknown)
+          ? await decryptNum(key, row.cashOutCents as unknown, "monthly_summaries.cash_out_cents")
           : null;
         if (storedCents !== args.base.cashOutCents) {
           return {
@@ -8722,7 +8977,7 @@ export const Actions = {
         }
       }
       const now = new Date();
-      const encCashOut = await encryptNum(key, args.cashOutCents);
+      const encCashOut = await encryptNum(key, args.cashOutCents, "monthly_summaries.cash_out_cents");
       await db
         .insert(schema.monthlySummaries)
         .values({
@@ -8768,22 +9023,26 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      const encAmount = await encryptNum(key, args.amountCents);
+      const encAmount = await encryptNum(key, args.amountCents, "monthly_bills.amount_cents");
       const [row] = await db
         .insert(schema.monthlyBills)
         .values({
-          name: await encryptStr(key, args.name),
+          name: await encryptStr(key, args.name, "monthly_bills.name"),
           amountCents: encAmount,
-          paidBy: await encryptStr(key, args.paidBy),
-          notes: await encryptNullable(key, args.notes),
-          category: await encryptStr(key, args.category),
+          paidBy: await encryptStr(key, args.paidBy, "monthly_bills.paid_by"),
+          notes: await encryptNullable(key, args.notes, "monthly_bills.notes"),
+          category: await encryptStr(key, args.category, "monthly_bills.category"),
           keepLightsOn: args.keepLightsOn ? 1 : 0,
         })
         .returning({ id: schema.monthlyBills.id });
       if (!row) throw new Error("insert failed");
       await db.insert(schema.monthlyBillVersions).values({
         billId: row.id,
-        amountCents: encAmount,
+        // Contract v91: the version row gets its OWN encryption of
+        // the same figure, bound to the version column — reusing
+        // the parent row's ciphertext would decrypt in neither
+        // column's context.
+        amountCents: await encryptNum(key, args.amountCents, "monthly_bill_versions.amount_cents"),
         effectiveFrom: args.effectiveFrom,
       });
       // Remember this Paid from as the sticky default for the next
@@ -8791,7 +9050,7 @@ export const Actions = {
       await upsertPlainSetting(
         db,
         ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY,
-        await encryptStr(key, args.paidBy),
+        await encryptStr(key, args.paidBy, settingContext(ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY)),
       );
       ctx.invalidateQueries();
       return { id: row.id };
@@ -8823,10 +9082,10 @@ export const Actions = {
       // before any write, so the stored newer bill stays intact.
       if (args.base !== undefined) {
         const storedBill = {
-          name: await decryptStr(key, existingBill.name),
-          paidBy: await decryptStr(key, existingBill.paidBy),
-          notes: await decryptNullable(key, existingBill.notes),
-          category: await decryptStr(key, existingBill.category),
+          name: await decryptStr(key, existingBill.name, "monthly_bills.name"),
+          paidBy: await decryptStr(key, existingBill.paidBy, "monthly_bills.paid_by"),
+          notes: await decryptNullable(key, existingBill.notes, "monthly_bills.notes"),
+          category: await decryptStr(key, existingBill.category, "monthly_bills.category"),
           keepLightsOn: existingBill.keepLightsOn === 1,
         };
         const sentFields = (
@@ -8854,10 +9113,10 @@ export const Actions = {
         category?: string;
         keepLightsOn?: number;
       } = {};
-      if (plain.name !== undefined) set.name = await encryptStr(key, plain.name);
-      if (plain.paidBy !== undefined) set.paidBy = await encryptStr(key, plain.paidBy);
-      if (plain.notes !== undefined) set.notes = await encryptNullable(key, plain.notes);
-      if (plain.category !== undefined) set.category = await encryptStr(key, plain.category);
+      if (plain.name !== undefined) set.name = await encryptStr(key, plain.name, "monthly_bills.name");
+      if (plain.paidBy !== undefined) set.paidBy = await encryptStr(key, plain.paidBy, "monthly_bills.paid_by");
+      if (plain.notes !== undefined) set.notes = await encryptNullable(key, plain.notes, "monthly_bills.notes");
+      if (plain.category !== undefined) set.category = await encryptStr(key, plain.category, "monthly_bills.category");
       if (plain.keepLightsOn !== undefined) set.keepLightsOn = plain.keepLightsOn;
       const updated = await db
         .update(schema.monthlyBills)
@@ -8878,7 +9137,7 @@ export const Actions = {
       await upsertPlainSetting(
         db,
         ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY,
-        await encryptStr(key, args.paidBy),
+        await encryptStr(key, args.paidBy, settingContext(ENTRY_DEFAULT_MONTHLY_PAID_FROM_KEY)),
       );
       ctx.invalidateQueries();
       return { ok: true, reason: "Bill updated." };
@@ -8900,7 +9159,7 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const updated = await db
         .update(schema.monthlyBills)
-        .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized") })
+        .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized", "monthly_bills.category") })
         .where(eq(schema.monthlyBills.id, args.id))
         .returning({ id: schema.monthlyBills.id });
       if (updated.length === 0) {
@@ -8926,7 +9185,7 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const updated = await db
         .update(schema.yearlyExpenses)
-        .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized") })
+        .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized", "yearly_expenses.category") })
         .where(eq(schema.yearlyExpenses.id, args.id))
         .returning({ id: schema.yearlyExpenses.id });
       if (updated.length === 0) {
@@ -9274,7 +9533,7 @@ export const Actions = {
             ),
           );
         const storedAmount = versionRow
-          ? await decryptNum(key, versionRow.amountCents as unknown)
+          ? await decryptNum(key, versionRow.amountCents as unknown, "monthly_bill_versions.amount_cents")
           : null;
         if (storedAmount !== args.base.amountCents) {
           return {
@@ -9284,7 +9543,7 @@ export const Actions = {
           };
         }
       }
-      const encAmountArg = await encryptNum(key, args.amountCents);
+      const encAmountArg = await encryptNum(key, args.amountCents, "monthly_bill_versions.amount_cents");
       // Atomic upsert on the (billId, effectiveFrom) pair
       // (contract v64, A1): the composite unique index (schema +
       // migration 0025) makes the pair a real conflict target, so
@@ -9310,12 +9569,12 @@ export const Actions = {
         .from(schema.monthlyBillVersions)
         .where(eq(schema.monthlyBillVersions.billId, args.billId));
       const all: BillVersionRow[] = [];
-      for (const v of allRaw) all.push({ ...v, amountCents: await decryptNum(key, v.amountCents as unknown) });
+      for (const v of allRaw) all.push({ ...v, amountCents: await decryptNum(key, v.amountCents as unknown, "monthly_bill_versions.amount_cents") });
       const latest = latestVersion(all);
       if (latest) {
         await db
           .update(schema.monthlyBills)
-          .set({ amountCents: await encryptNum(key, latest.amountCents) })
+          .set({ amountCents: await encryptNum(key, latest.amountCents, "monthly_bills.amount_cents") })
           .where(eq(schema.monthlyBills.id, args.billId));
       }
       ctx.invalidateQueries();
@@ -9389,12 +9648,12 @@ export const Actions = {
         .from(schema.monthlyBillVersions)
         .where(eq(schema.monthlyBillVersions.billId, target.billId));
       const remaining: BillVersionRow[] = [];
-      for (const v of remainingRaw) remaining.push({ ...v, amountCents: await decryptNum(key, v.amountCents as unknown) });
+      for (const v of remainingRaw) remaining.push({ ...v, amountCents: await decryptNum(key, v.amountCents as unknown, "monthly_bill_versions.amount_cents") });
       const latest = latestVersion(remaining);
       if (latest) {
         await db
           .update(schema.monthlyBills)
-          .set({ amountCents: await encryptNum(key, latest.amountCents) })
+          .set({ amountCents: await encryptNum(key, latest.amountCents, "monthly_bills.amount_cents") })
           .where(eq(schema.monthlyBills.id, target.billId));
       }
       ctx.invalidateQueries();
@@ -9590,6 +9849,14 @@ export const Actions = {
       // "nw_target_cents". Null when no target has been set (the
       // default) — the view then shows only a subtle set affordance.
       targetCents: z.number().nullable(),
+      // Restore epoch (contract v93, F5): the restore generation
+      // the dataset is on, stored in settings under
+      // "nw_restore_epoch_v1" and advanced by every restorebackup.
+      // The snapshot editors pass it back as baseEpoch — the CAS
+      // base alongside baseRevision — so an editor whose view
+      // predates a restore is refused. 0 when no restore has
+      // stamped one.
+      restoreEpoch: z.number().int().nonnegative(),
       // Section fold state for the Net Worth view's Accounts and
       // History sections, persisted in settings like the spending
       // side's collapse flags. Default (absent) = collapsed; only an
@@ -9683,7 +9950,7 @@ export const Actions = {
       let targetCents: number | null = null;
       if (targetRaw != null && targetRaw !== "") {
         if (isEncrypted(targetRaw)) {
-          const n = await decryptNum(key, targetRaw as unknown);
+          const n = await decryptNum(key, targetRaw as unknown, settingContext(NW_TARGET_KEY));
           targetCents = Number.isFinite(n) && n > 0 ? n : null;
         } else {
           const n = Number.parseInt(targetRaw, 10);
@@ -9716,6 +9983,9 @@ export const Actions = {
       return {
         includeProperty,
         targetCents,
+        restoreEpoch: parseRestoreEpoch(
+          settingRows.find((r) => r.key === NW_RESTORE_EPOCH_SETTING)?.value,
+        ),
         accountsCollapsed,
         historyCollapsed,
         growthSinceDate,
@@ -9972,8 +10242,7 @@ export const Actions = {
             key,
             JSON.stringify(
               composeRetirementBaselineBlob("session", saved, 1),
-            ),
-          );
+            ), settingContext(RETIREMENT_BASELINE_KEY));
           await db
             .insert(schema.settings)
             .values({ key: RETIREMENT_BASELINE_KEY, value: enc })
@@ -10124,8 +10393,7 @@ export const Actions = {
         key,
         JSON.stringify(
           composeRetirementInputsBlob(fields, state.scenarios, nextRevision),
-        ),
-      );
+        ), settingContext(RETIREMENT_KEY));
       if (baseRevision === undefined) {
         // Legacy unchecked write (no baseRevision): unconditional
         // upsert, as before — except the write still bumps the
@@ -10277,8 +10545,7 @@ export const Actions = {
             blobState.scenarios,
             nextRevision,
           ),
-        ),
-      );
+        ), settingContext(RETIREMENT_KEY));
       let inputsCommitted: boolean;
       if (baseRevision === undefined) {
         await upsertRetirementBlobValue(db, enc1);
@@ -10342,8 +10609,7 @@ export const Actions = {
                 fields,
                 nextBaselineRevision,
               ),
-            ),
-          ),
+            ), settingContext(RETIREMENT_BASELINE_KEY)),
         );
         ctx.invalidateQueries();
         return successShape(nextBaselineRevision);
@@ -10371,8 +10637,7 @@ export const Actions = {
                 fields,
                 nextBaselineRevision,
               ),
-            ),
-          ),
+            ), settingContext(RETIREMENT_BASELINE_KEY)),
         );
         if (inserted) {
           ctx.invalidateQueries();
@@ -10399,8 +10664,7 @@ export const Actions = {
             fields,
             nextBaselineRevision,
           ),
-        ),
-      );
+        ), settingContext(RETIREMENT_BASELINE_KEY));
       const firstCommit = await commitSettingsValueGuarded(
         db,
         RETIREMENT_BASELINE_KEY,
@@ -10425,8 +10689,7 @@ export const Actions = {
           key,
           JSON.stringify(
             composeRetirementBaselineBlob("saved", fields, retryRevision),
-          ),
-        );
+          ), settingContext(RETIREMENT_BASELINE_KEY));
         retryCommitted = await commitSettingsValueGuarded(
           db,
           RETIREMENT_BASELINE_KEY,
@@ -10443,8 +10706,7 @@ export const Actions = {
             key,
             JSON.stringify(
               composeRetirementBaselineBlob("saved", fields, retryRevision),
-            ),
-          ),
+            ), settingContext(RETIREMENT_BASELINE_KEY)),
         );
         retryCommitted = true;
       }
@@ -10706,8 +10968,7 @@ export const Actions = {
       for (;;) {
         const enc = await encryptStr(
           key,
-          joinRothBlob(stored, state.scenariosRaw, state.revision + 1),
-        );
+          joinRothBlob(stored, state.scenariosRaw, state.revision + 1), settingContext(ROTH_INPUTS_KEY));
         let committed: boolean;
         if (state.storedRaw === undefined) {
           committed = await insertRothBlobValueIfAbsent(db, enc);
@@ -10744,12 +11005,21 @@ export const Actions = {
   // revision, which writers pass back as baseRevision when
   // they save (see setRothUiState).
   getRothUiState: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: rothUiStateResponse,
     async handler(ctx): Promise<z.infer<typeof rothUiStateResponse>> {
       const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
       const rows = await db.select().from(schema.settings);
-      return parseRothUiState(rows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value);
+      const raw = rows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value;
+      // Contract v90: the blob is stored encrypted; a legacy
+      // plaintext record dual-reads as before. An undecryptable
+      // ciphertext record parses as no stored blob (the lenient
+      // reader's default), exactly as a corrupt plaintext blob
+      // did before encryption.
+      const stored = await readStoredBlob(key, raw, ROTH_UI_STATE_KEY);
+      return parseRothUiState(stored.plain);
     },
   }),
 
@@ -10771,12 +11041,14 @@ export const Actions = {
   // returns it.
   // The CAS commit is atomic, not just checked: against an
   // existing row it is a single UPDATE whose predicate requires
-  // the revision inside the stored blob to still equal
-  // baseRevision at commit time, verified by the statement's
-  // affected-row count — so two invocations that both read
-  // revision N before either commits cannot both succeed; the
-  // second's UPDATE matches 0 rows and it is refused with the
-  // re-read current blob, exactly like a sequential conflict.
+  // the row to still hold the exact raw value the writer read
+  // (ciphertext byte equality — the Roth plan record's guarded
+  // commit, since SQL cannot read a revision inside
+  // ciphertext), verified by the statement's affected-row
+  // count — so two invocations that both read revision N
+  // before either commits cannot both succeed; the second's
+  // UPDATE matches 0 rows and it is refused with the re-read
+  // current blob, exactly like a sequential conflict.
   // A first write (no stored row) commits INSERT-ONLY, never
   // an unconditional upsert (state audit fix 1): two
   // invocations that both read "no row" at baseRevision 0
@@ -10784,6 +11056,7 @@ export const Actions = {
   // writes nothing, and it is refused with the re-read current
   // blob, exactly like a sequential conflict.
   setRothUiState: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       section: z.enum(ROTH_SECTION_IDS).optional(),
       open: z.boolean().optional(),
@@ -10806,10 +11079,18 @@ export const Actions = {
     response: setRothUiStateResponse,
     async handler(ctx, args): Promise<SetRothUiStateResponse> {
       const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
       const rows = await db.select().from(schema.settings);
       const storedRaw = rows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value;
+      // Contract v90: decrypt the stored blob before the pure
+      // write path sees it (dual-read: legacy plaintext parses
+      // as before), and encrypt the composed blob before it
+      // reaches settings. applyRothUiWrite itself stays a
+      // plaintext-JSON function, exactly like the Roth plan
+      // record's split/join pair — the envelope lives here.
+      const stored = await readStoredBlob(key, storedRaw, ROTH_UI_STATE_KEY);
       const result = applyRothUiWrite(
-        storedRaw,
+        stored.plain,
         args.baseRevision,
         (state) => {
           if (args.section !== undefined && args.open !== undefined) {
@@ -10867,6 +11148,11 @@ export const Actions = {
           state: result.state,
         };
       }
+      // The composed blob is encrypted before any commit path
+      // below stores it (contract v90). Every path predicates
+      // on, or inserts against, the stored RAW value — never on
+      // JSON inside it, which SQL can no longer see.
+      const enc = await encryptStr(key, result.raw, settingContext(ROTH_UI_STATE_KEY));
       if (storedRaw === undefined) {
         // First write establishing the row: INSERT-ONLY (state
         // audit fix 1), mirroring the plan record's first-write
@@ -10880,15 +11166,16 @@ export const Actions = {
         // wrote nothing, so re-read the current blob and return
         // the conflict response, exactly like a sequential
         // conflict.
-        const inserted = await insertRothUiStateValueIfAbsent(db, result.raw);
+        const inserted = await insertRothUiStateValueIfAbsent(db, enc);
         if (inserted) {
           ctx.invalidateQueries();
           return { ok: true as const, revision: result.revision };
         }
         const currentRows = await db.select().from(schema.settings);
-        const current = parseRothUiState(
-          currentRows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value,
-        );
+        const currentStored = await readStoredBlob(
+          key,
+          currentRows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value, ROTH_UI_STATE_KEY);
+        const current = parseRothUiState(currentStored.plain);
         return {
           ok: false as const,
           conflict: true as const,
@@ -10901,47 +11188,50 @@ export const Actions = {
         // existing row: unconditional upsert, as before.
         await db
           .insert(schema.settings)
-          .values({ key: ROTH_UI_STATE_KEY, value: result.raw })
+          .values({ key: ROTH_UI_STATE_KEY, value: enc })
           .onConflictDoUpdate({
             target: schema.settings.key,
-            set: { value: result.raw },
+            set: { value: enc },
           });
         ctx.invalidateQueries();
         return { ok: true as const, revision: result.revision };
       }
       // CAS write against an existing row: commit with ONE
-      // guarded UPDATE. Its predicate re-checks, inside the same
-      // statement that writes, that the revision stored in the
-      // blob still equals the writer's base — the CASE over
-      // json_extract reproduces parseRothUiState's lenient
-      // revision read (unparseable blob, missing key, non-integer
-      // or negative revision all count as 0), the same predicate
-      // commitGuardedRothUiWrite mirrors in rothUiStateCore.ts.
-      // Exactly 1 affected row is the commit. 0 rows means a
-      // concurrent write landed between this invocation's read
-      // above and this commit and advanced the stored revision
-      // past the base: storage is untouched by this invocation,
-      // so re-read the current blob and refuse with it, exactly
-      // like the sequential conflict above.
-      const baseRevision = args.baseRevision;
-      const updated = await db
-        .update(schema.settings)
-        .set({ value: result.raw })
-        .where(
-          and(
-            eq(schema.settings.key, ROTH_UI_STATE_KEY),
-            sql`(case when json_valid(${schema.settings.value}) = 0 then 0 when json_extract(${schema.settings.value}, '$.revision') is null then 0 when typeof(json_extract(${schema.settings.value}, '$.revision')) <> 'integer' then 0 when json_extract(${schema.settings.value}, '$.revision') < 0 then 0 else json_extract(${schema.settings.value}, '$.revision') end) = ${baseRevision}`,
-          ),
-        )
-        .returning({ key: schema.settings.key });
-      if (updated.length === 1) {
+      // guarded UPDATE whose predicate is the stored RAW value
+      // itself (commitSettingsValueGuarded — the Roth plan
+      // record's pattern, see rothRevisionCore.ts). The previous
+      // guard read the revision out of the stored JSON with
+      // json_extract; that cannot work on ciphertext, and
+      // leaving it would have made every CAS write against a
+      // stored revision above 0 fail (the CASE reads 0 for a
+      // non-JSON value) while a base-0 write could clobber a
+      // newer blob. Raw-value equality is a sound CAS predicate
+      // here for the same reason it is for the plan record:
+      // encryptStr uses a fresh random nonce per encryption, so
+      // any intervening write changes the stored value and
+      // trips the guard. Exactly 1 affected row is the commit.
+      // 0 rows means a concurrent write landed between this
+      // invocation's read above and this commit: storage is
+      // untouched by this invocation, so re-read the current
+      // blob and refuse with it, exactly like the sequential
+      // conflict above. The commitGuardedRothUiWrite mirror in
+      // rothUiStateCore.ts still pins the revision decision the
+      // handler made on the decrypted read above.
+      const committed = await commitSettingsValueGuarded(
+        db,
+        ROTH_UI_STATE_KEY,
+        storedRaw,
+        enc,
+      );
+      if (committed) {
         ctx.invalidateQueries();
         return { ok: true as const, revision: result.revision };
       }
       const currentRows = await db.select().from(schema.settings);
-      const current = parseRothUiState(
-        currentRows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value,
-      );
+      const currentStored = await readStoredBlob(
+        key,
+        currentRows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value, ROTH_UI_STATE_KEY);
+      const current = parseRothUiState(currentStored.plain);
       return {
         ok: false as const,
         conflict: true as const,
@@ -11045,8 +11335,7 @@ export const Actions = {
             { inputs: stored, scenarios: blob.scenarios },
             nextRevision,
           ),
-        ),
-      );
+        ), settingContext(ROTH_INPUTS_KEY));
       const plan = rothFirstWritePlan(blob.storedRaw !== undefined, baseRevision);
       if (plan === "insert-only") {
         const inserted = await insertRothBlobValueIfAbsent(db, enc);
@@ -12370,22 +12659,38 @@ export const Actions = {
   // stored state instead of overwriting it. Neither prices
   // anything.
   getDecemberProjection: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: getDecemberProjectionResponse,
     async handler(ctx): Promise<z.infer<typeof getDecemberProjectionResponse>> {
       const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
       const rows = await db.select().from(schema.settings);
       const raw = rows.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
+      // Contract v90: the blob is stored encrypted; a legacy
+      // plaintext record dual-reads as before. An undecryptable
+      // ciphertext record is flagged unreadable (never silently
+      // treated as a fresh console).
+      const stored = await readStoredBlob(key, raw, DECEMBER_STATE_KEY);
+      if (stored.undecryptable) {
+        return {
+          state: parseDecemberState(undefined, new Date().getUTCFullYear()),
+          hasStored: true,
+          revision: 0,
+          storedUnreadable: true,
+        };
+      }
       return {
-        state: parseDecemberState(raw, new Date().getUTCFullYear()),
+        state: parseDecemberState(stored.plain, new Date().getUTCFullYear()),
         hasStored: raw !== undefined,
-        revision: parseDecemberRevision(raw),
-        storedUnreadable: isDecemberStateUnparseable(raw),
+        revision: parseDecemberRevision(stored.plain),
+        storedUnreadable: isDecemberStateUnparseable(stored.plain),
       };
     },
   }),
 
   saveDecemberProjection: defineAction({
+    privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       state: decemberState,
       baseRevision: z.number().int().min(0),
@@ -12393,19 +12698,22 @@ export const Actions = {
     response: saveDecemberProjectionResponse,
     async handler(ctx, args): Promise<z.infer<typeof saveDecemberProjectionResponse>> {
       const db = ctx.db<typeof schema>();
+      const key = await getCryptoKey(ctx);
       const rows = await db.select().from(schema.settings);
       const current = rows.find((r) => r.key === DECEMBER_STATE_KEY);
-      const storedRevision = parseDecemberRevision(current?.value);
+      const stored = await readStoredBlob(key, current?.value, DECEMBER_STATE_KEY);
+      const storedRevision = parseDecemberRevision(stored.plain);
       // Result-honesty (contract v67, F09): a save whose base was
       // read from an UNPARSEABLE stored record is refused as a
       // conflict — the damaged bytes are left intact, never
       // treated as a revision-0 record the save may build on.
-      if (isDecemberStateUnparseable(current?.value)) {
+      // An undecryptable ciphertext record refuses the same way.
+      if (stored.undecryptable || isDecemberStateUnparseable(stored.plain)) {
         return {
           ok: false as const,
           conflict: true as const,
           revision: storedRevision,
-          state: parseDecemberState(current?.value, new Date().getUTCFullYear()),
+          state: parseDecemberState(stored.plain, new Date().getUTCFullYear()),
           hasStored: true,
           storedUnreadable: true,
         };
@@ -12416,12 +12724,19 @@ export const Actions = {
           ok: false as const,
           conflict: true as const,
           revision: storedRevision,
-          state: parseDecemberState(current?.value, new Date().getUTCFullYear()),
+          state: parseDecemberState(stored.plain, new Date().getUTCFullYear()),
           hasStored: current !== undefined,
           storedUnreadable: false,
         };
       }
-      const blob = serializeDecemberState(args.state, decision.nextRevision);
+      // Contract v90: the serialized blob is encrypted before
+      // it reaches settings; the guarded commit below still
+      // predicates on the stored RAW value (ciphertext byte
+      // equality, the Roth records' pattern), so the CAS is
+      // unchanged by the envelope.
+      const blob = await encryptStr(
+        key,
+        serializeDecemberState(args.state, decision.nextRevision), settingContext(DECEMBER_STATE_KEY));
       if (current === undefined) {
         // First write: claim the key insert-only (the Roth
         // insert-if-absent pattern, on the December key) —
@@ -12435,13 +12750,15 @@ export const Actions = {
         if (!claimed) {
           const after = await db.select().from(schema.settings);
           const afterRaw = after.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
+          const afterStored = await readStoredBlob(key, afterRaw, DECEMBER_STATE_KEY);
           return {
             ok: false as const,
             conflict: true as const,
-            revision: parseDecemberRevision(afterRaw),
-            state: parseDecemberState(afterRaw, new Date().getUTCFullYear()),
+            revision: parseDecemberRevision(afterStored.plain),
+            state: parseDecemberState(afterStored.plain, new Date().getUTCFullYear()),
             hasStored: afterRaw !== undefined,
-            storedUnreadable: isDecemberStateUnparseable(afterRaw),
+            storedUnreadable:
+              afterStored.undecryptable || isDecemberStateUnparseable(afterStored.plain),
           };
         }
       } else {
@@ -12462,13 +12779,15 @@ export const Actions = {
         if (!committed) {
           const after = await db.select().from(schema.settings);
           const afterRaw = after.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
+          const afterStored = await readStoredBlob(key, afterRaw, DECEMBER_STATE_KEY);
           return {
             ok: false as const,
             conflict: true as const,
-            revision: parseDecemberRevision(afterRaw),
-            state: parseDecemberState(afterRaw, new Date().getUTCFullYear()),
+            revision: parseDecemberRevision(afterStored.plain),
+            state: parseDecemberState(afterStored.plain, new Date().getUTCFullYear()),
             hasStored: afterRaw !== undefined,
-            storedUnreadable: isDecemberStateUnparseable(afterRaw),
+            storedUnreadable:
+              afterStored.undecryptable || isDecemberStateUnparseable(afterStored.plain),
           };
         }
       }
@@ -13177,8 +13496,7 @@ export const Actions = {
          no row, exactly as before. */
       const encNote = await encryptNullable(
         key,
-        args.note?.trim() ? args.note.trim() : null,
-      );
+        args.note?.trim() ? args.note.trim() : null, "nw_snapshots.note");
       const rows: ({ accountId: number } & NwEncryptedRowValues)[] = [];
       for (const b of args.balances) {
         const cls = classById.get(b.accountId);
@@ -13248,9 +13566,18 @@ export const Actions = {
     // another updateNwSnapshot or from an updateNwBalance, both of
     // which bump the same counter. Omitting it keeps the legacy
     // unchecked behaviour (named in DATA-PLAN).
+    // Contract v93 (F5): `baseEpoch` is the restore epoch the
+    // editor observed when it loaded (getNetWorth's restoreEpoch).
+    // When supplied, the replacement is refused when the stored
+    // epoch has moved — a backup restore advanced it — even when
+    // the revision numbers match, and the refusal reason names
+    // the restore. Omitting it keeps the pre-v93 revision-only
+    // check, the same tolerated legacy leniency as omitting
+    // baseRevision; no live editor omits it.
     request: nwSnapshotInput.extend({
       id: z.number().int().positive(),
       baseRevision: z.number().int().nonnegative().optional(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
@@ -13262,16 +13589,21 @@ export const Actions = {
         .from(schema.nwSnapshots)
         .where(eq(schema.nwSnapshots.id, args.id));
       if (!target) return { ok: false, reason: "That snapshot was not found.", id: null };
+      const storedEpoch = await readStoredRestoreEpoch(db);
       const revisionDecision = decideCasRevision(
         target.revision ?? 0,
         args.baseRevision,
+        storedEpoch,
+        args.baseEpoch,
       );
       if (!revisionDecision.allowed) {
         return {
           ok: false,
           conflict: true,
           revision: target.revision ?? 0,
-          reason: casConflictReason("snapshot"),
+          reason: revisionDecision.epochConflict
+            ? casRestoreEpochConflictReason("snapshot")
+            : casConflictReason("snapshot"),
           id: null,
         };
       }
@@ -13317,8 +13649,7 @@ export const Actions = {
       /* ---- Build every row value BEFORE the write ---- */
       const encNote = await encryptNullable(
         key,
-        args.note?.trim() ? args.note.trim() : null,
-      );
+        args.note?.trim() ? args.note.trim() : null, "nw_snapshots.note");
       const rows: ({ accountId: number } & NwEncryptedRowValues)[] = [];
       for (const b of args.balances) {
         const cls = classById.get(b.accountId);
@@ -13388,9 +13719,14 @@ export const Actions = {
     // editor holding the pre-correction revision conflicts instead
     // of silently restoring the old balance. Omitting it keeps the
     // legacy unchecked behaviour (named in DATA-PLAN).
+    // Contract v93 (F5): `baseEpoch` is the restore epoch the
+    // editor observed when it loaded (getNetWorth's restoreEpoch),
+    // checked exactly as in updateNwSnapshot — a restore since the
+    // load refuses the write even when the revision numbers match.
     request: nwBalanceEntry.extend({
       snapshotId: z.number().int().positive(),
       baseRevision: z.number().int().nonnegative().optional(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
@@ -13404,16 +13740,21 @@ export const Actions = {
       if (!snapshot) {
         return { ok: false, reason: "That snapshot was not found.", id: null };
       }
+      const storedEpoch = await readStoredRestoreEpoch(db);
       const revisionDecision = decideCasRevision(
         snapshot.revision ?? 0,
         args.baseRevision,
+        storedEpoch,
+        args.baseEpoch,
       );
       if (!revisionDecision.allowed) {
         return {
           ok: false,
           conflict: true,
           revision: snapshot.revision ?? 0,
-          reason: casConflictReason("snapshot"),
+          reason: revisionDecision.epochConflict
+            ? casRestoreEpochConflictReason("snapshot")
+            : casConflictReason("snapshot"),
           id: null,
         };
       }
@@ -13437,7 +13778,7 @@ export const Actions = {
       // write — never folded with the first amount silently dropped.
       const splitsCheck = validateNwBalanceSplits(
         args.splits ?? null,
-        await decryptStr(key, account.name),
+        await decryptStr(key, account.name, "nw_accounts.name"),
       );
       if (!splitsCheck.ok) {
         return { ok: false, reason: splitsCheck.reason, id: null };
@@ -13540,7 +13881,7 @@ export const Actions = {
       }
       const allRaw = await db.select().from(schema.nwAccounts);
       const all = [];
-      for (const a of allRaw) all.push({ ...a, name: await decryptStr(key, a.name) });
+      for (const a of allRaw) all.push({ ...a, name: await decryptStr(key, a.name, "nw_accounts.name") });
       if (all.some((a) => a.name.toLowerCase() === name.toLowerCase())) {
         return { ok: false, reason: `An account named “${name}” already exists.`, id: null };
       }
@@ -13548,7 +13889,7 @@ export const Actions = {
       const [row] = await db
         .insert(schema.nwAccounts)
         .values({
-          name: await encryptStr(key, name),
+          name: await encryptStr(key, name, "nw_accounts.name"),
           sortOrder,
           archived: 0,
           propertyKind: args.custodial ? "none" : (args.propertyKind ?? "none"),
@@ -13601,7 +13942,7 @@ export const Actions = {
       }
       const allRaw = await db.select().from(schema.nwAccounts);
       const all = [];
-      for (const a of allRaw) all.push({ ...a, name: await decryptStr(key, a.name) });
+      for (const a of allRaw) all.push({ ...a, name: await decryptStr(key, a.name, "nw_accounts.name") });
       // Existence check (finding F22): renaming a missing account
       // must not report success for an update that touched nothing.
       const targetAccount = all.find((a) => a.id === args.id);
@@ -13638,7 +13979,7 @@ export const Actions = {
       await db
         .update(schema.nwAccounts)
         .set({
-          name: await encryptStr(key, name),
+          name: await encryptStr(key, name, "nw_accounts.name"),
           ...(args.custodial === true
             ? { propertyKind: "none" as const }
             : args.propertyKind
@@ -13774,7 +14115,7 @@ export const Actions = {
           // to the known constant.
           try {
             payloadKeyCheckValid =
-              (await decryptStr(key, keyCheckValue)) === KEY_CHECK_PLAINTEXT;
+              (await decryptStr(key, keyCheckValue, settingContext(KEY_CHECK_SETTING))) === KEY_CHECK_PLAINTEXT;
           } catch {
             payloadKeyCheckValid = false;
           }
@@ -13792,10 +14133,37 @@ export const Actions = {
       // (no MAC — a pre-MAC backup; restores, labelled
       // UNAUTHENTICATED in the result below).
       const payloadAuthenticity = classifyBackupAuthenticity(args);
+      // The legacy bucket verdict (contract v94, finding F6):
+      // buildBackupPayload decrypts a stored bucket under the
+      // "nw_accounts.bucket" context whenever it carries the
+      // reserved prefix, while the restore below stores the
+      // bucket verbatim — so a prefixed bucket that cannot be
+      // decrypted here would land and break every later export.
+      // Each prefixed bucket is therefore decrypt-attempted
+      // BEFORE preflight, in exactly the export path's context
+      // (the same literal string as the export decrypt site, so
+      // the two can never drift apart — no second context is
+      // invented), under the same dual-read the export reader
+      // gives (bound form, then the legacy no-AAD form). The
+      // verdicts are computed once, before any write, and
+      // preflight consumes them; plaintext buckets are never
+      // attempted and always pass.
+      const bucketCiphertextValid = new Map<string, boolean>();
+      for (const a of args.nwAccounts) {
+        if (!isEncrypted(a.bucket)) continue;
+        if (bucketCiphertextValid.has(a.bucket)) continue;
+        try {
+          await decryptStr(key, a.bucket, "nw_accounts.bucket");
+          bucketCiphertextValid.set(a.bucket, true);
+        } catch {
+          bucketCiphertextValid.set(a.bucket, false);
+        }
+      }
       const preflight = preflightRestoreBackup(
         args,
         payloadKeyCheckValid,
         payloadAuthenticity,
+        (value) => bucketCiphertextValid.get(value) ?? false,
       );
       if (!preflight.ok) {
         return { ok: false, reason: preflight.reason, authenticated: false };
@@ -13810,7 +14178,9 @@ export const Actions = {
          key-check, saved retirement inputs) are re-encrypted here
          when the payload carries them decrypted; a payload from an
          older export that still carries one as ciphertext under
-         the same key is stored as-is. Net Worth balances are
+         the same key is decrypted and re-encrypted with the
+         destination key's field binding (contract v91), never
+         stored verbatim. Net Worth balances are
          normalised by restoreCore's rule: a non-empty split IS the
          balance, so balanceCents is recomputed from the parts
          exactly as every normal writer computes it. */
@@ -13826,7 +14196,7 @@ export const Actions = {
         if (isEncrypted(currentRothRow.value)) {
           try {
             preRestoreRothRevision = parseRothBlobRevision(
-              await decryptStr(key, currentRothRow.value),
+              await decryptStr(key, currentRothRow.value, settingContext(RESTORE_ROTH_BLOB_KEY)),
             );
           } catch {
             preRestoreRothRevision = 0;
@@ -13847,17 +14217,22 @@ export const Actions = {
         // save happened to rewrite it.
         if (isEncryptedAtRestSettingKey(s.key)) {
           if (isEncrypted(s.value)) {
-            // Reserved-prefix verification (cluster E): a value for
-            // one of these encrypted-at-rest keys that CARRIES the
-            // prefix is stored as-is only when it genuinely
-            // decrypts under the current key. One that does not is
-            // fake ciphertext (or another key's) and would break
-            // every later load, so the restore is refused here —
-            // while rows are still only being built, before the
-            // atomic batch, with zero writes.
+            // Reserved-prefix verification (cluster E) and
+            // field binding (contract v91): a value for one of
+            // these encrypted-at-rest keys that CARRIES the prefix
+            // is stored only when it genuinely decrypts under the
+            // current key IN THIS KEY'S CONTEXT — and it is then
+            // re-encrypted with that binding, never stored
+            // verbatim, so a ciphertext transplanted from another
+            // field inside the backup cannot ride through. One
+            // that does not decrypt is fake ciphertext (or
+            // another key's) and would break every later load, so
+            // the restore is refused here — while rows are still
+            // only being built, before the atomic batch, with
+            // zero writes.
             let decrypted: string;
             try {
-              decrypted = await decryptStr(key, s.value);
+              decrypted = await decryptStr(key, s.value, settingContext(s.key));
             } catch {
               return {
                 ok: false,
@@ -13868,31 +14243,57 @@ export const Actions = {
             }
             if (s.key === RESTORE_ROTH_BLOB_KEY) {
               const stamped = stampRestoredRothBlob(decrypted, preRestoreRothRevision);
-              stored = stamped != null ? await encryptStr(key, stamped) : s.value;
+              // An unstamped blob (unparseable as a Roth record)
+              // is re-encrypted as the decrypted value itself, so
+              // the stored bytes still carry this key's binding.
+              stored = stamped != null ? await encryptStr(key, stamped, settingContext(s.key)) : await encryptStr(key, decrypted, settingContext(s.key));
             } else {
-              stored = s.value;
+              stored = await encryptStr(key, decrypted, settingContext(s.key));
             }
           } else if (s.key === RESTORE_ROTH_BLOB_KEY) {
             const stamped = stampRestoredRothBlob(s.value, preRestoreRothRevision);
-            stored = stamped != null ? await encryptStr(key, stamped) : await encryptStr(key, s.value);
+            stored = stamped != null ? await encryptStr(key, stamped, settingContext(s.key)) : await encryptStr(key, s.value, settingContext(s.key));
           } else {
-            stored = await encryptStr(key, s.value);
+            stored = await encryptStr(key, s.value, settingContext(s.key));
           }
         }
         settingsRows.push({ key: s.key, value: stored });
       }
+      // Contract v93 (F5): the restore epoch. A restore is a new
+      // write generation for every snapshot, so the epoch advances
+      // on EVERY restore — one past whatever the dataset was on
+      // before it (read above, alongside the Roth stamp). A
+      // carried epoch value in the payload is never trusted: it is
+      // dropped here and replaced with the freshly computed one,
+      // so a backup written before epochs existed, or one carrying
+      // a stale epoch, still invalidates every pre-restore editor.
+      // The row lands in the same atomic batch as the replacement
+      // below, so the epoch and the restored rows commit together.
+      const preRestoreEpoch = parseRestoreEpoch(
+        currentSettingRows.find(
+          (r: { key: string }) => r.key === NW_RESTORE_EPOCH_SETTING,
+        )?.value,
+      );
+      const restoredEpoch = nextRestoreEpoch(preRestoreEpoch);
+      const epochFreeSettings = settingsRows.filter(
+        (r) => r.key !== NW_RESTORE_EPOCH_SETTING,
+      );
+      epochFreeSettings.push({
+        key: NW_RESTORE_EPOCH_SETTING,
+        value: String(restoredEpoch),
+      });
       const yearlyExpenseRows: (typeof schema.yearlyExpenses.$inferInsert)[] = [];
       for (const y of args.yearlyExpenses) {
         yearlyExpenseRows.push({
           id: y.id,
-          name: await encryptStr(key, y.name),
+          name: await encryptStr(key, y.name, "yearly_expenses.name"),
           frequency: y.frequency as typeof schema.yearlyExpenses.$inferInsert.frequency,
-          expectedCents: await encryptNum(key, y.expectedCents),
+          expectedCents: await encryptNum(key, y.expectedCents, "yearly_expenses.expected_cents"),
           dueMonth: y.dueMonth,
           paidByType: y.paidByType as typeof schema.yearlyExpenses.$inferInsert.paidByType,
-          paidByName: await encryptStr(key, y.paidByName),
+          paidByName: await encryptStr(key, y.paidByName, "yearly_expenses.paid_by_name"),
           backfillBeforeFirstVersion: y.backfillBeforeFirstVersion,
-          category: await encryptStr(key, y.category),
+          category: await encryptStr(key, y.category, "yearly_expenses.category"),
           keepLightsOn: y.keepLightsOn,
           createdAt: backupMsToDate(y.createdAt),
         });
@@ -13902,7 +14303,7 @@ export const Actions = {
         yearlyExpenseVersionRows.push({
           id: v.id,
           expenseId: v.expenseId,
-          expectedCents: await encryptNum(key, v.expectedCents),
+          expectedCents: await encryptNum(key, v.expectedCents, "yearly_expense_versions.expected_cents"),
           frequency: v.frequency as typeof schema.yearlyExpenseVersions.$inferInsert.frequency,
           effectiveFrom: v.effectiveFrom,
           createdAt: backupMsToDate(v.createdAt),
@@ -13912,11 +14313,11 @@ export const Actions = {
       for (const b of args.monthlyBills) {
         monthlyBillRows.push({
           id: b.id,
-          name: await encryptStr(key, b.name),
-          amountCents: await encryptNum(key, b.amountCents),
-          paidBy: await encryptStr(key, b.paidBy),
-          notes: await encryptNullable(key, b.notes),
-          category: await encryptStr(key, b.category),
+          name: await encryptStr(key, b.name, "monthly_bills.name"),
+          amountCents: await encryptNum(key, b.amountCents, "monthly_bills.amount_cents"),
+          paidBy: await encryptStr(key, b.paidBy, "monthly_bills.paid_by"),
+          notes: await encryptNullable(key, b.notes, "monthly_bills.notes"),
+          category: await encryptStr(key, b.category, "monthly_bills.category"),
           keepLightsOn: b.keepLightsOn,
           collapsed: b.collapsed,
           createdAt: backupMsToDate(b.createdAt),
@@ -13927,7 +14328,7 @@ export const Actions = {
         monthlyBillVersionRows.push({
           id: v.id,
           billId: v.billId,
-          amountCents: await encryptNum(key, v.amountCents),
+          amountCents: await encryptNum(key, v.amountCents, "monthly_bill_versions.amount_cents"),
           effectiveFrom: v.effectiveFrom,
           createdAt: backupMsToDate(v.createdAt),
         });
@@ -13936,7 +14337,7 @@ export const Actions = {
       for (const s of args.monthlySummaries) {
         monthlySummaryRows.push({
           month: s.month,
-          cashOutCents: await encryptNum(key, s.cashOutCents),
+          cashOutCents: await encryptNum(key, s.cashOutCents, "monthly_summaries.cash_out_cents"),
           createdAt: backupMsToDate(s.createdAt),
           updatedAt: backupMsToDate(s.updatedAt),
         });
@@ -13946,9 +14347,9 @@ export const Actions = {
         monthlyOneOffRows.push({
           id: o.id,
           month: o.month,
-          description: await encryptStr(key, o.description),
-          amountCents: await encryptNum(key, o.amountCents),
-          note: await encryptNullable(key, o.note),
+          description: await encryptStr(key, o.description, "monthly_one_offs.description"),
+          amountCents: await encryptNum(key, o.amountCents, "monthly_one_offs.amount_cents"),
+          note: await encryptNullable(key, o.note, "monthly_one_offs.note"),
           createdAt: backupMsToDate(o.createdAt),
         });
       }
@@ -13957,9 +14358,9 @@ export const Actions = {
         monthlyCashOutItemRows.push({
           id: o.id,
           month: o.month,
-          description: await encryptStr(key, o.description),
-          amountCents: await encryptNum(key, o.amountCents),
-          note: await encryptNullable(key, o.note),
+          description: await encryptStr(key, o.description, "monthly_cash_out_items.description"),
+          amountCents: await encryptNum(key, o.amountCents, "monthly_cash_out_items.amount_cents"),
+          note: await encryptNullable(key, o.note, "monthly_cash_out_items.note"),
           day: o.day,
           createdAt: backupMsToDate(o.createdAt),
         });
@@ -13969,14 +14370,14 @@ export const Actions = {
         transactionRows.push({
           id: t.id,
           date: t.date,
-          description: await encryptStr(key, t.description),
-          amountCents: await encryptNum(key, t.amountCents),
+          description: await encryptStr(key, t.description, "transactions.description"),
+          amountCents: await encryptNum(key, t.amountCents, "transactions.amount_cents"),
           sourceType: t.sourceType as typeof schema.transactions.$inferInsert.sourceType,
-          accountName: await encryptStr(key, t.accountName),
+          accountName: await encryptStr(key, t.accountName, "transactions.account_name"),
           kind: t.kind as typeof schema.transactions.$inferInsert.kind,
-          category: await encryptStr(key, t.category),
+          category: await encryptStr(key, t.category, "transactions.category"),
           yearlyExpenseId: t.yearlyExpenseId,
-          fitId: await encryptNullable(key, t.fitId),
+          fitId: await encryptNullable(key, t.fitId, "transactions.fit_id"),
           createdAt: backupMsToDate(t.createdAt),
         });
       }
@@ -13984,7 +14385,13 @@ export const Actions = {
       for (const a of args.nwAccounts) {
         nwAccountRows.push({
           id: a.id,
-          name: await encryptStr(key, a.name),
+          name: await encryptStr(key, a.name, "nw_accounts.name"),
+          // The bucket stores verbatim, as before — preflight
+          // has already refused any prefixed bucket that cannot
+          // be decrypted, so a value reaching here is either
+          // plaintext (the export reader returns it as itself)
+          // or genuine ciphertext the export reader decrypts
+          // under this same field context on the next export.
           bucket: a.bucket,
           // Preflight has already validated propertyKind against
           // the enum, so this cast can no longer smuggle an
@@ -14001,7 +14408,7 @@ export const Actions = {
         nwSnapshotRows.push({
           id: s.id,
           date: s.date,
-          note: await encryptNullable(key, s.note),
+          note: await encryptNullable(key, s.note, "nw_snapshots.note"),
           createdAt: backupMsToDate(s.createdAt),
         });
       }
@@ -14012,25 +14419,25 @@ export const Actions = {
           id: b.id,
           snapshotId: b.snapshotId,
           accountId: b.accountId,
-          balanceCents: await encryptNum(key, b.balanceCents),
+          balanceCents: await encryptNum(key, b.balanceCents, "nw_balances.balance_cents"),
           splitHsaCents:
-            b.splitHsaCents == null ? null : await encryptNum(key, b.splitHsaCents),
+            b.splitHsaCents == null ? null : await encryptNum(key, b.splitHsaCents, "nw_balances.split_hsa_cents"),
           splitRothCents:
-            b.splitRothCents == null ? null : await encryptNum(key, b.splitRothCents),
+            b.splitRothCents == null ? null : await encryptNum(key, b.splitRothCents, "nw_balances.split_roth_cents"),
           splitTaxableCents:
             b.splitTaxableCents == null
               ? null
-              : await encryptNum(key, b.splitTaxableCents),
+              : await encryptNum(key, b.splitTaxableCents, "nw_balances.split_taxable_cents"),
           splitNonTaxableCents:
             b.splitNonTaxableCents == null
               ? null
-              : await encryptNum(key, b.splitNonTaxableCents),
+              : await encryptNum(key, b.splitNonTaxableCents, "nw_balances.split_non_taxable_cents"),
           split529Cents:
-            b.split529Cents == null ? null : await encryptNum(key, b.split529Cents),
+            b.split529Cents == null ? null : await encryptNum(key, b.split529Cents, "nw_balances.split_529_cents"),
           splitCashCents:
-            b.splitCashCents == null ? null : await encryptNum(key, b.splitCashCents),
+            b.splitCashCents == null ? null : await encryptNum(key, b.splitCashCents, "nw_balances.split_cash_cents"),
           splitPreTaxCents:
-            b.splitPreTaxCents == null ? null : await encryptNum(key, b.splitPreTaxCents),
+            b.splitPreTaxCents == null ? null : await encryptNum(key, b.splitPreTaxCents, "nw_balances.split_pre_tax_cents"),
         });
       }
 
@@ -14061,7 +14468,7 @@ export const Actions = {
           statements.push(db.insert(table).values(rows.slice(i, i + CHUNK) as any));
         }
       };
-      pushInserts(schema.settings, settingsRows);
+      pushInserts(schema.settings, epochFreeSettings);
       pushInserts(schema.yearlyExpenses, yearlyExpenseRows);
       pushInserts(schema.yearlyExpenseVersions, yearlyExpenseVersionRows);
       pushInserts(schema.monthlyBills, monthlyBillRows);

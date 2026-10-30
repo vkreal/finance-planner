@@ -118,7 +118,11 @@ import {
 casCanonical,
 casDeepEqual,
 casFieldMismatch,
+casRestoreEpochConflictReason,
 decideCasRevision,
+nextRestoreEpoch,
+NW_RESTORE_EPOCH_SETTING,
+parseRestoreEpoch,
 } from "./casCore";
 import {
 appendRetirementScenario,
@@ -5528,10 +5532,85 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "restore-bucket-undecryptable-enc-prefix-refused",
+    kind: "restore",
+    note: "Contract v94, stored-data finding F6 (the reviewer's reproduction): a restore carrying a Net Worth account whose bucket value is an undecryptable enc:v1:-prefixed value is REFUSED at preflight, before any write — no commit, the prior state byte-identical, and the reason names the bucket field. Two value classes are refused: malformed base64 after the prefix, and a plausible-looking prefixed body that is not genuine ciphertext. The control — the same payload with a plaintext legacy bucket — restores. The refusal is the preflight's, not the schema's: the payload schema types the bucket as an unrestricted string, so only the decrypt verdict can refuse it.",
+    expected: {
+      malformedRefused: 1, malformedCommitted: 0, malformedPriorIntact: 1,
+      malformedReasonNamesBucket: 1, plausibleRefused: 1, plausiblePriorIntact: 1,
+      plausibleReasonNamesBucket: 1, controlRestores: 1,
+    },
+    actual: () => {
+      const withBucket = (bucket: string): Record<string, unknown> => {
+        const raw = baseRestorePayload();
+        (raw.nwAccounts as Record<string, unknown>[])[0] = {
+          ...((raw.nwAccounts as Record<string, unknown>[])[0] as Record<string, unknown>),
+          bucket,
+        };
+        return raw;
+      };
+      const attempt = (raw: Record<string, unknown>, prior: RestoreState) =>
+        attemptRestore(prior, raw, restoreKeyCheckValidFor(raw));
+      const priorMalformed = restorePriorState();
+      const malformedRaw = withBucket("enc:v1:!");
+      const malformed = attempt(malformedRaw, priorMalformed);
+      const priorPlausible = restorePriorState();
+      const plausibleRaw = withBucket("enc:v1:garbage");
+      const plausible = attempt(plausibleRaw, priorPlausible);
+      const control = attempt(withBucket("Unbucketed"), restorePriorState());
+      return {
+        malformedRefused: malformed.ok ? 0 : 1,
+        malformedCommitted: malformed.committed ? 1 : 0,
+        malformedPriorIntact:
+          restoreStateFingerprint(malformed.state) === restoreStateFingerprint(priorMalformed) ? 1 : 0,
+        malformedReasonNamesBucket: malformed.reason.includes("bucket") ? 1 : 0,
+        plausibleRefused: plausible.ok ? 0 : 1,
+        plausiblePriorIntact:
+          restoreStateFingerprint(plausible.state) === restoreStateFingerprint(priorPlausible) ? 1 : 0,
+        plausibleReasonNamesBucket: plausible.reason.includes("bucket") ? 1 : 0,
+        controlRestores: control.ok && control.committed ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "restore-bucket-legacy-forms-accepted",
+    kind: "restore",
+    note: "Contract v94, stored-data finding F6 (the acceptance leg): valid legacy bucket forms still restore. A plaintext bucket lands verbatim, and a genuinely decryptable prefixed bucket — model ciphertext in this fixture model, standing in for a real ciphertext the handler's decrypt attempt verifies — also restores and lands verbatim, so a restore of a backup exported from a store holding an older encrypted bucket loses nothing. A prefixed value that is not genuine ciphertext refuses, pinning that the acceptance is the decrypt verdict, not the prefix alone. No plaintext domain is invented: a plaintext bucket tag outside the current bucket names restores too, because the export reader returns plaintext as itself and no writer restricts legacy plaintext tags.",
+    expected: {
+      plaintextRestores: 1, plaintextLands: 1, modelCiphertextRestores: 1,
+      modelCiphertextLands: 1, plausiblePrefixRefused: 1, otherPlaintextRestores: 1,
+    },
+    actual: () => {
+      const withBucket = (bucket: string): Record<string, unknown> => {
+        const raw = baseRestorePayload();
+        (raw.nwAccounts as Record<string, unknown>[])[0] = {
+          ...((raw.nwAccounts as Record<string, unknown>[])[0] as Record<string, unknown>),
+          bucket,
+        };
+        return raw;
+      };
+      const attempt = (raw: Record<string, unknown>) =>
+        attemptRestore(restorePriorState(), raw, restoreKeyCheckValidFor(raw));
+      const plain = attempt(withBucket("Unbucketed"));
+      const cipherValue = modelCiphertext("Taxable");
+      const cipher = attempt(withBucket(cipherValue));
+      const refused = attempt(withBucket("enc:v1:AAAA"));
+      const other = attempt(withBucket("Legacy tag"));
+      return {
+        plaintextRestores: plain.ok && plain.committed ? 1 : 0,
+        plaintextLands: plain.state.nwAccounts[0]?.bucket === "Unbucketed" ? 1 : 0,
+        modelCiphertextRestores: cipher.ok && cipher.committed ? 1 : 0,
+        modelCiphertextLands: cipher.state.nwAccounts[0]?.bucket === cipherValue ? 1 : 0,
+        plausiblePrefixRefused: refused.ok ? 0 : 1,
+        otherPlaintextRestores: other.ok && other.committed ? 1 : 0,
+      };
+    },
+  },
+  {
     id: "restore-encrypted-at-rest-key-list-complete",
     kind: "restore",
-    note: "Security round-2, finding 3 regression pin, extended at contract v60: the restore handler's settings loop branches on restoreCore's isEncryptedAtRestSettingKey, whose list (ENCRYPTED_AT_REST_SETTING_KEYS) must name EXACTLY the settings the ordinary writers store encrypted — opening_reserve_cents, the encryption key check, retirement_calc_inputs_v1, retirement_calc_baseline_v1, roth_conversion_inputs_v1, BOTH import-settings blobs, and (added v60, caught by the packaged F5 cross-install acceptance) BOTH encrypted sticky entry defaults, entry_default_monthly_paid_from_v1 and entry_default_yearly_paid_name_v1, whose omission left a cross-key restore holding the source install's ciphertext and failing every later dashboard load. Before the round-2 build the handler's hand-written list omitted spending_import_settings_v1, so a restored spending-import settings value sat in the database as the backup's plaintext until a later save rewrote it; every key on the list is now re-encrypted by the restore as it stores the row. The pin is exact in both directions: all nine expected keys are listed (expectedKeysListed 9) and the list carries nothing else (listLength 9), so neither a future omission nor a silent broadening passes.",
-    expected: { expectedKeysListed: 9, listLength: 9, spendingImportListed: 1 },
+    note: "Security round-2, finding 3 regression pin, extended at contract v60: the restore handler's settings loop branches on restoreCore's isEncryptedAtRestSettingKey, whose list (ENCRYPTED_AT_REST_SETTING_KEYS) must name EXACTLY the settings the ordinary writers store encrypted — opening_reserve_cents, the encryption key check, retirement_calc_inputs_v1, retirement_calc_baseline_v1, roth_conversion_inputs_v1, BOTH import-settings blobs, and (added v60, caught by the packaged F5 cross-install acceptance) BOTH encrypted sticky entry defaults, entry_default_monthly_paid_from_v1 and entry_default_yearly_paid_name_v1, whose omission left a cross-key restore holding the source install's ciphertext and failing every later dashboard load. Extended at contract v90 (stored-data findings F2/F3): the December projection blob december_projection_v1 and the Roth/Playground UI-state blob roth_ui_state_v1, whose writers encrypt them at rest — their omission would leave a restored value as the backup's plaintext until a later save rewrote it, and a cross-key restore carrying them as ciphertext would fail every later read. Before the round-2 build the handler's hand-written list omitted spending_import_settings_v1, so a restored spending-import settings value sat in the database as the backup's plaintext until a later save rewrote it; every key on the list is now re-encrypted by the restore as it stores the row. The pin is exact in both directions: all eleven expected keys are listed (expectedKeysListed 11) and the list carries nothing else (listLength 11), so neither a future omission nor a silent broadening passes.",
+    expected: { expectedKeysListed: 11, listLength: 11, spendingImportListed: 1 },
     actual: () => {
       const expectedKeys = [
         "opening_reserve_cents",
@@ -5543,6 +5622,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "nw_import_settings_v1",
         "entry_default_monthly_paid_from_v1",
         "entry_default_yearly_paid_name_v1",
+        "december_projection_v1",
+        "roth_ui_state_v1",
       ];
       return {
         expectedKeysListed: expectedKeys.filter((k) => isEncryptedAtRestSettingKey(k)).length,
@@ -5648,6 +5729,145 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         matchingNext: matching.allowed ? matching.nextRevision : -1,
         staleRefused: stale.allowed ? 1 : 0,
         staleStored: stale.allowed ? -1 : stale.storedRevision,
+      };
+    },
+  },
+  {
+    id: "api-cas-restore-epoch",
+    kind: "apicontract",
+    note: "Contract v93 (stored-data finding F5): the restore epoch in the CAS decision (server/src/casCore.ts). The epoch is stored under one settings key as a plain integer string; absent or unparseable reads as 0; a restore stamps one past the pre-restore epoch, whatever a backup carried. The epoch check runs before the revision check and is independent of it: a supplied epoch that differs from the stored epoch is refused as an epoch conflict even when the revision numbers match (the restored snapshot restarts at revision 0, so revision equality cannot tell a pre-restore editor from a fresh one). A missing epoch keeps the pre-v93 revision-only behaviour, and the epoch refusal reason names the restore.",
+    expected: {
+      epochKey: 1,
+      parseAbsent: 0,
+      parsePresent: 3,
+      parseJunk: 0,
+      parseNegative: 0,
+      nextFromZero: 1,
+      nextFrom41: 42,
+      freshAllowed: 1,
+      freshNext: 1,
+      staleEpochRefused: 0,
+      staleEpochIsEpochConflict: 1,
+      staleEpochStored: 0,
+      postRestoreFreshAllowed: 1,
+      secondRestoreRefused: 0,
+      secondRestoreIsEpochConflict: 1,
+      matchingRevisionStillRefused: 0,
+      ordinaryStaleRefused: 0,
+      ordinaryStaleNotEpochConflict: 1,
+      ordinaryFreshAllowed: 1,
+      ordinaryFreshNext: 6,
+      missingEpochLegacyAllowed: 1,
+      missingEpochFallsBackToRevision: 0,
+      reasonNamesRestore: 1,
+    },
+    actual: () => {
+      const fresh = decideCasRevision(0, 0, 0, 0);
+      const staleEpoch = decideCasRevision(0, 0, 1, 0);
+      const postRestoreFresh = decideCasRevision(0, 0, 1, 1);
+      const secondRestore = decideCasRevision(0, 0, 2, 1);
+      const matchingRevision = decideCasRevision(5, 5, 1, 0);
+      const ordinaryStale = decideCasRevision(5, 3, 0, 0);
+      const ordinaryFresh = decideCasRevision(5, 5, 0, 0);
+      const missingEpoch = decideCasRevision(5, undefined, 1, undefined);
+      const missingEpochStaleRev = decideCasRevision(5, 3, 1, undefined);
+      return {
+        epochKey: NW_RESTORE_EPOCH_SETTING === "nw_restore_epoch_v1" ? 1 : 0,
+        parseAbsent: parseRestoreEpoch(undefined),
+        parsePresent: parseRestoreEpoch("3"),
+        parseJunk: parseRestoreEpoch("not-a-number"),
+        parseNegative: parseRestoreEpoch("-1"),
+        nextFromZero: nextRestoreEpoch(0),
+        nextFrom41: nextRestoreEpoch(41),
+        freshAllowed: fresh.allowed ? 1 : 0,
+        freshNext: fresh.allowed ? fresh.nextRevision : -1,
+        staleEpochRefused: staleEpoch.allowed ? 1 : 0,
+        staleEpochIsEpochConflict:
+          !staleEpoch.allowed && staleEpoch.epochConflict ? 1 : 0,
+        staleEpochStored: staleEpoch.allowed ? -1 : staleEpoch.storedRevision,
+        postRestoreFreshAllowed: postRestoreFresh.allowed ? 1 : 0,
+        secondRestoreRefused: secondRestore.allowed ? 1 : 0,
+        secondRestoreIsEpochConflict:
+          !secondRestore.allowed && secondRestore.epochConflict ? 1 : 0,
+        matchingRevisionStillRefused: matchingRevision.allowed ? 1 : 0,
+        ordinaryStaleRefused: ordinaryStale.allowed ? 1 : 0,
+        ordinaryStaleNotEpochConflict:
+          !ordinaryStale.allowed && !ordinaryStale.epochConflict ? 1 : 0,
+        ordinaryFreshAllowed: ordinaryFresh.allowed ? 1 : 0,
+        ordinaryFreshNext: ordinaryFresh.allowed ? ordinaryFresh.nextRevision : -1,
+        missingEpochLegacyAllowed: missingEpoch.allowed ? 1 : 0,
+        missingEpochFallsBackToRevision: missingEpochStaleRev.allowed ? 1 : 0,
+        reasonNamesRestore: casRestoreEpochConflictReason("snapshot").includes(
+          "A backup was restored",
+        )
+          ? 1
+          : 0,
+      };
+    },
+  },
+  {
+    id: "api-cas-restore-epoch-interleaving",
+    kind: "apicontract",
+    note: "Contract v93 (F5): the reviewer's interleaving replayed through the pure epoch seam — editor reads a snapshot at revision 0, epoch 0; a restore replaces it (revision restarts at 0, epoch stamped to 1); the pre-restore editor's write is refused as an epoch conflict and the restored state is untouched by the decision; a fresh editor reading after the restore (revision 0, epoch 1) writes successfully and the revision advances; a second restore stamps epoch 2 and the first-restore-era editor's write is refused again. Each step's decision is the exact function the handlers run.",
+    expected: {
+      staleAfterFirstRestoreRefused: 0,
+      staleAfterFirstRestoreIsEpoch: 1,
+      freshAfterRestoreAllowed: 1,
+      freshAfterRestoreNext: 1,
+      staleAfterSecondRestoreRefused: 0,
+      staleAfterSecondRestoreIsEpoch: 1,
+      freshAfterSecondRestoreAllowed: 1,
+      epochsAdvance: 2,
+    },
+    actual: () => {
+      // Editor A loads before any restore.
+      const loadedRevision = 0;
+      const loadedEpoch = 0;
+      // First restore: stored revision restarts at 0, epoch 0 -> 1.
+      const epochAfterFirst = nextRestoreEpoch(loadedEpoch);
+      const storedRevisionAfterFirst = 0;
+      const staleFirst = decideCasRevision(
+        storedRevisionAfterFirst,
+        loadedRevision,
+        epochAfterFirst,
+        loadedEpoch,
+      );
+      // Fresh editor loads after the first restore and writes.
+      const freshFirst = decideCasRevision(
+        storedRevisionAfterFirst,
+        storedRevisionAfterFirst,
+        epochAfterFirst,
+        epochAfterFirst,
+      );
+      const revisionAfterFreshWrite = freshFirst.allowed
+        ? freshFirst.nextRevision
+        : -1;
+      // Second restore: epoch 1 -> 2; the first-restore-era editor
+      // (revision as the fresh write left it, epoch 1) writes.
+      const epochAfterSecond = nextRestoreEpoch(epochAfterFirst);
+      const staleSecond = decideCasRevision(
+        revisionAfterFreshWrite,
+        revisionAfterFreshWrite,
+        epochAfterSecond,
+        epochAfterFirst,
+      );
+      const freshSecond = decideCasRevision(
+        0,
+        0,
+        epochAfterSecond,
+        epochAfterSecond,
+      );
+      return {
+        staleAfterFirstRestoreRefused: staleFirst.allowed ? 1 : 0,
+        staleAfterFirstRestoreIsEpoch:
+          !staleFirst.allowed && staleFirst.epochConflict ? 1 : 0,
+        freshAfterRestoreAllowed: freshFirst.allowed ? 1 : 0,
+        freshAfterRestoreNext: revisionAfterFreshWrite,
+        staleAfterSecondRestoreRefused: staleSecond.allowed ? 1 : 0,
+        staleAfterSecondRestoreIsEpoch:
+          !staleSecond.allowed && staleSecond.epochConflict ? 1 : 0,
+        freshAfterSecondRestoreAllowed: freshSecond.allowed ? 1 : 0,
+        epochsAdvance: epochAfterSecond,
       };
     },
   },
