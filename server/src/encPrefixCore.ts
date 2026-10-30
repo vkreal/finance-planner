@@ -12,10 +12,13 @@
 //      idempotency shortcut) poisons the row — the next load tries
 //      to decrypt it, throws, and the whole data load breaks.
 //   2. A prefixed value may be stored as-is ONLY when it verifies
-//      as genuine ciphertext under the app's key (an internal path
-//      re-storing a value it just read). Anything else carrying the
-//      prefix is REFUSED with RESERVED_ENC_PREFIX_MESSAGE before
-//      any write, so a rejected value can never reach the database.
+//      as genuine ciphertext under the app's key FOR THE FIELD
+//      being written (contract v91: the verifier is a decrypt
+//      attempt bound to that field's AES-GCM associated data, so
+//      a ciphertext transplanted from another field does not
+//      verify here). Anything else carrying the prefix is REFUSED
+//      with RESERVED_ENC_PREFIX_MESSAGE before any write, so a
+//      rejected value can never reach the database.
 //   3. The predicate is exact: case-sensitive, position 0 only, no
 //      trimming. "ENC:V1:x", " enc:v1:x" (leading space), and
 //      "enc:v1" (no colon) are ordinary text and encrypt normally.
@@ -68,6 +71,15 @@ export function planTextStore(
    branch produces real AES-GCM ciphertext under the same prefix. */
 
 const MODEL_MARKER = `${ENC_PREFIX}model:`;
+
+// True iff the value is a model ciphertext (the fixtures' side of
+// the reserved-prefix decision): recognisably prefixed with the
+// model marker. The restore preflight's fixture model uses this
+// as its bucket-ciphertext verifier — the real handler's verifier
+// is a genuine decrypt attempt, never this predicate.
+export function isModelCiphertext(value: string): boolean {
+  return value.startsWith(MODEL_MARKER);
+}
 
 // A model ciphertext value for `plain`: recognisably prefixed,
 // trivially reversible, and verifiable by the fixture verifier

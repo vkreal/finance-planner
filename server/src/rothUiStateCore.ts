@@ -971,26 +971,35 @@ export function applyRothUiWrite(
    commits, both decide "allowed", and — if the commit were an
    unconditional upsert — the second would silently overwrite
    the first. The setRothUiState handler therefore commits a
-   CAS write against an existing row with a single UPDATE whose
-   WHERE clause re-checks the revision INSIDE the stored value
-   at commit time (a CASE over json_extract(value, '$.revision')
-   that reproduces parseRothUiState's lenient revision read:
-   missing, non-integer, or negative counts as 0), and branches
-   on the statement's affected-row count: exactly 1 row is the
-   commit; 0 rows means the stored revision had already
-   advanced past the writer's base, storage is untouched by
-   that invocation, and the writer is refused with the current
-   blob re-read after the failed update.
+   CAS write against an existing row with a single UPDATE
+   whose WHERE clause requires the row to still hold the exact
+   raw value the writer read (contract v90: the blob is stored
+   encrypted, so no revision can be read out of it in SQL —
+   the guard is ciphertext byte equality, the Roth plan
+   record's commitSettingsValueGuarded pattern, sound here
+   because every encryption uses a fresh random nonce), and
+   branches on the statement's affected-row count: exactly 1
+   row is the commit; 0 rows means a concurrent write landed
+   first, storage is untouched by that invocation, and the
+   writer is refused with the current blob re-read after the
+   failed update. (Before v90 the guard was a CASE over
+   json_extract(value, '$.revision') reproducing
+   parseRothUiState's lenient revision read; the predicate
+   below still mirrors the revision decision the handler
+   makes on the decrypted read.)
 
    The two functions below are that commit's testable mirror.
-   rothUiStoredRevisionMatches is the exact predicate the SQL
-   guard evaluates — "the leniently parsed revision of THIS
-   stored value equals the writer's base" — and
-   commitGuardedRothUiWrite is a SINGLE-GATE mirror of it: its
-   affected-rows verdict depends on that predicate alone,
-   exactly as the handler's commit does (in production the SQL
-   CASE predicate is the sole commit-time gate; the handler's
-   JS decision runs earlier, on the stale pre-read).
+   rothUiStoredRevisionMatches mirrors the revision decision the
+   handler makes on the DECRYPTED read — "the leniently parsed
+   revision of THIS plaintext value equals the writer's base" —
+   while the SQL guard itself is ciphertext byte equality (the
+   stored raw value must still equal the value the writer read).
+   commitGuardedRothUiWrite is a SINGLE-GATE mirror of the
+   revision decision: its affected-rows verdict depends on that
+   predicate alone, exactly as the handler's read-time decision
+   does (in production the SQL raw-value predicate is the sole
+   commit-time gate; the handler's JS decision runs earlier, on
+   the stale decrypted pre-read).
    commitGuardedRothUiWrite evaluates a guarded commit against
    the stored value AS IT STANDS AT COMMIT TIME (not a stale
    read snapshot): predicate false → affectedRows 0 and no raw

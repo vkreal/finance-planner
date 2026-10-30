@@ -33,14 +33,17 @@ import {
    Playground dials, and reads the engine's own outputs back.
 
    Persistence: the console's inputs are one JSON blob in
-   settings under DECEMBER_STATE_KEY, stored as form state in
-   the same plaintext style as the Playground's remembered form
-   (roth_ui_state_v1) — so the December session can be reopened
-   and adjusted as finals post, and the blob rides the ordinary
-   backup export / restore settings array with no extra cases.
-   Nothing in this module reads or writes any other view's
-   state, and a fresh (default) console prices nothing and
-   changes no existing figure. */
+   settings under DECEMBER_STATE_KEY, encrypted at rest with
+   the app's field encryption (contract v90, stored-data
+   finding F2) — the handlers encrypt the serialized blob on
+   save and decrypt on read, dual-reading a legacy plaintext
+   record stored before encryption. The blob rides the
+   ordinary backup export / restore settings array with no
+   extra cases: export decrypts it and restore re-encrypts it
+   under the destination key (both keys are on restoreCore's
+   encrypted-at-rest list). Nothing in this module reads or
+   writes any other view's state, and a fresh (default)
+   console prices nothing and changes no existing figure. */
 
 export const DECEMBER_STATE_KEY = "december_projection_v1";
 

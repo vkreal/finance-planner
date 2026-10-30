@@ -27,7 +27,13 @@
 //     intact; a failure anywhere earlier (quota, verification)
 //     leaves it active and surfaces an error. The previous
 //     generation's chunks are retained after the switch (cleanup
-//     removes only generations older than the previous one).
+//     removes only generations older than the previous one) —
+//     EXCEPT after a successful clearAllData (contract v92,
+//     stored-data finding F4): that persist purges every prior
+//     generation including the retained one, because the
+//     retained copy is the pre-wipe image. The purge is
+//     generations only; the encryption key and backup vault
+//     remain, by scope limit, for a future ruling.
 //   * On load, the active generation is reassembled and its hash
 //     verified before use. A corrupt, incomplete, or
 //     checksum-failing image is NEVER replaced with an empty
@@ -277,8 +283,15 @@ export interface LocalDb {
   /** Commit the current image as a new generation (see the
       protocol above). Throws StaleTabError when another tab has
       committed since this tab loaded, and propagates store
-      failures (e.g. quota) with the previous generation intact. */
-  persist(): void;
+      failures (e.g. quota) with the previous generation intact.
+      `purgeAllPriorGenerations` is the wipe exception (contract
+      v92, stored-data finding F4): when true, the cleanup after
+      the pointer switch removes EVERY prior generation,
+      including the gen - 1 fallback copy, so no pre-wipe image
+      remains readable. Every other persist keeps the fallback
+      exactly as before. The flag is set only by the packaged
+      runtime dispatch, and only for a successful clearAllData. */
+  persist(options?: { purgeAllPriorGenerations?: boolean }): void;
   /** Throw StaleTabError when the store's active generation is
       no longer the one this tab loaded or last wrote. */
   assertCurrent(): void;
@@ -417,7 +430,7 @@ export async function initLocalDb(
         );
       }
     },
-    persist() {
+    persist(options?: { purgeAllPriorGenerations?: boolean }) {
       // Stale check BEFORE writing anything: a tab may commit
       // only on top of the generation it loaded or last wrote.
       const current = readPointer(store);
@@ -453,8 +466,24 @@ export async function initLocalDb(
       store.set(ACTIVE_KEY, JSON.stringify(next));
       knownGen = gen;
       // Retain the previous generation (gen - 1) as the fallback
-      // copy; remove anything older.
-      for (let g = 1; g < gen - 1; g++) removeGeneration(store, g);
+      // copy; remove anything older — EXCEPT after a successful
+      // wipe (contract v92, stored-data finding F4), where the
+      // retained fallback IS the pre-wipe image: the purge then
+      // removes every prior generation, including gen - 1, so
+      // no pre-wipe image remains readable. The just-committed
+      // generation itself is never removed either way (it is
+      // the store's state, and for a wipe it is the empty image),
+      // and this purge touches generations only — never the
+      // encryption key, the backup vault, or any other store
+      // key, which a future ruling must decide separately.
+      // The purge runs only after the pointer switch, so a
+      // failure anywhere earlier leaves the prior generations
+      // (and the fallback) intact, as for any persist.
+      if (options?.purgeAllPriorGenerations) {
+        for (let g = 1; g < gen; g++) removeGeneration(store, g);
+      } else {
+        for (let g = 1; g < gen - 1; g++) removeGeneration(store, g);
+      }
     },
     saveMeta() {
       writeMeta(store, meta);

@@ -25,10 +25,11 @@
 //      or custodial account's balance. Deliberate exclusions
 //      (named in the restorebackup contract text): settings
 //      values other than the three scalar typed settings ride
-//      as opaque blobs; the Net Worth account `bucket` column
-//      is a legacy field no current writer writes; and
-//      server-assigned values (sortOrder, createdAt) are
-//      carried, not range-checked. And
+//      as opaque blobs; and server-assigned values (sortOrder,
+//      createdAt) are carried, not range-checked. The Net Worth
+//      account `bucket` column is NOT excluded: since contract
+//      v94 it is validated like every other field (see the
+//      preflight's bucket rule below). And
 //      intra-payload uniqueness + referential integrity are
 //      checked. Any failure refuses the restore with zero writes.
 //   2. The destructive replacement is ONE atomic batch: the wipe
@@ -55,6 +56,10 @@ import {
   txnCategoryField,
 } from "./fieldValidators";
 import { NW_PROPERTY_KINDS, splitPartsOf } from "./nwCore";
+import {
+  hasReservedEncPrefix,
+  isModelCiphertext,
+} from "./encPrefixCore";
 import {
 classifyBackupAuthenticity,
 type BackupAuthenticity,
@@ -103,6 +108,17 @@ export const ENCRYPTED_AT_REST_SETTING_KEYS: readonly string[] = [
   // class as the round-2 finding-3 key above.
   "entry_default_monthly_paid_from_v1",
   "entry_default_yearly_paid_name_v1",
+  // The two financial JSON form-state blobs (contract v90,
+  // stored-data findings F2/F3): the December projection
+  // console's saved inputs and the Roth/Playground UI-state
+  // blob. Both writers encrypt them at rest with encryptStr;
+  // both readers dual-read (a legacy plaintext record parses
+  // as before, a ciphertext record decrypts first). Listing
+  // them here is what makes a restore re-encrypt a backup's
+  // plaintext value under the destination key instead of
+  // storing it as plaintext until a later save rewrites it.
+  "december_projection_v1",
+  "roth_ui_state_v1",
 ];
 
 export function isEncryptedAtRestSettingKey(key: string): boolean {
@@ -358,7 +374,22 @@ export function isBackupMonth(s: string): boolean {
    "mismatch" when it carries one that does not, and "absent" when
    it carries none (a pre-MAC backup). Only "mismatch" refuses:
    "absent" restores with the UNAUTHENTICATED label, exactly the
-   compatibility rule the settlement settled on. */
+   compatibility rule the settlement settled on.
+   `verifyBucketCiphertext` is the caller's verdict on a Net Worth
+   account bucket value that carries the reserved enc:v1: prefix
+   (contract v94, stored-data finding F6): true when the value
+   genuinely decrypts under the current key in the bucket field's
+   own context — the context the export path decrypts it under —
+   false otherwise. The handler computes it with a real decrypt
+   attempt before calling preflight (preflight itself is pure and
+   holds no key); the fixture model passes the model-ciphertext
+   recogniser. A prefixed bucket with no verifier supplied is
+   refused: without a decrypt verdict there is no proof the value
+   can ever export again, and refusing is the only safe default.
+   Plaintext buckets (no prefix) are never passed to the
+   verifier: the export reader is lenient for plaintext, so any
+   plaintext bucket exports, and the preflight must not invent a
+   narrower plaintext domain no writer enforces. */
 
 export function payloadKeyCheckValue(
   payload: BackupPayload,
@@ -389,6 +420,7 @@ export function preflightRestoreBackup(
   payload: BackupPayload,
   payloadKeyCheckValid: boolean | null,
   payloadAuthenticity: BackupAuthenticity,
+  verifyBucketCiphertext?: (value: string) => boolean,
 ): RestorePreflightResult {
   if (
     payload.format !== BACKUP_FORMAT ||
@@ -428,6 +460,26 @@ export function preflightRestoreBackup(
     if (!(NW_PROPERTY_KINDS as readonly string[]).includes(a.propertyKind)) {
       return refuse(
         `Backup rejected: Net Worth account ${a.id} ("${a.name}") has an unrecognised propertyKind "${a.propertyKind}" (expected one of: ${NW_PROPERTY_KINDS.join(", ")}).`,
+      );
+    }
+    // The legacy bucket column (contract v94, finding F6): the
+    // restore stores it verbatim and the export path decrypts
+    // it whenever it carries the reserved prefix, so a prefixed
+    // bucket that cannot be decrypted would land here and break
+    // every later export. A prefixed value is therefore refused
+    // unless the caller's decrypt verdict says it genuinely
+    // decrypts in this field's context; a plaintext bucket is
+    // always accepted — the export reader returns plaintext as
+    // itself, and no writer restricts which plaintext tag a
+    // legacy row may carry. The refusal names the field and the
+    // value class, and (like every preflight refusal) lands
+    // before any write.
+    if (
+      hasReservedEncPrefix(a.bucket) &&
+      !(verifyBucketCiphertext?.(a.bucket) ?? false)
+    ) {
+      return refuse(
+        `Backup rejected: Net Worth account ${a.id} ("${a.name}") has a bucket value starting with "enc:v1:" that cannot be decrypted under this app's encryption key — an undecryptable encrypted bucket value would break every later export, so the restore was refused.`,
       );
     }
   }
@@ -1034,7 +1086,9 @@ export function stampRestoredRothBlob(
 // legacy defaults, preflight, plan, atomic execution. Any failure
 // leaves `prior` untouched and reports the same reason the handler
 // returns. The handler itself differs only in transport (it
-// encrypts the plan's rows and executes them as one db.batch).
+// encrypts the plan's rows and executes them as one db.batch,
+// and its bucket-ciphertext verdict is a real decrypt attempt
+// where the model's is model-ciphertext recognition).
 // The Roth blob stamp is part of the modelled flow: attemptRestore
 // stamps the Roth settings row exactly as the handler does (the
 // handler differs only in transport and applies the same helpers).
@@ -1043,6 +1097,13 @@ export function attemptRestore(
   rawPayload: unknown,
   payloadKeyCheckValid: boolean | null,
   failAtStatement: number | null = null,
+  // The fixture model's bucket-ciphertext verifier: a value
+  // counts as decryptable exactly when it is model ciphertext
+  // (encPrefixCore's model marker), mirroring the handler's
+  // real decrypt attempt in miniature. A caller may pass its
+  // own verifier; the default keeps every existing fixture
+  // call — all plaintext buckets — restoring exactly as before.
+  verifyBucketCiphertext: (value: string) => boolean = isModelCiphertext,
 ): {
   ok: boolean;
   reason: string;
@@ -1067,7 +1128,12 @@ export function attemptRestore(
   // contents were touched after export is refused by preflight;
   // a pre-MAC payload (no MAC) restores labelled unauthenticated.
   const authenticity = classifyBackupAuthenticity(parsed.data);
-  const pre = preflightRestoreBackup(parsed.data, payloadKeyCheckValid, authenticity);
+  const pre = preflightRestoreBackup(
+    parsed.data,
+    payloadKeyCheckValid,
+    authenticity,
+    verifyBucketCiphertext,
+  );
   if (!pre.ok)
     return { ok: false, reason: pre.reason, state: prior, committed: false, authenticity };
   const priorRothRow = prior.settings.find((s) => s.key === RESTORE_ROTH_BLOB_KEY);

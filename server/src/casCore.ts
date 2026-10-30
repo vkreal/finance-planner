@@ -25,7 +25,9 @@
    (F11/F12): a supplied base must equal the stored revision
    exactly; a missing base is the legacy unchecked path (named in
    DATA-PLAN), exactly the lenient shape decideRothBlobWrite gives
-   the blob records. */
+   the blob records. Contract v93 adds the restore epoch to that
+   decision (F5): a supplied epoch that differs from the stored
+   epoch is refused first, whatever the revision numbers say. */
 
 export function casCanonical(value: unknown): string {
   if (value === null) return "null";
@@ -74,17 +76,60 @@ export function casFieldMismatch(
    the stored revision exactly; anything else (stale, or from a
    "future" revision) is refused; an accepted write stores
    storedRevision + 1. A missing base is allowed (the legacy
-   unchecked path, named in DATA-PLAN) and still bumps. */
+   unchecked path, named in DATA-PLAN) and still bumps.
+
+   Contract v93 (stored-data finding F5) adds the restore epoch:
+   `storedEpoch` is the restore generation the dataset is on and
+   `baseEpoch` the generation the editor observed when it loaded.
+   The epoch check runs FIRST and is independent of the revision:
+   a supplied epoch that differs from the stored epoch is refused
+   as an epoch conflict even when the revision numbers happen to
+   match — that is exactly the restored-snapshot collision (a
+   restore restarts revisions, so revision equality alone cannot
+   tell a pre-restore editor from a fresh one). A missing epoch
+   keeps the pre-v93 revision-only behaviour (the same tolerated
+   legacy leniency as a missing base); no live editor omits it. */
 export type CasRevisionDecision =
   | { allowed: true; nextRevision: number }
-  | { allowed: false; storedRevision: number };
+  | {
+      allowed: false;
+      storedRevision: number;
+      epochConflict: boolean;
+    };
+
+/* The settings key carrying the restore epoch (contract v93):
+   a plain integer string — a generation counter, structural
+   metadata like the snapshot revision column, not a financial
+   value, so it is stored unencrypted like the revision. Absent
+   (or unparseable) reads as epoch 0, the pre-restore era. */
+export const NW_RESTORE_EPOCH_SETTING = "nw_restore_epoch_v1";
+
+export function parseRestoreEpoch(value: string | undefined): number {
+  if (value == null) return 0;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/* The epoch a restore stamps: always one past the epoch the
+   dataset was on before the restore, whatever the backup
+   carried — a carried epoch value is never trusted, so an old
+   backup with no epoch information still advances the epoch,
+   and a second restore advances it again. */
+export function nextRestoreEpoch(storedEpoch: number): number {
+  return storedEpoch + 1;
+}
 
 export function decideCasRevision(
   storedRevision: number,
   baseRevision: number | undefined,
+  storedEpoch = 0,
+  baseEpoch?: number,
 ): CasRevisionDecision {
+  if (baseEpoch !== undefined && baseEpoch !== storedEpoch) {
+    return { allowed: false, storedRevision, epochConflict: true };
+  }
   if (baseRevision !== undefined && baseRevision !== storedRevision) {
-    return { allowed: false, storedRevision };
+    return { allowed: false, storedRevision, epochConflict: false };
   }
   return { allowed: true, nextRevision: storedRevision + 1 };
 }
@@ -95,4 +140,13 @@ export function decideCasRevision(
    "snapshot", "monthly bill", …). */
 export function casConflictReason(what: string): string {
   return `A newer copy was saved elsewhere — this ${what} changed in another tab or on another device since you opened it, so your edit wasn't saved over it. The latest saved version is shown now; make your change again from there.`;
+}
+
+/* The restore-epoch conflict reason (contract v93, F5): the
+   dataset was replaced by a backup restore after the editor
+   loaded, so the edit must not save over the restored version.
+   It names the restore cause, so the refusal is distinguishable
+   from an ordinary newer-copy conflict. */
+export function casRestoreEpochConflictReason(what: string): string {
+  return `A backup was restored since you opened this ${what} — the restored version replaced what you loaded, so your edit wasn't saved over it. The latest saved version is shown now; make your change again from there.`;
 }

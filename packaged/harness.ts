@@ -69,6 +69,38 @@
 //      it, and the stored bytes survive untouched — while an
 //      absent record and a normal record behave exactly as
 //      before.
+//   O. Encrypted form-state blobs (contract v90, stored-data
+//      findings F2/F3): the December and Roth/Playground blobs
+//      store as ciphertext through the real writers, dual-read
+//      legacy plaintext rows planted in settings, restore from
+//      plaintext backups to encrypted stored values, restore a
+//      ciphertext backup correctly, and keep the Roth UI-state
+//      CAS guard working on ciphertext.
+//   P. Field-bound ciphertext (contract v91, stored-data
+//      finding F1): a ciphertext transplanted into another field
+//      is refused on load (never a silently wrong figure); every
+//      field family round-trips through its real write/read
+//      actions; legacy no-AAD ciphertext dual-reads and is
+//      re-encrypted bound by the loaders, while settings blobs
+//      upgrade on save only; and a restore re-encrypts legacy
+//      ciphertext or refuses a transplanted one with the prior
+//      state untouched — all through the real actions on
+//      throwaway stores with real encryption.
+//   Q. Wipe purges retained generations (contract v92,
+//      stored-data finding F4): a successful clearAllData
+//      through the real packaged dispatch leaves no prior
+//      generation readable (including the retained fallback),
+//      while the store stays usable, the encryption key is
+//      untouched (generations-only scope), a refused wipe
+//      keeps the fallback, and an ordinary persist still
+//      retains exactly its gen - 1 fallback.
+//   R. Restore epoch (contract v93, stored-data finding F5): a
+//      restore advances the epoch and every pre-restore snapshot
+//      editor is refused afterwards — through the real actions on
+//      a throwaway store with real encryption — while a fresh
+//      editor and ordinary revision CAS behave as before, a
+//      second restore invalidates again, and a carried stale
+//      epoch value in an old backup is ignored.
 //
 // Run via packaged/run-harness.mjs (which bundles this file with the
 // same resolver seams as the browser build).
@@ -77,6 +109,7 @@ import {
   memoryStore,
   ACTIVE_KEY,
   BACKUPS_KEY,
+  ENC_KEY_KEY,
   GEN_CHUNK_KEY,
   META_KEY,
   RSA_PRIV_KEY,
@@ -85,7 +118,7 @@ import {
 import { StoreRecoveryRequiredError } from "./src/localDb";
 import initSqlJs from "sql.js";
 import { MIGRATIONS } from "packaged-migrations";
-import { bytesToHex, sha256Bytes } from "../server/src/backupMacCore";
+import { bytesToHex, computeBackupMac, sha256Bytes } from "../server/src/backupMacCore";
 // The single sources of truth the contract expectations derive
 // from (round-7 fix H-1): the same Actions map and contract
 // version constant describeApi publishes, read here directly
@@ -93,6 +126,8 @@ import { bytesToHex, sha256Bytes } from "../server/src/backupMacCore";
 // that dropped an action or mangled the version fails loudly
 // against the source, and growing either never stales this file.
 import { Actions, API_CONTRACT_VERSION } from "../server/src/actions";
+import * as schema from "../server/src/schema";
+import { eq as drizzleEq } from "drizzle-orm";
 
 const wasmPath = process.env.FPKG_WASM;
 if (!wasmPath) throw new Error("FPKG_WASM env var is required");
@@ -1623,6 +1658,915 @@ eq(
   const backDec = await rtN.call<any>("getDecemberProjection", {});
   eq("N34 restored December record reads normally",
     [backDec.hasStored, backDec.storedUnreadable], [true, false]);
+}
+
+// ---------- O. Encrypted form-state blobs (contract v90, F2/F3) ----------
+// Real writers on a throwaway store, with the raw stored
+// settings value read through the runtime's local DB — the
+// only view that can see whether the value at rest is
+// ciphertext (exportbackup decrypts, so it cannot tell).
+{
+  const storeO = memoryStore();
+  const rtO = await createRuntime({ store: storeO, wasmUrl: wasmPath });
+  const dbO = rtO.localDb.db;
+  const rawStored = async (k: string): Promise<string | undefined> => {
+    // Client-side find, NOT a drizzle where(eq(...)): this file's
+    // local eq() assertion helper shadows drizzle-orm's eq, so a
+    // where(eq(...)) here silently calls the assertion (printing
+    // a spurious FAIL and returning undefined, i.e. no filter)
+    // and rows[0] is whatever row happens to be first — the
+    // section-O ciphertext assertions would then pass vacuously
+    // against the wrong row's bytes. Selecting all rows and
+    // finding by key reads the row this key actually holds.
+    const rows = await dbO.select().from(schema.settings);
+    return rows.find((r) => r.key === k)?.value;
+  };
+  const plantPlaintext = async (k: string, value: string): Promise<void> => {
+    await dbO
+      .insert(schema.settings)
+      .values({ key: k, value })
+      .onConflictDoUpdate({ target: schema.settings.key, set: { value } });
+  };
+
+  // O-A: December save stores ciphertext; read-back identical.
+  const decFresh = await rtO.call<any>("getDecemberProjection", {});
+  const decState = {
+    ...decFresh.state,
+    ytdInterest: 12500,
+    pretaxBalancePrimary: 1800000,
+    pretaxBalance: 1800000,
+  };
+  const decSave = await rtO.call<any>("saveDecemberProjection", {
+    state: decState,
+    baseRevision: 0,
+  });
+  eq("O1 December save ok at revision 1", [decSave.ok, decSave.revision], [true, 1]);
+  const decRaw = await rawStored("december_projection_v1");
+  check("O2 December stored value is ciphertext", decRaw?.startsWith("enc:v1:") === true);
+  check(
+    "O3 December stored value holds no plaintext figures",
+    decRaw !== undefined &&
+      !decRaw.includes('"ytdInterest":12500') &&
+      !decRaw.includes('"pretaxBalancePrimary":1800000'),
+  );
+  const decBack = await rtO.call<any>("getDecemberProjection", {});
+  eq(
+    "O4 December read-back identical",
+    [decBack.revision, decBack.state.ytdInterest, decBack.state.pretaxBalancePrimary],
+    [1, 12500, 1800000],
+  );
+
+  // O-B: Roth/Playground UI-state save stores ciphertext; read-back identical.
+  const uiFresh = await rtO.call<any>("getRothUiState", {});
+  const uiSave = await rtO.call<any>("setRothUiState", {
+    labDials: {
+      ...uiFresh.labDials,
+      spendingCents: 25000000,
+      pretaxCents: 180000000,
+      taxableCents: 90000000,
+      rothCents: 120000000,
+    },
+    playground: { ...uiFresh.playground, interest: "45000" },
+    baseRevision: 0,
+  });
+  eq("O5 Roth UI-state save ok at revision 1", [uiSave.ok, uiSave.revision], [true, 1]);
+  const uiRaw = await rawStored("roth_ui_state_v1");
+  check("O6 Roth UI-state stored value is ciphertext", uiRaw?.startsWith("enc:v1:") === true);
+  check(
+    "O7 Roth UI-state stored value holds no plaintext figures",
+    uiRaw !== undefined &&
+      !uiRaw.includes('"interest":"45000"') &&
+      !uiRaw.includes('"spendingCents":25000000'),
+  );
+  const uiBack = await rtO.call<any>("getRothUiState", {});
+  eq(
+    "O8 Roth UI-state read-back identical",
+    [
+      uiBack.revision,
+      uiBack.labDials.spendingCents,
+      uiBack.labDials.pretaxCents,
+      uiBack.playground.interest,
+    ],
+    [1, 25000000, 180000000, "45000"],
+  );
+
+  // O-CAS: the guarded commit still refuses a stale base
+  // against ciphertext, and accepts a fresh base.
+  const uiStale = await rtO.call<any>("setRothUiState", {
+    labDialsOpen: true,
+    baseRevision: 0,
+  });
+  eq("O9 stale Roth UI-state save conflicts", [uiStale.ok, uiStale.conflict], [false, true]);
+  eq("O10 stored Roth UI-state bytes intact after stale save", await rawStored("roth_ui_state_v1"), uiRaw);
+  const uiFreshSave = await rtO.call<any>("setRothUiState", {
+    labDialsOpen: true,
+    baseRevision: 1,
+  });
+  eq("O11 fresh-base Roth UI-state save ok at revision 2", [uiFreshSave.ok, uiFreshSave.revision], [true, 2]);
+
+  // O-C: legacy plaintext rows planted directly in settings
+  // dual-read correctly, with zero user action.
+  const legacyDec = JSON.stringify({
+    ...decFresh.state,
+    ytdInterest: 7777,
+    pretaxBalancePrimary: 424242,
+    pretaxBalance: 424242,
+    decemberStateFormat: 3,
+    revision: 5,
+  });
+  await plantPlaintext("december_projection_v1", legacyDec);
+  const decLegacy = await rtO.call<any>("getDecemberProjection", {});
+  eq(
+    "O12 legacy plaintext December row reads correctly",
+    [decLegacy.revision, decLegacy.state.ytdInterest, decLegacy.state.pretaxBalancePrimary],
+    [5, 7777, 424242],
+  );
+  const legacyUi = JSON.stringify({
+    ...uiBack,
+    labDials: { ...uiBack.labDials, spendingCents: 424242 },
+    revision: 3,
+  });
+  await plantPlaintext("roth_ui_state_v1", legacyUi);
+  const uiLegacy = await rtO.call<any>("getRothUiState", {});
+  eq(
+    "O13 legacy plaintext Roth UI-state row reads correctly",
+    [uiLegacy.revision, uiLegacy.labDials.spendingCents],
+    [3, 424242],
+  );
+
+  // O-D: a backup carrying PLAINTEXT values for both keys
+  // restores to ENCRYPTED stored values that read back.
+  const payloadO = await rtO.call<any>("exportbackup", {});
+  const plainPayload = JSON.parse(JSON.stringify(payloadO));
+  delete plainPayload.authenticityMac;
+  plainPayload.settings = plainPayload.settings.map((s: any) =>
+    s.key === "december_projection_v1"
+      ? { ...s, value: legacyDec }
+      : s.key === "roth_ui_state_v1"
+        ? { ...s, value: legacyUi }
+        : s,
+  );
+  const resPlain = await rtO.call<any>("restorebackup", plainPayload);
+  eq("O14 plaintext backup restores ok", resPlain.ok, true);
+  const decRawAfter = await rawStored("december_projection_v1");
+  const uiRawAfter = await rawStored("roth_ui_state_v1");
+  check(
+    "O15 restored December value is encrypted at rest",
+    decRawAfter?.startsWith("enc:v1:") === true,
+  );
+  check(
+    "O16 restored Roth UI-state value is encrypted at rest",
+    uiRawAfter?.startsWith("enc:v1:") === true,
+  );
+  const decRestored = await rtO.call<any>("getDecemberProjection", {});
+  eq(
+    "O17 restored December state reads back",
+    [decRestored.revision, decRestored.state.ytdInterest, decRestored.state.pretaxBalancePrimary],
+    [5, 7777, 424242],
+  );
+  const uiRestored = await rtO.call<any>("getRothUiState", {});
+  eq(
+    "O18 restored Roth UI-state reads back",
+    [uiRestored.revision, uiRestored.labDials.spendingCents],
+    [3, 424242],
+  );
+
+  // O-D2: a backup carrying CIPHERTEXT values (same key)
+  // restores correctly and reads back.
+  const cipherPayload = JSON.parse(JSON.stringify(payloadO));
+  delete cipherPayload.authenticityMac;
+  cipherPayload.settings = cipherPayload.settings.map((s: any) =>
+    s.key === "december_projection_v1"
+      ? { ...s, value: decRawAfter }
+      : s.key === "roth_ui_state_v1"
+        ? { ...s, value: uiRawAfter }
+        : s,
+  );
+  const resCipher = await rtO.call<any>("restorebackup", cipherPayload);
+  eq("O19 ciphertext backup restores ok", resCipher.ok, true);
+  const decCipherBack = await rtO.call<any>("getDecemberProjection", {});
+  eq(
+    "O20 ciphertext backup December reads back",
+    [decCipherBack.state.ytdInterest, decCipherBack.state.pretaxBalancePrimary],
+    [7777, 424242],
+  );
+  const uiCipherBack = await rtO.call<any>("getRothUiState", {});
+  eq("O21 ciphertext backup Roth UI-state reads back", uiCipherBack.labDials.spendingCents, 424242);
+
+  // O-E: export carries both blobs decrypted (the cross-key
+  // portability shape the v60 sticky-defaults fix established).
+  const exportO = await rtO.call<any>("exportbackup", {});
+  const decExported = exportO.settings.find((s: any) => s.key === "december_projection_v1")?.value;
+  const uiExported = exportO.settings.find((s: any) => s.key === "roth_ui_state_v1")?.value;
+  check(
+    "O22 exported December value is decrypted JSON",
+    typeof decExported === "string" &&
+      !decExported.startsWith("enc:v1:") &&
+      JSON.parse(decExported).ytdInterest === 7777,
+  );
+  check(
+    "O23 exported Roth UI-state value is decrypted JSON",
+    typeof uiExported === "string" &&
+      !uiExported.startsWith("enc:v1:") &&
+      JSON.parse(uiExported).labDials.spendingCents === 424242,
+  );
+}
+
+// ---------- P. Field-bound ciphertext (contract v91, F1) ----------
+// Real actions on throwaway stores with real encryption. Direct
+// database writes below plant or transplant stored bytes exactly
+// as a database writer would; every read then goes through the
+// real actions, so a context mismatch must surface as a refusal,
+// never as a wrong figure.
+{
+  // Legacy (pre-v91) encryption: AES-256-GCM, random nonce, NO
+  // associated data — the exact scheme every stored value used
+  // before this build. Planting its output is how the dual-read
+  // migration is proven without touching a real store.
+  const legacyEncrypt = async (plain: string, keyBase64: string): Promise<string> => {
+    const raw = Buffer.from(keyBase64, "base64");
+    const ck = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt"]);
+    const nonce = new Uint8Array(12);
+    crypto.getRandomValues(nonce);
+    const ct = new Uint8Array(
+      await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, ck, new TextEncoder().encode(plain)),
+    );
+    const combined = new Uint8Array(nonce.length + ct.length);
+    combined.set(nonce, 0);
+    combined.set(ct, nonce.length);
+    return "enc:v1:" + Buffer.from(combined).toString("base64");
+  };
+  const storedSetting = async (db: any, k: string): Promise<string | undefined> => {
+    const rows = await db.select().from(schema.settings);
+    return rows.find((r: any) => r.key === k)?.value;
+  };
+
+  // P-B/C runtime: write/read round-trips, then legacy plants.
+  const storeP = memoryStore();
+  const rtP = await createRuntime({ store: storeP, wasmUrl: wasmPath });
+  const dbP = rtP.localDb.db;
+  await rtP.call<any>("getDashboard", { month: "2027-01" });
+  const keyBase64P = storeP.get(ENC_KEY_KEY) ?? "";
+  check("P0 packaged encryption key present", keyBase64P.length > 0);
+
+  // P-B: one write + read per field family through the real actions.
+  await rtP.call<any>("addTransaction", {
+    date: "2027-01-15", description: "P field binding txn", amountCents: 432100,
+    sourceType: "checking", accountName: "Checking", kind: "spending",
+    category: "Groceries", yearlyExpenseId: null, fitId: "P-FIT-1",
+  });
+  // The bank transaction id is recorded only by the import
+  // batch action (the manual add/edit actions accept the shared
+  // shape but never set the column — documented at txnInput), so
+  // the fit_id context family is proven through that path.
+  const impTx = await rtP.call<any>("importTransactions", {
+    rows: [{
+      date: "2027-01-16", description: "P field binding import txn", amountCents: 98700,
+      sourceType: "checking", accountName: "Checking", kind: "spending",
+      category: "Groceries", yearlyExpenseId: null, fitId: "P-FIT-1",
+    }],
+  });
+  eq("P-B0c import transaction recorded", impTx.imported, 1);
+  const yExp = await rtP.call<any>("addYearlyExpense", {
+    name: "P binding yearly", frequency: "yearly", expectedCents: 300000,
+    dueMonth: 3, paidByType: "checking", paidByName: "Checking", category: "Housing",
+  });
+  eq("P-B0 yearly expense created", typeof yExp.id, "number");
+  await rtP.call<any>("setYearlyExpenseVersion", {
+    expenseId: yExp.id, expectedCents: 310000, frequency: "yearly", effectiveFrom: "2027-02",
+  });
+  const bill = await rtP.call<any>("addMonthlyBill", {
+    name: "P binding bill", amountCents: 150000, effectiveFrom: "2027-01",
+    paidBy: "Checking", notes: "P note", category: "Utilities",
+  });
+  await rtP.call<any>("setMonthlyBillAmount", {
+    billId: bill.id, amountCents: 155000, effectiveFrom: "2027-02",
+  });
+  await rtP.call<any>("upsertMonthlySummary", { month: "2027-01", cashOutCents: 1200000 });
+  await rtP.call<any>("addMonthlyOneOff", {
+    month: "2027-01", description: "P one-off", amountCents: 64000, note: "P one-off note",
+  });
+  await rtP.call<any>("addCashOutItem", {
+    month: "2027-01", description: "P cash item", amountCents: 210000, note: null, day: 5,
+  });
+  const acct = await rtP.call<any>("addNwAccount", {
+    name: "P binding account", propertyKind: "none", custodial: false,
+  });
+  const snap = await rtP.call<any>("addNwSnapshot", {
+    date: "2026-09-15", note: "P snapshot note",
+    balances: [{
+      accountId: acct.id, balanceCents: 5000000,
+      splits: [
+        { bucket: "Roth", amountCents: 2000000 },
+        { bucket: "Taxable", amountCents: 3000000 },
+      ],
+    }],
+  });
+  eq("P-B0a NW snapshot created", snap.ok, true);
+  await rtP.call<any>("saveImportSettings", {
+    settingsJson: JSON.stringify({
+      lastSettings: { template: "checking", outSign: "positive", accountName: "Checking", cardKeywords: "", transferKeywords: "" },
+      profiles: [], ofxAccounts: {},
+    }),
+  });
+  const impBack = await rtP.call<any>("getImportData", { months: [] });
+  check(
+    "P-B0b import settings round-trip",
+    typeof impBack.settingsJson === "string" && impBack.settingsJson.includes("Checking"),
+  );
+  await rtP.call<any>("updateSettings", { openingReserveCents: 250000, reserveStartMonth: null });
+
+  // The export payload is the round-trip oracle: it decrypts every
+  // field, so any encrypt/decrypt context mismatch fails here.
+  const payloadP = await rtP.call<any>("exportbackup", {});
+  const expTxn = payloadP.transactions.find((t: any) => t.description === "P field binding txn");
+  eq("P-B1 exported transaction amount", expTxn?.amountCents, 432100);
+  eq("P-B2 exported transaction bank id", payloadP.transactions.find((t: any) => t.description === "P field binding import txn")?.fitId, "P-FIT-1");
+  const expY = payloadP.yearlyExpenses.find((y: any) => y.name === "P binding yearly");
+  eq("P-B3 exported yearly amount (latest version)", expY?.expectedCents, 310000);
+  eq(
+    "P-B4 yearly version rows present",
+    payloadP.yearlyExpenseVersions.filter((v: any) => v.expenseId === yExp.id).length,
+    2,
+  );
+  eq(
+    "P-B5 exported summary",
+    payloadP.monthlySummaries.find((s: any) => s.month === "2027-01")?.cashOutCents,
+    1200000,
+  );
+  const expB = payloadP.monthlyBills.find((b: any) => b.name === "P binding bill");
+  eq("P-B6 exported bill amount (latest version)", expB?.amountCents, 155000);
+  eq("P-B7 exported bill note", expB?.notes, "P note");
+  const expO = payloadP.monthlyOneOffs.find((o: any) => o.description === "P one-off");
+  eq("P-B8 exported one-off", [expO?.amountCents, expO?.note], [64000, "P one-off note"]);
+  eq(
+    "P-B9 exported cash-out item",
+    payloadP.monthlyCashOutItems.find((c: any) => c.description === "P cash item")?.amountCents,
+    210000,
+  );
+  const nwP = await rtP.call<any>("getNetWorth", {});
+  eq(
+    "P-B10 NW snapshot total (split sum)",
+    nwP.snapshots.find((s: any) => s.date === "2026-09-15")?.totalCents,
+    5000000,
+  );
+
+  // P-C: legacy no-AAD ciphertext dual-reads and is re-encrypted
+  // bound by the loaders (table rows), while settings blobs
+  // upgrade on save only.
+  const legacyKc = await legacyEncrypt("hatch-encryption-check-v1", keyBase64P);
+  await dbP
+    .update(schema.settings)
+    .set({ value: legacyKc })
+    .where(drizzleEq(schema.settings.key, "encryption_key_check_v1"));
+  await rtP.call<any>("getDashboard", { month: "2027-01" });
+  const kcAfter = await storedSetting(dbP, "encryption_key_check_v1");
+  check(
+    "P-C1 legacy key-check rebound on load",
+    kcAfter !== undefined && kcAfter !== legacyKc && kcAfter.startsWith("enc:v1:"),
+  );
+
+  const legacySum = await legacyEncrypt("777700", keyBase64P);
+  await dbP
+    .update(schema.monthlySummaries)
+    .set({ cashOutCents: legacySum })
+    .where(drizzleEq(schema.monthlySummaries.month, "2027-01"));
+  await rtP.call<any>("getDashboard", { month: "2027-01" });
+  const payloadC = await rtP.call<any>("exportbackup", {});
+  eq(
+    "P-C2 legacy summary reads correctly",
+    payloadC.monthlySummaries.find((s: any) => s.month === "2027-01")?.cashOutCents,
+    777700,
+  );
+  const sumAfter = (await dbP.select().from(schema.monthlySummaries)).find(
+    (r: any) => r.month === "2027-01",
+  )?.cashOutCents;
+  check(
+    "P-C3 legacy summary rebound on load",
+    sumAfter !== undefined && sumAfter !== legacySum && sumAfter.startsWith("enc:v1:"),
+  );
+
+  const decFresh = await rtP.call<any>("getDecemberProjection", {});
+  const legacyDecState = JSON.stringify({ ...decFresh.state, ytdInterest: 4242, revision: 0 });
+  const legacyDec = await legacyEncrypt(legacyDecState, keyBase64P);
+  await dbP
+    .insert(schema.settings)
+    .values({ key: "december_projection_v1", value: legacyDec })
+    .onConflictDoUpdate({ target: schema.settings.key, set: { value: legacyDec } });
+  const decBack = await rtP.call<any>("getDecemberProjection", {});
+  eq("P-C4 legacy December blob reads correctly", decBack.state.ytdInterest, 4242);
+  eq(
+    "P-C5 December blob not rewritten on read (save-only upgrade)",
+    await storedSetting(dbP, "december_projection_v1"),
+    legacyDec,
+  );
+  const decSave = await rtP.call<any>("saveDecemberProjection", {
+    state: decBack.state, baseRevision: decBack.revision,
+  });
+  eq("P-C6 December save ok", decSave.ok, true);
+  const decRawSaved = await storedSetting(dbP, "december_projection_v1");
+  check(
+    "P-C7 December blob bound after save",
+    decRawSaved !== undefined && decRawSaved !== legacyDec && decRawSaved.startsWith("enc:v1:"),
+  );
+
+  // P-A: transplanted ciphertext is refused on load, in its own
+  // runtimes (a refused load leaves the runtime behind, and the
+  // point is the refusal, not recovery).
+  {
+    const storeT = memoryStore();
+    const rtT = await createRuntime({ store: storeT, wasmUrl: wasmPath });
+    const dbT = rtT.localDb.db;
+    await rtT.call<any>("getDashboard", { month: "2027-01" });
+    const yT = await rtT.call<any>("addYearlyExpense", {
+      name: "P transplant source", frequency: "yearly", expectedCents: 300000,
+      dueMonth: 3, paidByType: "checking", paidByName: "Checking", category: "Housing",
+    });
+    await rtT.call<any>("upsertMonthlySummary", { month: "2027-01", cashOutCents: 1200000 });
+    const yRaw = (await dbT.select().from(schema.yearlyExpenses)).find(
+      (r: any) => r.id === yT.id,
+    )?.expectedCents as string;
+    await dbT
+      .update(schema.monthlySummaries)
+      .set({ cashOutCents: yRaw })
+      .where(drizzleEq(schema.monthlySummaries.month, "2027-01"));
+    let threw = false;
+    try {
+      await rtT.call<any>("getDashboard", { month: "2027-01" });
+    } catch {
+      threw = true;
+    }
+    check("P-A1 transplanted amount ciphertext refused on load", threw);
+  }
+  {
+    const storeT2 = memoryStore();
+    const rtT2 = await createRuntime({ store: storeT2, wasmUrl: wasmPath });
+    const dbT2 = rtT2.localDb.db;
+    await rtT2.call<any>("getDashboard", { month: "2027-01" });
+    const billT = await rtT2.call<any>("addMonthlyBill", {
+      name: "P transplant name", amountCents: 100000, effectiveFrom: "2027-01",
+      paidBy: "Checking", notes: null, category: "Utilities",
+    });
+    const yT2 = await rtT2.call<any>("addYearlyExpense", {
+      name: "P victim yearly", frequency: "yearly", expectedCents: 100000,
+      dueMonth: 3, paidByType: "checking", paidByName: "Checking", category: "Housing",
+    });
+    const billRawName = (await dbT2.select().from(schema.monthlyBills)).find(
+      (r: any) => r.id === billT.id,
+    )?.name as string;
+    await dbT2
+      .update(schema.yearlyExpenses)
+      .set({ name: billRawName })
+      .where(drizzleEq(schema.yearlyExpenses.id, yT2.id));
+    let threw = false;
+    try {
+      await rtT2.call<any>("getDashboard", { month: "2027-01" });
+    } catch {
+      threw = true;
+    }
+    check("P-A2 transplanted name ciphertext refused on load", threw);
+  }
+
+  // P-D: restore re-encrypts (bound backup, legacy backup) or
+  // refuses a transplant inside the backup with state untouched.
+  const storeD = memoryStore();
+  const rtD = await createRuntime({ store: storeD, wasmUrl: wasmPath });
+  const dbD = rtD.localDb.db;
+  await rtD.call<any>("getDashboard", { month: "2027-01" });
+  const keyBase64D = storeD.get(ENC_KEY_KEY) ?? "";
+  const payloadD = await rtP.call<any>("exportbackup", {});
+  await rtD.call<any>("clearAllData", { confirm: "delete everything" });
+  const resD = await rtD.call<any>("restorebackup", payloadD);
+  eq("P-D1 bound backup restores ok", resD.ok, true);
+  const payloadD2 = await rtD.call<any>("exportbackup", {});
+  eq(
+    "P-D2 restored summary reads back",
+    payloadD2.monthlySummaries.find((s: any) => s.month === "2027-01")?.cashOutCents,
+    777700,
+  );
+  const yCipherD = (await dbD.select().from(schema.yearlyExpenses)).find(
+    (r: any) => typeof r.expectedCents === "string" && r.expectedCents.startsWith("enc:v1:"),
+  )?.expectedCents as string;
+  check("P-D2a transplant source ciphertext present", typeof yCipherD === "string" && yCipherD.length > 0);
+  const tamperedP = JSON.parse(JSON.stringify(payloadD));
+  delete tamperedP.authenticityMac;
+  tamperedP.settings = tamperedP.settings.filter((s: any) => s.key !== "december_projection_v1");
+  tamperedP.settings.push({ key: "december_projection_v1", value: yCipherD });
+  const resTampered = await rtD.call<any>("restorebackup", tamperedP);
+  eq("P-D3 transplanted ciphertext in backup refused", resTampered.ok, false);
+  check(
+    "P-D4 refusal names decryption",
+    typeof resTampered.reason === "string" && resTampered.reason.includes("can't be decrypted"),
+    resTampered.reason,
+  );
+  const afterD = await rtD.call<any>("exportbackup", {});
+  eq(
+    "P-D5 state untouched by refused restore",
+    afterD.monthlySummaries.find((s: any) => s.month === "2027-01")?.cashOutCents,
+    777700,
+  );
+  const legacyP = JSON.parse(JSON.stringify(payloadD));
+  delete legacyP.authenticityMac;
+  const decPlain = JSON.stringify((await rtP.call<any>("getDecemberProjection", {})).state);
+  const legacyDecD = await legacyEncrypt(decPlain, keyBase64D);
+  legacyP.settings = legacyP.settings.filter((s: any) => s.key !== "december_projection_v1");
+  legacyP.settings.push({ key: "december_projection_v1", value: legacyDecD });
+  const resLegacy = await rtD.call<any>("restorebackup", legacyP);
+  eq("P-D6 legacy-ciphertext backup restores ok", resLegacy.ok, true);
+  const decRawD = await storedSetting(dbD, "december_projection_v1");
+  check(
+    "P-D7 restored December value is bound, not the planted legacy bytes",
+    decRawD !== undefined && decRawD !== legacyDecD && decRawD.startsWith("enc:v1:"),
+  );
+  const decBackD = await rtD.call<any>("getDecemberProjection", {});
+  eq("P-D8 restored December state reads back", decBackD.state.ytdInterest, 4242);
+}
+
+// ---------- Q. Wipe purges retained generations (contract v92, F4) ----------
+// A successful wipe must leave NO pre-wipe image readable: the
+// retained gen - 1 fallback is itself the pre-wipe image, and
+// any older generation lingering in the store goes with it.
+// The just-committed empty image is the store's state and
+// stays; the encryption key and backup vault are outside the
+// generations-only scope and stay too. A refused wipe and an
+// ordinary persist keep the fallback exactly as before.
+{
+  const activeGen = (s: KeyValueStore): number =>
+    (JSON.parse(s.get(ACTIVE_KEY) as string) as { gen: number }).gen;
+  const hasGenChunk = (s: KeyValueStore, g: number): boolean =>
+    s.get(GEN_CHUNK_KEY(g, 0)) != null;
+
+  // Q-A: data at generation 5, wiped through the real dispatch.
+  const storeQ = memoryStore();
+  const rtQ = await createRuntime({ store: storeQ, wasmUrl: wasmPath });
+  await rtQ.call<any>("addMonthlyBill", {
+    name: "Q pre-wipe bill", amountCents: 12300, effectiveFrom: "2027-01", paidBy: "Checking",
+  });
+  // Each dispatch persists one generation; drive the pointer
+  // to exactly 5 with read-only dispatches so the pre-wipe
+  // image under test is generation 5 itself.
+  for (let i = 0; i < 10 && activeGen(storeQ) < 5; i++) {
+    await rtQ.call<any>("getDashboard", { month: "2027-01" });
+  }
+  eq("Q-A0 active generation is 5 before the wipe", activeGen(storeQ), 5);
+  check(
+    "Q-A0a gen 4 fallback present before the wipe",
+    hasGenChunk(storeQ, 4),
+  );
+  // Stale chunks under older generation numbers, as a store
+  // whose earlier cleanups missed them would hold: the purge
+  // sweep must remove those too, not only the fallback.
+  storeQ.set(GEN_CHUNK_KEY(1, 0), "stale");
+  storeQ.set(GEN_CHUNK_KEY(3, 0), "stale");
+  const keyBefore = storeQ.get(ENC_KEY_KEY) ?? "";
+  check("Q-A0b encryption key present before the wipe", keyBefore.length > 0);
+  const wiped = await rtQ.call<any>("clearAllData", { confirm: "delete everything" });
+  eq("Q-A1 clearAllData ok", wiped.ok, true);
+  eq("Q-A2 wipe commits the next generation", activeGen(storeQ), 6);
+  check(
+    "Q-A3 no prior generation chunk remains (fallback and older)",
+    [1, 2, 3, 4, 5].every((g) => !hasGenChunk(storeQ, g)),
+    `remaining: ${[1, 2, 3, 4, 5].filter((g) => hasGenChunk(storeQ, g)).join(",") || "none"}`,
+  );
+  check("Q-A4 the committed empty image remains", hasGenChunk(storeQ, 6));
+  check(
+    "Q-A5 encryption key untouched by the generations-only purge",
+    storeQ.get(ENC_KEY_KEY) === keyBefore,
+  );
+  // The store stays usable: a fresh runtime over the same
+  // store loads the empty image, and a fresh write/read cycle
+  // works on top of it (acceptance C).
+  const rtQ2 = await createRuntime({ store: storeQ, wasmUrl: wasmPath });
+  const dashWiped = await rtQ2.call<any>("getDashboard", { month: "2027-01" });
+  check(
+    "Q-A6 wiped store reloads usable and empty",
+    dashWiped.hasAnyData === false && (dashWiped.monthlyBills ?? []).length === 0,
+    `hasAnyData ${dashWiped.hasAnyData}`,
+  );
+  const postWipe = await rtQ2.call<any>("addMonthlyBill", {
+    name: "Q post-wipe bill", amountCents: 45600, effectiveFrom: "2027-01", paidBy: "Checking",
+  });
+  check("Q-A7 fresh write after the wipe commits", typeof postWipe.id === "number", `id ${postWipe.id}`);
+  const rtQ3 = await createRuntime({ store: storeQ, wasmUrl: wasmPath });
+  const dashPost = await rtQ3.call<any>("getDashboard", { month: "2027-01" });
+  check(
+    "Q-A8 fresh write reads back after reload",
+    (dashPost.monthlyBills ?? []).some((b: any) => b.name === "Q post-wipe bill"),
+  );
+
+  // Q-B: an ordinary (non-wipe) persist still retains exactly
+  // the gen - 1 fallback and advances the pointer.
+  const storeB = memoryStore();
+  const rtB = await createRuntime({ store: storeB, wasmUrl: wasmPath });
+  await rtB.call<any>("addMonthlyBill", {
+    name: "Q ordinary bill one", amountCents: 11100, effectiveFrom: "2027-01", paidBy: "Checking",
+  });
+  const genB1 = activeGen(storeB);
+  check(
+    "Q-B1 ordinary persist retains the prior generation",
+    hasGenChunk(storeB, genB1 - 1),
+    `active ${genB1}`,
+  );
+  await rtB.call<any>("addMonthlyBill", {
+    name: "Q ordinary bill two", amountCents: 22200, effectiveFrom: "2027-01", paidBy: "Checking",
+  });
+  eq("Q-B2 ordinary persist advances the pointer by one", activeGen(storeB), genB1 + 1);
+  check(
+    "Q-B3 ordinary persist retains exactly the new fallback",
+    hasGenChunk(storeB, genB1) && !hasGenChunk(storeB, genB1 - 1),
+    `active ${activeGen(storeB)}`,
+  );
+
+  // Q-D: a refused wipe (wrong confirmation) purges nothing:
+  // the fallback stays, and the data stays.
+  const storeR = memoryStore();
+  const rtR = await createRuntime({ store: storeR, wasmUrl: wasmPath });
+  await rtR.call<any>("addMonthlyBill", {
+    name: "Q refused-wipe bill", amountCents: 33300, effectiveFrom: "2027-01", paidBy: "Checking",
+  });
+  const genR = activeGen(storeR);
+  const refused = await rtR.call<any>("clearAllData", { confirm: "delete everythin" });
+  eq("Q-D1 refused wipe returns ok false", refused.ok, false);
+  check(
+    "Q-D2 refused wipe keeps the fallback generation",
+    hasGenChunk(storeR, genR),
+    `active ${activeGen(storeR)}, prior ${genR}`,
+  );
+  const dashR = await rtR.call<any>("getDashboard", { month: "2027-01" });
+  check(
+    "Q-D3 refused wipe leaves the data intact",
+    (dashR.monthlyBills ?? []).some((b: any) => b.name === "Q refused-wipe bill"),
+  );
+}
+
+// ---------- R. Restore epoch (contract v93, F5) ----------
+// The reviewer's interleaving through the real actions: an
+// editor reads a snapshot, a valid backup restore replaces it
+// (revision restarts at 0, exactly the pre-v93 hole), and the
+// pre-restore editor's write must be refused with the
+// restore-naming reason while the restored balance stays
+// intact. A fresh editor after the restore succeeds; ordinary
+// revision CAS without a restore is unchanged; a second
+// restore invalidates the first-restore-era editor again; and
+// a carried epoch value in an old backup is ignored — the
+// restore always stamps one past the destination's epoch.
+{
+  const storeR = memoryStore();
+  const rtR = await createRuntime({ store: storeR, wasmUrl: wasmPath });
+  // A fresh runtime boots seeded (section C's sample dataset),
+  // so wipe first — the section M idiom — leaving an empty
+  // store at epoch 0 for the interleaving below.
+  const wipedR = await rtR.call<any>("clearAllData", { confirm: "delete everything" });
+  eq("R-A0a store wiped empty before the interleaving", wipedR.ok, true);
+  const acctR = await rtR.call<any>("addNwAccount", { name: "Epoch Bank" });
+  const snapR = await rtR.call<any>("addNwSnapshot", {
+    date: "2026-10-01", note: null,
+    balances: [{ accountId: acctR.id, balanceCents: 1000000, splits: null }],
+  });
+  check("R-A0 snapshot added", snapR.ok === true, snapR.reason);
+  const snapOf = async () =>
+    (await rtR.call<any>("getNetWorth", {})).snapshots.find((s: any) => s.id === snapR.id);
+  const nwR0 = await rtR.call<any>("getNetWorth", {});
+  eq("R-A1 editor loads at epoch 0", nwR0.restoreEpoch, 0);
+  eq("R-A2 editor loads at revision 0", (await snapOf())?.revision, 0);
+  eq("R-A3 loaded balance is the pre-restore figure", (await snapOf())?.totalCents, 1000000);
+
+  // The restore payload: an export from before any restore, so
+  // it carries no epoch key at all (the old-backup shape), with
+  // the snapshot's balance replaced by the restored figure and
+  // re-signed so the restore verifies as authenticated.
+  const payloadR = await rtR.call<any>("exportbackup", {});
+  check(
+    "R-A4 pre-restore export carries no epoch key",
+    !(payloadR.settings ?? []).some((s: any) => s.key === "nw_restore_epoch_v1"),
+  );
+  const setBalance = (p: any, cents: number) => {
+    const row = (p.nwBalances ?? []).find((b: any) => b.snapshotId === snapR.id);
+    if (row) {
+      // A non-empty split IS the balance under the restore
+      // normalisation, so the replaced figure must ride with
+      // every split part cleared, or the edit is normalised
+      // away and the check below passes vacuously.
+      row.balanceCents = cents;
+      row.splitHsaCents = null;
+      row.splitRothCents = null;
+      row.splitTaxableCents = null;
+      row.splitNonTaxableCents = null;
+      row.split529Cents = null;
+      row.splitCashCents = null;
+      row.splitPreTaxCents = null;
+    }
+    return p;
+  };
+  const restored1 = setBalance(JSON.parse(JSON.stringify(payloadR)), 2000000);
+  restored1.authenticityMac = computeBackupMac(restored1);
+  const res1 = await rtR.call<any>("restorebackup", restored1);
+  eq("R-A5 first restore ok and authenticated", [res1.ok, res1.authenticated], [true, true]);
+  eq("R-A6 epoch advanced to 1 by the restore", (await rtR.call<any>("getNetWorth", {})).restoreEpoch, 1);
+  eq("R-A7 restored snapshot restarts at revision 0", (await snapOf())?.revision, 0);
+  eq("R-A8 restored balance is intact after the restore", (await snapOf())?.totalCents, 2000000);
+
+  // Editor A: the pre-restore view (revision 0, epoch 0).
+  const staleWhole = await rtR.call<any>("updateNwSnapshot", {
+    id: snapR.id, date: "2026-10-01", note: "stale edit",
+    balances: [{ accountId: acctR.id, balanceCents: 1000000, splits: null }],
+    baseRevision: 0, baseEpoch: 0,
+  });
+  eq("R-A9 stale whole-snapshot write refused", [staleWhole.ok, staleWhole.conflict], [false, true]);
+  check(
+    "R-A10 stale refusal names the restore",
+    typeof staleWhole.reason === "string" && staleWhole.reason.includes("A backup was restored"),
+    staleWhole.reason,
+  );
+  eq("R-A11 restored balance intact after the stale write", (await snapOf())?.totalCents, 2000000);
+  eq("R-A12 revision unmoved by the stale write", (await snapOf())?.revision, 0);
+  const staleBal = await rtR.call<any>("updateNwBalance", {
+    snapshotId: snapR.id, accountId: acctR.id, balanceCents: 1000000,
+    splits: null, baseRevision: 0, baseEpoch: 0,
+  });
+  eq("R-A13 stale balance write refused", [staleBal.ok, staleBal.conflict], [false, true]);
+  check(
+    "R-A14 stale balance refusal names the restore",
+    typeof staleBal.reason === "string" && staleBal.reason.includes("A backup was restored"),
+    staleBal.reason,
+  );
+  eq("R-A15 restored balance intact after the stale balance write", (await snapOf())?.totalCents, 2000000);
+
+  // Fresh editor: reads after the restore (revision 0, epoch 1).
+  const freshWhole = await rtR.call<any>("updateNwSnapshot", {
+    id: snapR.id, date: "2026-10-01", note: "fresh edit",
+    balances: [{ accountId: acctR.id, balanceCents: 2100000, splits: null }],
+    baseRevision: 0, baseEpoch: 1,
+  });
+  eq("R-B1 fresh whole-snapshot write succeeds and bumps the revision", [freshWhole.ok, freshWhole.revision], [true, 1]);
+  eq("R-B2 fresh edit stored", (await snapOf())?.totalCents, 2100000);
+  const freshBal = await rtR.call<any>("updateNwBalance", {
+    snapshotId: snapR.id, accountId: acctR.id, balanceCents: 2200000,
+    splits: null, baseRevision: 1, baseEpoch: 1,
+  });
+  eq("R-B3 fresh balance write succeeds and bumps the revision", [freshBal.ok, freshBal.revision], [true, 2]);
+
+  // Ordinary revision CAS, no restore since: a stale revision is
+  // refused with the ordinary reason, a fresh one succeeds.
+  const ordinaryStale = await rtR.call<any>("updateNwBalance", {
+    snapshotId: snapR.id, accountId: acctR.id, balanceCents: 2100000,
+    splits: null, baseRevision: 1, baseEpoch: 1,
+  });
+  eq("R-D1 stale revision without a restore refused", [ordinaryStale.ok, ordinaryStale.conflict], [false, true]);
+  check(
+    "R-D2 ordinary refusal does not name a restore",
+    typeof ordinaryStale.reason === "string" && !ordinaryStale.reason.includes("A backup was restored"),
+    ordinaryStale.reason,
+  );
+  const ordinaryFresh = await rtR.call<any>("updateNwBalance", {
+    snapshotId: snapR.id, accountId: acctR.id, balanceCents: 2300000,
+    splits: null, baseRevision: 2, baseEpoch: 1,
+  });
+  eq("R-D3 fresh revision without a restore succeeds", [ordinaryFresh.ok, ordinaryFresh.revision], [true, 3]);
+
+  // Second restore: a MAC-stripped (pre-MAC) payload carrying a
+  // STALE epoch value and a new balance. The carried value must
+  // be ignored — the restore stamps one past the destination's
+  // epoch (1 -> 2), and the first-restore-era editor is refused.
+  const payloadR2 = await rtR.call<any>("exportbackup", {});
+  const stripped2 = setBalance(JSON.parse(JSON.stringify(payloadR2)), 3000000);
+  delete stripped2.authenticityMac;
+  const epochRow = (stripped2.settings ?? []).find((s: any) => s.key === "nw_restore_epoch_v1");
+  check("R-C0 second export carries the stamped epoch", epochRow?.value === "1", String(epochRow?.value));
+  if (epochRow) epochRow.value = "0";
+  const res2 = await rtR.call<any>("restorebackup", stripped2);
+  eq("R-C1 second restore ok, labelled unauthenticated", [res2.ok, res2.authenticated], [true, false]);
+  eq("R-C2 epoch advanced to 2 despite the carried stale value", (await rtR.call<any>("getNetWorth", {})).restoreEpoch, 2);
+  eq("R-C3 second restored balance stored", (await snapOf())?.totalCents, 3000000);
+  const era1Stale = await rtR.call<any>("updateNwSnapshot", {
+    id: snapR.id, date: "2026-10-01", note: "first-restore-era edit",
+    balances: [{ accountId: acctR.id, balanceCents: 2300000, splits: null }],
+    baseRevision: 3, baseEpoch: 1,
+  });
+  eq("R-C4 first-restore-era write refused after the second restore", [era1Stale.ok, era1Stale.conflict], [false, true]);
+  check(
+    "R-C5 second-restore refusal names the restore",
+    typeof era1Stale.reason === "string" && era1Stale.reason.includes("A backup was restored"),
+    era1Stale.reason,
+  );
+  eq("R-C6 second restored balance intact", (await snapOf())?.totalCents, 3000000);
+  const freshAfterSecond = await rtR.call<any>("updateNwSnapshot", {
+    id: snapR.id, date: "2026-10-01", note: "second-restore-era edit",
+    balances: [{ accountId: acctR.id, balanceCents: 3100000, splits: null }],
+    baseRevision: 0, baseEpoch: 2,
+  });
+  eq("R-C7 fresh editor after the second restore succeeds", [freshAfterSecond.ok, freshAfterSecond.revision], [true, 1]);
+}
+
+// ---------- S. Legacy bucket field at restore preflight (contract v94, F6) ----------
+// The reviewer's reproduction through the real actions: a restore
+// carrying an undecryptable enc:v1:-prefixed bucket must be
+// refused at preflight with the prior data intact, while valid
+// legacy forms — a plaintext bucket, a legacy no-AAD ciphertext
+// bucket, and a field-bound ciphertext bucket — restore and
+// export again afterwards. The bucket is the one backup field
+// the restore stores verbatim while the export decrypts, so it
+// is the one field whose poisoned value an accepted restore
+// would carry into every later export.
+{
+  const storeS = memoryStore();
+  const rtS = await createRuntime({ store: storeS, wasmPath });
+  await rtS.call<any>("clearAllData", { confirm: "delete everything" });
+  await rtS.call<any>("getDashboard", { month: "2027-01" });
+  const keyBase64S = storeS.get(ENC_KEY_KEY) ?? "";
+  check("S0 packaged encryption key present", keyBase64S.length > 0);
+  const acctS = await rtS.call<any>("addNwAccount", { name: "Bucket Bank" });
+  const snapS = await rtS.call<any>("addNwSnapshot", {
+    date: "2026-10-01", note: null,
+    balances: [{ accountId: acctS.id, balanceCents: 4000000, splits: null }],
+  });
+  check("S0a snapshot added", snapS.ok === true, snapS.reason);
+  const totalOf = async () =>
+    (await rtS.call<any>("getNetWorth", {})).snapshots.find((s: any) => s.id === snapS.id)?.totalCents;
+  const priorTotal = await totalOf();
+  eq("S0b prior total is the entered figure", priorTotal, 4000000);
+
+  // Ciphertext crafters in the two forms the export reader
+  // accepts: legacy no-AAD (pre-v91) and field-bound under
+  // the bucket field's own context — the same context literal
+  // the export decrypt site uses.
+  const importBucketKey = async () => {
+    const raw = Buffer.from(keyBase64S, "base64");
+    return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt"]);
+  };
+  const encryptBucket = async (plain: string, bound: boolean): Promise<string> => {
+    const ck = await importBucketKey();
+    const nonce = new Uint8Array(12);
+    crypto.getRandomValues(nonce);
+    const params: AesGcmParams = bound
+      ? {
+          name: "AES-GCM", iv: nonce,
+          additionalData: new TextEncoder().encode("fp-aad-v1:nw_accounts.bucket"),
+        }
+      : { name: "AES-GCM", iv: nonce };
+    const ct = new Uint8Array(
+      await crypto.subtle.encrypt(params, ck, new TextEncoder().encode(plain)),
+    );
+    const combined = new Uint8Array(nonce.length + ct.length);
+    combined.set(nonce, 0);
+    combined.set(ct, nonce.length);
+    return "enc:v1:" + Buffer.from(combined).toString("base64");
+  };
+  const withBucket = (payload: any, bucket: string) => {
+    const p = JSON.parse(JSON.stringify(payload));
+    const row = (p.nwAccounts ?? []).find((a: any) => a.id === acctS.id);
+    if (row) row.bucket = bucket;
+    p.authenticityMac = computeBackupMac(p);
+    return p;
+  };
+  const exportedBucket = async (): Promise<string | undefined> => {
+    const p = await rtS.call<any>("exportbackup", {});
+    return p.nwAccounts.find((a: any) => a.id === acctS.id)?.bucket;
+  };
+
+  // S-A: the reviewer's poisoned value is refused, names the
+  // bucket, and leaves the prior data and later exports intact.
+  const poisoned = withBucket(await rtS.call<any>("exportbackup", {}), "enc:v1:!");
+  const refusedS = await rtS.call<any>("restorebackup", poisoned);
+  eq("S1 poisoned bucket restore refused", refusedS.ok, false);
+  check(
+    "S2 poisoned refusal names the bucket field",
+    typeof refusedS.reason === "string" && refusedS.reason.includes("bucket"),
+    refusedS.reason,
+  );
+  eq("S3 prior total intact after the refused restore", await totalOf(), priorTotal);
+  eq("S4 export still works after the refused restore", await exportedBucket(), "Unbucketed");
+
+  // S-B: a plaintext legacy bucket restores and exports again.
+  const plainS = await rtS.call<any>("restorebackup", withBucket(await rtS.call<any>("exportbackup", {}), "Taxable"));
+  eq("S5 plaintext bucket restore ok", plainS.ok, true);
+  eq("S6 plaintext bucket exports again", await exportedBucket(), "Taxable");
+
+  // S-C: a legacy no-AAD ciphertext bucket restores and exports
+  // to its plaintext tag.
+  const legacyBucket = await encryptBucket("Roth", false);
+  const legacyS = await rtS.call<any>("restorebackup", withBucket(await rtS.call<any>("exportbackup", {}), legacyBucket));
+  eq("S7 legacy ciphertext bucket restore ok", legacyS.ok, true);
+  eq("S8 legacy ciphertext bucket exports to its tag", await exportedBucket(), "Roth");
+
+  // S-D: a field-bound ciphertext bucket restores and exports
+  // to its plaintext tag.
+  const boundBucket = await encryptBucket("Cash", true);
+  const boundS = await rtS.call<any>("restorebackup", withBucket(await rtS.call<any>("exportbackup", {}), boundBucket));
+  eq("S9 bound ciphertext bucket restore ok", boundS.ok, true);
+  eq("S10 bound ciphertext bucket exports to its tag", await exportedBucket(), "Cash");
+
+  // S-E: a second undecryptable value class (invalid base64
+  // after the prefix) refuses the same way.
+  const badB64 = withBucket(await rtS.call<any>("exportbackup", {}), "enc:v1:%%%");
+  const refusedB64 = await rtS.call<any>("restorebackup", badB64);
+  eq("S11 invalid-base64 bucket restore refused", refusedB64.ok, false);
+  check(
+    "S12 invalid-base64 refusal names the bucket field",
+    typeof refusedB64.reason === "string" && refusedB64.reason.includes("bucket"),
+    refusedB64.reason,
+  );
+  eq("S13 prior total intact after the second refusal", await totalOf(), priorTotal);
 }
 
 console.log(`\n${checks - failures}/${checks} harness checks passed`);

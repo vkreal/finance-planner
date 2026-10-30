@@ -4824,8 +4824,9 @@ export function Playground() {
                    TWO of the pre-v69 floating labels return — the
                    LANDING bracket's top label (the first bracket
                    whose top is at or above the ordinary taxable
-                   total, in the pre-v69 "rate · room left" idiom,
-                   from the same marker figures the heading's ⓘ
+                   total; contract v89: the bracket rate only, the
+                   pre-v69 "rate · room left" tail removed — from
+                   the same marker figures the heading's ⓘ
                    status string uses) and the "0% gains end" label
                    at its tick, in its pre-v69 form with its small
                    ⓘ. No labels for passed or higher brackets.
@@ -4843,25 +4844,12 @@ export function Playground() {
                 );
                 const landingMarker =
                   landingIndex >= 0 ? (markers[landingIndex] ?? null) : null;
-                /* Landing-bracket explainer (contract v82): ONE
-                   sentence composed live from the priced result —
-                   the ordinary taxable total, the landing
-                   bracket's rate, the room left in it, and the
-                   next bracket's rate when there is a next
-                   bracket (the landing bracket is the last one
-                   modelled when there is none, so the sentence
-                   names the room in it instead of a next
-                   bracket it does not have — still one
-                   sentence, nothing hard-coded). The label
-                   text itself is unchanged. */
-                const nextMarker =
-                  landingIndex >= 0 ? markers[landingIndex + 1] : undefined;
-                const landingExplainerText =
-                  landingMarker == null
-                    ? null
-                    : nextMarker != null
-                      ? `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left before the ${nextMarker.rate}% bracket starts.`
-                      : `Your ${fmtDollars(ordinaryTaxable)} of ordinary income lands in the ${landingMarker.rate}% bracket, with ${fmtDollars(landingMarker.room)} of room left in it.`;
+                /* Contract v89: the landing label shows the
+                   bracket rate only — the "· $X left" tail and
+                   the v82 ⓘ beside it are removed at the user's
+                   direction (the room figure confused more
+                   than it helped); position, anchoring, font,
+                   colour, and stagger behaviour are unchanged. */
                 const showGainsEndLabel = gainsTotal > 0;
                 /* Axis-row stacking (contract v76): whether the
                    cliff and buffer axis labels sit close enough
@@ -5011,52 +4999,25 @@ export function Playground() {
                             </span>
                           </div>
                         )}
-                        {landingMarker != null &&
-                          landingExplainerText != null && (
+                        {landingMarker != null && (
                             <div className="relative h-[18px]">
-                              {/* Landing-bracket ⓘ (contract v82):
-                                  the shared InfoNote beside the
-                                  label, on the same gate as the
-                                  label and following its position
-                                  — the label text is unchanged and
-                                  stays aria-hidden (its figures
-                                  are already in the chart's
-                                  accessible description), while
-                                  the ⓘ button itself stays
-                                  reachable. The bubble opens
-                                  ABOVE the label, lifted clear of
-                                  the gains-end row above it when
-                                  that row is present (24px: the
-                                  18px row plus the gap), so it can
-                                  never cover the Buffer label row or
-                                  the bar below; it opens to the
-                                  left when the tick sits right of
-                                  centre, keeping the 224px bubble
-                                  inside the viewport at phone
-                                  width. Plain absolute bubble, not
-                                  the viewport-clamped variant —
-                                  the centring transform on this
-                                  label's wrapper would capture
-                                  fixed positioning (the v79
-                                  white-line lesson). */}
+                              {/* Landing-bracket label (contract
+                                  v89): rate only — the "· $X left"
+                                  tail and the v82 ⓘ are removed;
+                                  the label stays aria-hidden (its
+                                  figure is already in the chart's
+                                  accessible description). */}
                               <span
                                 className="absolute inline-flex items-center whitespace-nowrap"
                                 style={{
                                   color: landingMarker.color,
                                   left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
                                   transform: "translateX(-50%)",
-                                  /* Lift this label's stacking context
-                                     above the sticky play strip
-                                     (z-30): the centring transform
-                                     traps the bubble's own z-40
-                                     inside this span, so without a
-                                     z-index here the strip paints
-                                     over the top lines of an
-                                     above-opening bubble when the
-                                     chart sits high in the
-                                     viewport. The label itself sits
-                                     below the strip, so nothing
-                                     else moves. */
+                                  /* Stacking lift retained unchanged
+                                     from the v82 ⓘ (z-31, above
+                                     the z-30 sticky play strip):
+                                     removing the ⓘ must not move
+                                     the label's paint order. */
                                   zIndex: 31,
                                 }}
                               >
@@ -5064,22 +5025,8 @@ export function Playground() {
                                   aria-hidden="true"
                                   className="tnum text-[11px]"
                                 >
-                                  {landingMarker.rate}% ·{" "}
-                                  {landingMarker.room > 0.5
-                                    ? `${fmtDollars(landingMarker.room)} left`
-                                    : "filled"}
+                                  {landingMarker.rate}%
                                 </span>
-                                <InfoNote
-                                  text={landingExplainerText}
-                                  ariaLabel="About the landing bracket label"
-                                  placement="above"
-                                  liftPx={showGainsEndLabel ? 24 : 0}
-                                  align={
-                                    taxX(landingMarker.to) > 40
-                                      ? "right"
-                                      : "left"
-                                  }
-                                />
                               </span>
                             </div>
                           )}
