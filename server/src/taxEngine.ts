@@ -1703,6 +1703,20 @@ export function acaCreditFor(args: {
   // the 2027 table likewise prices for coverage year 2027
   // exactly.
   projected?: boolean;
+  // Contract v95 (F1): the coverage year whose
+  // applicable-percentage table prices the credit. Absent,
+  // it is coverageYear — the one parameter served both the
+  // guideline row and the table, and every existing caller
+  // prices exactly as before. A caller may split the two:
+  // coverageYear keeps governing the guideline row (the
+  // lookback below), the cliff, and the cliff's start year,
+  // while tableYear governs ONLY the acaTableFor lookup.
+  // The Playground's "newest" convention is the one split
+  // caller: it relabels coverageYear so the lookback lands
+  // on the newest guideline row, and passes the real
+  // coverage year as tableYear so the relabel never moves
+  // the percentage table off the real year.
+  tableYear?: number;
 }): AcaCreditResult {
   // Coverage-year credits use the PRIOR year's poverty guidelines.
   const fpl = fplFor(args.householdSize, args.coverageYear - 1);
@@ -1717,7 +1731,7 @@ export function acaCreditFor(args: {
   if (overCliff || pctFpl < 100) {
     return { credit: 0, pctFpl: r2(pctFpl), applicablePct: 0, fpl, cliff, overCliff };
   }
-  const bands = acaTableFor(args.coverageYear, {
+  const bands = acaTableFor(args.tableYear ?? args.coverageYear, {
     projected: args.projected ?? false,
   });
   const lows = [0, 133, 150, 200, 250, 300];

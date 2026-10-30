@@ -5570,13 +5570,17 @@ export function Playground() {
                 const acaHasCliff = acaApplies && pgYearNum >= 2026;
                 const acaCrossed = acaHasCliff && pg.aca.overCliff;
                 const acaCliff = pg.aca.cliff ?? 0;
+                // The line under the priced tier, graded under
+                // the PREMIUM year's law row — the same row the
+                // server grades pg.irmaa.tier under (contract
+                // v97), never the priced year's row.
                 const irmaaLine =
                   pg.irmaa.applies && pg.irmaa.tier >= 1
                     ? irmaaTierUpTo(
                         pg.irmaa.tier - 1,
                         pgFiling,
-                        lawForYear(pgYearNum),
-                        pgYearNum,
+                        lawForYear(pg.irmaa.premiumYear),
+                        pg.irmaa.premiumYear,
                         0,
                       )
                     : null;

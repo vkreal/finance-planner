@@ -3110,7 +3110,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 94;
+export const API_CONTRACT_VERSION = 99;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -10799,7 +10799,9 @@ export const Actions = {
       });
       if (!built) return { ...empty, baselineKind: baselineRec.kind };
       const { inputs, stocks, expected, vol } = built;
-      const years = Math.max(0, inputs.endAge - inputs.currentAge);
+      // Inclusive horizon (F6, contract v99): one return per
+      // priced year, the end-age year included.
+      const years = Math.max(0, inputs.endAge - inputs.currentAge + 1);
       const projPath = simulateRetirement(
         inputs,
         Array.from({ length: years }, () => expected),

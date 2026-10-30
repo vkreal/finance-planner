@@ -1055,7 +1055,10 @@ export function RetirementCalc() {
   // the numbers on screen would silently not be the saved plan.
   const expected = (parseNum(expectedPct) ?? blendedExpected(stocks)) / 100;
   const vol = Math.max(0, (parseNum(volPct) ?? blendedVol(stocks)) / 100);
-  const planYears = inputs ? inputs.endAge - inputs.currentAge : 0;
+  // Inclusive horizon (F6, contract v99): the priced years run
+  // from the current age through the end age, so the count is
+  // the age span plus one — the same count the engines run.
+  const planYears = inputs ? inputs.endAge - inputs.currentAge + 1 : 0;
 
   /* ----- Engine C: projection ----- */
   const projection = useMemo(() => {
@@ -1431,7 +1434,7 @@ export function RetirementCalc() {
       // Projection result runs for Current inputs: the same
       // simulate engine at the scenario's own expected return
       // held steady — no different parameters.
-      const projYears = built.inputs.endAge - built.inputs.currentAge;
+      const projYears = built.inputs.endAge - built.inputs.currentAge + 1;
       const projPath = simulate(
         built.inputs,
         Array.from({ length: projYears }, () => built.expected),
@@ -3185,7 +3188,7 @@ export function RetirementCalc() {
               <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
                 <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Median final-year spending</p>
                 <p className="tnum display mt-1.5 text-xl font-semibold">{fmt(historical.medianFinalYearSpending)}</p>
-                <p className="mt-1 text-xs text-[var(--dim)]">Median across runs, in the final year (age {inputs.endAge - 1})</p>
+                <p className="mt-1 text-xs text-[var(--dim)]">Median across runs, in the final year (age {inputs.endAge})</p>
               </div>
             )}
             <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
@@ -3394,7 +3397,7 @@ export function RetirementCalc() {
                 <div className="rounded-[var(--radius)] border border-[var(--border)] p-3.5">
                   <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Median final-year spending</p>
                   <p className="tnum display mt-1.5 text-xl font-semibold">{fmt(monteCarlo.medianFinalYearSpending)}</p>
-                  <p className="mt-1 text-xs text-[var(--dim)]">Median across runs, in the final year (age {inputs.endAge - 1})</p>
+                  <p className="mt-1 text-xs text-[var(--dim)]">Median across runs, in the final year (age {inputs.endAge})</p>
                 </div>
               )}
               {inputs.strategy === "percent" && monteCarlo.lowestSpending != null && (
