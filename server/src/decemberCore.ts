@@ -4,7 +4,7 @@ import {
   solvePlaygroundAcaCliffFill,
   type PlaygroundYearInputs,
 } from "./rothOptimizer";
-import type { FilingStatus } from "./taxEngine";
+import type { EducationStudent, FilingStatus } from "./taxEngine";
 import {
   decideRothBlobWrite,
   parseRothBlobRevision,
@@ -189,6 +189,34 @@ export const decemberState = z.object({
   itemizedSaltPaid: z.number().finite().min(0),
   itemizedCharitable: z.number().finite().min(0),
   itemizedOther: z.number().finite().min(0),
+  // Education credits (contract v103, round-14 fix F3):
+  // the December tax year's per-student qualified
+  // education expenses, in the SAME shape the Playground
+  // prices — each entry is one student's qualified
+  // expenses in dollars plus the household's own
+  // aotcEligible mark (entered, never inferred from 529
+  // balances, the college-years span, or any other saved
+  // field). The shared priceYear education step
+  // (educationCreditsFor in taxEngine) is the only credit
+  // math; this field only carries the entered students
+  // into it. Null = no education input yet (a blob written
+  // before this field existed parses a missing key as
+  // null): no students are priced, the credits are $0,
+  // and the year prices exactly as before this build —
+  // with the settlement carrying the visible
+  // excludes-education-credits qualification instead of
+  // presenting itself as final. An empty list is an
+  // entered answer (the household entered, then cleared,
+  // its students) and likewise prices $0 of credits.
+  educationStudents: z
+    .array(
+      z.object({
+        expenses: z.number().finite().min(0),
+        aotcEligible: z.boolean(),
+      }),
+    )
+    .max(12)
+    .nullable(),
   // Strays checklist (household-neutral wording in the view).
   strayCapDist: decemberStray,
   strayK1: decemberStray,
@@ -207,6 +235,25 @@ export const decemberState = z.object({
   // a portion of the total, never an amount on top of it;
   // the assembly clamps it to the stray's total).
   strayJanPaidQualifiedAmount: z.number().finite().min(0),
+  // The capital-gain-distribution PORTION of the
+  // January-paid stray's total (contract v104, round-14
+  // fix F5): a distribution the fund designates as a
+  // capital gain dividend is treated as a long-term
+  // capital gain (§852(b)(3)), not as an ordinary
+  // dividend, even when §852(b)(7) deems it received on
+  // December 31 because it was declared in October–
+  // December and paid in January. Like the qualified
+  // portion above it is a portion of the total, never an
+  // amount on top of it: the assembly clamps it to the
+  // total, rides it on the gains stack (the same
+  // totalGain → stockSold/stockBasis → ltcg path the
+  // capital-distribution ranges and stray use), and
+  // removes it from ordinary dividends, so the qualified
+  // split applies to the ordinary remainder only. A blob
+  // written before this field existed parses a missing
+  // key as $0 — the whole January-paid total then rides
+  // ordinary dividends exactly as before this build.
+  strayJanPaidCapGainAmount: z.number().finite().min(0),
   strayDivInt: decemberStray,
   strayPlannedSales: decemberStray,
   // Return of capital, split by tax character (December
@@ -289,6 +336,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     itemizedSaltPaid: 0,
     itemizedCharitable: 0,
     itemizedOther: 0,
+    educationStudents: null,
     strayCapDist: strayDefault(),
     strayK1: strayDefault(),
     strayTaxExempt: strayDefault(),
@@ -298,6 +346,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     strayCutoff: strayDefault(),
     strayJanPaid: strayDefault(),
     strayJanPaidQualifiedAmount: 0,
+    strayJanPaidCapGainAmount: 0,
     strayDivInt: strayDefault(),
     strayPlannedSales: strayDefault(),
     strayROC: strayDefault(),
@@ -549,6 +598,25 @@ export function parseDecemberState(
   nonNeg("itemizedSaltPaid", (n) => (out.itemizedSaltPaid = n));
   nonNeg("itemizedCharitable", (n) => (out.itemizedCharitable = n));
   nonNeg("itemizedOther", (n) => (out.itemizedOther = n));
+  // Education students (v103): a missing key or an explicit
+  // null reads as NO INPUT YET (null — the default above);
+  // an array reads as entered, entry by entry, keeping only
+  // well-formed entries (finite non-negative expenses and a
+  // boolean mark), capped at the schema's 12 — so a blob
+  // written before this field existed prices exactly as it
+  // did, and a stored list round-trips intact.
+  if (Array.isArray(p.educationStudents)) {
+    const rows: EducationStudent[] = [];
+    for (const rawRow of p.educationStudents as unknown[]) {
+      if (rawRow == null || typeof rawRow !== "object" || Array.isArray(rawRow)) continue;
+      const row = rawRow as Record<string, unknown>;
+      const expenses = num(row.expenses);
+      if (expenses == null || expenses < 0 || typeof row.aotcEligible !== "boolean") continue;
+      rows.push({ expenses, aotcEligible: row.aotcEligible });
+      if (rows.length >= 12) break;
+    }
+    out.educationStudents = rows;
+  }
   stray("strayCapDist", (s) => (out.strayCapDist = s));
   stray("strayK1", (s) => (out.strayK1 = s));
   stray("strayTaxExempt", (s) => (out.strayTaxExempt = s));
@@ -560,6 +628,14 @@ export function parseDecemberState(
   nonNeg(
     "strayJanPaidQualifiedAmount",
     (n) => (out.strayJanPaidQualifiedAmount = n),
+  );
+  // Capital-gain portion (v104): a missing key (every blob
+  // written before this field existed) reads as the inert
+  // $0 default above, so the January-paid total prices
+  // exactly as it did before this build.
+  nonNeg(
+    "strayJanPaidCapGainAmount",
+    (n) => (out.strayJanPaidCapGainAmount = n),
   );
   stray("strayDivInt", (s) => (out.strayDivInt = s));
   stray("strayPlannedSales", (s) => (out.strayPlannedSales = s));
@@ -613,6 +689,12 @@ export type DecemberRecordFacts = {
   primarySoleBeneficiaryOfSpouse?: boolean | null;
   pretaxBalancePrimary?: number | null;
   pretaxBalanceSpouse?: number | null;
+  // The Tax Plan record's entered education students FOR
+  // the December tax year, already converted to December
+  // units (dollars, the Playground shape — the record's
+  // own per-year cents entries filtered to this year).
+  // Absent / null = the record does not answer.
+  educationStudents?: EducationStudent[] | null;
 };
 
 /* Round-4 fix, round-5 extension — load-time resolution,
@@ -646,6 +728,11 @@ export type DecemberRecordFacts = {
      last-resort fallback. A blob WITH an explicit split
      always governs.
 
+   · Education students (v103): a console with no
+     education input yet (educationStudents null) resolves
+     the record's entered students for the December tax
+     year; any entered console list governs.
+
    Pure: it returns the effective state for this open
    and writes nothing. Round-5 fix 1b: the resolution is
    an overlay, never an input to a save — the client
@@ -673,6 +760,21 @@ export function resolveDecemberStateAtLoad(
     out = {
       ...out,
       primarySoleBeneficiaryOfSpouse: facts.primarySoleBeneficiaryOfSpouse,
+    };
+  }
+  // Education students (v103): a console with NO education
+  // input yet (educationStudents null — every blob written
+  // before this field existed, and a fresh console) resolves
+  // the record's entered students for the December tax year
+  // as an overlay, exactly like the beneficiary fact above:
+  // displayed and priced, never saved as the console's own
+  // until the user edits the education controls here. A
+  // console value that IS entered (any list, even empty)
+  // always governs and is never overwritten.
+  if (out.educationStudents == null && facts.educationStudents != null) {
+    out = {
+      ...out,
+      educationStudents: facts.educationStudents,
     };
   }
   if (!out.pretaxSplitExplicit && out.pretaxBalance != null) {
@@ -759,6 +861,13 @@ export type DecemberStoredProvenance = {
   legacyBeneficiaryAnswerUnconfirmed: boolean;
   legacyRocSplitUnconfirmed: boolean;
   legacyJanPaidSplitUnconfirmed: boolean;
+  // Education students (v103): the stored blob's own
+  // entered students (null = no input yet), preserved
+  // through saves the same way the beneficiary fact is —
+  // a record-resolved overlay never becomes the console's
+  // saved answer unless the user edits the education
+  // controls here.
+  educationStudents: EducationStudent[] | null;
 };
 
 export function decemberStoredProvenanceOf(
@@ -774,6 +883,7 @@ export function decemberStoredProvenanceOf(
       state.legacyBeneficiaryAnswerUnconfirmed,
     legacyRocSplitUnconfirmed: state.legacyRocSplitUnconfirmed,
     legacyJanPaidSplitUnconfirmed: state.legacyJanPaidSplitUnconfirmed,
+    educationStudents: state.educationStudents,
   };
 }
 
@@ -805,10 +915,14 @@ export function decemberStateForSave(
     balances: boolean;
     rocCharacter?: boolean;
     janPaidCharacter?: boolean;
+    education?: boolean;
   },
 ): DecemberState {
   return {
     ...display,
+    educationStudents: edited.education
+      ? display.educationStudents
+      : stored.educationStudents,
     primarySoleBeneficiaryOfSpouse: edited.beneficiary
       ? display.primarySoleBeneficiaryOfSpouse
       : stored.primarySoleBeneficiaryOfSpouse,
@@ -990,11 +1104,17 @@ export function decemberNullableMoneyFromFormValue(s: string): number | null {
    Return of capital reclassified as an ordinary dividend
    rides the dividends total instead (its actual character).
    The settled-review additions flow the same way: a fund
-   dividend declared in October–December and paid in January
-   is deemed received December 31 (§852(b)(7)), so it rides
-   the dividends total, with its qualified portion riding
-   the qualified-dividends subset like the year-to-date
-   pair; money-market dividends from a cash sleeve and
+   distribution declared in October–December and paid in
+   January is deemed received December 31 (§852(b)(7)), so
+   its ordinary part rides the dividends total, with its
+   qualified portion riding the qualified-dividends subset
+   like the year-to-date pair — and (v104, F5) the part the
+   fund designates as a capital gain distribution rides
+   the capital result above instead, as a long-term gain
+   (§852(b)(3)), removed from the dividends total so it is
+   never counted twice and Washington's excise (which
+   prices the long-term gain and never a dividend) sees
+   it; money-market dividends from a cash sleeve and
    savings-bond interest ride interest; and the AGI reducers
    that actually work (deductible HSA contributions, pre-tax
    deferrals not already reflected in the wages above)
@@ -1010,19 +1130,38 @@ export function decemberNullableMoneyFromFormValue(s: string): number | null {
    netted, never double-counted. The coverage-month stray
    carries NO income: it reduces the case's final allowable
    credit instead (see computeDecemberProjection), because
-   eligibility is monthly. */
+   eligibility is monthly. The entered education students
+   (v103) ride the engine's education dial unchanged, so
+   the shared §25A step prices them — the nonrefundable
+   portion inside the federal tax, the refundable AOTC
+   portion reported on the result and credited in the
+   settlement (see computeDecemberProjection). */
 export function decemberCaseInputs(
   state: DecemberState,
   kind: DecemberCaseKind,
   draw: number,
 ): PlaygroundYearInputs {
   const joint = state.filingStatus === "mfj";
+  const janPaid = strayAmount(state.strayJanPaid);
+  // The capital-gain-distribution portion of the
+  // January-paid total (v104, F5): a portion of that
+  // total, clamped to it, never an amount on top of it.
+  // It rides the gains stack below (its §852(b)(3)
+  // character — a long-term capital gain), and it is
+  // REMOVED from the ordinary-dividends total, so no
+  // dollar is counted twice.
+  const janPaidCapGain =
+    janPaid > 0
+      ? Math.min(janPaid, Math.max(0, state.strayJanPaidCapGainAmount))
+      : 0;
+  const janPaidOrdinary = r2(janPaid - janPaidCapGain);
   const totalGain = r2(
     state.ytdCapitalGain +
       state.remCapDist[kind] +
       strayAmount(state.strayCapDist) +
       strayAmount(state.strayPlannedSales) +
-      strayAmount(state.strayROC) -
+      strayAmount(state.strayROC) +
+      janPaidCapGain -
       strayAmount(state.strayLossHarvest),
   );
   const otherOrdinary = r2(
@@ -1032,14 +1171,18 @@ export function decemberCaseInputs(
       strayAmount(state.straySeverance) -
       strayAmount(state.strayAgiReducers),
   );
-  const janPaid = strayAmount(state.strayJanPaid);
   // The qualified portion of the January-paid total: a
-  // portion of that total (validated ≤ the total here, the
-  // same clamp the year-to-date pair's split applies), never
-  // an amount on top of it.
+  // portion of the ORDINARY REMAINDER only (v104 — the
+  // capital-gain portion above is a gain, never a
+  // dividend, qualified or otherwise), validated ≤ that
+  // remainder here, the same clamp the year-to-date
+  // pair's split applies, never an amount on top of it.
   const janPaidQualified =
-    janPaid > 0
-      ? Math.min(janPaid, Math.max(0, state.strayJanPaidQualifiedAmount))
+    janPaidOrdinary > 0
+      ? Math.min(
+          janPaidOrdinary,
+          Math.max(0, state.strayJanPaidQualifiedAmount),
+        )
       : 0;
   const hasSplitBalance =
     state.pretaxBalancePrimary != null || state.pretaxBalanceSpouse != null;
@@ -1056,7 +1199,7 @@ export function decemberCaseInputs(
     ordinaryDividends: r2(
       state.ytdOrdinaryDividends +
         state.remOrdinaryDividends[kind] +
-        janPaid +
+        janPaidOrdinary +
         strayAmount(state.strayROCOrdinary),
     ),
     otherOrdinary,
@@ -1093,7 +1236,13 @@ export function decemberCaseInputs(
     itemizedSaltPaid: state.itemizedSaltPaid,
     itemizedCharitable: state.itemizedCharitable,
     itemizedOther: state.itemizedOther,
-    educationStudents: null,
+    // Education students (v103): the console's entered
+    // students for this tax year ride the engine's own
+    // education dial, so the shared priceYear §25A step
+    // prices them exactly as it prices a Playground year —
+    // no credit math lives here. Null (no input yet) and
+    // an empty list both price $0 of credits.
+    educationStudents: state.educationStudents ?? null,
   };
 }
 
@@ -1151,6 +1300,39 @@ export type DecemberCaseResult = {
   repaymentExposure: number;
   federalTaxAtHeadline: number;
   totalTaxAtHeadline: number;
+  // Education credits at the headline draw (v103), read
+  // straight off the engine result for the priced year —
+  // the shared priceYear §25A step's own figures, no new
+  // pricing here. educationAotc / educationLlc are the
+  // tentative credits after the §25A(d) phase-out under
+  // the winning allocation (educationChoice names it);
+  // educationNonrefundable is the portion already applied
+  // inside federalTaxAtHeadline (it reduced the income
+  // tax, never below $0); educationRefundable is the
+  // refundable AOTC portion — reported by the engine
+  // separately and NEVER netted into federalTax or
+  // totalTax — which the settlement below credits beside
+  // the ACA premium credit, exactly as the plan's score
+  // identity does. All $0 / "none" when no student with
+  // expenses is entered.
+  educationAotcAtHeadline: number;
+  educationLlcAtHeadline: number;
+  educationChoiceAtHeadline: "aotc" | "llc" | "none";
+  educationNonrefundableAtHeadline: number;
+  educationRefundableAtHeadline: number;
+  // True when at least one entered student carries
+  // qualified expenses for the year (the credits above
+  // were priced from entered expenses — whether or not
+  // the phase-out or the liability left them at $0).
+  hasEducationExpenses: boolean;
+  // The settlement qualification (v103): true when NO
+  // education expenses are entered, so no education
+  // credit is priced and the settlement EXCLUDES
+  // education credits. The console renders this beside
+  // every settlement figure in that state — a settlement
+  // is never presented as final while the credit is
+  // unpriced.
+  excludesEducationCredits: boolean;
   // Projected-tax-bill readouts (contract v50): the same
   // priced year at the headline draw, read straight off the
   // engine result — no new pricing. totalIncomeAtHeadline
@@ -1169,8 +1351,13 @@ export type DecemberCaseResult = {
   // no client ever does this arithmetic: total tax, less
   // the part of the final credit not already advanced
   // (creditStillDue), plus any excess advance credit to
-  // repay (excessAptcRepayment) — equivalently totalTax −
-  // effective final credit + APTC taken whenever the
+  // repay (excessAptcRepayment), less the refundable
+  // education credit (educationRefundableAtHeadline —
+  // credited beside the ACA premium credit, the plan
+  // score identity's treatment; the nonrefundable
+  // education portion is already inside the tax) —
+  // equivalently totalTax − effective final credit +
+  // APTC taken − refundable education credit whenever the
   // effective credit is known and the repayment is modeled.
   // Null only when the repayment is unmodeled (a pre-2026
   // year whose APTC exceeds its effective final credit) or
@@ -1313,6 +1500,15 @@ export function computeDecemberProjection(
   const zeroBalanceBinds = uncappedDraw != null && uncappedDraw > 0;
 
   const coverageReduction = strayAmount(state.strayCoverage);
+  // Education coverage (v103): expenses are entered when at
+  // least one entered student carries a positive amount —
+  // a null list (no input yet), an empty list, and a list of
+  // $0 rows all price $0 of credits, and the first of those
+  // (and any $0-only entry) leaves the settlement carrying
+  // the excludes-education-credits qualification below.
+  const hasEducationExpenses = (state.educationStudents ?? []).some(
+    (s) => s.expenses > 0,
+  );
   const cases: DecemberCaseResult[] = DECEMBER_CASE_KINDS.map((kind, i) => {
     const zero = zeroResults[i]!;
     const atHeadline = pricePlaygroundYear(
@@ -1381,21 +1577,26 @@ export function computeDecemberProjection(
             ? 0
             : null;
     // The projected tax bill's net (contract v50, round-7
-    // fix B): the filing settlement for this case at the
-    // headline draw — see the field's note on
-    // DecemberCaseResult. Null whenever the repayment is
-    // null, so no single figure is shown for a case whose
-    // repayment is unmodeled or whose credit is unpriced;
-    // netSettleNote then names which of the two it is (the
-    // unpriced reason wins whenever the credit itself is
-    // unpriced, in any year).
+    // fix B; v103 for the education term): the filing
+    // settlement for this case at the headline draw — see
+    // the field's note on DecemberCaseResult. The refundable
+    // education credit is credited beside the ACA premium
+    // credit (the plan score identity's treatment): it
+    // reduces the settlement dollar for dollar and is never
+    // netted into the floored federal tax itself. Null
+    // whenever the repayment is null, so no single figure is
+    // shown for a case whose repayment is unmodeled or whose
+    // credit is unpriced; netSettleNote then names which of
+    // the two it is (the unpriced reason wins whenever the
+    // credit itself is unpriced, in any year).
     const netSettleAtHeadline: number | null =
       excessAptcRepayment == null
         ? null
         : r2(
             atHeadline.totalTax -
               (creditStillDue ?? 0) +
-              excessAptcRepayment,
+              excessAptcRepayment -
+              atHeadline.educationRefundable,
           );
     const netSettleNote: string | null =
       netSettleAtHeadline != null
@@ -1421,6 +1622,13 @@ export function computeDecemberProjection(
       repaymentExposure: excessAptcRepayment ?? 0,
       federalTaxAtHeadline: atHeadline.federalTax,
       totalTaxAtHeadline: atHeadline.totalTax,
+      educationAotcAtHeadline: atHeadline.educationAotc,
+      educationLlcAtHeadline: atHeadline.educationLlc,
+      educationChoiceAtHeadline: atHeadline.educationChoice,
+      educationNonrefundableAtHeadline: atHeadline.educationNonrefundable,
+      educationRefundableAtHeadline: atHeadline.educationRefundable,
+      hasEducationExpenses,
+      excludesEducationCredits: !hasEducationExpenses,
       totalIncomeAtHeadline: atHeadline.agi,
       taxableIncomeAtHeadline: atHeadline.taxableIncome,
       stateTaxAtHeadline: atHeadline.stateTax,
@@ -1458,6 +1666,11 @@ export function computeDecemberProjection(
   if (state.strayCutoff.status === "na" || state.strayTradeDate.status === "na") {
     warnings.push(
       "The year-end execution clocks are not both confirmed — brokerage sales count by trade date, while a plan distribution counts in the year it is paid (actually or constructively received), not the year it is requested; get the administrator's payment date and December cutoff in writing.",
+    );
+  }
+  if (!hasEducationExpenses) {
+    warnings.push(
+      "No education expenses are entered, so this settlement excludes education credits — the American Opportunity Credit (up to $2,500 per student) and the Lifetime Learning Credit (up to $2,000 per return) are not priced. If anyone in the household paid qualified education expenses this year, enter them in the Education credits section so the settlement includes them.",
     );
   }
   return {
@@ -3597,6 +3810,516 @@ export function runDecemberFixtures(): {
     if (knownZero2025.netSettleNote !== null) {
       fail(`(v) net settle note should be null, got ${JSON.stringify(knownZero2025.netSettleNote)}`);
     }
+  });
+
+  /* ---- Contract v103 fixtures: education credits (round-14 F3) ----
+     The settlement's acceptance examples, re-derived in the
+     settled audit from the law row (taxLaw.ts: aotc 100% of
+     the first $2,000 + 25% of the next $2,000 per eligible
+     student, refundable 40%; llc 20% of up to $10,000 per
+     return; MFJ phase-out $160,000–$180,000). The household
+     shape for (a)–(c): 2026 MFJ, ages 60/58, both on
+     Medicare (no ACA cliff, so the headline draw is null
+     and every case prices at a $0 draw — solver-independent,
+     hence exact), $60,000 of ordinary income, no state tax.
+     Tax before credits: taxable income $60,000 − $32,200
+     standard deduction = $27,800 → 10% × $24,800 + 12% ×
+     $3,000 = $2,840.00. */
+  const eduBase = (): DecemberState => ({
+    ...defaultDecemberState(2026),
+    agePrimary: 60,
+    ageSpouse: 58,
+    onMedicarePrimary: true,
+    onMedicareSpouse: true,
+    ytdOtherOrdinary: 60000,
+  });
+
+  run("dec-education-aotc-acceptance", (fail) => {
+    // (a) AOTC on $4,000 of qualified expenses for one
+    // eligible student: 100% × $2,000 + 25% × $2,000 =
+    // $2,500.00; refundable 40% = $1,000.00; nonrefundable
+    // applied min($1,500, $2,840) = $1,500.00 → federal tax
+    // $1,340.00. The settlement credits the refundable
+    // portion beside the ACA credit (here a known $0), so
+    // it lands at $1,340 − $1,000 = $340.00 — exactly
+    // $2,500.00 better than the no-student settlement.
+    const s = eduBase();
+    s.educationStudents = [{ expenses: 4000, aotcEligible: true }];
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "engine AOTC", pg.educationAotc, 2500);
+    exact(fail, "engine LLC", pg.educationLlc, 0);
+    if (pg.educationChoice !== "aotc") {
+      fail(`engine choice should be aotc, got ${pg.educationChoice}`);
+    }
+    exact(fail, "engine nonrefundable applied", pg.educationNonrefundable, 1500);
+    exact(fail, "engine refundable", pg.educationRefundable, 1000);
+    exact(fail, "engine federal tax", pg.federalTax, 1340);
+    // The refundable portion is never netted into the tax:
+    // totalTax is the floored federal tax itself.
+    exact(fail, "engine total tax excludes the refundable part", pg.totalTax, 1340);
+    const r = computeDecemberProjection(s);
+    const likely = r.cases[1]!;
+    exact(fail, "federal tax at headline", likely.federalTaxAtHeadline, 1340);
+    exact(fail, "AOTC at headline", likely.educationAotcAtHeadline, 2500);
+    exact(fail, "nonrefundable at headline", likely.educationNonrefundableAtHeadline, 1500);
+    exact(fail, "refundable at headline", likely.educationRefundableAtHeadline, 1000);
+    if (!likely.hasEducationExpenses) fail("entered expenses should mark hasEducationExpenses");
+    if (likely.excludesEducationCredits) fail("entered expenses should clear the qualification");
+    exact(fail, "net settle at headline", likely.netSettleAtHeadline, 340);
+    const noStudent = computeDecemberProjection(eduBase()).cases[1]!;
+    exact(fail, "no-student net settle", noStudent.netSettleAtHeadline, 2840);
+    exact(
+      fail,
+      "settlement improvement from the credit",
+      r2((noStudent.netSettleAtHeadline ?? 0) - (likely.netSettleAtHeadline ?? 0)),
+      2500,
+    );
+    if (r.warnings.some((w) => w.includes("excludes education credits"))) {
+      fail("a priced-credit year should carry no excludes-credits warning");
+    }
+    // The entered students ride the saved blob intact.
+    const back = parseDecemberState(serializeDecemberState(s, 2), 2026);
+    if (
+      back.educationStudents == null ||
+      back.educationStudents.length !== 1 ||
+      back.educationStudents[0]!.expenses !== 4000 ||
+      back.educationStudents[0]!.aotcEligible !== true
+    ) {
+      fail("the entered students should round-trip through the saved blob");
+    }
+  });
+
+  run("dec-education-llc-variant", (fail) => {
+    // (b) The LLC variant: one student NOT marked
+    // AOTC-eligible with $10,000 of eligible expenses →
+    // 20% × $10,000 = $2,000.00 nonrefundable → federal
+    // tax $2,840 − $2,000 = $840.00, no refundable part,
+    // so the settlement is the tax itself.
+    const s = eduBase();
+    s.educationStudents = [{ expenses: 10000, aotcEligible: false }];
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "engine LLC", pg.educationLlc, 2000);
+    exact(fail, "engine AOTC", pg.educationAotc, 0);
+    if (pg.educationChoice !== "llc") {
+      fail(`engine choice should be llc, got ${pg.educationChoice}`);
+    }
+    exact(fail, "engine nonrefundable applied", pg.educationNonrefundable, 2000);
+    exact(fail, "engine refundable", pg.educationRefundable, 0);
+    exact(fail, "engine federal tax", pg.federalTax, 840);
+    const likely = computeDecemberProjection(s).cases[1]!;
+    exact(fail, "federal tax at headline", likely.federalTaxAtHeadline, 840);
+    exact(fail, "LLC at headline", likely.educationLlcAtHeadline, 2000);
+    exact(fail, "refundable at headline", likely.educationRefundableAtHeadline, 0);
+    exact(fail, "net settle at headline", likely.netSettleAtHeadline, 840);
+    if (likely.excludesEducationCredits) fail("entered expenses should clear the qualification");
+  });
+
+  run("dec-education-none-entered-qualification", (fail) => {
+    // (c) No students entered: the settlement is
+    // BIT-IDENTICAL to the pre-v103 figures for this
+    // household (federal tax $2,840.00, settlement
+    // $2,840.00 — the figures the AOTC fixture above
+    // differences against) AND every case carries the
+    // excludes-education-credits qualification, with the
+    // projection warning naming it.
+    const r = computeDecemberProjection(eduBase());
+    const likely = r.cases[1]!;
+    exact(fail, "federal tax unchanged", likely.federalTaxAtHeadline, 2840);
+    exact(fail, "total tax unchanged", likely.totalTaxAtHeadline, 2840);
+    exact(fail, "net settle unchanged", likely.netSettleAtHeadline, 2840);
+    exact(fail, "AOTC $0", likely.educationAotcAtHeadline, 0);
+    exact(fail, "refundable $0", likely.educationRefundableAtHeadline, 0);
+    for (const c of r.cases) {
+      if (c.hasEducationExpenses) fail(`${c.kind}: no expenses should be marked entered`);
+      if (!c.excludesEducationCredits) {
+        fail(`${c.kind}: the settlement should carry the excludes-education-credits qualification`);
+      }
+    }
+    if (!r.warnings.some((w) => w.includes("excludes education credits"))) {
+      fail("the projection should warn that the settlement excludes education credits");
+    }
+    // An entered-but-empty list prices identically and
+    // still carries the qualification (no expenses are
+    // entered either way).
+    const empty = eduBase();
+    empty.educationStudents = [];
+    const emptyLikely = computeDecemberProjection(empty).cases[1]!;
+    exact(fail, "empty list federal tax", emptyLikely.federalTaxAtHeadline, 2840);
+    exact(fail, "empty list net settle", emptyLikely.netSettleAtHeadline, 2840);
+    if (!emptyLikely.excludesEducationCredits) {
+      fail("an empty list should still carry the qualification");
+    }
+    // Back-compat: a blob written before the field existed
+    // parses it as no input yet (null) and prices $0 of
+    // credits; the default state is likewise null.
+    const legacy = parseDecemberState(JSON.stringify({ taxYear: 2026 }), 2026);
+    if (legacy.educationStudents !== null) {
+      fail("a legacy blob should parse educationStudents as null (no input yet)");
+    }
+    if (defaultDecemberState(2026).educationStudents !== null) {
+      fail("the default state should start with no education input");
+    }
+    if (!decemberState.safeParse(eduBase()).success) {
+      fail("the writer schema should accept a state with no education input (null)");
+    }
+    const withStudents = eduBase();
+    withStudents.educationStudents = [{ expenses: 4000, aotcEligible: true }];
+    if (!decemberState.safeParse(withStudents).success) {
+      fail("the writer schema should accept entered students");
+    }
+  });
+
+  run("dec-education-phaseout-shared", (fail) => {
+    // (d) Phase-out: the same household at $170,000 of
+    // ordinary income — AGI inside the MFJ §25A(d) range
+    // ($160,000–$180,000), halfway through it, so half the
+    // credit phases out. Tax before credits: taxable
+    // $170,000 − $32,200 = $137,800 → $2,480 + $9,120 +
+    // 22% × $37,000 = $19,740.00. The $4,000-expense AOTC
+    // prices $2,500 × ½ = $1,250.00 through the shared
+    // step: refundable $500.00, nonrefundable $750.00 →
+    // federal tax $18,990.00, settlement $18,490.00 — the
+    // settlement improvement over the no-student case is
+    // exactly the phased $1,250.00, proving December
+    // prices the shared phase-out, not a full credit.
+    const s = eduBase();
+    s.ytdOtherOrdinary = 170000;
+    s.educationStudents = [{ expenses: 4000, aotcEligible: true }];
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "phased AOTC", pg.educationAotc, 1250);
+    exact(fail, "phased refundable", pg.educationRefundable, 500);
+    exact(fail, "phased nonrefundable", pg.educationNonrefundable, 750);
+    exact(fail, "federal tax after the phased credit", pg.federalTax, 18990);
+    const likely = computeDecemberProjection(s).cases[1]!;
+    exact(fail, "federal tax at headline", likely.federalTaxAtHeadline, 18990);
+    exact(fail, "refundable at headline", likely.educationRefundableAtHeadline, 500);
+    exact(fail, "net settle at headline", likely.netSettleAtHeadline, 18490);
+    const noStudent = eduBase();
+    noStudent.ytdOtherOrdinary = 170000;
+    const noStudentLikely = computeDecemberProjection(noStudent).cases[1]!;
+    exact(fail, "no-student federal tax", noStudentLikely.federalTaxAtHeadline, 19740);
+    exact(fail, "no-student net settle", noStudentLikely.netSettleAtHeadline, 19740);
+    exact(
+      fail,
+      "settlement improvement is the phased credit",
+      r2((noStudentLikely.netSettleAtHeadline ?? 0) - (likely.netSettleAtHeadline ?? 0)),
+      1250,
+    );
+    // At the top of the range the credit is gone entirely:
+    // $180,000 of AGI phases it out in full.
+    const top = eduBase();
+    top.ytdOtherOrdinary = 180000;
+    top.educationStudents = [{ expenses: 4000, aotcEligible: true }];
+    const topPg = pricePlaygroundYear(decemberCaseInputs(top, "likely", 0));
+    exact(fail, "fully phased AOTC", topPg.educationAotc, 0);
+    exact(fail, "fully phased refundable", topPg.educationRefundable, 0);
+  });
+
+  run("dec-education-preseed-resolution", (fail) => {
+    // (e) Preseed / provenance (v103): the load path the
+    // view's hydration runs. A console with no education
+    // input yet resolves the Tax Plan record's entered
+    // students for the December year (supplied here as
+    // record facts in December units — the exact shape
+    // resolveDecemberStateAtLoad consumes); an entered
+    // console list is never overwritten; and the
+    // resolution is an overlay — an unrelated save
+    // derivation keeps the STORED null, while an education
+    // edit makes the console's own list govern.
+    const stored = parseDecemberState(
+      JSON.stringify({ taxYear: 2026, agePrimary: 60 }),
+      2026,
+    );
+    if (stored.educationStudents !== null) {
+      fail("the stored blob should start with no education input");
+    }
+    const recordStudents = [{ expenses: 4000, aotcEligible: true }];
+    const resolved = resolveDecemberStateAtLoad(stored, {
+      educationStudents: recordStudents,
+    });
+    if (
+      resolved.educationStudents == null ||
+      resolved.educationStudents.length !== 1 ||
+      resolved.educationStudents[0]!.expenses !== 4000
+    ) {
+      fail("the record's students should resolve into a console with no input yet");
+    }
+    // The resolved overlay prices the credit.
+    const pricedResolved: DecemberState = {
+      ...resolved,
+      ageSpouse: 58,
+      onMedicarePrimary: true,
+      onMedicareSpouse: true,
+      ytdOtherOrdinary: 60000,
+    };
+    exact(
+      fail,
+      "resolved students price the AOTC settlement",
+      computeDecemberProjection(pricedResolved).cases[1]!.netSettleAtHeadline,
+      340,
+    );
+    // An entered console list governs over the record.
+    const entered = parseDecemberState(
+      JSON.stringify({
+        taxYear: 2026,
+        educationStudents: [{ expenses: 10000, aotcEligible: false }],
+      }),
+      2026,
+    );
+    const enteredResolved = resolveDecemberStateAtLoad(entered, {
+      educationStudents: recordStudents,
+    });
+    if (
+      enteredResolved.educationStudents == null ||
+      enteredResolved.educationStudents.length !== 1 ||
+      enteredResolved.educationStudents[0]!.expenses !== 10000 ||
+      enteredResolved.educationStudents[0]!.aotcEligible !== false
+    ) {
+      fail("an entered console list must never be overwritten by the record");
+    }
+    // Overlay discipline on save: unrelated edit → the
+    // stored null is what saves; education edit → the
+    // display list saves.
+    const prov = decemberStoredProvenanceOf(stored);
+    const unrelatedSave = decemberStateForSave(resolved, prov, {
+      beneficiary: false,
+      balances: false,
+    });
+    if (unrelatedSave.educationStudents !== null) {
+      fail("an unrelated save must keep the stored no-input value, not the resolved overlay");
+    }
+    const educationSave = decemberStateForSave(resolved, prov, {
+      beneficiary: false,
+      balances: false,
+      education: true,
+    });
+    if (
+      educationSave.educationStudents == null ||
+      educationSave.educationStudents.length !== 1
+    ) {
+      fail("an education edit should save the console's own list");
+    }
+  });
+
+  /* ---- Contract v104 fixtures: January-paid capital-gain
+     distributions (round-14 F5) ----
+     Legal premise: §852(b)(7) deems a distribution declared
+     in October–December and paid in January received on
+     December 31 of the declaration year (the year December
+     already gets right), and §852(b)(3) treats a capital
+     gain dividend so designated as a long-term capital
+     gain (the character December got wrong before v104:
+     the whole January-paid total rode ordinary dividends,
+     so Washington — whose excise prices long-term gains
+     and never dividends — never saw it at all). */
+
+  run("dec-jan-paid-capgain-wa-acceptance", (fail) => {
+    // (a) The settlement's acceptance example, through the
+    // December path: 2026 WA, $1,278,000 of already-
+    // recognized long-term gains plus a $100,000 capital-
+    // gain distribution declared Dec 2026 and paid Jan
+    // 2027. After the fix the WA gain base is $1,378,000:
+    // $1,378,000 − $278,000 standard deduction = $1,100,000
+    // of taxable Washington gains → 7% × $1,000,000 + 9.9%
+    // × $100,000 = $79,900.00. The before-fix figure named
+    // here as the corrected error is $70,000.00 (base
+    // $1,278,000 − $278,000 = $1,000,000 → 7% flat): the
+    // $0-portion leg below prices exactly that, so the
+    // understatement corrected is $9,900.00.
+    const waBase = (): DecemberState => ({
+      ...defaultDecemberState(2026),
+      agePrimary: 60,
+      ageSpouse: 58,
+      onMedicarePrimary: true,
+      onMedicareSpouse: true,
+      residenceState: "WA",
+      ytdCapitalGain: 1278000,
+      strayJanPaid: { status: "amount", amount: 100000 },
+    });
+    const fixed = waBase();
+    fixed.strayJanPaidCapGainAmount = 100000;
+    const fixedInputs = decemberCaseInputs(fixed, "likely", 0);
+    exact(fail, "capital-gain portion rides stock sold", fixedInputs.stockSold, 1378000);
+    exact(fail, "capital-gain portion leaves ordinary dividends", fixedInputs.ordinaryDividends, 0);
+    const fixedPg = pricePlaygroundYear(fixedInputs);
+    exact(fail, "WA gains after fix", fixedPg.waGains, 1378000);
+    exact(fail, "WA taxable gains after fix", fixedPg.waTaxableGains, 1100000);
+    exact(fail, "WA excise after fix", fixedPg.stateTax, 79900);
+    const before = waBase();
+    const beforePg = pricePlaygroundYear(decemberCaseInputs(before, "likely", 0));
+    exact(fail, "WA gains before fix ($0 portion)", beforePg.waGains, 1278000);
+    exact(fail, "WA taxable gains before fix ($0 portion)", beforePg.waTaxableGains, 1000000);
+    exact(fail, "WA excise before fix (the corrected error)", beforePg.stateTax, 70000);
+    exact(
+      fail,
+      "understatement corrected",
+      r2(fixedPg.stateTax - beforePg.stateTax),
+      9900,
+    );
+  });
+
+  run("dec-jan-paid-capgain-federal-character", (fail) => {
+    // (b) The federal character difference, quantified
+    // from the shared pricer on the ROC fixture's clean
+    // shape: $120,000 of wages (MFJ, standard deduction
+    // $32,200 → ordinary taxable income $87,800, federal
+    // tax $2,480 + 12% × $63,000 = $10,040.00) plus a
+    // $30,000 January-paid distribution.
+    // · Priced as an ordinary dividend (the pre-fix
+    //   treatment, $0 capital-gain portion): taxable income
+    //   rises to $117,800 — an increment of $13,000 × 12% +
+    //   $17,000 × 22% = $5,300.00 → federal tax $15,340.00.
+    // · Priced as a capital-gain distribution (the whole
+    //   $30,000 on the gains staircase): $11,100 of it fits
+    //   the 0% space up to the $98,900 top and $18,900 is
+    //   taxed at 15% — an increment of $2,835.00 → federal
+    //   tax $12,875.00.
+    // The federal character difference on this shape is
+    // therefore $5,300.00 − $2,835.00 = $2,465.00.
+    const wages = base();
+    wages.ytdOtherOrdinary = 120000;
+    const t0 = pricePlaygroundYear(decemberCaseInputs(wages, "likely", 0)).federalTax;
+    exact(fail, "wages-only federal tax", t0, 10040);
+    const ordinary = base();
+    ordinary.ytdOtherOrdinary = 120000;
+    ordinary.strayJanPaid = { status: "amount", amount: 30000 };
+    const tOrd = pricePlaygroundYear(decemberCaseInputs(ordinary, "likely", 0)).federalTax;
+    exact(fail, "ordinary-treatment federal tax", tOrd, 15340);
+    exact(fail, "ordinary-treatment increment", r2(tOrd - t0), 5300);
+    const capGain = base();
+    capGain.ytdOtherOrdinary = 120000;
+    capGain.strayJanPaid = { status: "amount", amount: 30000 };
+    capGain.strayJanPaidCapGainAmount = 30000;
+    const tCap = pricePlaygroundYear(decemberCaseInputs(capGain, "likely", 0)).federalTax;
+    exact(fail, "capital-gain-treatment federal tax", tCap, 12875);
+    exact(fail, "capital-gain-treatment increment", r2(tCap - t0), 2835);
+    exact(fail, "federal character difference", r2(tOrd - tCap), 2465);
+  });
+
+  run("dec-jan-paid-capgain-zero-identity", (fail) => {
+    // (c) The $0-portion identity case: a January-paid
+    // amount with a $0 (or absent) capital-gain portion
+    // prices BIT-IDENTICALLY to before v104 — the figures
+    // pinned here are the pre-fix figures from the standing
+    // qualified-portion fixture's shape ($100,000 of wages
+    // MFJ plus a $20,000 January-paid total: $2,400.00 of
+    // added federal tax when none of it is qualified, $0
+    // when all of the ordinary remainder is qualified).
+    const wages = base();
+    wages.ytdOtherOrdinary = 100000;
+    const t0 = pricePlaygroundYear(decemberCaseInputs(wages, "likely", 0)).federalTax;
+    const zero = base();
+    zero.ytdOtherOrdinary = 100000;
+    zero.strayJanPaid = { status: "amount", amount: 20000 };
+    zero.strayJanPaidCapGainAmount = 0;
+    const zeroInputs = decemberCaseInputs(zero, "likely", 0);
+    exact(fail, "$0 portion: whole total in ordinary dividends", zeroInputs.ordinaryDividends, 20000);
+    exact(fail, "$0 portion: no gain on the stock dials", zeroInputs.stockSold, 0);
+    const tZero = pricePlaygroundYear(zeroInputs).federalTax;
+    exact(fail, "$0 portion tax increment (pre-fix figure)", r2(tZero - t0), 2400);
+    // Back-compat: a blob written before the field existed
+    // parses the portion as $0, the default state carries
+    // $0, the writer schema accepts the state, and an
+    // entered portion round-trips through the saved blob.
+    const legacy = parseDecemberState(
+      JSON.stringify({
+        taxYear: 2026,
+        strayJanPaid: { status: "amount", amount: 20000 },
+      }),
+      2026,
+    );
+    if (legacy.strayJanPaidCapGainAmount !== 0) {
+      fail("a legacy blob should parse the capital-gain portion as $0");
+    }
+    const withWages: DecemberState = { ...legacy, ytdOtherOrdinary: 100000 };
+    exact(
+      fail,
+      "legacy blob tax increment (pre-fix figure)",
+      r2(pricePlaygroundYear(decemberCaseInputs(withWages, "likely", 0)).federalTax - t0),
+      2400,
+    );
+    if (defaultDecemberState(2026).strayJanPaidCapGainAmount !== 0) {
+      fail("the default state should carry a $0 capital-gain portion");
+    }
+    if (!decemberState.safeParse(zero).success) {
+      fail("the writer schema should accept a $0 capital-gain portion");
+    }
+    const entered = base();
+    entered.strayJanPaid = { status: "amount", amount: 20000 };
+    entered.strayJanPaidCapGainAmount = 7500;
+    const back = parseDecemberState(serializeDecemberState(entered, 2), 2026);
+    if (back.strayJanPaidCapGainAmount !== 7500) {
+      fail("an entered capital-gain portion should round-trip through the saved blob");
+    }
+  });
+
+  run("dec-jan-paid-capgain-combined-no-double-count", (fail) => {
+    // (d) Combined splits on ONE January-paid amount: a
+    // $60,000 total with a $20,000 capital-gain portion and
+    // $15,000 of qualified dividends inside the remaining
+    // $40,000 of ordinary dividends. No double-count: the
+    // dials decompose the total exactly — the non-qualified
+    // ordinary part ($40,000 − $15,000 = $25,000) + the
+    // qualified part ($15,000) + the capital-gain part
+    // ($20,000) = the $60,000 entered, and the income the
+    // pricer counts is the ordinary total ($40,000, which
+    // already includes its qualified subset) + the gain
+    // ($20,000) = $60,000, counted once.
+    const s = base();
+    s.ytdOtherOrdinary = 100000;
+    s.strayJanPaid = { status: "amount", amount: 60000 };
+    s.strayJanPaidCapGainAmount = 20000;
+    s.strayJanPaidQualifiedAmount = 15000;
+    const inputs = decemberCaseInputs(s, "likely", 0);
+    exact(fail, "ordinary dial is the remainder only", inputs.ordinaryDividends, 40000);
+    exact(fail, "qualified dial is its portion of the remainder", inputs.qualifiedDividends, 15000);
+    exact(fail, "gain dial carries the capital-gain portion", inputs.stockSold - inputs.stockBasis, 20000);
+    exact(
+      fail,
+      "portions decompose the entered total",
+      r2(inputs.ordinaryDividends - inputs.qualifiedDividends) +
+        inputs.qualifiedDividends +
+        (inputs.stockSold - inputs.stockBasis),
+      60000,
+    );
+    exact(
+      fail,
+      "counted income is the entered total, once",
+      r2(inputs.ordinaryDividends + (inputs.stockSold - inputs.stockBasis)),
+      60000,
+    );
+    // Priced end to end (hand-derived): AGI $100,000 +
+    // $60,000 = $160,000; taxable $127,800; ordinary
+    // taxable $127,800 − ($20,000 gain + $15,000 qualified)
+    // = $92,800 → ordinary tax $2,480 + 12% × $68,000 =
+    // $10,640.00; the $35,000 preferential stack sits on
+    // $92,800 — $6,100 fits the 0% space to the $98,900
+    // top, $28,900 at 15% = $4,335.00 → federal tax
+    // $14,975.00.
+    const pg = pricePlaygroundYear(inputs);
+    exact(fail, "combined federal tax", pg.federalTax, 14975);
+    exact(fail, "combined AGI counts the total once", pg.agi, 160000);
+    // Clamps: a capital-gain portion entered above the
+    // total clamps to the total (ordinary remainder $0),
+    // and a qualified portion entered above the ordinary
+    // remainder clamps to that remainder, never to the
+    // whole total.
+    const overCap = base();
+    overCap.strayJanPaid = { status: "amount", amount: 20000 };
+    overCap.strayJanPaidCapGainAmount = 25000;
+    overCap.strayJanPaidQualifiedAmount = 20000;
+    const overCapInputs = decemberCaseInputs(overCap, "likely", 0);
+    exact(fail, "over-entered capital-gain portion clamps to the total", overCapInputs.stockSold, 20000);
+    exact(fail, "fully-capital total leaves no ordinary dividends", overCapInputs.ordinaryDividends, 0);
+    exact(fail, "qualified clamps to the $0 ordinary remainder", overCapInputs.qualifiedDividends, 0);
+    const overQual = base();
+    overQual.strayJanPaid = { status: "amount", amount: 20000 };
+    overQual.strayJanPaidCapGainAmount = 15000;
+    overQual.strayJanPaidQualifiedAmount = 20000;
+    const overQualInputs = decemberCaseInputs(overQual, "likely", 0);
+    exact(fail, "partial-capital ordinary remainder", overQualInputs.ordinaryDividends, 5000);
+    exact(fail, "qualified clamps to the ordinary remainder", overQualInputs.qualifiedDividends, 5000);
+    exact(fail, "partial-capital gain dial", overQualInputs.stockSold, 15000);
   });
 
 

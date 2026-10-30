@@ -61,6 +61,43 @@
 //     work years (F4). The pre-full-retirement-age earnings
 //     test is NOT modeled — no machinery for it exists
 //     anywhere in the engine — so benefits deposit in full.
+//     The plan's entered tax-exempt interest prices in the
+//     salary year too (contract v102, round-14 fix F1): the
+//     shared priceYear counts it in provisional income for
+//     §86 and in MAGI, exactly as the plan march and the
+//     Playground price it. CASH PARITY: the march prices
+//     those dollars for §86 / MAGI purposes only — its
+//     cash-in is RMDs + benefits + other ordinary income,
+//     never the tax-exempt interest — so the work year does
+//     the same and banks nothing for them in the surplus.
+//   · Capital-loss carryforwards price in salary years too
+//     (contract v100, round-14 fix F2): the roll threads the
+//     loss ledger through the work years exactly as it
+//     threads the taxable basis ledger — entering state from
+//     the plan's capitalLossCarryInSt/Lt, each priced year
+//     netting its own gains (a work year realizes gains only
+//     on a deficit-funding Taxable sale) through the SHARED
+//     applyLossLedger helper, never a second netting
+//     implementation. Trial pricings read only the netted
+//     result and the CLAIMED allowance (utilization passed
+//     as unbounded), exactly the plan march's ledgerFields
+//     discipline; the year's carry-out is reconciled ONCE,
+//     at year end, against the final priced year's taxable
+//     income before the allowance. A year with no gains and
+//     no deficit still consumes the allowance against its
+//     taxable income; a year with no taxable income before
+//     the allowance uses none of it and the whole loss
+//     carries forward. The rolled inputs hand the retirement
+//     march the CONSUMED carryforward (the year-end carry-out
+//     after the last work year), never the entering balance
+//     a second time. Washington's excise base is the gross
+//     gains minus only the Washington-attributable
+//     carryforward the year's gains absorbed (contract v101,
+//     round-14 fix F4 — the same invariant the march's
+//     ledgerFields prices, through the same shared
+//     transform; see applyLossLedger). A plan
+//     with no entering banked loss prices bit-identically:
+//     the transform is the identity when the carry-in is $0.
 //   · Required minimum distributions price in salary years
 //     too (contract v98, engine-calendar fix F5): each owner's
 //     RMD is computed by the plan engine's own shared helper
@@ -116,9 +153,11 @@
 // at this boundary, as are the saved job inputs (cents).
 
 import {
+  applyLossLedger,
   deflationFactor,
   priceYear,
   rmdForYear,
+  type LossCarryforward,
   type RothPlanInputs,
 } from "./taxEngine";
 import { lawForYear, type FilingStatus, type YearLaw } from "./taxLaw";
@@ -666,8 +705,8 @@ export type WorkYearLine = {
   // employee's own HSA — the wages the federal price runs on.
   taxableWages: number;
   // The year's priced MAGI (the shared priceYear result's
-  // magi: AGI plus tax-exempt interest — $0 of the latter in
-  // a work year). Build E: the roll records it in the rolled
+  // magi: AGI plus tax-exempt interest — the plan's entered
+  // annual amount in a work year, contract v102). Build E: the roll records it in the rolled
   // plan's IRMAA lookback seed, so the retirement march's
   // first premium years grade these work-year returns
   // instead of pricing no lookback at all.
@@ -732,7 +771,59 @@ export type WorkYearLine = {
   // only when the roll supplies the taxable context and the
   // year's settlement draws from Taxable; a standalone price
   // (no balance context) realizes no sale and reports $0.
+  // This is the GROSS realized gain, before any capital-loss
+  // carryforward netting (contract v100) — the figure the
+  // loss ledger nets, and the figure the Washington excise
+  // prices on BEFORE the Washington-attributable absorbed
+  // part is subtracted (contract v101: the priced excise
+  // base is this figure minus capitalLossWaAbsorbedByGains
+  // below).
   ltcg: number;
+  // Capital-loss carryforward ledger for this year
+  // (contract v100, round-14 fix F2 — the SHARED
+  // applyLossLedger transform, the plan march's own rules):
+  // the banked loss entering the year, by character (in the
+  // roll, the previous work year's carry-out; standalone,
+  // the plan's capitalLossCarryInSt/Lt); the year's net
+  // capital result after the carry-in netting (the signed
+  // figure actually priced as the year's capital result —
+  // equal to `ltcg` whenever no carry-in enters); the
+  // §1211(b) allowance CLAIMED on the year's return (the
+  // amount priced into the year's AGI and tax) and the part
+  // of it the year's taxable income actually absorbed (the
+  // Capital Loss Carryover Worksheet utilization limit,
+  // reconciled once at year end against the final priced
+  // year's taxableIncomeBeforeLossAllowance — only the used
+  // part is consumed from the carryforward); the part of
+  // the carry-in absorbed against this year's own gains;
+  // and the carry-out, character preserved, that the next
+  // year (or, after the roll's last work year, the rolled
+  // plan's retirement march) enters with. All $0 in a year
+  // no banked loss enters.
+  capitalLossCarryInSt: number;
+  capitalLossCarryInLt: number;
+  netCapitalResult: number;
+  capitalLossAllowance: number;
+  capitalLossAllowanceUsed: number;
+  capitalLossAbsorbedByGains: number;
+  capitalLossCarryOutSt: number;
+  capitalLossCarryOutLt: number;
+  // Washington-attributable sub-ledger for this year
+  // (contract v101, round-14 fix F4 — the same shared
+  // transform's attribution): the Washington-attributable
+  // part of the carry-in, by character; the part of it the
+  // year's gains absorbed — the ONLY part of the federal
+  // netting that reduced this year's Washington excise base
+  // (the priced base is the gross `ltcg` above minus this
+  // figure); and the Washington-attributable carry-out, by
+  // character, that the next year (or the rolled plan's
+  // retirement march) enters with. All $0 in a year no
+  // Washington-attributable loss enters.
+  capitalLossCarryInWaSt: number;
+  capitalLossCarryInWaLt: number;
+  capitalLossWaAbsorbedByGains: number;
+  capitalLossCarryOutWaSt: number;
+  capitalLossCarryOutWaLt: number;
   // Salary − federal − state − FICA − the plan's annual
   // spending − the employee's own contributions (deferral +
   // catch-up + mega + own HSA) + the year's Social Security
@@ -801,6 +892,23 @@ export type WorkYearPretaxContext = {
   priorSpouse: number;
 };
 
+// The roll's per-year capital-loss context (contract v100,
+// round-14 fix F2): the banked loss entering this year, by
+// character — the previous work year's reconciled carry-out.
+// The roll threads it exactly as it threads the taxable
+// basis ledger and the pending education refund. Absent (a
+// standalone price) the year prices from the plan's own
+// capitalLossCarryInSt/Lt as its entering state. The
+// Washington-attributable sub-state (contract v101) rides
+// the same context the same way: waSt / waLt are the
+// previous work year's reconciled Washington carry-out,
+// absent = the plan's own capitalLossCarryInStWa /
+// capitalLossCarryInLtWa.
+export type WorkYearLossContext = LossCarryforward & {
+  waSt?: number;
+  waLt?: number;
+};
+
 export function priceOneWorkYear(
   plan: RothPlanInputs,
   job: WorkYearJob,
@@ -819,6 +927,12 @@ export function priceOneWorkYear(
   // prices on; omitted for a standalone price, which reads
   // the plan's starting balances as its opening balances.
   pretaxCtx?: WorkYearPretaxContext | null,
+  // The roll's capital-loss context for this year (contract
+  // v100, F2): the banked loss entering the year, threaded
+  // from the previous work year's reconciled carry-out;
+  // omitted for a standalone price, which reads the plan's
+  // capitalLossCarryInSt/Lt as its entering state.
+  lossCtx?: WorkYearLossContext | null,
 ): WorkYearLine {
   const calendarYear = plan.birthYearPrimary + age;
   const law = lawForYear(calendarYear);
@@ -936,8 +1050,81 @@ export function priceOneWorkYear(
         : plan.ssSpouseAnnual
       : 0;
   const ssBenefits = r2(ssPrimaryThisYear + ssSpouseThisYear);
-  const priceWithGain = (ltcg: number) =>
-    priceYear({
+  // CAPITAL-LOSS CARRYFORWARD LEDGER (contract v100,
+  // round-14 fix F2): the banked loss entering this year —
+  // threaded by the roll from the previous work year's
+  // carry-out, or, for a standalone price, the plan's own
+  // entering carryforward. ledgerFields is the plan march's
+  // own transform shape (taxEngine.ts, simulateRothPlan):
+  // given the year's GROSS own gains (here, only the
+  // deficit-funding sale's realized gain — a work year
+  // realizes no other gains), it returns the priceYear
+  // fields for the NETTED year through the SHARED
+  // applyLossLedger helper: the priced ltcg is the net
+  // capital result after the carry-in netting, the §1211(b)
+  // allowance rides alongside it, and the Washington excise
+  // base is the gross gains minus only the
+  // Washington-attributable carryforward the gains absorbed
+  // (contract v101, round-14 fix F4 — the same invariant the
+  // march prices, through the same transform, so a salary
+  // year and a retirement year can never disagree about the
+  // base; with no Washington attribution entered the base is
+  // the gross gains, exactly the pre-v101 figure). A
+  // trial pricing reads only the netted result and the
+  // CLAIMED allowance from the transform — never its
+  // carry-out — so utilization is passed as unbounded here;
+  // the year's carry-out is reconciled ONCE, after the
+  // final pricing below, against that pricing's taxable
+  // income before the allowance, exactly as the march's
+  // ledFinal reconciliation does. In a year with no
+  // carry-in the transform is the identity — the returned
+  // fields are exactly the pre-v100 ones — which is what
+  // keeps a plan with no banked loss bit-identical.
+  const lossCarryInSt = Math.max(
+    0,
+    lossCtx?.st ?? plan.capitalLossCarryInSt ?? 0,
+  );
+  const lossCarryInLt = Math.max(
+    0,
+    lossCtx?.lt ?? plan.capitalLossCarryInLt ?? 0,
+  );
+  // The Washington-attributable sub-state entering the year
+  // (contract v101): threaded by the roll alongside the
+  // character totals, each clamped to its character's
+  // carry-in — a portion of the pool, never more than it.
+  const lossCarryInWaSt = Math.min(
+    lossCarryInSt,
+    Math.max(0, lossCtx?.waSt ?? plan.capitalLossCarryInStWa ?? 0),
+  );
+  const lossCarryInWaLt = Math.min(
+    lossCarryInLt,
+    Math.max(0, lossCtx?.waLt ?? plan.capitalLossCarryInLtWa ?? 0),
+  );
+  const lossLedgerOn = lossCarryInSt > 0 || lossCarryInLt > 0;
+  const ledgerFields = (
+    grossGains: number,
+  ): {
+    ltcg: number;
+    capitalLossAllowance?: number;
+    waGainsBase?: number;
+  } => {
+    if (!lossLedgerOn) return { ltcg: grossGains };
+    const led = applyLossLedger(
+      { st: lossCarryInSt, lt: lossCarryInLt },
+      grossGains,
+      plan.filingStatus,
+      Number.POSITIVE_INFINITY,
+      { st: lossCarryInWaSt, lt: lossCarryInWaLt },
+    );
+    return {
+      ltcg: led.netResult,
+      capitalLossAllowance: led.allowance,
+      waGainsBase: r2(grossGains - led.waAbsorbedByGains),
+    };
+  };
+  const priceWithGain = (grossLtcg: number) => {
+    const lf = ledgerFields(grossLtcg);
+    return priceYear({
     calendarYear,
     filingStatus: plan.filingStatus,
     agePrimary: age,
@@ -952,8 +1139,35 @@ export function priceOneWorkYear(
     conversion: 0,
     extraPreTaxDraw: 0,
     ssBenefits,
-    taxExemptInterest: 0,
-    ltcg,
+    // Tax-exempt interest (contract v102, round-14 fix
+    // F1): the plan's entered annual amount, passed exactly
+    // as the plan march passes it at its own priceYear sites
+    // and the Playground passes its input — the shared
+    // priceYear includes it in provisional income for §86
+    // Social Security taxation (26 U.S.C. §86(b)(1)-(2):
+    // modified AGI is AGI increased by tax-exempt interest,
+    // plus one-half of benefits) and in MAGI. CASH PARITY
+    // (verified in the march, taxEngine.ts): the march's
+    // cash-in is rmd + ssBenefits + otherOrdinaryAnnual
+    // ONLY — the tax-exempt dollars are priced for §86 /
+    // MAGI purposes and are NEVER banked as household cash
+    // there — so the work year mirrors that exactly: the
+    // amount prices here and is NOT added to the surplus
+    // below. A plan with $0 entered prices bit-identically
+    // to before this fix.
+    taxExemptInterest: plan.taxExemptInterestAnnual,
+    // The NETTED capital result (contract v100): the gross
+    // sale gain netted against the entering carryforward by
+    // ledgerFields above, with the claimed §1211(b)
+    // allowance riding alongside it and the Washington
+    // excise base at the gross gains minus the
+    // Washington-attributable absorbed part (contract v101).
+    // With no carry-in
+    // these are exactly the pre-v100 fields (ltcg = the
+    // gross gain, no allowance, no base override).
+    ltcg: lf.ltcg,
+    capitalLossAllowance: lf.capitalLossAllowance,
+    waGainsBase: lf.waGainsBase,
     interestIncome,
     qualifiedDividends: dividendIncome,
     inflationPct: plan.inflationPct,
@@ -988,6 +1202,7 @@ export function priceOneWorkYear(
       (e) => e.year === calendarYear,
     ),
     });
+  };
   const ficaWages = r2(job.salary - stack.ownHsa);
   const payroll = payrollTaxBreakdown(
     Math.max(0, ficaWages),
@@ -1071,6 +1286,31 @@ export function priceOneWorkYear(
       if (drawn <= 0) break;
     }
   }
+  // LOSS LEDGER, YEAR END (contract v100): the year's FINAL
+  // ledger outcome — the shared transform applied to the
+  // year's settled gross gains (`ltcg` above is that gross
+  // figure) against the year's carry-in, reconciled ONCE
+  // here, the one place the year's final taxable income is
+  // known: the final pricing's taxable income without the
+  // allowance (priced.taxableIncomeBeforeLossAllowance)
+  // caps how much of the claimed allowance the carry-out
+  // gives up (the Capital Loss Carryover Worksheet's
+  // limit) — the claimed allowance itself, and so the
+  // year's AGI and tax, are exactly as priced either way.
+  // A year with no gains and no deficit still passes
+  // through here: its allowance consumes against its
+  // taxable income, and a year with no taxable income
+  // before the allowance uses none of it, so the whole
+  // loss carries out.
+  const ledFinal = lossLedgerOn
+    ? applyLossLedger(
+        { st: lossCarryInSt, lt: lossCarryInLt },
+        ltcg,
+        plan.filingStatus,
+        priced.taxableIncomeBeforeLossAllowance,
+        { st: lossCarryInWaSt, lt: lossCarryInWaLt },
+      )
+    : null;
   return {
     age,
     calendarYear,
@@ -1097,6 +1337,24 @@ export function priceOneWorkYear(
     rmdTablePrimary: rmdPrimaryRes.table,
     rmdTableSpouse: rmdSpouseRes.table,
     ltcg: r2(ltcg),
+    // The year's loss-ledger outcome (contract v100): with
+    // no carry-in, the net result is the gross gain itself
+    // and every ledger figure is $0.
+    capitalLossCarryInSt: r2(lossCarryInSt),
+    capitalLossCarryInLt: r2(lossCarryInLt),
+    netCapitalResult: ledFinal ? ledFinal.netResult : r2(ltcg),
+    capitalLossAllowance: ledFinal ? ledFinal.allowance : 0,
+    capitalLossAllowanceUsed: ledFinal ? ledFinal.allowanceUsed : 0,
+    capitalLossAbsorbedByGains: ledFinal ? ledFinal.absorbedByGains : 0,
+    capitalLossCarryOutSt: ledFinal ? ledFinal.carryOut.st : 0,
+    capitalLossCarryOutLt: ledFinal ? ledFinal.carryOut.lt : 0,
+    // The year's Washington sub-ledger outcome (contract
+    // v101): with no carry-in, every figure is $0.
+    capitalLossCarryInWaSt: r2(lossCarryInWaSt),
+    capitalLossCarryInWaLt: r2(lossCarryInWaLt),
+    capitalLossWaAbsorbedByGains: ledFinal ? ledFinal.waAbsorbedByGains : 0,
+    capitalLossCarryOutWaSt: ledFinal ? ledFinal.waCarryOut.st : 0,
+    capitalLossCarryOutWaLt: ledFinal ? ledFinal.waCarryOut.lt : 0,
     surplus,
     // The year's refundable §25A credit, carried by the roll
     // (contract v96) — never part of the surplus above.
@@ -1302,6 +1560,33 @@ export function rollWorkYears(
   // Taxable.
   let pendingEduRefund = 0;
   let eduRefundsDeposited = 0;
+  // CAPITAL-LOSS LEDGER STATE (contract v100, round-14 fix
+  // F2): the banked loss carried alongside the balances,
+  // entering from the plan's capitalLossCarryInSt/Lt and
+  // replaced each year by that year's reconciled carry-out
+  // (pricedLine.capitalLossCarryOutSt/Lt — priceOneWorkYear
+  // reconciles utilization once, at its year end, against
+  // its final priced taxable income). After the loop these
+  // hold the consumed balance the rolled inputs hand to
+  // the retirement march, so the march never prices the
+  // entering balance a second time.
+  let lossCarrySt = Math.max(0, plan.capitalLossCarryInSt ?? 0);
+  let lossCarryLt = Math.max(0, plan.capitalLossCarryInLt ?? 0);
+  // The Washington-attributable sub-state (contract v101)
+  // threads alongside the character totals the same way:
+  // entering from the plan's stated portions (each clamped
+  // to its character's total) and replaced each year by
+  // that year's reconciled Washington carry-out, so the
+  // rolled inputs hand the march the consumed attribution
+  // too — never the entering portion priced a second time.
+  let lossCarryWaSt = Math.min(
+    lossCarrySt,
+    Math.max(0, plan.capitalLossCarryInStWa ?? 0),
+  );
+  let lossCarryWaLt = Math.min(
+    lossCarryLt,
+    Math.max(0, plan.capitalLossCarryInLtWa ?? 0),
+  );
   for (let i = 0; i < count; i++) {
     const age = effectiveStart + i;
     // EDUCATION REFUND DEPOSIT (contract v96, Build D
@@ -1364,8 +1649,23 @@ export function rollWorkYears(
       // the pricing), so each owner's RMD prices on exactly
       // the balance the plan march would read for the year.
       { priorPrimary: pretaxPrimary, priorSpouse: pretaxSpouse },
+      // The capital-loss context for this year (contract
+      // v100): the banked loss carried into the year — the
+      // previous work year's reconciled carry-out (the
+      // plan's entering carryforward for the first year) —
+      // with its Washington-attributable sub-state (contract
+      // v101) riding the same context.
+      { st: lossCarrySt, lt: lossCarryLt, waSt: lossCarryWaSt, waLt: lossCarryWaLt },
     );
     priorYearWages = pricedLine.ficaWages;
+    // This year's reconciled carry-out becomes the next
+    // work year's carry-in (contract v100) — the ledger
+    // advances exactly once per priced year, here, after
+    // the year's pricing has converged and reconciled.
+    lossCarrySt = pricedLine.capitalLossCarryOutSt;
+    lossCarryLt = pricedLine.capitalLossCarryOutLt;
+    lossCarryWaSt = pricedLine.capitalLossCarryOutWaSt;
+    lossCarryWaLt = pricedLine.capitalLossCarryOutWaLt;
     // This year's refundable credit becomes next year's
     // deposit (contract v96): carried undeposited until
     // the start of the next simulated year. It is assigned
@@ -1505,6 +1805,24 @@ export function rollWorkYears(
   const basisFields = rebuildRolledBasisFields(plan, ledger, balances.taxable);
   const rolledInputs: RothPlanInputs = {
     ...plan,
+    // CONSUMED CARRYFORWARD HANDOFF (contract v100): the
+    // retirement march initializes its loss ledger from
+    // these fields, so they must carry the year-end
+    // carry-out after the LAST work year — the balance the
+    // work years left unconsumed — not the entering balance
+    // the spread above would otherwise pass through a
+    // second time. ($0 / $0 for a plan that entered with no
+    // banked loss, bit-identical to before.)
+    capitalLossCarryInSt: r2(lossCarrySt),
+    capitalLossCarryInLt: r2(lossCarryLt),
+    // The Washington attribution hands over consumed too
+    // (contract v101): the march initializes its Washington
+    // sub-state from these fields, so they carry the
+    // reconciled Washington carry-out after the last work
+    // year, not the entering portions the spread above
+    // would otherwise pass through.
+    capitalLossCarryInStWa: r2(lossCarryWaSt),
+    capitalLossCarryInLtWa: r2(lossCarryWaLt),
     taxableBasisPct: basisFields.taxableBasisPct,
     taxableTiers: basisFields.taxableTiers,
     // IRMAA LOOKBACK SEED (Build E): the work years this roll
@@ -1597,7 +1915,7 @@ export function runWorkYearsCompare(
     const key =
       roll.totals.years === 0
         ? `no-work:${quitAge}`
-        : `${quitAge}:${roll.balances.pretax}:${roll.balances.roth}:${roll.balances.taxable}:${roll.balances.hsa}`;
+        : `${quitAge}:${roll.balances.pretax}:${roll.balances.roth}:${roll.balances.taxable}:${roll.balances.hsa}:${roll.rolledInputs.capitalLossCarryInSt ?? 0}:${roll.rolledInputs.capitalLossCarryInLt ?? 0}:${roll.rolledInputs.capitalLossCarryInStWa ?? 0}:${roll.rolledInputs.capitalLossCarryInLtWa ?? 0}`;
     let entry = cache.get(key);
     if (!entry) {
       entry = { roll, optimizer: runJointOptimizer(roll.rolledInputs) };

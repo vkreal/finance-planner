@@ -183,16 +183,28 @@ export type PriceYearInput = {
   itemizedOther?: number;
   // Washington excise base override (T4; optional — absent =
   // the excise prices on `ltcg`, bit-identical to before):
-  // when present, the WA path prices on THIS figure — the
-  // year's own realized long-term gains BEFORE any federal
-  // capital-loss carryforward netting — instead of the
-  // (possibly netted) `ltcg`. The federal ledger never
-  // enters the excise: Washington takes no carryforward (a
-  // loss year carries nothing, RCW 82.87.040(3)), so a year
-  // whose gains are fully absorbed by a federal carryforward
-  // still prices the excise on the gains it realized. Only
-  // the plan engine passes it, and only in a year its loss
-  // ledger is active.
+  // when present, the WA path prices on THIS figure instead
+  // of the (possibly netted) `ltcg`. The figure is the
+  // year's gross realized long-term gains MINUS the
+  // Washington-attributable part of the federal loss
+  // carryforward the year's gains actually absorbed
+  // (contract v101, round-14 fix F4): RCW 82.87.040(3) bars
+  // carrying a NEGATIVE Washington amount forward, but it
+  // also provides that a federal loss carryforward directly
+  // attributable to losses from sales or exchanges allocated
+  // to Washington under RCW 82.87.100 IS included in the
+  // calculation of adjusted capital gain to the extent it is
+  // included in the federal net long-term capital gain
+  // computation — and RCW 82.87.020(1)(c)–(e) adds back only
+  // the carryovers from non-Washington, exempt, and pre-2022
+  // sales, never a Washington-allocated one. So only the
+  // Washington-attributable absorbed part reduces the base;
+  // the rest of the federal netting never touches the
+  // excise, and with no Washington-attributable carryforward
+  // entered the base is the gross gains exactly as before.
+  // Only the plan engine (and the work-years roll, through
+  // the same ledger transform) passes it, and only in a year
+  // its loss ledger is active.
   waGainsBase?: number;
   // Education credits (T6 build; optional — absent / null /
   // empty = no education expenses entered, no credits price,
@@ -334,8 +346,11 @@ export type PriceYearResult = {
   // Washington excise breakdown (T3): the year's WA-allocated
   // long-term gains entering the excise base (max(0, ltcg) —
   // or max(0, waGainsBase) when the caller supplies the
-  // pre-ledger gains (T4); a net loss year enters $0 and
-  // carries nothing forward, RCW 82.87.040(3)), the standard
+  // ledger-adjusted base (T4; contract v101: the gross gains
+  // minus the Washington-attributable carryforward the gains
+  // absorbed); a net loss year enters $0 — a negative
+  // Washington amount carries nothing forward, RCW
+  // 82.87.040(3)), the standard
   // deduction and charitable deduction applied, and the
   // taxable Washington capital gains the tiered rate priced.
   // All $0 on the flat-rate path (any residence other than
@@ -575,7 +590,11 @@ export function irmaaAnnualPerPerson(tier: number, law: YearLaw): number {
    their law-row nominal values, undeflated. A year whose
    gains are negative owes $0 and carries nothing forward
    (RCW 82.87.040(3)): the base here is floored at $0 before
-   any deduction. */
+   any deduction. That no-carryforward rule is about the
+   negative Washington amount itself: the federal ledger's
+   Washington-attributable carryforward (contract v101) is
+   netted by the CALLER into the base it passes here (see
+   the waGainsBase input), never inside this pricer. */
 
 export type WaCapitalGainsResult = {
   // WA-allocated long-term gains entering the base (≥ 0).
@@ -663,6 +682,39 @@ export function waCapitalGainsTax(args: {
      4. What survives — including every unused allowance
         dollar — carries out, character intact.
 
+   Washington attribution (contract v101, round-14 fix F4):
+   the ledger also tracks, inside each character, the part
+   of the carryforward that is directly attributable to
+   losses from sales or exchanges allocated to Washington
+   (RCW 82.87.100) — the plan inputs
+   capitalLossCarryInStWa / capitalLossCarryInLtWa state it
+   for the entering balance, each a portion of (never more
+   than) that character's total. The accounting invariant
+   for a priced year is:
+
+     Washington excise base = the year's gross realized
+     gains − the Washington-attributable carryforward the
+     year's gains absorbed
+
+   (equivalently, the netted federal long-term gain plus
+   the NON-Washington-attributable carryforward the gains
+   absorbed). Only the absorbed part counts: a
+   Washington-attributable loss that instead rides the
+   §1211(b) allowance against ordinary income, or carries
+   out unused, never reduces the excise base — RCW
+   82.87.040(3) includes the carryforward in adjusted
+   capital gain only to the extent it is included in the
+   federal net long-term capital gain computation. Within
+   a character the pool is fungible, so consumption is
+   attributed PRO-RATA: the Washington share of each
+   character's gains-absorption, and of each character's
+   allowance consumption, is that character's Washington
+   share of the amount being consumed. The non-Washington
+   remainder (which includes any exempt-sale and pre-2022
+   carryovers the household does not mark Washington) is
+   the RCW 82.87.020(1)(c)–(e) addback population: it never
+   reduces the Washington base.
+
    This transform is the single place those rules live: the
    plan march routes every pricing of a ledger year through
    it (via ledgerFields in simulateRothPlan), and the
@@ -705,8 +757,25 @@ export type LossLedgerYearResult = {
   // own gains (as opposed to consumed by the allowance or
   // carried out) — the absorption a gains year performs.
   absorbedByGains: number;
+  // The Washington-attributable part of the carry-in the
+  // year's own gains absorbed (contract v101): the ONLY
+  // part of the federal netting that reduces the year's
+  // Washington excise base (see the attribution rules in
+  // the ledger header above). Utilization-independent, like
+  // absorbedByGains: it is fixed by the year's gains and
+  // the entering attribution, never by the allowance
+  // reconciliation. $0 whenever no Washington-attributable
+  // carryforward entered.
+  waAbsorbedByGains: number;
   // What carries into the next year, character preserved.
   carryOut: LossCarryforward;
+  // The Washington-attributable part of what carries into
+  // the next year, character preserved (contract v101):
+  // the entering attribution minus its pro-rata share of
+  // the year's gains-absorption and of the allowance
+  // actually used. All $0 whenever no Washington-attributable
+  // carryforward entered.
+  waCarryOut: LossCarryforward;
 };
 
 // The §1211(b) allowance cap: $3,000, or $1,500 for married
@@ -747,9 +816,20 @@ export function applyLossLedger(
   // once, at year end, against the year's final priced
   // taxable income.
   taxableIncomeBeforeAllowance: number,
+  // The Washington-attributable part of the carry-in, by
+  // character (contract v101; see the attribution rules in
+  // the ledger header above). Optional: absent = none of
+  // the carry-in is Washington-attributable, the result's
+  // Washington fields are $0, and every pre-v101 caller
+  // prices bit-identically. Each character's figure is
+  // clamped to that character's carry-in — an attribution
+  // is a portion of the pool, never more than the pool.
+  waIn?: LossCarryforward,
 ): LossLedgerYearResult {
   const stIn = Math.max(0, carryIn.st);
   const ltIn = Math.max(0, carryIn.lt);
+  const waStIn = Math.min(stIn, Math.max(0, waIn?.st ?? 0));
+  const waLtIn = Math.min(ltIn, Math.max(0, waIn?.lt ?? 0));
   // Long-term column: the year's own long-term result netted
   // with the long-term carryover entering as a loss.
   const ltNet = ownLongTermResult - ltIn;
@@ -793,12 +873,42 @@ export function applyLossLedger(
   const absorbedByGains = r2(
     Math.max(0, stIn + ltIn - carryOut.st - carryOut.lt - allowanceUsed),
   );
+  // Washington attribution (contract v101): each character's
+  // gains-absorption is the part of that character's pool the
+  // year's gains consumed before the allowance ran (the
+  // long-term pool less its remainder, the short-term pool
+  // less its remainder), and the Washington share of every
+  // consumption is pro-rata within the character — of the
+  // gains-absorption against the entering pool, and of the
+  // allowance's used part against the post-gains remainder.
+  const ltAbsorbedByGains = Math.max(0, ltIn - remainingLtLoss);
+  const stAbsorbedByGains = Math.max(0, stIn - remainingStLoss);
+  const waLtAbsorbed =
+    ltIn > 0 ? (waLtIn * ltAbsorbedByGains) / ltIn : 0;
+  const waStAbsorbed =
+    stIn > 0 ? (waStIn * stAbsorbedByGains) / stIn : 0;
+  const waStRemainder = waStIn - waStAbsorbed;
+  const waLtRemainder = waLtIn - waLtAbsorbed;
+  const waStUsedByAllowance =
+    remainingStLoss > 0
+      ? (waStRemainder * stConsumedByAllowance) / remainingStLoss
+      : 0;
+  const waLtUsedByAllowance =
+    remainingLtLoss > 0
+      ? (waLtRemainder * ltConsumedByAllowance) / remainingLtLoss
+      : 0;
+  const waCarryOut: LossCarryforward = {
+    st: r2(Math.max(0, waStRemainder - waStUsedByAllowance)),
+    lt: r2(Math.max(0, waLtRemainder - waLtUsedByAllowance)),
+  };
   return {
     netResult: r2(totalLoss > 0 ? -totalLoss : pricedGain),
     allowance: r2(allowance),
     allowanceUsed: r2(allowanceUsed),
     absorbedByGains,
+    waAbsorbedByGains: r2(waStAbsorbed + waLtAbsorbed),
     carryOut,
+    waCarryOut,
   };
 }
 
@@ -2638,6 +2748,26 @@ export type RothPlanInputs = {
   // ordinary income year by year (see applyLossLedger).
   capitalLossCarryInSt?: number;
   capitalLossCarryInLt?: number;
+  // Washington-attributable portions of the entering
+  // carryforward (contract v101, round-14 fix F4): of each
+  // character's banked loss above, the part directly
+  // attributable to losses from sales or exchanges allocated
+  // to Washington under RCW 82.87.100. Each is a PORTION of
+  // its character's total — the engine clamps it to that
+  // total — stated as a positive loss amount like the totals
+  // themselves. Optional so every pre-existing constructor
+  // keeps its meaning: absent / 0 = no Washington-attributable
+  // part, the Washington excise base stays at the year's
+  // gross realized gains, and the plan prices bit-identically
+  // to before this build. Only the part of the attributable
+  // portion a year's gains actually absorb reduces that
+  // year's Washington base (see applyLossLedger); the
+  // remainder of the carryforward — non-Washington, exempt,
+  // and pre-2022 portions the household does not mark
+  // Washington — is added back under RCW 82.87.020(1)(c)–(e)
+  // and never reduces it.
+  capitalLossCarryInStWa?: number;
+  capitalLossCarryInLtWa?: number;
   // Itemized deductions (T5 build): the household's annual
   // itemized components, in dollars, entered once for the
   // plan and priced in EVERY plan year (in today's dollars,
@@ -3017,6 +3147,15 @@ export type RothYearDetail = {
   lossCarryInSt: number;
   lossCarryInLt: number;
   lossAbsorbed: number;
+  // The Washington-attributable part of lossAbsorbed
+  // (contract v101, display only like the rest of this
+  // ledger block): the amount this year's Washington
+  // excise base was reduced by — the gross gains on the
+  // year's waGains line exceed this line's base reduction
+  // by exactly the non-Washington absorption. $0 in every
+  // year of a plan with no Washington-attributable
+  // carryforward entered.
+  lossWaAbsorbed: number;
   lossAllowance: number;
   lossCarryOutSt: number;
   lossCarryOutLt: number;
@@ -3701,6 +3840,25 @@ export function simulateRothPlan(
   // before this build.
   let lossCarrySt = Math.max(0, inputs.capitalLossCarryInSt ?? 0);
   let lossCarryLt = Math.max(0, inputs.capitalLossCarryInLt ?? 0);
+  // Washington-attributable sub-state (contract v101): the
+  // part of each character's banked loss attributable to
+  // Washington-allocated sales, entering from the plan's
+  // capitalLossCarryInStWa / capitalLossCarryInLtWa (each
+  // clamped to its character's total — a portion, never
+  // more than the pool) and replaced each year by that
+  // year's reconciled Washington carry-out, exactly as the
+  // character totals above are replaced by the carry-out.
+  // All $0 in a plan that enters no Washington attribution,
+  // which is what keeps such a plan's Washington base at the
+  // gross gains, bit-identical to before this build.
+  let lossCarryWaSt = Math.min(
+    lossCarrySt,
+    Math.max(0, inputs.capitalLossCarryInStWa ?? 0),
+  );
+  let lossCarryWaLt = Math.min(
+    lossCarryLt,
+    Math.max(0, inputs.capitalLossCarryInLtWa ?? 0),
+  );
   // Gift what-if outflow state (see the input fields): applied
   // exactly once, in the first simulated year at or past the
   // gift age. Never set on a main run, so no main figure moves.
@@ -3775,8 +3933,14 @@ export function simulateRothPlan(
     // the priceYear fields for the NETTED year: the priced
     // ltcg is the net capital result after the carry-in
     // netting, the §1211(b) allowance rides alongside it, and
-    // the Washington excise keeps the GROSS gains as its base
-    // (it takes no carryforward). The fill base, every
+    // the Washington excise base is the gross gains minus
+    // only the Washington-attributable carryforward the
+    // gains absorbed (contract v101 — the ONE shared place
+    // the invariant in applyLossLedger's header is priced:
+    // base = gross − Washington-attributable absorbed; with
+    // no Washington attribution entered the absorbed part is
+    // $0 and the base is the gross gains, exactly the pre-v101
+    // figure). The fill base, every
     // settlement round, the ceiling re-solves, the harvest
     // search, and the marginal reprices all price through
     // this one transform, so they can never disagree about
@@ -3786,6 +3950,8 @@ export function simulateRothPlan(
     // with no banked loss bit-identical.
     const carryInSt = lossCarrySt;
     const carryInLt = lossCarryLt;
+    const carryInWaSt = lossCarryWaSt;
+    const carryInWaLt = lossCarryWaLt;
     const ledgerOn = carryInSt > 0 || carryInLt > 0;
     const ledgerFields = (
       grossGains: number,
@@ -3796,17 +3962,21 @@ export function simulateRothPlan(
       // its carry-out — so utilization is passed as
       // unbounded here; the year's carry-out is reconciled
       // once, at year end (ledFinal below), against the
-      // final priced year's taxable income.
+      // final priced year's taxable income. The Washington
+      // absorbed figure the base subtracts is
+      // utilization-independent, so a trial pricing and the
+      // year-end reconciliation agree on the base exactly.
       const led = applyLossLedger(
         { st: carryInSt, lt: carryInLt },
         grossGains,
         effFilingStatus,
         Number.POSITIVE_INFINITY,
+        { st: carryInWaSt, lt: carryInWaLt },
       );
       return {
         ltcg: led.netResult,
         capitalLossAllowance: led.allowance,
-        waGainsBase: grossGains,
+        waGainsBase: r2(grossGains - led.waAbsorbedByGains),
       };
     };
 
@@ -5861,11 +6031,17 @@ export function simulateRothPlan(
           realizedGains + injectedLtcg + gainsHarvested,
           effFilingStatus,
           priced.taxableIncomeBeforeLossAllowance,
+          { st: carryInWaSt, lt: carryInWaLt },
         )
       : null;
     if (ledFinal) {
       lossCarrySt = ledFinal.carryOut.st;
       lossCarryLt = ledFinal.carryOut.lt;
+      // The Washington sub-state advances with the same
+      // reconciliation (contract v101): next year's base
+      // subtracts only what remains of the attribution.
+      lossCarryWaSt = ledFinal.waCarryOut.st;
+      lossCarryWaLt = ledFinal.waCarryOut.lt;
     }
 
     // ACA credit kept for the year (priced on final ACA MAGI —
@@ -6380,6 +6556,7 @@ export function simulateRothPlan(
       lossCarryInSt: r2(carryInSt),
       lossCarryInLt: r2(carryInLt),
       lossAbsorbed: ledFinal ? ledFinal.absorbedByGains : 0,
+      lossWaAbsorbed: ledFinal ? ledFinal.waAbsorbedByGains : 0,
       lossAllowance: ledFinal ? ledFinal.allowance : 0,
       lossCarryOutSt: ledFinal ? ledFinal.carryOut.st : 0,
       lossCarryOutLt: ledFinal ? ledFinal.carryOut.lt : 0,

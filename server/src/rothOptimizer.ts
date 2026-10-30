@@ -2292,6 +2292,15 @@ export type RothSavedLike = {
   // untouched record prices bit-identically to before.
   capitalLossCarryInStCents?: number | null;
   capitalLossCarryInLtCents?: number | null;
+  // Washington-attributable portions of the entering
+  // carryforward (contract v101, round-14 fix F4), integer
+  // cents like the totals they are portions of. Optional:
+  // a saved record written before this build has neither
+  // key, which reads as blank = $0 = no Washington
+  // attribution, so an untouched record prices
+  // bit-identically to before.
+  capitalLossCarryInStWaCents?: number | null;
+  capitalLossCarryInLtWaCents?: number | null;
   // Itemized deductions (T5 build), in integer cents:
   // mortgage interest, state and local taxes paid,
   // charitable contributions, and other itemized
@@ -2575,6 +2584,10 @@ export type ExecutionYearResult = {
 // priced with, and the re-solve prices the year the sim
 // priced. No banked loss → the base keeps its gross ltcg
 // and carries no allowance, bit-identical to before.
+// Contract v101: the Washington base here is the same
+// figure the march priced — the gross gains minus the
+// Washington-attributable absorbed part the shared
+// transform reports — never the bare gross gains.
 function executionLedgerFields(
   plan: RothPlanInputs,
   y: RothYear,
@@ -2593,11 +2606,15 @@ function executionLedgerFields(
     y.detail.ltcg,
     y.filingStatus,
     Number.POSITIVE_INFINITY,
+    {
+      st: Math.max(0, plan.capitalLossCarryInStWa ?? 0),
+      lt: Math.max(0, plan.capitalLossCarryInLtWa ?? 0),
+    },
   );
   return {
     ltcg: led.netResult,
     capitalLossAllowance: led.allowance,
-    waGainsBase: y.detail.ltcg,
+    waGainsBase: r2(y.detail.ltcg - led.waAbsorbedByGains),
   };
 }
 
@@ -5271,6 +5288,12 @@ export function planInputsFromSaved(
     // exactly as entered.
     capitalLossCarryInSt: dollars(saved.capitalLossCarryInStCents ?? null),
     capitalLossCarryInLt: dollars(saved.capitalLossCarryInLtCents ?? null),
+    // Washington-attribution passthrough (contract v101):
+    // absent / null cents = blank = $0 attributable on that
+    // character, so the Washington base stays at the gross
+    // gains and the plan prices bit-identically to before.
+    capitalLossCarryInStWa: dollars(saved.capitalLossCarryInStWaCents ?? null),
+    capitalLossCarryInLtWa: dollars(saved.capitalLossCarryInLtWaCents ?? null),
     // Itemized passthrough (T5): absent / null cents = blank
     // = $0 on that component, so the itemized total is $0,
     // the standard deduction wins, and the plan prices
