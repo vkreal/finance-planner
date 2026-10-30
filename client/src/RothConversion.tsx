@@ -601,6 +601,13 @@ export function RothConversion() {
   // preserved). Blank = none.
   const [carryInSt, setCarryInSt] = useState("");
   const [carryInLt, setCarryInLt] = useState("");
+  // Washington-attributable portions of the carryforwards
+  // above (contract v101): of each character's banked loss,
+  // the part from sales allocated to Washington — the only
+  // part whose absorption by a year's gains reduces that
+  // year's Washington capital-gains excise. Blank = none.
+  const [carryInStWa, setCarryInStWa] = useState("");
+  const [carryInLtWa, setCarryInLtWa] = useState("");
   // Itemized deductions (T5 build): the household's annual
   // itemized components — each priced year takes the greater
   // of the itemized total (SALT capped) and the standard
@@ -1162,6 +1169,8 @@ export function RothConversion() {
     residenceState?: "WA" | "other" | null;
     capitalLossCarryInStCents?: number | null;
     capitalLossCarryInLtCents?: number | null;
+    capitalLossCarryInStWaCents?: number | null;
+    capitalLossCarryInLtWaCents?: number | null;
     itemizedMortgageInterestCents?: number | null;
     itemizedSaltPaidCents?: number | null;
     itemizedCharitableCents?: number | null;
@@ -1291,6 +1300,8 @@ export function RothConversion() {
     setResidenceState(src.residenceState === "WA" ? "WA" : "other");
     setCarryInSt(money(src.capitalLossCarryInStCents ?? null));
     setCarryInLt(money(src.capitalLossCarryInLtCents ?? null));
+    setCarryInStWa(money(src.capitalLossCarryInStWaCents ?? null));
+    setCarryInLtWa(money(src.capitalLossCarryInLtWaCents ?? null));
     setItemizedMortgage(money(src.itemizedMortgageInterestCents ?? null));
     setItemizedSalt(money(src.itemizedSaltPaidCents ?? null));
     setItemizedCharitable(money(src.itemizedCharitableCents ?? null));
@@ -1807,6 +1818,8 @@ export function RothConversion() {
       residenceState,
       capitalLossCarryInStCents: parseMoney(carryInSt),
       capitalLossCarryInLtCents: parseMoney(carryInLt),
+      capitalLossCarryInStWaCents: parseMoney(carryInStWa),
+      capitalLossCarryInLtWaCents: parseMoney(carryInLtWa),
       itemizedMortgageInterestCents: parseMoney(itemizedMortgage),
       itemizedSaltPaidCents: parseMoney(itemizedSalt),
       itemizedCharitableCents: parseMoney(itemizedCharitable),
@@ -2020,7 +2033,7 @@ export function RothConversion() {
     jobSalary, jobEmployer401k, jobEmployerHsa,
     drawOrder, drawOrderSwitchAge, drawOrderAfter,
     soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple, benchSingle, benchFamily,
-    inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, ceilBracket, ceilIrmaa, ceilLtcg, ceilAca, ceilAcaFamilyOnly, magiCap, cliffBuffer,
+    inflation, stateRate, residenceState, carryInSt, carryInLt, carryInStWa, carryInLtWa, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, ceilBracket, ceilIrmaa, ceilLtcg, ceilAca, ceilAcaFamilyOnly, magiCap, cliffBuffer,
     guardrailOn, bunchingOn, gainsHarvestOn,
     balanceOverrides,
     execPretax, execPretaxSpouse, execRoth, execTaxable, execHsa,
@@ -2618,6 +2631,8 @@ export function RothConversion() {
           : null,
       capitalLossCarryInStCents: sc.capitalLossCarryInStCents ?? null,
       capitalLossCarryInLtCents: sc.capitalLossCarryInLtCents ?? null,
+      capitalLossCarryInStWaCents: sc.capitalLossCarryInStWaCents ?? null,
+      capitalLossCarryInLtWaCents: sc.capitalLossCarryInLtWaCents ?? null,
       itemizedMortgageInterestCents: sc.itemizedMortgageInterestCents ?? null,
       itemizedSaltPaidCents: sc.itemizedSaltPaidCents ?? null,
       itemizedCharitableCents: sc.itemizedCharitableCents ?? null,
@@ -3320,6 +3335,8 @@ export function RothConversion() {
       residenceState,
       capitalLossCarryInSt: parseDollars(carryInSt) ?? 0,
       capitalLossCarryInLt: parseDollars(carryInLt) ?? 0,
+      capitalLossCarryInStWa: parseDollars(carryInStWa) ?? 0,
+      capitalLossCarryInLtWa: parseDollars(carryInLtWa) ?? 0,
       itemizedMortgageInterest: parseDollars(itemizedMortgage) ?? 0,
       itemizedSaltPaid: parseDollars(itemizedSalt) ?? 0,
       itemizedCharitable: parseDollars(itemizedCharitable) ?? 0,
@@ -3348,7 +3365,7 @@ export function RothConversion() {
     hsaBal, basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS,
     ssSAge, ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom,
     protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple,
-    benchSingle, benchFamily, acaSpouseEndAge, inflation, stateRate, residenceState, carryInSt, carryInLt, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, balanceOverrides, data,
+    benchSingle, benchFamily, acaSpouseEndAge, inflation, stateRate, residenceState, carryInSt, carryInLt, carryInStWa, carryInLtWa, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, balanceOverrides, data,
   ]);
 
   const ceilings: FillCeilings = useMemo(
@@ -3913,6 +3930,8 @@ export function RothConversion() {
     stateRate: numChanged(stateRate, savedResolved?.stateRatePct),
     carryInSt: moneyChanged(carryInSt, savedResolved?.capitalLossCarryInStCents),
     carryInLt: moneyChanged(carryInLt, savedResolved?.capitalLossCarryInLtCents),
+    carryInStWa: moneyChanged(carryInStWa, savedResolved?.capitalLossCarryInStWaCents),
+    carryInLtWa: moneyChanged(carryInLtWa, savedResolved?.capitalLossCarryInLtWaCents),
     itemizedMortgage: moneyChanged(itemizedMortgage, savedResolved?.itemizedMortgageInterestCents),
     itemizedSalt: moneyChanged(itemizedSalt, savedResolved?.itemizedSaltPaidCents),
     itemizedCharitable: moneyChanged(itemizedCharitable, savedResolved?.itemizedCharitableCents),
@@ -6959,7 +6978,7 @@ export function RothConversion() {
         </>
       ))}
 
-      {rothSection("advanced", "Advanced", advancedSummary + (sectionChangedCount(["ceilBracket", "ceilIrmaa", "ceilLtcg", "ceilAca", "ceilAcaFamilyOnly", "magiCap", "cliffBuffer", "guardrailOn", "bunchingOn", "gainsHarvestOn", "expectedPct", "inflation", "residenceState", "stateRate", "carryInSt", "carryInLt", "itemizedMortgage", "itemizedSalt", "itemizedCharitable", "itemizedOther", "eduStudents", "heirRate"]) > 0 ? ` · ${sectionChangedCount(["ceilBracket", "ceilIrmaa", "ceilLtcg", "ceilAca", "ceilAcaFamilyOnly", "magiCap", "cliffBuffer", "guardrailOn", "bunchingOn", "gainsHarvestOn", "expectedPct", "inflation", "residenceState", "stateRate", "carryInSt", "carryInLt", "itemizedMortgage", "itemizedSalt", "itemizedCharitable", "itemizedOther", "eduStudents", "heirRate"])} changed` : ""), (
+      {rothSection("advanced", "Advanced", advancedSummary + (sectionChangedCount(["ceilBracket", "ceilIrmaa", "ceilLtcg", "ceilAca", "ceilAcaFamilyOnly", "magiCap", "cliffBuffer", "guardrailOn", "bunchingOn", "gainsHarvestOn", "expectedPct", "inflation", "residenceState", "stateRate", "carryInSt", "carryInLt", "carryInStWa", "carryInLtWa", "itemizedMortgage", "itemizedSalt", "itemizedCharitable", "itemizedOther", "eduStudents", "heirRate"]) > 0 ? ` · ${sectionChangedCount(["ceilBracket", "ceilIrmaa", "ceilLtcg", "ceilAca", "ceilAcaFamilyOnly", "magiCap", "cliffBuffer", "guardrailOn", "bunchingOn", "gainsHarvestOn", "expectedPct", "inflation", "residenceState", "stateRate", "carryInSt", "carryInLt", "carryInStWa", "carryInLtWa", "itemizedMortgage", "itemizedSalt", "itemizedCharitable", "itemizedOther", "eduStudents", "heirRate"])} changed` : ""), (
         <>
           <p className="text-sm text-[var(--dim)]">
             Each year in the window, the plan converts just enough to reach the{" "}
@@ -7206,6 +7225,14 @@ export function RothConversion() {
             {moneyField("Capital-loss carryforward — long-term", carryInLt, setCarryInLt, {
               hint: "Unused net long-term capital losses banked before the plan starts. Short-term and long-term are tracked separately, the way the IRS worksheet does it. Blank = none.",
               changed: changedFields.carryInLt,
+            })}
+            {moneyField("…of which Washington-allocated — short-term", carryInStWa, setCarryInStWa, {
+              hint: "Washington only: of the short-term carryforward above, the part from sales allocated to Washington. Only this part, as later gains absorb it, reduces the Washington capital-gains excise — the rest is added back. Blank = none of it.",
+              changed: changedFields.carryInStWa,
+            })}
+            {moneyField("…of which Washington-allocated — long-term", carryInLtWa, setCarryInLtWa, {
+              hint: "Washington only: of the long-term carryforward above, the part from sales allocated to Washington (post-2021). Only this part, as later gains absorb it, reduces the Washington capital-gains excise — the rest is added back. Blank = none of it.",
+              changed: changedFields.carryInLtWa,
             })}
             {moneyField("Mortgage interest", itemizedMortgage, setItemizedMortgage, {
               hint: "Itemized deductions: the household's annual mortgage interest. Each priced year takes the greater of the itemized total and that year's standard deduction. Blank = $0.",

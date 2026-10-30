@@ -98,6 +98,12 @@ type DecForm = {
   itemizedSaltPaid: string;
   itemizedCharitable: string;
   itemizedOther: string;
+  // Education students (contract v103): the December tax
+  // year's per-student qualified expenses as typed strings
+  // plus the household's AOTC-eligible mark per student —
+  // the same rows the Tax Plan record and the Playground
+  // carry, in this console's own form units.
+  educationStudents: { expenses: string; aotcEligible: boolean }[];
   strayCapDist: StrayForm;
   strayK1: StrayForm;
   strayTaxExempt: StrayForm;
@@ -107,6 +113,10 @@ type DecForm = {
   strayCutoff: StrayForm;
   strayJanPaid: StrayForm;
   strayJanPaidQualifiedAmount: string;
+  // Capital-gain-distribution portion of the January-paid
+  // total (contract v104): a plain money string like the
+  // qualified portion beside it.
+  strayJanPaidCapGainAmount: string;
   strayDivInt: StrayForm;
   strayPlannedSales: StrayForm;
   strayROC: StrayForm;
@@ -134,6 +144,7 @@ type DecForm = {
    fallback the first-open preseed uses). */
 function recordFactsOf(
   data: ApiResponse<typeof api, "getRothPlanner"> | undefined,
+  taxYear?: number,
 ): DecemberRecordFacts {
   const s = data?.saved;
   const primaryCents = s?.pretaxCents ?? data?.snapshot?.pretaxCents ?? null;
@@ -143,6 +154,20 @@ function recordFactsOf(
     pretaxBalancePrimary: primaryCents != null ? primaryCents / 100 : null,
     pretaxBalanceSpouse:
       s?.pretaxSpouseCents != null ? s.pretaxSpouseCents / 100 : null,
+    // The record's entered education students for the
+    // December tax year (v103): the record's per-year
+    // cents entries filtered to that year and converted
+    // to dollars — the December shape. Null when the
+    // record carries no entries at all.
+    educationStudents:
+      s?.educationStudents != null
+        ? s.educationStudents
+            .filter((e) => taxYear == null || e.year === taxYear)
+            .map((e) => ({
+              expenses: e.expensesCents / 100,
+              aotcEligible: e.aotcEligible === true,
+            }))
+        : null,
   };
 }
 
@@ -213,6 +238,10 @@ function formFromState(s: DecemberState): DecForm {
     itemizedSaltPaid: moneyStr(s.itemizedSaltPaid),
     itemizedCharitable: moneyStr(s.itemizedCharitable),
     itemizedOther: moneyStr(s.itemizedOther),
+    educationStudents: (s.educationStudents ?? []).map((x) => ({
+      expenses: moneyStr(x.expenses),
+      aotcEligible: x.aotcEligible,
+    })),
     strayCapDist: st(s.strayCapDist),
     strayK1: st(s.strayK1),
     strayTaxExempt: st(s.strayTaxExempt),
@@ -222,6 +251,7 @@ function formFromState(s: DecemberState): DecForm {
     strayCutoff: st(s.strayCutoff),
     strayJanPaid: st(s.strayJanPaid),
     strayJanPaidQualifiedAmount: moneyStr(s.strayJanPaidQualifiedAmount),
+    strayJanPaidCapGainAmount: moneyStr(s.strayJanPaidCapGainAmount),
     strayDivInt: st(s.strayDivInt),
     strayPlannedSales: st(s.strayPlannedSales),
     strayROC: st(s.strayROC),
@@ -320,6 +350,17 @@ function stateFromForm(f: DecForm): DecemberState {
     itemizedSaltPaid: clamp0(parseMoney(f.itemizedSaltPaid)),
     itemizedCharitable: clamp0(parseMoney(f.itemizedCharitable)),
     itemizedOther: clamp0(parseMoney(f.itemizedOther)),
+    // Education students (v103): the form's rows ARE the
+    // entered answer whenever the form was hydrated from
+    // an entered list — stateFromForm always returns a
+    // list (never null), and decemberStateForSave decides
+    // whether this list or the stored value is what saves
+    // (a record-resolved overlay saves the stored null
+    // until the user edits these controls).
+    educationStudents: f.educationStudents.map((x) => ({
+      expenses: clamp0(parseMoney(x.expenses)),
+      aotcEligible: x.aotcEligible,
+    })),
     strayCapDist: st(f.strayCapDist),
     strayK1: stSigned(f.strayK1),
     strayTaxExempt: st(f.strayTaxExempt),
@@ -329,6 +370,7 @@ function stateFromForm(f: DecForm): DecemberState {
     strayCutoff: st(f.strayCutoff),
     strayJanPaid: st(f.strayJanPaid),
     strayJanPaidQualifiedAmount: clamp0(parseMoney(f.strayJanPaidQualifiedAmount)),
+    strayJanPaidCapGainAmount: clamp0(parseMoney(f.strayJanPaidCapGainAmount)),
     strayDivInt: st(f.strayDivInt),
     strayPlannedSales: st(f.strayPlannedSales),
     strayROC: st(f.strayROC),
@@ -393,9 +435,13 @@ export function December() {
       setBalancesEdited(false);
       setRocCharacterEdited(false);
       setJanPaidCharacterEdited(false);
+      setEducationEdited(false);
       setForm(
         formFromState(
-          resolveDecemberStateAtLoad(res.state, recordFactsOf(rothQ.data)),
+          resolveDecemberStateAtLoad(
+            res.state,
+            recordFactsOf(rothQ.data, res.state.taxYear),
+          ),
         ),
       );
       setSaveNote(
@@ -427,9 +473,17 @@ export function December() {
     legacyBeneficiaryAnswerUnconfirmed: false,
     legacyRocSplitUnconfirmed: false,
     legacyJanPaidSplitUnconfirmed: false,
+    educationStudents: null,
   });
   const [beneficiaryEdited, setBeneficiaryEdited] = useState(false);
   const [balancesEdited, setBalancesEdited] = useState(false);
+  // Education provenance (v103): whether the user has
+  // edited the education controls in this console since
+  // hydration — until then a save preserves the stored
+  // education value, so a Tax Plan record overlay (or the
+  // first-open preseed's stored value) is what governs,
+  // exactly like the beneficiary fact.
+  const [educationEdited, setEducationEdited] = useState(false);
   // Round-6: whether the user has edited each tax-
   // character control in this console since hydration —
   // the matching legacy character flag clears only on
@@ -474,6 +528,7 @@ export function December() {
     const needsRecord =
       !decQ.data.hasStored ||
       decQ.data.state.primarySoleBeneficiaryOfSpouse == null ||
+      decQ.data.state.educationStudents == null ||
       (!decQ.data.state.pretaxSplitExplicit &&
         decQ.data.state.pretaxBalance != null);
     if (needsRecord && rothQ.isPending) return;
@@ -487,9 +542,13 @@ export function December() {
     setBalancesEdited(false);
     setRocCharacterEdited(false);
     setJanPaidCharacterEdited(false);
+    setEducationEdited(false);
     let initial = formFromState(
       decQ.data.hasStored
-        ? resolveDecemberStateAtLoad(decQ.data.state, recordFactsOf(rothQ.data))
+        ? resolveDecemberStateAtLoad(
+            decQ.data.state,
+            recordFactsOf(rothQ.data, decQ.data.state.taxYear),
+          )
         : decQ.data.state,
     );
     if (!decQ.data.hasStored && rothQ.data) {
@@ -578,6 +637,19 @@ export function December() {
             s.itemizedOtherCents != null
               ? fmtMoneyInput(s.itemizedOtherCents / 100)
               : initial.itemizedOther,
+          // Education students (v103): the first-open
+          // preseed carries the record's entered students
+          // for the December tax year, so a household with
+          // college expenses on its Tax Plan record opens
+          // with them priced instead of silently dropped.
+          // (A stored console's own list always wins —
+          // this preseed runs only when nothing is stored.)
+          educationStudents: (s.educationStudents ?? [])
+            .filter((e) => e.year === year)
+            .map((e) => ({
+              expenses: fmtMoneyInput(e.expensesCents / 100),
+              aotcEligible: e.aotcEligible === true,
+            })),
         };
       }
     }
@@ -601,6 +673,10 @@ export function December() {
         legacyBeneficiaryAnswerUnconfirmed: false,
         legacyRocSplitUnconfirmed: false,
         legacyJanPaidSplitUnconfirmed: false,
+        // The preseeded education students become this
+        // console's own stored values on the first save —
+        // they are its initial entries, like the balances.
+        educationStudents: preseeded.educationStudents,
       };
     }
     setForm(initial);
@@ -632,6 +708,7 @@ export function December() {
             balances: balancesEdited,
             rocCharacter: rocCharacterEdited,
             janPaidCharacter: janPaidCharacterEdited,
+            education: educationEdited,
           },
         ),
         {
@@ -920,6 +997,11 @@ export function December() {
                         ? `−${fmtDollars(likelyCase.creditAtHeadline)}`
                         : fmtDollars(likelyCase.creditAtHeadline),
                     )}
+                  {likelyCase.educationRefundableAtHeadline > 0 &&
+                    billRow(
+                      "Refundable education credit (AOTC)",
+                      `−${fmtDollars(likelyCase.educationRefundableAtHeadline)}`,
+                    )}
                   {likelyCase.excessAptcRepayment != null &&
                     likelyCase.excessAptcRepayment > 0 &&
                     billRow(
@@ -948,6 +1030,28 @@ export function December() {
                     )
                   )}
                 </div>
+                {likelyCase.educationNonrefundableAtHeadline > 0 && (
+                  <p className="mt-2 text-xs text-[var(--dim)]">
+                    Education credits of{" "}
+                    {fmtDollars(likelyCase.educationNonrefundableAtHeadline)} are
+                    already applied against the federal tax above
+                    {likelyCase.educationChoiceAtHeadline === "aotc"
+                      ? " (American Opportunity Credit)"
+                      : likelyCase.educationChoiceAtHeadline === "llc"
+                        ? " (Lifetime Learning Credit)"
+                        : ""}
+                    .
+                  </p>
+                )}
+                {likelyCase.excludesEducationCredits && (
+                  <p className="mt-2 text-sm text-[var(--warn)]" role="note">
+                    This settlement excludes education credits — no education
+                    expenses are entered below, so the American Opportunity
+                    Credit and the Lifetime Learning Credit are not priced in
+                    it. It is not a final settlement if anyone in the household
+                    paid qualified education expenses this year.
+                  </p>
+                )}
                 <p className="mt-2 text-xs text-[var(--dim)]">
                   This estimate is before any withholding or estimated payments,
                   which this console does not track.
@@ -1037,6 +1141,18 @@ export function December() {
                         <span className="font-semibold">
                           {fmtDollars(c.netSettleAtHeadline)}
                         </span>
+                      </p>
+                    )}
+                    {c.educationRefundableAtHeadline > 0 && (
+                      <p className="tnum mt-1 text-sm">
+                        Refundable education credit included: −
+                        {fmtDollars(c.educationRefundableAtHeadline)}
+                      </p>
+                    )}
+                    {c.excludesEducationCredits && (
+                      <p className="mt-1 text-sm text-[var(--warn)]" role="note">
+                        Excludes education credits — no education expenses
+                        entered.
                       </p>
                     )}
                     {c.overCliffEvenAtZero && (
@@ -1355,6 +1471,138 @@ export function December() {
         </p>
       </section>
 
+      {/* Education credits (contract v103) */}
+      <section className={sectionCls} aria-label="Education credits">
+        <h3 className="text-base font-semibold">Education credits</h3>
+        <div className="mt-1 max-w-3xl space-y-1 text-sm text-[var(--dim)]">
+          <p>
+            <strong className="text-[var(--text)]">AOTC — the American Opportunity Credit:</strong>{" "}
+            up to $2,500 per student. Of that, $1,500 lowers the tax bill, and
+            $1,000 is refundable — it comes back at filing even if no tax is
+            owed.
+          </p>
+          <p>
+            <strong className="text-[var(--text)]">LLC — the Lifetime Learning Credit:</strong>{" "}
+            up to $2,000 per tax return (not per student), for students who do
+            not qualify for the AOTC.
+          </p>
+          <p>
+            Both credits shrink once married-filing-jointly income passes
+            $160,000, and they are gone at $180,000.
+          </p>
+          <p>
+            Qualified expenses are the amounts from Form 1098-T — tuition and
+            required fees the student actually paid this year. Enter one row
+            per student, and check the AOTC box only for a student who
+            qualifies for the American Opportunity Credit.
+          </p>
+        </div>
+        {form.educationStudents.length === 0 && (
+          <p className="mt-3 text-sm text-[var(--warn)]" role="note">
+            No students entered — the settlement above excludes education
+            credits.
+          </p>
+        )}
+        {form.educationStudents.map((student, i) => (
+          <div
+            key={i}
+            className="mt-3 rounded-[var(--radius)] border border-[var(--border)] px-3 py-3"
+          >
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {moneyField(
+                `Student ${i + 1} — qualified expenses`,
+                student.expenses,
+                (v) => {
+                  setEducationEdited(true);
+                  edit((f) => ({
+                    ...f,
+                    educationStudents: f.educationStudents.map((x, j) =>
+                      j === i ? { ...x, expenses: v } : x,
+                    ),
+                  }));
+                },
+                { idLabel: `December education student ${i + 1} expenses` },
+              )}
+              <div className="flex items-end justify-between gap-3 pb-1">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    aria-label={`Student ${i + 1} eligible for the American Opportunity Credit (AOTC)`}
+                    checked={student.aotcEligible}
+                    onChange={(e) => {
+                      setEducationEdited(true);
+                      edit((f) => ({
+                        ...f,
+                        educationStudents: f.educationStudents.map((x, j) =>
+                          j === i ? { ...x, aotcEligible: e.target.checked } : x,
+                        ),
+                      }));
+                    }}
+                  />
+                  Eligible for the AOTC
+                </label>
+                <button
+                  type="button"
+                  aria-label={`Remove student ${i + 1}`}
+                  className="text-sm text-[var(--dim)] underline underline-offset-2 hover:text-[var(--bad)]"
+                  onClick={() => {
+                    setEducationEdited(true);
+                    edit((f) => ({
+                      ...f,
+                      educationStudents: f.educationStudents.filter(
+                        (_, j) => j !== i,
+                      ),
+                    }));
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+        <button
+          type="button"
+          aria-label="Add a student"
+          className="mt-3 rounded-[var(--radius)] border border-[var(--border)] px-4 py-2 text-sm font-medium hover:text-[var(--accent)]"
+          onClick={() => {
+            setEducationEdited(true);
+            edit((f) => ({
+              ...f,
+              educationStudents: [
+                ...f.educationStudents,
+                { expenses: "", aotcEligible: true },
+              ],
+            }));
+          }}
+        >
+          Add a student
+        </button>
+        {likelyCase != null && likelyCase.hasEducationExpenses && (
+          <p className="tnum mt-3 max-w-3xl text-sm text-[var(--dim)]">
+            Priced at the headline draw:{" "}
+            {likelyCase.educationChoiceAtHeadline === "aotc"
+              ? `American Opportunity Credit ${fmtDollars(likelyCase.educationAotcAtHeadline)}`
+              : likelyCase.educationChoiceAtHeadline === "llc"
+                ? `Lifetime Learning Credit ${fmtDollars(likelyCase.educationLlcAtHeadline)}`
+                : "no credit after the phase-out"}
+            {likelyCase.educationNonrefundableAtHeadline > 0 &&
+              ` — ${fmtDollars(likelyCase.educationNonrefundableAtHeadline)} applied against the tax`}
+            {likelyCase.educationRefundableAtHeadline > 0 &&
+              `, plus ${fmtDollars(likelyCase.educationRefundableAtHeadline)} refundable at filing`}
+            . Already reflected in the settlement above.
+          </p>
+        )}
+        {form.educationStudents.length > 0 &&
+          !form.educationStudents.some((x) => parseMoney(x.expenses) > 0) && (
+            <p className="mt-3 text-sm text-[var(--warn)]" role="note">
+              No expenses entered yet — the settlement above excludes
+              education credits until a student&rsquo;s expenses are entered.
+            </p>
+          )}
+      </section>
+
       {/* Strays checklist */}
       <section className={sectionCls} aria-label="Strays checklist">
         <h3 className="text-base font-semibold">Strays checklist</h3>
@@ -1388,6 +1636,26 @@ export function December() {
               },
               { idLabel: "December stray January-paid qualified portion", hint: "The part of the total above that is qualified dividends — it keeps its qualified character. Leave at $0 if none of it is qualified." },
               )}
+              {moneyField("Of which capital-gain distributions", form.strayJanPaidCapGainAmount, (v) => {
+                // Contract v104: this field is a plain
+                // character split of the same total — it
+                // does NOT touch the qualified-amount
+                // provenance flag above, which only the
+                // qualified field confirms.
+                edit((f) => ({
+                  ...f,
+                  strayJanPaidCapGainAmount: v,
+                }));
+              },
+              { idLabel: "December stray January-paid capital-gain portion", hint: "The part of the total above that the fund calls a capital-gain distribution. Leave at $0 if none of it is one." },
+              )}
+              <p className="mt-2 text-sm text-[var(--dim)]">
+                A distribution declared in October–December and paid in
+                January counts as received on December 31 of the earlier
+                year. A capital-gain distribution is a long-term gain,
+                not an ordinary dividend — enter that part above so it is
+                taxed as a gain.
+              </p>
             </div>
           ),
         })}
@@ -1591,6 +1859,7 @@ export function December() {
                 setBalancesEdited(true);
                 setRocCharacterEdited(true);
                 setJanPaidCharacterEdited(true);
+                setEducationEdited(true);
                 setForm(formFromState(blank));
                 setResetArmed(false);
               }}

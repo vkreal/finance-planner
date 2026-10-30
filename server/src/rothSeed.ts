@@ -135,6 +135,11 @@ export type RothSeedInputs = {
   // optional pricing input the seed does not presume.
   capitalLossCarryInStCents: null;
   capitalLossCarryInLtCents: null;
+  // Washington-attributable portions of the carryforward
+  // (contract v101): null in the seed = blank = no
+  // Washington attribution presumed.
+  capitalLossCarryInStWaCents: null;
+  capitalLossCarryInLtWaCents: null;
   // Itemized deductions (T5 build): null in the seed = blank
   // = no itemized components, like every optional pricing
   // input the seed does not presume.
@@ -228,6 +233,8 @@ export function seedRothInputs(derived: {
     residenceState: null,
     capitalLossCarryInStCents: null,
     capitalLossCarryInLtCents: null,
+    capitalLossCarryInStWaCents: null,
+    capitalLossCarryInLtWaCents: null,
     itemizedMortgageInterestCents: null,
     itemizedSaltPaidCents: null,
     itemizedCharitableCents: null,

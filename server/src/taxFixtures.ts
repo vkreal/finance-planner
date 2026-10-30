@@ -18574,7 +18574,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t4-wa-excise-takes-no-carryforward",
     kind: "tax",
-    note: "T4 (f) — WASHINGTON TAKES NO CARRYFORWARD (hand-derived; the carry-out RE-PINNED by the round-3 carryover fix — the original pin consumed the allowance in a year that could not use it): a WA plan with a $600,000 long-term banked loss realizes $500,000 of gains in one year ($1,000,000 drawn from a $1,000,000 account at 50% basis). Federally the loss absorbs every gain (absorbed $500,000), the year is still a net-loss year (allowance $3,000 claimed), and the federal tax is $0 — but the excise prices on the year's OWN gains, untouched by the federal ledger: $500,000 − $278,000 standard deduction = $222,000 of taxable Washington gains at 7% = $15,540 of state tax, even with a 5% flat rate also entered (the excise replaces it). The $15,540 is paid from the $100,000 pre-tax balance (the taxable account is empty after the draw), which is a distribution, not a gain — the excise base does not move. That distribution is the year's only income beside the absorbed gains, and the $32,200 standard deduction shelters it in full even before the allowance, so the year has no taxable income for the allowance to offset: none of it is used, and the full $100,000 residue carries out.",
+    note: "T4 (f) — WASHINGTON EXCISE ON GROSS GAINS WHEN NO WASHINGTON-ALLOCATED PORTION IS ENTERED (hand-derived; the carry-out RE-PINNED by the round-3 carryover fix — the original pin consumed the allowance in a year that could not use it; the figures are UNCHANGED by contract v101, which corrected the rule's statement and scope: this case enters no Washington-attributable portion of its banked loss, so under RCW 82.87.020(1)(c)–(e) the whole carryforward is added back and the base stays at the gross gains — the v101 fixtures pin the entered-attribution cases): a WA plan with a $600,000 long-term banked loss realizes $500,000 of gains in one year ($1,000,000 drawn from a $1,000,000 account at 50% basis). Federally the loss absorbs every gain (absorbed $500,000), the year is still a net-loss year (allowance $3,000 claimed), and the federal tax is $0 — but the excise prices on the year's OWN gains, untouched by the federal ledger: $500,000 − $278,000 standard deduction = $222,000 of taxable Washington gains at 7% = $15,540 of state tax, even with a 5% flat rate also entered (the excise replaces it). The $15,540 is paid from the $100,000 pre-tax balance (the taxable account is empty after the draw), which is a distribution, not a gain — the excise base does not move. That distribution is the year's only income beside the absorbed gains, and the $32,200 standard deduction shelters it in full even before the allowance, so the year has no taxable income for the allowance to offset: none of it is used, and the full $100,000 residue carries out.",
     expected: {
       federalTax: 0,
       stateTax: 15540,
@@ -18669,12 +18669,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t4-entering-input-and-no-move-anchor",
     kind: "tax",
-    note: "T4 (h) — ENTERING INPUT PLUMBING + NO-MOVE ANCHOR: the saved shape's capitalLossCarryInStCents / capitalLossCarryInLtCents convert through planInputsFromSaved (the one conversion every pricing path flows through) to engine dollars ($12,345 / $6,789 from 1234500 / 678900 cents), and a record without the keys converts to $0 / $0. On a plan with real conversions, draws, and taxes (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65), an explicit $0 / $0 entering pair prices BIT-IDENTICALLY to the absent pair — same lifetime federal and state tax, same ending wealth, same per-year taxes — which is the anchor every pre-T4 plan relies on. The contract's lossCarryforwardSemantics names the input fields, the $3,000 allowance, the character rule, Washington, and the Playground exclusion.",
+    note: "T4 (h) — ENTERING INPUT PLUMBING + NO-MOVE ANCHOR: the saved shape's capitalLossCarryInStCents / capitalLossCarryInLtCents convert through planInputsFromSaved (the one conversion every pricing path flows through) to engine dollars ($12,345 / $6,789 from 1234500 / 678900 cents), and a record without the keys converts to $0 / $0. Extended by contract v101: the Washington-attributable portions capitalLossCarryInStWaCents / capitalLossCarryInLtWaCents convert the same way ($2,345 / $3,456 from 234500 / 345600 cents), and a record without those keys converts to $0 / $0. On a plan with real conversions, draws, and taxes (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65), an explicit $0 / $0 entering pair prices BIT-IDENTICALLY to the absent pair — same lifetime federal and state tax, same ending wealth, same per-year taxes — which is the anchor every pre-T4 plan relies on. The contract's lossCarryforwardSemantics names the input fields, the $3,000 allowance, the character rule, Washington, and the Playground exclusion.",
     expected: {
       stDollars: 12345,
       ltDollars: 6789,
+      stWaDollars: 2345,
+      ltWaDollars: 3456,
       absentSt: 0,
       absentLt: 0,
+      absentStWa: 0,
+      absentLtWa: 0,
       sameLifetimeFederal: 1,
       sameLifetimeState: 1,
       sameEndingWealth: 1,
@@ -18723,6 +18727,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           ? {
               capitalLossCarryInStCents: 1234500,
               capitalLossCarryInLtCents: 678900,
+              capitalLossCarryInStWaCents: 234500,
+              capitalLossCarryInLtWaCents: 345600,
             }
           : {}),
       });
@@ -18754,8 +18760,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       return {
         stDollars: setInputs?.capitalLossCarryInSt ?? null,
         ltDollars: setInputs?.capitalLossCarryInLt ?? null,
+        stWaDollars: setInputs?.capitalLossCarryInStWa ?? null,
+        ltWaDollars: setInputs?.capitalLossCarryInLtWa ?? null,
         absentSt: absentInputs?.capitalLossCarryInSt ?? null,
         absentLt: absentInputs?.capitalLossCarryInLt ?? null,
+        absentStWa: absentInputs?.capitalLossCarryInStWa ?? null,
+        absentLtWa: absentInputs?.capitalLossCarryInLtWa ?? null,
         sameLifetimeFederal:
           absent.lifetimeFederalTax === explicitZero.lifetimeFederalTax ? 1 : 0,
         sameLifetimeState:
@@ -22746,6 +22756,595 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         primaryRmd68: s68?.rmdPrimary ?? null,
         spousePretaxQuit: spouseRoll.balances.pretaxSpouse,
         primaryPretaxQuit: spouseRoll.balances.pretaxPrimary,
+      };
+    },
+  },
+  {
+    id: "v100-workyears-capital-loss-carryforward-allowance",
+    kind: "tax",
+    note: "CONTRACT v100 (round-14 fix F2, settled pricing-parity audit) — CAPITAL-LOSS CARRYFORWARDS PRICE IN THE WORK YEARS: THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (IRC §§1211(b) / 1212; the 2026 MFJ row: standard deduction $32,200, 10% band top $24,800 of taxable income): MFJ, primary born 1981 (age 45 in 2026), salary $100,000, no employer contributions, no other income, no gains, $0 spending, 0% return and 0% inflation, $10,000 of entering LONG-TERM carryforward. The contribution stack is $24,500 deferral + $8,750 family HSA = $33,250 (the $47,500 mega-backdoor is after-tax and never touches taxable wages), so taxable wages are $66,750 and taxable income before the allowance is $66,750 − $32,200 = $34,550. WITHOUT the carryforward (the control, and the pre-fix price): tax is 10% × $24,800 + 12% × $9,750 = $3,650.00 and MAGI is $66,750. WITH it: the year's own result is a $10,000 net loss, the §1211(b) allowance is the $3,000 cap, taxable income is $31,550, and the tax is $2,480 + 12% × $6,750 = $3,290.00 — the $360.00 overstatement the fix corrects — with MAGI $63,750 (the allowance subtracts from AGI). Utilization: allowance used = min($3,000, $34,550) = $3,000, so the carryforward into 2027 is $7,000 long-term, and the one-year roll's rolledInputs hand the retirement march exactly that $7,000 — before the fix the roll spread the plan untouched, so the march entered with the full $10,000 and priced the consumed $3,000 a second time. TWO-YEAR LEG (the threading itself): a second identical work year (age 46, calendar 2027 priced off the 2026 row) enters with $7,000, prices the same $3,290.00, consumes another $3,000, and the two-year roll hands the march $4,000. A standalone priceOneWorkYear prices from the plan's entering carryforward as its entering state, so its line pins the same figures as the roll's first year.",
+    expected: {
+      standaloneFederal: 3290,
+      standaloneMagi: 63750,
+      standaloneTaxableWages: 66750,
+      standaloneAllowance: 3000,
+      standaloneAllowanceUsed: 3000,
+      standaloneAbsorbed: 0,
+      standaloneNetResult: -10000,
+      standaloneCarryInLt: 10000,
+      standaloneCarryOutLt: 7000,
+      standaloneCarryOutSt: 0,
+      controlFederal: 3650,
+      controlMagi: 66750,
+      controlAllowance: 0,
+      controlCarryOutLt: 0,
+      rollFederal45: 3290,
+      rollCarryOutLt45: 7000,
+      rolledLt46: 7000,
+      rolledSt46: 0,
+      rollCarryInLt46: 7000,
+      rollFederal46: 3290,
+      rollCarryOutLt46: 4000,
+      rolledLt47: 4000,
+    },
+    actual: () => {
+      const shape = {
+        startYear: 2026,
+        birthYearPrimary: 1981,
+        birthYearSpouse: 1992,
+        filingStatus: "mfj" as const,
+        annualSpending: 0,
+        retirementAge: 46,
+        windowStartAge: 45,
+        expectedReturnPct: 0,
+        inflationPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 0,
+        hsaStart: 0,
+      };
+      const job: WorkYearJob = { salary: 100000, employer401k: 0, employerHsa: 0 };
+      const withPlan = basePlan({ ...shape, capitalLossCarryInLt: 10000 });
+      const withoutPlan = basePlan({ ...shape });
+      const standalone = priceOneWorkYear(withPlan, job, 45);
+      const control = priceOneWorkYear(withoutPlan, job, 45);
+      const rollOne = rollWorkYears(withPlan, job, 46);
+      const rollTwo = rollWorkYears(withPlan, job, 47);
+      const l46 = rollTwo.lines[1];
+      return {
+        standaloneFederal: standalone.federalTax,
+        standaloneMagi: standalone.magi,
+        standaloneTaxableWages: standalone.taxableWages,
+        standaloneAllowance: standalone.capitalLossAllowance,
+        standaloneAllowanceUsed: standalone.capitalLossAllowanceUsed,
+        standaloneAbsorbed: standalone.capitalLossAbsorbedByGains,
+        standaloneNetResult: standalone.netCapitalResult,
+        standaloneCarryInLt: standalone.capitalLossCarryInLt,
+        standaloneCarryOutLt: standalone.capitalLossCarryOutLt,
+        standaloneCarryOutSt: standalone.capitalLossCarryOutSt,
+        controlFederal: control.federalTax,
+        controlMagi: control.magi,
+        controlAllowance: control.capitalLossAllowance,
+        controlCarryOutLt: control.capitalLossCarryOutLt,
+        rollFederal45: rollOne.lines[0]?.federalTax ?? null,
+        rollCarryOutLt45: rollOne.lines[0]?.capitalLossCarryOutLt ?? null,
+        rolledLt46: rollOne.rolledInputs.capitalLossCarryInLt ?? null,
+        rolledSt46: rollOne.rolledInputs.capitalLossCarryInSt ?? null,
+        rollCarryInLt46: l46?.capitalLossCarryInLt ?? null,
+        rollFederal46: l46?.federalTax ?? null,
+        rollCarryOutLt46: l46?.capitalLossCarryOutLt ?? null,
+        rolledLt47: rollTwo.rolledInputs.capitalLossCarryInLt ?? null,
+      };
+    },
+  },
+  {
+    id: "v100-workyears-capital-loss-gains-year-and-unused-allowance",
+    kind: "tax",
+    note: "CONTRACT v100 (round-14 fix F2) — A GAINS YEAR NETS ITS DEFICIT-FUNDING SALE AGAINST THE CARRYFORWARD, AND A ZERO-TAXABLE-INCOME YEAR USES NONE OF ITS ALLOWANCE (hand-derived; IRC §§1211(b) / 1212 and the Capital Loss Carryover Worksheet utilization limit). GAINS LEG: the workyears-deficit-sale-gains-priced micro-case (MFJ b.1971/b.1982, window 55, salary $100,000, employer 401(k) $5,000, spending $100,000, 0% return, Taxable $200,000 at 0% basis, one work year in 2026) plus a $50,000 entering long-term carryforward. The stack shelters $84,750 (deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750), taxable wages are $57,750, ordinary taxable income is $57,750 − $32,200 = $25,550 (ordinary tax $2,570), and FICA is $6,904.13, so at a $0 gains tax the deficit is $94,224.13. Selling at 0% basis realizes the whole drawn amount as the gross gain; netted against the carryforward the priced gain is $94,224.13 − $50,000 = $44,224.13, which fits entirely inside the 0% LTCG space ($98,900 threshold − $25,550 ordinary stack = $73,350), so the gains tax is $0 and the fixed point is exact: gross gain $94,224.13, federal tax $2,570.00, the whole $50,000 carry-in absorbed by gains, no allowance (no net loss remains), carry-out $0, at-quit Taxable $200,000 − $94,224.13 = $105,775.87, and the rolled plan enters the march with $0 of carryforward. The no-carryforward control is the standing micro-case itself: gross gain $97,907.80 and federal $6,253.67 (its gains above the 0% space price at 15%). ZERO-INCOME LEG: MFJ b.1970/b.1981, one work year at 56, salary $40,000 fully sheltered by the stack (deferral $24,500 + pre-tax catch-up $8,000 + own HSA $7,500 = $40,000, so taxable wages are $0), $0 spending, Taxable $100,000 at 100% basis, $10,000 entering long-term carryforward. The $3,000 allowance is CLAIMED (it prices the year's AGI at −$3,000 and the federal tax stays $0) but the year's taxable income before the allowance is $0, so the used part is $0 and the whole $10,000 carries out — the roll hands the march the untouched $10,000. The year's surplus is −$2,486.25 (its FICA), a deficit the 100%-basis balance absorbs at no gain, ending Taxable at $97,513.75. Before this fix both legs priced with no ledger at all: the gains leg taxed the gross gain and the zero-income leg's plan handed the march a carryforward its work year should have been measured against.",
+    expected: {
+      gainsGross: 94224.13,
+      gainsNet: 44224.13,
+      gainsFederal: 2570,
+      gainsAllowance: 0,
+      gainsAbsorbed: 50000,
+      gainsCarryOutLt: 0,
+      gainsTaxableAtQuit: 105775.87,
+      gainsRolledLt: 0,
+      gainsShortfall: 0,
+      controlGross: 97907.8,
+      controlFederal: 6253.67,
+      zeroFederal: 0,
+      zeroAllowance: 3000,
+      zeroAllowanceUsed: 0,
+      zeroNetResult: -10000,
+      zeroCarryInLt: 10000,
+      zeroCarryOutLt: 10000,
+      zeroSurplus: -2486.25,
+      zeroTaxableAtQuit: 97513.75,
+      zeroRolledLt: 10000,
+    },
+    actual: () => {
+      const gainsPlan = basePlan({
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        annualSpending: 100000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 200000,
+        taxableBasisPct: 0,
+        hsaStart: 0,
+        capitalLossCarryInLt: 50000,
+      });
+      const gainsJob: WorkYearJob = { salary: 100000, employer401k: 5000, employerHsa: 0 };
+      const gainsRoll = rollWorkYears(gainsPlan, gainsJob, 56);
+      const controlRoll = rollWorkYears(
+        basePlan({
+          startYear: 2026,
+          birthYearPrimary: 1971,
+          birthYearSpouse: 1982,
+          filingStatus: "mfj",
+          annualSpending: 100000,
+          retirementAge: 55,
+          windowStartAge: 55,
+          expectedReturnPct: 0,
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 200000,
+          taxableBasisPct: 0,
+          hsaStart: 0,
+        }),
+        gainsJob,
+        56,
+      );
+      const zeroRoll = rollWorkYears(
+        basePlan({
+          startYear: 2026,
+          birthYearPrimary: 1970,
+          birthYearSpouse: 1981,
+          filingStatus: "mfj",
+          annualSpending: 0,
+          retirementAge: 57,
+          windowStartAge: 56,
+          expectedReturnPct: 0,
+          pretaxStart: 0,
+          rothStart: 0,
+          taxableStart: 100000,
+          taxableBasisPct: 100,
+          hsaStart: 0,
+          capitalLossCarryInLt: 10000,
+        }),
+        { salary: 40000, employer401k: 0, employerHsa: 0 },
+        57,
+      );
+      const g = gainsRoll.lines[0];
+      const c = controlRoll.lines[0];
+      const z = zeroRoll.lines[0];
+      return {
+        gainsGross: g?.ltcg ?? null,
+        gainsNet: g?.netCapitalResult ?? null,
+        gainsFederal: g?.federalTax ?? null,
+        gainsAllowance: g?.capitalLossAllowance ?? null,
+        gainsAbsorbed: g?.capitalLossAbsorbedByGains ?? null,
+        gainsCarryOutLt: g?.capitalLossCarryOutLt ?? null,
+        gainsTaxableAtQuit: gainsRoll.balances.taxable,
+        gainsRolledLt: gainsRoll.rolledInputs.capitalLossCarryInLt ?? null,
+        gainsShortfall: gainsRoll.totals.shortfall,
+        controlGross: c?.ltcg ?? null,
+        controlFederal: c?.federalTax ?? null,
+        zeroFederal: z?.federalTax ?? null,
+        zeroAllowance: z?.capitalLossAllowance ?? null,
+        zeroAllowanceUsed: z?.capitalLossAllowanceUsed ?? null,
+        zeroNetResult: z?.netCapitalResult ?? null,
+        zeroCarryInLt: z?.capitalLossCarryInLt ?? null,
+        zeroCarryOutLt: z?.capitalLossCarryOutLt ?? null,
+        zeroSurplus: z?.surplus ?? null,
+        zeroTaxableAtQuit: zeroRoll.balances.taxable,
+        zeroRolledLt: zeroRoll.rolledInputs.capitalLossCarryInLt ?? null,
+      };
+    },
+  },
+  {
+    id: "v101-wa-allocated-carryforward-acceptance",
+    kind: "tax",
+    note: "CONTRACT v101 (round-14 fix F4, settled pricing-parity audit) — THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (RCW 82.87.040(3) and the RCW 82.87.020(1) definitional chain; the 2026 Washington row: $278,000 standard deduction, 7% up to $1,000,000 of taxable gains and 9.9% above it): a WA plan (2026, MFJ) realizes $1,300,000 of long-term gains in one year — the whole $2,600,000 taxable account at 50% basis drawn for spending, so the gross gains are exactly $1,300,000 whatever the year's tax settlement draws from the $2,000,000 pre-tax balance — against a $100,000 entering long-term carryforward stated FULLY Washington-attributable (capitalLossCarryInLtWa = the whole $100,000). Federally the gains absorb the whole carryforward (absorbed $100,000, no allowance, nothing carries out) and price at $1,200,000. BEFORE this fix the engine overrode the Washington base with the gross gains: $1,300,000 − $278,000 = $1,022,000 of taxable Washington gains → 7% × $1,000,000 + 9.9% × $22,000 = $72,178.00 of excise — the corrected error, an overstatement of $7,638.00. AFTER the fix the base is the gross gains minus the Washington-attributable absorbed part: $1,300,000 − $100,000 = $1,200,000, taxable Washington gains $1,200,000 − $278,000 = $922,000, excise 7% × $922,000 = $64,540.00. A 5% flat rate is also entered and is ignored, as in every Washington case (the excise replaces it).",
+    expected: {
+      stateTax: 64540,
+      waGains: 1200000,
+      waTaxableGains: 922000,
+      grossGains: 1300000,
+      absorbed: 100000,
+      waAbsorbed: 100000,
+      allowance: 0,
+      outLt: 0,
+    },
+    actual: () => {
+      const r = simulateRothPlan(
+        basePlan({
+          pretaxStart: 2000000,
+          taxableStart: 2600000,
+          taxableBasisPct: 50,
+          annualSpending: 2600000,
+          retirementAge: 57,
+          endAgePrimary: 57,
+          residenceState: "WA",
+          stateRatePct: 5,
+          capitalLossCarryInLt: 100000,
+          capitalLossCarryInLtWa: 100000,
+        }),
+        DO_NOTHING,
+      );
+      const y = r.years[0];
+      return {
+        stateTax: y?.stateTax ?? null,
+        waGains: y?.detail.waGains ?? null,
+        waTaxableGains: y?.detail.waTaxableGains ?? null,
+        grossGains: y?.detail.ltcg ?? null,
+        absorbed: y?.detail.lossAbsorbed ?? null,
+        waAbsorbed: y?.detail.lossWaAbsorbed ?? null,
+        allowance: y?.detail.lossAllowance ?? null,
+        outLt: y?.detail.lossCarryOutLt ?? null,
+      };
+    },
+  },
+  {
+    id: "v101-wa-nonwa-carryforward-base-unchanged",
+    kind: "tax",
+    note: "CONTRACT v101 (round-14 fix F4) — A NON-WASHINGTON-ONLY CARRYFORWARD LEAVES THE WASHINGTON BASE AT THE GROSS GAINS (hand-derived; RCW 82.87.020(1)(c)–(e)): the acceptance case's exact shape — $1,300,000 of gross gains against a $100,000 entering long-term carryforward — but with NO Washington-attributable portion entered (capitalLossCarryInLtWa $0). The federal NETTING is identical to the acceptance case (the same $100,000 absorbed, the same $1,200,000 priced gain, nothing carried out — the two runs' final federal bills differ only through the settlement feedback, the larger excise being paid by a larger pre-tax distribution, which is itself ordinary income), but the whole carryforward is in the statutory addback population, so the Washington base stays at the gross $1,300,000: taxable Washington gains $1,022,000 and excise $72,178.00 — the pre-fix figure, correct for THIS attribution. The state-tax gap between the two runs is exactly the $7,638.00 the acceptance fixture corrects when the attribution is entered.",
+    expected: {
+      stateTax: 72178,
+      waGains: 1300000,
+      waTaxableGains: 1022000,
+      grossGains: 1300000,
+      absorbed: 100000,
+      waAbsorbed: 0,
+      outLt: 0,
+      fedNettingSameAsWaCase: 1,
+      stateGapVsWaCase: 7638,
+    },
+    actual: () => {
+      const shape = {
+        pretaxStart: 2000000,
+        taxableStart: 2600000,
+        taxableBasisPct: 50,
+        annualSpending: 2600000,
+        retirementAge: 57,
+        endAgePrimary: 57,
+        residenceState: "WA" as const,
+        stateRatePct: 5,
+        capitalLossCarryInLt: 100000,
+      };
+      const noWa = simulateRothPlan(
+        basePlan({ ...shape, capitalLossCarryInLtWa: 0 }),
+        DO_NOTHING,
+      );
+      const wa = simulateRothPlan(
+        basePlan({ ...shape, capitalLossCarryInLtWa: 100000 }),
+        DO_NOTHING,
+      );
+      const y = noWa.years[0];
+      const yw = wa.years[0];
+      return {
+        stateTax: y?.stateTax ?? null,
+        waGains: y?.detail.waGains ?? null,
+        waTaxableGains: y?.detail.waTaxableGains ?? null,
+        grossGains: y?.detail.ltcg ?? null,
+        absorbed: y?.detail.lossAbsorbed ?? null,
+        waAbsorbed: y?.detail.lossWaAbsorbed ?? null,
+        outLt: y?.detail.lossCarryOutLt ?? null,
+        fedNettingSameAsWaCase:
+          y != null &&
+          yw != null &&
+          y.detail.lossAbsorbed === yw.detail.lossAbsorbed &&
+          y.detail.lossCarryOutLt === yw.detail.lossCarryOutLt &&
+          y.detail.lossAllowance === yw.detail.lossAllowance
+            ? 1
+            : 0,
+        stateGapVsWaCase:
+          y != null && yw != null ? y.stateTax - yw.stateTax : null,
+      };
+    },
+  },
+  {
+    id: "v101-wa-mixed-carryforward-split-and-threading",
+    kind: "tax",
+    note: "CONTRACT v101 (round-14 fix F4) — A MIXED WASHINGTON / NON-WASHINGTON CARRYFORWARD PINS THE SPLIT, AND THE ATTRIBUTION THREADS ACROSS YEARS (hand-derived; RCW 82.87.040(3), RCW 82.87.020(1)). SPLIT LEGS (one year, 2026, the acceptance shape): a $2,000,000 entering long-term carryforward meets $1,300,000 of gross gains, so the gains absorb $1,300,000 of the pool and a $700,000 net loss remains (allowance $3,000 claimed). With HALF the pool Washington-attributable ($1,000,000), the fungible pool's pro-rata attribution puts $650,000 of the absorption on the Washington side: base $1,300,000 − $650,000 = $650,000, taxable Washington gains $372,000, excise 7% × $372,000 = $26,040.00. With the WHOLE pool attributable the absorbed $1,300,000 is all Washington: base $0, excise $0. With NONE attributable the base stays at gross: excise $72,178.00, as in the non-Washington fixture. THREADING LEG (two years): a $200,000 long-term carryforward, half Washington-attributable ($100,000), meets $100,000 of gains in 2026 ($200,000 drawn from a $1,000,000 account at 50% basis for spending; no other income, no tax): pro-rata absorption is $100,000 total / $50,000 Washington, so the 2026 base is $50,000 (excise $0, under the $278,000 deduction); the $3,000 allowance is claimed but the year has no taxable income before it, so none is used and $100,000 carries out — $50,000 of it still Washington-attributable. In 2027 Social Security of $400,000 (from age 58) covers the $200,000 spending AND the year's whole tax bill from cash — no account is drawn — and an injected $400,000 long-term sale gain (the engine's one-time sale-gain input) meets the carried $100,000: absorption $100,000 total / $50,000 Washington, base $400,000 − $50,000 = $350,000, taxable Washington gains $72,000, excise 7% × $72,000 = $5,040.00, and nothing carries out, the 2027 gross gains staying exactly the injected $400,000.",
+    expected: {
+      mixedWaGains: 650000,
+      mixedWaTaxable: 372000,
+      mixedStateTax: 26040,
+      mixedAbsorbed: 1300000,
+      mixedWaAbsorbed: 650000,
+      mixedAllowance: 3000,
+      allWaGains: 0,
+      allWaStateTax: 0,
+      allWaAbsorbed: 1300000,
+      noneWaGains: 1300000,
+      noneWaStateTax: 72178,
+      noneWaAbsorbed: 0,
+      y1WaGains: 50000,
+      y1StateTax: 0,
+      y1Absorbed: 100000,
+      y1WaAbsorbed: 50000,
+      y1Allowance: 3000,
+      y1OutLt: 100000,
+      y2GrossGains: 400000,
+      y2WaGains: 350000,
+      y2WaTaxable: 72000,
+      y2StateTax: 5040,
+      y2Absorbed: 100000,
+      y2WaAbsorbed: 50000,
+      y2OutLt: 0,
+    },
+    actual: () => {
+      const splitShape = {
+        pretaxStart: 2000000,
+        taxableStart: 2600000,
+        taxableBasisPct: 50,
+        annualSpending: 2600000,
+        retirementAge: 57,
+        endAgePrimary: 57,
+        residenceState: "WA" as const,
+        capitalLossCarryInLt: 2000000,
+      };
+      const mixed = simulateRothPlan(
+        basePlan({ ...splitShape, capitalLossCarryInLtWa: 1000000 }),
+        DO_NOTHING,
+      ).years[0];
+      const all = simulateRothPlan(
+        basePlan({ ...splitShape, capitalLossCarryInLtWa: 2000000 }),
+        DO_NOTHING,
+      ).years[0];
+      const none = simulateRothPlan(
+        basePlan({ ...splitShape, capitalLossCarryInLtWa: 0 }),
+        DO_NOTHING,
+      ).years[0];
+      const thread = simulateRothPlan(
+        basePlan({
+          pretaxStart: 2000000,
+          taxableStart: 1000000,
+          taxableBasisPct: 50,
+          annualSpending: 200000,
+          retirementAge: 57,
+          endAgePrimary: 58,
+          residenceState: "WA",
+          ssPrimaryAnnual: 400000,
+          ssPrimaryStartAge: 58,
+          saleGainAge: 58,
+          saleGainAmount: 400000,
+          capitalLossCarryInLt: 200000,
+          capitalLossCarryInLtWa: 100000,
+        }),
+        DO_NOTHING,
+      );
+      const [y1, y2] = thread.years;
+      return {
+        mixedWaGains: mixed?.detail.waGains ?? null,
+        mixedWaTaxable: mixed?.detail.waTaxableGains ?? null,
+        mixedStateTax: mixed?.stateTax ?? null,
+        mixedAbsorbed: mixed?.detail.lossAbsorbed ?? null,
+        mixedWaAbsorbed: mixed?.detail.lossWaAbsorbed ?? null,
+        mixedAllowance: mixed?.detail.lossAllowance ?? null,
+        allWaGains: all?.detail.waGains ?? null,
+        allWaStateTax: all?.stateTax ?? null,
+        allWaAbsorbed: all?.detail.lossWaAbsorbed ?? null,
+        noneWaGains: none?.detail.waGains ?? null,
+        noneWaStateTax: none?.stateTax ?? null,
+        noneWaAbsorbed: none?.detail.lossWaAbsorbed ?? null,
+        y1WaGains: y1?.detail.waGains ?? null,
+        y1StateTax: y1?.stateTax ?? null,
+        y1Absorbed: y1?.detail.lossAbsorbed ?? null,
+        y1WaAbsorbed: y1?.detail.lossWaAbsorbed ?? null,
+        y1Allowance: y1?.detail.lossAllowance ?? null,
+        y1OutLt: y1?.detail.lossCarryOutLt ?? null,
+        y2GrossGains: y2?.detail.ltcg ?? null,
+        y2WaGains: y2?.detail.waGains ?? null,
+        y2WaTaxable: y2?.detail.waTaxableGains ?? null,
+        y2StateTax: y2?.stateTax ?? null,
+        y2Absorbed: y2?.detail.lossAbsorbed ?? null,
+        y2WaAbsorbed: y2?.detail.lossWaAbsorbed ?? null,
+        y2OutLt: y2?.detail.lossCarryOutLt ?? null,
+      };
+    },
+  },
+  {
+    id: "v101-workyears-wa-allocated-carryforward",
+    kind: "tax",
+    note: "CONTRACT v101 (round-14 fix F4) — A WORK YEAR'S WASHINGTON BASE DEDUCTS ONLY THE WASHINGTON-ATTRIBUTABLE ABSORBED PART (hand-derived; RCW 82.87.040(3); the workyears-deficit-sale shape of the contract v100 gains leg: MFJ b.1971/b.1982, one work year at 55 in 2026, salary $100,000, employer 401(k) $5,000, 0% return, Taxable at 0% basis so a deficit-funding sale realizes its whole drawn amount as the gross gain; the stack shelters $84,750 — deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 — so taxable wages are $57,750, ordinary taxable income is $25,550, the ordinary federal tax is $2,570.00, and FICA is $6,904.13; a $400,000 entering long-term carryforward nets the sale federally in both legs). MIXED LEG (spending $404,235.87; $100,000 of the carryforward Washington-attributable): at a gross gain of $400,000 the netted federal gain is $0 (federal tax stays the $2,570.00 ordinary tax, no allowance — no net loss remains), the Washington base is $400,000 − $100,000 = $300,000, taxable Washington gains $22,000, excise $1,540.00, and the fixed point is exact: deficit = $404,235.87 + $2,570.00 + $1,540.00 + $6,904.13 + $84,750.00 − $100,000.00 = $400,000.00 of sale, leaving Taxable at $600,000 of the $1,000,000 and handing the march a $0 carryforward with a $0 Washington remainder. NON-WASHINGTON LEG (spending $443,735.87; no Washington portion entered): at a gross gain of $450,000 the netted gain is $50,000, inside the $73,350 of remaining 0% space ($98,900 threshold − $25,550 ordinary stack), so the federal tax is again $2,570.00, but the Washington base stays at the gross $450,000 — taxable Washington gains $172,000, excise $12,040.00 — and the fixed point is again exact: $443,735.87 − $5,775.87 (salary less FICA, contributions, and the ordinary tax) + $12,040.00 = $450,000.00, leaving Taxable at $550,000. Before this fix a work year inherited the march's gross-base override for the whole carryforward (and, read the other way, netting the full carryforward against the base would have priced the mixed leg's excise at $0): both legs now price the base the statute prices. A 5% flat rate is entered in both legs and ignored (the excise replaces it).",
+    expected: {
+      mixedGross: 400000,
+      mixedNet: 0,
+      mixedFederal: 2570,
+      mixedState: 1540,
+      mixedAbsorbed: 400000,
+      mixedWaAbsorbed: 100000,
+      mixedCarryOutLt: 0,
+      mixedCarryOutWaLt: 0,
+      mixedTaxableAtQuit: 600000,
+      mixedRolledLt: 0,
+      mixedRolledWaLt: 0,
+      noneGross: 450000,
+      noneNet: 50000,
+      noneFederal: 2570,
+      noneState: 12040,
+      noneWaAbsorbed: 0,
+      noneCarryOutLt: 0,
+      noneTaxableAtQuit: 550000,
+      noneRolledWaLt: 0,
+    },
+    actual: () => {
+      const shape = {
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj" as const,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 0,
+        inflationPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 1000000,
+        taxableBasisPct: 0,
+        hsaStart: 0,
+        residenceState: "WA" as const,
+        stateRatePct: 5,
+        capitalLossCarryInLt: 400000,
+      };
+      const job: WorkYearJob = { salary: 100000, employer401k: 5000, employerHsa: 0 };
+      const mixedRoll = rollWorkYears(
+        basePlan({ ...shape, annualSpending: 404235.87, capitalLossCarryInLtWa: 100000 }),
+        job,
+        56,
+      );
+      const noneRoll = rollWorkYears(
+        basePlan({ ...shape, annualSpending: 443735.87, capitalLossCarryInLtWa: 0 }),
+        job,
+        56,
+      );
+      const m = mixedRoll.lines[0];
+      const n = noneRoll.lines[0];
+      return {
+        mixedGross: m?.ltcg ?? null,
+        mixedNet: m?.netCapitalResult ?? null,
+        mixedFederal: m?.federalTax ?? null,
+        mixedState: m?.stateTax ?? null,
+        mixedAbsorbed: m?.capitalLossAbsorbedByGains ?? null,
+        mixedWaAbsorbed: m?.capitalLossWaAbsorbedByGains ?? null,
+        mixedCarryOutLt: m?.capitalLossCarryOutLt ?? null,
+        mixedCarryOutWaLt: m?.capitalLossCarryOutWaLt ?? null,
+        mixedTaxableAtQuit: mixedRoll.balances.taxable,
+        mixedRolledLt: mixedRoll.rolledInputs.capitalLossCarryInLt ?? null,
+        mixedRolledWaLt: mixedRoll.rolledInputs.capitalLossCarryInLtWa ?? null,
+        noneGross: n?.ltcg ?? null,
+        noneNet: n?.netCapitalResult ?? null,
+        noneFederal: n?.federalTax ?? null,
+        noneState: n?.stateTax ?? null,
+        noneWaAbsorbed: n?.capitalLossWaAbsorbedByGains ?? null,
+        noneCarryOutLt: n?.capitalLossCarryOutLt ?? null,
+        noneTaxableAtQuit: noneRoll.balances.taxable,
+        noneRolledWaLt: noneRoll.rolledInputs.capitalLossCarryInLtWa ?? null,
+      };
+    },
+  },
+  {
+    id: "v102-workyears-tax-exempt-interest-ss-taxation",
+    kind: "tax",
+    note: "CONTRACT v102 (round-14 fix F1, settled pricing-parity audit) — TAX-EXEMPT INTEREST PRICES IN THE WORK YEARS FOR §86 SOCIAL SECURITY TAXATION: THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (26 U.S.C. §86(b)(1)-(2): provisional income is AGI excluding benefits, increased by tax-exempt interest, plus one-half of benefits, against the $32,000 / $44,000 joint base / adjusted-base amounts; the 2026 MFJ row: standard deduction $32,200, 10% band top $24,800 of taxable income). MFJ, primary born 1962 (age 64 in 2026), salary $80,000, Social Security benefits $10,000 (started at 64), $6,000 of tax-exempt interest, no employer contributions, $0 spending, 0% return and 0% inflation. The 2026 contribution stack is $24,500 elective + $8,000 catch-up (age 64 takes the 50+ band, NOT the 60-63 band) + $9,750 HSA ($8,750 family + $1,000 age-55 catch-up) = $42,250 of pre-tax shelter, plus a $37,750 mega-backdoor (after-tax; §415(c) room $72,000 − $24,500, capped by the $37,750 of salary left after the pre-tax stack and the HSA), so taxable wages are $37,750 and the employee's own contributions total the whole $80,000 salary. The §414(v)(7) Roth-catch-up mandate is inert: Box-3 wages are $80,000 − $9,750 = $70,250, under the $150,000 threshold, so the catch-up stays pre-tax. WITH the $6,000: provisional income is $37,750 + $6,000 + $5,000 = $48,750, so taxable Social Security is min(0.85 × $10,000, min(0.5 × $10,000, 0.5 × ($44,000 − $32,000)) + 0.85 × ($48,750 − $44,000)) = min($8,500, $5,000 + $4,037.50) = $8,500; AGI is $46,250, taxable income is $46,250 − $32,200 = $14,050, and the federal tax is 10% × $14,050 = $1,405.00. BEFORE this fix the work-year pricer passed $0 of tax-exempt interest: provisional income was $42,750, taxable Social Security was $5,000, taxable income was $10,550, and the tax was $1,055.00 — the corrected error, a $350.00 understatement named here as the before-fix figure. MAGI is $46,250 + $6,000 = $52,250 (the shared priceYear adds the tax-exempt interest to AGI for MAGI), and the taxable-benefits figure pinned below is read off the line as MAGI − $6,000 − taxable wages = $8,500, the line carrying no separate benefits-taxed field. FICA on $70,250 of wages is $4,355.50 Social Security (6.2%, under the $184,500 wage base) + $1,018.63 Medicare (1.45%, rounded from $1,018.625; the payroll total rounds once from $5,374.125 to $5,374.13) with no Additional Medicare. CASH PARITY (verified in the plan march): the march's cash-in is RMDs + benefits + other ordinary income ONLY — the tax-exempt dollars are priced for §86 / MAGI purposes and are never banked as household cash — so the work year mirrors that exactly: the surplus is $80,000 − $1,405.00 − $5,374.13 − $80,000 of own contributions + $10,000 of benefits = $3,220.87, with NO $6,000 inflow term, and the one-year roll banks exactly that into Taxable at the quit age. The roll leg pins the same federal tax and MAGI through rollWorkYears, proving the roll and the standalone price share the one corrected priceYear call.",
+    expected: {
+      standaloneFederal: 1405,
+      standaloneMagi: 52250,
+      standaloneTaxableWages: 37750,
+      standaloneSsTaxableDerived: 8500,
+      standaloneDeferral: 24500,
+      standaloneCatchUp: 8000,
+      standaloneCatchUpRothFlag: 0,
+      standaloneOwnHsa: 9750,
+      standaloneMega: 37750,
+      standaloneFica: 5374.13,
+      standaloneSsBenefits: 10000,
+      standaloneSurplus: 3220.87,
+      rollFederal: 1405,
+      rollMagi: 52250,
+      rollTaxableAtQuit: 3220.87,
+    },
+    actual: () => {
+      const shape = {
+        startYear: 2026,
+        birthYearPrimary: 1962,
+        birthYearSpouse: 1973,
+        filingStatus: "mfj" as const,
+        annualSpending: 0,
+        retirementAge: 64,
+        windowStartAge: 64,
+        expectedReturnPct: 0,
+        inflationPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 0,
+        hsaStart: 0,
+        ssPrimaryAnnual: 10000,
+        ssPrimaryStartAge: 64,
+        taxExemptInterestAnnual: 6000,
+      };
+      const job: WorkYearJob = { salary: 80000, employer401k: 0, employerHsa: 0 };
+      const plan = basePlan(shape);
+      const standalone = priceOneWorkYear(plan, job, 64);
+      const roll = rollWorkYears(plan, job, 65);
+      return {
+        standaloneFederal: standalone.federalTax,
+        standaloneMagi: standalone.magi,
+        standaloneTaxableWages: standalone.taxableWages,
+        standaloneSsTaxableDerived:
+          standalone.magi - 6000 - standalone.taxableWages,
+        standaloneDeferral: standalone.stack.deferral,
+        standaloneCatchUp: standalone.stack.catchUp,
+        standaloneCatchUpRothFlag: standalone.stack.catchUpIsRoth ? 1 : 0,
+        standaloneOwnHsa: standalone.stack.ownHsa,
+        standaloneMega: standalone.stack.mega,
+        standaloneFica: standalone.fica,
+        standaloneSsBenefits: standalone.ssBenefits,
+        standaloneSurplus: standalone.surplus,
+        rollFederal: roll.lines[0]?.federalTax ?? null,
+        rollMagi: roll.lines[0]?.magi ?? null,
+        rollTaxableAtQuit: roll.balances.taxable,
+      };
+    },
+  },
+  {
+    id: "v102-workyears-tax-exempt-interest-zero-identity",
+    kind: "tax",
+    note: "CONTRACT v102 (round-14 fix F1) — THE $0 TAX-EXEMPT-INTEREST IDENTITY CASE: the acceptance example's exact shape (MFJ, primary born 1962, age 64 in 2026, salary $80,000, Social Security $10,000 from 64, no employer contributions, $0 spending, 0% return and 0% inflation) with NO tax-exempt interest entered. A plan with $0 / absent tax-exempt interest must price bit-identically to before the fix, and it does — these are the pre-fix figures themselves: provisional income $37,750 + $0 + $5,000 = $42,750, taxable Social Security min(0.5 × $10,000, 0.5 × ($42,750 − $32,000)) = min($5,000, $5,375) = $5,000 (read off the line as MAGI − $0 − taxable wages), AGI and MAGI both $42,750, taxable income $10,550, federal tax 10% × $10,550 = $1,055.00, FICA $5,374.13 as in the acceptance fixture. The cross-leg pins the cash-parity rule from the other side: the with-interest surplus ($3,220.87, acceptance fixture) minus this case's surplus ($3,570.87) is exactly −$350.00 — the tax difference alone — so the $6,000 of tax-exempt interest is priced for §86 / MAGI and banked NOWHERE, exactly as the plan march treats it (its cash-in is RMDs + benefits + other ordinary income only).",
+    expected: {
+      zeroFederal: 1055,
+      zeroMagi: 42750,
+      zeroTaxableWages: 37750,
+      zeroSsTaxableDerived: 5000,
+      zeroFica: 5374.13,
+      zeroSurplus: 3570.87,
+      zeroRollFederal: 1055,
+      zeroRollTaxableAtQuit: 3570.87,
+      surplusDiffWithMinusZero: -350,
+    },
+    actual: () => {
+      const shape = {
+        startYear: 2026,
+        birthYearPrimary: 1962,
+        birthYearSpouse: 1973,
+        filingStatus: "mfj" as const,
+        annualSpending: 0,
+        retirementAge: 64,
+        windowStartAge: 64,
+        expectedReturnPct: 0,
+        inflationPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 0,
+        hsaStart: 0,
+        ssPrimaryAnnual: 10000,
+        ssPrimaryStartAge: 64,
+      };
+      const job: WorkYearJob = { salary: 80000, employer401k: 0, employerHsa: 0 };
+      const zeroPlan = basePlan({ ...shape, taxExemptInterestAnnual: 0 });
+      const withPlan = basePlan({ ...shape, taxExemptInterestAnnual: 6000 });
+      const zero = priceOneWorkYear(zeroPlan, job, 64);
+      const withInterest = priceOneWorkYear(withPlan, job, 64);
+      const zeroRoll = rollWorkYears(zeroPlan, job, 65);
+      return {
+        zeroFederal: zero.federalTax,
+        zeroMagi: zero.magi,
+        zeroTaxableWages: zero.taxableWages,
+        zeroSsTaxableDerived: zero.magi - zero.taxableWages,
+        zeroFica: zero.fica,
+        zeroSurplus: zero.surplus,
+        zeroRollFederal: zeroRoll.lines[0]?.federalTax ?? null,
+        zeroRollTaxableAtQuit: zeroRoll.balances.taxable,
+        surplusDiffWithMinusZero:
+          Math.round((withInterest.surplus - zero.surplus) * 100) / 100,
       };
     },
   },
