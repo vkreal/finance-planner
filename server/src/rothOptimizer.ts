@@ -97,7 +97,7 @@ fplFor,
 lawForYear,
 rmdAgeForBirthYear,
 } from "./taxLaw";
-import { irmaaTierUpTo } from "./taxEngine";
+import { irmaaTierFor, irmaaTierUpTo } from "./taxEngine";
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -2980,7 +2980,14 @@ export type PlaygroundYearInputs = {
   // table (engine-audit round-2 fix) — while under
   // "lookback" a specific coverage year prices its own
   // table — including the 2027 table (Rev. Proc. 2026-26)
-  // for coverage year 2027 exactly.
+  // for coverage year 2027 exactly. Contract v95 (F1)
+  // keeps the two years separate inside acaCreditFor: the
+  // relabelled coverage year governs only the guideline
+  // row, and the table keys on the real coverage year
+  // passed as tableYear — so a relabelled 2026 prices on
+  // the 2026 table, never on the 2027 table the relabel
+  // names, while a real 2027 still prices on the 2027
+  // table under either convention.
   acaConvention?: "lookback" | "newest";
 };
 
@@ -3155,10 +3162,11 @@ export type PlaygroundYearResult = {
     credit: number | null;
     applicablePct: number | null;
   };
-  // IRMAA: applies when at least one person is on Medicare.
-  // The tier is this year's MAGI read through the engine's own
-  // tier classifier — the surcharge it sets is paid in
-  // premiumYear (taxYear + 2).
+  // IRMAA: applies when at least one person is on Medicare
+  // in the premium year (by premium-year age, not by the
+  // priced year's Medicare flags). The tier is this year's
+  // MAGI read through the premium year's law row — the
+  // surcharge it sets is paid in premiumYear (taxYear + 2).
   irmaa: {
     applies: boolean;
     personsOnMedicare: number;
@@ -3464,15 +3472,17 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // projection's "newest" convention, a coverage year of
   // (newest guideline year + 1) makes acaCreditFor's lookback
   // land exactly on the newest guideline row — the plan
-  // convention. The applicable-percentage table no longer
-  // rides this coverage-year value (Build C): acaCreditFor
-  // is told explicitly whether this is projected pricing
-  // (acaProjected below), and in projected mode the table
-  // follows the coverage year this value names: a coverage
-  // year of 2027 prices on the 2027 table (the engine-audit
-  // round-2 fix), later coverage years on the 2026 table.
-  // Pre-2026 years keep the real coverage year:
-  // the enhanced-credit schedule has no cliff to re-price.
+  // convention. That relabel governs ONLY the guideline row
+  // (and with it the cliff): the applicable-percentage table
+  // keys on the REAL coverage year, passed to acaCreditFor
+  // as tableYear (contract v95, F1) — the convention doc
+  // above states the rule, and the relabel must never move
+  // the table. A relabelled 2026 therefore prices on the
+  // 2026 table, a real 2027 on the 2027 table (projected
+  // mode, the engine-audit round-2 fix), later years on
+  // the 2026 table, and pre-2026 years keep the real
+  // coverage year: the enhanced-credit schedule has no
+  // cliff to re-price.
   const newestGuidelineYear = Math.max(
     ...Object.keys(FPL_GUIDELINES).map(Number),
   );
@@ -3504,6 +3514,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       magi: acaHouseholdMagi,
       householdSize: inp.acaHouseholdSize,
       coverageYear: acaCoverageYear,
+      // F1: the table keys on the real coverage year, never
+      // on the relabelled year that fetches the guideline row.
+      tableYear: inp.taxYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
       projected: acaProjected,
     });
@@ -3519,19 +3532,43 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     };
   }
 
-  // IRMAA — the tier this year's MAGI sets, from the engine's
-  // own classifier (priceYear already computed it), charged per
-  // person on Medicare in taxYear + 2.
+  // IRMAA — the tier this year's MAGI sets, charged per
+  // person on Medicare in premiumYear (taxYear + 2), under
+  // the PREMIUM year's law row — the plan engine's rule,
+  // mirrored exactly (contract v97, engine-calendar F3+F4).
+  // Participants count by AGE in the premium year: the
+  // primary from 65, the spouse from 65 too — the plan's
+  // spouse threshold is her ACA end age, which defaults to
+  // 65, and the single-year pricer carries no end-age input
+  // to thread a different boundary, so the default governs
+  // both persons here. The current-year onMedicare flags
+  // do NOT gate this block: they still drive only the ACA
+  // block above (current-year marketplace coverage), and a
+  // person who turns 65 in the premium year counts here
+  // even while the flag for the priced year is off. Tier
+  // thresholds AND surcharge rates both read the premium
+  // law row (lawForYear's own carry-forward for a premium
+  // year past the table — no new table). The 2-year MAGI
+  // lookback is preserved: the MAGI graded is this priced
+  // year's own (premiumYear − 2), exactly as the plan
+  // grades a lookback year's MAGI under the premium row.
+  // The source-year law row (`law`, above) keeps pricing
+  // the tax year itself and is untouched here, as is
+  // priceYear's own irmaaTier, which classifies the priced
+  // year under its own row and plays no part in this block.
+  const premiumYear = inp.taxYear + 2;
+  const premiumLaw = lawForYear(premiumYear);
   const personsOnMedicare =
-    (inp.onMedicarePrimary ? 1 : 0) + (joint && inp.onMedicareSpouse ? 1 : 0);
-  const tier = priced.irmaaTier;
-  const annualPerPerson = irmaaAnnualPerPerson(tier, law);
-  const nextTierRaw = irmaaTierUpTo(tier, fs, law, inp.taxYear, 0);
+    (inp.agePrimary + 2 >= 65 ? 1 : 0) +
+    (joint && ageSpouse != null && ageSpouse + 2 >= 65 ? 1 : 0);
+  const tier = irmaaTierFor(priced.magi, fs, premiumLaw, premiumYear, 0);
+  const annualPerPerson = irmaaAnnualPerPerson(tier, premiumLaw);
+  const nextTierRaw = irmaaTierUpTo(tier, fs, premiumLaw, premiumYear, 0);
   const irmaa: PlaygroundYearResult["irmaa"] = {
     applies: personsOnMedicare > 0,
     personsOnMedicare,
     tier,
-    premiumYear: inp.taxYear + 2,
+    premiumYear,
     monthlyPerPerson: r2(annualPerPerson / 12),
     annualPerPerson,
     annualHousehold: r2(annualPerPerson * personsOnMedicare),
@@ -3567,6 +3604,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       magi: withoutAcaHouseholdMagi,
       householdSize: inp.acaHouseholdSize,
       coverageYear: acaCoverageYear,
+      // F1: same split as the main ACA call above — the
+      // table keys on the real coverage year.
+      tableYear: inp.taxYear,
       benchmarkAnnual: inp.acaBenchmarkAnnual ?? 0,
       projected: acaProjected,
     });
@@ -3646,10 +3686,20 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     }
   }
   let irmaaFlag: PlaygroundIrmaaGainsFlag | null = null;
-  if (hasGainsTyped && personsOnMedicare > 0 && tier !== pricedWithoutGains.irmaaTier) {
-    const withoutTier = pricedWithoutGains.irmaaTier;
+  // The without-gains tier on the SAME premium-year basis:
+  // the without-gains MAGI graded under the premium law row,
+  // so the flag compares two premium-year tiers, never a
+  // premium tier against a source-year one.
+  const withoutTier = irmaaTierFor(
+    pricedWithoutGains.magi,
+    fs,
+    premiumLaw,
+    premiumYear,
+    0,
+  );
+  if (hasGainsTyped && personsOnMedicare > 0 && tier !== withoutTier) {
     const lowerTier = Math.min(tier, withoutTier);
-    const lineRaw = irmaaTierUpTo(lowerTier, fs, law, inp.taxYear, 0);
+    const lineRaw = irmaaTierUpTo(lowerTier, fs, premiumLaw, premiumYear, 0);
     const line = Number.isFinite(lineRaw) ? lineRaw : null;
     if (tier > withoutTier) {
       irmaaFlag = {
@@ -3684,7 +3734,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     hasGainsTyped,
     withoutMagi: pricedWithoutGains.magi,
     withoutAcaMagi: withoutAcaHouseholdMagi,
-    withoutTier: pricedWithoutGains.irmaaTier,
+    withoutTier,
     acaFlag,
     irmaaFlag,
   };

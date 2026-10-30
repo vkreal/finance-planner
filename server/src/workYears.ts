@@ -25,7 +25,14 @@
 //   · The cash surplus (salary − federal tax − state tax −
 //     FICA − spending − the employee's own contributions +
 //     any Social Security benefits already being collected)
-//     lands in Taxable at year end. Every bucket grows at the
+//     lands in Taxable at year end. The refundable §25A
+//     credit is NOT part of that surplus: like the
+//     retirement march, the roll carries it undeposited and
+//     lands it in Taxable at the start of the NEXT work
+//     year, at 100% basis (the return is filed the next
+//     spring); a credit earned in the roll's last work year
+//     is included in the quit-age Taxable balance instead,
+//     so no refund dollar is ever dropped. Every bucket grows at the
 //     plan's expected return each year; contributions land at
 //     year end, so they earn no growth in the year they are
 //     made. A deficit year's surplus draws the Taxable balance
@@ -54,6 +61,31 @@
 //     work years (F4). The pre-full-retirement-age earnings
 //     test is NOT modeled — no machinery for it exists
 //     anywhere in the engine — so benefits deposit in full.
+//   · Required minimum distributions price in salary years
+//     too (contract v98, engine-calendar fix F5): each owner's
+//     RMD is computed by the plan engine's own shared helper
+//     on that owner's prior-Dec-31 pre-tax balance — the
+//     balance the year opens with, before this year's growth
+//     and before this year's contributions land, so a
+//     contribution made DURING a year never counts toward
+//     that year's RMD — with the same RMD-age mapping and the
+//     same per-owner Joint-vs-Uniform table selection the
+//     plan march applies (the spouse sole beneficiary and
+//     more than 10 years younger selects the Joint table for
+//     that owner; each owner's own beneficiary fact selects
+//     only that owner's table). The distribution is priced
+//     exactly as the march prices it: ordinary income inside
+//     the shared priceYear, cash in the year's surplus on the
+//     same footing as Social Security benefits, and money out
+//     of the pre-tax balance (the post-distribution balance
+//     is what grows and what this year's contributions land
+//     on). LIMITATION (settled with the fix): no still-working
+//     exception is priced — the work-years path, like the
+//     plan, carries pre-tax money as one aggregated balance
+//     per owner with no 401(k)/IRA distinction, so a worker
+//     past RMD age whose balance sits entirely in a current
+//     employer's plan and who could qualify for that
+//     exception is priced with an RMD anyway.
 //   · After the roll, the scenario is priced with the EXISTING
 //     joint optimizer machinery at the quit age, and the
 //     all-in lifetime tax is the optimizer's net cost plus the
@@ -86,6 +118,7 @@
 import {
   deflationFactor,
   priceYear,
+  rmdForYear,
   type RothPlanInputs,
 } from "./taxEngine";
 import { lawForYear, type FilingStatus, type YearLaw } from "./taxLaw";
@@ -671,6 +704,29 @@ export type WorkYearLine = {
   // into the year's surplus as household cash. $0 when no
   // benefit has started.
   ssBenefits: number;
+  // Required minimum distributions priced this year
+  // (contract v98, F5): each owner's own RMD, computed by
+  // the shared rmdForYear helper on that owner's
+  // prior-Dec-31 pre-tax balance (the balance the year
+  // opens with — this year's contributions never count
+  // toward it), on that owner's own RMD clock, with that
+  // owner's table selected by that owner's own beneficiary
+  // fact exactly as the plan march selects it. `rmd` is the
+  // household total the shared priceYear prices as ordinary
+  // income; the distributed cash is in the year's surplus
+  // (see below) and the roll takes each owner's amount out
+  // of that owner's pre-tax balance before growth. All $0
+  // (divisors and tables null) in a year before either
+  // owner's RMD age. No still-working exception is priced:
+  // the balances carry no 401(k)/IRA distinction (see the
+  // model note at the top of this file).
+  rmd: number;
+  rmdPrimary: number;
+  rmdSpouse: number;
+  rmdDivisorPrimary: number | null;
+  rmdDivisorSpouse: number | null;
+  rmdTablePrimary: "joint" | "uniform" | null;
+  rmdTableSpouse: "joint" | "uniform" | null;
   // The long-term capital gain realized by this year's
   // deficit-funding Taxable sale (F1): priced into the year
   // only when the roll supplies the taxable context and the
@@ -679,10 +735,26 @@ export type WorkYearLine = {
   ltcg: number;
   // Salary − federal − state − FICA − the plan's annual
   // spending − the employee's own contributions (deferral +
-  // catch-up + mega + own HSA) + the year's refundable §25A
-  // education credit + the year's Social Security benefits.
-  // Banked into Taxable at year end.
+  // catch-up + mega + own HSA) + the year's Social Security
+  // benefits + the year's RMDs (F5: the distribution is
+  // household cash on the same footing as the benefits —
+  // it funds the year's spending and taxes and any leftover
+  // banks into Taxable, exactly the plan march's surplus
+  // sweep). The year's refundable §25A credit is NOT in
+  // this figure: it is carried undeposited and lands in
+  // Taxable at the start of the next simulated year (see
+  // rollWorkYears), so it can neither fund this year's
+  // deficit nor bank at this year's end. Banked into
+  // Taxable at year end.
   surplus: number;
+  // The year's refundable §25A education credit, from the
+  // shared priceYear result: the portion of the year's
+  // credit that arrives as cash when the year's return is
+  // filed the next spring. Reported here so the roll can
+  // carry it into the next year's opening Taxable pool
+  // (or, in the roll's last year, into the quit-age
+  // balance); never netted into the surplus above.
+  educationRefundable: number;
   // The part of a NEGATIVE surplus the Taxable balance could
   // not absorb (round-7 fix 1.1): the roll floors the balance
   // at $0 — a work year never books a negative asset — and the
@@ -711,6 +783,24 @@ export type WorkYearTaxableContext = {
   ledger: TaxableLedger;
 };
 
+// The roll's per-year pre-tax context (contract v98, F5):
+// each owner's pre-tax balance the year opens with — the
+// prior Dec-31 balance that owner's RMD prices on. The roll
+// threads the balances it carries into the year (the prior
+// year-end balances: grown, net of that year's distribution,
+// plus that year's landed contributions), so a contribution
+// made DURING a year lands after that year's RMD is priced
+// and counts only toward the NEXT year's RMD, exactly as
+// the plan march's year-opening balances do. Absent (a
+// standalone price) the year prices its RMDs on the plan's
+// starting balances — plan.pretaxStart / pretaxSpouseStart
+// are the year's opening balances by construction, the same
+// convention the taxable context's opening balance follows.
+export type WorkYearPretaxContext = {
+  priorPrimary: number;
+  priorSpouse: number;
+};
+
 export function priceOneWorkYear(
   plan: RothPlanInputs,
   job: WorkYearJob,
@@ -724,6 +814,11 @@ export function priceOneWorkYear(
   // The roll's taxable context for this year (F1/F3); omitted
   // for a standalone price.
   taxableCtx?: WorkYearTaxableContext | null,
+  // The roll's pre-tax context for this year (F5): each
+  // owner's prior-Dec-31 balance, the base that owner's RMD
+  // prices on; omitted for a standalone price, which reads
+  // the plan's starting balances as its opening balances.
+  pretaxCtx?: WorkYearPretaxContext | null,
 ): WorkYearLine {
   const calendarYear = plan.birthYearPrimary + age;
   const law = lawForYear(calendarYear);
@@ -753,6 +848,54 @@ export function priceOneWorkYear(
   );
   const ageSpouse =
     plan.birthYearSpouse != null ? calendarYear - plan.birthYearSpouse : null;
+  // REQUIRED MINIMUM DISTRIBUTIONS (contract v98, F5):
+  // priced exactly as the plan march prices them — per
+  // owner, through the SHARED rmdForYear helper (its RMD-age
+  // mapping and divisor tables are the only ones; nothing is
+  // re-derived here), each on that owner's prior-Dec-31
+  // balance: the balance the year opens with, supplied by
+  // the roll from the balances it carries in (a standalone
+  // price reads the plan's starting balances, its opening
+  // balances by construction). This year's contributions
+  // land at year end, after this pricing, so they never
+  // count toward this year's RMD. Table selection is the
+  // march's, per owner: the primary's RMD runs on
+  // spouseSoleBeneficiary, the spouse's on
+  // primarySoleBeneficiaryOfSpouse with the roles swapped —
+  // the two facts are separate and neither is read for the
+  // other owner. DIVISOR-SELECTION FALLBACK: none is needed
+  // beyond the helper's own rule — the work-years path
+  // carries every input the march's selection reads (both
+  // birth years, both beneficiary facts) on the same plan
+  // inputs, and where a fact is absent (the spouse's fact is
+  // optional on the inputs) the march's own rule applies
+  // inside the helper: only an explicit true selects the
+  // Joint table, anything else prices the Uniform table; a
+  // missing spouse birth year prices no spouse RMD at all.
+  // No still-working exception is priced (see the model
+  // note): the balances carry no 401(k)/IRA distinction.
+  const priorPretaxPrimary = pretaxCtx?.priorPrimary ?? plan.pretaxStart;
+  const priorPretaxSpouse =
+    pretaxCtx?.priorSpouse ?? (plan.pretaxSpouseStart ?? 0);
+  const rmdPrimaryRes = rmdForYear({
+    priorDec31PreTax: priorPretaxPrimary,
+    agePrimary: age,
+    ageSpouse,
+    birthYearPrimary: plan.birthYearPrimary,
+    spouseSoleBeneficiary: plan.spouseSoleBeneficiary,
+  });
+  const rmdSpouseRes =
+    ageSpouse != null && plan.birthYearSpouse != null
+      ? rmdForYear({
+          priorDec31PreTax: priorPretaxSpouse,
+          agePrimary: ageSpouse,
+          ageSpouse: age,
+          birthYearPrimary: plan.birthYearSpouse,
+          spouseSoleBeneficiary:
+            plan.primarySoleBeneficiaryOfSpouse === true,
+        })
+      : { rmd: 0, divisor: null, table: null };
+  const rmdTotal = r2(rmdPrimaryRes.rmd + rmdSpouseRes.rmd);
   // TAXABLE YIELDS (contract v58, F3): priced exactly as the
   // retirement march prices them — interest and dividend
   // income on the balance the year OPENS with (in the roll,
@@ -800,7 +943,12 @@ export function priceOneWorkYear(
     agePrimary: age,
     ageSpouse,
     otherOrdinary: Math.max(0, taxableWages),
-    rmd: 0,
+    // The year's RMDs (F5): ordinary income inside the
+    // shared price, exactly the march's treatment — the
+    // distribution is priced here, its cash joins the
+    // surplus below, and the roll takes it out of the
+    // pre-tax balances.
+    rmd: rmdTotal,
     conversion: 0,
     extraPreTaxDraw: 0,
     ssBenefits,
@@ -828,14 +976,14 @@ export function priceOneWorkYear(
     // students price their §25A credits in the work year
     // exactly as in any priced year — the nonrefundable
     // portion is inside priced.federalTax, so the surplus
-    // below already reflects it. The refundable portion IS
-    // added to the surplus below (engine-audit round-2
-    // fix): it is cash the household actually receives, and
-    // the retirement march (Build D) deposits the same
-    // credit into Taxable — leaving it out of the work-year
-    // surplus made the refund vanish from the balance sheet
-    // entirely. It lands in Taxable through the existing
-    // roll-forward, banked at year end like any surplus.
+    // below already reflects it. The refundable portion is
+    // NOT added to the surplus below (contract v96): like
+    // the retirement march (Build D), the roll carries it
+    // undeposited and deposits it in Taxable at the start
+    // of the next simulated year — the year's return is
+    // filed the next spring — so the same-year surplus
+    // must not bank cash the household has not received,
+    // and a deficit year must not fund itself from it.
     educationStudents: (plan.educationStudents ?? []).filter(
       (e) => e.year === calendarYear,
     ),
@@ -858,13 +1006,21 @@ export function priceOneWorkYear(
         fica -
         plan.annualSpending -
         ownContributions +
-        // The year's refundable §25A credit (p.education-
-        // Refundable): cash back to the household, banked into
-        // Taxable by the roll-forward below.
-        p.educationRefundable +
         // The year's Social Security benefits (F4): household
-        // cash, banked into Taxable like any surplus.
-        ssBenefits,
+        // cash, banked into Taxable like any surplus. The
+        // refundable §25A credit (p.educationRefundable) is
+        // deliberately NOT added here (contract v96): it is
+        // next spring's cash, carried by the roll and
+        // deposited at the start of the next simulated year.
+        ssBenefits +
+        // The year's RMDs (F5): the distribution is household
+        // cash on the same footing as the benefits above —
+        // the plan march counts it in the year's cash income
+        // that covers spending first and whose leftover sweeps
+        // into Taxable; here it is one term of the same net
+        // surplus figure, so it funds this year's deficit
+        // settlement exactly as the march's cash does.
+        rmdTotal,
     );
   // DEFICIT-FUNDING SALE SETTLEMENT (contract v58, F1): price
   // the year first with no sale (ltcg $0). When the roll
@@ -933,8 +1089,18 @@ export function priceOneWorkYear(
     interestIncome,
     dividendIncome,
     ssBenefits,
+    rmd: rmdTotal,
+    rmdPrimary: rmdPrimaryRes.rmd,
+    rmdSpouse: rmdSpouseRes.rmd,
+    rmdDivisorPrimary: rmdPrimaryRes.divisor,
+    rmdDivisorSpouse: rmdSpouseRes.divisor,
+    rmdTablePrimary: rmdPrimaryRes.table,
+    rmdTableSpouse: rmdSpouseRes.table,
     ltcg: r2(ltcg),
     surplus,
+    // The year's refundable §25A credit, carried by the roll
+    // (contract v96) — never part of the surplus above.
+    educationRefundable: priced.educationRefundable,
     // No balance context in a standalone price — the roll
     // computes the year's real shortfall (see WorkYearLine).
     shortfall: 0,
@@ -966,9 +1132,12 @@ export type WorkYearTotals = {
   employerContributions: number;
   // What actually landed in Taxable from the surplus stream:
   // each year's surplus as absorbed by the balance (a deficit
-  // year reduces it only down to a $0 balance — see shortfall).
-  // Equals the plain sum of the yearly surpluses whenever no
-  // year ran a shortfall.
+  // year reduces it only down to a $0 balance — see shortfall),
+  // plus every refundable §25A deposit the roll landed
+  // (contract v96: start-of-year deposits and the
+  // horizon-end deposit). Equals the plain sum of the yearly
+  // surpluses plus the landed refunds whenever no year ran
+  // a shortfall.
   surplusBanked: number;
   // Total unfunded work-year shortfall (round-7 fix 1.1): the
   // sum of the yearly shortfalls — spending and taxes the
@@ -985,7 +1154,8 @@ export type WorkYearRoll = {
   lines: WorkYearLine[];
   totals: WorkYearTotals;
   // Balances at the quit age, after the last work year's
-  // growth + year-end contributions.
+  // growth + year-end contributions, plus any horizon-end
+  // education refund deposit (contract v96).
   balances: {
     pretax: number; // primary + spouse combined
     pretaxPrimary: number;
@@ -1064,7 +1234,13 @@ export function rollWorkYears(
       // the quit age as both the retirement age and the
       // window-start age — not the plan's saved retirement
       // age. Balances and every other input are the plan's
-      // own, exactly as before.
+      // own, exactly as before. No pending refundable credit
+      // arises here to carry anywhere: no work year is
+      // priced, so no work-year credit is earned; the
+      // rolled march prices education credits for its own
+      // years (from the quit age on) through its own
+      // pending-refund carry, and nothing is threaded
+      // through it from the roll.
       rolledInputs: {
         ...plan,
         retirementAge: Math.floor(quitAge),
@@ -1112,8 +1288,40 @@ export function rollWorkYears(
   // The taxable basis ledger (F2), carried in dollars beside
   // the balance through every rolled year.
   const ledger = initTaxableLedger(plan);
+  // PENDING EDUCATION REFUND (contract v96): the refundable
+  // §25A credit the previous work year priced, carried here
+  // undeposited — the plan march's pendingEduRefund shape.
+  // It lands in the taxable pool at the start of the next
+  // simulated year (the deposit block at the top of the
+  // loop), and whatever is still pending after the last
+  // work year lands in the quit-age balance instead (the
+  // horizon-end deposit after the loop), so a refund is
+  // never dropped. eduRefundsDeposited is the total the
+  // roll actually landed, counted into surplusBanked so
+  // the totals still name every dollar that reached
+  // Taxable.
+  let pendingEduRefund = 0;
+  let eduRefundsDeposited = 0;
   for (let i = 0; i < count; i++) {
     const age = effectiveStart + i;
+    // EDUCATION REFUND DEPOSIT (contract v96, Build D
+    // timing): last year's refundable credit lands in the
+    // taxable pool at the START of this year — the prior
+    // year's return is filed this spring — before this
+    // year's yields, growth, and settlement run, at 100%
+    // basis, so it funds this year's spending and taxes
+    // and grows with the pool exactly as the march's
+    // start-of-year deposit does. The ledger landing runs
+    // before the tier balances grow below, so the deposit
+    // grows with the pool too; the pro-rata denominator is
+    // the pre-deposit opening balance, the balance the
+    // tier ledgers currently sum to.
+    if (pendingEduRefund > 0) {
+      landSurplusInLedger(ledger, taxable, pendingEduRefund);
+      taxable += pendingEduRefund;
+      eduRefundsDeposited += pendingEduRefund;
+      pendingEduRefund = 0;
+    }
     // TAXABLE LEDGER for the year (F1/F2/F3): the year opens
     // with the balance carried in (the base the year's yields
     // price on); the balance then grows at the plan's return
@@ -1139,21 +1347,48 @@ export function rollWorkYears(
       for (const t of ledger.tiers) t.bal *= growth;
     }
     stepUpLedgerForYield(ledger, grownTaxable, yieldTotal);
-    const pricedLine = priceOneWorkYear(plan, job, age, priorYearWages, {
-      openingBalance: openingTaxable,
-      grownBalance: grownTaxable,
-      ledger,
-    });
+    const pricedLine = priceOneWorkYear(
+      plan,
+      job,
+      age,
+      priorYearWages,
+      {
+        openingBalance: openingTaxable,
+        grownBalance: grownTaxable,
+        ledger,
+      },
+      // The prior-Dec-31 pre-tax balances (F5): the balances
+      // carried into this year — the loop variables still
+      // hold the prior year-end figures at this point (this
+      // year's growth and contributions land below, after
+      // the pricing), so each owner's RMD prices on exactly
+      // the balance the plan march would read for the year.
+      { priorPrimary: pretaxPrimary, priorSpouse: pretaxSpouse },
+    );
     priorYearWages = pricedLine.ficaWages;
+    // This year's refundable credit becomes next year's
+    // deposit (contract v96): carried undeposited until
+    // the start of the next simulated year. It is assigned
+    // here, after the year's pricing has converged, so the
+    // deficit settlement above never funds itself from
+    // cash that arrives next spring.
+    pendingEduRefund = r2(pricedLine.educationRefundable);
     const s = pricedLine.stack;
     const catchUpPreTax = s.catchUpIsRoth ? 0 : s.catchUp;
     const catchUpRoth = s.catchUpIsRoth ? s.catchUp : 0;
     const pretaxIn = s.deferral + catchUpPreTax + s.employer401k;
     const rothIn = catchUpRoth + s.mega;
-    // Grow first, then land the year-end contributions — the
-    // contributions earn no growth in the year they are made.
-    pretaxPrimary = pretaxPrimary * growth + pretaxIn;
-    pretaxSpouse = pretaxSpouse * growth;
+    // The year's RMD leaves its owner's balance first (F5 —
+    // the march's order: the distribution is taken from the
+    // prior-Dec-31 balance, and the post-distribution balance
+    // is what grows), then grow, then land the year-end
+    // contributions — the contributions earn no growth in
+    // the year they are made, and they count toward the NEXT
+    // year's RMD, never this year's.
+    pretaxPrimary =
+      Math.max(0, pretaxPrimary - pricedLine.rmdPrimary) * growth + pretaxIn;
+    pretaxSpouse =
+      Math.max(0, pretaxSpouse - pricedLine.rmdSpouse) * growth;
     roth = roth * growth + rothIn;
     // DEFICIT FLOOR (round-7 fix 1.1): a work year's surplus
     // can be negative — outgo past the salary — but the
@@ -1209,6 +1444,30 @@ export function rollWorkYears(
     totals.surplusBanked += line.surplus + line.shortfall;
     totals.shortfall += line.shortfall;
   }
+  // HORIZON-END EDUCATION REFUND (contract v96): a
+  // refundable credit earned in the roll's LAST work year
+  // has no following work year inside the roll, so — like
+  // the plan march's final-year exception — it is added
+  // to the quit-age taxable balance directly, after the
+  // final year's growth, as the undeposited dollars
+  // themselves (the return is filed after the roll ends).
+  // It lands at 100% basis and flows into the rolled
+  // plan's opening taxable balance and rebuilt basis
+  // fields below, so the retirement march prices on it
+  // from its first year; it is never dropped and never
+  // deposited twice (the loop's deposit block consumed
+  // every earlier year's credit at the next year's start).
+  if (pendingEduRefund > 0) {
+    landSurplusInLedger(ledger, taxable, pendingEduRefund);
+    taxable += pendingEduRefund;
+    eduRefundsDeposited += pendingEduRefund;
+    pendingEduRefund = 0;
+  }
+  // Refund deposits that actually landed in Taxable —
+  // start-of-year deposits plus the horizon-end deposit —
+  // count into surplusBanked, so the totals name every
+  // dollar the surplus-and-refund stream landed.
+  totals.surplusBanked += eduRefundsDeposited;
   totals.grossSalary = r2(totals.grossSalary);
   totals.federal = r2(totals.federal);
   totals.state = r2(totals.state);

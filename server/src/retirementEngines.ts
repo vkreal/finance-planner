@@ -34,6 +34,32 @@ function medianOf(values: number[]): number {
   return s.length % 2 === 1 ? (s[mid] ?? 0) : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
 }
 
+// Horizon convention (engine-calendar fix F6, contract v99):
+// a plan's priced years are the years from the current age
+// THROUGH the end age, inclusive — the end-age year is priced
+// and its return is applied, so the ending balance is the
+// value AFTER the end-age year. This is the Roth plan engine's
+// convention (its march loops while year − birthYear <=
+// endAge, applying a growth step at each loop tail), and the
+// Retirement engines are aligned to it so the same span prices
+// the same number of years on every surface: a plan from age
+// 55 to age 95 runs 41 priced years, not 40. Every end-age-
+// bound loop in this file derives its year count from this
+// one helper — simulateDetailed (Projection), runNeverRunsOut
+// (the solver's feasibility twin), runHistorical, runMonteCarlo,
+// and solveGuardrailsScan (the Max Spending solver's scan) —
+// so the surfaces cannot drift apart again. The one count
+// that does NOT come from here is the guardrails scan's
+// pre-retirement year count (retirement age − current age,
+// capped at the horizon): those are the years BEFORE the
+// first retired year, a window bound rather than an end-age
+// bound — the cap only bites when retirement is at or past
+// the end age, a combination solveMaxSpending refuses at
+// entry, so the inclusive horizon leaves it unchanged.
+export function horizonYears(currentAge: number, endAge: number): number {
+  return Math.max(0, endAge - currentAge + 1);
+}
+
 // Deterministic PRNG so a Monte Carlo batch is stable until Re-run.
 function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -291,13 +317,13 @@ export type SimInputs = {
 //   extra-income offset, exactly where Constant applies the
 //   spending input.
 export type SimDetailed = {
-  balances: number[]; // length years+1, starting at currentAge
+  balances: number[]; // length years+1, starting at currentAge (years = the inclusive horizon, see horizonYears)
   grossWithdrawals: number[]; // per year: gross spending (0 pre-retirement)
   netWithdrawals: number[]; // per year: gross − extra income (what leaves the portfolio)
 };
 
 export function simulateDetailed(inputs: SimInputs, returns: number[]): SimDetailed {
-  const years = Math.max(0, inputs.endAge - inputs.currentAge);
+  const years = horizonYears(inputs.currentAge, inputs.endAge);
   const balances: number[] = [inputs.startCents];
   const grossWithdrawals: number[] = [];
   const netWithdrawals: number[] = [];
@@ -367,7 +393,7 @@ export function simulate(inputs: SimInputs, returns: number[]): number[] {
 // simulateDetailed's balance evolution exactly: the solver
 // cross-checks its scan winner with the full engines.
 export function runNeverRunsOut(inputs: SimInputs, returns: number[]): boolean {
-  const years = Math.max(0, inputs.endAge - inputs.currentAge);
+  const years = horizonYears(inputs.currentAge, inputs.endAge);
   let bal = inputs.startCents;
   let currentSpending = inputs.spendingCents;
   let initialRate: number | null = null;
@@ -547,7 +573,7 @@ export type HistResult = {
 };
 
 export function runHistorical(inputs: SimInputs, stocksPct: number): HistResult | null {
-  const planYears = inputs.endAge - inputs.currentAge;
+  const planYears = horizonYears(inputs.currentAge, inputs.endAge);
   if (planYears <= 0) return null;
   const allReturns = historicalRealReturns(stocksPct);
   const lastYear = HISTORICAL[HISTORICAL.length - 1]?.year ?? 0;
@@ -642,7 +668,7 @@ export function runMonteCarlo(
   seed: number,
   runCount = MONTE_CARLO_TAB_RUNS,
 ): McResult | null {
-  const planYears = inputs.endAge - inputs.currentAge;
+  const planYears = horizonYears(inputs.currentAge, inputs.endAge);
   if (planYears <= 0) return null;
   const rng = mulberry32(seed * 7919 + 17);
   const endings: number[] = [];
@@ -820,7 +846,7 @@ function solveGuardrailsScan(
   mcSeed: number,
 ): SolverResult | null {
   const STEP = 10000; // $100 in cents
-  const planYears = base.endAge - base.currentAge;
+  const planYears = horizonYears(base.currentAge, base.endAge);
   if (planYears <= 0) return null;
   const runReturns: number[][] = [];
   if (engine === "historical") {
@@ -877,6 +903,14 @@ function solveGuardrailsScan(
   // later-starting income larger than the spending revives a
   // zeroed balance, so a first-year-income ceiling would cut
   // the scan short and understate the maximum.
+  // preYears is a window count, not an end-age count: the
+  // years strictly before the first retired year, grown to
+  // find the best balance AT retirement. The inclusive
+  // horizon (F6) does not add a year here — the year at the
+  // retirement age is a retired year, not a pre-retirement
+  // one — and the planYears cap binds only when retirement
+  // is at or past the end age, which solveMaxSpending
+  // refuses before this scan runs.
   const preYears = Math.max(
     0,
     Math.min(planYears, base.retirementAge - base.currentAge),

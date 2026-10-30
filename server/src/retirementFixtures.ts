@@ -147,14 +147,14 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     kind: "projection",
     note: "Constant strategy at the blended 75/25 expected return.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":516551018},
+    expected: {"endingCents":535677701},
   },
   {
     id: "proj-constant-retired-now",
     kind: "projection",
     note: "Retire immediately at 65.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":269989656},
+    expected: {"endingCents":274939062},
   },
   {
     id: "proj-constant-depletes",
@@ -168,49 +168,73 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     kind: "projection",
     note: "Percent strategy, 5% of the balance each year.",
     input: { portfolioCents: 300000000, spendingCents: 10000000, currentAge: 60, retirementAge: 60, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":352582378},
+    expected: {"endingCents":354213071},
   },
   {
     id: "proj-percent-3-low-return",
     kind: "projection",
     note: "Percent strategy at 3% with a typed 4% expected return.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 4, volatilityPct: null, strategy: "percent", percentOfPortfolio: 3, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":301779315},
+    expected: {"endingCents":304434974},
   },
   {
     id: "proj-guardrails-defaults",
     kind: "projection",
     note: "Guardrails at the professional default knobs (120/80/10).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":414103365},
+    expected: {"endingCents":420883165},
   },
   {
     id: "proj-guardrails-custom-knobs",
     kind: "projection",
     note: "Guardrails with non-default knobs 135/70/12 and a typed 4.25% return.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 4.25, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 135, guardrailsRaisePct: 70, guardrailsAdjustmentPct: 12 },
-    expected: {"endingCents":131244906},
+    expected: {"endingCents":128749695},
   },
   {
     id: "proj-income-midplan",
     kind: "projection",
     note: "Extra income of $50,484/yr starting at 67, mid-plan (retirement at 57).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 5048400, extraIncomeStartAge: 67, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":867943496},
+    expected: {"endingCents":912613930},
   },
   {
     id: "proj-income-surplus",
     kind: "projection",
     note: "Surplus case: extra income ($150,000/yr from 57) exceeds spending, so the surplus is invested.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 15000000, extraIncomeStartAge: 57, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":2549331362},
+    expected: {"endingCents":2701205415},
   },
   {
     id: "proj-income-no-start-age",
     kind: "projection",
     note: "Extra income with no start age counts from the retirement age.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 2400000, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":841795873},
+    expected: {"endingCents":882162136},
+  },
+  // ---- F6 horizon-convention group (contract v99): the
+  // end-age year is priced and its return applied, matching
+  // the Roth plan engine's march. Hand-derived from the
+  // closed form: with no spending and a steady 10% return the
+  // ending balance is the starting balance grown by one
+  // factor per priced year — 41 factors from age 55 through
+  // age 95, 56 through age 110. The Roth engine's figure for
+  // the same inputs is pinned in the tax suite (fixture
+  // tax-f6-horizon-matches-retirement), so the two surfaces
+  // cannot drift apart again. ----
+  {
+    id: "proj-f6-horizon-55-to-95",
+    kind: "projection",
+    note: "F6 horizon convention (hand-derived): $100,000 at a steady 10% return, no spending, age 55 to end age 95. The inclusive horizon prices 41 years (55 through 95), so the ending is $100,000 × 1.10^41 = $4,978,518.11. Before the F6 alignment the Retirement loop ran 40 growth steps and ended at $4,525,925.56 — one step short of the Roth engine's figure for the identical span.",
+    input: { portfolioCents: 10000000, spendingCents: 0, currentAge: 55, retirementAge: 55, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 10, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":497851811},
+  },
+  {
+    id: "proj-f6-horizon-55-to-110",
+    kind: "projection",
+    note: "F6 horizon convention (hand-derived): the same pure-growth shape to end age 110 prices 56 years (55 through 110), so the ending is $100,000 × 1.10^56 = $20,796,505.67. Before the F6 alignment the loop ran 55 steps and ended at $18,905,914.25.",
+    input: { portfolioCents: 10000000, spendingCents: 0, currentAge: 55, retirementAge: 55, endAge: 110, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 10, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
+    expected: {"endingCents":2079650567},
   },
   // ---- Historical group: REGRESSION SNAPSHOTS pinned from the
   // verified implementation under the maintenance rule above —
@@ -220,70 +244,70 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     kind: "historical",
     note: "Constant strategy over every historical start year, 75/25 mix.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":72.9,"medianEndingCents":374102771,"worstEndingCents":0,"worstStartYear":1929,"runCount":59},
+    expected: {"successRate":72.4,"medianEndingCents":377882097,"worstEndingCents":0,"worstStartYear":1929,"runCount":58},
   },
   {
     id: "hist-constant-5050-30y",
     kind: "historical",
-    note: "50/50 mix, retire at 65, 30-year plan.",
+    note: "50/50 mix, retire at 65, plan to 95 — 31 priced years under the F6 inclusive horizon (a 30-year span before contract v99).",
     input: { portfolioCents: 100000000, spendingCents: 4500000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 50, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":84.1,"medianEndingCents":79111200,"worstEndingCents":0,"worstStartYear":1937,"runCount":69},
+    expected: {"successRate":80.9,"medianEndingCents":73039277,"worstEndingCents":0,"worstStartYear":1937,"runCount":68},
   },
   {
     id: "hist-percent-45",
     kind: "historical",
     note: "Percent strategy at 4.5%, 60/40 mix, retire at 60.",
     input: { portfolioCents: 300000000, spendingCents: 10000000, currentAge: 60, retirementAge: 60, endAge: 95, stocksPct: 60, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 4.5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":100,"medianEndingCents":338982855,"worstEndingCents":184945450,"worstStartYear":1946,"runCount":64,"lowestSpendingCents":5196484,"averageSpendingCents":14980945},
+    expected: {"successRate":100,"medianEndingCents":327897509,"worstEndingCents":160866157,"worstStartYear":1946,"runCount":63,"lowestSpendingCents":5196484,"averageSpendingCents":14901519},
   },
   {
     id: "hist-guardrails-defaults",
     kind: "historical",
     note: "Guardrails at the professional default knobs (120/80/10).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":100,"medianEndingCents":345623390,"worstEndingCents":49182057,"worstStartYear":1973,"runCount":59},
+    expected: {"successRate":100,"medianEndingCents":368811208,"worstEndingCents":50169849,"worstStartYear":1930,"runCount":58},
   },
   {
     id: "hist-guardrails-custom-knobs",
     kind: "historical",
     note: "Guardrails with non-default knobs 135/70/12.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 135, guardrailsRaisePct: 70, guardrailsAdjustmentPct: 12 },
-    expected: {"successRate":100,"medianEndingCents":352923139,"worstEndingCents":33069266,"worstStartYear":1973,"runCount":59},
+    expected: {"successRate":100,"medianEndingCents":358516444,"worstEndingCents":35378393,"worstStartYear":1973,"runCount":58},
   },
   {
     id: "hist-income-midplan",
     kind: "historical",
     note: "Extra income of $50,484/yr starting at 67, mid-plan.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 5048400, extraIncomeStartAge: 67, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":100,"medianEndingCents":741722003,"worstEndingCents":86423134,"worstStartYear":1969,"runCount":59},
+    expected: {"successRate":100,"medianEndingCents":810684338,"worstEndingCents":95438667,"worstStartYear":1969,"runCount":58},
   },
   {
     id: "hist-income-surplus",
     kind: "historical",
     note: "Surplus case: $150,000/yr income from 57 against $100,000 spending.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 15000000, extraIncomeStartAge: 57, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":100,"medianEndingCents":2475462397,"worstEndingCents":1522719600,"worstStartYear":1940,"runCount":59},
+    expected: {"successRate":100,"medianEndingCents":2618531460,"worstEndingCents":1504433631,"worstStartYear":1937,"runCount":58},
   },
   {
     id: "hist-all-stocks",
     kind: "historical",
     note: "100% stocks mix.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 100, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":78,"medianEndingCents":966178964,"worstEndingCents":0,"worstStartYear":1929,"runCount":59},
+    expected: {"successRate":77.6,"medianEndingCents":989392390,"worstEndingCents":0,"worstStartYear":1929,"runCount":58},
   },
   {
     id: "hist-all-bonds",
     kind: "historical",
     note: "0% stocks (all bonds) mix.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 0, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":13.6,"medianEndingCents":0,"worstEndingCents":0,"worstStartYear":1928,"runCount":59},
+    expected: {"successRate":12.1,"medianEndingCents":0,"worstEndingCents":0,"worstStartYear":1928,"runCount":58},
   },
   {
     id: "hist-short-plan-15y",
     kind: "historical",
-    note: "Short 15-year plan (65 to 80): many more start-year windows fit.",
+    note: "Short plan (65 to 80): 16 priced years under the F6 inclusive horizon (a 15-year span before contract v99) — many more start-year windows fit.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 65, retirementAge: 65, endAge: 80, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":100,"medianEndingCents":227280066,"worstEndingCents":25100267,"worstStartYear":1969,"runCount":84},
+    expected: {"successRate":100,"medianEndingCents":225892999,"worstEndingCents":15642457,"worstStartYear":1969,"runCount":83},
   },
   // ---- Monte Carlo group: REGRESSION SNAPSHOTS pinned from the
   // verified implementation under the maintenance rule above —
@@ -295,7 +319,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Monte Carlo at the app's default seed, blended return/volatility.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
-    expected: {"successRate":61.2,"p10Cents":0,"p50Cents":145294232,"p90Cents":1778700904},
+    expected: {"successRate":61.4,"p10Cents":0,"p50Cents":160255391,"p90Cents":1740198679},
   },
   {
     id: "mc-percent-5",
@@ -303,7 +327,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Percent strategy at 5%, seed 777.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 777,
-    expected: {"successRate":100,"p10Cents":51114180,"p50Cents":175720872,"p90Cents":536601481,"lowestSpendingCents":239290,"averageSpendingCents":10065205},
+    expected: {"successRate":100,"p10Cents":50099483,"p50Cents":172477645,"p90Cents":571421878,"lowestSpendingCents":258937,"averageSpendingCents":10380987},
   },
   {
     id: "mc-guardrails-defaults",
@@ -311,7 +335,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Guardrails at the professional default knobs, seed 4242.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 4242,
-    expected: {"successRate":99.4,"p10Cents":37937556,"p50Cents":219018292,"p90Cents":903474611},
+    expected: {"successRate":98.4,"p10Cents":38066776,"p50Cents":207600675,"p90Cents":928079958},
   },
   {
     id: "mc-guardrails-custom-knobs",
@@ -319,7 +343,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Guardrails with non-default knobs 135/70/12, seed 99.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 135, guardrailsRaisePct: 70, guardrailsAdjustmentPct: 12 },
     mcSeed: 99,
-    expected: {"successRate":99.1,"p10Cents":31414214,"p50Cents":206136231,"p90Cents":977788742},
+    expected: {"successRate":99.3,"p10Cents":29579210,"p50Cents":204052744,"p90Cents":954102960},
   },
   {
     id: "mc-income-midplan",
@@ -327,7 +351,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Extra income of $50,484/yr starting at 67, seed 12345.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 5048400, extraIncomeStartAge: 67, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
-    expected: {"successRate":84.6,"p10Cents":0,"p50Cents":409211666,"p90Cents":2235019371},
+    expected: {"successRate":86.1,"p10Cents":0,"p50Cents":446447532,"p90Cents":2174106077},
   },
   {
     id: "mc-income-surplus",
@@ -335,7 +359,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Surplus case: $150,000/yr income from 57, seed 31337.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 15000000, extraIncomeStartAge: 57, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 31337,
-    expected: {"successRate":100,"p10Cents":675052546,"p50Cents":1850236008,"p90Cents":5519384174},
+    expected: {"successRate":100,"p10Cents":687052221,"p50Cents":1925948742,"p90Cents":5854395177},
   },
   {
     id: "mc-high-vol-low-return",
@@ -343,7 +367,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Typed 3.5% expected return with 24% volatility, seed 2024.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 3.5, volatilityPct: 24, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 2024,
-    expected: {"successRate":22.8,"p10Cents":0,"p50Cents":0,"p90Cents":412706115},
+    expected: {"successRate":21.6,"p10Cents":0,"p50Cents":0,"p90Cents":319425557},
   },
   {
     id: "mc-zero-volatility",
@@ -351,7 +375,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Zero volatility: every simulated lifetime is the same path.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: 0, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 5,
-    expected: {"successRate":100,"p10Cents":516551018,"p50Cents":516551018,"p90Cents":516551018},
+    expected: {"successRate":100,"p10Cents":535677701,"p50Cents":535677701,"p90Cents":535677701},
   },
   {
     id: "solver-hist-constant-95",
@@ -359,7 +383,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical engine, Constant strategy, 95% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":8070000,"successRate":96.6,"medianEndingCents":643282884,"solvedPercent":null},
+    expected: {"solvedSpendingCents":8020000,"successRate":96.6,"medianEndingCents":676827580,"solvedPercent":null},
   },
   {
     id: "solver-hist-guardrails-95",
@@ -367,7 +391,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical engine, Guardrails (default knobs), 95% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":15380000,"successRate":96.6,"medianEndingCents":106940633,"solvedPercent":null},
+    expected: {"solvedSpendingCents":15020000,"successRate":96.6,"medianEndingCents":124645270,"solvedPercent":null},
   },
   {
     id: "solver-hist-percent-95",
@@ -375,7 +399,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical engine, Percent strategy, 95% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":2313,"solvedPercent":30},
+    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":1692,"solvedPercent":30},
   },
   {
     id: "solver-mc-constant-85",
@@ -384,7 +408,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 85,
-    expected: {"solvedSpendingCents":6630000,"successRate":85.2,"medianEndingCents":480501564,"solvedPercent":null},
+    expected: {"solvedSpendingCents":6850000,"successRate":85,"medianEndingCents":495645951,"solvedPercent":null},
   },
   {
     id: "solver-mc-guardrails-85",
@@ -393,7 +417,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 85,
-    expected: {"solvedSpendingCents":15190000,"successRate":85,"medianEndingCents":55680334,"solvedPercent":null},
+    expected: {"solvedSpendingCents":14840000,"successRate":85.1,"medianEndingCents":64843519,"solvedPercent":null},
   },
   {
     id: "solver-mc-percent-85",
@@ -402,7 +426,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "percent", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 85,
-    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":1565,"solvedPercent":30},
+    expected: {"solvedSpendingCents":60000000,"successRate":100,"medianEndingCents":1161,"solvedPercent":30},
   },
   {
     id: "solver-hist-constant-100",
@@ -410,7 +434,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending at a 100% target — only spending that survived every start year solves.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     solverEngine: "historical", solverTargetPct: 100,
-    expected: {"solvedSpendingCents":7810000,"successRate":100,"medianEndingCents":666368288,"solvedPercent":null},
+    expected: {"solvedSpendingCents":7760000,"successRate":100,"medianEndingCents":718990286,"solvedPercent":null},
   },
   {
     id: "solver-hist-guardrails-custom-90",
@@ -418,7 +442,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Max Spending, Historical, Guardrails with non-default knobs 150/60/15, 90% target.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 150, guardrailsRaisePct: 60, guardrailsAdjustmentPct: 15 },
     solverEngine: "historical", solverTargetPct: 90,
-    expected: {"solvedSpendingCents":18350000,"successRate":91.5,"medianEndingCents":26901857,"solvedPercent":null},
+    expected: {"solvedSpendingCents":18330000,"successRate":91.4,"medianEndingCents":26704672,"solvedPercent":null},
   },
   {
     id: "solver-mc-deplete-refill-95",
@@ -427,7 +451,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 40000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":277667456,"solvedPercent":null},
+    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":290319892,"solvedPercent":null},
   },
   {
     id: "solver-hist-deplete-refill-95",
@@ -435,87 +459,87 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "The same deplete-then-refill case on the Historical engine: solves to $0 (the first $100 step scores 0.0% — no historical run funds even $100/yr across the ten years before the income starts). Under the old scoring it also claimed $50,500/yr at 100%.",
     input: { portfolioCents: 40000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":354462526,"solvedPercent":null},
+    expected: {"solvedSpendingCents":0,"successRate":100,"medianEndingCents":385153350,"solvedPercent":null},
   },
   {
     id: "solver-mc-refill-fundable-95",
     kind: "solver",
-    note: "The refill plan scaled up: a $40,000 portfolio CAN fund some spending until the $48,000/yr income starts at 67 — $3,000/yr at 95.3% on the unified tab stream under the never-runs-out rule (the next $100 step scores 94.2%). The old ending-balance scoring solved this to $50,500/yr at 100%, pure refill credit. Re-pinned from the old solver-only stream's 95.4% at the same $3,000.",
+    note: "The refill plan scaled up: a $40,000 portfolio CAN fund some spending until the $48,000/yr income starts at 67 — $3,000/yr at 95.9% on the unified tab stream under the never-runs-out rule (the next $100 step scores 94.6%). The old ending-balance scoring solved this to $50,500/yr at 100%, pure refill credit. Re-pinned from the old solver-only stream's 95.4% at the same $3,000; the rate was 95.3% before the F6 inclusive horizon (contract v99).",
     input: { portfolioCents: 4000000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":300000,"successRate":95.3,"medianEndingCents":274798529,"solvedPercent":null},
+    expected: {"solvedSpendingCents":300000,"successRate":95.9,"medianEndingCents":284686107,"solvedPercent":null},
   },
   {
     id: "solver-hist-refill-fundable-95",
     kind: "solver",
-    note: "The $40,000 refill plan on the Historical engine: $3,300/yr at 98.3% (the next $100 step scores 94.9%). The old scoring solved it to $50,500/yr at 100%.",
+    note: "The $40,000 refill plan on the Historical engine: $3,300/yr at 98.3% (the next $100 step scores 94.8% under the F6 inclusive horizon; it scored 94.9% before it). The old scoring solved it to $50,500/yr at 100%.",
     input: { portfolioCents: 4000000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":330000,"successRate":98.3,"medianEndingCents":345378346,"solvedPercent":null},
+    expected: {"solvedSpendingCents":330000,"successRate":98.3,"medianEndingCents":375282561,"solvedPercent":null},
   },
   {
     id: "solver-hist-guardrails-refill-95",
     kind: "solver",
-    note: "Guardrails scan on a refill plan: $30,000 portfolio, $9,000 base spending, $48,000/yr income from 67. Solves to $3,400 at 96.6% under the never-runs-out rule (next step 94.9%); the old ending-balance scan solved it to $15,700 at 98.3% on refill credit.",
+    note: "Guardrails scan on a refill plan: $30,000 portfolio, $9,000 base spending, $48,000/yr income from 67. Solves to $3,400 at 96.6% under the never-runs-out rule (next step 94.8% under the F6 inclusive horizon; 94.9% before it); the old ending-balance scan solved it to $15,700 at 98.3% on refill credit.",
     input: { portfolioCents: 3000000, spendingCents: 900000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":340000,"successRate":96.6,"medianEndingCents":308138937,"solvedPercent":null},
+    expected: {"solvedSpendingCents":340000,"successRate":96.6,"medianEndingCents":342304289,"solvedPercent":null},
   },
   {
     id: "solver-mc-guardrails-refill-95",
     kind: "solver",
-    note: "The guardrails refill plan scanned on the unified tab stream: $3,200 at 96.1% (next step 94.8%); the old ending-balance scan solved it to $15,600 at 95.2%, and the old solver-only stream's never-runs-out scan solved it to $3,300 at 95.0%.",
+    note: "The guardrails refill plan scanned on the unified tab stream: $3,200 at 95.5% (next step 94.6%); before the F6 inclusive horizon (contract v99) it solved to the same $3,200 at 96.1% (next step 94.8%). The old ending-balance scan solved it to $15,600 at 95.2%, and the old solver-only stream's never-runs-out scan solved it to $3,300 at 95.0%.",
     input: { portfolioCents: 3000000, spendingCents: 900000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":320000,"successRate":96.1,"medianEndingCents":238993655,"solvedPercent":null},
+    expected: {"solvedSpendingCents":320000,"successRate":95.5,"medianEndingCents":246505761,"solvedPercent":null},
   },
   {
     id: "solver-mc-unified-stream-95",
     kind: "solver",
-    note: "Unified-stream regression (the reported disagreement): a $3,062,500 portfolio spending $150,000/yr, solved on the Monte Carlo TAB's stream (seed 12345, 1,000 runs). (Portfolio and spending rotated to synthetic sample figures in the pre-publication privacy scrub; the property is unchanged.) On the unified stream the solver finds $75,800 at 95.1% — and the runner's direct tab-stream run at the solved spending must reproduce that 95.1% and the median ending exactly (the next $100 step scores 94.9% on the tab stream).",
+    note: "Unified-stream regression (the reported disagreement): a $3,062,500 portfolio spending $150,000/yr, solved on the Monte Carlo TAB's stream (seed 12345, 1,000 runs). (Portfolio and spending rotated to synthetic sample figures in the pre-publication privacy scrub; the property is unchanged.) On the unified stream the solver finds $75,200 at 95.0% — and the runner's direct tab-stream run at the solved spending must reproduce that 95.0% and the median ending exactly (the next $100 step scores 94.9% on the tab stream). Before the F6 inclusive horizon (contract v99) it found $75,800 at 95.1%.",
     input: { portfolioCents: 306250000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":7580000,"successRate":95.1,"medianEndingCents":1015282779,"solvedPercent":null},
+    expected: {"solvedSpendingCents":7520000,"successRate":95,"medianEndingCents":1094703042,"solvedPercent":null},
   },
   {
     id: "hist-deplete-refill-never-out",
     kind: "historical",
-    note: "The deplete-then-refill case at the old solved spending ($47,900/yr on a $400 portfolio, $48,000/yr income from 67): every one of the 59 runs ends positive after refilling (the ending-balance successRate is 100, median ending $7,375.89, worst ending $3,298.99) — and every run spent a decade at $0 first, so the never-runs-out rate is 0. The Historical tab headlines the never-runs-out rate, so it reads 0% for this plan (it read 100% under the old ending-balance headline), while the median ending still shows the refill figure. Both rates are pinned so the divergence can never silently close from either side.",
+    note: "The deplete-then-refill case at the old solved spending ($47,900/yr on a $400 portfolio, $48,000/yr income from 67): every one of the 58 runs ends positive after refilling (the ending-balance successRate is 100, median ending $8,013.87, worst ending $3,597.13) — and every run spent a decade at $0 first, so the never-runs-out rate is 0. The Historical tab headlines the never-runs-out rate, so it reads 0% for this plan (it read 100% under the old ending-balance headline), while the median ending still shows the refill figure. Both rates are pinned so the divergence can never silently close from either side.",
     input: { portfolioCents: 40000, spendingCents: 4790000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
-    expected: {"successRate":100,"neverOutSuccessRate":0,"medianEndingCents":737589,"worstEndingCents":329899,"worstStartYear":1942,"runCount":59},
+    expected: {"successRate":100,"neverOutSuccessRate":0,"medianEndingCents":801387,"worstEndingCents":359713,"worstStartYear":1941,"runCount":58},
   },
   {
     id: "mc-deplete-refill-never-out",
     kind: "montecarlo",
-    note: "The same case on the Monte Carlo engine (tab seed 12345, 1000 runs): ending-balance success 100% with a $5,781.06 median ending — the refill signature — while the never-runs-out rate is 0%. The Monte Carlo tab headlines the never-runs-out rate, so it reads 0% for this plan (it read 100% under the old ending-balance headline), while the median ending still shows the refill figure.",
+    note: "The same case on the Monte Carlo engine (tab seed 12345, 1000 runs): ending-balance success 100% with a $6,040.73 median ending — the refill signature — while the never-runs-out rate is 0%. The Monte Carlo tab headlines the never-runs-out rate, so it reads 0% for this plan (it read 100% under the old ending-balance headline), while the median ending still shows the refill figure.",
     input: { portfolioCents: 40000, spendingCents: 4790000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
-    expected: {"successRate":100,"neverOutSuccessRate":0,"p10Cents":308924,"p50Cents":578106,"p90Cents":1108970},
+    expected: {"successRate":100,"neverOutSuccessRate":0,"p10Cents":311774,"p50Cents":604073,"p90Cents":1235535},
   },
   {
     id: "hist-atrisk-just-above-95",
     kind: "historical",
-    note: "Boundary: success lands just ABOVE the 95% Historical at-risk cutoff (66 of 69 start years).",
+    note: "Boundary case, re-derived under F6 (contract v99): before the inclusive horizon this plan landed just ABOVE the 95% Historical at-risk cutoff (66 of 69 start years); the extra priced year moves it to 94.1% (64 of 68 start years) — just BELOW the cutoff, so the case now pins the below side alongside its sibling. The id keeps its original name as history.",
     input: { portfolioCents: 100000000, spendingCents: 4000000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":95.7,"neverOutSuccessRate":95.7,"medianEndingCents":250938950,"worstEndingCents":0,"worstStartYear":1966,"runCount":69},
+    expected: {"successRate":94.1,"neverOutSuccessRate":94.1,"medianEndingCents":234004588,"worstEndingCents":0,"worstStartYear":1965,"runCount":68},
   },
   {
     id: "hist-atrisk-just-below-95",
     kind: "historical",
-    note: "Boundary: success lands just BELOW the 95% Historical at-risk cutoff (65 of 69 start years) — an at-risk plan.",
+    note: "Boundary: success lands just BELOW the 95% Historical at-risk cutoff (64 of 68 start years under the F6 inclusive horizon; 65 of 69 before it) — an at-risk plan.",
     input: { portfolioCents: 100000000, spendingCents: 4100000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"successRate":94.2,"neverOutSuccessRate":94.2,"medianEndingCents":241236524,"worstEndingCents":0,"worstStartYear":1965,"runCount":69},
+    expected: {"successRate":94.1,"neverOutSuccessRate":94.1,"medianEndingCents":226295944,"worstEndingCents":0,"worstStartYear":1965,"runCount":68},
   },
   {
     id: "mc-atrisk-just-above-85",
     kind: "montecarlo",
-    note: "Boundary: success lands just ABOVE the 85% Monte Carlo at-risk cutoff, seed 12345.",
+    note: "Boundary case, re-derived under F6 (contract v99): before the inclusive horizon this plan landed just ABOVE the 85% Monte Carlo at-risk cutoff (85.6%, seed 12345); the extra priced year moves it to 84.1% — just BELOW the cutoff, so the case now pins the below side alongside its sibling. The id keeps its original name as history.",
     input: { portfolioCents: 100000000, spendingCents: 3700000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
-    expected: {"successRate":85.6,"neverOutSuccessRate":85.6,"p10Cents":0,"p50Cents":129967899,"p90Cents":545442120},
+    expected: {"successRate":84.1,"neverOutSuccessRate":84.1,"p10Cents":0,"p50Cents":135860945,"p90Cents":655367077},
   },
   {
     id: "mc-atrisk-just-below-85",
@@ -523,7 +547,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     note: "Boundary: success lands just BELOW the 85% Monte Carlo at-risk cutoff — an at-risk plan, seed 12345.",
     input: { portfolioCents: 100000000, spendingCents: 3750000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
-    expected: {"successRate":84.8,"neverOutSuccessRate":84.8,"p10Cents":0,"p50Cents":126821824,"p90Cents":540468794},
+    expected: {"successRate":83.5,"neverOutSuccessRate":83.5,"p10Cents":0,"p50Cents":132237261,"p90Cents":647196114},
   },
   {
     id: "display-delta-fractional-cent",
@@ -546,29 +570,29 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     kind: "projection",
     note: "Phased strategy, $100,000/yr, step-down from age 75 at 1%/yr, at the blended 75/25 expected return. Gross spending from the step-down formula (factor 1 through age 75, then 0.99^(age−75)): age 74 = $100,000, age 75 = $100,000 (the start age is still full), age 76 = $99,000 (0.99^1), age 85 = $90,438.21 (0.99^10 = 0.9043820750…). Ending balance and gross figures verified by an independent from-scratch recomputation of the formula and year loop (October 2026).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 75, phaseDeclinePct: 1 },
-    expected: {"endingCents":544128779,"grossByAgeCents":[{"age":74,"cents":10000000},{"age":75,"cents":10000000},{"age":76,"cents":9900000},{"age":85,"cents":9043821}]},
+    expected: {"endingCents":566766818,"grossByAgeCents":[{"age":74,"cents":10000000},{"age":75,"cents":10000000},{"age":76,"cents":9900000},{"age":85,"cents":9043821}]},
   },
   {
     id: "proj-phased-zero-decline-equals-constant",
     kind: "projection",
-    note: "Bit-identity: Phased with a 0% step-down is Constant on identical inputs — its ending must equal proj-constant-base's $5,165,510.18 to the cent (the factor is exactly 1 at every age).",
+    note: "Bit-identity: Phased with a 0% step-down is Constant on identical inputs — its ending must equal proj-constant-base's $5,356,777.01 to the cent (the factor is exactly 1 at every age).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 75, phaseDeclinePct: 0 },
-    expected: {"endingCents":516551018},
+    expected: {"endingCents":535677701},
   },
   {
     id: "proj-phased-start-at-end-equals-constant",
     kind: "projection",
-    note: "Bit-identity: Phased with its step-down start age AT the end age (95) never declines within the plan (the last year run is age 94), even at a 5% step-down — its ending must equal proj-constant-base's $5,165,510.18 to the cent.",
+    note: "Bit-identity: Phased with its step-down start age AT the end age (95) never declines within the plan, even at a 5% step-down: under the F6 inclusive horizon the end-age year itself now runs, but at an age equal to the start age the factor is still exactly 1 — its ending must equal proj-constant-base's $5,356,777.01 to the cent.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 95, phaseDeclinePct: 5 },
-    expected: {"endingCents":516551018},
+    expected: {"endingCents":535677701},
   },
   {
     id: "solver-hist-phased-95",
     kind: "solver",
-    note: "Max Spending, Historical engine, Phased strategy (step-down from 75 at 1%/yr), 95% target: the solved figure is the maximum STARTING (pre-decline) annual spending, priced through the phased path — $81,900/yr at 96.6%, above Constant's $80,700 on the same plan because the later years spend less. Verified by a brute-force $100-step scan over the historical engine's never-runs-out rate (the next step, $82,000, scores 94.9%).",
+    note: "Max Spending, Historical engine, Phased strategy (step-down from 75 at 1%/yr), 95% target: the solved figure is the maximum STARTING (pre-decline) annual spending, priced through the phased path — $81,500/yr at 96.6%, above Constant's $80,200 on the same plan because the later years spend less. Verified by a brute-force $100-step scan over the historical engine's never-runs-out rate (the next step, $81,600, scores 94.8%). Before the F6 inclusive horizon (contract v99) it solved to $81,900 (next step 94.9%).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 75, phaseDeclinePct: 1 },
     solverEngine: "historical", solverTargetPct: 95,
-    expected: {"solvedSpendingCents":8190000,"successRate":96.6,"medianEndingCents":650861099,"solvedPercent":null},
+    expected: {"solvedSpendingCents":8150000,"successRate":96.6,"medianEndingCents":678284587,"solvedPercent":null},
   },
   // ---- Prompt 13 guardrails fixes (contract v40): the two
   // equality rails, genuine crossings past the tolerance, and
@@ -581,39 +605,39 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "proj-guardrails-equality-cut-no-fire",
     kind: "projection",
-    note: "Prompt 13 Defect 1, Case A (equality at the CUT rail, hand-derived): $1,200,000 portfolio, $200,000/yr spending, retire at 60, 0% returns, default 120/80/10 guardrails. The initial rate is 200000/1200000 = 16⅔%; at age 61 the balance is exactly $1,000,000, so the current 20% rate is mathematically EQUAL to 120% of the initial rate — the strict rule fires NO cut, so age-61 spending stays $200,000 and the plan ends at $800,000. Before the tolerance fix the raw float rail (120/100)×initial evaluated to 0.19999999999999998 < 0.2 and the engine cut to $180,000 (ending $820,000).",
+    note: "Prompt 13 Defect 1, Case A (equality at the CUT rail, hand-derived): $1,200,000 portfolio, $200,000/yr spending, retire at 60, 0% returns, default 120/80/10 guardrails. The initial rate is 200000/1200000 = 16⅔%; at age 61 the balance is exactly $1,000,000, so the current 20% rate is mathematically EQUAL to 120% of the initial rate — the strict rule fires NO cut, so age-61 spending stays $200,000 and the plan ends at $800,000. Before the tolerance fix the raw float rail (120/100)×initial evaluated to 0.19999999999999998 < 0.2 and the engine cut to $180,000 (ending $820,000). F6 re-pin (contract v99): the inclusive horizon adds the age-62 year — its rate is $200,000/$800,000 = 25%, genuinely past the 20% cut rail, so spending cuts 10% to $180,000 and the plan ends at $620,000; the pinned age-61 gross (the equality year itself) is unchanged.",
     input: { portfolioCents: 120000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":80000000,"grossByAgeCents":[{"age":61,"cents":20000000}]},
+    expected: {"endingCents":62000000,"grossByAgeCents":[{"age":61,"cents":20000000}]},
   },
   {
     id: "proj-guardrails-equality-raise-no-fire",
     kind: "projection",
-    note: "Prompt 13 Defect 1, Case B (equality at the RAISE rail, hand-derived): $1,000,000 portfolio, $200,000/yr spending, retire at 60, default guardrails, initial rate 20%. The audit's return path (+56.25% then 0%) is reproduced at the step that matters by a uniform +56.25% expected return: after age 60 the balance is exactly $1,250,000 (800,000 × 1.5625), so the age-61 rate 200000/1250000 = 16% is mathematically EQUAL to 80% of the initial rate — the strict rule fires NO raise, so age-61 spending stays $200,000. (The second year's return differs from the audit path, so the ending — (1,250,000 − 200,000) × 1.5625 = $1,640,625 — reflects the uniform return; the pinned age-61 gross is the audit's discriminating figure.) Before the fix the raw float rail (80/100)×0.2 evaluated to 0.16000000000000003 > 0.16 and the engine raised to $220,000.",
+    note: "Prompt 13 Defect 1, Case B (equality at the RAISE rail, hand-derived): $1,000,000 portfolio, $200,000/yr spending, retire at 60, default guardrails, initial rate 20%. The audit's return path (+56.25% then 0%) is reproduced at the step that matters by a uniform +56.25% expected return: after age 60 the balance is exactly $1,250,000 (800,000 × 1.5625), so the age-61 rate 200000/1250000 = 16% is mathematically EQUAL to 80% of the initial rate — the strict rule fires NO raise, so age-61 spending stays $200,000. (The second year's return differs from the audit path, so the ending — (1,250,000 − 200,000) × 1.5625 = $1,640,625 — reflects the uniform return; the pinned age-61 gross is the audit's discriminating figure.) Before the fix the raw float rail (80/100)×0.2 evaluated to 0.16000000000000003 > 0.16 and the engine raised to $220,000. F6 re-pin (contract v99): the inclusive horizon adds the age-62 year — its rate is $200,000/$1,640,625 ≈ 12.2%, genuinely below the 16% raise rail, so spending raises 10% to $220,000 and the ending is ($1,640,625 − $220,000) × 1.5625 = $2,219,726.56; the pinned age-61 gross is unchanged.",
     input: { portfolioCents: 100000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 56.25, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":164062500,"grossByAgeCents":[{"age":61,"cents":20000000}]},
+    expected: {"endingCents":221972656,"grossByAgeCents":[{"age":61,"cents":20000000}]},
   },
   {
     id: "proj-guardrails-genuine-cut-compounds",
     kind: "projection",
-    note: "Prompt 13 companion pin: a rate genuinely past the cut rail by far more than the 1e-9 tolerance still fires exactly ONE adjustment per year, compounding on the adjusted level (hand-derived): $1,000,000 portfolio, $50,000/yr spending (5% initial rate; cut rail 6%), −50% returns every year. Age 60: no adjustment (rate = initial), balance (1,000,000 − 50,000) × 0.5 = $475,000. Age 61: rate 50,000/475,000 = 10.53% > 6% → cut 10% to $45,000; balance (475,000 − 45,000) × 0.5 = $215,000. Age 62: rate 45,000/215,000 = 20.93% > 6% → cut 10% again, applied to $45,000 (not reset to $50,000) = $40,500; ending (215,000 − 40,500) × 0.5 = $87,250.",
+    note: "Prompt 13 companion pin: a rate genuinely past the cut rail by far more than the 1e-9 tolerance still fires exactly ONE adjustment per year, compounding on the adjusted level (hand-derived): $1,000,000 portfolio, $50,000/yr spending (5% initial rate; cut rail 6%), −50% returns every year. Age 60: no adjustment (rate = initial), balance (1,000,000 − 50,000) × 0.5 = $475,000. Age 61: rate 50,000/475,000 = 10.53% > 6% → cut 10% to $45,000; balance (475,000 − 45,000) × 0.5 = $215,000. Age 62: rate 45,000/215,000 = 20.93% > 6% → cut 10% again, applied to $45,000 (not reset to $50,000) = $40,500; balance (215,000 − 40,500) × 0.5 = $87,250. F6 re-pin (contract v99): the inclusive horizon adds age 63 — rate 40,500/87,250 ≈ 46.4% > 6% → cut 10% again to $36,450; ending (87,250 − 36,450) × 0.5 = $25,400.",
     input: { portfolioCents: 100000000, spendingCents: 5000000, currentAge: 60, retirementAge: 60, endAge: 63, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: -50, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":8725000,"grossByAgeCents":[{"age":61,"cents":4500000},{"age":62,"cents":4050000}]},
+    expected: {"endingCents":2540000,"grossByAgeCents":[{"age":61,"cents":4500000},{"age":62,"cents":4050000}]},
   },
   {
     id: "proj-guardrails-genuine-raise-fires",
     kind: "projection",
-    note: "Prompt 13 companion pin: a rate genuinely past the raise rail by far more than the tolerance still fires (hand-derived): $1,000,000 portfolio, $200,000/yr spending (20% initial rate; raise rail 16%), +100% returns every year. Age 60: no adjustment, balance (1,000,000 − 200,000) × 2 = $1,600,000. Age 61: rate 200,000/1,600,000 = 12.5% < 16% by 3.5 points → raise 10% to $220,000; ending (1,600,000 − 220,000) × 2 = $2,760,000.",
+    note: "Prompt 13 companion pin: a rate genuinely past the raise rail by far more than the tolerance still fires (hand-derived): $1,000,000 portfolio, $200,000/yr spending (20% initial rate; raise rail 16%), +100% returns every year. Age 60: no adjustment, balance (1,000,000 − 200,000) × 2 = $1,600,000. Age 61: rate 200,000/1,600,000 = 12.5% < 16% by 3.5 points → raise 10% to $220,000; balance (1,600,000 − 220,000) × 2 = $2,760,000. F6 re-pin (contract v99): the inclusive horizon adds age 62 — rate 220,000/2,760,000 ≈ 8.0% < 16% → raise 10% again to $242,000; ending (2,760,000 − 242,000) × 2 = $5,036,000.",
     input: { portfolioCents: 100000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 100, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
-    expected: {"endingCents":276000000,"grossByAgeCents":[{"age":61,"cents":22000000}]},
+    expected: {"endingCents":503600000,"grossByAgeCents":[{"age":61,"cents":22000000}]},
   },
   {
     id: "solver-guardrails-one-year-fully-funded",
     kind: "solver",
-    note: "Prompt 13 Defect 2, one-year case (the audit's reproduction, hand-derived): $1,000 portfolio, retire at 60, end at 61, no extra income, 0% return / 0% volatility, Monte Carlo engine (seed 12345, 1,000 identical zero-volatility runs), 100% never-short target. A $1,000 withdrawal from a $1,000 portfolio is fully funded (the portfolio ends at $0 but no year is short), so the guardrails maximum is $1,000 with a $0 median ending. Before the inclusive-endpoint fix the scan bound subtracted one cent and never tested the $1,000 step, solving to $900 (the Constant solver's control figure was $1,000 all along).",
+    note: "Prompt 13 Defect 2 case (the audit's reproduction, hand-derived), re-derived under F6 (contract v99): $1,000 portfolio, retire at 60, end at 61, no extra income, 0% return / 0% volatility, Monte Carlo engine (seed 12345, 1,000 identical zero-volatility runs), 100% never-short target. Before F6 this was a one-year plan (age 60 only): a $1,000 withdrawal was fully funded and the guardrails maximum was $1,000 with a $0 median ending (before the inclusive-endpoint fix the scan bound subtracted one cent and solved to $900). Under the inclusive horizon TWO years price (ages 60 and 61): at $500/yr the first year leaves $500, the age-61 rate (100%) is past the cut rail (120% of the 50% initial rate), so spending cuts 10% to $450 — fully funded, ending at $50; at $600/yr the age-61 cut lands at $540 against a $400 balance, short — so the maximum is $500 with a $50 median ending.",
     input: { portfolioCents: 100000, spendingCents: 100000, currentAge: 60, retirementAge: 60, endAge: 61, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 100,
-    expected: {"solvedSpendingCents":100000,"successRate":100,"medianEndingCents":0,"solvedPercent":null},
+    expected: {"solvedSpendingCents":50000,"successRate":100,"medianEndingCents":5000,"solvedPercent":null},
   },
   {
     id: "solver-guardrails-income-only-five-year",
@@ -683,7 +707,9 @@ function runFixtureCase(c: FixtureCase): FixtureCaseResult {
   const { inputs, stocks, expected, vol } = built;
   const exp = c.expected;
   if (c.kind === "projection") {
-    const years = Math.max(0, inputs.endAge - inputs.currentAge);
+    // Inclusive horizon (F6, contract v99): the projection's
+    // return stream covers every priced year, end age included.
+    const years = Math.max(0, inputs.endAge - inputs.currentAge + 1);
     const returns = Array.from({ length: years }, () => expected);
     const path = simulate(inputs, returns);
     checkCents(failures, "endingCents", path[path.length - 1] ?? 0, exp.endingCents);
@@ -836,19 +862,31 @@ export function runRetirementFixtures(
 
    Exact equality is NOT expected and is not the pass bar: the
    published study replays 1926–1995 Ibbotson data (this app
-   replays 1928–2025 Damodaran/BLS data — 69 overlapping 30-year
-   windows starting 1928–1996), uses corporate bonds where this
-   app blends in the 10-year Treasury, and counts a success as a
-   terminal value above zero, as does this engine. The anchor
-   passes when each app rate lands in the published neighbourhood
-   (within the tolerance below), which is what "explainable by
-   window and method" means numerically. */
+   replays 1928–2025 Damodaran/BLS data), uses corporate bonds
+   where this app blends in the 10-year Treasury, and counts a
+   success as a terminal value above zero, as does this engine.
+   The anchor passes when each app rate lands in the published
+   neighbourhood (within the tolerance below), which is what
+   "explainable by window and method" means numerically.
+   F6 WINDOW EFFECT (contract v99): under the inclusive
+   horizon this case (age 65 to end age 95) prices 31 years,
+   not the published study's 30, so one fewer overlapping
+   window fits the dataset — 68 windows starting 1928–1995,
+   where the pre-F6 engine replayed 69 starting 1928–1996 —
+   and each app rate is a 31-year rate set against the
+   published 30-year figure, a further explainable-by-method
+   difference on top of the data and bond differences above.
+   The case inputs and the published figures are NOT re-pinned:
+   both mixes still land within the tolerance below under the
+   new window arithmetic (verified in the v99 self-check run),
+   which is the anchor doing its job — the horizon change is
+   documented here rather than absorbed silently. */
 export const TRINITY_CASE = {
   portfolioCents: 100_000_000, // $1,000,000
   spendingCents: 4_000_000, // $40,000/yr — the 4% rule
   currentAge: 65,
   retirementAge: 65, // retire immediately
-  endAge: 95, // 30-year horizon
+  endAge: 95, // a 30-year span; 31 priced years under the F6 inclusive horizon (see the F6 window-effect note above)
 };
 export const TRINITY_PUBLISHED = {
   mix5050SuccessRate: 95,
