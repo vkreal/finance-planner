@@ -2923,6 +2923,7 @@ export function RothConversion() {
       windowStopAge: score.windowStopAge,
       optimizerGuardrail: score.guardrail,
       optimizerBunching: score.bunching,
+      gainsHarvest: score.gainsHarvest,
       drawOrder: asDrawOrderKey(score.drawOrder),
       // A declared "No benefit" is never overwritten by a
       // claiming result: that person was not searched, so the
@@ -3616,6 +3617,7 @@ export function RothConversion() {
             },
         guardrail: score.guardrail,
         bunching: score.bunching,
+        gainsHarvest: score.gainsHarvest,
       };
       return {
         score,
@@ -9540,20 +9542,29 @@ export function RothConversion() {
                   candidate.netCost, computed server-side) and
                   the same Save-as-scenario action the runner-up
                   rows use. Improvements only — no score. When
-                  nothing priced beats the saved plan, or Do
-                  Nothing won, one line says so instead. */}
+                  nothing priced beats the saved plan, one line
+                  says so instead. When Do Nothing won but priced
+                  strategies still beat the saved plan, the
+                  Do Nothing-won context is a sentence above the
+                  list, not a substitute for it (contract v106). */}
               <div className="mt-5">
                 <h3 className="text-base font-semibold">
                   What would improve this plan
                 </h3>
-                {optResult.winnerIsDoNothing ||
-                optResult.improvements.length === 0 ? (
+                {optResult.improvements.length === 0 ? (
                   <p className="mt-1 text-sm text-[var(--dim)]">
                     {optResult.winnerIsDoNothing
                       ? "Do Nothing won the search — and no strategy it priced beats your saved plan."
                       : "Your saved plan is the best the search found — no strategy it priced beats it."}
                   </p>
                 ) : (
+                  <>
+                    {optResult.winnerIsDoNothing && (
+                      <p className="mt-1 text-sm text-[var(--dim)]">
+                        Do Nothing won the search — but these strategies it
+                        priced still beat your saved plan.
+                      </p>
+                    )}
                   <ul className="mt-2 space-y-2">
                     {optResult.improvements.map((s) => (
                       <li
@@ -9598,6 +9609,7 @@ export function RothConversion() {
                       </li>
                     ))}
                   </ul>
+                  </>
                 )}
               </div>
               {optResult.claimSearchNote && (

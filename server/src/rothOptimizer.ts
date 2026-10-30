@@ -1359,6 +1359,19 @@ export function jointSearchNote(info: JointSearchInfo): string {
   // state is inferred from the searched flags (a searched
   // primary produces a table in a real run); a literal that
   // sets claimAgeTableEmpty explicitly governs.
+  // Floor-exempt Do Nothing winner below the floor (contract
+  // v107, round-15 F3): claimAgeFloorMetFor deliberately
+  // returns true for Do Nothing (the floor exemption — Do
+  // Nothing stays eligible and can still win), so a met floor
+  // must NOT be read as proof the winning claim is at or
+  // after the floor. When the winner is Do Nothing claiming
+  // below the floor, the note states the actual claiming age
+  // and the exemption plainly, and never carries the
+  // compliance assertion — the same plain-conflict treatment
+  // a locked non-Do-Nothing winner below the floor gets,
+  // extended to the exempt winner. A Do Nothing winner at or
+  // above the floor, and every non-Do-Nothing path, keep the
+  // wording below exactly.
   const floorMet: boolean | null =
     info.claimAgeFloor == null
       ? null
@@ -1367,6 +1380,11 @@ export function jointSearchNote(info: JointSearchInfo): string {
         : info.winnerPrimaryAge != null
           ? info.winnerIsDoNothing === true || info.winnerPrimaryAge >= info.claimAgeFloor
           : true;
+  const exemptBelowFloor =
+    info.winnerIsDoNothing === true &&
+    info.claimAgeFloor != null &&
+    info.winnerPrimaryAge != null &&
+    info.winnerPrimaryAge < info.claimAgeFloor;
   const tableEmpty =
     info.claimAgeTableEmpty !== undefined
       ? info.claimAgeTableEmpty
@@ -1374,11 +1392,13 @@ export function jointSearchNote(info: JointSearchInfo): string {
   const floorSentence =
     info.claimAgeFloor == null
       ? ""
-      : floorMet === false
-        ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}, but the winner claims at ${info.winnerPrimaryAge ?? "an age below it"}, below your floor — the winner does not meet your floor.${info.lockedPrimary === true ? ` That claim is locked at ${info.winnerPrimaryAge} because the benefit has already started, so the entered age cannot move.` : ""}`
-        : tableEmpty
-          ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later.`
-          : ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later, and the younger ages in the table below are marked as below your floor.`;
+      : exemptBelowFloor
+        ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}, but the winner is Do Nothing, which claims at ${info.winnerPrimaryAge}, below your floor — Do Nothing is exempt from the floor, so it can still win even though its claiming age is below the floor.`
+        : floorMet === false
+          ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}, but the winner claims at ${info.winnerPrimaryAge ?? "an age below it"}, below your floor — the winner does not meet your floor.${info.lockedPrimary === true ? ` That claim is locked at ${info.winnerPrimaryAge} because the benefit has already started, so the entered age cannot move.` : ""}`
+          : tableEmpty
+            ? ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later.`
+            : ` Your earliest claiming age to consider is ${info.claimAgeFloor}: the winner is the best strategy at a claiming age of ${info.claimAgeFloor} or later, and the younger ages in the table below are marked as below your floor.`;
   // Locked claiming ages (N-1), in plain words, when a benefit
   // had already started at plan start. Empty when nobody is
   // locked, so an unlocked record's note is exactly as before.
@@ -1393,9 +1413,11 @@ export function jointSearchNote(info: JointSearchInfo): string {
           ? ` Your spouse's claiming age is locked at ${info.lockedSpouseAge} because their benefit has already started — a claim that is already being paid cannot be changed, so the search kept it exactly as entered.`
           : "";
   if (!info.searchedPrimary && !info.searchedSpouse) {
-    // A floor conflict is stated even on this branch (v56);
-    // a met or unset floor keeps the prior wording exactly.
-    const conflictSuffix = floorMet === false ? floorSentence : "";
+    // A floor conflict is stated even on this branch (v56),
+    // and so is the exempt-below-floor Do Nothing statement
+    // (v107); a met or unset floor keeps the prior wording
+    // exactly.
+    const conflictSuffix = floorMet === false || exemptBelowFloor ? floorSentence : "";
     if (declaredPrimary && declaredSpouse) {
       return `Neither person has a Social Security benefit — both are marked as having no benefit — so there are no claiming ages to search. The strategies above were priced with no Social Security benefit for either person, with all six draw orders searched as part of the strategy set.${conflictSuffix}`;
     }
