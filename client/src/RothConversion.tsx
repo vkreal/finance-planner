@@ -2987,6 +2987,7 @@ export function RothConversion() {
     claimSpouseAge: s.claimSpouseAge,
     ssPrimaryAnnual: s.ssPrimaryAnnual,
     ssSpouseAnnual: s.ssSpouseAnnual,
+    gainsHarvest: s.gainsHarvest,
     // The check's request schema now requires one of the six
     // engine draw-order keys (API follow-on 2, F6); the score's
     // key always is one (the server emits it via drawOrderKey),
