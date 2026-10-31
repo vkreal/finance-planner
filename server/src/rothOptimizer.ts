@@ -1566,14 +1566,17 @@ export const ROTH_MC_CHECK_SEED = 12345;
 export const ROTH_MC_CHECK_PATHS = 250;
 
 // Fixed stream stride for runRothMonteCarloStats (F3,
-// batch-independent streams): the stats run draws exactly
-// this many standardized shocks per path from its stream,
-// whatever scenarios are in the call, so a scenario's trial
-// streams — and therefore its statistics — are identical
-// whether it is priced alone or batched with longer- or
-// shorter-horizon companions. Within-call pairing is
-// preserved: every scenario still consumes its own prefix of
-// the same per-path vector. 160 covers the longest horizon
+// batch-independent streams) and, since contract v110 (round-16
+// F2), for runRothMonteCarloCheck as well: both runs draw
+// exactly this many standardized shocks per path from the
+// shared stream, whatever scenarios are in the call, so a
+// scenario's trial streams — and therefore its statistics —
+// are identical whether it is priced alone or batched with
+// longer- or shorter-horizon companions, and the check and
+// the stats action sample the SAME paths for an identical
+// strategy, volatility, horizon, and seed. Within-call pairing
+// is preserved: every scenario still consumes its own prefix
+// of the same per-path vector. 160 covers the longest horizon
 // the schemas permit (endAge max 130, earliest current age
 // 0 → 131 years) with headroom. Trial 0's shocks are
 // unchanged from the old discipline — the stream starts
@@ -1720,10 +1723,21 @@ export function runRothMonteCarloCheck(
 ): RothMcCheckResult {
   const rng = rothMcStream(opts.seed);
   const paths: RothMcCheckPath[] = [];
+  // The plan's horizon in years — the prefix of each path's
+  // shock vector this check consumes.
+  const years =
+    inputs.endAgePrimary - (inputs.startYear - inputs.birthYearPrimary) + 1;
   for (let i = 0; i < opts.pathCount; i++) {
-    // Draw the full series first, then price BOTH candidates
-    // from that same series array — paired paths by construction.
-    const series = rothMcReturnSeries(inputs, opts.volatilityPct, rng);
+    // Draw the fixed-stride shock vector first (contract v110,
+    // round-16 F2: the same MC_STREAM_STRIDE_YEARS stride the
+    // stats run draws), then price BOTH candidates from the
+    // horizon prefix of that same vector — paired paths by
+    // construction, and the same paths the stats action samples
+    // for an identical strategy, volatility, horizon, and seed.
+    const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+    const series = z
+      .slice(0, Math.max(0, years))
+      .map((zi) => inputs.expectedReturnPct + opts.volatilityPct * zi);
     const winnerCost = priceMcCandidate(inputs, winner, series);
     const doNothingCost = priceMcCandidate(inputs, doNothing, series);
     paths.push({

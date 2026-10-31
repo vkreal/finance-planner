@@ -2,7 +2,7 @@
   "entry": "client/dist/index.html",
   "managedCronJobs": [],
   "name": "Finance Planner",
-  "platformVersion": 25,
+  "platformVersion": 26,
   "runtime": "typescript",
   "slug": "monthly-spending-tracker"
 }
