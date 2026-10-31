@@ -24,3 +24,9 @@ This artifact's data lives in `app.db`, managed by the app: read it with the
 artifact inspect data operations and change it through the app's own actions
 (`artifact.invoke_action`) or an artifact edit, never by running sqlite or
 scripts against the file.
+
+## Handover for AI assistants
+
+HANDOVER.md at the repo root carries the operating model, standing decisions,
+and engine quirks for a household's plan, figure-free. An AI analyzing a
+household's plan should read it first (the README links it too).

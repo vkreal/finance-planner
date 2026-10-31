@@ -13,7 +13,7 @@
 
 <br/>
 
-[Live demo](https://vkreal.github.io/finance-planner/) · [The five views](#-the-five-views) · [Features](#-features) · [Two ways to run it](#-two-ways-to-run-it)
+[Live demo](https://vkreal.github.io/finance-planner/) · [The five views](#-the-five-views) · [Features](#-features) · [Two ways to run it](#-two-ways-to-run-it) · [Handover for AI assistants](HANDOVER.md)
 
 </div>
 
@@ -35,6 +35,10 @@ Finance Planner connects the questions households actually ask when retirement g
 | What does *this one year* look like, tax-wise? | **Playground** |
 
 …including the hard one most tools skip: **how to draw down pre-tax savings without tripping the ACA premium-credit cliff or Medicare IRMAA tiers.**
+
+## 🤖 For AI assistants
+
+If you're an AI assistant analyzing a household's plan with this repo, start with [HANDOVER.md](HANDOVER.md). It carries the operating model, the engine quirks that trip people up, how to answer questions, and a checklist of what a household's handover should record — with no household figures in it. Every figure lives in the saved record, retrievable through the API; the version log ([DATA-PLAN.md](DATA-PLAN.md)) is figure-free, and [AGENTS.md](AGENTS.md) carries the build rules.
 
 ## 🧭 The five views
 
