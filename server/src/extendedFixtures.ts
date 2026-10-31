@@ -612,6 +612,252 @@ function f1OldSlice(core: SpendingCore, viewedMonth: string, count: number) {
   };
 }
 
+// Round-18 F5 — the True-cost explainer's operands, run on the core
+// exactly as getDashboard prices the tile response. The formula's
+// operands must be the figures the engine uses — cash out, the
+// settlement-basis lumps, and the set-aside — cashOut − lumps +
+// accrual = smoothed — in both branches. The dataset is the
+// settlement's example: a lights-on smoothed bill ($120/year,
+// set-aside $10/month) effective Jan 2026, charged $60 to a card
+// in January and settled by a generic $60 card payment in
+// February, so February's charge-month checking lumps are $0 even
+// though $60 settles in February. The helpers read the tile
+// response's figures off the core (eff() is what getDashboard
+// publishes as incurredCents / yearlyLumpsCents / cashOutCents /
+// smoothedCents, and monthAgg().lumpsChecking is the old summary
+// branch's second term) plus what each old formula's operands
+// would have totalled, so the fixtures pin both the corrected
+// identity and how far the old operands disagreed. The rendered
+// check pins the formula's displayed text end to end.
+function f5Yearly(): { yearly: CoreYearlyBillNamed[]; yearlyVersions: CoreYearlyVersion[] } {
+  return {
+    yearly: [
+      { id: 1, name: "LightsBill", frequency: "yearly", expectedCents: 12000, dueMonth: null, backfillBeforeFirstVersion: 0, keepLightsOn: 1 },
+    ],
+    yearlyVersions: [
+      { id: 1, expenseId: 1, effectiveFrom: "2026-01", expectedCents: 12000, frequency: "yearly" },
+    ],
+  };
+}
+
+// February as a summary (entered-total) month: entered cash out
+// $100, the $60 card payment settling January's yearly charge.
+function f5SummaryCore(): SpendingCore {
+  const { yearly, yearlyVersions } = f5Yearly();
+  return createSpendingCore({
+    txns: [
+      { date: "2026-01-15", kind: "spending", sourceType: "card", amountCents: 6000, yearlyExpenseId: 1 },
+      { date: "2026-02-10", kind: "card_payment", sourceType: "checking", amountCents: 6000, yearlyExpenseId: null },
+    ],
+    yearly,
+    yearlyVersions,
+    summaries: [{ month: "2026-02", cashOutCents: 10000 }],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: null,
+  });
+}
+
+// February as a transaction month: $100 checking spending plus the
+// $60 card payment settling January's yearly charge. The card
+// payment is cash out but not "spending", so incurred ($100) and
+// cash out ($160) differ.
+function f5TransactionCore(): SpendingCore {
+  const { yearly, yearlyVersions } = f5Yearly();
+  return createSpendingCore({
+    txns: [
+      { date: "2026-01-15", kind: "spending", sourceType: "card", amountCents: 6000, yearlyExpenseId: 1 },
+      { date: "2026-02-05", kind: "spending", sourceType: "checking", amountCents: 10000, yearlyExpenseId: null },
+      { date: "2026-02-10", kind: "card_payment", sourceType: "checking", amountCents: 6000, yearlyExpenseId: null },
+    ],
+    yearly,
+    yearlyVersions,
+    summaries: [],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: null,
+  });
+}
+
+// The normal case — charge month = settlement month: the yearly
+// bill is paid $60 from checking in February alongside $40 of
+// checking spending, no card activity. The old and new operands
+// agree here, so the formula is unchanged.
+function f5NormalCore(): SpendingCore {
+  const { yearly, yearlyVersions } = f5Yearly();
+  return createSpendingCore({
+    txns: [
+      { date: "2026-02-05", kind: "spending", sourceType: "checking", amountCents: 6000, yearlyExpenseId: 1 },
+      { date: "2026-02-12", kind: "spending", sourceType: "checking", amountCents: 4000, yearlyExpenseId: null },
+    ],
+    yearly,
+    yearlyVersions,
+    summaries: [],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: null,
+  });
+}
+
+// The formula's figures for one month, as getDashboard publishes
+// them: cash out, the settled lumps, the set-aside, and the
+// headline — plus the old operands (the charge-month checking
+// lumps and the incurred total) and what each old formula's
+// operands would have totalled.
+function f5Formula(core: SpendingCore, month: string) {
+  const e = core.eff(month);
+  const agg = core.monthAgg(month);
+  return {
+    cashOut: e.cashOut,
+    incurred: e.incurred,
+    settledLumps: e.lumps,
+    lumpsChecking: agg.lumpsChecking,
+    accrual: e.accrual,
+    smoothed: e.smoothed,
+    identityHolds: e.cashOut - e.lumps + e.accrual === e.smoothed ? 1 : 0,
+    oldSummaryTotal: e.cashOut - agg.lumpsChecking + e.accrual,
+    oldTransactionTotal: e.incurred - e.lumps + e.accrual,
+  };
+}
+
+// Round-18 F6 — the Year view's estimate marker, run on the core
+// exactly as getYearView runs it. November 2026 entered ahead at
+// $400 (current month fixed at Oct 2026, the example's current
+// month) with an October entered total of $100 and no bills, so
+// True cost is cash out in both months. The helper mirrors
+// getYearView's months loop line for line: inWindow ends at the
+// current month for the current year, hasData is the core's
+// monthHasData, estimate is the month after the current month,
+// and the totals sum only months with data inside the window —
+// so November carries the estimate flag and its $400, and the
+// totals exclude it. The rendered check pins the Year chart's
+// (est.) label and muted bars and the month panel's badge.
+function f6Core(): SpendingCore {
+  return createSpendingCore<CoreYearlyVersion, CoreYearlyBillNamed>({
+    txns: [],
+    yearly: [],
+    yearlyVersions: [],
+    summaries: [
+      { month: "2026-10", cashOutCents: 10000 },
+      { month: "2026-11", cashOutCents: 40000 },
+    ],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: null,
+  });
+}
+
+function f6YearView(core: SpendingCore, year: number, currentMonth: string) {
+  const windowStart = `${year}-01`;
+  const windowEnd = year === Number(currentMonth.slice(0, 4)) ? currentMonth : `${year}-12`;
+  const rows: { monthNum: number; hasData: boolean; estimate: boolean; trueCost: number }[] = [];
+  let totalsTrueCost = 0;
+  for (let n = 1; n <= 12; n++) {
+    const m = `${year}-${String(n).padStart(2, "0")}`;
+    const inWindow = m >= windowStart && m <= windowEnd;
+    const hasData = core.monthHasData(m);
+    const trueCost = hasData ? core.eff(m).smoothed : 0;
+    if (hasData && inWindow) totalsTrueCost += trueCost;
+    rows.push({ monthNum: n, hasData, estimate: m > currentMonth, trueCost });
+  }
+  const oct = rows.find((r) => r.monthNum === 10) ?? null;
+  const nov = rows.find((r) => r.monthNum === 11) ?? null;
+  return {
+    octHasData: oct?.hasData ? 1 : 0,
+    octEstimate: oct?.estimate ? 1 : 0,
+    octTrueCost: oct?.trueCost ?? null,
+    novHasData: nov?.hasData ? 1 : 0,
+    novEstimate: nov?.estimate ? 1 : 0,
+    novTrueCost: nov?.trueCost ?? null,
+    totalsTrueCost,
+  };
+}
+
+// Round-18 F7 — the Year Summary's bill-only years, run on the
+// core exactly as getYearSummary runs it. A lights-on smoothed
+// bill ($120/year, set-aside $10/month) effective Jan 2025, no
+// 2025 transactions, summaries, items, or snapshots, and one 2026
+// transaction — so 2025's only data is the bill in effect. The
+// dataset is defined once and shared: the core prices from it and
+// the available-years union reads the same transaction dates and
+// bill-version effective years the handler's union reads. The
+// trend helper mirrors getYearSummary's trend loop for one year
+// (monthHasData + eff, capped at the current month for the current
+// year). The rendered check pins the summary's year list and trend
+// end to end.
+function f7Dataset(): {
+  txns: CoreTxn[];
+  yearlyVersions: CoreYearlyVersion[];
+} {
+  return {
+    txns: [
+      { date: "2026-03-15", kind: "spending", sourceType: "checking", amountCents: 10000, yearlyExpenseId: null },
+    ],
+    yearlyVersions: [
+      { id: 1, expenseId: 1, effectiveFrom: "2025-01", expectedCents: 12000, frequency: "yearly" },
+    ],
+  };
+}
+
+function f7Core(): SpendingCore {
+  const { txns, yearlyVersions } = f7Dataset();
+  return createSpendingCore<CoreYearlyVersion, CoreYearlyBillNamed>({
+    txns,
+    yearly: [
+      { id: 1, name: "LightsBill", frequency: "yearly", expectedCents: 12000, dueMonth: null, backfillBeforeFirstVersion: 0, keepLightsOn: 1 },
+    ],
+    yearlyVersions,
+    summaries: [],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: null,
+  });
+}
+
+function f7AvailableYears(requestedYear: number) {
+  const { txns, yearlyVersions } = f7Dataset();
+  const yearSet = new Set<number>();
+  // The handler's union inputs, as the fixture dataset carries
+  // them: no snapshots, one 2026 transaction, no summaries, no
+  // items, no one-offs, no monthly bill versions — plus the
+  // smoothed bill-version effective years (contract v124).
+  for (const t of txns) yearSet.add(Number(t.date.slice(0, 4)));
+  for (const v of yearlyVersions) yearSet.add(Number(v.effectiveFrom.slice(0, 4)));
+  if (yearSet.size === 0) yearSet.add(requestedYear);
+  return [...yearSet].sort((a, b) => a - b);
+}
+
+function f7Trend(core: SpendingCore, trendYear: number, currentMonth: string) {
+  const trendStart = `${trendYear}-01`;
+  const trendEnd =
+    trendYear === Number(currentMonth.slice(0, 4)) ? currentMonth : `${trendYear}-12`;
+  let months = 0;
+  let trueCost = 0;
+  for (let n = 1; n <= 12; n++) {
+    const m = `${trendYear}-${String(n).padStart(2, "0")}`;
+    if (m < trendStart || m > trendEnd) continue;
+    if (!core.monthHasData(m)) continue;
+    months += 1;
+    trueCost += core.eff(m).smoothed;
+  }
+  return { months, trueCost: months > 0 ? trueCost : null };
+}
+
 // The Year Summary's prior-year anchor, selected exactly as the
 // action selects it: the last snapshot dated before Jan 1 of the
 // year — the starting point the Net Worth view's Year to date is
@@ -1523,6 +1769,51 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         oldSliceMean: o.mean,
       };
     },
+  },
+  {
+    id: "sp-f5-summary-formula",
+    kind: "spending",
+    note: "Round-18 F5, summary branch (February, entered total $100): a $60 card-charged yearly bill settles in February via a generic card payment, set-aside $10. The engine's True cost is $100 − $60 + $10 = $50.00, and the formula now reads those same operands. (Pre-v124 the second term was the charge-month checking lumps — $0, since the bill was charged in January — so the operands totalled $110.00 against a $50.00 headline, $60 unexplained.)",
+    expected: { cashOut: 10000, settledLumps: 6000, accrual: 1000, smoothed: 5000, lumpsChecking: 0, identityHolds: 1, oldSummaryTotal: 11000 },
+    actual: () => f5Formula(f5SummaryCore(), "2026-02"),
+  },
+  {
+    id: "sp-f5-transaction-formula",
+    kind: "spending",
+    note: "Round-18 F5, transaction branch (February, no entered total): $100 checking spending plus a $60 card payment settling January's yearly charge. The card payment is cash out but not 'spending', so cash out is $160.00 while incurred is $100.00; True cost is $160 − $60 + $10 = $110.00, and the formula now reads cash out first. (Pre-v124 the first term was incurred, so the operands totalled $50.00 against a $110.00 headline, $60 unexplained.)",
+    expected: { cashOut: 16000, incurred: 10000, settledLumps: 6000, accrual: 1000, smoothed: 11000, identityHolds: 1, oldTransactionTotal: 5000 },
+    actual: () => f5Formula(f5TransactionCore(), "2026-02"),
+  },
+  {
+    id: "sp-f5-normal-case",
+    kind: "spending",
+    note: "Round-18 F5, normal case (February, charge month = settlement month): the yearly bill is paid $60 from checking in February alongside $40 checking spending, no card activity. Cash out and incurred are both $100.00, settled and charge-month checking lumps are both $60.00, True cost is $100 − $60 + $10 = $50.00 either way — the fix changes nothing here.",
+    expected: { cashOut: 10000, incurred: 10000, settledLumps: 6000, lumpsChecking: 6000, accrual: 1000, smoothed: 5000, identityHolds: 1, oldSummaryTotal: 5000, oldTransactionTotal: 5000 },
+    actual: () => f5Formula(f5NormalCore(), "2026-02"),
+  },
+  {
+    id: "sp-f6-year-estimate-marker",
+    kind: "spending",
+    note: "Round-18 F6, Year view estimate (current month fixed at Oct 2026): November 2026 entered ahead at $400 with an October entered total of $100 and no bills, so True cost is cash out in both months. November carries the estimate flag — it is after the current month — while October does not, and the Year totals sum only months inside the window, so they exclude November's $400.00. (Pre-v124 the Year month rows carried no estimate field at all, so November read as an actual figure.)",
+    expected: { octHasData: 1, octEstimate: 0, octTrueCost: 10000, novHasData: 1, novEstimate: 1, novTrueCost: 40000, totalsTrueCost: 10000 },
+    actual: () => f6YearView(f6Core(), 2026, "2026-10"),
+  },
+  {
+    id: "sp-f7-available-years",
+    kind: "spending",
+    note: "Round-18 F7, Year Summary available years (requested year 2026): a $120/year bill effective Jan 2025 with no 2025 transactions, summaries, items, or snapshots, and one 2026 transaction. The bill-version effective year 2025 enters the union alongside 2026, so the year list carries both. (Pre-v124 the union never consulted bill versions, so 2025 was absent.)",
+    expected: { includes2025: 1, includes2026: 1, count: 2 },
+    actual: () => {
+      const years = f7AvailableYears(2026);
+      return { includes2025: years.includes(2025) ? 1 : 0, includes2026: years.includes(2026) ? 1 : 0, count: years.length };
+    },
+  },
+  {
+    id: "sp-f7-bill-only-year-trend",
+    kind: "spending",
+    note: "Round-18 F7, bill-only year trend (current month fixed at Oct 2026): the $120/year bill in effect throughout 2025 prices twelve months at the $10.00 set-aside each, $120.00 True cost for 2025, with no other 2025 data. (Pre-v124 the year never entered the list, so the $120.00 was silently absent from the all-years trend.)",
+    expected: { months: 12, trueCost: 12000 },
+    actual: () => f7Trend(f7Core(), 2025, "2026-10"),
   },
   {
     id: "sp-monthly-total-and-klo",

@@ -1225,7 +1225,7 @@ export function December() {
                         "MAGI",
                         <button
                           type="button"
-                          aria-label="Go to the Wages & other ordinary income field"
+                          aria-label="Go to the year-to-date actuals"
                           className={decTapCls}
                           onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                         >
@@ -1239,7 +1239,7 @@ export function December() {
                     "Federal tax",
                     <button
                       type="button"
-                      aria-label="Go to the Wages & other ordinary income field"
+                      aria-label="Go to the year-to-date actuals"
                       className={decTapCls}
                       onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                     >
@@ -1251,7 +1251,7 @@ export function December() {
                       "State tax",
                       <button
                         type="button"
-                        aria-label="Go to the Wages & other ordinary income field"
+                        aria-label="Go to the year-to-date actuals"
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                       >
@@ -1263,7 +1263,7 @@ export function December() {
                       "Total tax",
                       <button
                         type="button"
-                        aria-label="Go to the Wages & other ordinary income field"
+                        aria-label="Go to the year-to-date actuals"
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                       >
@@ -1327,7 +1327,7 @@ export function December() {
                         : "Estimated amount to settle at filing",
                       <button
                         type="button"
-                        aria-label="Go to the Wages & other ordinary income field"
+                        aria-label="Go to the year-to-date actuals"
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                       >
@@ -1365,7 +1365,7 @@ export function December() {
                           </>,
                           <button
                             type="button"
-                            aria-label="Go to the Wages & other ordinary income field"
+                            aria-label="Go to the year-to-date actuals"
                             className={decTapCls}
                             onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                           >
@@ -2295,7 +2295,7 @@ export function December() {
                         <td className="py-1.5 pr-3">
                           <button
                             type="button"
-                            aria-label="Go to the Wages & other ordinary income field"
+                            aria-label="Go to the year-to-date actuals"
                             className={decTapCls}
                             onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                           >
@@ -2322,7 +2322,7 @@ export function December() {
                         <td className="py-1.5 pr-3">
                           <button
                             type="button"
-                            aria-label="Go to the Wages & other ordinary income field"
+                            aria-label="Go to the year-to-date actuals"
                             className={decTapCls}
                             onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                           >
@@ -2332,7 +2332,7 @@ export function December() {
                         <td className="py-1.5">
                           <button
                             type="button"
-                            aria-label="Go to the Wages & other ordinary income field"
+                            aria-label="Go to the year-to-date actuals"
                             className={decTapCls}
                             onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                           >

@@ -945,13 +945,21 @@ export function Playground() {
       </button>
     </h3>
   );
-  /* Jump-and-highlight (contract v69): the provenance-tap
-     mechanism modelled on Spending's scrollToSection — open
-     the target's face, group, and section first, scroll on a
-     later frame, then flash an outline on the field itself
-     for ~1.6s (applied to the element directly and restored
-     afterwards, so the shared field helpers do not change). */
+  /* Jump-and-highlight (contract v69, highlight strengthened
+     contract v124 round-18 F8): the provenance-tap mechanism
+     modelled on Spending's scrollToSection — open the target's
+     face, group, and section first, scroll on a later frame,
+     then mark the field itself for ~3s with a 2px accent
+     outline plus a soft accent background tint, so the landing
+     is unmistakable (applied to the element directly and
+     restored afterwards, so the shared field helpers do not
+     change). A fixed 3s duration — not until-edit — so the
+     mark always clears on its own and the rendered check can
+     assert it deterministically. A new jump restores the
+     previous field first, so a highlight can never stick. */
   const pgFlashTimer = useRef<number | null>(null);
+  const pgFlashEl = useRef<HTMLElement | null>(null);
+  const pgFlashPrev = useRef<{ outline: string; outlineOffset: string; background: string } | null>(null);
   const jumpToPgField = (fieldId: string, section: PgSectionId = "aca") => {
     setPgFace("year");
     setPgGroupOpen((p) => ({ ...p, single: true }));
@@ -960,17 +968,33 @@ export function Playground() {
       const el = document.getElementById(fieldId);
       if (!el) return;
       el.scrollIntoView({ behavior: "smooth", block: "center" });
-      const prevOutline = el.style.outline;
-      const prevOffset = el.style.outlineOffset;
-      el.style.outline = "2px solid var(--accent)";
-      el.style.outlineOffset = "2px";
+      // A new jump restores the previous field first.
+      if (pgFlashEl.current != null && pgFlashPrev.current != null) {
+        const old = pgFlashEl.current;
+        old.style.outline = pgFlashPrev.current.outline;
+        old.style.outlineOffset = pgFlashPrev.current.outlineOffset;
+        old.style.background = pgFlashPrev.current.background;
+      }
       if (pgFlashTimer.current != null) {
         window.clearTimeout(pgFlashTimer.current);
       }
+      const prev = {
+        outline: el.style.outline,
+        outlineOffset: el.style.outlineOffset,
+        background: el.style.background,
+      };
+      pgFlashPrev.current = prev;
+      pgFlashEl.current = el;
+      el.style.outline = "2px solid var(--accent)";
+      el.style.outlineOffset = "2px";
+      el.style.background = "color-mix(in srgb, var(--accent) 15%, transparent)";
       pgFlashTimer.current = window.setTimeout(() => {
-        el.style.outline = prevOutline;
-        el.style.outlineOffset = prevOffset;
-      }, 1600);
+        el.style.outline = prev.outline;
+        el.style.outlineOffset = prev.outlineOffset;
+        el.style.background = prev.background;
+        pgFlashEl.current = null;
+        pgFlashPrev.current = null;
+      }, 3000);
     }, 150);
   };
   const pgTapCls =
@@ -3043,7 +3067,7 @@ export function Playground() {
                     <span className="font-bold text-[var(--accent)]">
                       <button
                         type="button"
-                        aria-label="Go to the Interest field"
+                        aria-label="Go to the income inputs"
                         className={pgTapCls}
                         onClick={() => jumpToPgField("roth-Interest", "income")}
                       >
@@ -3061,7 +3085,7 @@ export function Playground() {
                         <span className="font-bold text-[var(--accent)]">
                           <button
                             type="button"
-                            aria-label="Go to the Interest field"
+                            aria-label="Go to the income inputs"
                             className={pgTapCls}
                             onClick={() => jumpToPgField("roth-Interest", "income")}
                           >
@@ -3078,7 +3102,7 @@ export function Playground() {
                     MAGI{" "}
                     <button
                       type="button"
-                      aria-label="Go to the Interest field"
+                      aria-label="Go to the income inputs"
                       className={pgTapCls}
                       onClick={() => jumpToPgField("roth-Interest", "income")}
                     >
@@ -6168,7 +6192,7 @@ export function Playground() {
                       "Federal tax on ordinary income",
                       <button
                         type="button"
-                        aria-label="Go to the Interest field"
+                        aria-label="Go to the income inputs"
                         className={pgTapCls}
                         onClick={() => jumpToPgField("roth-Interest", "income")}
                       >
@@ -6179,9 +6203,9 @@ export function Playground() {
                       "Federal tax on gains",
                       <button
                         type="button"
-                        aria-label="Go to the Interest field"
+                        aria-label="Go to the Stock sold field"
                         className={pgTapCls}
-                        onClick={() => jumpToPgField("roth-Interest", "income")}
+                        onClick={() => jumpToPgField("roth-Stock-sold", "stock")}
                       >
                         {fmtDollars(pg.ltcgTax + pg.niit)}
                       </button>,
@@ -6193,7 +6217,7 @@ export function Playground() {
                       "Total federal tax",
                       <button
                         type="button"
-                        aria-label="Go to the Interest field"
+                        aria-label="Go to the income inputs"
                         className={pgTapCls}
                         onClick={() => jumpToPgField("roth-Interest", "income")}
                       >
@@ -6242,7 +6266,7 @@ export function Playground() {
                         "State tax",
                         <button
                           type="button"
-                          aria-label="Go to the Interest field"
+                          aria-label="Go to the income inputs"
                           className={pgTapCls}
                           onClick={() => jumpToPgField("roth-Interest", "income")}
                         >
@@ -6254,7 +6278,7 @@ export function Playground() {
                         "Washington capital-gains excise",
                         <button
                           type="button"
-                          aria-label="Go to the Interest field"
+                          aria-label="Go to the income inputs"
                           className={pgTapCls}
                           onClick={() => jumpToPgField("roth-Interest", "income")}
                         >
@@ -6266,7 +6290,7 @@ export function Playground() {
                       "MAGI",
                       <button
                         type="button"
-                        aria-label="Go to the Interest field"
+                        aria-label="Go to the income inputs"
                         className={pgTapCls}
                         onClick={() => jumpToPgField("roth-Interest", "income")}
                       >
@@ -6278,7 +6302,7 @@ export function Playground() {
                         "ACA household income",
                         <button
                           type="button"
-                          aria-label="Go to the Interest field"
+                          aria-label="Go to the income inputs"
                           className={pgTapCls}
                           onClick={() => jumpToPgField("roth-Interest", "income")}
                         >
@@ -6309,7 +6333,7 @@ export function Playground() {
                       </>,
                       <button
                         type="button"
-                        aria-label="Go to the Interest field"
+                        aria-label="Go to the income inputs"
                         className={pgTapCls}
                         onClick={() => jumpToPgField("roth-Interest", "income")}
                       >

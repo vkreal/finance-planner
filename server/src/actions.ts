@@ -3158,7 +3158,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 123;
+export const API_CONTRACT_VERSION = 124;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -7534,6 +7534,10 @@ export const Actions = {
           monthNum: z.number(),
           inWindow: z.boolean(),
           hasData: z.boolean(),
+          // True when this month is after the current calendar month — its
+          // figures were entered ahead and are estimates (contract v124,
+          // round-18 F6 — the same flag the Dashboard history rows carry).
+          estimate: z.boolean(),
           trueCostCents: z.number(),
           cashOutCents: z.number(),
           totalMonthlyCents: z.number(),
@@ -7644,7 +7648,7 @@ export const Actions = {
           totals.keepLightsOnCents += figs.keepLightsOnCents;
           totals.yearlyPaidOutCents += figs.yearlyPaidOutCents;
         }
-        months.push({ month: m, monthNum: n, inWindow, hasData, ...figs });
+        months.push({ month: m, monthNum: n, inWindow, hasData, estimate: m > currentMonthStr, ...figs });
       }
 
       return {
@@ -13787,6 +13791,14 @@ export const Actions = {
       for (const s of summaries) yearSet.add(Number(s.month.slice(0, 4)));
       for (const it of cashOutItems) yearSet.add(Number(it.month.slice(0, 4)));
       for (const o of oneOffs) yearSet.add(Number(o.month.slice(0, 4)));
+      // Contract v124 (round-18 F7): bill-version effective years —
+      // a year whose only data is a bill in effect (a bill-only year)
+      // still belongs in the list and the trend, since the trend
+      // prices it from monthHasData + eff. Monthly and smoothed
+      // bill versions alike; the year is the version's effective
+      // year, not every year the bill stays in effect.
+      for (const v of billVersions) yearSet.add(Number(v.effectiveFrom.slice(0, 4)));
+      for (const v of yearlyVersions) yearSet.add(Number(v.effectiveFrom.slice(0, 4)));
       if (yearSet.size === 0) yearSet.add(year);
       const availableYears = [...yearSet].sort((a, b) => a - b);
 

@@ -1412,6 +1412,7 @@ type YearChartDatum = {
   name: string;
   monthStr: string;
   hasData: boolean;
+  estimate: boolean;
   trueCost: number | null;
   cashOut: number | null;
   trueCostCents: number;
@@ -1436,14 +1437,18 @@ function YearTrueCostChart({
   const chartData: YearChartDatum[] = months
     .filter((m) => m.hasData)
     .map((m) => ({
-      name: MONTH_SHORT[m.monthNum - 1] ?? m.month,
+      name: m.estimate
+        ? `${MONTH_SHORT[m.monthNum - 1] ?? m.month} (est.)`
+        : (MONTH_SHORT[m.monthNum - 1] ?? m.month),
       monthStr: m.month,
       hasData: true,
+      estimate: m.estimate,
       trueCost: m.trueCostCents / 100,
       cashOut: m.cashOutCents / 100,
       trueCostCents: m.trueCostCents,
       cashOutCents: m.cashOutCents,
     }));
+  const hasEstimate = chartData.some((d) => d.estimate);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleChartClick = (state: any) => {
@@ -1464,12 +1469,14 @@ function YearTrueCostChart({
       <p className="mt-0.5 text-sm text-[var(--dim)]">
         Each month&rsquo;s True cost and Cash out, from the same figures as
         the panels below. Tap a month to open it.
+        {hasEstimate &&
+          " An (est.) month is entered ahead and may be revised."}
       </p>
       {/* Screen-reader / text fallback carrying the exact figures. */}
       <ul className="sr-only">
         {chartData.map((d) => (
           <li key={d.monthStr}>
-            {`${d.name} ${year}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}`}
+            {`${d.name} ${year}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
           </li>
         ))}
       </ul>
@@ -1566,14 +1573,36 @@ function YearTrueCostChart({
                 fill="var(--accent)"
                 radius={[3, 3, 0, 0]}
                 cursor="pointer"
-              />
+              >
+                {chartData.map((d) => (
+                  <Cell
+                    key={d.monthStr}
+                    fill="var(--accent)"
+                    fillOpacity={d.estimate ? 0.3 : 1}
+                    stroke={d.estimate ? "var(--accent)" : "none"}
+                    strokeWidth={d.estimate ? 1.5 : 0}
+                    strokeDasharray={d.estimate ? "4 2" : undefined}
+                  />
+                ))}
+              </Bar>
               <Bar
                 dataKey="cashOut"
                 name="Cash out"
                 fill="var(--warn)"
                 radius={[3, 3, 0, 0]}
                 cursor="pointer"
-              />
+              >
+                {chartData.map((d) => (
+                  <Cell
+                    key={d.monthStr}
+                    fill="var(--warn)"
+                    fillOpacity={d.estimate ? 0.3 : 1}
+                    stroke={d.estimate ? "var(--warn)" : "none"}
+                    strokeWidth={d.estimate ? 1.5 : 0}
+                    strokeDasharray={d.estimate ? "4 2" : undefined}
+                  />
+                ))}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -3417,6 +3446,11 @@ export function App() {
                                 This month
                               </span>
                             )}
+                            {m.estimate && (
+                              <span className="ml-2 align-middle text-xs font-medium text-[var(--dim)]">
+                                (est.)
+                              </span>
+                            )}
                           </h3>
                           <button
                             type="button"
@@ -3576,8 +3610,8 @@ export function App() {
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
-                    <dt>− Smoothed bills that left checking this month</dt>
-                    <dd>{fmt(data.yearlyLumpsCheckingCents)}</dd>
+                    <dt>− Smoothed bills paid this month</dt>
+                    <dd>{fmt(data.yearlyLumpsCents)}</dd>
                   </div>
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
                     <dt>
@@ -3595,8 +3629,8 @@ export function App() {
               ) : (
                 <dl className="tnum mt-4 space-y-1 border-t border-[var(--border)] pt-3 text-base">
                   <div className="flex justify-between gap-3">
-                    <dt>Spending recorded this month</dt>
-                    <dd className="font-medium">{fmt(data.incurredCents)}</dd>
+                    <dt>Cash out this month</dt>
+                    <dd className="font-medium">{fmt(data.cashOutCents)}</dd>
                   </div>
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
                     <dt>− Smoothed bills paid this month</dt>
@@ -3687,8 +3721,8 @@ export function App() {
                       double-counting, that total is the month's number
                       and the transactions are <strong>not</strong> added on top
                       of it. The one exception: smoothed bills (yearly or
-                      periodic) recorded as paid from checking (
-                      {fmt(data.yearlyLumpsCheckingCents)}) are still subtracted
+                      periodic) whose money left checking this month (
+                      {fmt(data.yearlyLumpsCents)}) are still subtracted
                       in the formula above, so they aren't counted twice.
                       {data.isItemsMonth
                         ? " Delete the items below if you'd rather use the month's entered total or its transactions."
