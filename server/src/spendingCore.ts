@@ -602,13 +602,46 @@ export function createSpendingCore<
 
   const monthAgg = (m: string): MonthAgg => byMonth.get(m) ?? emptyAgg();
 
+  // The earliest month with any data (contract v122, round-18 F2):
+  // the first month the Year view / Explorer treat as a data month
+  // (monthHasData below) — transactions, entered totals, cash-out
+  // items, one-offs, AND any bill version in effect (a monthly
+  // bill's earliest version, a smoothed bill's earliest version).
+  // Before v122 the bills were not consulted, so a bill effective
+  // in January with the first transaction in March made every
+  // consumer of this value skip January–February — the Dashboard
+  // trailing window, history rows, and YTD, plus the Retirement
+  // default window and the reserve start — while the Year view
+  // counted those months, so the two disagreed by the bill-only
+  // months' accruals. A smoothed bill with no versions at all
+  // contributes no candidate: monthHasData counts every month
+  // for it, but no start month exists in the data (every writer
+  // creates the version row with the bill, so this is defensive
+  // only). A bill version's effective month is its start even
+  // for a legacy backfill bill: monthHasData checks versions
+  // WITHOUT the backfill fallback, so months before the first
+  // version are not data months there either.
   const txnEarliest =
     txns.length > 0 ? monthOf(txns[0]?.date ?? "") : null;
   const sumEarliest =
     summaries.length > 0 ? (summaries[0]?.month ?? null) : null;
   const itemEarliest =
     cashOutItems.length > 0 ? (cashOutItems[0]?.month ?? null) : null;
-  const earliest = [txnEarliest, sumEarliest, itemEarliest]
+  const oneOffEarliest =
+    oneOffs.length > 0 ? oneOffs.map((o) => o.month).sort()[0] ?? null : null;
+  const billEarliest = [
+    ...billVersions.map((v) => v.effectiveFrom),
+    ...yearlyVersions.map((v) => v.effectiveFrom),
+  ]
+    .filter((v) => v !== "")
+    .sort()[0] ?? null;
+  const earliest = [
+    txnEarliest,
+    sumEarliest,
+    itemEarliest,
+    oneOffEarliest,
+    billEarliest,
+  ]
     .filter((v): v is string => v != null && v !== "")
     .sort()[0] ?? null;
   const reserveStartMonth =

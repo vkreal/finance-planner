@@ -3137,7 +3137,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 121;
+export const API_CONTRACT_VERSION = 122;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -5584,29 +5584,43 @@ async function computeRetirementDefaults(
   const defaultPortfolioCents = nwTotalCents - (bucket529Cents ?? 0);
 
   // --- default spending: trailing True cost, annualised ---
-  const { txns, yearly, yearlyVersions, summaries, cashOutItems } =
-    await loadAll(ctx);
+  const {
+    txns,
+    yearly,
+    yearlyVersions,
+    summaries,
+    cashOutItems,
+    bills,
+    billVersions,
+    oneOffs,
+  } = await loadAll(ctx);
   // The per-month computation (the cumulative-rounded accrual and
   // the cash-out resolution behind the smoothed figure) lives in
   // the shared spending core (server/src/spendingCore.ts) — the
   // same code the dashboard runs — so this default can never
-  // drift from the Spending views on rounding.
+  // drift from the Spending views on rounding. The bills and
+  // one-offs ride along so the window start below is the shared
+  // earliest data month: they do not change any month's smoothed
+  // figure (monthly bills and one-offs never feed it; the yearly
+  // accrual was already passed), only which months count.
   const core = createSpendingCore({
     txns,
     yearly,
     yearlyVersions,
     summaries,
     cashOutItems,
+    bills,
+    billVersions,
+    oneOffs,
   });
   const effSmoothed = (m: string): number => core.eff(m).smoothed;
-  const monthCandidates = [
-    ...new Set([
-      ...txns.map((t) => monthOf(t.date)),
-      ...summaries.map((s) => s.month),
-      ...cashOutItems.map((it) => it.month),
-    ]),
-  ].sort();
-  const earliestMonth = monthCandidates[0] ?? null;
+  // The window start is the shared earliest data month (contract
+  // v122, round-18 F2) — the same definition getDashboard uses —
+  // so a smoothed bill effective before the first transaction
+  // opens the window at its first month and the bill-only
+  // months' accruals annualise into the default, exactly as the
+  // Dashboard's trailing average counts them.
+  const earliestMonth = core.earliest;
   const nowD = new Date();
   const currentMonthStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, "0")}`;
   let defaultSpendingAnnualCents = 0;

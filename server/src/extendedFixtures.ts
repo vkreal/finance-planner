@@ -25,6 +25,8 @@ createSpendingCore,
 daysInMonthOf,
 monthlyBillUpdateOutcome,
 monthlyBillUpdateSet,
+monthsBetween,
+shiftMonth,
 sortCashOutItems,
 versionInEffect,
 yearSummaryFloorMonth,
@@ -439,6 +441,84 @@ function yearSpending(core: SpendingCore, year: number) {
     average: months > 0 ? Math.round(trueCost / months) : 0,
     firstMonthNum,
     lastMonthNum,
+  };
+}
+
+// Round-18 F2 — the bill-only-months example, run on the core
+// exactly as getDashboard / computeRetirementDefaults run it.
+// A lights-on smoothed bill ($120/year, set-aside $10/month)
+// effective Jan 2026, first checking spending ($100) in Mar
+// 2026, viewed with the current month fixed at Oct 2026 (the
+// example's current month — the trailing and Retirement windows
+// end at the current month, so the fixtures pin the windows
+// against that month rather than the wall clock). The helpers
+// below mirror the handlers' window arithmetic line for line:
+// the YTD loop (January–viewed month, skipping months before
+// the earliest data month), the history beforeStart rule is
+// inlined in its fixture, the trailing window (up to 12 months
+// ending at the current month, starting at the earliest data
+// month), and the Retirement default's annualisation of the
+// same trailing window. The rendered check pins the handlers
+// themselves end to end.
+function f2Core(): SpendingCore {
+  const yearly: CoreYearlyBillNamed[] = [
+    { id: 1, name: "LightsBill", frequency: "yearly", expectedCents: 12000, dueMonth: null, backfillBeforeFirstVersion: 0, keepLightsOn: 1 },
+  ];
+  const yearlyVersions: CoreYearlyVersion[] = [
+    { id: 1, expenseId: 1, effectiveFrom: "2026-01", expectedCents: 12000, frequency: "yearly" },
+  ];
+  return createSpendingCore({
+    txns: [
+      { date: "2026-03-15", kind: "spending", sourceType: "checking", amountCents: 10000, yearlyExpenseId: null },
+    ],
+    yearly,
+    yearlyVersions,
+    summaries: [],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: null,
+  });
+}
+
+// getDashboard's YTD loop for one year, viewed month `month`.
+function f2Ytd(core: SpendingCore, month: string) {
+  const jan = `${month.slice(0, 4)}-01`;
+  const n = monthsBetween(jan, month) + 1;
+  let trueCost = 0;
+  let floor = 0;
+  for (let i = 0; i < n; i++) {
+    const m = shiftMonth(jan, i);
+    if (core.earliest != null && m < core.earliest) continue;
+    trueCost += core.eff(m).smoothed;
+    floor += core.keepLightsOnForMonth(m);
+  }
+  return { trueCost, floor };
+}
+
+// getDashboard's trailing window ending at `currentMonth`.
+function f2Trailing(core: SpendingCore, currentMonth: string) {
+  const windowStart = shiftMonth(currentMonth, -11);
+  const coveredStart =
+    core.earliest && core.earliest > windowStart ? core.earliest : windowStart;
+  const count =
+    core.earliest == null || coveredStart > currentMonth
+      ? 0
+      : monthsBetween(coveredStart, currentMonth) + 1;
+  let sum = 0;
+  for (let i = 0; i < count; i++) sum += core.eff(shiftMonth(coveredStart, i)).smoothed;
+  return { months: count, sum, avgSmoothed: count > 0 ? Math.round(sum / count) : 0 };
+}
+
+// computeRetirementDefaults' annualisation of the same window
+// (the unrounded average, annualised, then rounded once).
+function f2RetirementDefault(core: SpendingCore, currentMonth: string) {
+  const t = f2Trailing(core, currentMonth);
+  return {
+    months: t.months,
+    annual: t.months > 0 ? Math.round((t.sum / t.months) * 12) : 0,
   };
 }
 
@@ -1213,8 +1293,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-reserve-accumulation",
     kind: "spending",
-    note: "Reserve from Jan 2025 (opening $0), on the settlement basis (contract v59): Jan +400 set-aside − 200 settled lumps (BiWater's checking payment; QuarterFee's card charge settles in Feb) = +$200.00; Feb + 400 − 1,500 settled (AnnualSub's early $1,200.00 checking payment + QuarterFee's $300.00 settlement) = −$900.00; Mar + 600 − 600 (SemiIns's late checking payment) = −$900.00. (Pre-v59 January read −$100.00 on the charge-month basis; Feb/Mar totals are unchanged.)",
-    expected: { startMonth: 202501, jan: 20000, feb: -90000, mar: -90000 },
+    note: "Reserve from Nov 2024 (opening $0), on the settlement basis (contract v59) — the start is the first bill-effective month (contract v122, round-18 F2): the four smoothed bills take effect Nov 2024, so Nov +400 set-aside − 0 settled = +$400.00 and Dec +400 − 0 = +$800.00 before January; Jan +400 − 200 settled lumps (BiWater's checking payment; QuarterFee's card charge settles in Feb) = +$1,000.00; Feb +400 − 1,500 settled (AnnualSub's early $1,200.00 checking payment + QuarterFee's $300.00 settlement) = −$100.00; Mar +600 − 600 (SemiIns's late checking payment) = −$100.00. (Pre-v122 the start was the first transaction month, Jan 2025, and January read +$200.00 — the Nov–Dec accruals were missing.)",
+    expected: { startMonth: 202411, jan: 100000, feb: -10000, mar: -10000 },
     actual: (w) => ({
       startMonth: w.core.reserveStartMonth ? Number(w.core.reserveStartMonth.replace("-", "")) : null,
       jan: w.core.reserveThrough("2025-01"),
@@ -1225,11 +1305,11 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-forecast-card-and-late-payments",
     kind: "spending",
-    note: "Forecast viewed from Jan 2025. Jan: QuarterFee due — its recorded card payment ($300.00) is the amount; BiWater due and paid ($200.00); total due $500.00, projected reserve = the calculated reserve +$200.00 (settlement basis — see sp-reserve-accumulation). Feb: SemiIns due, unpaid yet — expected $600.00; projected reserve 200 + 400 − 600 due − 1,200 (AnnualSub's early Feb payment for a bill not due in Feb) = −$1,200.00. Mar: AnnualSub due — expected $1,200.00 (its actual landed in Feb); BiWater due $200.00; projected reserve −1,200 + 600 − 1,400 due − 600 (SemiIns's late Mar payment, not due in Mar) = −$2,600.00.",
+    note: "Forecast viewed from Jan 2025. The projected reserve accumulates from the reserve start, Nov 2024 (contract v122, round-18 F2 — the first bill-effective month; see sp-reserve-accumulation), so January's projection already carries the Nov–Dec accruals. Jan: QuarterFee due — its recorded card payment ($300.00) is the amount; BiWater due and paid ($200.00); total due $500.00, projected reserve = 400 + 400 (Nov–Dec set-asides) + 200 (Jan: +400 set-aside − 200 settled) = +$1,000.00 (settlement basis). Feb: SemiIns due, unpaid yet — expected $600.00; projected reserve 1,000 + 400 − 600 due − 1,200 (AnnualSub's early Feb payment for a bill not due in Feb) = −$400.00. Mar: AnnualSub due — expected $1,200.00 (its actual landed in Feb); BiWater due $200.00; projected reserve −400 + 600 − 1,400 due − 600 (SemiIns's late Mar payment, not due in Mar) = −$1,800.00.",
     expected: {
-      janDue: 50000, janProjected: 20000, janY3Amount: 30000,
-      febDue: 60000, febProjected: -120000, febY2Amount: 60000,
-      marDue: 140000, marProjected: -260000, marY1Amount: 120000,
+      janDue: 50000, janProjected: 100000, janY3Amount: 30000,
+      febDue: 60000, febProjected: -40000, febY2Amount: 60000,
+      marDue: 140000, marProjected: -180000, marY1Amount: 120000,
     },
     actual: (w) => {
       const [jan, feb, mar] = w.forecastJan;
@@ -1247,6 +1327,56 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         marY1Amount: mar ? dueAmt(mar, 1) : null,
       };
     },
+  },
+  {
+    id: "sp-f2-earliest-includes-bill-months",
+    kind: "spending",
+    note: "Round-18 F2: the shared earliest data month counts bill-effective months. A lights-on smoothed bill effective Jan 2026 with the first checking spending in Mar 2026 opens tracking in January, not March — the Dashboard, the Retirement default window, and the reserve start all follow this one definition, and the Year view's monthHasData agrees (Jan and Feb are data months there too).",
+    expected: { earliestMonth: 202601, reserveStartMonth: 202601, janHasData: 1, febHasData: 1 },
+    actual: () => {
+      const c = f2Core();
+      return {
+        earliestMonth: c.earliest ? Number(c.earliest.replace("-", "")) : null,
+        reserveStartMonth: c.reserveStartMonth ? Number(c.reserveStartMonth.replace("-", "")) : null,
+        janHasData: c.monthHasData("2026-01") ? 1 : 0,
+        febHasData: c.monthHasData("2026-02") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "sp-f2-dashboard-ytd",
+    kind: "spending",
+    note: "Round-18 F2, Dashboard YTD (viewed Oct 2026): the year-to-date sums January–October, skipping nothing before the earliest data month — January. True cost = $100 March cash out + ten months × $10 set-aside = $200.00; the Keep-the-lights-on floor = ten months × $10 = $100.00. (Pre-v122 January–February were skipped and both read $20.00 lower.)",
+    expected: { trueCost: 20000, floor: 10000 },
+    actual: () => f2Ytd(f2Core(), "2026-10"),
+  },
+  {
+    id: "sp-f2-dashboard-jan-history",
+    kind: "spending",
+    note: "Round-18 F2, Dashboard January history row: months before tracking started show nothing, but January IS the tracking start now, so its row carries its real True cost — $10.00 set-aside, no cash out — and March carries $110.00 ($100 cash out + $10 set-aside). (Pre-v122 the January row was zeroed as before-start.)",
+    expected: { janSmoothed: 1000, marSmoothed: 11000 },
+    actual: () => {
+      const c = f2Core();
+      const row = (m: string) => (c.earliest != null && m < c.earliest ? 0 : c.eff(m).smoothed);
+      return { janSmoothed: row("2026-01"), marSmoothed: row("2026-03") };
+    },
+  },
+  {
+    id: "sp-f2-dashboard-trailing-average",
+    kind: "spending",
+    note: "Round-18 F2, Dashboard trailing average (current month fixed at Oct 2026 — the example's current month): the trailing window covers the ten months Jan–Oct from the earliest data month, so the average is $200.00 ÷ 10 = $20.00/month. (Pre-v122 the window covered Mar–Oct only, eight months, and the average read $23.00/month.)",
+    expected: { months: 10, avgSmoothed: 2000 },
+    actual: () => {
+      const t = f2Trailing(f2Core(), "2026-10");
+      return { months: t.months, avgSmoothed: t.avgSmoothed };
+    },
+  },
+  {
+    id: "sp-f2-retirement-default",
+    kind: "spending",
+    note: "Round-18 F2, Retirement default annual spending (current month fixed at Oct 2026): the default annualises the trailing True cost over the window from the earliest data month — ten months Jan–Oct, $200.00 total — so $200.00 ÷ 10 × 12 = $240.00/year. (Pre-v122 the window started in March, eight months, and the default read $270.00/year.)",
+    expected: { months: 10, annual: 24000 },
+    actual: () => f2RetirementDefault(f2Core(), "2026-10"),
   },
   {
     id: "sp-monthly-total-and-klo",
