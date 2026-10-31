@@ -1016,7 +1016,7 @@ export function December() {
   const billRow = (
     label: ReactNode,
     value: ReactNode,
-    opts?: { bold?: boolean; divide?: boolean },
+    opts?: { bold?: boolean; divide?: boolean; highlight?: boolean },
   ) => (
     <div
       className={`flex items-baseline justify-between gap-4 ${
@@ -1024,7 +1024,21 @@ export function December() {
       }`}
     >
       <span className={opts?.bold ? "font-semibold" : undefined}>{label}</span>
-      <span className={`tnum ${opts?.bold ? "font-bold" : ""}`}>{value}</span>
+      {/* Highlight (contract v117): the v87 accent treatment —
+          the figure itself renders bold in the accent colour,
+          matching the tax figure elsewhere. The label keeps
+          whatever the bold option gives it. */}
+      <span
+        className={`tnum ${
+          opts?.highlight
+            ? "font-bold text-[var(--accent)]"
+            : opts?.bold
+              ? "font-bold"
+              : ""
+        }`}
+      >
+        {value}
+      </span>
     </div>
   );
   const rangeRow = (
@@ -1211,6 +1225,7 @@ export function December() {
                       likelyCase.creditAtHeadline > 0
                         ? `−${fmtDollars(likelyCase.creditAtHeadline)}`
                         : fmtDollars(likelyCase.creditAtHeadline),
+                      { highlight: true },
                     )}
                   {likelyCase.educationRefundableAtHeadline > 0 &&
                     billRow(
@@ -1277,7 +1292,7 @@ export function December() {
                             />
                           </>,
                           fmtDollars(likelyCase.cashLeftAtHeadline),
-                          { bold: true },
+                          { bold: true, highlight: true },
                         )}
                         <p className="text-xs text-[var(--dim)]">
                           Cash in minus the net tax bill — what&rsquo;s
