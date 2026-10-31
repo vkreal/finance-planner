@@ -107,6 +107,52 @@ export const decemberState = z.object({
   // Realized capital result so far — SIGNED (negative = a net
   // realized loss), like the engine's own stock gain.
   ytdCapitalGain: z.number().finite(),
+  // Capital-loss carryforward ENTERING this year (contract
+  // v111, round-17 fix F1+F2): the banked short-term and
+  // long-term losses from prior years still unused as this
+  // year begins, in dollars, stated as positive amounts,
+  // plus the Washington-attributable portion of each (a
+  // portion of that character's total). NULLABLE, and null
+  // and $0 are different facts: null = no input yet (the
+  // console has not answered — at load, a null field can
+  // resolve from the Tax Plan record's entering carryforward
+  // when the December year IS the plan's first year, exactly
+  // the education overlay's discipline); $0 = explicitly
+  // none. A blob written before these fields existed parses
+  // a missing key as null and prices exactly as before this
+  // build until an amount is entered. When any amount is
+  // positive, decemberCaseInputs passes the four through to
+  // pricePlaygroundYear, which runs the shared plan loss
+  // ledger (applyLossLedger) over the year — no loss math
+  // lives here.
+  carryInCapitalLossSt: z.number().finite().min(0).nullable(),
+  carryInCapitalLossLt: z.number().finite().min(0).nullable(),
+  carryInCapitalLossStWa: z.number().finite().min(0).nullable(),
+  carryInCapitalLossLtWa: z.number().finite().min(0).nullable(),
+  // Gain harvest (contract v113, round-17 fix F3): whether
+  // the plan's gain-harvest strategy is on for this year,
+  // and the taxable-pool facts the harvest sizes itself
+  // from — the pool available to sell (the COMBINED taxable
+  // pool, Taxable plus Cash, the pool the plan march draws
+  // on) and its BLENDED basis % (basis dollars ÷ pool; the
+  // march's tier walking moves only its basis step-up
+  // bookkeeping between years, never the size, so one
+  // blended % carries the sizing). harvestOn defaults OFF:
+  // a blob written before these fields existed parses them
+  // off / null and prices exactly as before this build.
+  // The two facts are NULLABLE: null = no input yet (at
+  // load, a null fact resolves from the Tax Plan record's
+  // taxable facts — its taxable balance and its basis % or
+  // tier blend — under the same overlay discipline as the
+  // carry-in: entered values always win, record facts fill
+  // nulls, and an unedited save persists the stored value).
+  // Harvest ON with either fact still null after resolution
+  // cannot be priced: the projection then prices NO harvest
+  // and carries the gain-harvest-unpriced qualification on
+  // every case (and a warning), never a silent $0.
+  harvestOn: z.boolean(),
+  harvestPoolAmount: z.number().finite().min(0).nullable(),
+  harvestPoolBasisPct: z.number().finite().min(0).max(100).nullable(),
   ytdSsPrimary: z.number().finite().min(0),
   ytdSsSpouse: z.number().finite().min(0),
   // Remaining expected income (December stragglers), per line.
@@ -220,6 +266,24 @@ export const decemberState = z.object({
   // Strays checklist (household-neutral wording in the view).
   strayCapDist: decemberStray,
   strayK1: decemberStray,
+  // The long-term-capital-gain PORTION of the K-1 stray's
+  // total (contract v112, round-17 fix F4): Schedule K-1
+  // box 9a reports the part of a partnership / S-corp /
+  // trust allocation that is a net long-term capital gain,
+  // and that part keeps its long-term character on the
+  // partner's return — it is taxed at the capital-gains
+  // rates, not as ordinary income. Like the January-paid
+  // splits (v104) it is a portion of the total, never an
+  // amount on top of it: the assembly clamps it to the
+  // K-1 total (a signed total — the portion applies only
+  // to a positive K-1 amount; a deductible K-1 loss has
+  // no gain portion), rides it on the long-term-gains
+  // stack, and removes it from ordinary income, so no
+  // dollar is counted twice. A blob written before this
+  // field existed parses a missing key as $0 — the whole
+  // K-1 amount then rides ordinary income exactly as
+  // before this build.
+  strayK1CapGainAmount: z.number().finite().min(0),
   strayTaxExempt: decemberStray,
   strayDependent: decemberStray,
   straySeverance: decemberStray,
@@ -264,6 +328,25 @@ export const decemberState = z.object({
   // the ordinary-dividends total instead of the gains stack.
   strayROC: decemberStray,
   strayROCOrdinary: decemberStray,
+  // The qualified-dividends PORTION of the reclassified
+  // return-of-capital amount (contract v112, round-17
+  // fix F5): a dividend reclassified out of return of
+  // capital can itself be a qualified dividend (Form
+  // 1099-DIV box 1b, a subset of the box 1a ordinary
+  // total), and that part is taxed at the preferential
+  // qualified-dividend rates, not as ordinary income.
+  // Like the January-paid qualified companion (v104) it
+  // is a portion of the ordinary total, never an amount
+  // on top of it: the assembly clamps it to the
+  // strayROCOrdinary total and adds it to the qualified-
+  // dividends total, while the whole ordinary amount
+  // stays in ordinary dividends (qualified is a subset),
+  // so no dollar is counted twice. A blob written before
+  // this field existed parses a missing key as $0 — the
+  // whole reclassified amount then prices as a
+  // non-qualified ordinary dividend exactly as before
+  // this build.
+  strayROCQualifiedAmount: z.number().finite().min(0),
   strayAgiReducers: decemberStray,
   strayCoverage: decemberStray,
   strayTradeDate: decemberStray,
@@ -311,6 +394,13 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     ytdQualifiedDividends: 0,
     ytdTaxExemptInterest: 0,
     ytdCapitalGain: 0,
+    carryInCapitalLossSt: null,
+    carryInCapitalLossLt: null,
+    carryInCapitalLossStWa: null,
+    carryInCapitalLossLtWa: null,
+    harvestOn: false,
+    harvestPoolAmount: null,
+    harvestPoolBasisPct: null,
     ytdSsPrimary: 0,
     ytdSsSpouse: 0,
     remCapDist: rangeDefault(),
@@ -339,6 +429,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     educationStudents: null,
     strayCapDist: strayDefault(),
     strayK1: strayDefault(),
+    strayK1CapGainAmount: 0,
     strayTaxExempt: strayDefault(),
     strayDependent: strayDefault(),
     straySeverance: strayDefault(),
@@ -351,6 +442,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     strayPlannedSales: strayDefault(),
     strayROC: strayDefault(),
     strayROCOrdinary: strayDefault(),
+    strayROCQualifiedAmount: 0,
     strayAgiReducers: strayDefault(),
     strayCoverage: strayDefault(),
     strayTradeDate: strayDefault(),
@@ -539,6 +631,36 @@ export function parseDecemberState(
     out.pretaxBalanceSpouse = splitSpouse.value;
     out.pretaxBalance = legacyPretax.value;
   }
+  // Entering capital-loss carryforward (v111): nullable
+  // like the balances — a missing key (every blob written
+  // before these fields existed) and an explicit null both
+  // read as NO INPUT YET (null, the default above), an
+  // entered amount (including an explicit $0) reads as
+  // written, so a pre-v111 blob prices exactly as it did.
+  const ciSt = nullableNonNeg("carryInCapitalLossSt");
+  if (ciSt.seen) out.carryInCapitalLossSt = ciSt.value;
+  const ciLt = nullableNonNeg("carryInCapitalLossLt");
+  if (ciLt.seen) out.carryInCapitalLossLt = ciLt.value;
+  const ciStWa = nullableNonNeg("carryInCapitalLossStWa");
+  if (ciStWa.seen) out.carryInCapitalLossStWa = ciStWa.value;
+  const ciLtWa = nullableNonNeg("carryInCapitalLossLtWa");
+  if (ciLtWa.seen) out.carryInCapitalLossLtWa = ciLtWa.value;
+  // Gain harvest (v113): the toggle reads as a plain
+  // boolean (absent = off, the default above); the two
+  // facts are nullable like the carry-in — a missing key
+  // (every blob written before these fields existed) and
+  // an explicit null both read as NO INPUT YET, an entered
+  // amount (including an explicit $0 pool or a 100% basis)
+  // reads as written, so a pre-v113 blob prices exactly as
+  // it did. The basis % additionally refuses a value above
+  // 100 (out of range reads as no input, leniently).
+  if (typeof p.harvestOn === "boolean") out.harvestOn = p.harvestOn;
+  const hvPool = nullableNonNeg("harvestPoolAmount");
+  if (hvPool.seen) out.harvestPoolAmount = hvPool.value;
+  const hvBasis = nullableNonNeg("harvestPoolBasisPct");
+  if (hvBasis.seen && (hvBasis.value == null || hvBasis.value <= 100)) {
+    out.harvestPoolBasisPct = hvBasis.value;
+  }
   nonNeg("rmdAlreadyReceived", (n) => (out.rmdAlreadyReceived = n));
   if (typeof p.spouseSoleBeneficiary === "boolean") {
     out.spouseSoleBeneficiary = p.spouseSoleBeneficiary;
@@ -619,6 +741,14 @@ export function parseDecemberState(
   }
   stray("strayCapDist", (s) => (out.strayCapDist = s));
   stray("strayK1", (s) => (out.strayK1 = s));
+  // K-1 capital-gain portion (v112): a missing key (every
+  // blob written before this field existed) reads as the
+  // inert $0 default above, so the K-1 total prices
+  // exactly as it did before this build.
+  nonNeg(
+    "strayK1CapGainAmount",
+    (n) => (out.strayK1CapGainAmount = n),
+  );
   stray("strayTaxExempt", (s) => (out.strayTaxExempt = s));
   stray("strayDependent", (s) => (out.strayDependent = s));
   stray("straySeverance", (s) => (out.straySeverance = s));
@@ -641,6 +771,13 @@ export function parseDecemberState(
   stray("strayPlannedSales", (s) => (out.strayPlannedSales = s));
   stray("strayROC", (s) => (out.strayROC = s));
   stray("strayROCOrdinary", (s) => (out.strayROCOrdinary = s));
+  // ROC qualified portion (v112): a missing key reads as
+  // the inert $0 default above, so the reclassified
+  // amount prices exactly as it did before this build.
+  nonNeg(
+    "strayROCQualifiedAmount",
+    (n) => (out.strayROCQualifiedAmount = n),
+  );
   stray("strayAgiReducers", (s) => (out.strayAgiReducers = s));
   stray("strayCoverage", (s) => (out.strayCoverage = s));
   stray("strayTradeDate", (s) => (out.strayTradeDate = s));
@@ -695,6 +832,37 @@ export type DecemberRecordFacts = {
   // own per-year cents entries filtered to this year).
   // Absent / null = the record does not answer.
   educationStudents?: EducationStudent[] | null;
+  // The Tax Plan record's entering capital-loss
+  // carryforward (v111), in dollars: the record's
+  // capitalLossCarryIn* Cents converted. That balance is
+  // the loss entering the plan's FIRST year, so it
+  // answers the December console ONLY for that year —
+  // planFirstYear is that year (the record's execution
+  // year), and load resolution applies the carry-in facts
+  // only when the console's taxYear equals it. Absent /
+  // null per field = the record does not answer that
+  // field.
+  carryInCapitalLossSt?: number | null;
+  carryInCapitalLossLt?: number | null;
+  carryInCapitalLossStWa?: number | null;
+  carryInCapitalLossLtWa?: number | null;
+  planFirstYear?: number | null;
+  // The Tax Plan record's taxable-pool facts (v113), in
+  // dollars / percent: the record's taxable pool (its
+  // entered taxable balance, or the snapshot-followed
+  // Taxable + Cash pool less any exclude-from-plan amount —
+  // the pool resolvePlanBalances assembles for the march)
+  // and its basis: the record's entered basis %, or the
+  // blended % of its basis tiers (Σ share × basis ÷ Σ
+  // share) when it carries tiers. A record whose basis is
+  // BLANK (no % and no tiers — the march's harvest is inert
+  // there too) does not answer the basis fact. Absent /
+  // null per field = the record does not answer. Unlike
+  // the carry-in these are balance facts, not entering-year
+  // balances, so resolution is NOT gated on the plan's
+  // first year.
+  harvestPoolAmount?: number | null;
+  harvestPoolBasisPct?: number | null;
 };
 
 /* Round-4 fix, round-5 extension — load-time resolution,
@@ -776,6 +944,70 @@ export function resolveDecemberStateAtLoad(
       ...out,
       educationStudents: facts.educationStudents,
     };
+  }
+  // Entering capital-loss carryforward (v111): the Tax
+  // Plan record's carry-in is the balance entering the
+  // plan's FIRST year, so it resolves into the console
+  // ONLY when the console's tax year IS that year
+  // (planFirstYear — the record's execution year); in any
+  // other year the record's balance says nothing about
+  // this year's entering loss and no overlay applies.
+  // Per field: a null console value (no input yet)
+  // resolves from the record fact; any entered console
+  // value — including an explicit $0 — always wins and is
+  // never overwritten. Like every resolution here this is
+  // an overlay for display and pricing only: a save
+  // persists the STORED values for fields the user has
+  // not edited in this console (decemberStateForSave's
+  // carryIn flag).
+  if (facts.planFirstYear != null && out.taxYear === facts.planFirstYear) {
+    const carryPatch: Partial<DecemberState> = {};
+    if (out.carryInCapitalLossSt == null && facts.carryInCapitalLossSt != null) {
+      carryPatch.carryInCapitalLossSt = facts.carryInCapitalLossSt;
+    }
+    if (out.carryInCapitalLossLt == null && facts.carryInCapitalLossLt != null) {
+      carryPatch.carryInCapitalLossLt = facts.carryInCapitalLossLt;
+    }
+    if (
+      out.carryInCapitalLossStWa == null &&
+      facts.carryInCapitalLossStWa != null
+    ) {
+      carryPatch.carryInCapitalLossStWa = facts.carryInCapitalLossStWa;
+    }
+    if (
+      out.carryInCapitalLossLtWa == null &&
+      facts.carryInCapitalLossLtWa != null
+    ) {
+      carryPatch.carryInCapitalLossLtWa = facts.carryInCapitalLossLtWa;
+    }
+    if (Object.keys(carryPatch).length > 0) {
+      out = { ...out, ...carryPatch };
+    }
+  }
+  // Gain-harvest pool facts (v113): the record's taxable
+  // pool and blended basis resolve into null console facts
+  // in ANY year (balance facts, not entering-year balances
+  // like the carry-in above — no first-year gate). Per
+  // field: a null console value (no input yet) resolves
+  // from the record fact; any entered console value —
+  // including an explicit $0 pool — always wins and is
+  // never overwritten. The harvest toggle itself is the
+  // console's own answer and never resolves. Like every
+  // resolution here this is an overlay for display and
+  // pricing only: a save persists the STORED values for
+  // fields the user has not edited in this console
+  // (decemberStateForSave's harvest flag).
+  {
+    const harvestPatch: Partial<DecemberState> = {};
+    if (out.harvestPoolAmount == null && facts.harvestPoolAmount != null) {
+      harvestPatch.harvestPoolAmount = facts.harvestPoolAmount;
+    }
+    if (out.harvestPoolBasisPct == null && facts.harvestPoolBasisPct != null) {
+      harvestPatch.harvestPoolBasisPct = facts.harvestPoolBasisPct;
+    }
+    if (Object.keys(harvestPatch).length > 0) {
+      out = { ...out, ...harvestPatch };
+    }
   }
   if (!out.pretaxSplitExplicit && out.pretaxBalance != null) {
     const recPrimary = facts.pretaxBalancePrimary ?? null;
@@ -868,6 +1100,25 @@ export type DecemberStoredProvenance = {
   // saved answer unless the user edits the education
   // controls here.
   educationStudents: EducationStudent[] | null;
+  // Entering capital-loss carryforward (v111): the stored
+  // blob's own four values (null per field = no input
+  // yet), preserved through saves the same way — a
+  // record-resolved overlay (the plan's first year only)
+  // never becomes the console's saved answer unless the
+  // user edits the carry-in controls here.
+  carryInCapitalLossSt: number | null;
+  carryInCapitalLossLt: number | null;
+  carryInCapitalLossStWa: number | null;
+  carryInCapitalLossLtWa: number | null;
+  // Gain-harvest pool facts (v113): the stored blob's own
+  // two values (null per field = no input yet), preserved
+  // through saves the same way — a record-resolved overlay
+  // never becomes the console's saved answer unless the
+  // user edits the harvest pool controls here. The harvest
+  // toggle is NOT provenance: it is a plain console answer
+  // and always saves as displayed.
+  harvestPoolAmount: number | null;
+  harvestPoolBasisPct: number | null;
 };
 
 export function decemberStoredProvenanceOf(
@@ -884,6 +1135,12 @@ export function decemberStoredProvenanceOf(
     legacyRocSplitUnconfirmed: state.legacyRocSplitUnconfirmed,
     legacyJanPaidSplitUnconfirmed: state.legacyJanPaidSplitUnconfirmed,
     educationStudents: state.educationStudents,
+    carryInCapitalLossSt: state.carryInCapitalLossSt,
+    carryInCapitalLossLt: state.carryInCapitalLossLt,
+    carryInCapitalLossStWa: state.carryInCapitalLossStWa,
+    carryInCapitalLossLtWa: state.carryInCapitalLossLtWa,
+    harvestPoolAmount: state.harvestPoolAmount,
+    harvestPoolBasisPct: state.harvestPoolBasisPct,
   };
 }
 
@@ -916,6 +1173,8 @@ export function decemberStateForSave(
     rocCharacter?: boolean;
     janPaidCharacter?: boolean;
     education?: boolean;
+    carryIn?: boolean;
+    harvest?: boolean;
   },
 ): DecemberState {
   return {
@@ -923,6 +1182,24 @@ export function decemberStateForSave(
     educationStudents: edited.education
       ? display.educationStudents
       : stored.educationStudents,
+    carryInCapitalLossSt: edited.carryIn
+      ? display.carryInCapitalLossSt
+      : stored.carryInCapitalLossSt,
+    carryInCapitalLossLt: edited.carryIn
+      ? display.carryInCapitalLossLt
+      : stored.carryInCapitalLossLt,
+    carryInCapitalLossStWa: edited.carryIn
+      ? display.carryInCapitalLossStWa
+      : stored.carryInCapitalLossStWa,
+    carryInCapitalLossLtWa: edited.carryIn
+      ? display.carryInCapitalLossLtWa
+      : stored.carryInCapitalLossLtWa,
+    harvestPoolAmount: edited.harvest
+      ? display.harvestPoolAmount
+      : stored.harvestPoolAmount,
+    harvestPoolBasisPct: edited.harvest
+      ? display.harvestPoolBasisPct
+      : stored.harvestPoolBasisPct,
     primarySoleBeneficiaryOfSpouse: edited.beneficiary
       ? display.primarySoleBeneficiaryOfSpouse
       : stored.primarySoleBeneficiaryOfSpouse,
@@ -1121,7 +1398,15 @@ export function decemberNullableMoneyFromFormValue(s: string): number | null {
    subtract from other ordinary income — an assembly of the
    engine's existing dials, never new tax math. The K-1
    stray is signed (a deductible loss reduces ordinary
-   income). A filing dependent's income does NOT join the
+   income), and (v112, F4) the part of a positive K-1
+   amount reported as a long-term capital gain (Schedule
+   K-1 box 9a) rides the capital result above instead of
+   ordinary income, removed from it so it is never counted
+   twice; (v112, F5) the qualified part of a reclassified
+   return-of-capital dividend rides the qualified-dividends
+   subset like the January-paid qualified companion, while
+   the whole reclassified amount stays in ordinary
+   dividends. A filing dependent's income does NOT join the
    parents' income at all: it rides the engine's ACA-only
    dependentMagiForAca channel, into the §36B household
    MAGI and nowhere else. The pre-tax balances go in split
@@ -1155,19 +1440,49 @@ export function decemberCaseInputs(
       ? Math.min(janPaid, Math.max(0, state.strayJanPaidCapGainAmount))
       : 0;
   const janPaidOrdinary = r2(janPaid - janPaidCapGain);
+  // The K-1 stray's character split (v112, F4): the K-1
+  // amount is the one SIGNED stray. Its box 9a long-term
+  // capital gain portion is a portion of a POSITIVE K-1
+  // total, clamped to that total, never an amount on top
+  // of it: it rides the gains stack below (its long-term
+  // character) and is REMOVED from ordinary income, so
+  // no dollar is counted twice. A deductible K-1 loss
+  // (a negative total) has no gain portion — the portion
+  // reads $0 and the loss reduces ordinary income whole,
+  // exactly as before this build.
+  const k1Total = straySignedAmount(state.strayK1);
+  const k1CapGain =
+    k1Total > 0
+      ? Math.min(k1Total, Math.max(0, state.strayK1CapGainAmount))
+      : 0;
+  const k1Ordinary = r2(k1Total - k1CapGain);
+  // The qualified portion of the reclassified return-of-
+  // capital amount (v112, F5): a portion of the
+  // strayROCOrdinary total, clamped to it, never an
+  // amount on top of it. The whole reclassified amount
+  // stays in ordinary dividends below (qualified is a
+  // subset of ordinary, the year-to-date pair's shape);
+  // this portion additionally rides the qualified-
+  // dividends total, priced in the gains stack.
+  const rocOrdinary = strayAmount(state.strayROCOrdinary);
+  const rocQualified =
+    rocOrdinary > 0
+      ? Math.min(rocOrdinary, Math.max(0, state.strayROCQualifiedAmount))
+      : 0;
   const totalGain = r2(
     state.ytdCapitalGain +
       state.remCapDist[kind] +
       strayAmount(state.strayCapDist) +
       strayAmount(state.strayPlannedSales) +
       strayAmount(state.strayROC) +
-      janPaidCapGain -
+      janPaidCapGain +
+      k1CapGain -
       strayAmount(state.strayLossHarvest),
   );
   const otherOrdinary = r2(
     state.ytdOtherOrdinary +
       state.remOtherOrdinary[kind] +
-      straySignedAmount(state.strayK1) +
+      k1Ordinary +
       strayAmount(state.straySeverance) -
       strayAmount(state.strayAgiReducers),
   );
@@ -1200,7 +1515,7 @@ export function decemberCaseInputs(
       state.ytdOrdinaryDividends +
         state.remOrdinaryDividends[kind] +
         janPaidOrdinary +
-        strayAmount(state.strayROCOrdinary),
+        rocOrdinary,
     ),
     otherOrdinary,
     taxExemptInterest: r2(state.ytdTaxExemptInterest + strayAmount(state.strayTaxExempt)),
@@ -1212,7 +1527,8 @@ export function decemberCaseInputs(
     qualifiedDividends: r2(
       state.ytdQualifiedDividends +
         state.remQualifiedDividends[kind] +
-        janPaidQualified,
+        janPaidQualified +
+        rocQualified,
     ),
     // Split by owner when a split was entered (the primary's
     // balance on the primary dial, the spouse's on the
@@ -1243,6 +1559,39 @@ export function decemberCaseInputs(
     // no credit math lives here. Null (no input yet) and
     // an empty list both price $0 of credits.
     educationStudents: state.educationStudents ?? null,
+    // Entering capital-loss carryforward (v111): the
+    // console's entered carry-in rides the pricer's own
+    // carry-in dials, so the shared applyLossLedger nets
+    // it against the year's gains, prices the §1211(b)
+    // allowance, splits the federal and Washington gain
+    // bases, and reconciles the carry-out — no loss math
+    // lives here. Null (no input yet) passes as undefined
+    // (absent), which prices exactly as before this build.
+    capitalLossCarryInSt: state.carryInCapitalLossSt ?? undefined,
+    capitalLossCarryInLt: state.carryInCapitalLossLt ?? undefined,
+    capitalLossCarryInStWa: state.carryInCapitalLossStWa ?? undefined,
+    capitalLossCarryInLtWa: state.carryInCapitalLossLtWa ?? undefined,
+    // Gain harvest (v113): the console's pool facts ride
+    // the pricer's own harvest dials ONLY while the
+    // harvest toggle is on, so the pricer sizes the
+    // harvest inside every pricing of the year — the zero-
+    // draw pricings, the headline pricing, and every trial
+    // pricing inside the cliff solver — and the solved
+    // December draw is sized WITH the harvest included
+    // (the draw shrinks by the harvested gain when the
+    // cliff target binds). Toggle off passes the dials
+    // absent, so the year prices bit-identically to
+    // before. Toggle on with a fact still null passes that
+    // dial absent too — the pricer then sizes no harvest,
+    // and computeDecemberProjection carries the
+    // gain-harvest-unpriced qualification on every case
+    // instead of letting the $0 read as a priced answer.
+    harvestPoolAmount: state.harvestOn
+      ? (state.harvestPoolAmount ?? undefined)
+      : undefined,
+    harvestPoolBasisPct: state.harvestOn
+      ? (state.harvestPoolBasisPct ?? undefined)
+      : undefined,
   };
 }
 
@@ -1325,6 +1674,38 @@ export type DecemberCaseResult = {
   // were priced from entered expenses — whether or not
   // the phase-out or the liability left them at $0).
   hasEducationExpenses: boolean;
+  // Capital-loss carry-out at the headline draw (v111):
+  // the entering carryforward (plus any of the year's own
+  // net loss) still unused after this case's headline
+  // pricing — the part that carries into next year, by
+  // character, read straight off the priced year's own
+  // reconciled ledger result (pricePlaygroundYear's
+  // lossCarryOut*), no new loss math here. The Wa fields
+  // are the Washington-attributable portions of the same
+  // carry-out. All $0 when no carry-in was entered.
+  lossCarryOutStAtHeadline: number;
+  lossCarryOutLtAtHeadline: number;
+  lossCarryOutStWaAtHeadline: number;
+  lossCarryOutLtWaAtHeadline: number;
+  // Gain harvest (v113): the long-term gain the year's
+  // harvest realized into the 0% band, read straight off
+  // the priced year (pricePlaygroundYear's harvestedGain)
+  // at the headline draw and at a $0 draw — already inside
+  // that case's MAGI, credit, and taxes above; these
+  // fields only name it. $0 when the harvest toggle is
+  // off, when no gain fit the band, or when the harvest
+  // could not be priced at all (gainHarvestUnpriced).
+  harvestedGainAtHeadline: number;
+  harvestedGainAtZeroDraw: number;
+  // The harvest qualification (v113): true when the
+  // harvest toggle is ON but a pool / basis fact is
+  // missing (no console entry and no Tax Plan record
+  // fact), so no harvest is priced and the settlement
+  // EXCLUDES gain harvesting. The console renders this
+  // beside every settlement figure in that state, like
+  // excludesEducationCredits — a settlement is never
+  // presented as final while the harvest is unpriced.
+  gainHarvestUnpriced: boolean;
   // The settlement qualification (v103): true when NO
   // education expenses are entered, so no education
   // credit is priced and the settlement EXCLUDES
@@ -1509,6 +1890,19 @@ export function computeDecemberProjection(
   const hasEducationExpenses = (state.educationStudents ?? []).some(
     (s) => s.expenses > 0,
   );
+  // Gain-harvest pricing state (v113): the harvest is
+  // priced whenever the toggle is on AND both pool facts
+  // are present (entered in the console, or resolved at
+  // load from the Tax Plan record — computeDecemberProjection
+  // reads the state it is given, so a resolved state prices
+  // the harvest and an unresolved one does not). Toggle on
+  // with a fact missing prices NO harvest and carries the
+  // qualification on every case below, plus the warning at
+  // the end — the settlement excludes gain harvesting
+  // rather than silently pricing it as $0.
+  const gainHarvestUnpriced =
+    state.harvestOn &&
+    (state.harvestPoolAmount == null || state.harvestPoolBasisPct == null);
   const cases: DecemberCaseResult[] = DECEMBER_CASE_KINDS.map((kind, i) => {
     const zero = zeroResults[i]!;
     const atHeadline = pricePlaygroundYear(
@@ -1627,6 +2021,13 @@ export function computeDecemberProjection(
       educationChoiceAtHeadline: atHeadline.educationChoice,
       educationNonrefundableAtHeadline: atHeadline.educationNonrefundable,
       educationRefundableAtHeadline: atHeadline.educationRefundable,
+      lossCarryOutStAtHeadline: atHeadline.lossCarryOutSt,
+      lossCarryOutLtAtHeadline: atHeadline.lossCarryOutLt,
+      lossCarryOutStWaAtHeadline: atHeadline.lossCarryOutStWa,
+      lossCarryOutLtWaAtHeadline: atHeadline.lossCarryOutLtWa,
+      harvestedGainAtHeadline: atHeadline.harvestedGain,
+      harvestedGainAtZeroDraw: zero.harvestedGain,
+      gainHarvestUnpriced,
       hasEducationExpenses,
       excludesEducationCredits: !hasEducationExpenses,
       totalIncomeAtHeadline: atHeadline.agi,
@@ -1671,6 +2072,11 @@ export function computeDecemberProjection(
   if (!hasEducationExpenses) {
     warnings.push(
       "No education expenses are entered, so this settlement excludes education credits — the American Opportunity Credit (up to $2,500 per student) and the Lifetime Learning Credit (up to $2,000 per return) are not priced. If anyone in the household paid qualified education expenses this year, enter them in the Education credits section so the settlement includes them.",
+    );
+  }
+  if (gainHarvestUnpriced) {
+    warnings.push(
+      "Gain harvesting is switched on, but the taxable pool or its basis is not entered — here or in the Tax Plan record — so this settlement excludes gain harvesting: no harvest is priced, and a year the plan harvests in will settle differently (the harvested gain counts as income and shrinks the ACA credit). Enter the pool and its basis in the Gain harvest section so the settlement includes the harvest.",
     );
   }
   return {
@@ -4322,6 +4728,905 @@ export function runDecemberFixtures(): {
     exact(fail, "partial-capital gain dial", overQualInputs.stockSold, 15000);
   });
 
+  run("dec-carryforward-f1-acceptance", (fail) => {
+    // Round-17 F1 acceptance (settled, figures re-derived
+    // there): 2026 MFJ, ages 60/58, $60,000 of ordinary
+    // income, a $10,000 entering LONG-TERM carryforward, no
+    // new gains, $20,000 benchmark, $12,000 APTC, $5,000
+    // buffer. The ledger claims the $3,000 allowance, so
+    // the safe draw rises by exactly $3,000 and $7,000
+    // carries out.
+    const s = base();
+    s.ytdOtherOrdinary = 60000;
+    s.carryInCapitalLossLt = 10000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    near(fail, "ledger-aware headline draw", r.headlineDraw, 22600);
+    const likely = r.cases[1]!;
+    near(fail, "likely magi at headline", likely.magiAtHeadline, 79600);
+    exact(fail, "carry-out long-term at headline", likely.lossCarryOutLtAtHeadline, 7000);
+    exact(fail, "carry-out short-term at headline", likely.lossCarryOutStAtHeadline, 0);
+    exact(fail, "carry-out WA at headline", r2(likely.lossCarryOutStWaAtHeadline + likely.lossCarryOutLtWaAtHeadline), 0);
+    // At the COMMON $19,600 draw (the pre-fix headline):
+    // federal tax $4,832.00 (was $5,192.00) and settlement
+    // $4,461.36 (was $5,120.16) — the settlement derived
+    // from the priced credit exactly as the case assembly
+    // reconciles it (total tax − credit still due).
+    const atCommon = pricePlaygroundYear(decemberCaseInputs(s, "likely", 19600));
+    exact(fail, "federal tax at the common draw", atCommon.federalTax, 4832);
+    exact(fail, "credit at the common draw", atCommon.aca.credit, 12370.64);
+    exact(
+      fail,
+      "settlement at the common draw",
+      r2(atCommon.totalTax - Math.max(0, (atCommon.aca.credit ?? 0) - s.aptcTaken)),
+      4461.36,
+    );
+    exact(fail, "carry-out preserved at the common draw", atCommon.lossCarryOutLt, 7000);
+    exact(fail, "allowance priced at the common draw", atCommon.capitalLossAllowance, 3000);
+    // The pre-fix control: the same year with NO carry-in
+    // entered prices the old figures — headline $19,600,
+    // federal tax $5,192.00 at that draw, settlement
+    // $5,120.16.
+    const control = base();
+    control.ytdOtherOrdinary = 60000;
+    const rc = computeDecemberProjection(control);
+    near(fail, "control headline draw (pre-fix)", rc.headlineDraw, 19600);
+    const controlAt = pricePlaygroundYear(decemberCaseInputs(control, "likely", 19600));
+    exact(fail, "control federal tax (pre-fix)", controlAt.federalTax, 5192);
+    exact(
+      fail,
+      "control settlement (pre-fix)",
+      r2(controlAt.totalTax - Math.max(0, (controlAt.aca.credit ?? 0) - control.aptcTaken)),
+      5120.16,
+    );
+    exact(fail, "control carry-out", controlAt.lossCarryOutLt, 0);
+  });
+
+  run("dec-carryforward-zero-identity", (fail) => {
+    // Back-compat: a December state with NO carry-in
+    // (nulls) and one with an explicit $0 carry-in price
+    // BIT-IDENTICALLY — same dials out of the assembly,
+    // same priced figures, $0 carry-outs — and a blob
+    // written before the fields existed parses them null.
+    const sNull = base();
+    sNull.ytdOtherOrdinary = 50000;
+    const sZero = base();
+    sZero.ytdOtherOrdinary = 50000;
+    sZero.carryInCapitalLossSt = 0;
+    sZero.carryInCapitalLossLt = 0;
+    sZero.carryInCapitalLossStWa = 0;
+    sZero.carryInCapitalLossLtWa = 0;
+    const pNull = pricePlaygroundYear(decemberCaseInputs(sNull, "likely", 5000));
+    const pZero = pricePlaygroundYear(decemberCaseInputs(sZero, "likely", 5000));
+    exact(fail, "federal tax identical", pZero.federalTax, pNull.federalTax);
+    exact(fail, "total tax identical", pZero.totalTax, pNull.totalTax);
+    exact(fail, "AGI identical", pZero.agi, pNull.agi);
+    exact(fail, "state tax identical", pZero.stateTax, pNull.stateTax);
+    exact(fail, "allowance identical", pZero.capitalLossAllowance, pNull.capitalLossAllowance);
+    for (const [label, v] of [
+      ["null-state carry-out ST", pNull.lossCarryOutSt],
+      ["null-state carry-out LT", pNull.lossCarryOutLt],
+      ["zero-state carry-out ST", pZero.lossCarryOutSt],
+      ["zero-state carry-out LT", pZero.lossCarryOutLt],
+      ["zero-state carry-out ST WA", pZero.lossCarryOutStWa],
+      ["zero-state carry-out LT WA", pZero.lossCarryOutLtWa],
+    ] as [string, number][]) {
+      exact(fail, label, v, 0);
+    }
+    const rNull = computeDecemberProjection(sNull);
+    const rZero = computeDecemberProjection(sZero);
+    if (rZero.headlineDraw !== rNull.headlineDraw) {
+      fail(`headline identical: got ${rZero.headlineDraw}, want ${rNull.headlineDraw}`);
+    }
+    if (
+      rZero.cases[1]!.netSettleAtHeadline !==
+      rNull.cases[1]!.netSettleAtHeadline
+    ) {
+      fail("settlement should be identical between null and $0 carry-in");
+    }
+    // Parse / defaults / round-trip.
+    const legacy = parseDecemberState(
+      JSON.stringify({ taxYear: 2026 }),
+      2026,
+    );
+    if (
+      legacy.carryInCapitalLossSt !== null ||
+      legacy.carryInCapitalLossLt !== null ||
+      legacy.carryInCapitalLossStWa !== null ||
+      legacy.carryInCapitalLossLtWa !== null
+    ) {
+      fail("a legacy blob should parse every carry-in field as null");
+    }
+    const dflt = defaultDecemberState(2026);
+    if (dflt.carryInCapitalLossLt !== null) {
+      fail("the default state should carry a null carry-in");
+    }
+    if (!decemberState.safeParse(sZero).success) {
+      fail("the writer schema should accept an explicit $0 carry-in");
+    }
+    const entered = base();
+    entered.carryInCapitalLossSt = 100;
+    entered.carryInCapitalLossLt = 200;
+    entered.carryInCapitalLossStWa = 30;
+    entered.carryInCapitalLossLtWa = 40;
+    const back = parseDecemberState(serializeDecemberState(entered, 2), 2026);
+    if (
+      back.carryInCapitalLossSt !== 100 ||
+      back.carryInCapitalLossLt !== 200 ||
+      back.carryInCapitalLossStWa !== 30 ||
+      back.carryInCapitalLossLtWa !== 40
+    ) {
+      fail("entered carry-in values should round-trip through the saved blob");
+    }
+  });
+
+  run("dec-carryforward-f2-nonwa-acceptance", (fail) => {
+    // Round-17 F2 acceptance (settled): 2026 MFJ, $110,000
+    // ordinary income, a $500,000 realized long-term gain,
+    // and a $100,000 entering long-term carryforward that
+    // is NOT Washington-attributable. Federal nets to
+    // $400,000 either way; Washington's base stays at the
+    // gross $500,000 — excise $15,540.00, settlement
+    // $91,095.00 (the console's old single-net-gain entry
+    // priced the excise at $8,540.00, $7,000.00 low).
+    const s = base();
+    s.ytdOtherOrdinary = 110000;
+    s.ytdCapitalGain = 500000;
+    s.carryInCapitalLossLt = 100000;
+    s.residenceState = "WA";
+    s.aptcTaken = 0;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    if (r.headlineDraw !== 0) fail(`headline should be 0 (over the cliff at $0), got ${r.headlineDraw}`);
+    const likely = r.cases[1]!;
+    exact(fail, "federal tax", likely.federalTaxAtHeadline, 75555);
+    exact(fail, "Washington excise (gross base)", likely.stateTaxAtHeadline, 15540);
+    exact(fail, "total tax", likely.totalTaxAtHeadline, 91095);
+    exact(fail, "settlement", likely.netSettleAtHeadline, 91095);
+    exact(fail, "carry-out (fully absorbed)", likely.lossCarryOutLtAtHeadline, 0);
+    // The old entry the planned-sales hint instructed —
+    // the gain entered NET ($400,000) with no carry-in —
+    // prices the same federal tax but the understated
+    // $8,540.00 excise: the corrected error, pinned.
+    const oldWay = base();
+    oldWay.ytdOtherOrdinary = 110000;
+    oldWay.ytdCapitalGain = 400000;
+    oldWay.residenceState = "WA";
+    oldWay.aptcTaken = 0;
+    const oldLikely = computeDecemberProjection(oldWay).cases[1]!;
+    exact(fail, "old-entry federal tax (unchanged)", oldLikely.federalTaxAtHeadline, 75555);
+    exact(fail, "old-entry Washington excise (the corrected error)", oldLikely.stateTaxAtHeadline, 8540);
+  });
+
+  run("dec-carryforward-wa-attributable-base-down", (fail) => {
+    // The v101 plan behavior through the December path:
+    // the SAME $100,000 entering carryforward, but stated
+    // fully Washington-attributable — now the Washington
+    // base prices DOWN to the federal net $400,000 and the
+    // excise is $8,540.00, while the federal tax is
+    // unchanged (attribution moves only the WA base).
+    const s = base();
+    s.ytdOtherOrdinary = 110000;
+    s.ytdCapitalGain = 500000;
+    s.carryInCapitalLossLt = 100000;
+    s.carryInCapitalLossLtWa = 100000;
+    s.residenceState = "WA";
+    s.aptcTaken = 0;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "Washington gains base priced down", pg.waGains, 400000);
+    exact(fail, "federal tax unchanged by attribution", pg.federalTax, 75555);
+    const likely = computeDecemberProjection(s).cases[1]!;
+    exact(fail, "Washington excise (attributable base)", likely.stateTaxAtHeadline, 8540);
+    exact(fail, "total tax", likely.totalTaxAtHeadline, 84095);
+    exact(fail, "settlement", likely.netSettleAtHeadline, 84095);
+  });
+
+  run("dec-carryforward-zero-taxable-utilization", (fail) => {
+    // Worksheet utilization: a year with NO taxable income
+    // for the allowance to offset CLAIMS the $3,000
+    // allowance (it prices in AGI) but USES none of it —
+    // the whole $10,000 entering carryforward carries out.
+    // Both spouses on Medicare, so there is no cliff and
+    // the cases price at a $0 draw.
+    const s = base();
+    s.agePrimary = 67;
+    s.ageSpouse = 66;
+    s.onMedicarePrimary = true;
+    s.onMedicareSpouse = true;
+    s.carryInCapitalLossLt = 10000;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "allowance claimed", pg.capitalLossAllowance, 3000);
+    exact(fail, "full carry-out (allowance unused)", pg.lossCarryOutLt, 10000);
+    exact(fail, "no short-term carry-out", pg.lossCarryOutSt, 0);
+    const r = computeDecemberProjection(s);
+    if (r.headlineDraw !== null) fail("no cliff should apply on Medicare");
+    exact(
+      fail,
+      "case carry-out at headline",
+      r.cases[1]!.lossCarryOutLtAtHeadline,
+      10000,
+    );
+  });
+
+  run("dec-carryforward-resolution-and-save-rules", (fail) => {
+    // Load resolution (v111): the record's carry-in is the
+    // balance entering the plan's FIRST year, so it
+    // resolves only when the console's tax year IS that
+    // year; per field, null resolves and any entered value
+    // (including $0) wins. Save derivation: an unedited
+    // carry-in saves its STORED value, never the resolved
+    // overlay.
+    const facts: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+    };
+    const fresh = defaultDecemberState(2026);
+    const resolved = resolveDecemberStateAtLoad(fresh, facts);
+    exact(fail, "resolved ST", resolved.carryInCapitalLossSt, 1000);
+    exact(fail, "resolved LT", resolved.carryInCapitalLossLt, 10000);
+    exact(fail, "resolved ST WA", resolved.carryInCapitalLossStWa, 250);
+    exact(fail, "resolved LT WA", resolved.carryInCapitalLossLtWa, 2000);
+    const otherYear = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), taxYear: 2027 },
+      facts,
+    );
+    if (
+      otherYear.carryInCapitalLossSt !== null ||
+      otherYear.carryInCapitalLossLt !== null ||
+      otherYear.carryInCapitalLossStWa !== null ||
+      otherYear.carryInCapitalLossLtWa !== null
+    ) {
+      fail("no resolution should apply outside the plan's first year");
+    }
+    const entered = resolveDecemberStateAtLoad(
+      {
+        ...defaultDecemberState(2026),
+        carryInCapitalLossSt: 500,
+        carryInCapitalLossLt: 0,
+      },
+      facts,
+    );
+    exact(fail, "entered ST wins", entered.carryInCapitalLossSt, 500);
+    exact(fail, "entered $0 LT wins", entered.carryInCapitalLossLt, 0);
+    exact(fail, "unanswered ST WA still resolves", entered.carryInCapitalLossStWa, 250);
+    const silent = resolveDecemberStateAtLoad(fresh, { planFirstYear: 2026 });
+    if (silent.carryInCapitalLossLt !== null) {
+      fail("a record that does not answer should leave the field null");
+    }
+    const stored = decemberStoredProvenanceOf(fresh);
+    const savedOverlay = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+    });
+    if (savedOverlay.carryInCapitalLossLt !== null) {
+      fail("an unedited save should persist the stored (null) carry-in, not the overlay");
+    }
+    const savedEdited = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+      carryIn: true,
+    });
+    exact(fail, "an edited save persists the console value", savedEdited.carryInCapitalLossLt, 10000);
+    if (!decemberState.safeParse(resolved).success) {
+      fail("the writer schema should accept resolved carry-in values");
+    }
+  });
+
+  /* ---- Contract v112 fixtures: character splits on the
+     two strays (round-17 F4 + F5) ----
+     F4: Schedule K-1 box 9a net long-term capital gain
+     retains long-term character on the partner's return —
+     before v112 the whole signed K-1 amount rode other
+     ordinary income, so a box 9a gain priced at ordinary
+     rates. F5: a return-of-capital amount reclassified
+     as a dividend can itself be a qualified dividend
+     (Form 1099-DIV box 1b, a subset of box 1a) — before
+     v112 the reclassified amount rode only the ordinary-
+     dividends total, with no qualified companion (the
+     January-paid stray has had one since its split), so
+     its qualified part priced at ordinary rates. Both
+     fixes follow the v104 field shape: a top-level
+     non-negative portion field, clamped in the assembly,
+     $0 / absent pricing bit-identically to before. */
+
+  run("dec-k1-capgain-acceptance", (fail) => {
+    // The settlement's F4 example: 2026 MFJ, $110,000 of
+    // ordinary income plus a $10,000 K-1 amount that is
+    // entirely a box 9a long-term capital gain.
+    // · Before the fix (no portion entered): AGI
+    //   $120,000, taxable $87,800, federal tax 10% ×
+    //   $24,800 + 12% × $63,000 = $10,040.00.
+    // · After: the $10,000 rides the gains stack —
+    //   ordinary taxable $77,800 → $8,840.00, and the
+    //   gain sits inside the 0% band (total taxable
+    //   $87,800 < $98,900) → $0 gains tax → $8,840.00.
+    // The overstatement corrected is $1,200.00.
+    const before = base();
+    before.ytdOtherOrdinary = 110000;
+    before.strayK1 = { status: "amount", amount: 10000 };
+    const beforeInputs = decemberCaseInputs(before, "likely", 0);
+    exact(fail, "before: whole K-1 in ordinary income", beforeInputs.otherOrdinary, 120000);
+    exact(fail, "before: no gain on the stock dials", beforeInputs.stockSold, 0);
+    exact(
+      fail,
+      "before federal tax (the corrected error)",
+      pricePlaygroundYear(beforeInputs).federalTax,
+      10040,
+    );
+    const fixed = base();
+    fixed.ytdOtherOrdinary = 110000;
+    fixed.strayK1 = { status: "amount", amount: 10000 };
+    fixed.strayK1CapGainAmount = 10000;
+    const fixedInputs = decemberCaseInputs(fixed, "likely", 0);
+    exact(fail, "gain portion leaves ordinary income", fixedInputs.otherOrdinary, 110000);
+    exact(fail, "gain portion rides the stock dials", fixedInputs.stockSold, 10000);
+    exact(fail, "gain portion basis", fixedInputs.stockBasis, 0);
+    const fixedPg = pricePlaygroundYear(fixedInputs);
+    exact(fail, "federal tax after fix", fixedPg.federalTax, 8840);
+    exact(fail, "AGI counts the K-1 once", fixedPg.agi, 120000);
+    exact(
+      fail,
+      "overstatement corrected",
+      r2(pricePlaygroundYear(beforeInputs).federalTax - fixedPg.federalTax),
+      1200,
+    );
+    // A PARTIAL portion splits: $4,000 of a $10,000 K-1
+    // amount as box 9a gain leaves $6,000 ordinary.
+    const partial = base();
+    partial.ytdOtherOrdinary = 110000;
+    partial.strayK1 = { status: "amount", amount: 10000 };
+    partial.strayK1CapGainAmount = 4000;
+    const partialInputs = decemberCaseInputs(partial, "likely", 0);
+    exact(fail, "partial: ordinary keeps the rest", partialInputs.otherOrdinary, 116000);
+    exact(fail, "partial: gain dial carries the portion", partialInputs.stockSold, 4000);
+  });
+
+  run("dec-roc-qualified-acceptance", (fail) => {
+    // The settlement's F5 example: 2026 MFJ, $110,000 of
+    // ordinary income plus a $10,000 return-of-capital
+    // amount reclassified as an ordinary dividend that is
+    // entirely qualified.
+    // · Before the fix (no qualified portion): the
+    //   $10,000 prices as a non-qualified ordinary
+    //   dividend → federal tax $10,040.00 (same stack as
+    //   the F4 control).
+    // · After: the $10,000 is a qualified dividend —
+    //   ordinary taxable $77,800 → $8,840.00, the
+    //   qualified amount sits inside the 0% band → $0
+    //   preferential tax → $8,840.00.
+    // The overstatement corrected is $1,200.00.
+    const before = base();
+    before.ytdOtherOrdinary = 110000;
+    before.strayROCOrdinary = { status: "amount", amount: 10000 };
+    const beforeInputs = decemberCaseInputs(before, "likely", 0);
+    exact(fail, "before: reclassified amount in ordinary dividends", beforeInputs.ordinaryDividends, 10000);
+    exact(fail, "before: nothing qualified", beforeInputs.qualifiedDividends, 0);
+    exact(
+      fail,
+      "before federal tax (the corrected error)",
+      pricePlaygroundYear(beforeInputs).federalTax,
+      10040,
+    );
+    const fixed = base();
+    fixed.ytdOtherOrdinary = 110000;
+    fixed.strayROCOrdinary = { status: "amount", amount: 10000 };
+    fixed.strayROCQualifiedAmount = 10000;
+    const fixedInputs = decemberCaseInputs(fixed, "likely", 0);
+    exact(fail, "whole amount stays in ordinary dividends", fixedInputs.ordinaryDividends, 10000);
+    exact(fail, "qualified portion rides the qualified total", fixedInputs.qualifiedDividends, 10000);
+    const fixedPg = pricePlaygroundYear(fixedInputs);
+    exact(fail, "federal tax after fix", fixedPg.federalTax, 8840);
+    exact(fail, "AGI counts the dividend once", fixedPg.agi, 120000);
+    exact(
+      fail,
+      "overstatement corrected",
+      r2(pricePlaygroundYear(beforeInputs).federalTax - fixedPg.federalTax),
+      1200,
+    );
+  });
+
+  run("dec-k1-capgain-zero-identity", (fail) => {
+    // The $0-portion identity: a K-1 amount with a $0 (or
+    // absent) capital-gain portion prices BIT-IDENTICALLY
+    // to before v112 — the figures pinned here are the
+    // pre-fix figures (the F4 control stack: $110,000 of
+    // ordinary income plus a $10,000 K-1 amount →
+    // $10,040.00).
+    const zero = base();
+    zero.ytdOtherOrdinary = 110000;
+    zero.strayK1 = { status: "amount", amount: 10000 };
+    zero.strayK1CapGainAmount = 0;
+    const zeroInputs = decemberCaseInputs(zero, "likely", 0);
+    exact(fail, "$0 portion: whole K-1 in ordinary income", zeroInputs.otherOrdinary, 120000);
+    exact(fail, "$0 portion: no gain on the stock dials", zeroInputs.stockSold, 0);
+    exact(
+      fail,
+      "$0 portion federal tax (pre-fix figure)",
+      pricePlaygroundYear(zeroInputs).federalTax,
+      10040,
+    );
+    // Back-compat: a blob written before the field existed
+    // parses the portion as $0, the default state carries
+    // $0, the writer schema accepts the state, and an
+    // entered portion round-trips through the saved blob.
+    const legacy = parseDecemberState(
+      JSON.stringify({
+        taxYear: 2026,
+        strayK1: { status: "amount", amount: 10000 },
+      }),
+      2026,
+    );
+    if (legacy.strayK1CapGainAmount !== 0) {
+      fail("a legacy blob should parse the K-1 capital-gain portion as $0");
+    }
+    const legacyWithIncome: DecemberState = {
+      ...legacy,
+      ytdOtherOrdinary: 110000,
+    };
+    exact(
+      fail,
+      "legacy blob federal tax (pre-fix figure)",
+      pricePlaygroundYear(decemberCaseInputs(legacyWithIncome, "likely", 0)).federalTax,
+      10040,
+    );
+    if (defaultDecemberState(2026).strayK1CapGainAmount !== 0) {
+      fail("the default state should carry a $0 K-1 capital-gain portion");
+    }
+    if (!decemberState.safeParse(zero).success) {
+      fail("the writer schema should accept a $0 K-1 capital-gain portion");
+    }
+    const entered = base();
+    entered.strayK1 = { status: "amount", amount: 10000 };
+    entered.strayK1CapGainAmount = 3500;
+    const back = parseDecemberState(serializeDecemberState(entered, 2), 2026);
+    if (back.strayK1CapGainAmount !== 3500) {
+      fail("an entered K-1 capital-gain portion should round-trip through the saved blob");
+    }
+  });
+
+  run("dec-roc-qualified-zero-identity", (fail) => {
+    // The $0-portion identity for F5: a reclassified ROC
+    // amount with a $0 (or absent) qualified portion
+    // prices BIT-IDENTICALLY to before v112 — the figures
+    // pinned here are the pre-fix figures (the F5 control
+    // stack: $110,000 of ordinary income plus a $10,000
+    // reclassified dividend → $10,040.00).
+    const zero = base();
+    zero.ytdOtherOrdinary = 110000;
+    zero.strayROCOrdinary = { status: "amount", amount: 10000 };
+    zero.strayROCQualifiedAmount = 0;
+    const zeroInputs = decemberCaseInputs(zero, "likely", 0);
+    exact(fail, "$0 portion: amount in ordinary dividends", zeroInputs.ordinaryDividends, 10000);
+    exact(fail, "$0 portion: nothing qualified", zeroInputs.qualifiedDividends, 0);
+    exact(
+      fail,
+      "$0 portion federal tax (pre-fix figure)",
+      pricePlaygroundYear(zeroInputs).federalTax,
+      10040,
+    );
+    const legacy = parseDecemberState(
+      JSON.stringify({
+        taxYear: 2026,
+        strayROCOrdinary: { status: "amount", amount: 10000 },
+      }),
+      2026,
+    );
+    if (legacy.strayROCQualifiedAmount !== 0) {
+      fail("a legacy blob should parse the ROC qualified portion as $0");
+    }
+    const legacyWithIncome: DecemberState = {
+      ...legacy,
+      ytdOtherOrdinary: 110000,
+    };
+    exact(
+      fail,
+      "legacy blob federal tax (pre-fix figure)",
+      pricePlaygroundYear(decemberCaseInputs(legacyWithIncome, "likely", 0)).federalTax,
+      10040,
+    );
+    if (defaultDecemberState(2026).strayROCQualifiedAmount !== 0) {
+      fail("the default state should carry a $0 ROC qualified portion");
+    }
+    if (!decemberState.safeParse(zero).success) {
+      fail("the writer schema should accept a $0 ROC qualified portion");
+    }
+    const entered = base();
+    entered.strayROCOrdinary = { status: "amount", amount: 10000 };
+    entered.strayROCQualifiedAmount = 2500;
+    const back = parseDecemberState(serializeDecemberState(entered, 2), 2026);
+    if (back.strayROCQualifiedAmount !== 2500) {
+      fail("an entered ROC qualified portion should round-trip through the saved blob");
+    }
+  });
+
+  run("dec-stray-character-combined-no-double-count", (fail) => {
+    // Both splits together on one year: $110,000 of
+    // ordinary income, a $10,000 K-1 amount entirely box
+    // 9a gain, and a $10,000 reclassified ROC dividend
+    // entirely qualified. No double-count at the dial
+    // level: the K-1 total leaves ordinary income exactly
+    // once (it is on the gain dial instead), the ROC
+    // total is in ordinary dividends once with its
+    // qualified subset marked, and the priced AGI counts
+    // each total once — $110,000 + $10,000 + $10,000 =
+    // $130,000. End to end: taxable $97,800; ordinary
+    // taxable $97,800 − ($10,000 gain + $10,000 qualified)
+    // = $77,800 → $8,840.00; the $20,000 preferential
+    // stack fits the 0% room ($98,900 − $77,800 =
+    // $21,100) → $0 → federal tax $8,840.00.
+    const s = base();
+    s.ytdOtherOrdinary = 110000;
+    s.strayK1 = { status: "amount", amount: 10000 };
+    s.strayK1CapGainAmount = 10000;
+    s.strayROCOrdinary = { status: "amount", amount: 10000 };
+    s.strayROCQualifiedAmount = 10000;
+    const inputs = decemberCaseInputs(s, "likely", 0);
+    exact(fail, "ordinary income excludes the K-1 gain portion", inputs.otherOrdinary, 110000);
+    exact(fail, "gain dial carries the K-1 portion", inputs.stockSold, 10000);
+    exact(fail, "ordinary dividends carry the ROC total once", inputs.ordinaryDividends, 10000);
+    exact(fail, "qualified total carries the ROC portion", inputs.qualifiedDividends, 10000);
+    const pg = pricePlaygroundYear(inputs);
+    exact(fail, "combined AGI counts each total once", pg.agi, 130000);
+    exact(fail, "combined federal tax", pg.federalTax, 8840);
+  });
+
+  run("dec-stray-character-clamps", (fail) => {
+    // Clamps: a portion entered above its stray's total
+    // clamps to the total, never an amount on top of it.
+    const overK1 = base();
+    overK1.ytdOtherOrdinary = 110000;
+    overK1.strayK1 = { status: "amount", amount: 10000 };
+    overK1.strayK1CapGainAmount = 25000;
+    const overK1Inputs = decemberCaseInputs(overK1, "likely", 0);
+    exact(fail, "over-entered K-1 portion clamps to the total", overK1Inputs.stockSold, 10000);
+    exact(fail, "fully-gain K-1 leaves no K-1 ordinary", overK1Inputs.otherOrdinary, 110000);
+    exact(
+      fail,
+      "clamped K-1 federal tax",
+      pricePlaygroundYear(overK1Inputs).federalTax,
+      8840,
+    );
+    const overRoc = base();
+    overRoc.ytdOtherOrdinary = 110000;
+    overRoc.strayROCOrdinary = { status: "amount", amount: 10000 };
+    overRoc.strayROCQualifiedAmount = 25000;
+    const overRocInputs = decemberCaseInputs(overRoc, "likely", 0);
+    exact(fail, "over-entered ROC portion clamps to the total", overRocInputs.qualifiedDividends, 10000);
+    exact(fail, "ROC total still counted once", overRocInputs.ordinaryDividends, 10000);
+    exact(
+      fail,
+      "clamped ROC federal tax",
+      pricePlaygroundYear(overRocInputs).federalTax,
+      8840,
+    );
+    // A deductible K-1 LOSS has no gain portion: with a
+    // negative K-1 total the portion field is inert and
+    // the loss reduces ordinary income whole, exactly as
+    // before this build.
+    const loss = base();
+    loss.ytdOtherOrdinary = 110000;
+    loss.strayK1 = { status: "amount", amount: -10000 };
+    loss.strayK1CapGainAmount = 5000;
+    const lossInputs = decemberCaseInputs(loss, "likely", 0);
+    exact(fail, "K-1 loss reduces ordinary income whole", lossInputs.otherOrdinary, 100000);
+    exact(fail, "K-1 loss puts nothing on the gain dials", lossInputs.stockSold, 0);
+  });
+
+  /* ---- Contract v113 fixtures: the gain harvest
+     (round-17 F3) ----
+     The plan march harvests after settlement when its
+     gainsHarvest toggle is on (taxEngine's harvestOn gate);
+     the console now carries the same model: a toggle plus
+     the pool / blended-basis facts, sized inside
+     pricePlaygroundYear by the march's own rule — the
+     largest gain, capped by the pool's unrealized gain,
+     that stays inside the 0% band. */
+
+  run("dec-harvest-f3-acceptance", (fail) => {
+    // The settlement's worked example: 2026 MFJ, ages
+    // 60/58, $65,000 ordinary income, a $40,000 taxable
+    // pool at 75% basis (unrealized gain $10,000), $20,000
+    // benchmark, $10,000 APTC. The 0% room is $98,900 −
+    // $32,800 ordinary taxable = $66,100, so the full
+    // $10,000 harvests: MAGI rises $65,000 → $75,000, the
+    // credit falls by 9.96% × $10,000 = $996, the federal
+    // tax is unchanged (the gain sits in the 0% band), and
+    // the settlement at a $0 draw moves from an $86 refund
+    // to $910 payable.
+    const on = base();
+    on.ytdOtherOrdinary = 65000;
+    on.aptcTaken = 10000;
+    on.harvestOn = true;
+    on.harvestPoolAmount = 40000;
+    on.harvestPoolBasisPct = 75;
+    const pgOn = pricePlaygroundYear(decemberCaseInputs(on, "likely", 0));
+    exact(fail, "harvested gain", pgOn.harvestedGain, 10000);
+    exact(fail, "ACA MAGI with harvest", pgOn.acaMagi, 75000);
+    exact(fail, "credit with harvest", pgOn.aca.credit, 12530);
+    exact(fail, "federal tax unchanged by harvest", pgOn.federalTax, 3440);
+    exact(
+      fail,
+      "settlement at $0 draw with harvest",
+      r2(pgOn.federalTax - (pgOn.aca.credit ?? 0) + on.aptcTaken),
+      910,
+    );
+    const off = base();
+    off.ytdOtherOrdinary = 65000;
+    off.aptcTaken = 10000;
+    const pgOff = pricePlaygroundYear(decemberCaseInputs(off, "likely", 0));
+    exact(fail, "no harvested gain when off", pgOff.harvestedGain, 0);
+    exact(fail, "ACA MAGI without harvest", pgOff.acaMagi, 65000);
+    exact(fail, "credit without harvest", pgOff.aca.credit, 13526);
+    exact(fail, "federal tax without harvest", pgOff.federalTax, 3440);
+    exact(
+      fail,
+      "settlement at $0 draw without harvest",
+      r2(pgOff.federalTax - (pgOff.aca.credit ?? 0) + off.aptcTaken),
+      -86,
+    );
+    // Headline consistency: the solved draw is sized WITH
+    // the harvest included — with the cliff target binding
+    // it shrinks by the harvested gain ($14,600 off →
+    // $4,600 on), and each case names its harvested gain.
+    const projOn = computeDecemberProjection(on);
+    const projOff = computeDecemberProjection(off);
+    near(fail, "headline draw without harvest", projOff.headlineDraw, 14600);
+    near(fail, "headline draw with harvest", projOn.headlineDraw, 4600);
+    const likelyOn = projOn.cases[1]!;
+    exact(fail, "case harvested gain at $0 draw", likelyOn.harvestedGainAtZeroDraw, 10000);
+    exact(fail, "case harvested gain at headline", likelyOn.harvestedGainAtHeadline, 10000);
+    near(fail, "MAGI at headline with harvest", likelyOn.magiAtHeadline, 79600);
+    if (likelyOn.gainHarvestUnpriced) {
+      fail("a fully-facted harvest must not carry the unpriced qualification");
+    }
+  });
+
+  run("dec-harvest-off-identity", (fail) => {
+    // Harvest OFF (the default) prices bit-identically to
+    // before this build — including when the pool facts
+    // are entered but the toggle is off (the facts are
+    // dormant: decemberCaseInputs passes the dials absent).
+    const plain = base();
+    plain.ytdOtherOrdinary = 65000;
+    const dormant = base();
+    dormant.ytdOtherOrdinary = 65000;
+    dormant.harvestOn = false;
+    dormant.harvestPoolAmount = 40000;
+    dormant.harvestPoolBasisPct = 75;
+    const a = computeDecemberProjection(plain);
+    const b = computeDecemberProjection(dormant);
+    if (b.headlineDraw !== a.headlineDraw) {
+      fail(`headline draw identical: got ${b.headlineDraw}, want ${a.headlineDraw}`);
+    }
+    for (let i = 0; i < 3; i++) {
+      exact(fail, `case ${i} MAGI identical`, b.cases[i]!.magiAtHeadline, a.cases[i]!.magiAtHeadline);
+      exact(fail, `case ${i} federal tax identical`, b.cases[i]!.federalTaxAtHeadline, a.cases[i]!.federalTaxAtHeadline);
+      if (b.cases[i]!.netSettleAtHeadline !== a.cases[i]!.netSettleAtHeadline) {
+        fail(`case ${i} settlement identical: got ${b.cases[i]!.netSettleAtHeadline}, want ${a.cases[i]!.netSettleAtHeadline}`);
+      }
+      exact(fail, `case ${i} harvested gain`, b.cases[i]!.harvestedGainAtHeadline, 0);
+    }
+    // A legacy blob (written before the harvest fields
+    // existed) parses them at their inert defaults, and
+    // the writer schema accepts both shapes.
+    const legacy = JSON.parse(
+      serializeDecemberState(defaultDecemberState(2026), 0),
+    ) as Record<string, unknown>;
+    delete legacy.harvestOn;
+    delete legacy.harvestPoolAmount;
+    delete legacy.harvestPoolBasisPct;
+    const parsed = parseDecemberState(JSON.stringify(legacy), 2026);
+    if (parsed.harvestOn !== false) fail("legacy blob should parse harvest off");
+    if (parsed.harvestPoolAmount !== null) fail("legacy blob should parse the pool as no input");
+    if (parsed.harvestPoolBasisPct !== null) fail("legacy blob should parse the basis as no input");
+    if (!decemberState.safeParse(defaultDecemberState(2026)).success) {
+      fail("the writer schema should accept the default state");
+    }
+    if (!decemberState.safeParse(dormant).success) {
+      fail("the writer schema should accept entered harvest facts");
+    }
+    // An out-of-range basis % in a blob reads leniently as
+    // no input, never as a priced fact.
+    const badBasis = parseDecemberState(
+      JSON.stringify({ harvestPoolBasisPct: 140 }),
+      2026,
+    );
+    if (badBasis.harvestPoolBasisPct !== null) {
+      fail("a basis % above 100 should parse as no input");
+    }
+  });
+
+  run("dec-harvest-no-facts-qualification", (fail) => {
+    // Harvest ON with no pool / basis facts anywhere: no
+    // harvest is priced (the figures are the harvest-off
+    // figures, bit-identically), and every case carries
+    // the gain-harvest-unpriced qualification with a
+    // warning naming it — never a silent $0.
+    const on = base();
+    on.ytdOtherOrdinary = 65000;
+    on.harvestOn = true;
+    const proj = computeDecemberProjection(on);
+    const offProj = computeDecemberProjection({ ...on, harvestOn: false });
+    if (proj.headlineDraw !== offProj.headlineDraw) {
+      fail(`headline identical to off: got ${proj.headlineDraw}, want ${offProj.headlineDraw}`);
+    }
+    for (let i = 0; i < 3; i++) {
+      if (!proj.cases[i]!.gainHarvestUnpriced) {
+        fail(`case ${i} should carry the unpriced qualification`);
+      }
+      exact(fail, `case ${i} harvested gain`, proj.cases[i]!.harvestedGainAtZeroDraw, 0);
+      exact(fail, `case ${i} MAGI identical to off`, proj.cases[i]!.magiAtHeadline, offProj.cases[i]!.magiAtHeadline);
+      if (proj.cases[i]!.netSettleAtHeadline !== offProj.cases[i]!.netSettleAtHeadline) {
+        fail(`case ${i} settlement identical to off: got ${proj.cases[i]!.netSettleAtHeadline}, want ${offProj.cases[i]!.netSettleAtHeadline}`);
+      }
+    }
+    if (!proj.warnings.some((w) => w.includes("excludes gain harvesting"))) {
+      fail("the projection warnings should name the excluded harvest");
+    }
+    // One missing fact is enough: pool entered, basis not.
+    const partial = computeDecemberProjection({
+      ...on,
+      harvestPoolAmount: 40000,
+    });
+    if (!partial.cases[1]!.gainHarvestUnpriced) {
+      fail("a missing basis fact should still carry the qualification");
+    }
+    // An entered $0 pool IS a fact: the harvest prices
+    // (at $0) and no qualification is carried.
+    const zeroPool = computeDecemberProjection({
+      ...on,
+      harvestPoolAmount: 0,
+      harvestPoolBasisPct: 75,
+    });
+    if (zeroPool.cases[1]!.gainHarvestUnpriced) {
+      fail("an entered $0 pool should price, not qualify");
+    }
+    exact(fail, "$0 pool harvests $0", zeroPool.cases[1]!.harvestedGainAtZeroDraw, 0);
+    if (zeroPool.warnings.some((w) => w.includes("excludes gain harvesting"))) {
+      fail("an entered $0 pool should not warn about an excluded harvest");
+    }
+    // A 100% basis is likewise a priced fact ($0 gain).
+    const fullBasis = computeDecemberProjection({
+      ...on,
+      harvestPoolAmount: 40000,
+      harvestPoolBasisPct: 100,
+    });
+    if (fullBasis.cases[1]!.gainHarvestUnpriced) {
+      fail("an entered 100% basis should price, not qualify");
+    }
+    exact(fail, "100% basis harvests $0", fullBasis.cases[1]!.harvestedGainAtZeroDraw, 0);
+  });
+
+  run("dec-harvest-room-binding", (fail) => {
+    // When the pool's unrealized gain exceeds the 0%
+    // band, the ROOM caps the harvest, not the pool: a
+    // $500,000 pool at 0% basis over $65,000 of ordinary
+    // income harvests exactly the $66,100 of room
+    // ($98,900 0% top − $32,800 ordinary taxable income),
+    // leaves no 0% room, and still pays no gains tax.
+    const s = base();
+    s.ytdOtherOrdinary = 65000;
+    s.harvestOn = true;
+    s.harvestPoolAmount = 500000;
+    s.harvestPoolBasisPct = 0;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "harvest capped by the 0% room", pg.harvestedGain, 66100);
+    exact(fail, "no 0% room left", pg.gainsZeroRoomLeft, 0);
+    exact(fail, "nothing priced at 15%", pg.gainsAt15, 0);
+    exact(fail, "federal tax is the ordinary tax alone", pg.federalTax, 3440);
+    exact(fail, "MAGI carries the full harvest", pg.acaMagi, 131100);
+    // The same room binds from the gains side: with
+    // $60,000 of the year's own gains already in the band,
+    // only the remaining $6,100 of room harvests.
+    const own = base();
+    own.ytdOtherOrdinary = 65000;
+    own.ytdCapitalGain = 60000;
+    own.harvestOn = true;
+    own.harvestPoolAmount = 500000;
+    own.harvestPoolBasisPct = 0;
+    const pgOwn = pricePlaygroundYear(decemberCaseInputs(own, "likely", 0));
+    exact(fail, "harvest takes only the room the year's own gains leave", pgOwn.harvestedGain, 6100);
+  });
+
+  run("dec-harvest-carryforward-interaction", (fail) => {
+    // The entering carryforward absorbs harvested gains
+    // first (the march's ledgerFields nets the total
+    // including the harvest): a $20,000 long-term
+    // carry-in absorbs the full $10,000 harvest, so the
+    // priced year shows no gain at all — MAGI moves only
+    // by the $3,000 allowance — and the carry-out is the
+    // entering balance less the absorbed harvest and the
+    // used allowance.
+    const s = base();
+    s.ytdOtherOrdinary = 65000;
+    s.carryInCapitalLossLt = 20000;
+    s.harvestOn = true;
+    s.harvestPoolAmount = 40000;
+    s.harvestPoolBasisPct = 75;
+    const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    exact(fail, "harvest still realized gross", pg.harvestedGain, 10000);
+    exact(fail, "priced net gain after absorption", pg.ltcgNet, -10000);
+    exact(fail, "MAGI moves by the allowance alone", pg.acaMagi, 62000);
+    exact(fail, "federal tax on the absorbed year", pg.federalTax, 3080);
+    exact(fail, "carry-out after absorption and used allowance", pg.lossCarryOutLt, 7000);
+    // Control: the same carry-in with NO harvest — the
+    // year's own result is $0, so only the allowance is
+    // consumed and $17,000 carries out.
+    const control = base();
+    control.ytdOtherOrdinary = 65000;
+    control.carryInCapitalLossLt = 20000;
+    const pgControl = pricePlaygroundYear(decemberCaseInputs(control, "likely", 0));
+    exact(fail, "control MAGI", pgControl.acaMagi, 62000);
+    exact(fail, "control carry-out", pgControl.lossCarryOutLt, 17000);
+    // And the same harvest with NO carry-in prices the
+    // full gain into MAGI (the F3 acceptance shape).
+    const noCarry = base();
+    noCarry.ytdOtherOrdinary = 65000;
+    noCarry.harvestOn = true;
+    noCarry.harvestPoolAmount = 40000;
+    noCarry.harvestPoolBasisPct = 75;
+    const pgNoCarry = pricePlaygroundYear(decemberCaseInputs(noCarry, "likely", 0));
+    exact(fail, "unabsorbed harvest reaches MAGI whole", pgNoCarry.acaMagi, 75000);
+  });
+
+  run("dec-harvest-resolution-and-save-rules", (fail) => {
+    // Load resolution (v113): the record's pool facts are
+    // balance facts, so they resolve into null console
+    // fields in ANY year (no first-year gate, unlike the
+    // carry-in); per field, null resolves and any entered
+    // value (including a $0 pool) wins. Save derivation:
+    // an unedited harvest saves its STORED values, never
+    // the resolved overlay.
+    const facts: DecemberRecordFacts = {
+      harvestPoolAmount: 40000,
+      harvestPoolBasisPct: 75,
+    };
+    const fresh = defaultDecemberState(2026);
+    const resolved = resolveDecemberStateAtLoad(fresh, facts);
+    exact(fail, "resolved pool", resolved.harvestPoolAmount, 40000);
+    exact(fail, "resolved basis", resolved.harvestPoolBasisPct, 75);
+    const otherYear = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), taxYear: 2027 },
+      facts,
+    );
+    exact(fail, "pool resolves in any year", otherYear.harvestPoolAmount, 40000);
+    exact(fail, "basis resolves in any year", otherYear.harvestPoolBasisPct, 75);
+    const entered = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), harvestPoolAmount: 0 },
+      facts,
+    );
+    exact(fail, "entered $0 pool wins", entered.harvestPoolAmount, 0);
+    exact(fail, "unanswered basis still resolves", entered.harvestPoolBasisPct, 75);
+    const silent = resolveDecemberStateAtLoad(fresh, {});
+    if (silent.harvestPoolAmount !== null || silent.harvestPoolBasisPct !== null) {
+      fail("a record that does not answer should leave the facts null");
+    }
+    // The toggle never resolves from the record.
+    if (resolved.harvestOn !== false) {
+      fail("load resolution must never switch the harvest toggle on");
+    }
+    const stored = decemberStoredProvenanceOf(fresh);
+    const savedOverlay = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+    });
+    if (savedOverlay.harvestPoolAmount !== null || savedOverlay.harvestPoolBasisPct !== null) {
+      fail("an unedited save should persist the stored (null) harvest facts, not the overlay");
+    }
+    const savedEdited = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+      harvest: true,
+    });
+    exact(fail, "an edited save persists the console pool", savedEdited.harvestPoolAmount, 40000);
+    exact(fail, "an edited save persists the console basis", savedEdited.harvestPoolBasisPct, 75);
+    if (!decemberState.safeParse(resolved).success) {
+      fail("the writer schema should accept resolved harvest facts");
+    }
+  });
 
   return {
     total: results.length,

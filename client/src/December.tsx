@@ -72,6 +72,23 @@ type DecForm = {
   ytdQualifiedDividends: string;
   ytdTaxExemptInterest: string;
   ytdCapitalGain: string;
+  // Capital losses carried into this year (contract v111):
+  // nullable money like the balances — null (blank) and $0
+  // are distinct facts (no input yet vs explicitly none),
+  // so these four convert through the nullable-money pair.
+  carryInCapitalLossSt: string;
+  carryInCapitalLossLt: string;
+  carryInCapitalLossStWa: string;
+  carryInCapitalLossLtWa: string;
+  // Gain harvest (contract v113): the toggle is a plain
+  // boolean; the pool amount is nullable money like the
+  // carry-in fields (blank vs $0 are distinct facts), and
+  // the basis % is a plain string where blank = no input
+  // yet (null in the state) and any entered number —
+  // 100 included — is a fact.
+  harvestOn: boolean;
+  harvestPoolAmount: string;
+  harvestPoolBasisPct: string;
   ytdSsPrimary: string;
   ytdSsSpouse: string;
   remCapDist: RangeForm;
@@ -106,6 +123,10 @@ type DecForm = {
   educationStudents: { expenses: string; aotcEligible: boolean }[];
   strayCapDist: StrayForm;
   strayK1: StrayForm;
+  // Long-term-capital-gain portion of the K-1 total
+  // (contract v112): a plain money string like the
+  // January-paid portions beside it.
+  strayK1CapGainAmount: string;
   strayTaxExempt: StrayForm;
   strayDependent: StrayForm;
   straySeverance: StrayForm;
@@ -121,6 +142,10 @@ type DecForm = {
   strayPlannedSales: StrayForm;
   strayROC: StrayForm;
   strayROCOrdinary: StrayForm;
+  // Qualified-dividends portion of the reclassified
+  // return-of-capital amount (contract v112): a plain
+  // money string like the January-paid portions.
+  strayROCQualifiedAmount: string;
   strayAgiReducers: StrayForm;
   strayCoverage: StrayForm;
   strayTradeDate: StrayForm;
@@ -154,6 +179,66 @@ function recordFactsOf(
     pretaxBalancePrimary: primaryCents != null ? primaryCents / 100 : null,
     pretaxBalanceSpouse:
       s?.pretaxSpouseCents != null ? s.pretaxSpouseCents / 100 : null,
+    // The record's entering capital-loss carryforward
+    // (v111): the record's capitalLossCarryIn* Cents
+    // converted to dollars, plus planFirstYear — the
+    // record's execution year, the year that carry-in
+    // enters. Load resolution applies the carry-in only
+    // when the December year is that year. Null per field
+    // when the record does not answer.
+    carryInCapitalLossSt:
+      s?.capitalLossCarryInStCents != null
+        ? s.capitalLossCarryInStCents / 100
+        : null,
+    carryInCapitalLossLt:
+      s?.capitalLossCarryInLtCents != null
+        ? s.capitalLossCarryInLtCents / 100
+        : null,
+    carryInCapitalLossStWa:
+      s?.capitalLossCarryInStWaCents != null
+        ? s.capitalLossCarryInStWaCents / 100
+        : null,
+    carryInCapitalLossLtWa:
+      s?.capitalLossCarryInLtWaCents != null
+        ? s.capitalLossCarryInLtWaCents / 100
+        : null,
+    planFirstYear: data?.execution?.executionYear ?? null,
+    // The record's taxable-pool facts (v113): the pool the
+    // plan march draws on — the record's entered taxable
+    // balance when it carries one, otherwise the snapshot-
+    // followed pool (Taxable + Cash buckets, less any
+    // exclude-from-plan amount), exactly the pool
+    // resolvePlanBalances assembles — and its basis: the
+    // blended % of the record's basis tiers when it carries
+    // tiers (Σ share × basis ÷ Σ share), otherwise its
+    // entered basis %. A blank basis (no % and no tiers)
+    // does not answer — the march's harvest is inert there
+    // too. Null per field when the record does not answer.
+    harvestPoolAmount:
+      s?.taxableCents != null
+        ? s.taxableCents / 100
+        : data?.snapshot != null &&
+            (data.snapshot.taxableCents != null ||
+              data.snapshot.cashCents != null)
+          ? Math.max(
+              0,
+              (data.snapshot.taxableCents ?? 0) +
+                (data.snapshot.cashCents ?? 0) -
+                Math.max(0, s?.taxableExcludeCents ?? 0),
+            ) / 100
+          : null,
+    harvestPoolBasisPct: (() => {
+      const tiers = s?.taxableTiers;
+      if (tiers != null && tiers.length > 0) {
+        const shareSum = tiers.reduce((a, t) => a + t.sharePct, 0);
+        if (shareSum > 0) {
+          return (
+            tiers.reduce((a, t) => a + t.sharePct * t.basisPct, 0) / shareSum
+          );
+        }
+      }
+      return s?.taxableBasisPct ?? null;
+    })(),
     // The record's entered education students for the
     // December tax year (v103): the record's per-year
     // cents entries filtered to that year and converted
@@ -209,6 +294,17 @@ function formFromState(s: DecemberState): DecForm {
     ytdQualifiedDividends: moneyStr(s.ytdQualifiedDividends),
     ytdTaxExemptInterest: moneyStr(s.ytdTaxExemptInterest),
     ytdCapitalGain: moneyStr(s.ytdCapitalGain),
+    // Carry-in losses render through the nullable-money
+    // converter like the balances: null shows blank, an
+    // entered $0 shows "0" — the distinction is a fact.
+    carryInCapitalLossSt: decemberNullableMoneyFormValue(s.carryInCapitalLossSt),
+    carryInCapitalLossLt: decemberNullableMoneyFormValue(s.carryInCapitalLossLt),
+    carryInCapitalLossStWa: decemberNullableMoneyFormValue(s.carryInCapitalLossStWa),
+    carryInCapitalLossLtWa: decemberNullableMoneyFormValue(s.carryInCapitalLossLtWa),
+    harvestOn: s.harvestOn,
+    harvestPoolAmount: decemberNullableMoneyFormValue(s.harvestPoolAmount),
+    harvestPoolBasisPct:
+      s.harvestPoolBasisPct == null ? "" : String(s.harvestPoolBasisPct),
     ytdSsPrimary: moneyStr(s.ytdSsPrimary),
     ytdSsSpouse: moneyStr(s.ytdSsSpouse),
     remCapDist: rg(s.remCapDist),
@@ -244,6 +340,7 @@ function formFromState(s: DecemberState): DecForm {
     })),
     strayCapDist: st(s.strayCapDist),
     strayK1: st(s.strayK1),
+    strayK1CapGainAmount: moneyStr(s.strayK1CapGainAmount),
     strayTaxExempt: st(s.strayTaxExempt),
     strayDependent: st(s.strayDependent),
     straySeverance: st(s.straySeverance),
@@ -256,6 +353,7 @@ function formFromState(s: DecemberState): DecForm {
     strayPlannedSales: st(s.strayPlannedSales),
     strayROC: st(s.strayROC),
     strayROCOrdinary: st(s.strayROCOrdinary),
+    strayROCQualifiedAmount: moneyStr(s.strayROCQualifiedAmount),
     strayAgiReducers: st(s.strayAgiReducers),
     strayCoverage: st(s.strayCoverage),
     strayTradeDate: st(s.strayTradeDate),
@@ -307,6 +405,31 @@ function stateFromForm(f: DecForm): DecemberState {
     ytdQualifiedDividends: clamp0(parseMoney(f.ytdQualifiedDividends)),
     ytdTaxExemptInterest: clamp0(parseMoney(f.ytdTaxExemptInterest)),
     ytdCapitalGain: parseMoney(f.ytdCapitalGain),
+    carryInCapitalLossSt: (() => {
+      const n = decemberNullableMoneyFromFormValue(f.carryInCapitalLossSt);
+      return n == null ? null : clamp0(n);
+    })(),
+    carryInCapitalLossLt: (() => {
+      const n = decemberNullableMoneyFromFormValue(f.carryInCapitalLossLt);
+      return n == null ? null : clamp0(n);
+    })(),
+    carryInCapitalLossStWa: (() => {
+      const n = decemberNullableMoneyFromFormValue(f.carryInCapitalLossStWa);
+      return n == null ? null : clamp0(n);
+    })(),
+    carryInCapitalLossLtWa: (() => {
+      const n = decemberNullableMoneyFromFormValue(f.carryInCapitalLossLtWa);
+      return n == null ? null : clamp0(n);
+    })(),
+    harvestOn: f.harvestOn,
+    harvestPoolAmount: (() => {
+      const n = decemberNullableMoneyFromFormValue(f.harvestPoolAmount);
+      return n == null ? null : clamp0(n);
+    })(),
+    harvestPoolBasisPct:
+      f.harvestPoolBasisPct.trim() === ""
+        ? null
+        : Math.min(100, clamp0(parseMoney(f.harvestPoolBasisPct))),
     ytdSsPrimary: clamp0(parseMoney(f.ytdSsPrimary)),
     ytdSsSpouse: f.filingStatus === "mfj" ? clamp0(parseMoney(f.ytdSsSpouse)) : 0,
     remCapDist: rg0(f.remCapDist),
@@ -363,6 +486,7 @@ function stateFromForm(f: DecForm): DecemberState {
     })),
     strayCapDist: st(f.strayCapDist),
     strayK1: stSigned(f.strayK1),
+    strayK1CapGainAmount: clamp0(parseMoney(f.strayK1CapGainAmount)),
     strayTaxExempt: st(f.strayTaxExempt),
     strayDependent: st(f.strayDependent),
     straySeverance: st(f.straySeverance),
@@ -375,6 +499,7 @@ function stateFromForm(f: DecForm): DecemberState {
     strayPlannedSales: st(f.strayPlannedSales),
     strayROC: st(f.strayROC),
     strayROCOrdinary: st(f.strayROCOrdinary),
+    strayROCQualifiedAmount: clamp0(parseMoney(f.strayROCQualifiedAmount)),
     strayAgiReducers: st(f.strayAgiReducers),
     strayCoverage: st(f.strayCoverage),
     strayTradeDate: st(f.strayTradeDate),
@@ -436,6 +561,8 @@ export function December() {
       setRocCharacterEdited(false);
       setJanPaidCharacterEdited(false);
       setEducationEdited(false);
+      setCarryInEdited(false);
+      setHarvestEdited(false);
       setForm(
         formFromState(
           resolveDecemberStateAtLoad(
@@ -474,6 +601,12 @@ export function December() {
     legacyRocSplitUnconfirmed: false,
     legacyJanPaidSplitUnconfirmed: false,
     educationStudents: null,
+    carryInCapitalLossSt: null,
+    carryInCapitalLossLt: null,
+    carryInCapitalLossStWa: null,
+    carryInCapitalLossLtWa: null,
+    harvestPoolAmount: null,
+    harvestPoolBasisPct: null,
   });
   const [beneficiaryEdited, setBeneficiaryEdited] = useState(false);
   const [balancesEdited, setBalancesEdited] = useState(false);
@@ -484,6 +617,21 @@ export function December() {
   // first-open preseed's stored value) is what governs,
   // exactly like the beneficiary fact.
   const [educationEdited, setEducationEdited] = useState(false);
+  // Carry-in provenance (v111): whether the user has
+  // edited the capital-loss carry-in controls in this
+  // console since hydration — until then a save preserves
+  // the stored carry-in values, so a Tax Plan record
+  // overlay for the plan's first year is displayed and
+  // priced but never becomes the console's saved answer.
+  const [carryInEdited, setCarryInEdited] = useState(false);
+  // Harvest provenance (v113): whether the user has edited
+  // the harvest pool / basis controls in this console since
+  // hydration — until then a save preserves the stored pool
+  // facts, so a Tax Plan record overlay is displayed and
+  // priced but never becomes the console's saved answer.
+  // The toggle itself is not provenance: it always saves as
+  // displayed.
+  const [harvestEdited, setHarvestEdited] = useState(false);
   // Round-6: whether the user has edited each tax-
   // character control in this console since hydration —
   // the matching legacy character flag clears only on
@@ -529,6 +677,12 @@ export function December() {
       !decQ.data.hasStored ||
       decQ.data.state.primarySoleBeneficiaryOfSpouse == null ||
       decQ.data.state.educationStudents == null ||
+      decQ.data.state.carryInCapitalLossSt == null ||
+      decQ.data.state.carryInCapitalLossLt == null ||
+      decQ.data.state.carryInCapitalLossStWa == null ||
+      decQ.data.state.carryInCapitalLossLtWa == null ||
+      decQ.data.state.harvestPoolAmount == null ||
+      decQ.data.state.harvestPoolBasisPct == null ||
       (!decQ.data.state.pretaxSplitExplicit &&
         decQ.data.state.pretaxBalance != null);
     if (needsRecord && rothQ.isPending) return;
@@ -543,6 +697,8 @@ export function December() {
     setRocCharacterEdited(false);
     setJanPaidCharacterEdited(false);
     setEducationEdited(false);
+    setCarryInEdited(false);
+    setHarvestEdited(false);
     let initial = formFromState(
       decQ.data.hasStored
         ? resolveDecemberStateAtLoad(
@@ -650,6 +806,49 @@ export function December() {
               expenses: fmtMoneyInput(e.expensesCents / 100),
               aotcEligible: e.aotcEligible === true,
             })),
+          // Capital losses carried in (v111): the record's
+          // carry-in is the balance entering the plan's
+          // FIRST year, so it preseeds ONLY when the
+          // December year is that year (the record's
+          // execution year). In any other year the fields
+          // keep their blank (no input yet) default.
+          ...(rothQ.data.execution?.executionYear === year
+            ? {
+                carryInCapitalLossSt:
+                  s.capitalLossCarryInStCents != null
+                    ? decemberNullableMoneyFormValue(s.capitalLossCarryInStCents / 100)
+                    : initial.carryInCapitalLossSt,
+                carryInCapitalLossLt:
+                  s.capitalLossCarryInLtCents != null
+                    ? decemberNullableMoneyFormValue(s.capitalLossCarryInLtCents / 100)
+                    : initial.carryInCapitalLossLt,
+                carryInCapitalLossStWa:
+                  s.capitalLossCarryInStWaCents != null
+                    ? decemberNullableMoneyFormValue(s.capitalLossCarryInStWaCents / 100)
+                    : initial.carryInCapitalLossStWa,
+                carryInCapitalLossLtWa:
+                  s.capitalLossCarryInLtWaCents != null
+                    ? decemberNullableMoneyFormValue(s.capitalLossCarryInLtWaCents / 100)
+                    : initial.carryInCapitalLossLtWa,
+              }
+            : {}),
+          // Gain-harvest pool facts (v113): the record's
+          // taxable pool and blended basis preseed the
+          // harvest section's facts (the toggle itself stays
+          // off — preseeding facts never switches a strategy
+          // on). Balance facts, so no first-year gate.
+          harvestPoolAmount: (() => {
+            const facts = recordFactsOf(rothQ.data, year);
+            return facts.harvestPoolAmount != null
+              ? decemberNullableMoneyFormValue(facts.harvestPoolAmount)
+              : initial.harvestPoolAmount;
+          })(),
+          harvestPoolBasisPct: (() => {
+            const facts = recordFactsOf(rothQ.data, year);
+            return facts.harvestPoolBasisPct != null
+              ? String(facts.harvestPoolBasisPct)
+              : initial.harvestPoolBasisPct;
+          })(),
         };
       }
     }
@@ -677,6 +876,19 @@ export function December() {
         // console's own stored values on the first save —
         // they are its initial entries, like the balances.
         educationStudents: preseeded.educationStudents,
+        // The preseeded carry-in values likewise become
+        // this console's own stored values (v111) — they
+        // are its initial entries, seeded only when the
+        // December year is the plan's first year.
+        carryInCapitalLossSt: preseeded.carryInCapitalLossSt,
+        carryInCapitalLossLt: preseeded.carryInCapitalLossLt,
+        carryInCapitalLossStWa: preseeded.carryInCapitalLossStWa,
+        carryInCapitalLossLtWa: preseeded.carryInCapitalLossLtWa,
+        // The preseeded harvest pool facts likewise become
+        // this console's own stored values (v113) — they are
+        // its initial entries, like the balances.
+        harvestPoolAmount: preseeded.harvestPoolAmount,
+        harvestPoolBasisPct: preseeded.harvestPoolBasisPct,
       };
     }
     setForm(initial);
@@ -709,6 +921,8 @@ export function December() {
             rocCharacter: rocCharacterEdited,
             janPaidCharacter: janPaidCharacterEdited,
             education: educationEdited,
+            carryIn: carryInEdited,
+            harvest: harvestEdited,
           },
         ),
         {
@@ -1002,6 +1216,11 @@ export function December() {
                       "Refundable education credit (AOTC)",
                       `−${fmtDollars(likelyCase.educationRefundableAtHeadline)}`,
                     )}
+                  {likelyCase.harvestedGainAtHeadline > 0 &&
+                    billRow(
+                      "Gain harvested into the 0% band",
+                      fmtDollars(likelyCase.harvestedGainAtHeadline),
+                    )}
                   {likelyCase.excessAptcRepayment != null &&
                     likelyCase.excessAptcRepayment > 0 &&
                     billRow(
@@ -1050,6 +1269,15 @@ export function December() {
                     Credit and the Lifetime Learning Credit are not priced in
                     it. It is not a final settlement if anyone in the household
                     paid qualified education expenses this year.
+                  </p>
+                )}
+                {likelyCase.gainHarvestUnpriced && (
+                  <p className="mt-2 text-sm text-[var(--warn)]" role="note">
+                    This settlement excludes gain harvesting — harvesting is
+                    switched on in the Gain harvest section below, but no
+                    taxable pool or basis is entered, so no harvest is priced
+                    in it. It is not a final settlement if the plan harvests
+                    gains this year.
                   </p>
                 )}
                 <p className="mt-2 text-xs text-[var(--dim)]">
@@ -1149,10 +1377,44 @@ export function December() {
                         {fmtDollars(c.educationRefundableAtHeadline)}
                       </p>
                     )}
+                    {c.lossCarryOutStAtHeadline + c.lossCarryOutLtAtHeadline > 0 && (
+                      <p className="tnum mt-1 text-sm">
+                        Loss carried into next year:{" "}
+                        {fmtDollars(
+                          c.lossCarryOutStAtHeadline + c.lossCarryOutLtAtHeadline,
+                        )}{" "}
+                        — long-term {fmtDollars(c.lossCarryOutLtAtHeadline)},
+                        short-term {fmtDollars(c.lossCarryOutStAtHeadline)}
+                      </p>
+                    )}
+                    {c.lossCarryOutStWaAtHeadline + c.lossCarryOutLtWaAtHeadline > 0 && (
+                      <p className="tnum mt-1 text-sm">
+                        Of that, the Washington-attributable part is{" "}
+                        {fmtDollars(
+                          c.lossCarryOutStWaAtHeadline + c.lossCarryOutLtWaAtHeadline,
+                        )}
+                        {c.lossCarryOutLtWaAtHeadline > 0 &&
+                          ` — long-term ${fmtDollars(c.lossCarryOutLtWaAtHeadline)}`}
+                        {c.lossCarryOutStWaAtHeadline > 0 &&
+                          `${c.lossCarryOutLtWaAtHeadline > 0 ? ", " : " — "}short-term ${fmtDollars(c.lossCarryOutStWaAtHeadline)}`}
+                      </p>
+                    )}
+                    {c.harvestedGainAtHeadline > 0 && (
+                      <p className="tnum mt-1 text-sm">
+                        Gain harvested into the 0% band:{" "}
+                        {fmtDollars(c.harvestedGainAtHeadline)}
+                      </p>
+                    )}
                     {c.excludesEducationCredits && (
                       <p className="mt-1 text-sm text-[var(--warn)]" role="note">
                         Excludes education credits — no education expenses
                         entered.
+                      </p>
+                    )}
+                    {c.gainHarvestUnpriced && (
+                      <p className="mt-1 text-sm text-[var(--warn)]" role="note">
+                        Excludes gain harvesting — switched on, but no
+                        taxable pool / basis entered.
                       </p>
                     )}
                     {c.overCliffEvenAtZero && (
@@ -1422,6 +1684,109 @@ export function December() {
         </div>
       </section>
 
+      {/* Capital losses carried into this year (contract v111) */}
+      <section className={sectionCls} aria-label="Capital losses carried into this year">
+        <h3 className="text-base font-semibold">Capital losses carried into this year</h3>
+        <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+          A capital-loss carryforward is a net capital loss from an earlier year that
+          wasn&rsquo;t used up — the unused part carries forward into this year. Enter
+          the short-term and long-term amounts still unused as this year begins. The
+          console nets them against this year&rsquo;s gains, then applies up to $3,000
+          of what is left against ordinary income for the year. Anything still unused
+          carries into next year and is shown on the case cards above. Leave a field
+          blank if it hasn&rsquo;t been entered yet; enter 0 when there is none.
+        </p>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {moneyField("Short-term loss carried in", form.carryInCapitalLossSt, (v) => {
+            setCarryInEdited(true);
+            edit((f) => ({ ...f, carryInCapitalLossSt: v }));
+          },
+          { idLabel: "December carry-in short-term loss" },
+          )}
+          {moneyField("Long-term loss carried in", form.carryInCapitalLossLt, (v) => {
+            setCarryInEdited(true);
+            edit((f) => ({ ...f, carryInCapitalLossLt: v }));
+          },
+          { idLabel: "December carry-in long-term loss" },
+          )}
+          {moneyField("Of the short-term loss, the Washington part", form.carryInCapitalLossStWa, (v) => {
+            setCarryInEdited(true);
+            edit((f) => ({ ...f, carryInCapitalLossStWa: v }));
+          },
+          { idLabel: "December carry-in short-term loss Washington part", hint: "Only the part of the loss that came from sales allocated to Washington — that part alone can reduce the Washington capital-gains tax base, and only when this year’s gains actually absorb it." },
+          )}
+          {moneyField("Of the long-term loss, the Washington part", form.carryInCapitalLossLtWa, (v) => {
+            setCarryInEdited(true);
+            edit((f) => ({ ...f, carryInCapitalLossLtWa: v }));
+          },
+          { idLabel: "December carry-in long-term loss Washington part", hint: "The Washington-allocated part of the long-term loss above." },
+          )}
+        </div>
+      </section>
+
+      {/* Gain harvest (contract v113) */}
+      <section className={sectionCls} aria-label="Gain harvest">
+        <h3 className="text-base font-semibold">Gain harvest</h3>
+        <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+          Gain harvesting means selling taxable investments on purpose to realize
+          long-term gains that land inside the 0% capital-gains band — the part of
+          the gains stack taxed at 0% — and buying them back at the higher basis.
+          Inside the band the harvest costs no extra federal tax, but every
+          harvested dollar still counts as income: it raises MAGI, shrinks the ACA
+          premium credit, and shrinks the safe December draw above by the same
+          amount, because the draw is sized with the harvest included. When this
+          is switched on, the console sizes the harvest the way the Tax Plan does:
+          the largest gain that stays inside the 0% band, capped by the pool&rsquo;s
+          unrealized gain (the pool less its basis). An entering capital-loss
+          carryforward above absorbs harvested gains first, exactly as it absorbs
+          any other gain.
+        </p>
+        <div className="mt-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              aria-label="Harvest gains into the 0% bracket"
+              checked={form.harvestOn}
+              onChange={(e) => set("harvestOn", e.target.checked)}
+            />
+            Harvest gains into the 0% bracket this year
+          </label>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {moneyField("Taxable pool available to sell", form.harvestPoolAmount, (v) => {
+            setHarvestEdited(true);
+            edit((f) => ({ ...f, harvestPoolAmount: v }));
+          },
+          { idLabel: "December harvest pool", hint: "The whole taxable pool the harvest can sell from — taxable investments plus cash, the pool the Tax Plan draws on. Leave blank if it hasn’t been entered yet; enter 0 when there is no pool." },
+          )}
+          {pctField("Basis — % of the pool already taxed", form.harvestPoolBasisPct, (v) => {
+            setHarvestEdited(true);
+            edit((f) => ({ ...f, harvestPoolBasisPct: v }));
+          },
+          { idLabel: "December harvest basis percent", hint: "The share of the pool that is already-taxed basis. The rest is unrealized gain — the most the harvest can realize. Leave blank if it hasn’t been entered yet; 100% means no gain to harvest." },
+          )}
+        </div>
+        {form.harvestOn &&
+          (form.harvestPoolAmount.trim() === "" ||
+            form.harvestPoolBasisPct.trim() === "") && (
+            <p className="mt-3 max-w-3xl text-sm text-[var(--warn)]" role="note">
+              Harvesting is switched on, but the pool or its basis is missing —
+              here and in your Tax Plan record — so the settlement above excludes
+              gain harvesting until both are entered.
+            </p>
+          )}
+        {likelyCase != null && likelyCase.harvestedGainAtZeroDraw > 0 && (
+          <p className="tnum mt-3 max-w-3xl text-sm text-[var(--dim)]">
+            Before any December draw, the harvest realizes{" "}
+            {fmtDollars(likelyCase.harvestedGainAtZeroDraw)} in the likely case;
+            at the headline draw it realizes{" "}
+            {fmtDollars(likelyCase.harvestedGainAtHeadline)} — the draw takes
+            room the harvest would otherwise use.
+          </p>
+        )}
+      </section>
+
       {/* Remaining ranges */}
       <section className={sectionCls} aria-label="Still to come">
         <h3 className="text-base font-semibold">Still to come — December stragglers</h3>
@@ -1664,8 +2029,8 @@ export function December() {
           hint: "Include money-market dividends from any cash sleeve, and savings-bond interest in the year a bond matures or is redeemed — both are easy to leave out of the actuals above.",
         })}
         {strayRow("Gains on sales planned to fund taxes or raise cash", "strayPlannedSales", {
-          amountLabel: "Forecast net gain on planned sales",
-          hint: "Selling investments to pay the tax bill or raise spending cash realizes a gain too. Forecast it lot by lot (specific share lots), net of any prior-year capital-loss carryforward.",
+          amountLabel: "Forecast gain on planned sales",
+          hint: "Selling investments to pay the tax bill or raise spending cash realizes a gain too. Forecast it lot by lot (specific share lots) — the gain BEFORE any prior-year capital-loss carryforward: enter the carryforward in the “Capital losses carried into this year” section above and the console nets it for you.",
         })}
         {strayRow("Return of capital reclassified as an ordinary dividend", "strayROCOrdinary", {
           // Round-6: this row IS the ROC character
@@ -1680,6 +2045,25 @@ export function December() {
             ? "Saved before this split existed — check it: the return-of-capital amount below was entered before there were two items, so confirm how much of it belongs here as an ordinary dividend."
             : undefined,
           hint: "When a fund reclassifies return of capital as a dividend, that part is an ORDINARY dividend — it is taxed as ordinary income, not as a capital gain. Enter it here, not under the capital part below.",
+          extra: (
+            <div className="mt-2 max-w-xs">
+              {moneyField("Of which qualified dividends", form.strayROCQualifiedAmount, (v) => {
+                edit((f) => ({
+                  ...f,
+                  strayROCQualifiedAmount: v,
+                }));
+              },
+              { idLabel: "December stray ROC qualified portion", hint: "The part of the amount above that the fund reports as qualified dividends. Leave at $0 if none of it is qualified." },
+              )}
+              <p className="mt-2 text-sm text-[var(--dim)]">
+                A reclassified dividend can itself be a qualified dividend
+                (the fund reports it as one on Form 1099-DIV). That part is
+                taxed at the lower qualified-dividend rates, not as ordinary
+                income — enter that part above so it keeps its qualified
+                character.
+              </p>
+            </div>
+          ),
         })}
         {strayRow("Return of capital over basis (capital gain)", "strayROC", {
           amountLabel: "Income over basis (capital gain)",
@@ -1691,6 +2075,24 @@ export function December() {
         {strayRow("K-1 income (partnership, S-corp, trust)", "strayK1", {
           amountLabel: "K-1 income expected for the year (a deductible loss as a negative amount)",
           hint: "Taxable K-1 allocations count whether or not cash was distributed. A currently deductible K-1 loss is entered as a negative amount and reduces income dollar for dollar.",
+          extra: (
+            <div className="mt-2 max-w-xs">
+              {moneyField("Of which long-term capital gain (box 9a)", form.strayK1CapGainAmount, (v) => {
+                edit((f) => ({
+                  ...f,
+                  strayK1CapGainAmount: v,
+                }));
+              },
+              { idLabel: "December stray K-1 capital-gain portion", hint: "The part of the K-1 amount above reported on Schedule K-1 box 9a as a net long-term capital gain. Leave at $0 if none of it is one." },
+              )}
+              <p className="mt-2 text-sm text-[var(--dim)]">
+                Schedule K-1 box 9a reports the long-term capital gain part
+                of a K-1 amount. That part is taxed at the lower
+                capital-gains rates; the rest is taxed as ordinary income.
+                Enter the box 9a part above so it is taxed as a gain.
+              </p>
+            </div>
+          ),
         })}
         {strayRow("Tax-exempt interest beyond the actuals above", "strayTaxExempt", {
           amountLabel: "Additional tax-exempt interest",
@@ -1860,6 +2262,8 @@ export function December() {
                 setRocCharacterEdited(true);
                 setJanPaidCharacterEdited(true);
                 setEducationEdited(true);
+                setCarryInEdited(true);
+                setHarvestEdited(true);
                 setForm(formFromState(blank));
                 setResetArmed(false);
               }}

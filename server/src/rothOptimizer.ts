@@ -3010,6 +3010,51 @@ export type PlaygroundYearInputs = {
   // written before it was included carry no such key and
   // load with it absent (no students), exactly as before.
   educationStudents?: EducationStudent[] | null;
+  // Capital-loss carryforward entering the year (contract
+  // v111, round-17 fix F1+F2; December console only —
+  // absent / 0 on every Playground caller, and the year
+  // then prices bit-identically to before): the banked
+  // short-term and long-term losses from prior years, in
+  // dollars, stated as positive amounts, plus the
+  // Washington-attributable portion of each (a portion of
+  // that character's total, clamped inside the ledger).
+  // When any carry-in is positive, pricePlaygroundYear
+  // runs the year's own net long-term result through the
+  // SAME shared applyLossLedger the plan march uses: the
+  // carry-in nets against the year's gains, the §1211(b)
+  // allowance is the ledger's, the Washington excise base
+  // is the gross gains minus only the Washington-
+  // attributable part the gains actually absorbed (so the
+  // federal and Washington bases can differ — the F2
+  // defect was one signed gain serving both), and the
+  // result carries the reconciled carry-out. With no
+  // carry-in the ledger never runs and the in-year-only
+  // pricing below is untouched.
+  capitalLossCarryInSt?: number;
+  capitalLossCarryInLt?: number;
+  capitalLossCarryInStWa?: number;
+  capitalLossCarryInLtWa?: number;
+  // Gain harvest (contract v113, round-17 fix F3; December
+  // console only — absent / null on every Playground caller,
+  // and the year then prices bit-identically to before): the
+  // taxable pool available to sell and its basis, the two
+  // facts the plan march's harvest sizes itself from
+  // (simulateRothPlan's harvestOn block). The march draws on
+  // the COMBINED taxable pool (the Taxable bucket plus the
+  // Cash bucket — the pool resolvePlanBalances assembles)
+  // and sizes against its TOTAL basis dollars; tier walking
+  // in the march moves only the basis step-up bookkeeping
+  // between years, never the size, so a single pool amount
+  // plus its BLENDED basis % (basis dollars ÷ pool) carries
+  // the sizing exactly: available unrealized gain = pool −
+  // pool × basisPct / 100. BOTH facts present = price a
+  // harvest inside this pricing (see pricePlaygroundYear);
+  // either absent = no harvest is priced and harvestedGain
+  // reads $0 — the December layer, which owns the toggle,
+  // decides whether that absence is a silent $0 or an
+  // unpriced-harvest qualification on the settlement.
+  harvestPoolAmount?: number | null;
+  harvestPoolBasisPct?: number | null;
   // ACA guideline convention (Playground projection build):
   // absent / "lookback" = the single-year rule — acaCreditFor
   // prices the coverage year off the PRIOR year's poverty
@@ -3101,6 +3146,35 @@ export type PlaygroundYearResult = {
   // loss. Any loss beyond the allowance is not priced
   // (in real life it carries forward).
   capitalLossAllowance: number;
+  // Capital-loss carryforward LEAVING the year (contract
+  // v111): the entering carry-in (plus any of the year's
+  // own net loss) that neither the year's gains nor the
+  // USED part of the §1211(b) allowance consumed,
+  // reconciled once against the priced year's final
+  // taxable income before the allowance — the plan march's
+  // year-end reconciliation pattern. The Washington fields
+  // are the Washington-attributable portions of the same
+  // carry-out. All four are $0 whenever no carry-in was
+  // entered (the ledger did not run — a Playground year
+  // keeps no cross-year state, exactly as before).
+  lossCarryOutSt: number;
+  lossCarryOutLt: number;
+  lossCarryOutStWa: number;
+  lossCarryOutLtWa: number;
+  // The long-term gain this pricing's harvest realized into
+  // the 0% capital-gains band (contract v113): the largest
+  // gain, capped by the entered pool's unrealized gain,
+  // whose addition to the year's gains stack leaves every
+  // harvested dollar inside the 0% band (the plan march's
+  // harvest predicate — gains priced at 15% / 20% do not
+  // rise). It is already INSIDE ltcgNet / ltcgPriced / agi /
+  // acaMagi above (it rides the gains stack through
+  // priceYear, netted by any entering loss carryforward
+  // exactly as the march's ledgerFields nets it, and counts
+  // in the Washington base and the NIIT base the same way);
+  // this field only NAMES the harvested part. $0 whenever
+  // no harvest facts were supplied or no gain fit the band.
+  harvestedGain: number;
   agi: number;
   magi: number;
   acaMagi: number;
@@ -3351,14 +3425,69 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // ordinary income this year. (Before this fix the loss was
   // netted against the qualified dividends first, erasing
   // them from AGI and inventing ACA credit.)
-  const ltcgNet = stockGain;
-  const ltcgPriced = r2(Math.max(0, stockGain) + inp.qualifiedDividends);
-  const capitalLoss = Math.max(0, -stockGain);
-  const capitalLossAllowance = Math.min(3000, capitalLoss);
-  // The total preferential income typed (capital result +
-  // qualified dividends) — the gains flags' stack figure and
-  // phrase, as before.
-  const prefTyped = r2(stockGain + inp.qualifiedDividends);
+  // Entering capital-loss carryforward (contract v111,
+  // round-17 fix F1+F2): when any carry-in is entered, the
+  // year's own net long-term result runs through the SAME
+  // shared applyLossLedger the plan march's ledgerFields
+  // runs — trial pricing takes the netted result, the
+  // CLAIMED allowance, and the Washington base (gross gains
+  // minus only the Washington-attributable part the gains
+  // absorbed) with utilization UNBOUNDED, and the carry-out
+  // is reconciled once, after priceYear, against the priced
+  // year's taxable income before the allowance (the plan's
+  // year-end pattern). When no carry-in is entered the
+  // ledger never runs and every figure below is the
+  // pre-v111 in-year computation, term for term.
+  const carryInSt = Math.max(0, inp.capitalLossCarryInSt ?? 0);
+  const carryInLt = Math.max(0, inp.capitalLossCarryInLt ?? 0);
+  const carryInStWa = Math.max(0, inp.capitalLossCarryInStWa ?? 0);
+  const carryInLtWa = Math.max(0, inp.capitalLossCarryInLtWa ?? 0);
+  const lossLedgerOn = carryInSt > 0 || carryInLt > 0;
+  // The priceYear gains fields for a GROSS capital result
+  // (the typed stock gain, plus any harvested gain when the
+  // harvest below sizes one): with a carry-in entered, the
+  // shared ledger's transform at that gross total — the
+  // plan march's ledgerFields, term for term; without one,
+  // the identity (the gross result prices as-is, the
+  // allowance is the in-year §1211(b) figure). The harvest
+  // search and the final pricing both read this one
+  // transform, so they can never disagree about the year's
+  // netting.
+  const gainsFieldsFor = (
+    grossGains: number,
+  ): {
+    ltcg: number;
+    capitalLossAllowance: number;
+    waGainsBase?: number;
+  } => {
+    if (!lossLedgerOn) {
+      return {
+        ltcg: grossGains,
+        capitalLossAllowance: Math.min(3000, Math.max(0, -grossGains)),
+      };
+    }
+    const led = applyLossLedger(
+      { st: carryInSt, lt: carryInLt },
+      grossGains,
+      fs,
+      Number.POSITIVE_INFINITY,
+      { st: carryInStWa, lt: carryInLtWa },
+    );
+    return {
+      ltcg: led.netResult,
+      capitalLossAllowance: led.allowance,
+      waGainsBase: r2(grossGains - led.waAbsorbedByGains),
+    };
+  };
+  let ltcgNet = stockGain;
+  let capitalLossAllowance = Math.min(3000, Math.max(0, -stockGain));
+  let waGainsBase: number | undefined;
+  {
+    const f0 = gainsFieldsFor(stockGain);
+    ltcgNet = f0.ltcg;
+    capitalLossAllowance = f0.capitalLossAllowance;
+    waGainsBase = f0.waGainsBase;
+  }
 
   // The year's RMD — the plan's own rule (rmdForYear on the
   // primary's clock, Joint Life when applicable) over the
@@ -3467,8 +3596,16 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // The capital result passes RAW (negative = a net
     // capital loss): priceYear prices max(0, ltcg) on the
     // gains stack and never nets the loss against the
-    // qualified dividends passed beside it.
-    ltcg: stockGain,
+    // qualified dividends passed beside it. With an
+    // entering carryforward (v111) this is the LEDGER-
+    // NETTED result (ltcgNet), and the Washington excise
+    // prices on its own base — the gross gains minus the
+    // Washington-attributable absorbed part — so the two
+    // bases can differ; with no carry-in ltcgNet IS the
+    // typed stock gain and no waGainsBase is passed, so
+    // the excise prices on ltcg exactly as before.
+    ltcg: ltcgNet,
+    ...(waGainsBase != null ? { waGainsBase } : {}),
     qualifiedDividends: inp.qualifiedDividends,
     capitalLossAllowance,
     inflationPct: 0,
@@ -3486,8 +3623,125 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // year — absent = no students = no credits.
     educationStudents: inp.educationStudents ?? null,
   };
+  // Gain harvest (contract v113, round-17 fix F3): when the
+  // caller supplies the pool / basis facts, size the year's
+  // harvest EXACTLY as the plan march sizes its own
+  // (simulateRothPlan's harvestOn block): the available
+  // unrealized gain is the pool less its basis dollars, and
+  // the harvest is the largest amount of it — searched to
+  // the cent — whose addition to the year's gross gains
+  // leaves the gains priced at 15% and at 20% unchanged,
+  // i.e. every harvested dollar lands inside the 0%
+  // capital-gains band. The march ALSO caps its search by
+  // the strategy's own ceilings (a bracket top, an IRMAA
+  // tier cap, a custom MAGI cap, and the ACA cliff cap);
+  // the single-year pricer carries no strategy ceilings —
+  // its one ceiling, the ACA cliff, is the cliff solver's
+  // own target, and because the harvest is sized inside
+  // every pricing the solver's trial draws see it too, so
+  // the solved draw shrinks by the harvested gain when the
+  // cliff target binds. The harvested gain rides the gains
+  // stack through the SAME gainsFieldsFor transform as the
+  // typed gain — an entering loss carryforward absorbs it
+  // first (the march's ledgerFields nets the total
+  // including the harvest), and Washington / NIIT price it
+  // exactly as priceYear prices any long-term gain in the
+  // stack. When either fact is absent, no harvest is sized
+  // and every figure below is the pre-v113 pricing, term
+  // for term.
+  let harvestedGain = 0;
+  const harvestPool = inp.harvestPoolAmount ?? null;
+  const harvestBasisPct = inp.harvestPoolBasisPct ?? null;
+  if (harvestPool != null && harvestBasisPct != null) {
+    const pool = Math.max(0, harvestPool);
+    const basisPctClamped = Math.min(100, Math.max(0, harvestBasisPct));
+    const availableGain = Math.max(0, pool - (basisPctClamped / 100) * pool);
+    if (availableGain > 0) {
+      const settled = priceYear(base);
+      const settledAt15 = settled.gainsAt15;
+      const settledAt20 = settled.gainsAt20;
+      const harvestFits = (h: number): boolean => {
+        const f = gainsFieldsFor(stockGain + h);
+        const p = priceYear({
+          ...base,
+          ltcg: f.ltcg,
+          capitalLossAllowance: f.capitalLossAllowance,
+          ...(f.waGainsBase != null ? { waGainsBase: f.waGainsBase } : {}),
+        });
+        return (
+          p.gainsAt15 <= settledAt15 + 0.005 &&
+          p.gainsAt20 <= settledAt20 + 0.005
+        );
+      };
+      if (harvestFits(0)) {
+        let lo = 0;
+        let hi = Math.floor(availableGain * 100);
+        while (lo < hi) {
+          const mid = Math.floor((lo + hi + 1) / 2);
+          if (harvestFits(mid / 100)) {
+            lo = mid;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        if (lo > 0) {
+          harvestedGain = lo / 100;
+          const fH = gainsFieldsFor(stockGain + harvestedGain);
+          ltcgNet = fH.ltcg;
+          capitalLossAllowance = fH.capitalLossAllowance;
+          waGainsBase = fH.waGainsBase;
+          base.ltcg = fH.ltcg;
+          base.capitalLossAllowance = fH.capitalLossAllowance;
+          if (fH.waGainsBase != null) {
+            base.waGainsBase = fH.waGainsBase;
+          } else {
+            delete base.waGainsBase;
+          }
+        }
+      }
+    }
+  }
+  const ltcgPriced = r2(Math.max(0, ltcgNet) + inp.qualifiedDividends);
+  const capitalLoss = Math.max(0, -ltcgNet);
+  // The total preferential income priced (the possibly
+  // netted capital result + qualified dividends) — the
+  // gains flags' stack figure and phrase, as before.
+  const prefTyped = r2(ltcgNet + inp.qualifiedDividends);
+
   const priced = priceYear(base);
   const pricedZero = priceYear({ ...base, conversion: 0 });
+
+  // Loss-ledger year-end reconciliation (contract v111):
+  // the carry-out is fixed ONCE, against the priced year's
+  // final taxable income before the allowance — the plan
+  // march's ledFinal pattern — so only the part of the
+  // claimed allowance that actually offset taxable income
+  // is consumed from the carryforward. All four figures
+  // stay $0 when no carry-in was entered (the ledger never
+  // ran; the trial pricing's unbounded-utilization result
+  // above is never surfaced as a carry-out).
+  let lossCarryOutSt = 0;
+  let lossCarryOutLt = 0;
+  let lossCarryOutStWa = 0;
+  let lossCarryOutLtWa = 0;
+  if (lossLedgerOn) {
+    const ledFinal = applyLossLedger(
+      { st: carryInSt, lt: carryInLt },
+      // The year's own total gains INCLUDING any harvested
+      // gain — the plan march's year-end pattern (its T4
+      // ledger outcome runs on draws' gains + injected gain
+      // + harvested gain), so the carry-out reconciles
+      // against the same total the trial pricings netted.
+      stockGain + harvestedGain,
+      fs,
+      priced.taxableIncomeBeforeLossAllowance,
+      { st: carryInStWa, lt: carryInLtWa },
+    );
+    lossCarryOutSt = ledFinal.carryOut.st;
+    lossCarryOutLt = ledFinal.carryOut.lt;
+    lossCarryOutStWa = ledFinal.waCarryOut.st;
+    lossCarryOutLtWa = ledFinal.waCarryOut.lt;
+  }
 
   // Bracket landing: with the conversion stacked last, its last
   // dollar lands in the top bracket layer the year's ordinary
@@ -3847,6 +4101,11 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     ltcgPriced,
     capitalLoss,
     capitalLossAllowance,
+    lossCarryOutSt,
+    lossCarryOutLt,
+    lossCarryOutStWa,
+    lossCarryOutLtWa,
+    harvestedGain,
     agi: priced.agi,
     magi: priced.magi,
     acaMagi: acaHouseholdMagi,
