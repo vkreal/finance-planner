@@ -110,7 +110,10 @@ export {
    `liftPx` (contract v82, used by one caller) adds extra clear
    space between an above-placed bubble and its button, so the
    bubble can clear a neighbouring row above the button — the
-   default 0 keeps every existing caller's geometry exactly. */
+   default 0 keeps every existing caller's geometry exactly.
+   `onOpenChange` (contract v120) reports whenever the bubble
+   opens or closes, so a chart label can lift its span above its
+   siblings while its tooltip is open. */
 export function InfoNote({
   text,
   ariaLabel,
@@ -118,6 +121,7 @@ export function InfoNote({
   placement = "below",
   viewportClamp = false,
   liftPx = 0,
+  onOpenChange,
 }: {
   text: string;
   ariaLabel: string;
@@ -126,6 +130,8 @@ export function InfoNote({
   viewportClamp?: boolean;
   /** Extra px of gap above the button for an above-placed bubble. */
   liftPx?: number;
+  /** Called whenever the bubble opens or closes (contract v120). */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [pinned, setPinned] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -138,6 +144,17 @@ export function InfoNote({
   const rawId = useId();
   const tipId = `roth-info-tip-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
   const show = pinned || hovered;
+
+  // Contract v120: report open/closed to the parent, so a chart
+  // label can lift its span above its siblings while its tooltip
+  // is open. The callback rides on a ref: parents pass an inline
+  // arrow, and reading it through the ref keeps this effect from
+  // re-firing on the arrow's identity.
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  useEffect(() => {
+    onOpenChangeRef.current?.(show);
+  }, [show]);
 
   useEffect(() => {
     if (!pinned) return;

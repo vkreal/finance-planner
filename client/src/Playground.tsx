@@ -148,6 +148,7 @@ type TickLabel = {
 };
 
 const EMPTY_STAGGERED: ReadonlySet<number> = new Set();
+const EMPTY_CHART_LABELS: ReadonlySet<string> = new Set();
 
 function TickStrip({
   ticks,
@@ -160,6 +161,25 @@ function TickStrip({
   const spanRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const [staggered, setStaggered] =
     useState<ReadonlySet<number>>(EMPTY_STAGGERED);
+  /* Contract v120: which noted ticks have their tooltip open —
+     the open tick's span lifts to 41, above its z-31 siblings,
+     while its bubble is open, so the bubble paints above the
+     neighbouring tick labels instead of underneath them; it
+     drops back to 31 when the bubble closes. A set, not a single
+     holder, so a pinned tick stays lifted while another tick is
+     hovered. The updater is identity-guarded: re-reporting the
+     same open/closed value returns the same set, so no render
+     follows. */
+  const [openNotes, setOpenNotes] =
+    useState<ReadonlySet<number>>(EMPTY_STAGGERED);
+  const setNoteOpen = (rate: number, open: boolean) =>
+    setOpenNotes((prev) => {
+      if (prev.has(rate) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(rate);
+      else next.delete(rate);
+      return next;
+    });
   /* The positions the stagger decision is judged from, as
      one key: the effect re-measures whenever a label's
      centre moves, and the ResizeObserver re-measures
@@ -243,8 +263,12 @@ function TickStrip({
                  chart area below (the z-31 lift of the 0%
                  InfoNote pattern); the centring transform
                  traps the bubble's own z-index inside this
-                 span, so the lift rides on the span itself. */
-              zIndex: m.note != null ? 31 : undefined,
+                 span, so the lift rides on the span itself.
+                 Contract v120: while the tick's own bubble
+                 is open the span lifts to 41, above its
+                 sibling ticks, so the bubble paints above
+                 them too. */
+              zIndex: m.note != null ? (openNotes.has(m.rate) ? 41 : 31) : undefined,
             }}
           >
             <span aria-hidden="true">
@@ -255,6 +279,7 @@ function TickStrip({
                 text={m.note}
                 ariaLabel={m.noteAriaLabel ?? `About the ${m.rate}% bracket top`}
                 align={taxX(m.to) > 60 ? "right" : "left"}
+                onOpenChange={(open) => setNoteOpen(m.rate, open)}
               />
             )}
           </span>
@@ -564,6 +589,26 @@ export function Playground() {
   const stackChartRef = useRef<HTMLDivElement | null>(null);
   const stackLinesRef = useRef<HTMLDivElement | null>(null);
   const [landingLinkH, setLandingLinkH] = useState<number | null>(null);
+  /* Contract v120: which income-stack chart labels have their
+     tooltip open — the open label's span lifts to 41, above its
+     z-31 siblings, while its bubble is open, so the bubble
+     paints above the neighbouring labels instead of underneath
+     them; it drops back to 31 when the bubble closes. A set, not
+     a single holder, so a pinned label stays lifted while
+     another label is hovered. The updater is identity-guarded:
+     re-reporting the same open/closed value returns the same
+     set, so no render follows. */
+  const [openChartLabels, setOpenChartLabels] =
+    useState<ReadonlySet<string>>(EMPTY_CHART_LABELS);
+  const setChartLabelOpen = (id: string, open: boolean) =>
+    setOpenChartLabels((prev) => {
+      if (prev.has(id) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const chartLabelZ = (id: string) => (openChartLabels.has(id) ? 41 : 31);
   useLayoutEffect(() => {
     const labels = stackLabelsRef.current;
     const lines = stackLinesRef.current;
@@ -5111,8 +5156,13 @@ export function Playground() {
                                    chart-area sibling — bars, tick
                                    labels, guide lines, tint, and
                                    the z-1 gains track — paints over
-                                   the downward-opening bubble. */
-                                zIndex: 31,
+                                   the downward-opening bubble.
+                                   Contract v120: while this label's
+                                   own bubble is open the span lifts
+                                   to 41, above its sibling labels,
+                                   so the bubble paints above them
+                                   too. */
+                                zIndex: chartLabelZ("zero"),
                               }}
                             >
                               <span
@@ -5126,6 +5176,7 @@ export function Playground() {
                                 text={`Long-term gains and qualified dividends in the taxable account are taxed at 0% while total taxable income stays under ${fmtDollars(zeroTop)}. Past that line they price at 15%, and at 20% once taxable income passes ${fmtDollars(floor20)}.`}
                                 ariaLabel="About the 0% gains line"
                                 align={taxX(zeroTop) > 60 ? "right" : "left"}
+                                onOpenChange={(open) => setChartLabelOpen("zero", open)}
                               />
                             </span>
                           </div>
@@ -5158,8 +5209,13 @@ export function Playground() {
                                      from the v82 ⓘ (z-31, above
                                      the z-30 sticky play strip):
                                      removing the ⓘ must not move
-                                     the label's paint order. */
-                                  zIndex: 31,
+                                     the label's paint order.
+                                     Contract v120: while this
+                                     label's own bubble is open the
+                                     span lifts to 41, above its
+                                     sibling labels, so the bubble
+                                     paints above them too. */
+                                  zIndex: chartLabelZ("landing"),
                                 }}
                               >
                                 <span
@@ -5172,6 +5228,7 @@ export function Playground() {
                                   text={`Your ordinary income lands in this bracket — ${fmtDollars(ordinaryTaxable)} of ordinary taxable income sits in the ${landingMarker.rate}% bracket, the rate on your last dollars of ordinary income.`}
                                   ariaLabel={`About the ${landingMarker.rate}% landing bracket`}
                                   align={taxX(landingMarker.to) > 60 ? "right" : "left"}
+                                  onOpenChange={(open) => setChartLabelOpen("landing", open)}
                                 />
                               </span>
                             </div>
@@ -5244,7 +5301,11 @@ export function Playground() {
                           style={{
                             left: `clamp(40px, ${(acaBufferLine.xPct + acaCliffLine.xPct) / 2}%, calc(100% - 40px))`,
                             transform: "translateX(-50%)",
-                            zIndex: 31,
+                            /* Contract v120: while this label's own
+                               bubble is open the span lifts to 41,
+                               above its sibling labels, so the
+                               bubble paints above them too. */
+                            zIndex: chartLabelZ("buffer"),
                           }}
                         >
                           <span
@@ -5258,6 +5319,7 @@ export function Playground() {
                             text={`Your safety margin under the ACA cliff. The cliff is ${fmtDollars(acaCliffLine.cliff)}; the buffer stops your income ${fmtDollars(pgAcaBufferDollars)} short of it, at ${fmtDollars(acaBufferLine.magi)}, so a small surprise doesn't wipe out the whole credit.`}
                             ariaLabel="About the ACA safety buffer"
                             align={(acaBufferLine.xPct + acaCliffLine.xPct) / 2 > 60 ? "right" : "left"}
+                            onOpenChange={(open) => setChartLabelOpen("buffer", open)}
                           />
                         </span>
                       </div>
@@ -5619,7 +5681,11 @@ export function Playground() {
                         $0 taxable label and its ⓘ are untouched. */}
                     <span
                       className={`tnum absolute inline-flex items-center text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
-                      style={{ right: 0, zIndex: 31 }}
+                      /* Contract v120: while this label's own
+                         bubble is open the span lifts to 41,
+                         above its sibling labels, so the bubble
+                         paints above them too. */
+                      style={{ right: 0, zIndex: chartLabelZ("axisEnd") }}
                     >
                       <span aria-hidden="true">
                         {fmtDollars(axisTaxableMax)}
@@ -5628,6 +5694,7 @@ export function Playground() {
                         text="The right end of the chart's scale. The scale runs a little past the furthest line on the chart so nothing piles up at the right edge — this is where the ruler stops, not income, tax, or a bracket top."
                         ariaLabel="About the end of the chart's scale"
                         align="right"
+                        onOpenChange={(open) => setChartLabelOpen("axisEnd", open)}
                       />
                     </span>
                     </div>
