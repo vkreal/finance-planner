@@ -907,10 +907,10 @@ export function Playground() {
      for ~1.6s (applied to the element directly and restored
      afterwards, so the shared field helpers do not change). */
   const pgFlashTimer = useRef<number | null>(null);
-  const jumpToPgField = (fieldId: string) => {
+  const jumpToPgField = (fieldId: string, section: PgSectionId = "aca") => {
     setPgFace("year");
     setPgGroupOpen((p) => ({ ...p, single: true }));
-    setPgOpenSections((p) => ({ ...p, aca: true }));
+    setPgOpenSections((p) => ({ ...p, [section]: true }));
     window.setTimeout(() => {
       const el = document.getElementById(fieldId);
       if (!el) return;
@@ -2996,7 +2996,14 @@ export function Playground() {
                   <span>
                     Total federal tax{" "}
                     <span className="font-bold text-[var(--accent)]">
-                      {fmtDollars(pg?.federalTax ?? 0)}
+                      <button
+                        type="button"
+                        aria-label="Go to the Interest field"
+                        className={pgTapCls}
+                        onClick={() => jumpToPgField("roth-Interest", "income")}
+                      >
+                        {fmtDollars(pg?.federalTax ?? 0)}
+                      </button>
                     </span>
                   </span>
                   {pg != null && pg.stateTax > 0 && (
@@ -3007,7 +3014,14 @@ export function Playground() {
                       <span>
                         Total tax{" "}
                         <span className="font-bold text-[var(--accent)]">
-                          {fmtDollarsExact(pg.totalTax)}
+                          <button
+                            type="button"
+                            aria-label="Go to the Interest field"
+                            className={pgTapCls}
+                            onClick={() => jumpToPgField("roth-Interest", "income")}
+                          >
+                            {fmtDollarsExact(pg.totalTax)}
+                          </button>
                         </span>
                       </span>
                     </span>
@@ -3016,7 +3030,15 @@ export function Playground() {
                     ·
                   </span>
                   <span>
-                    MAGI {fmtDollars(pg?.magi ?? 0)}
+                    MAGI{" "}
+                    <button
+                      type="button"
+                      aria-label="Go to the Interest field"
+                      className={pgTapCls}
+                      onClick={() => jumpToPgField("roth-Interest", "income")}
+                    >
+                      {fmtDollars(pg?.magi ?? 0)}
+                    </button>
                     {pg != null && (
                       <InfoNote
                         text={magiNote}
@@ -3093,7 +3115,16 @@ export function Playground() {
                         <span>
                           Est. ACA credit{" "}
                           <span className="font-bold text-[var(--accent)]">
-                            {fmtDollars(pg.aca.credit)}
+                            <button
+                              type="button"
+                              aria-label="Go to the ACA benchmark premium / yr field"
+                              className={pgTapCls}
+                              onClick={() =>
+                                jumpToPgField("roth-ACA-benchmark-premium-yr", "aca")
+                              }
+                            >
+                              {fmtDollars(pg.aca.credit)}
+                            </button>
                           </span>
                         </span>
                       </span>
@@ -4790,7 +4821,7 @@ export function Playground() {
               })();
               const stackRow = (
                 label: ReactNode,
-                value: string,
+                value: ReactNode,
                 sub?: string,
                 highlightValue?: boolean,
               ) => (
@@ -6007,7 +6038,16 @@ export function Playground() {
                           <>
                             {" — estimated credit "}
                             <span className="font-bold text-[var(--accent)]">
-                              {fmtDollars(pg.aca.credit)}
+                              <button
+                                type="button"
+                                aria-label="Go to the ACA benchmark premium / yr field"
+                                className={pgTapCls}
+                                onClick={() =>
+                                  jumpToPgField("roth-ACA-benchmark-premium-yr", "aca")
+                                }
+                              >
+                                {fmtDollars(pg.aca.credit)}
+                              </button>
                             </span>
                             {" at the ACA benchmark premium entered."}
                           </>
@@ -6057,15 +6097,44 @@ export function Playground() {
                   <section className={sectionCls} aria-label="Tax for the year">
                   <h3 className="text-sm font-semibold">Tax for the year</h3>
                   <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-                    {stackRow("Federal tax on ordinary income", fmtDollars(pg.ordinaryTax))}
+                    {stackRow(
+                      "Federal tax on ordinary income",
+                      <button
+                        type="button"
+                        aria-label="Go to the Interest field"
+                        className={pgTapCls}
+                        onClick={() => jumpToPgField("roth-Interest", "income")}
+                      >
+                        {fmtDollars(pg.ordinaryTax)}
+                      </button>,
+                    )}
                     {stackRow(
                       "Federal tax on gains",
-                      fmtDollars(pg.ltcgTax + pg.niit),
+                      <button
+                        type="button"
+                        aria-label="Go to the Interest field"
+                        className={pgTapCls}
+                        onClick={() => jumpToPgField("roth-Interest", "income")}
+                      >
+                        {fmtDollars(pg.ltcgTax + pg.niit)}
+                      </button>,
                       pg.niit > 0
                         ? `${fmtDollars(pg.ltcgTax)} gains tax + ${fmtDollars(pg.niit)} NIIT`
                         : undefined,
                     )}
-                    {stackRow("Total federal tax", fmtDollars(pg.federalTax), undefined, true)}
+                    {stackRow(
+                      "Total federal tax",
+                      <button
+                        type="button"
+                        aria-label="Go to the Interest field"
+                        className={pgTapCls}
+                        onClick={() => jumpToPgField("roth-Interest", "income")}
+                      >
+                        {fmtDollars(pg.federalTax)}
+                      </button>,
+                      undefined,
+                      true,
+                    )}
                     {pg.educationAotc > 0 &&
                       stackRow(
                         "American Opportunity Credit",
@@ -6102,18 +6171,52 @@ export function Playground() {
                         `Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) did not beat the regular tax.`,
                       )}
                     {pg.stateTax > 0 &&
-                      stackRow("State tax", fmtDollars(pg.stateTax))}
+                      stackRow(
+                        "State tax",
+                        <button
+                          type="button"
+                          aria-label="Go to the Interest field"
+                          className={pgTapCls}
+                          onClick={() => jumpToPgField("roth-Interest", "income")}
+                        >
+                          {fmtDollars(pg.stateTax)}
+                        </button>,
+                      )}
                     {pgResidence === "WA" &&
                       stackRow(
                         "Washington capital-gains excise",
-                        fmtDollars(pg.stateTax),
+                        <button
+                          type="button"
+                          aria-label="Go to the Interest field"
+                          className={pgTapCls}
+                          onClick={() => jumpToPgField("roth-Interest", "income")}
+                        >
+                          {fmtDollars(pg.stateTax)}
+                        </button>,
                         `${fmtDollars(pg.waGains)} of gains − ${fmtDollars(pg.waStandardDeduction)} standard deduction = ${fmtDollars(pg.waTaxableGains)} taxable`,
                       )}
-                    {stackRow("MAGI", fmtDollars(pg.magi))}
+                    {stackRow(
+                      "MAGI",
+                      <button
+                        type="button"
+                        aria-label="Go to the Interest field"
+                        className={pgTapCls}
+                        onClick={() => jumpToPgField("roth-Interest", "income")}
+                      >
+                        {fmtDollars(pg.magi)}
+                      </button>,
+                    )}
                     {pg.acaMagi !== pg.magi &&
                       stackRow(
                         "ACA household income",
-                        fmtDollars(pg.acaMagi),
+                        <button
+                          type="button"
+                          aria-label="Go to the Interest field"
+                          className={pgTapCls}
+                          onClick={() => jumpToPgField("roth-Interest", "income")}
+                        >
+                          {fmtDollars(pg.acaMagi)}
+                        </button>,
                         "MAGI plus the untaxed part of Social Security",
                       )}
                     {/* Cash left after tax (contract v114, fixed
@@ -6137,7 +6240,14 @@ export function Playground() {
                           ariaLabel="About the cash left after tax"
                         />
                       </>,
-                      fmtDollars(pg.cashLeftAfterTax),
+                      <button
+                        type="button"
+                        aria-label="Go to the Interest field"
+                        className={pgTapCls}
+                        onClick={() => jumpToPgField("roth-Interest", "income")}
+                      >
+                        {fmtDollars(pg.cashLeftAfterTax)}
+                      </button>,
                       "Cash in minus the net tax bill — what's left to spend next year, before any spending.",
                       true,
                     )}

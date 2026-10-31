@@ -1174,7 +1174,16 @@ export function December() {
             <p className="mt-1 max-w-3xl text-base font-semibold">{result.headlineText}</p>
             {result.cliff != null && (
               <p className="mt-1 text-sm text-[var(--dim)]">
-                Cliff {fmtDollars(result.cliff)} · aim at {fmtDollars(result.targetMagi ?? 0)}{" "}
+                Cliff{" "}
+                <button
+                  type="button"
+                  aria-label="Go to the ACA household size field"
+                  className={decTapCls}
+                  onClick={() => jumpToDecField("roth-December-ACA-household-size")}
+                >
+                  {fmtDollars(result.cliff)}
+                </button>{" "}
+                · aim at {fmtDollars(result.targetMagi ?? 0)}{" "}
                 (cliff −{" "}
                 <button
                   type="button"
@@ -1212,19 +1221,68 @@ export function December() {
                   {billIncomeOpen && (
                     <>
                       {billRow("Adjusted gross income (AGI)", fmtDollars(likelyCase.totalIncomeAtHeadline))}
-                      {billRow("MAGI", fmtDollars(likelyCase.magiAtHeadline))}
+                      {billRow(
+                        "MAGI",
+                        <button
+                          type="button"
+                          aria-label="Go to the Wages & other ordinary income field"
+                          className={decTapCls}
+                          onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                        >
+                          {fmtDollars(likelyCase.magiAtHeadline)}
+                        </button>,
+                      )}
                       {billRow("Taxable income", fmtDollars(likelyCase.taxableIncomeAtHeadline))}
                     </>
                   )}
-                  {billRow("Federal tax", fmtDollars(likelyCase.federalTaxAtHeadline))}
-                  {billShowState && billRow("State tax", fmtDollars(likelyCase.stateTaxAtHeadline))}
-                  {billShowState && billRow("Total tax", fmtDollars(likelyCase.totalTaxAtHeadline))}
+                  {billRow(
+                    "Federal tax",
+                    <button
+                      type="button"
+                      aria-label="Go to the Wages & other ordinary income field"
+                      className={decTapCls}
+                      onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                    >
+                      {fmtDollars(likelyCase.federalTaxAtHeadline)}
+                    </button>,
+                  )}
+                  {billShowState &&
+                    billRow(
+                      "State tax",
+                      <button
+                        type="button"
+                        aria-label="Go to the Wages & other ordinary income field"
+                        className={decTapCls}
+                        onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                      >
+                        {fmtDollars(likelyCase.stateTaxAtHeadline)}
+                      </button>,
+                    )}
+                  {billShowState &&
+                    billRow(
+                      "Total tax",
+                      <button
+                        type="button"
+                        aria-label="Go to the Wages & other ordinary income field"
+                        className={decTapCls}
+                        onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                      >
+                        {fmtDollars(likelyCase.totalTaxAtHeadline)}
+                      </button>,
+                    )}
                   {likelyCase.creditAtHeadline != null &&
                     billRow(
                       "ACA premium credit",
-                      likelyCase.creditAtHeadline > 0
-                        ? `−${fmtDollars(likelyCase.creditAtHeadline)}`
-                        : fmtDollars(likelyCase.creditAtHeadline),
+                      <button
+                        type="button"
+                        aria-label="Go to the Benchmark premium (annual) field"
+                        className={decTapCls}
+                        onClick={() => jumpToDecField("roth-December-ACA-benchmark")}
+                      >
+                        {likelyCase.creditAtHeadline > 0
+                          ? `−${fmtDollars(likelyCase.creditAtHeadline)}`
+                          : fmtDollars(likelyCase.creditAtHeadline)}
+                      </button>,
                       { highlight: true },
                     )}
                   {likelyCase.educationRefundableAtHeadline > 0 &&
@@ -1235,7 +1293,14 @@ export function December() {
                   {likelyCase.harvestedGainAtHeadline > 0 &&
                     billRow(
                       "Gain harvested into the 0% band",
-                      fmtDollars(likelyCase.harvestedGainAtHeadline),
+                      <button
+                        type="button"
+                        aria-label="Go to the Taxable pool available to sell field"
+                        className={decTapCls}
+                        onClick={() => jumpToDecField("roth-December-harvest-pool")}
+                      >
+                        {fmtDollars(likelyCase.harvestedGainAtHeadline)}
+                      </button>,
                     )}
                   {likelyCase.excessAptcRepayment != null &&
                     likelyCase.excessAptcRepayment > 0 &&
@@ -1260,7 +1325,14 @@ export function December() {
                       likelyCase.netSettleAtHeadline < 0
                         ? "Estimated refund at filing"
                         : "Estimated amount to settle at filing",
-                      fmtDollars(likelyCase.netSettleAtHeadline),
+                      <button
+                        type="button"
+                        aria-label="Go to the Wages & other ordinary income field"
+                        className={decTapCls}
+                        onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                      >
+                        {fmtDollars(likelyCase.netSettleAtHeadline)}
+                      </button>,
                       { bold: true, divide: true },
                     )
                   )}
@@ -1291,7 +1363,14 @@ export function December() {
                               ariaLabel="About the cash left after tax"
                             />
                           </>,
-                          fmtDollars(likelyCase.cashLeftAtHeadline),
+                          <button
+                            type="button"
+                            aria-label="Go to the Wages & other ordinary income field"
+                            className={decTapCls}
+                            onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                          >
+                            {fmtDollars(likelyCase.cashLeftAtHeadline)}
+                          </button>,
                           { bold: true, highlight: true },
                         )}
                         <p className="text-xs text-[var(--dim)]">
@@ -2213,17 +2292,53 @@ export function December() {
                     {result.cases.map((c) => (
                       <tr key={c.kind} className="tnum border-t border-[var(--border)]">
                         <td className="py-1.5 pr-3 font-medium">{CASE_LABELS[c.kind]}</td>
-                        <td className="py-1.5 pr-3">{fmtDollars(c.nonDrawAcaMagi)}</td>
+                        <td className="py-1.5 pr-3">
+                          <button
+                            type="button"
+                            aria-label="Go to the Wages & other ordinary income field"
+                            className={decTapCls}
+                            onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                          >
+                            {fmtDollars(c.nonDrawAcaMagi)}
+                          </button>
+                        </td>
                         <td className="py-1.5 pr-3">
                           {c.maxDraw == null ? "—" : fmtDollars(c.maxDraw)}
                         </td>
                         <td className="py-1.5 pr-3">
-                          {c.excessAptcRepayment == null
-                            ? "—"
-                            : fmtDollars(c.excessAptcRepayment)}
+                          {c.excessAptcRepayment == null ? (
+                            "—"
+                          ) : (
+                            <button
+                              type="button"
+                              aria-label="Go to the Advance credit (APTC) already taken field"
+                              className={decTapCls}
+                              onClick={() => jumpToDecField("roth-December-APTC-taken")}
+                            >
+                              {fmtDollars(c.excessAptcRepayment)}
+                            </button>
+                          )}
                         </td>
-                        <td className="py-1.5 pr-3">{fmtDollars(c.federalTaxAtHeadline)}</td>
-                        <td className="py-1.5">{fmtDollars(c.totalTaxAtHeadline)}</td>
+                        <td className="py-1.5 pr-3">
+                          <button
+                            type="button"
+                            aria-label="Go to the Wages & other ordinary income field"
+                            className={decTapCls}
+                            onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                          >
+                            {fmtDollars(c.federalTaxAtHeadline)}
+                          </button>
+                        </td>
+                        <td className="py-1.5">
+                          <button
+                            type="button"
+                            aria-label="Go to the Wages & other ordinary income field"
+                            className={decTapCls}
+                            onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
+                          >
+                            {fmtDollars(c.totalTaxAtHeadline)}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
