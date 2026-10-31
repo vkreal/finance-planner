@@ -3130,7 +3130,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 108;
+export const API_CONTRACT_VERSION = 110;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -6607,6 +6607,7 @@ export const Actions = {
   // what it means there). There is no hand-maintained schema
   // copy to drift. Read-only: reads no data, writes nothing.
   describeApi: defineAction({
+    description: "Return the machine-readable API contract for every published action, generated live from the actions' own zod schemas, with version stamps and conventions.",
     // A-5(a): an optional action filter — a caller learning
     // one action's contract passes { action: "<name>" } and
     // gets the same response with the actions array narrowed
@@ -6668,6 +6669,7 @@ export const Actions = {
   }),
 
   getDashboard: defineAction({
+    description: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ month: z.string().regex(monthRe) }),
     response: z.object({
@@ -7371,6 +7373,7 @@ export const Actions = {
   // month for the current year, the full year otherwise) over months
   // that have data; panels cover all twelve months regardless.
   getYearView: defineAction({
+    description: "One calendar year's spending: monthly true cost and cash out, totals, and the year's bills.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ year: z.number().int().min(1900).max(2200) }),
     response: z.object({
@@ -7525,6 +7528,7 @@ export const Actions = {
   // cash-out handling in eff(), and one-offs as explanation totals.
   // It never writes anything.
   getExplorer: defineAction({
+    description: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       fromMonth: z.string().regex(monthRe),
@@ -7727,6 +7731,7 @@ export const Actions = {
   }),
 
   addTransaction: defineAction({
+    description: "Record one spending transaction (checking or card).",
     privileged: [privileged.ensureEncryptionKey],
     request: txnInput,
     response: z.object({ id: z.number() }),
@@ -7754,6 +7759,7 @@ export const Actions = {
   }),
 
   updateTransaction: defineAction({
+    description: "Edit one recorded transaction.",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F13): `base` is the transaction as
     // the editor loaded it. When supplied, the write is a GUARDED
@@ -7875,6 +7881,7 @@ export const Actions = {
   }),
 
   deleteTransaction: defineAction({
+    description: "Delete one recorded transaction.",
     request: z.object({ id: z.number().int().positive() }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -7898,6 +7905,7 @@ export const Actions = {
      against this read data — stored amounts and descriptions
      are ciphertext, so the server never content-matches them. */
   getImportData: defineAction({
+    description: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       months: z.array(z.string().regex(monthRe)).max(60),
@@ -8016,6 +8024,7 @@ export const Actions = {
      settings value (IMPORT_SETTINGS_KEY), validated against the
      shared blob shape before anything is stored. */
   saveImportSettings: defineAction({
+    description: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       settingsJson: z.string().min(2).max(60000),
@@ -8067,6 +8076,7 @@ export const Actions = {
      goes through the existing addNwSnapshot — this pair only
      carries the panel's setup. */
   getNwImportSettings: defineAction({
+    description: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({
@@ -8102,6 +8112,7 @@ export const Actions = {
      settings value (NW_IMPORT_SETTINGS_KEY), validated against
      the shared blob shape before anything is stored. */
   saveNwImportSettings: defineAction({
+    description: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       settingsJson: z.string().min(2).max(200000),
@@ -8148,6 +8159,7 @@ export const Actions = {
   }),
 
   importTransactions: defineAction({
+    description: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows).",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       rows: z.array(txnInput).min(1).max(1000),
@@ -8302,6 +8314,7 @@ export const Actions = {
   }),
 
   addYearlyExpense: defineAction({
+    description: "Add a yearly or periodic (smoothed) expense bill.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       name: billNameField,
@@ -8364,6 +8377,7 @@ export const Actions = {
   }),
 
   updateYearlyExpense: defineAction({
+    description: "Edit a yearly/periodic expense's details.",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F17): `base` is the expense as the
     // editor loaded it — the parent fields AND the version stored
@@ -8540,6 +8554,7 @@ export const Actions = {
   // setMonthlyBillAmount). Upserts the version for (expense,
   // effectiveFrom); other months' versions are untouched.
   setYearlyExpenseVersion: defineAction({
+    description: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       expenseId: z.number().int().positive(),
@@ -8598,6 +8613,7 @@ export const Actions = {
   }),
 
   deleteYearlyExpense: defineAction({
+    description: "Delete a yearly/periodic expense and its versions.",
     request: z.object({ id: z.number().int().positive() }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -8632,6 +8648,7 @@ export const Actions = {
   // the whole bill remains the deleteYearlyExpense flow above.
   // Recorded transactions / actual payments are never touched.
   deleteYearlyExpenseVersion: defineAction({
+    description: "Remove one version from a yearly/periodic expense's history.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ versionId: z.number().int().positive() }),
     response: z.object({ ok: z.boolean(), reason: z.string() }),
@@ -8691,6 +8708,7 @@ export const Actions = {
   // Quick due-month setter: only the due-month anchor changes, never
   // amounts, frequencies, or versions.
   setYearlyDueMonth: defineAction({
+    description: "Set the due month of a yearly expense.",
     request: z.object({
       id: z.number().int().positive(),
       dueMonth: dueMonthField,
@@ -8712,6 +8730,7 @@ export const Actions = {
   }),
 
   addMonthlyOneOff: defineAction({
+    description: "Record a one-off expense against a month.",
     privileged: [privileged.ensureEncryptionKey],
     request: oneOffInput,
     response: z.object({ id: z.number() }),
@@ -8735,6 +8754,7 @@ export const Actions = {
   }),
 
   updateMonthlyOneOff: defineAction({
+    description: "Edit a recorded one-off expense.",
     privileged: [privileged.ensureEncryptionKey],
     request: oneOffInput.extend({ id: z.number().int().positive() }),
     response: okReasonResponse,
@@ -8761,6 +8781,7 @@ export const Actions = {
   }),
 
   deleteMonthlyOneOff: defineAction({
+    description: "Delete a recorded one-off expense.",
     request: z.object({ id: z.number().int().positive() }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -8778,6 +8799,7 @@ export const Actions = {
   }),
 
   addCashOutItem: defineAction({
+    description: "Add an itemized cash-out line to a month.",
     privileged: [privileged.ensureEncryptionKey],
     request: cashOutItemInput,
     response: z.object({ id: z.number() }),
@@ -8802,6 +8824,7 @@ export const Actions = {
   }),
 
   updateCashOutItem: defineAction({
+    description: "Edit an itemized cash-out line.",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F14): `base` is the item as the
     // editor loaded it. When supplied, the write is a GUARDED
@@ -8895,6 +8918,7 @@ export const Actions = {
   }),
 
   deleteCashOutItem: defineAction({
+    description: "Delete an itemized cash-out line from a month.",
     request: z.object({ id: z.number().int().positive() }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -8912,6 +8936,7 @@ export const Actions = {
   }),
 
   updateSettings: defineAction({
+    description: "Update spending settings (opening reserve and reserve start month).",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F26): `base` is the settings pair
     // as the settings form loaded it. When supplied, the write is
@@ -8986,6 +9011,7 @@ export const Actions = {
   }),
 
   upsertMonthlySummary: defineAction({
+    description: "Enter or update a month's direct cash-out total (supersedes that month's transactions).",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F15): `base` is the month total as
     // the editor loaded it (null = no total was stored for the
@@ -9044,6 +9070,7 @@ export const Actions = {
   }),
 
   deleteMonthlySummary: defineAction({
+    description: "Remove a month's entered cash-out total.",
     request: z.object({ month: z.string().regex(monthRe) }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -9064,6 +9091,7 @@ export const Actions = {
   }),
 
   addMonthlyBill: defineAction({
+    description: "Add a monthly bill.",
     privileged: [privileged.ensureEncryptionKey],
     request: monthlyBillInput,
     response: z.object({ id: z.number() }),
@@ -9106,6 +9134,7 @@ export const Actions = {
   }),
 
   updateMonthlyBill: defineAction({
+    description: "Edit a monthly bill's details.",
     privileged: [privileged.ensureEncryptionKey],
     // The request schema lives in apiContractCore
     // (updateMonthlyBillIn): notes / category / keepLightsOn are
@@ -9195,6 +9224,7 @@ export const Actions = {
   // Set a monthly bill's category. Label only — no amount, version,
   // or total is touched. Blank falls back to "Uncategorized".
   setMonthlyBillCategory: defineAction({
+    description: "Set a monthly bill's category (relabels past months' grouping).",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       id: z.number().int().positive(),
@@ -9221,6 +9251,7 @@ export const Actions = {
   // Set a smoothed bill's category. Label only — no amount, frequency,
   // version, or total is touched. Blank falls back to "Uncategorized".
   setYearlyCategory: defineAction({
+    description: "Set a yearly/periodic expense's category (relabels past months' grouping).",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       id: z.number().int().positive(),
@@ -9247,6 +9278,7 @@ export const Actions = {
   // Toggle a monthly bill's "Keep the lights on" check. Label only —
   // no amount, version, or total is touched.
   setMonthlyBillKeepLightsOn: defineAction({
+    description: "Toggle a monthly bill's Keep-the-lights-on flag.",
     request: z.object({
       id: z.number().int().positive(),
       keepLightsOn: z.boolean(),
@@ -9272,6 +9304,7 @@ export const Actions = {
   // settings so it survives reloads, new sessions, and devices.
   // No amount, version, or total is touched.
   setMonthlyBillsCollapsedAll: defineAction({
+    description: "Persist the Monthly bills section's collapsed/expanded state.",
     request: z.object({
       collapsed: z.boolean(),
     }),
@@ -9299,6 +9332,7 @@ export const Actions = {
   // devices. Independent of the Monthly bills and By category flags.
   // No amount, version, or total is touched.
   setYearlyBillsCollapsedAll: defineAction({
+    description: "Persist the Yearly & periodic expenses section's collapsed/expanded state.",
     request: z.object({
       collapsed: z.boolean(),
     }),
@@ -9326,6 +9360,7 @@ export const Actions = {
   // Independent of the Monthly bills and Yearly bills flags.
   // No amount, version, or total is touched.
   setByCategoryCollapsedAll: defineAction({
+    description: "Persist the By category section's collapsed/expanded state.",
     request: z.object({
       collapsed: z.boolean(),
     }),
@@ -9354,6 +9389,7 @@ export const Actions = {
   // flags. Default (absent) is collapsed. No amount, version, or
   // total is touched.
   setYearInSpendingCollapsedAll: defineAction({
+    description: "Persist the Year in spending section's collapsed/expanded state.",
     request: z.object({
       collapsed: z.boolean(),
     }),
@@ -9386,6 +9422,7 @@ export const Actions = {
   // (no stored entry) is collapsed — summary line only. No amount,
   // version, or total is ever touched by these actions.
   getExplainerState: defineAction({
+    description: "Read the explainer panel's expanded state.",
     request: z.object({}),
     response: z.object({
       expanded: z.record(z.string(), z.boolean()),
@@ -9412,6 +9449,7 @@ export const Actions = {
   }),
 
   setExplainerExpanded: defineAction({
+    description: "Persist the explainer panel's expanded state.",
     request: z.object({
       id: z.string().min(1).max(80),
       expanded: z.boolean(),
@@ -9468,6 +9506,7 @@ export const Actions = {
   // uiFoldCore.ts, where the accuracy fixtures pin it. No
   // amount, version, or total is ever touched by these actions.
   getUiFoldState: defineAction({
+    description: "Read the generic fold state: the open/closed map for the Spending and Net Worth collapsible pieces not owned by a more specific store (per-month cash-out item lists, the import panels, the reserve settings fold, the Trend anchor note).",
     request: z.object({}),
     response: z.object({
       open: z.record(z.string(), z.boolean()),
@@ -9484,6 +9523,7 @@ export const Actions = {
   }),
 
   setUiFoldState: defineAction({
+    description: "Persist one generic fold's open/closed state (see getUiFoldState).",
     request: z.object({
       id: z.string().min(1).max(80),
       open: z.boolean(),
@@ -9512,6 +9552,7 @@ export const Actions = {
   // Toggle a smoothed bill's "Keep the lights on" check. Label only —
   // no amount, frequency, version, or total is touched.
   setYearlyKeepLightsOn: defineAction({
+    description: "Toggle a yearly/periodic expense's Keep-the-lights-on flag.",
     request: z.object({
       id: z.number().int().positive(),
       keepLightsOn: z.boolean(),
@@ -9538,6 +9579,7 @@ export const Actions = {
   // amount that was in effect then. Choosing an earlier effectiveFrom is
   // the explicit way to correct a past month.
   setMonthlyBillAmount: defineAction({
+    description: "Set a monthly bill's amount from a chosen month onward.",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F16): `base` is the amount stored
     // for (bill, effectiveFrom) as the editor loaded it (null = no
@@ -9631,6 +9673,7 @@ export const Actions = {
   }),
 
   deleteMonthlyBill: defineAction({
+    description: "Delete a monthly bill and its versions.",
     request: z.object({ id: z.number().int().positive() }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -9660,6 +9703,7 @@ export const Actions = {
   // A bill's ONLY remaining version cannot be deleted — deleting
   // the whole bill remains the deleteMonthlyBill flow above.
   deleteMonthlyBillVersion: defineAction({
+    description: "Remove one version from a monthly bill's history.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ versionId: z.number().int().positive() }),
     response: z.object({ ok: z.boolean(), reason: z.string() }),
@@ -9710,6 +9754,7 @@ export const Actions = {
   }),
 
   seedExamples: defineAction({
+    description: "Seed the example spending dataset.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({ ok: z.boolean(), reason: z.string() }),
@@ -9764,6 +9809,7 @@ export const Actions = {
   // The encryption key-check row goes with the other settings; the
   // next data load recreates it via ensureKeyCheck.
   clearAllData: defineAction({
+    description: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state.",
     request: z.object({ confirm: z.string() }),
     response: z.object({ ok: z.boolean() }),
     async handler(ctx, args): Promise<{ ok: boolean }> {
@@ -9800,6 +9846,7 @@ export const Actions = {
   // check), so re-running it can never duplicate or mix sample
   // rows with real records.
   seedNetWorth: defineAction({
+    description: "Seed the Net Worth accounts and snapshots from the built-in sample data.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({ ok: z.boolean(), seeded: z.boolean(), reason: z.string() }),
@@ -9842,6 +9889,7 @@ export const Actions = {
   // passes the check receives both datasets or (on failure) is
   // reported unseeded so the caller does not mark it seeded.
   seedFirstRun: defineAction({
+    description: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (contract v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({ ok: z.boolean(), seeded: z.boolean(), reason: z.string() }),
@@ -9886,6 +9934,7 @@ export const Actions = {
   }),
 
   getNetWorth: defineAction({
+    description: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({
@@ -10075,6 +10124,7 @@ export const Actions = {
   // the totals/charts include — it never touches any account,
   // snapshot, or balance row. Default (no stored value) is off.
   setNwIncludeProperty: defineAction({
+    description: "Set whether property (house/mortgage) counts in Net Worth totals.",
     request: z.object({ include: z.boolean() }),
     response: z.object({ ok: z.literal(true) }),
     async handler(ctx, args): Promise<{ ok: true }> {
@@ -10098,6 +10148,7 @@ export const Actions = {
   // under "nw_target_cents" as a plain integer-cents string; null
   // clears it (the row is deleted, returning to the empty default).
   setNwTarget: defineAction({
+    description: "Set the Net Worth target amount.",
     request: z.object({
       targetCents: z.number().int().positive().nullable(),
     }),
@@ -10134,6 +10185,7 @@ export const Actions = {
      and the same trailing-12-month window as getDashboard's
      Actual average. */
   getRetirementCalc: defineAction({
+    description: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({
@@ -10331,6 +10383,7 @@ export const Actions = {
   // Spending sections' set*CollapsedAll actions. No input,
   // amount, or total is touched.
   setRetirementAssumptionsCollapsed: defineAction({
+    description: "Persist the Retirement assumptions section's collapsed state.",
     request: z.object({
       collapsed: z.boolean(),
     }),
@@ -10359,6 +10412,7 @@ export const Actions = {
   // spending value is annual cents and is NOT touched: flipping
   // the unit writes only this preference.
   setRetirementSpendingUnit: defineAction({
+    description: "Persist the Retirement annual-spending entry unit (per year / per month).",
     request: z.object({
       unit: z.enum(["month", "year"]),
     }),
@@ -10381,6 +10435,7 @@ export const Actions = {
   }),
 
   saveRetirementCalc: defineAction({
+    description: "Save the Retirement calculator inputs.",
     privileged: [privileged.ensureEncryptionKey],
     // baseRevision (API follow-on F23) is the CAS base: the
     // blob-1 revision the writer's copy of the record was read
@@ -10514,6 +10569,7 @@ export const Actions = {
   // record until the next explicit save — autosaves of the working
   // inputs never move it.
   saveRetirementBaseline: defineAction({
+    description: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan').",
     privileged: [privileged.ensureEncryptionKey],
     // baseRevision / baseBaselineRevision (API follow-on F23)
     // are the CAS bases for blob 1 / blob 2 — the revisions the
@@ -10798,6 +10854,7 @@ export const Actions = {
   // Spending solve uses the view's current solver engine / target,
   // so both sides of every delta are priced identically.
   getRetirementBaselineResults: defineAction({
+    description: "Price the saved Retirement baselines against the current defaults.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       mcSeed: z.number().int(),
@@ -10891,6 +10948,7 @@ export const Actions = {
   // through mutateRetirementScenarios (guarded commit, revision
   // bumped, one re-read-and-retry on a lost race — F23).
   saveRetirementScenario: defineAction({
+    description: "Save a Retirement scenario.",
     privileged: [privileged.ensureEncryptionKey],
     request: z
       .object({
@@ -10911,6 +10969,7 @@ export const Actions = {
   }),
 
   deleteRetirementScenario: defineAction({
+    description: "Delete a saved Retirement scenario.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ name: z.string().min(1).max(60) }),
     response: retirementScenarioWriteResponse,
@@ -10931,6 +10990,7 @@ export const Actions = {
   // must not collide with a different scenario's name. The stored
   // inputs and the blob's other fields are preserved exactly.
   renameRetirementScenario: defineAction({
+    description: "Rename a saved Retirement scenario.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       name: z.string().min(1).max(60),
@@ -10958,6 +11018,7 @@ export const Actions = {
      dollars; the client converts at the boundary). Every field is
      nullable: null means "use the client-side default / seed". */
   getRothPlanner: defineAction({
+    description: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, tax-return actuals block, and the latest Net Worth snapshot subtotals.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: rothPlannerResponse,
@@ -10995,6 +11056,7 @@ export const Actions = {
   // — the SAME union saveRothInputs uses — so the family has
   // one conflict shape.
   resetRothPlanner: defineAction({
+    description: "Reset the Roth plan record (plan inputs plus the execution-year, gift, MC-volatility, and tax-return blocks) to the seeded fresh-user defaults; saved scenarios pass through untouched.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: saveRothInputsResponse,
@@ -11055,6 +11117,7 @@ export const Actions = {
   // revision, which writers pass back as baseRevision when
   // they save (see setRothUiState).
   getRothUiState: defineAction({
+    description: "Read the Roth view's UI state (open sections, year table, workspace mode) plus the Playground form's remembered dial state, with the blob's current write revision.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: rothUiStateResponse,
@@ -11106,6 +11169,7 @@ export const Actions = {
   // writes nothing, and it is refused with the re-read current
   // blob, exactly like a sequential conflict.
   setRothUiState: defineAction({
+    description: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       section: z.enum(ROTH_SECTION_IDS).optional(),
@@ -11292,6 +11356,7 @@ export const Actions = {
   }),
 
   saveRothInputs: defineAction({
+    description: "Save the Roth plan record (inputs plus execution-year, MC-volatility, gift, and tax-return blocks).",
     privileged: [privileged.ensureEncryptionKey],
     // The plan record's own writer is the ONLY writer that
     // accepts the execution-year fields — they save WITH the
@@ -11440,6 +11505,7 @@ export const Actions = {
   }),
 
   saveRothScenario: defineAction({
+    description: "Save the given plan inputs as a new named Roth scenario (complete record required).",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ ...rothInputFields }),
     response: rothScenarioWriteResponse,
@@ -11478,6 +11544,7 @@ export const Actions = {
   }),
 
   deleteRothScenario: defineAction({
+    description: "Delete a saved Roth scenario by name.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ name: z.string().min(1).max(120) }),
     response: rothScenarioWriteResponse,
@@ -11502,6 +11569,7 @@ export const Actions = {
   }),
 
   renameRothScenario: defineAction({
+    description: "Rename a saved Roth scenario.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       name: z.string().min(1).max(120),
@@ -11553,6 +11621,7 @@ export const Actions = {
      working inputs record passes through raw, untouched,
      exactly like the other scenario writers. */
   updateRothScenario: defineAction({
+    description: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F22): `baseScenario` is the named
     // scenario's complete payload as the editor loaded it. When
@@ -11633,6 +11702,7 @@ export const Actions = {
   // ages and the plan's draw order (display only — neither strip
   // writes anything).
   runRothOptimizer: defineAction({
+    description: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -11952,6 +12022,7 @@ export const Actions = {
   // to the first scenario. A Do Nothing scenario is an ordinary
   // patch (ceilings: null) and can serve as the baseline.
   runRothCompare: defineAction({
+    description: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -12124,6 +12195,7 @@ export const Actions = {
   // only; it is not part of the plan payload and prices nothing
   // else.
   runRothMonteCarloCheck: defineAction({
+    description: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -12237,6 +12309,7 @@ export const Actions = {
   // four scenarios is the check's own two-candidate sizing
   // doubled — well inside the worker budget on a typical plan.
   runRothMonteCarloStats: defineAction({
+    description: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -12344,6 +12417,7 @@ export const Actions = {
   // (the rolled inputs carry the quit age as the retirement
   // age); a blank / $0 salary prices no work years at any age.
   runWorkYearsCompare: defineAction({
+    description: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -12484,6 +12558,7 @@ export const Actions = {
   // Money in these outputs is DOLLARS (the tax engine's
   // units), like the optimizer outputs.
   runRothGiftCompare: defineAction({
+    description: "Price the plan as saved versus with a one-off gift of appreciated stock to a child, including the child's sale tax and the gift-tax exclusion check.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -12673,6 +12748,7 @@ export const Actions = {
   // Playground's loader, built from the priced inputs, so
   // pasting it back reproduces this exact pricing in the tab.
   runPlaygroundYear: defineAction({
+    description: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine.",
     request: playgroundYearIn,
     response: z.object({
       provenance: provenanceOut,
@@ -12709,6 +12785,7 @@ export const Actions = {
   // stored state instead of overwriting it. Neither prices
   // anything.
   getDecemberProjection: defineAction({
+    description: "Read the December projection console's saved inputs.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: getDecemberProjectionResponse,
@@ -12740,6 +12817,7 @@ export const Actions = {
   }),
 
   saveDecemberProjection: defineAction({
+    description: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       state: decemberState,
@@ -12851,6 +12929,7 @@ export const Actions = {
   // + strays) and prices it through the shared single-year
   // engine — see decemberCore. Saves nothing.
   runDecemberProjection: defineAction({
+    description: "Price the December year-end projection from the given console inputs (same state shape as saveDecemberProjection) through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver.",
     request: z.object({ state: decemberState }),
     response: z.object({
       provenance: provenanceOut,
@@ -12876,6 +12955,7 @@ export const Actions = {
   // given. Balances resolve server-side like the other
   // plan-level actions. Compute-only: saves nothing.
   runPlanYearDetail: defineAction({
+    description: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -12987,6 +13067,7 @@ export const Actions = {
   // response carries provenance + the effective inputs priced.
   // Compute-only: saves nothing.
   runRothFunding: defineAction({
+    description: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.strictObject({
       ...rothComputeFields,
@@ -13035,6 +13116,7 @@ export const Actions = {
   // It never writes anything. availableYears is the union of every
   // year present in the data (NW snapshot years plus spending years).
   getYearSummary: defineAction({
+    description: "Year summary for one year: spending figures and Net Worth movement on the same math as their own views.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ year: z.number().int().min(1900).max(2200) }),
     response: z.object({
@@ -13422,6 +13504,7 @@ export const Actions = {
   // reloads, new sessions, and devices. Absent = collapsed (the
   // default); the client stores an explicit value on first toggle.
   setNwAccountsCollapsed: defineAction({
+    description: "Persist the Net Worth Accounts section's collapsed state.",
     request: z.object({
       collapsed: z.boolean(),
     }),
@@ -13447,6 +13530,7 @@ export const Actions = {
   // only, persisted like the Accounts flag, independent of it.
   // Absent = collapsed (the default).
   setNwHistoryCollapsed: defineAction({
+    description: "Persist the Net Worth History section's collapsed state.",
     request: z.object({
       collapsed: z.boolean(),
     }),
@@ -13474,6 +13558,7 @@ export const Actions = {
   // which getNetWorth reads back as null), returning the growth
   // baseline to the first snapshot. Display only.
   setNwGrowthSince: defineAction({
+    description: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
     request: z.object({
       date: z.string().regex(dateRe).nullable(),
     }),
@@ -13496,6 +13581,7 @@ export const Actions = {
   }),
 
   addNwSnapshot: defineAction({
+    description: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
     privileged: [privileged.ensureEncryptionKey],
     request: nwSnapshotInput,
     response: nwMutationOut,
@@ -13608,6 +13694,7 @@ export const Actions = {
   }),
 
   updateNwSnapshot: defineAction({
+    description: "Replace a Net Worth snapshot's date, note, and balances.",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F11): `baseRevision` is the
     // snapshot revision the editor loaded (from getNetWorth). When
@@ -13760,6 +13847,7 @@ export const Actions = {
   // balanceCents null (and no splits) removes that account's balance
   // from the snapshot, as if it had never been recorded on that date.
   updateNwBalance: defineAction({
+    description: "Correct one account's balance in one snapshot (null removes it).",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F12, folded into F11's counter):
     // `baseRevision` is the SNAPSHOT revision the editor loaded.
@@ -13887,6 +13975,7 @@ export const Actions = {
   }),
 
   deleteNwSnapshot: defineAction({
+    description: "Delete a Net Worth snapshot and its balances.",
     request: z.object({ id: z.number().int().positive() }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
@@ -13910,6 +13999,7 @@ export const Actions = {
   }),
 
   addNwAccount: defineAction({
+    description: "Add a Net Worth account (ordinary, property, or custodial).",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       name: nwAccountNameField,
@@ -13953,6 +14043,7 @@ export const Actions = {
   }),
 
   renameNwAccount: defineAction({
+    description: "Rename a Net Worth account and optionally update its property/custodial flags.",
     privileged: [privileged.ensureEncryptionKey],
     // Contract v65 (CAS sweep, F19): `base` is the account's
     // (name, propertyKind, custodial) as the editor loaded them.
@@ -14046,6 +14137,7 @@ export const Actions = {
   }),
 
   setNwAccountArchived: defineAction({
+    description: "Archive or restore a Net Worth account.",
     request: z.object({ id: z.number().int().positive(), archived: z.boolean() }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
@@ -14077,6 +14169,7 @@ export const Actions = {
   // property accounts are refused. Snapshot totals are computed
   // from the remaining balances, so they recompute on their own.
   deleteNwAccount: defineAction({
+    description: "Permanently delete an archived, non-property Net Worth account and its balances.",
     request: z.object({ id: z.number().int().positive() }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
@@ -14123,6 +14216,7 @@ export const Actions = {
   // are decrypted to their true figures, exactly as the other
   // actions return them.
   exportbackup: defineAction({
+    description: "Export the complete dataset as one decrypted backup payload.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: backupPayload,
@@ -14137,6 +14231,7 @@ export const Actions = {
   // restore, getDashboard / getNetWorth return figures identical
   // to the exported ones.
   restorebackup: defineAction({
+    description: "Replace the entire dataset with a backup payload from exportbackup, preserving ids.",
     privileged: [privileged.ensureEncryptionKey],
     request: backupPayload,
     response: restoreBackupOut,
@@ -14570,6 +14665,7 @@ export const Actions = {
      mst-crypt.mjs, never any key file, never anything else. */
 
   listBackups: defineAction({
+    description: "List the encrypted backup files the Backups panel shows: this space's own backups folder unioned with the legacy shared folder.",
     privileged: [privileged.listBackups],
     request: z.object({}),
     response: z.object({
@@ -14592,6 +14688,7 @@ export const Actions = {
   }),
 
   deleteBackup: defineAction({
+    description: "Delete one backup-*.mstbak file from this space's own backups folder.",
     privileged: [privileged.deleteBackup],
     request: z.object({ filename: z.string().min(1).max(120) }),
     response: z.object({ ok: z.boolean(), reason: z.string() }),
@@ -14623,6 +14720,7 @@ export const Actions = {
   }),
 
   deleteAllBackups: defineAction({
+    description: "Delete every backup file in this space's own backups folder.",
     privileged: [privileged.deleteAllBackups],
     request: z.object({}),
     response: z.object({
@@ -14650,6 +14748,7 @@ export const Actions = {
   // weekly backups use. Read-only with respect to app data: nothing
   // in the dataset is created, changed, or deleted.
   createBackupNow: defineAction({
+    description: "Create an encrypted backup file now from the current dataset (same payload as exportbackup).",
     privileged: [privileged.ensureEncryptionKey, privileged.createBackup],
     request: z.object({}),
     response: z.object({
@@ -14697,6 +14796,7 @@ export const Actions = {
      and says so explicitly in `note`. It reads data and changes
      nothing. */
   runAccuracySelfCheck: defineAction({
+    description: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, data integrity, the replay reproducibility diagnostic, or the December console fixtures) per call.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({ suite: accuracySuiteEnum.optional() }),
     response: accuracySelfCheckResponse,

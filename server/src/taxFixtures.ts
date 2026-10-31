@@ -3437,16 +3437,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-seeded-small-n",
     kind: "tax",
-    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.)",
+    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–40 are different market trials than under the old variable-length draw. Every figure moved: wins 34 → 33, win rate 85% → 82.5%, median advantage $130,788.85 → $129,618.70, p10 −$22,890.85 → −$19,638.95, p90 $377,639.32 → $476,377.44, winner median net $161,901.10 → $161,454.23, Do Nothing median net $308,688.28 → $318,003.38. The note's earlier sentence 'The winner takes 34 of 40 paths' is superseded by this re-pin: the winner now takes 33 of 40.)",
     expected: {
       pathsRun: 40,
-      wins: 34,
-      winRatePct: 85,
-      medianAdvantage: 130788.85,
-      p10Advantage: -22890.85,
-      p90Advantage: 377639.32,
-      winnerMedianNetCost: 161901.1,
-      doNothingMedianNetCost: 308688.28,
+      wins: 33,
+      winRatePct: 82.5,
+      medianAdvantage: 129618.7,
+      p10Advantage: -19638.95,
+      p90Advantage: 476377.44,
+      winnerMedianNetCost: 161454.23,
+      doNothingMedianNetCost: 318003.38,
     },
     actual: () => {
       const plan = optTorpedoPlan();
@@ -3472,7 +3472,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-paired-paths",
     kind: "tax",
-    note: "Market-uncertainty check pairing: at N = 6, volatility 15, seed 12345, every path's {winnerCost, doNothingCost} from the check equals a DIRECT simulateRothPlan pricing of both candidates (claiming ages folded in, Do Nothing as the ceilings-null strategy, the winner as its re-solved strategy) using the exported series generator's series for that same path — proving both strategies see the identical series on each path. And Do Nothing priced with the NEXT path's series differs from its own-path price on all 6 paths — proving the series genuinely vary per path (a single shared series, or one series per candidate, would fail one side or the other).",
+    note: "Market-uncertainty check pairing: at N = 6, volatility 15, seed 12345, every path's {winnerCost, doNothingCost} from the check equals a DIRECT simulateRothPlan pricing of both candidates (claiming ages folded in, Do Nothing as the ceilings-null strategy, the winner as its re-solved strategy) using that same path's series — proving both strategies see the identical series on each path. And Do Nothing priced with the NEXT path's series differs from its own-path price on all 6 paths — proving the series genuinely vary per path (a single shared series, or one series per candidate, would fail one side or the other). (Series regeneration REWORKED in v110, round-16 F2: the check now draws the fixed MC_STREAM_STRIDE_YEARS (160) shock vector per path and prices from its horizon prefix — the stats run's discipline — so this case regenerates each path's series the same way, via rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng) sliced to the plan horizon, instead of the old variable-length rothMcReturnSeries draw.)",
     expected: { mismatches: 0, pathsChecked: 6, dnAltSeriesDiffers: 6 },
     actual: () => {
       const plan = optTorpedoPlan();
@@ -3485,10 +3485,22 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         pathCount: N,
         seed: ROTH_MC_CHECK_SEED,
       });
-      // Regenerate the batch's series in order from a fresh stream.
+      // Regenerate the batch's series in order from a fresh stream,
+      // under the v110 fixed-stride discipline: one 160-shock vector
+      // per path, the series is its horizon prefix centered on the
+      // plan's expected return.
       const rng = rothMcStream(ROTH_MC_CHECK_SEED);
+      const horizonYears =
+        plan.endAgePrimary - (plan.startYear - plan.birthYearPrimary) + 1;
       const seriesList: number[][] = [];
-      for (let i = 0; i < N; i++) seriesList.push(rothMcReturnSeries(plan, 15, rng));
+      for (let i = 0; i < N; i++) {
+        const z = rothMcShockSeries(MC_STREAM_STRIDE_YEARS, rng);
+        seriesList.push(
+          z
+            .slice(0, horizonYears)
+            .map((zi) => plan.expectedReturnPct + 15 * zi),
+        );
+      }
       const priceWith = (
         cand: typeof winner,
         series: readonly number[],
@@ -12445,16 +12457,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-o2-monte-carlo-production",
     kind: "tax",
-    note: "Presentation pin O2 / MT-O2 (engine-derived fresh 2026-10-15 at PRODUCTION parameters — 250 paired paths, seed 12345, volatility 15% — on the anchor shape's joint winner vs its Do Nothing): the winner wins 201 of 250 paths (80.4%); the median advantage is $1,101,401.10, with the 10th percentile at −$90,752.59 (the check honestly shows paths where converting loses) and the 90th at $5,493,643.26; median net costs: winner $304,037.46, Do Nothing $1,408,184.05. The review-era figures for this check were STALE-SUSPECT and are superseded by these derived values. This is golden-battery Q21. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Presentation pin O2 / MT-O2 (engine-derived fresh 2026-10-15 at PRODUCTION parameters — 250 paired paths, seed 12345, volatility 15% — on the anchor shape's joint winner vs its Do Nothing): the winner wins 221 of 250 paths (88.4%); the median advantage is $1,174,980.76, with the 10th percentile at −$24,673.08 (the check honestly shows paths where converting loses) and the 90th at $5,872,178.26; median net costs: winner $317,760.39, Do Nothing $1,465,241.19. The review-era figures for this check were STALE-SUSPECT and are superseded by these derived values. This is golden-battery Q21. (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–250 are different market trials than under the old variable-length draw. Every figure moved from the prior pin: wins 205 → 221, win rate 82% → 88.4%, median advantage $1,101,401.10 → $1,174,980.76, p10 −$77,606.49 → −$24,673.08, p90 $5,493,643.26 → $5,872,178.26, winner median net $304,037.46 → $317,760.39, Do Nothing median net $1,408,184.05 → $1,465,241.19.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
     expected: {
       paths: 250,
-      wins: 205,
-      winRatePct: 82,
-      medianAdvantage: 1101401.1,
-      p10Advantage: -77606.49,
-      p90Advantage: 5493643.26,
-      winnerMedianNetCost: 304037.46,
-      doNothingMedianNetCost: 1408184.05,
+      wins: 221,
+      winRatePct: 88.4,
+      medianAdvantage: 1174980.76,
+      p10Advantage: -24673.08,
+      p90Advantage: 5872178.26,
+      winnerMedianNetCost: 317760.39,
+      doNothingMedianNetCost: 1465241.19,
     },
     actual: () => {
       const plan = goldenWorkPlan();

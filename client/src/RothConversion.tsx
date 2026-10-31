@@ -698,6 +698,13 @@ export function RothConversion() {
   const [giftFingerprint, setGiftFingerprint] = useState("");
   const [giftError, setGiftError] = useState("");
   const [optResult, setOptResult] = useState<OptData | null>(null);
+  // Fingerprint of the exact request the optimizer last ran on
+  // (contract v109, round-16 F1): the Monte Carlo check is gated
+  // on it, so a plan edited after the optimizer ran cannot be
+  // checked as if the retained winner were priced on the
+  // current inputs. Follows the sibling sections' pattern
+  // (yfFingerprint / wyFingerprint / giftFingerprint).
+  const [optFingerprint, setOptFingerprint] = useState("");
   // "How the search works" methodology expander (display only).
   const [optHowOpen, setOptHowOpen] = useState(false);
   const [optRunFailed, setOptRunFailed] = useState(false);
@@ -2903,9 +2910,10 @@ export function RothConversion() {
   const runOptimizerMut = useMutation({
     mutationFn: (input: OptRequest) => api.runRothOptimizer(input),
     onMutate: () => setOptRunFailed(false),
-    onSuccess: (res) => {
+    onSuccess: (res, vars) => {
       setOptRunFailed(false);
       setOptResult(res);
+      setOptFingerprint(JSON.stringify(vars));
     },
     onError: () => setOptRunFailed(true),
   });
@@ -3111,6 +3119,18 @@ export function RothConversion() {
       fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
     });
   };
+  // The optimizer run's staleness (contract v109, round-16 F1):
+  // the current fingerprint is built exactly as the Run button
+  // builds its request, so any plan input that affects optimizer
+  // pricing is covered. While stale, the retained winner was
+  // priced on earlier inputs and the Monte Carlo check below is
+  // gated — its figures are not a validation of that winner.
+  const optFingerprintNow = JSON.stringify({
+    ...buildSavePayload(),
+    fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
+  });
+  const optStale =
+    optResult != null && optFingerprint !== optFingerprintNow;
   // The fingerprint of what a run right now would price; the
   // stored result is current only while it matches.
   const mcRequestNow = buildMcRequest();
@@ -9959,7 +9979,7 @@ export function RothConversion() {
                       type="button"
                       aria-label="Run the market-uncertainty check"
                       className="rounded-[var(--radius)] bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-                      disabled={!mcRequestNow || runMcCheckMut.isPending}
+                      disabled={!mcRequestNow || optStale || runMcCheckMut.isPending}
                       onClick={() => {
                         if (mcRequestNow) runMcCheckMut.mutate(mcRequestNow);
                       }}
@@ -9969,7 +9989,9 @@ export function RothConversion() {
                     <span className="text-xs text-[var(--dim)]" aria-live="polite">
                       {runMcCheckMut.isPending
                         ? "Pricing the winning strategy and Do Nothing across varied return paths — this can take a while."
-                        : "Runs with the plan and the winning strategy exactly as they stand now. Running the check saves nothing."}
+                        : optStale
+                          ? "The plan changed since the optimizer ran, so this winner was priced on the earlier inputs — run the optimizer again before checking it."
+                          : "Runs with the plan and the winning strategy exactly as they stand now. Running the check saves nothing."}
                     </span>
                   </div>
                   {mcRunFailed && (
@@ -9983,7 +10005,7 @@ export function RothConversion() {
                       {mcResult.data.reason}
                     </p>
                   )}
-                  {mcResult?.data.ok && mcResultCurrent && (
+                  {mcResult?.data.ok && mcResultCurrent && !optStale && (
                     <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-4 py-3">
                       <p className="text-sm text-[var(--dim)]">
                         Market-uncertainty check — figures across varied-return
