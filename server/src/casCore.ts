@@ -134,6 +134,34 @@ export function decideCasRevision(
   return { allowed: true, nextRevision: storedRevision + 1 };
 }
 
+/* The restore-epoch decision for mutations that carry no revision
+   counter (contract v121, round-18 F3/F4): the same epoch rule
+   decideCasRevision applies to the snapshot editors, factored out
+   so the value-CAS spending editors, the deletes, and the settings
+   writers can share it. `storedEpoch` is the restore generation
+   the dataset is on and `baseEpoch` the generation the editor
+   observed when it loaded. A supplied epoch that differs from the
+   stored epoch is refused as an epoch conflict — a restore
+   replaced the dataset since the load, even when the stored value
+   still equals the loaded base (the value-ABA: a same-value
+   restore is invisible to a value check, so the epoch is the only
+   signal). A missing epoch keeps the pre-v121 behaviour (the same
+   tolerated legacy leniency as a missing base); no live editor
+   omits it. */
+export type EpochDecision =
+  | { allowed: true }
+  | { allowed: false; epochConflict: true };
+
+export function decideRestoreEpoch(
+  storedEpoch: number,
+  baseEpoch?: number,
+): EpochDecision {
+  if (baseEpoch !== undefined && baseEpoch !== storedEpoch) {
+    return { allowed: false, epochConflict: true };
+  }
+  return { allowed: true };
+}
+
 /* The December-style conflict reason the CAS families share: a
    newer copy was saved elsewhere, this edit was NOT saved over it.
    `what` names the record in the editor's own words ("transaction",

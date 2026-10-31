@@ -120,6 +120,7 @@ casDeepEqual,
 casFieldMismatch,
 casRestoreEpochConflictReason,
 decideCasRevision,
+decideRestoreEpoch,
 nextRestoreEpoch,
 NW_RESTORE_EPOCH_SETTING,
 parseRestoreEpoch,
@@ -5868,6 +5869,79 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
           !staleSecond.allowed && staleSecond.epochConflict ? 1 : 0,
         freshAfterSecondRestoreAllowed: freshSecond.allowed ? 1 : 0,
         epochsAdvance: epochAfterSecond,
+      };
+    },
+  },
+  {
+    id: "api-cas-restore-epoch-spending",
+    kind: "apicontract",
+    note: "Contract v121 (round-18 F3): the restore-epoch guard generalised to the spending editors and deletes — the pure decideRestoreEpoch seam the handlers run. The settlement's re-derived example: an editor loads a month total at epoch 0; a restore replaces the dataset with the SAME total (same value, different generation, epoch 0 -> 1); the stale editor's save is refused as an epoch conflict even though the stored value still equals the base, so the value-CAS check alone would have let it through. A fresh editor loading after the restore (epoch 1) writes; omitting baseEpoch keeps the legacy unchecked behaviour; the refusal reason names the restore and the record.",
+    expected: {
+      sameValueStaleRefused: 0,
+      sameValueStaleIsEpochConflict: 1,
+      freshAfterRestoreAllowed: 1,
+      missingBaseEpochLegacyAllowed: 1,
+      matchingEpochAllowed: 1,
+      reasonNamesRestore: 1,
+      reasonNamesRecord: 1,
+    },
+    actual: () => {
+      // Editor loads the month total at epoch 0; the restore
+      // replaces the dataset at the same value, epoch 0 -> 1.
+      const storedEpoch = nextRestoreEpoch(0);
+      const staleSameValue = decideRestoreEpoch(storedEpoch, 0);
+      // Fresh editor loads after the restore and saves.
+      const fresh = decideRestoreEpoch(storedEpoch, storedEpoch);
+      // A caller that omits baseEpoch keeps the legacy path.
+      const legacy = decideRestoreEpoch(storedEpoch, undefined);
+      const reason = casRestoreEpochConflictReason("month's cash-out total");
+      return {
+        sameValueStaleRefused: staleSameValue.allowed ? 1 : 0,
+        sameValueStaleIsEpochConflict:
+          !staleSameValue.allowed && staleSameValue.epochConflict ? 1 : 0,
+        freshAfterRestoreAllowed: fresh.allowed ? 1 : 0,
+        missingBaseEpochLegacyAllowed: legacy.allowed ? 1 : 0,
+        matchingEpochAllowed: decideRestoreEpoch(1, 1).allowed ? 1 : 0,
+        reasonNamesRestore: reason.includes("A backup was restored") ? 1 : 0,
+        reasonNamesRecord: reason.includes("month's cash-out total") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "api-cas-restore-epoch-delete",
+    kind: "apicontract",
+    note: "Contract v121 (round-18 F4): the restore-epoch guard on deletes — the pure decideRestoreEpoch seam the delete handlers run. The restore path re-inserts snapshots with their explicit ids, so a stale tab holding a pre-restore snapshot id would otherwise delete the restored snapshot. A delete carrying the pre-restore epoch is refused as an epoch conflict; a delete carrying the post-restore epoch is allowed; a second restore refuses the first-restore-era delete again. The refusal reason names the restore and the record.",
+    expected: {
+      staleDeleteRefused: 0,
+      staleDeleteIsEpochConflict: 1,
+      freshDeleteAllowed: 1,
+      staleAfterSecondRestoreRefused: 0,
+      staleAfterSecondRestoreIsEpoch: 1,
+      reasonNamesRestore: 1,
+      reasonNamesRecord: 1,
+    },
+    actual: () => {
+      // Tab loads the snapshot list at epoch 0; the restore
+      // re-inserts the snapshot with the same id, epoch 0 -> 1.
+      const epochAfterFirst = nextRestoreEpoch(0);
+      const staleDelete = decideRestoreEpoch(epochAfterFirst, 0);
+      // Fresh view loads after the restore and deletes.
+      const freshDelete = decideRestoreEpoch(epochAfterFirst, epochAfterFirst);
+      // Second restore stamps epoch 2; the first-restore-era
+      // delete is refused again.
+      const epochAfterSecond = nextRestoreEpoch(epochAfterFirst);
+      const staleSecond = decideRestoreEpoch(epochAfterSecond, epochAfterFirst);
+      const reason = casRestoreEpochConflictReason("snapshot");
+      return {
+        staleDeleteRefused: staleDelete.allowed ? 1 : 0,
+        staleDeleteIsEpochConflict:
+          !staleDelete.allowed && staleDelete.epochConflict ? 1 : 0,
+        freshDeleteAllowed: freshDelete.allowed ? 1 : 0,
+        staleAfterSecondRestoreRefused: staleSecond.allowed ? 1 : 0,
+        staleAfterSecondRestoreIsEpoch:
+          !staleSecond.allowed && staleSecond.epochConflict ? 1 : 0,
+        reasonNamesRestore: reason.includes("A backup was restored") ? 1 : 0,
+        reasonNamesRecord: reason.includes("snapshot") ? 1 : 0,
       };
     },
   },

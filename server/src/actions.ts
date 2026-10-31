@@ -140,6 +140,7 @@ import {
   casFieldMismatch,
   casRestoreEpochConflictReason,
   decideCasRevision,
+  decideRestoreEpoch,
   nextRestoreEpoch,
   NW_RESTORE_EPOCH_SETTING,
   parseRestoreEpoch,
@@ -863,6 +864,12 @@ const cashOutItemUpdateInput = z
     // Contract v65 (CAS sweep, F14): the item as the editor loaded
     // it — see updateCashOutItem. Optional: omitting it keeps the
     // legacy unchecked write (named in DATA-PLAN).
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the editor observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load,
+    // even when the stored item still equals the base.
+    baseEpoch: z.number().int().nonnegative().optional(),
     base: z
       .object({
         month: z.string().regex(monthRe),
@@ -3130,7 +3137,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 120;
+export const API_CONTRACT_VERSION = 121;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -5780,37 +5787,37 @@ type AccuracySelfCheckResponse = z.infer<typeof accuracySelfCheckResponse>;
    entry here, so a future action added without a purpose is
    visible in the contract itself rather than drifting silently. */
 const ACTION_PURPOSES: Record<string, string> = {
-  getDashboard: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles.",
+  getDashboard: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles. restoreEpoch (contract v121) is the dataset's current restore generation — the epoch base the spending editors and deletes pass back as baseEpoch, so a view that predates a backup restore is refused.",
   getYearView: "One calendar year's spending: monthly true cost and cash out, totals, and the year's bills.",
   getExplorer: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range.",
   addTransaction: "Record one spending transaction (checking or card).",
-  updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write.",
-  deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist.",
+  updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given. BATCH IDEMPOTENCY KEY (contract v64, F02): the optional batchKey makes one batch retry-safe against a lost response — a completed keyed batch is recorded durably (a settings row holding the batch's rows hash and count, committed in the SAME batch as the rows), and a repeat call with the same key and the same rows returns the original { imported } count inserting ZERO additional rows; the same key with DIFFERENT rows is refused with a clear error and inserts nothing; a genuinely new import under a new key inserts identical rows normally (the key guards retries, not content). Requests without a key behave exactly as before. The import panel generates one key per 500-row batch and reuses it when re-offering that batch after a failure.",
-  getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
+  getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins. restoreEpoch (contract v121) is the dataset's current restore generation — the epoch base the import panel's confirmed cash-out save passes back as baseEpoch.",
   saveImportSettings: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an import-settings blob (importParseCore); anything else is refused and nothing is stored.",
   getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
   saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored.",
   addYearlyExpense: "Add a yearly or periodic (smoothed) expense bill. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted.",
-  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the parent fields as loaded, plus the version stored for the save's effective month — null when none existed), the write is refused with { ok: false, conflict: true, reason } when any of those no longer matches storage, checked before any write so the parent and every version stay intact. Omitting `base` keeps the legacy unchecked write.",
-  setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist. The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64).",
-  deleteYearlyExpense: "Delete a yearly/periodic expense and its versions. Returns { ok: false, reason } when the id does not exist.",
-  deleteYearlyExpenseVersion: "Remove one version from a yearly/periodic expense's history.",
-  setYearlyDueMonth: "Set the due month of a yearly expense. Returns { ok: false, reason } when the id does not exist.",
+  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the parent fields as loaded, plus the version stored for the save's effective month — null when none existed), the write is refused with { ok: false, conflict: true, reason } when any of those no longer matches storage, checked before any write so the parent and every version stay intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist. The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteYearlyExpense: "Delete a yearly/periodic expense and its versions. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteYearlyExpenseVersion: "Remove one version from a yearly/periodic expense's history. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setYearlyDueMonth: "Set the due month of a yearly expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addMonthlyOneOff: "Record a one-off expense against a month.",
-  updateMonthlyOneOff: "Edit a recorded one-off expense. Returns { ok: false, reason } when the id does not exist.",
-  deleteMonthlyOneOff: "Delete a recorded one-off expense. Returns { ok: false, reason } when the id does not exist.",
+  updateMonthlyOneOff: "Edit a recorded one-off expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlyOneOff: "Delete a recorded one-off expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addCashOutItem: "Add an itemized cash-out line to a month.",
-  updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the item as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write.",
-  deleteCashOutItem: "Delete an itemized cash-out line from a month. Returns { ok: false, reason } when the id does not exist.",
-  updateSettings: "Update spending settings (opening reserve and reserve start month). Compare-and-swap (contract v65): when the caller supplies `base` (both stored keys as loaded), the write is refused with { ok: false, conflict: true, reason } when either stored key no longer matches its base, and both stored values stay intact. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }.",
-  upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions). Compare-and-swap (contract v65): when the caller supplies `base` (the stored month total as loaded, null when none was stored), the write is refused with { ok: false, conflict: true, reason } when the stored total differs from the base. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }.",
-  deleteMonthlySummary: "Remove a month's entered cash-out total. Returns { ok: false, reason } when no total is recorded for that month.",
+  updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the item as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteCashOutItem: "Delete an itemized cash-out line from a month. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  updateSettings: "Update spending settings (opening reserve and reserve start month). Compare-and-swap (contract v65): when the caller supplies `base` (both stored keys as loaded), the write is refused with { ok: false, conflict: true, reason } when either stored key no longer matches its base, and both stored values stay intact. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions). Compare-and-swap (contract v65): when the caller supplies `base` (the stored month total as loaded, null when none was stored), the write is refused with { ok: false, conflict: true, reason } when the stored total differs from the base. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlySummary: "Remove a month's entered cash-out total. Returns { ok: false, reason } when no total is recorded for that month. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addMonthlyBill: "Add a monthly bill.",
-  updateMonthlyBill: "Edit a monthly bill's details. Only the fields actually sent are written: notes, category, and keepLightsOn are optional with no defaults, so an absent field preserves the stored value, while an explicitly sent notes: null clears the notes. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the bill's five form fields as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save would replace no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write.",
-  setMonthlyBillCategory: "Set a monthly bill's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist.",
-  setYearlyCategory: "Set a yearly/periodic expense's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist.",
-  setMonthlyBillKeepLightsOn: "Toggle a monthly bill's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
+  updateMonthlyBill: "Edit a monthly bill's details. Only the fields actually sent are written: notes, category, and keepLightsOn are optional with no defaults, so an absent field preserves the stored value, while an explicitly sent notes: null clears the notes. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the bill's five form fields as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save would replace no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setMonthlyBillCategory: "Set a monthly bill's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setYearlyCategory: "Set a yearly/periodic expense's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setMonthlyBillKeepLightsOn: "Toggle a monthly bill's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   setMonthlyBillsCollapsedAll: "Persist the Monthly bills section's collapsed/expanded state.",
   setYearlyBillsCollapsedAll: "Persist the Yearly & periodic expenses section's collapsed/expanded state.",
   setByCategoryCollapsedAll: "Persist the By category section's collapsed/expanded state.",
@@ -5819,20 +5826,20 @@ const ACTION_PURPOSES: Record<string, string> = {
   setExplainerExpanded: "Persist the explainer panel's expanded state.",
   getUiFoldState: "Read the generic fold state: the open/closed map for the Spending and Net Worth collapsible pieces not owned by a more specific store (per-month cash-out item lists, the import panels, the reserve settings fold, the Trend anchor note). Only folds left open are carried; an absent id is that fold's default (closed).",
   setUiFoldState: "Persist one generic fold's open/closed state (see getUiFoldState). Display-only; setting a fold closed removes its entry, since every fold in this store defaults to closed.",
-  setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist.",
-  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist. The version write is an atomic upsert on the (bill, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the amount stored for that effective month as loaded — null when no version existed for it), the write is refused with { ok: false, conflict: true, reason } when the stored amount for that month differs from the base. Omitting `base` keeps the legacy unchecked write.",
-  deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist.",
-  deleteMonthlyBillVersion: "Remove one version from a monthly bill's history.",
+  setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist. The version write is an atomic upsert on the (bill, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the amount stored for that effective month as loaded — null when no version existed for it), the write is refused with { ok: false, conflict: true, reason } when the stored amount for that month differs from the base. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlyBillVersion: "Remove one version from a monthly bill's history. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   seedExamples: "Seed the example spending dataset. Refused unless the WHOLE dataset is empty — every dataset table, settings included (the one global first-run emptiness check, seedGuardCore): a tracker holding any real record receives no sample rows. The seed commits as ONE atomic batch (contract v64): a failure mid-seed leaves the dataset empty and a plain retry can succeed.",
   seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (contract v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
   clearAllData: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state. Requires confirm to carry the exact phrase \"delete everything\"; any other confirmation deletes nothing.",
   seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table. The seed commits as ONE atomic batch (contract v64), like seedExamples.",
   getNetWorth: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress. restoreEpoch (contract v93) is the dataset's current restore generation — the epoch base the snapshot editors pass back alongside baseRevision, so an editor whose view predates a backup restore is refused.",
-  setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals.",
-  setNwTarget: "Set the Net Worth target amount.",
-  getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results. Also carries savedUnreadable / baselineUnreadable markers (contract v67): true when the saved inputs record / baseline record exists but cannot be read — in that state saved / baseline read as null exactly as an absent record would, and the markers are the distinction.",
+  setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setNwTarget: "Set the Net Worth target amount. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results. Also carries savedUnreadable / baselineUnreadable markers (contract v67): true when the saved inputs record / baseline record exists but cannot be read — in that state saved / baseline read as null exactly as an absent record would, and the markers are the distinction. restoreEpoch (contract v121) is the dataset's current restore generation — the epoch base the spending-unit toggle passes back as baseEpoch.",
   setRetirementAssumptionsCollapsed: "Persist the Retirement assumptions section's collapsed state.",
-  setRetirementSpendingUnit: "Persist the Retirement annual-spending entry unit (per year / per month).",
+  setRetirementSpendingUnit: "Persist the Retirement annual-spending entry unit (per year / per month). Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getRetirementCalc's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   saveRetirementCalc: "Save the Retirement calculator inputs. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current lite record (saved inputs, scenarios, baseline, and both revisions) instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. FIRST WRITE (contract v64): when no record exists yet and a baseRevision is supplied, the write is insert-if-absent — if a first save from elsewhere landed between the read and the write, this write is refused with the same conflict shape instead of overwriting it, so two overlapping first saves at base 0 produce exactly one success and one conflict.",
   saveRetirementBaseline: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan'). Revision-checked (CAS) on BOTH records: a write whose baseRevision or baseBaselineRevision no longer matches the stored revision is refused before anything is written, with the current lite record and both revisions; a baseline commit that loses a commit-time race is retried once against the fresh baseline, and a second loss returns a stage \"baseline\" conflict (the working inputs were saved; the baseline did not move). Writes with no bases keep the legacy unchecked behaviour, and every accepted write bumps both revisions and returns them. FIRST WRITE (contract v64): when a record does not exist yet and its base is supplied, that record's write is insert-if-absent — a landed concurrent first save refuses this write (an inputs-stage conflict when the working record landed, a stage \"baseline\" conflict when only the baseline landed) instead of being overwritten.",
   getRetirementBaselineResults: "Price the saved Retirement baselines against the current defaults. Carries baselineUnreadable (contract v67): true when a baseline record exists but cannot be read, distinct from no baseline.",
@@ -5864,11 +5871,11 @@ const ACTION_PURPOSES: Record<string, string> = {
   addNwSnapshot: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
   updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the replacement is refused with { ok: false, conflict: true, revision, reason } when the stored revision has moved — by either snapshot writer — and the stored snapshot stays intact; an accepted write bumps the revision and returns it. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the replacement is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match; an editor that loaded after the restore succeeds normally. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
   updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the write is refused with { ok: false, conflict: true, revision, reason } when the snapshot's revision has moved, and an accepted write bumps that same revision — so a whole-snapshot editor holding the older revision conflicts instead of restoring the old balance. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
-  deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist.",
+  deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist. Epoch-checked (contract v121, round-18 F4): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the delete is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load — the restore path re-inserts snapshots with their explicit ids, so a stale delete by id would otherwise remove the restored snapshot. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addNwAccount: "Add a Net Worth account (ordinary, property, or custodial). An absent propertyKind defaults to \"none\"; an unknown propertyKind value is rejected, never defaulted.",
-  renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the account's name, propertyKind, and custodial flag as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save writes no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write.",
-  setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist.",
-  deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances.",
+  renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the account's name, propertyKind, and custodial flag as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save writes no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   exportbackup: "Export the complete dataset as one decrypted backup payload. The payload carries an authenticityMac — a keyed MAC over its contents — which restorebackup verifies before restoring.",
   restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative; every backed-up field's own writer rule holds (string lengths for names, descriptions, categories, paid-by labels and notes; the yearly dueMonth within 1–12 or null; every stored flag a 0/1 value; row ids and foreign keys positive; no tax-bucket split on a property or custodial account's balance — the field rules are the shared fieldValidators fragments the writers themselves use); and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes. Named exclusions: settings values other than those three scalar typed settings ride as opaque blobs (their writers validate structured objects at save time and their readers parse leniently), and server-assigned values (sortOrder, createdAt timestamps) are carried without range checks; transaction amounts and Net Worth balances stay signed because their writers accept negatives. The Net Worth account bucket field is a legacy column no current writer writes, and it is validated, not excluded: a bucket value carrying the enc:v1: prefix is refused at preflight unless it genuinely decrypts under this app's encryption key in the bucket field's own context (the context the export path decrypts it under) — an undecryptable prefixed bucket would otherwise be stored verbatim and break every later export — while a plaintext bucket always restores. Every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes. Restore epoch (contract v93): every restore advances the stored restore epoch by one in the same atomic batch — a carried epoch value in the payload is ignored, so old backups still advance it — and any snapshot editor holding a pre-restore epoch is refused afterwards.",
   listBackups: "List the encrypted backup files the Backups panel shows: this space's own backups folder unioned with the legacy shared folder. Each entry's source says which folder it resolved to — \"own\" (deletable from the app) or \"legacy\" (exists only in the legacy folder, which is read-only: listed and restorable, never deletable from here).",
@@ -6639,6 +6646,28 @@ async function readStoredRestoreEpoch(db: any): Promise<number> {
   return parseRestoreEpoch(row?.value);
 }
 
+/* Contract v121 (round-18 F3/F4): the restore-epoch refusal for
+   mutations that carry no revision counter — the spending editors,
+   the deletes, and the settings writers. Returns the
+   restore-naming conflict reason when the caller supplied a
+   baseEpoch that differs from the stored restore epoch (a backup
+   restore advanced it since the editor loaded), or null when the
+   write may proceed (no baseEpoch supplied — the tolerated legacy
+   leniency — or the epochs match). Callers refuse with the same
+   conflict shape the snapshot editors use ({ ok: false,
+   conflict: true, reason }), naming the record in `what`. */
+async function restoreEpochConflict(
+  db: any,
+  baseEpoch: number | undefined,
+  what: string,
+): Promise<string | null> {
+  if (baseEpoch === undefined) return null;
+  const storedEpoch = await readStoredRestoreEpoch(db);
+  return decideRestoreEpoch(storedEpoch, baseEpoch).allowed
+    ? null
+    : casRestoreEpochConflictReason(what);
+}
+
 export const Actions = {
   // Machine-readable API contract (model-friendly API, Piece 1):
   // generated AT CALL TIME from the live action definitions —
@@ -6908,6 +6937,14 @@ export const Actions = {
       // stored data passes every check — the UI renders nothing
       // for an empty list.
       integrityWarnings: z.array(z.string()),
+      // Restore epoch (contract v121, round-18 F3): the restore
+      // generation the dataset is on, stored in settings under
+      // "nw_restore_epoch_v1" and advanced by every restorebackup
+      // (the same value getNetWorth publishes). The spending
+      // editors and deletes pass it back as baseEpoch, so a view
+      // that predates a restore is refused. 0 when no restore has
+      // stamped one.
+      restoreEpoch: z.number().int().nonnegative(),
     }),
     async handler(ctx, args) {
       const { txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems, settingsMap, key } =
@@ -7289,6 +7326,7 @@ export const Actions = {
       }
       return {
         month,
+        restoreEpoch: parseRestoreEpoch(settingsMap.get(NW_RESTORE_EPOCH_SETTING)),
         totalExpectedYearlyCents,
         totalAnnualCents,
         accrualCents,
@@ -7813,8 +7851,16 @@ export const Actions = {
     // mismatch returns the conflict shape and the stored newer
     // value stays intact. A call omitting `base` keeps the legacy
     // unchecked behaviour (named in DATA-PLAN).
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the editor observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load —
+    // even when the stored row still equals the base (a same-value
+    // restore is invisible to the value check). Omitting it keeps
+    // the pre-v121 value-only check.
     request: txnInput.extend({
       id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
       base: z
         .object({
           date: dateString,
@@ -7835,11 +7881,31 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const { base, ...fields } = args;
       let guardRaw: typeof schema.transactions.$inferSelect | undefined;
-      if (base !== undefined) {
-        const [raw] = await db
+      // Contract v121 (F3): the epoch check is independent of the
+      // value base — it runs whenever a baseEpoch is supplied,
+      // before the value check, so a restore since the load
+      // refuses the write even when the stored row still equals
+      // the base (a same-value restore is invisible to the value
+      // check). The row is loaded once for both checks, only
+      // when a guard is supplied.
+      let rowForGuard: typeof schema.transactions.$inferSelect | undefined;
+      if (base !== undefined || args.baseEpoch !== undefined) {
+        [rowForGuard] = await db
           .select()
           .from(schema.transactions)
           .where(eq(schema.transactions.id, args.id));
+        if (!rowForGuard) {
+          return { ok: false, reason: "That transaction was not found." };
+        }
+        const epochReason = await restoreEpochConflict(db, args.baseEpoch, "transaction");
+        if (epochReason) {
+          return { ok: false, conflict: true, reason: epochReason };
+        }
+      }
+      if (base !== undefined) {
+        const raw = rowForGuard;
+        // Unreachable in practice — the guard load above returns
+        // when the row is missing — but the type needs the check.
         if (!raw) {
           return { ok: false, reason: "That transaction was not found." };
         }
@@ -7925,10 +7991,31 @@ export const Actions = {
 
   deleteTransaction: defineAction({
     description: "Delete one recorded transaction.",
-    request: z.object({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load —
+    // the restore re-creates rows with the same ids, so a stale
+    // delete would remove restored data. Omitting it keeps the
+    // pre-v121 unchecked behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ id: schema.transactions.id })
+        .from(schema.transactions)
+        .where(eq(schema.transactions.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That transaction was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "transaction");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const deleted = await db
         .delete(schema.transactions)
         .where(eq(schema.transactions.id, args.id))
@@ -7987,6 +8074,13 @@ export const Actions = {
           ),
         }),
       ),
+      // Restore epoch (contract v121, round-18 F3): the restore
+      // generation the dataset is on (the same value getNetWorth
+      // and getDashboard publish). The import panel's confirmed
+      // cash-out save passes it back as baseEpoch, so a panel that
+      // loaded before a restore is refused. 0 when no restore has
+      // stamped one.
+      restoreEpoch: z.number().int().nonnegative(),
     }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
@@ -8058,7 +8152,12 @@ export const Actions = {
           });
         }
       }
-      return { settingsJson, existing, cashOut };
+      return {
+        settingsJson,
+        existing,
+        cashOut,
+        restoreEpoch: await readStoredRestoreEpoch(db),
+      };
     },
   }),
 
@@ -8431,6 +8530,13 @@ export const Actions = {
     // before ANY write, so a refusal leaves the parent and every
     // version intact. Omitting `base` keeps the legacy unchecked
     // behaviour (named in DATA-PLAN).
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the editor observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load,
+    // even when the stored fields still equal the base (a
+    // same-value restore is invisible to the value check).
+    // Omitting it keeps the pre-v121 value-only check.
     request: z.object({
       id: z.number().int().positive(),
       name: billNameField,
@@ -8442,6 +8548,7 @@ export const Actions = {
       category: category60Field.default("Uncategorized"),
       keepLightsOn: z.boolean().default(false),
       effectiveFrom: z.string().regex(monthRe).optional(),
+      baseEpoch: z.number().int().nonnegative().optional(),
       base: z
         .object({
           name: billNameField,
@@ -8474,6 +8581,13 @@ export const Actions = {
         .where(eq(schema.yearlyExpenses.id, args.id));
       if (!existingExpense) {
         return { ok: false, reason: "That yearly expense was not found." };
+      }
+      // Contract v121 (F3): the epoch check runs before the value
+      // check — a restore since the load refuses the write even
+      // when the stored fields still equal the base.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
       }
       // The effective month is resolved BEFORE the CAS checks:
       // the version base is the version stored for THIS month.
@@ -8599,11 +8713,17 @@ export const Actions = {
   setYearlyExpenseVersion: defineAction({
     description: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward.",
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       expenseId: z.number().int().positive(),
       expectedCents: z.number().int().nonnegative(),
       frequency: yearlyFrequency,
       effectiveFrom: z.string().regex(monthRe),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
@@ -8618,6 +8738,10 @@ export const Actions = {
         .where(eq(schema.yearlyExpenses.id, args.expenseId));
       if (!existingExpense) {
         return { ok: false, reason: "That yearly expense was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
       }
       const encExpectedArg = await encryptNum(key, args.expectedCents, "yearly_expense_versions.expected_cents");
       // Atomic upsert on the (expenseId, effectiveFrom) pair
@@ -8657,7 +8781,17 @@ export const Actions = {
 
   deleteYearlyExpense: defineAction({
     description: "Delete a yearly/periodic expense and its versions.",
-    request: z.object({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load —
+    // the restore re-creates the expense with the same id, so a
+    // stale delete would remove restored data. Omitting it keeps
+    // the pre-v121 unchecked behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
@@ -8667,6 +8801,10 @@ export const Actions = {
         .where(eq(schema.yearlyExpenses.id, args.id));
       if (!existingExpense) {
         return { ok: false, reason: "That yearly expense was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
       }
       await db
         .update(schema.transactions)
@@ -8693,12 +8831,26 @@ export const Actions = {
   deleteYearlyExpenseVersion: defineAction({
     description: "Remove one version from a yearly/periodic expense's history.",
     privileged: [privileged.ensureEncryptionKey],
-    request: z.object({ versionId: z.number().int().positive() }),
-    response: z.object({ ok: z.boolean(), reason: z.string() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      versionId: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
+    // The conflict flag carries an epoch refusal (contract v121),
+    // like the spending family's okReasonResponse.
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      conflict: z.boolean().optional(),
+    }),
     async handler(
       ctx,
       args,
-    ): Promise<{ ok: boolean; reason: string }> {
+    ): Promise<{ ok: boolean; reason: string; conflict?: boolean }> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
@@ -8708,6 +8860,10 @@ export const Actions = {
         .where(eq(schema.yearlyExpenseVersions.id, args.versionId));
       if (!target) {
         return { ok: false, reason: "That history entry was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
       }
       const all = await db
         .select()
@@ -8752,13 +8908,30 @@ export const Actions = {
   // amounts, frequencies, or versions.
   setYearlyDueMonth: defineAction({
     description: "Set the due month of a yearly expense.",
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       id: z.number().int().positive(),
       dueMonth: dueMonthField,
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ id: schema.yearlyExpenses.id })
+        .from(schema.yearlyExpenses)
+        .where(eq(schema.yearlyExpenses.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const updated = await db
         .update(schema.yearlyExpenses)
         .set({ dueMonth: args.dueMonth })
@@ -8799,12 +8972,31 @@ export const Actions = {
   updateMonthlyOneOff: defineAction({
     description: "Edit a recorded one-off expense.",
     privileged: [privileged.ensureEncryptionKey],
-    request: oneOffInput.extend({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the editor observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: oneOffInput.extend({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      const [existing] = await db
+        .select({ id: schema.monthlyOneOffs.id })
+        .from(schema.monthlyOneOffs)
+        .where(eq(schema.monthlyOneOffs.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That one-off expense was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "one-off expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const updated = await db
         .update(schema.monthlyOneOffs)
         .set({
@@ -8825,10 +9017,29 @@ export const Actions = {
 
   deleteMonthlyOneOff: defineAction({
     description: "Delete a recorded one-off expense.",
-    request: z.object({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ id: schema.monthlyOneOffs.id })
+        .from(schema.monthlyOneOffs)
+        .where(eq(schema.monthlyOneOffs.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That one-off expense was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "one-off expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const deleted = await db
         .delete(schema.monthlyOneOffs)
         .where(eq(schema.monthlyOneOffs.id, args.id))
@@ -8884,11 +9095,30 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const { base, ...fields } = args;
       let guardRaw: typeof schema.monthlyCashOutItems.$inferSelect | undefined;
-      if (base !== undefined) {
-        const [raw] = await db
+      // Contract v121 (F3): the epoch check is independent of the
+      // value base — it runs whenever a baseEpoch is supplied,
+      // before the value check, so a restore since the load
+      // refuses the write even when the stored item still equals
+      // the base. The row is loaded once for both checks, only
+      // when a guard is supplied.
+      let rowForGuard: typeof schema.monthlyCashOutItems.$inferSelect | undefined;
+      if (base !== undefined || args.baseEpoch !== undefined) {
+        [rowForGuard] = await db
           .select()
           .from(schema.monthlyCashOutItems)
           .where(eq(schema.monthlyCashOutItems.id, args.id));
+        if (!rowForGuard) {
+          return { ok: false, reason: "That cash-out item was not found." };
+        }
+        const epochReason = await restoreEpochConflict(db, args.baseEpoch, "cash-out item");
+        if (epochReason) {
+          return { ok: false, conflict: true, reason: epochReason };
+        }
+      }
+      if (base !== undefined) {
+        const raw = rowForGuard;
+        // Unreachable in practice — the guard load above returns
+        // when the row is missing — but the type needs the check.
         if (!raw) {
           return { ok: false, reason: "That cash-out item was not found." };
         }
@@ -8962,10 +9192,29 @@ export const Actions = {
 
   deleteCashOutItem: defineAction({
     description: "Delete an itemized cash-out line from a month.",
-    request: z.object({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ id: schema.monthlyCashOutItems.id })
+        .from(schema.monthlyCashOutItems)
+        .where(eq(schema.monthlyCashOutItems.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That cash-out item was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "cash-out item");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const deleted = await db
         .delete(schema.monthlyCashOutItems)
         .where(eq(schema.monthlyCashOutItems.id, args.id))
@@ -8988,9 +9237,17 @@ export const Actions = {
     // are checked before either is written, so a refusal leaves
     // both stored values intact. Omitting `base` keeps the legacy
     // unchecked behaviour (named in DATA-PLAN).
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the form observed when it opened (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load,
+    // even when both stored keys still equal the base (a
+    // same-value restore is invisible to the value check).
+    // Omitting it keeps the pre-v121 value-only check.
     request: z.object({
       openingReserveCents: z.number().int(),
       reserveStartMonth: z.string().regex(monthRe).nullable().default(null),
+      baseEpoch: z.number().int().nonnegative().optional(),
       base: z
         .object({
           openingReserveCents: z.number().int(),
@@ -9003,6 +9260,13 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      // Contract v121 (F3): the epoch check runs before the value
+      // check — a restore since the load refuses the write even
+      // when both stored keys still equal the base.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "reserve settings");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       if (args.base !== undefined) {
         const rows = await db.select().from(schema.settings);
         const rawReserve = rows.find(
@@ -9063,9 +9327,20 @@ export const Actions = {
     // prevented duplication but not stale replacement. Omitting
     // `base` keeps the legacy unchecked behaviour (named in
     // DATA-PLAN).
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the editor observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load —
+    // even when the stored total still equals the base (a
+    // same-value restore is invisible to the value check, which
+    // is exactly the settlement's re-derived example: a September
+    // total restored at the same value, then a stale save
+    // overwriting it). Omitting it keeps the pre-v121 value-only
+    // check.
     request: z.object({
       month: z.string().regex(monthRe),
       cashOutCents: z.number().int().nonnegative(),
+      baseEpoch: z.number().int().nonnegative().optional(),
       base: z
         .object({
           cashOutCents: z.number().int().nonnegative().nullable(),
@@ -9077,6 +9352,13 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      // Contract v121 (F3): the epoch check runs before the value
+      // check — a restore since the load refuses the write even
+      // when the stored total still equals the base.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "month's cash-out total");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       if (args.base !== undefined) {
         const [row] = await db
           .select()
@@ -9114,10 +9396,35 @@ export const Actions = {
 
   deleteMonthlySummary: defineAction({
     description: "Remove a month's entered cash-out total.",
-    request: z.object({ month: z.string().regex(monthRe) }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load —
+    // the restore re-creates the month total, so a stale delete
+    // would remove restored data. This path previously took no
+    // base at all. Omitting it keeps the pre-v121 unchecked
+    // behaviour.
+    request: z.object({
+      month: z.string().regex(monthRe),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ month: schema.monthlySummaries.month })
+        .from(schema.monthlySummaries)
+        .where(eq(schema.monthlySummaries.month, args.month));
+      if (!existing) {
+        return {
+          ok: false,
+          reason: "No cash-out total is recorded for that month.",
+        };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "month's cash-out total");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const deleted = await db
         .delete(schema.monthlySummaries)
         .where(eq(schema.monthlySummaries.month, args.month))
@@ -9196,6 +9503,13 @@ export const Actions = {
       if (!existingBill) {
         return { ok: false, reason: "That monthly bill was not found." };
       }
+      // Contract v121 (F3): the epoch check runs before the value
+      // check — a restore since the load refuses the write even
+      // when the stored fields still equal the base.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       // CAS guard (contract v65, F18): when the caller supplied
       // the loaded base, refuse if any field this save would
       // replace no longer matches its base in storage — checked
@@ -9269,15 +9583,32 @@ export const Actions = {
   setMonthlyBillCategory: defineAction({
     description: "Set a monthly bill's category (relabels past months' grouping).",
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       id: z.number().int().positive(),
       category: z.string().max(60),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      const [existing] = await db
+        .select({ id: schema.monthlyBills.id })
+        .from(schema.monthlyBills)
+        .where(eq(schema.monthlyBills.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const updated = await db
         .update(schema.monthlyBills)
         .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized", "monthly_bills.category") })
@@ -9296,15 +9627,32 @@ export const Actions = {
   setYearlyCategory: defineAction({
     description: "Set a yearly/periodic expense's category (relabels past months' grouping).",
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       id: z.number().int().positive(),
       category: z.string().max(60),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      const [existing] = await db
+        .select({ id: schema.yearlyExpenses.id })
+        .from(schema.yearlyExpenses)
+        .where(eq(schema.yearlyExpenses.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const updated = await db
         .update(schema.yearlyExpenses)
         .set({ category: await encryptStr(key, args.category.trim() || "Uncategorized", "yearly_expenses.category") })
@@ -9322,13 +9670,30 @@ export const Actions = {
   // no amount, version, or total is touched.
   setMonthlyBillKeepLightsOn: defineAction({
     description: "Toggle a monthly bill's Keep-the-lights-on flag.",
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       id: z.number().int().positive(),
       keepLightsOn: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ id: schema.monthlyBills.id })
+        .from(schema.monthlyBills)
+        .where(eq(schema.monthlyBills.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That monthly bill was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const updated = await db
         .update(schema.monthlyBills)
         .set({ keepLightsOn: args.keepLightsOn ? 1 : 0 })
@@ -9596,13 +9961,30 @@ export const Actions = {
   // no amount, frequency, version, or total is touched.
   setYearlyKeepLightsOn: defineAction({
     description: "Toggle a yearly/periodic expense's Keep-the-lights-on flag.",
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       id: z.number().int().positive(),
       keepLightsOn: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ id: schema.yearlyExpenses.id })
+        .from(schema.yearlyExpenses)
+        .where(eq(schema.yearlyExpenses.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That yearly expense was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       const updated = await db
         .update(schema.yearlyExpenses)
         .set({ keepLightsOn: args.keepLightsOn ? 1 : 0 })
@@ -9631,10 +10013,18 @@ export const Actions = {
     // differs from the base, on top of v64's atomic upsert.
     // Omitting `base` keeps the legacy unchecked behaviour (named
     // in DATA-PLAN).
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the editor observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load,
+    // even when the stored amount still equals the base (a
+    // same-value restore is invisible to the value check).
+    // Omitting it keeps the pre-v121 value-only check.
     request: z.object({
       billId: z.number().int().positive(),
       amountCents: z.number().int().nonnegative(),
       effectiveFrom: z.string().regex(monthRe),
+      baseEpoch: z.number().int().nonnegative().optional(),
       base: z
         .object({
           amountCents: z.number().int().nonnegative().nullable(),
@@ -9654,6 +10044,13 @@ export const Actions = {
         .where(eq(schema.monthlyBills.id, args.billId));
       if (!existingBill) {
         return { ok: false, reason: "That monthly bill was not found." };
+      }
+      // Contract v121 (F3): the epoch check runs before the value
+      // check — a restore since the load refuses the write even
+      // when the stored amount still equals the base.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill amount");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
       }
       if (args.base !== undefined) {
         const [versionRow] = await db
@@ -9717,7 +10114,15 @@ export const Actions = {
 
   deleteMonthlyBill: defineAction({
     description: "Delete a monthly bill and its versions.",
-    request: z.object({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: okReasonResponse,
     async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
@@ -9727,6 +10132,10 @@ export const Actions = {
         .where(eq(schema.monthlyBills.id, args.id));
       if (!existingBill) {
         return { ok: false, reason: "That monthly bill was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
       }
       await db
         .delete(schema.monthlyBillVersions)
@@ -9748,12 +10157,26 @@ export const Actions = {
   deleteMonthlyBillVersion: defineAction({
     description: "Remove one version from a monthly bill's history.",
     privileged: [privileged.ensureEncryptionKey],
-    request: z.object({ versionId: z.number().int().positive() }),
-    response: z.object({ ok: z.boolean(), reason: z.string() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      versionId: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
+    // The conflict flag carries an epoch refusal (contract v121),
+    // like the spending family's okReasonResponse.
+    response: z.object({
+      ok: z.boolean(),
+      reason: z.string(),
+      conflict: z.boolean().optional(),
+    }),
     async handler(
       ctx,
       args,
-    ): Promise<{ ok: boolean; reason: string }> {
+    ): Promise<{ ok: boolean; reason: string; conflict?: boolean }> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
@@ -9763,6 +10186,10 @@ export const Actions = {
         .where(eq(schema.monthlyBillVersions.id, args.versionId));
       if (!target) {
         return { ok: false, reason: "That history entry was not found." };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
       }
       const all = await db
         .select()
@@ -10168,10 +10595,22 @@ export const Actions = {
   // snapshot, or balance row. Default (no stored value) is off.
   setNwIncludeProperty: defineAction({
     description: "Set whether property (house/mortgage) counts in Net Worth totals.",
-    request: z.object({ include: z.boolean() }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      include: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "net worth settings");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -10183,7 +10622,7 @@ export const Actions = {
           set: { value: args.include ? "1" : "0" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Property setting saved." };
     },
   }),
 
@@ -10192,12 +10631,22 @@ export const Actions = {
   // clears it (the row is deleted, returning to the empty default).
   setNwTarget: defineAction({
     description: "Set the Net Worth target amount.",
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       targetCents: z.number().int().positive().nullable(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "net worth target");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       if (args.targetCents == null) {
         await db
           .delete(schema.settings)
@@ -10212,7 +10661,7 @@ export const Actions = {
           });
       }
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Target saved." };
     },
   }),
 
@@ -10319,6 +10768,12 @@ export const Actions = {
       // the stored spending value is annual cents everywhere
       // and no engine reads this.
       spendingUnit: z.enum(["month", "year"]),
+      // Restore epoch (contract v121, round-18 F3): the restore
+      // generation the dataset is on (the same value getNetWorth
+      // and getDashboard publish). The spending-unit toggle passes
+      // it back as baseEpoch, so a view that predates a restore
+      // is refused. 0 when no restore has stamped one.
+      restoreEpoch: z.number().int().nonnegative(),
     }),
     async handler(ctx) {
       const db = ctx.db<typeof schema>();
@@ -10416,7 +10871,7 @@ export const Actions = {
           ? ("year" as const)
           : ("month" as const);
 
-      return { defaultPortfolioCents, nwTotalCents, bucket529Cents, latestSnapshotHasAnySplit, defaultSpendingAnnualCents, defaultSpendingWindowStart, defaultSpendingWindowEnd, defaultSpendingMonths, includeProperty, defaultCurrentAge, defaultCurrentAgeFromBirthYear, saved, scenarios, baseline: baselineRec?.inputs ?? null, baselineKind: baselineRec?.kind ?? null, revision: blobState.revision, baselineRevision, savedUnreadable: blobState.revisionState.present && !blobState.revisionState.valid, baselineUnreadable, assumptionsCollapsed, spendingUnit };
+      return { defaultPortfolioCents, nwTotalCents, bucket529Cents, latestSnapshotHasAnySplit, defaultSpendingAnnualCents, defaultSpendingWindowStart, defaultSpendingWindowEnd, defaultSpendingMonths, includeProperty, defaultCurrentAge, defaultCurrentAgeFromBirthYear, saved, scenarios, baseline: baselineRec?.inputs ?? null, baselineKind: baselineRec?.kind ?? null, revision: blobState.revision, baselineRevision, savedUnreadable: blobState.revisionState.present && !blobState.revisionState.valid, baselineUnreadable, assumptionsCollapsed, spendingUnit, restoreEpoch: await readStoredRestoreEpoch(db) };
     },
   }),
 
@@ -10456,12 +10911,22 @@ export const Actions = {
   // the unit writes only this preference.
   setRetirementSpendingUnit: defineAction({
     description: "Persist the Retirement annual-spending entry unit (per year / per month).",
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getRetirementCalc's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
     request: z.object({
       unit: z.enum(["month", "year"]),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "retirement spending unit");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -10473,7 +10938,7 @@ export const Actions = {
           set: { value: args.unit },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Spending unit saved." };
     },
   }),
 
@@ -14019,7 +14484,18 @@ export const Actions = {
 
   deleteNwSnapshot: defineAction({
     description: "Delete a Net Worth snapshot and its balances.",
-    request: z.object({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F4): `baseEpoch` is the restore
+    // epoch the editor observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // The restore path re-inserts snapshots with their explicit
+    // ids, so a stale delete by id would otherwise remove the
+    // restored snapshot. Omitting it keeps the pre-v121 unchecked
+    // behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
       const db = ctx.db<typeof schema>();
@@ -14029,6 +14505,10 @@ export const Actions = {
         .where(eq(schema.nwSnapshots.id, args.id));
       if (!existingSnapshot) {
         return { ok: false, reason: "That snapshot was not found.", id: null };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "snapshot");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason, id: args.id };
       }
       await db
         .delete(schema.nwBalances)
@@ -14106,6 +14586,12 @@ export const Actions = {
       // custodial forces its propertyKind to "none" (a custodial
       // account is never a property account).
       custodial: z.boolean().optional(),
+      // Contract v121 (round-18 F3): `baseEpoch` is the restore
+      // epoch the editor observed when it loaded (getNetWorth's
+      // restoreEpoch). When supplied, the write is refused when a
+      // backup restore advanced the stored epoch since the load,
+      // even when the stored fields still equal the base.
+      baseEpoch: z.number().int().nonnegative().optional(),
       base: z
         .object({
           name: nwAccountNameField,
@@ -14132,6 +14618,13 @@ export const Actions = {
       const targetAccount = all.find((a) => a.id === args.id);
       if (!targetAccount) {
         return { ok: false, reason: "That account was not found.", id: null };
+      }
+      // Contract v121 (F3): the epoch check runs before the value
+      // check — a restore since the load refuses the write even
+      // when the stored fields still equal the base.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "account");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason, id: args.id };
       }
       if (args.base !== undefined) {
         const storedAccount = {
@@ -14181,10 +14674,30 @@ export const Actions = {
 
   setNwAccountArchived: defineAction({
     description: "Archive or restore a Net Worth account.",
-    request: z.object({ id: z.number().int().positive(), archived: z.boolean() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      archived: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
       const db = ctx.db<typeof schema>();
+      const [existing] = await db
+        .select({ id: schema.nwAccounts.id })
+        .from(schema.nwAccounts)
+        .where(eq(schema.nwAccounts.id, args.id));
+      if (!existing) {
+        return { ok: false, reason: "That account was not found.", id: null };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "account");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason, id: args.id };
+      }
       const updated = await db
         .update(schema.nwAccounts)
         .set({ archived: args.archived ? 1 : 0 })
@@ -14213,7 +14726,15 @@ export const Actions = {
   // from the remaining balances, so they recompute on their own.
   deleteNwAccount: defineAction({
     description: "Permanently delete an archived, non-property Net Worth account and its balances.",
-    request: z.object({ id: z.number().int().positive() }),
+    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the delete is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v121 unchecked behaviour.
+    request: z.object({
+      id: z.number().int().positive(),
+      baseEpoch: z.number().int().nonnegative().optional(),
+    }),
     response: nwMutationOut,
     async handler(ctx, args): Promise<z.infer<typeof nwMutationOut>> {
       const db = ctx.db<typeof schema>();
@@ -14223,6 +14744,10 @@ export const Actions = {
         .where(eq(schema.nwAccounts.id, args.id));
       if (!account) {
         return { ok: false, reason: "That account no longer exists.", id: null };
+      }
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "account");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason, id: args.id };
       }
       if (account.archived !== 1) {
         return {

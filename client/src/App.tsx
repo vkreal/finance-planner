@@ -1644,6 +1644,11 @@ export function App() {
   const [editingTxnBase, setEditingTxnBase] = useState<
     ApiRequest<typeof api, "updateTransaction">["base"] | null
   >(null);
+  // Contract v121 (F3): the restore epoch as loaded when the
+  // editor opened (getDashboard's restoreEpoch) — frozen at open
+  // like the CAS base, so a restore since the load refuses the
+  // save even when the stored row still equals the base.
+  const [editingTxnEpoch, setEditingTxnEpoch] = useState<number | null>(null);
   const [tDate, setTDate] = useState(todayStr());
   const [tDesc, setTDesc] = useState("");
   const [tDollars, setTDollars] = useState("");
@@ -1662,6 +1667,9 @@ export function App() {
   // editor opened — the save's CAS base (parent fields plus the
   // version stored for the save's effective month).
   const [editingYearly, setEditingYearly] = useState<Yearly | null>(null);
+  // Contract v121 (F3): the restore epoch as loaded when the
+  // editor opened — frozen at open like the CAS base.
+  const [editingYearlyEpoch, setEditingYearlyEpoch] = useState<number | null>(null);
   const [yName, setYName] = useState("");
   const [yFrequency, setYFrequency] = useState<"yearly" | "bimonthly" | "quarterly" | "semiannual">("yearly");
   const [yDollars, setYDollars] = useState("");
@@ -1686,6 +1694,9 @@ export function App() {
     month: string;
     cashOutCents: number | null;
   } | null>(null);
+  // Contract v121 (F3): the restore epoch as loaded when the
+  // summary form opened — frozen at open like the CAS base.
+  const [summaryEpoch, setSummaryEpoch] = useState<number | null>(null);
   const [sDollars, setSDollars] = useState("");
   const [summaryError, setSummaryError] = useState("");
 
@@ -1718,6 +1729,9 @@ export function App() {
   const [editingItemBase, setEditingItemBase] = useState<
     ApiRequest<typeof api, "updateCashOutItem">["base"] | null
   >(null);
+  // Contract v121 (F3): the restore epoch as loaded when the
+  // editor opened — frozen at open like the CAS base.
+  const [editingItemEpoch, setEditingItemEpoch] = useState<number | null>(null);
   const [iDate, setIDate] = useState(() => `${currentMonth()}-01`);
   const [iDesc, setIDesc] = useState("");
   const [iDollars, setIDollars] = useState("");
@@ -1732,6 +1746,9 @@ export function App() {
   // fields) and the chained amount save (the version stored for
   // the chosen effective month).
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
+  // Contract v121 (F3): the restore epoch as loaded when the
+  // editor opened — frozen at open like the CAS bases.
+  const [editingBillEpoch, setEditingBillEpoch] = useState<number | null>(null);
   const [bName, setBName] = useState("");
   const [bDollars, setBDollars] = useState("");
   const [bEffectiveFrom, setBEffectiveFrom] = useState(currentMonth());
@@ -1744,6 +1761,10 @@ export function App() {
   /* one-off notes state */
   const [showOneOffForm, setShowOneOffForm] = useState(false);
   const [editingOneOffId, setEditingOneOffId] = useState<number | null>(null);
+  // Contract v121 (F3): the restore epoch as loaded when the
+  // editor opened — frozen at open, so a restore since the load
+  // refuses the save.
+  const [editingOneOffEpoch, setEditingOneOffEpoch] = useState<number | null>(null);
   const [oMonth, setOMonth] = useState(currentMonth());
   const [oDesc, setODesc] = useState("");
   const [oDollars, setODollars] = useState("");
@@ -1883,6 +1904,7 @@ export function App() {
   const updateTxn = useMutation({
     mutationFn: (input: TxnInput & { id: number } & {
       base?: ApiRequest<typeof api, "updateTransaction">["base"];
+      baseEpoch?: number;
     }) => api.updateTransaction(input),
     onSuccess: (r) => {
       if (!r.ok) {
@@ -1898,8 +1920,13 @@ export function App() {
     onError: (e) => setFormError(String(e)),
   });
   const deleteTxn = useMutation({
-    mutationFn: (id: number) => api.deleteTransaction({ id }),
-    onSuccess: invalidate,
+    // Contract v121 (F3): an immediate delete carries the epoch
+    // of the data on screen (the row the user is looking at).
+    mutationFn: (id: number) => api.deleteTransaction({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That transaction could not be deleted.");
+      invalidate();
+    },
   });
   const addYearly = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addYearlyExpense">) =>
@@ -1929,11 +1956,17 @@ export function App() {
     onError: (e) => setYearlyError(String(e)),
   });
   const deleteYearly = useMutation({
-    mutationFn: (id: number) => api.deleteYearlyExpense({ id }),
-    onSuccess: invalidate,
+    // Contract v121 (F3): an immediate delete carries the epoch
+    // of the data on screen.
+    mutationFn: (id: number) => api.deleteYearlyExpense({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That expense could not be deleted.");
+      invalidate();
+    },
   });
   const deleteYearlyVersion = useMutation({
-    mutationFn: (versionId: number) => api.deleteYearlyExpenseVersion({ versionId }),
+    // Contract v121 (F3): carries the epoch of the data on screen.
+    mutationFn: (versionId: number) => api.deleteYearlyExpenseVersion({ versionId, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       setConfirmYearlyVersionId(null);
       if (!r.ok) {
@@ -1947,7 +1980,8 @@ export function App() {
     onError: (e) => setVersionDeleteError(String(e)),
   });
   const deleteMonthlyVersion = useMutation({
-    mutationFn: (versionId: number) => api.deleteMonthlyBillVersion({ versionId }),
+    // Contract v121 (F3): carries the epoch of the data on screen.
+    mutationFn: (versionId: number) => api.deleteMonthlyBillVersion({ versionId, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       setConfirmMonthlyVersionId(null);
       if (!r.ok) {
@@ -1972,14 +2006,20 @@ export function App() {
       }
       invalidate();
       setShowSummaryForm(false);
+      setSummaryEpoch(null);
       setSDollars("");
       setSummaryError("");
     },
     onError: (e) => setSummaryError(String(e)),
   });
   const deleteSummary = useMutation({
-    mutationFn: (m: string) => api.deleteMonthlySummary({ month: m }),
-    onSuccess: invalidate,
+    // Contract v121 (F3): an immediate delete carries the epoch
+    // of the data on screen.
+    mutationFn: (m: string) => api.deleteMonthlySummary({ month: m, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That month's total could not be removed.");
+      invalidate();
+    },
   });
   const addCashOutItem = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addCashOutItem">) =>
@@ -2008,8 +2048,13 @@ export function App() {
     onError: (e) => setItemError(String(e)),
   });
   const deleteCashOutItem = useMutation({
-    mutationFn: (id: number) => api.deleteCashOutItem({ id }),
-    onSuccess: invalidate,
+    // Contract v121 (F3): an immediate delete carries the epoch
+    // of the data on screen.
+    mutationFn: (id: number) => api.deleteCashOutItem({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That item could not be deleted.");
+      invalidate();
+    },
   });
   const addBill = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addMonthlyBill">) =>
@@ -2039,8 +2084,13 @@ export function App() {
     onError: (e) => setBillError(String(e)),
   });
   const deleteBill = useMutation({
-    mutationFn: (id: number) => api.deleteMonthlyBill({ id }),
-    onSuccess: invalidate,
+    // Contract v121 (F3): an immediate delete carries the epoch
+    // of the data on screen.
+    mutationFn: (id: number) => api.deleteMonthlyBill({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That bill could not be deleted.");
+      invalidate();
+    },
   });
   const setBillAmount = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillAmount">) =>
@@ -2083,28 +2133,53 @@ export function App() {
     onError: (e) => setOneOffError(String(e)),
   });
   const deleteOneOff = useMutation({
-    mutationFn: (id: number) => api.deleteMonthlyOneOff({ id }),
-    onSuccess: invalidate,
+    // Contract v121 (F3): an immediate delete carries the epoch
+    // of the data on screen.
+    mutationFn: (id: number) => api.deleteMonthlyOneOff({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That one-off could not be deleted.");
+      invalidate();
+    },
   });
   const setDueMonth = useMutation({
+    // Contract v121 (F3): an immediate setter carries the epoch
+    // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyDueMonth">) =>
-      api.setYearlyDueMonth(input),
-    onSuccess: invalidate,
+      api.setYearlyDueMonth({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That due month could not be saved.");
+      invalidate();
+    },
   });
   const setMonthlyCategory = useMutation({
+    // Contract v121 (F3): an immediate setter carries the epoch
+    // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillCategory">) =>
-      api.setMonthlyBillCategory(input),
-    onSuccess: invalidate,
+      api.setMonthlyBillCategory({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That category could not be saved.");
+      invalidate();
+    },
   });
   const setYearlyCategory = useMutation({
+    // Contract v121 (F3): an immediate setter carries the epoch
+    // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyCategory">) =>
-      api.setYearlyCategory(input),
-    onSuccess: invalidate,
+      api.setYearlyCategory({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That category could not be saved.");
+      invalidate();
+    },
   });
   const setMonthlyKeepLightsOn = useMutation({
+    // Contract v121 (F3): an immediate setter carries the epoch
+    // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillKeepLightsOn">) =>
-      api.setMonthlyBillKeepLightsOn(input),
-    onSuccess: invalidate,
+      api.setMonthlyBillKeepLightsOn({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That flag could not be saved.");
+      invalidate();
+    },
   });
   const setMonthlyBillsCollapsedAll = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillsCollapsedAll">) =>
@@ -2127,9 +2202,14 @@ export function App() {
     onSuccess: invalidate,
   });
   const setYearlyKeepLightsOn = useMutation({
+    // Contract v121 (F3): an immediate setter carries the epoch
+    // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyKeepLightsOn">) =>
-      api.setYearlyKeepLightsOn(input),
-    onSuccess: invalidate,
+      api.setYearlyKeepLightsOn({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That flag could not be saved.");
+      invalidate();
+    },
   });
   const seed = useMutation({
     mutationFn: () => api.seedExamples({}),
@@ -2142,6 +2222,7 @@ export function App() {
     setShowTxnForm(false);
     setEditingTxnId(null);
     setEditingTxnBase(null);
+    setEditingTxnEpoch(null);
     setTDesc("");
     setTDollars("");
     setTRefund(false);
@@ -2181,6 +2262,10 @@ export function App() {
       category: t.category,
       yearlyExpenseId: t.yearlyExpenseId ?? null,
     });
+    // Contract v121 (F3): freeze the restore epoch with the base
+    // — a restore since this load refuses the save even when the
+    // stored row still equals the base.
+    setEditingTxnEpoch(data?.restoreEpoch ?? 0);
     setShowTxnForm(true);
     setTDate(t.date);
     setTDesc(t.description);
@@ -2225,6 +2310,7 @@ export function App() {
       updateTxn.mutate({
         ...input,
         id: editingTxnId,
+        baseEpoch: editingTxnEpoch ?? 0,
         ...(editingTxnBase ? { base: editingTxnBase } : {}),
       });
     else addTxn.mutate(input);
@@ -2234,6 +2320,7 @@ export function App() {
     setShowYearlyForm(false);
     setEditingYearlyId(null);
     setEditingYearly(null);
+    setEditingYearlyEpoch(null);
     setYName("");
     // New-bill entry defaults: frequency starts on Yearly, the due
     // month starts on the current month, and Paid from starts on the
@@ -2258,6 +2345,9 @@ export function App() {
   function openEditYearly(y: Yearly) {
     setEditingYearlyId(y.id);
     setEditingYearly(y);
+    // Contract v121 (F3): freeze the restore epoch with the
+    // loaded expense — a restore since this load refuses the save.
+    setEditingYearlyEpoch(data?.restoreEpoch ?? 0);
     setShowYearlyForm(true);
     setYName(y.name);
     setYFrequency(
@@ -2340,6 +2430,7 @@ export function App() {
       updateYearly.mutate({
         ...input,
         id: editingYearlyId,
+        baseEpoch: editingYearlyEpoch ?? 0,
         ...(base ? { base } : {}),
       });
     } else addYearly.mutate(input);
@@ -2349,6 +2440,10 @@ export function App() {
     setSMonth(forMonth);
     setSDollars(existingCents != null ? String(existingCents / 100) : "");
     setSummaryBase({ month: forMonth, cashOutCents: existingCents ?? null });
+    // Contract v121 (F3): freeze the restore epoch with the base
+    // — a restore since this load refuses the save even when the
+    // stored total still equals the base.
+    setSummaryEpoch(data?.restoreEpoch ?? 0);
     setSummaryError("");
     setShowSummaryForm(true);
   }
@@ -2378,6 +2473,7 @@ export function App() {
       month: sMonth,
       cashOutCents: cents,
       base: { cashOutCents: baseCents },
+      baseEpoch: summaryEpoch ?? 0,
     });
   }
 
@@ -2385,6 +2481,7 @@ export function App() {
     setShowItemForm(false);
     setEditingItemId(null);
     setEditingItemBase(null);
+    setEditingItemEpoch(null);
     setIDate(`${currentMonth()}-01`);
     setIDesc("");
     setIDollars("");
@@ -2408,6 +2505,8 @@ export function App() {
       note: it.note ?? null,
       day: it.day,
     });
+    // Contract v121 (F3): freeze the restore epoch with the base.
+    setEditingItemEpoch(data?.restoreEpoch ?? 0);
     setShowItemForm(true);
     setIDate(`${it.month}-${String(it.day).padStart(2, "0")}`);
     setIDesc(it.description);
@@ -2455,6 +2554,7 @@ export function App() {
       updateCashOutItem.mutate({
         ...input,
         id: editingItemId,
+        baseEpoch: editingItemEpoch ?? 0,
         ...(editingItemBase ? { base: editingItemBase } : {}),
       });
     else addCashOutItem.mutate(input);
@@ -2468,6 +2568,7 @@ export function App() {
     setShowBillForm(false);
     setEditingBillId(null);
     setEditingBill(null);
+    setEditingBillEpoch(null);
     setBName("");
     setBDollars("");
     setBEffectiveFrom(currentMonth());
@@ -2487,6 +2588,9 @@ export function App() {
   function openEditBill(b: Bill) {
     setEditingBillId(b.id);
     setEditingBill(b);
+    // Contract v121 (F3): freeze the restore epoch with the
+    // loaded bill — both chained saves carry it.
+    setEditingBillEpoch(data?.restoreEpoch ?? 0);
     setShowBillForm(true);
     setBName(b.name);
     setBDollars(String(b.latestAmountCents / 100));
@@ -2539,7 +2643,7 @@ export function App() {
           }
         : undefined;
       updateBill.mutate(
-        { id: editingBillId, name: bName.trim(), paidBy, notes, category: bCategory.trim() || "Uncategorized", keepLightsOn: bKeepLightsOn, ...(billBase ? { base: billBase } : {}) },
+        { id: editingBillId, name: bName.trim(), paidBy, notes, category: bCategory.trim() || "Uncategorized", keepLightsOn: bKeepLightsOn, baseEpoch: editingBillEpoch ?? 0, ...(billBase ? { base: billBase } : {}) },
         {
           onSuccess: (r) => {
             if (!r.ok) return;
@@ -2547,6 +2651,7 @@ export function App() {
               billId: editingBillId,
               amountCents: cents,
               effectiveFrom: bEffectiveFrom,
+              baseEpoch: editingBillEpoch ?? 0,
               ...(amountBase ? { base: amountBase } : {}),
             });
           },
@@ -2568,6 +2673,7 @@ export function App() {
   function resetOneOffForm() {
     setShowOneOffForm(false);
     setEditingOneOffId(null);
+    setEditingOneOffEpoch(null);
     setODesc("");
     setODollars("");
     setONote("");
@@ -2582,6 +2688,8 @@ export function App() {
 
   function openEditOneOff(o: OneOff) {
     setEditingOneOffId(o.id);
+    // Contract v121 (F3): freeze the restore epoch at open.
+    setEditingOneOffEpoch(data?.restoreEpoch ?? 0);
     setShowOneOffForm(true);
     setOMonth(o.month);
     setODesc(o.description);
@@ -2611,7 +2719,7 @@ export function App() {
       amountCents: cents,
       note: oNote.trim() ? oNote.trim() : null,
     };
-    if (editingOneOffId) updateOneOff.mutate({ ...input, id: editingOneOffId });
+    if (editingOneOffId) updateOneOff.mutate({ ...input, id: editingOneOffId, baseEpoch: editingOneOffEpoch ?? 0 });
     else addOneOff.mutate(input);
   }
 
@@ -4096,7 +4204,7 @@ export function App() {
                     <button type="submit" className={btnPrimary} disabled={upsertSummary.isPending}>
                       Save cash out
                     </button>
-                    <button type="button" className={btnGhost} onClick={() => setShowSummaryForm(false)}>
+                    <button type="button" className={btnGhost} onClick={() => { setShowSummaryForm(false); setSummaryEpoch(null); }}>
                       Cancel
                     </button>
                   </div>
@@ -5337,11 +5445,15 @@ function ReserveSettings({
     openingReserveCents: number;
     reserveStartMonth: string | null;
   } | null>(null);
+  // Contract v121 (F3): the restore epoch as loaded when the fold
+  // opened — frozen with the base.
+  const [baseEpoch, setBaseEpoch] = useState<number | null>(null);
   const save = useMutation({
     mutationFn: () =>
       api.updateSettings({
         openingReserveCents: parseDollars(opening) ?? 0,
         reserveStartMonth: start ? start : null,
+        baseEpoch: baseEpoch ?? 0,
         ...(base ? { base } : {}),
       }),
     onSuccess: (r) => {
@@ -5369,6 +5481,8 @@ function ReserveSettings({
             openingReserveCents: data.openingReserveCents,
             reserveStartMonth: data.reserveStartMonth ?? null,
           });
+          // Contract v121 (F3): freeze the restore epoch with the base.
+          setBaseEpoch(data.restoreEpoch ?? 0);
           setMsg("");
           setOpen(true);
         }}
@@ -5456,6 +5570,11 @@ function ImportPanel({
      months saved from this preview, and a save error line. */
   type RecordedCashOutMonth = ApiResponse<typeof api, "getImportData">["cashOut"][number];
   const [recordedCashOut, setRecordedCashOut] = useState<RecordedCashOutMonth[] | null>(null);
+  // Contract v121 (F3): the restore epoch as loaded by the same
+  // getImportData read as the recorded cash out — the confirmed
+  // proposal save carries it back as baseEpoch, so a panel that
+  // loaded before a restore is refused.
+  const [recordedCashOutEpoch, setRecordedCashOutEpoch] = useState<number | null>(null);
   const [savingMonth, setSavingMonth] = useState<string | null>(null);
   const [savedMonths, setSavedMonths] = useState<Record<string, boolean>>({});
   const [proposalError, setProposalError] = useState("");
@@ -5955,10 +6074,12 @@ function ImportPanel({
       // IM-4: the same read carries each month's recorded cash
       // out, which the proposal below compares against.
       setRecordedCashOut(data.cashOut);
+      setRecordedCashOutEpoch(data.restoreEpoch);
     } catch {
       setDupFlags(null);
       setExactFlags(null);
       setRecordedCashOut(null);
+      setRecordedCashOutEpoch(null);
       setDupNote("The duplicate check couldn't run, so review the rows below before importing — rows already recorded won't be flagged this time.");
     }
     setCheckingDups(false);
@@ -6024,7 +6145,13 @@ function ImportPanel({
       // below says to check it before saving again.
       if (rec) {
         for (const it of rec.items) {
-          await api.deleteCashOutItem({ id: it.id });
+          // Contract v121 (F3): the delete carries the epoch
+          // this comparison loaded at — a restore since then
+          // refuses it before anything is removed.
+          const del = await api.deleteCashOutItem({ id: it.id, baseEpoch: recordedCashOutEpoch ?? 0 });
+          if (!del.ok) {
+            throw new Error(del.reason ?? "That item could not be deleted.");
+          }
         }
       }
       for (const it of p.items) {
@@ -6042,10 +6169,14 @@ function ImportPanel({
       // entered total as this comparison loaded it — a refused
       // (conflicted) save throws into the proposal error path
       // below instead of silently overwriting a newer total.
+      // Contract v121 (F3): the save also carries the epoch this
+      // comparison loaded at, so a restore since then refuses it
+      // even when the stored total still equals the base.
       const summaryRes = await api.upsertMonthlySummary({
         month: p.month,
         cashOutCents: p.totalCents,
         base: { cashOutCents: rec?.enteredCashOutCents ?? null },
+        baseEpoch: recordedCashOutEpoch ?? 0,
       });
       if (!summaryRes.ok) {
         throw new Error(
@@ -6061,6 +6192,7 @@ function ImportPanel({
           months: proposals.map((x) => x.month),
         });
         setRecordedCashOut(data.cashOut);
+        setRecordedCashOutEpoch(data.restoreEpoch);
       } catch {
         // The save landed; only the comparison refresh failed.
       }

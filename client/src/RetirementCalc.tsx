@@ -1530,10 +1530,16 @@ export function RetirementCalc() {
   // only the preference: the stored annual spending value is
   // never part of this write.
   const setSpendingUnitPref = useMutation({
+    // Contract v121 (F3): the flip carries the epoch of the data
+    // on screen.
     mutationFn: (
       input: Parameters<typeof api.setRetirementSpendingUnit>[0],
-    ) => api.setRetirementSpendingUnit(input),
-    onSuccess: () => {
+    ) => api.setRetirementSpendingUnit({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      // A refused flip (a restore since the load) reverts the
+      // optimistic local unit to the stored one — the stored
+      // preference never moved.
+      if (!r.ok) setSpendingUnit(data?.spendingUnit ?? "month");
       queryClient.invalidateQueries({ queryKey: ["retirementcalc"] });
     },
   });

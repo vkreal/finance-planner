@@ -713,8 +713,15 @@ function SnapshotEditor({
   });
 
   const del = useMutation({
-    mutationFn: (id: number) => api.deleteNwSnapshot({ id }),
-    onSuccess: () => {
+    // Contract v121 (F4): the delete carries the epoch this
+    // editor observed when it opened — a restore since then
+    // refuses it instead of deleting the restored snapshot.
+    mutationFn: (id: number) => api.deleteNwSnapshot({ id, baseEpoch: observedEpoch }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setError(r.reason);
+        return;
+      }
       invalidate();
       onClose();
     },
@@ -3002,6 +3009,8 @@ export function NetWorthView() {
         propertyKind: input.type === "custodial" ? "none" : input.type,
         custodial: input.type === "custodial",
         base: input.base,
+        // Contract v121 (F3): the epoch of the data on screen.
+        baseEpoch: data?.restoreEpoch ?? 0,
       }),
     onSuccess: (r) => {
       if (!r.ok) {
@@ -3015,12 +3024,27 @@ export function NetWorthView() {
     onError: (e) => setRenameError(String(e)),
   });
   const setIncludeProperty = useMutation({
-    mutationFn: (include: boolean) => api.setNwIncludeProperty({ include }),
-    onSuccess: invalidate,
+    // Contract v121 (F3): carries the epoch of the data on screen.
+    mutationFn: (include: boolean) => api.setNwIncludeProperty({ include, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setAccountError(r.reason ?? "That setting could not be saved.");
+        return;
+      }
+      setAccountError("");
+      invalidate();
+    },
   });
   const setNwTarget = useMutation({
-    mutationFn: (targetCents: number | null) => api.setNwTarget({ targetCents }),
-    onSuccess: () => {
+    // Contract v121 (F3): carries the epoch of the data on screen.
+    mutationFn: (targetCents: number | null) => api.setNwTarget({ targetCents, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        // Refused (epoch conflict): keep the editor open and show
+        // why instead of closing over the stored target.
+        setTargetError(r.reason ?? "That target could not be saved.");
+        return;
+      }
       setEditingTarget(false);
       setTargetError("");
       invalidate();
@@ -3040,12 +3064,21 @@ export function NetWorthView() {
     onSuccess: invalidate,
   });
   const setArchived = useMutation({
+    // Contract v121 (F3): carries the epoch of the data on screen.
     mutationFn: (input: { id: number; archived: boolean }) =>
-      api.setNwAccountArchived(input),
-    onSuccess: invalidate,
+      api.setNwAccountArchived({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setAccountError(r.reason ?? "That account could not be updated.");
+        return;
+      }
+      setAccountError("");
+      invalidate();
+    },
   });
   const deleteAccount = useMutation({
-    mutationFn: (id: number) => api.deleteNwAccount({ id }),
+    // Contract v121 (F3): carries the epoch of the data on screen.
+    mutationFn: (id: number) => api.deleteNwAccount({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       if (!r.ok) {
         setDeleteAccountError(r.reason);

@@ -418,6 +418,13 @@ export const updateMonthlyBillIn = z.object({
   // replace differs from its loaded base in storage. Optional:
   // omitting it keeps the legacy unchecked behaviour (named in
   // DATA-PLAN).
+  // Contract v121 (round-18 F3): `baseEpoch` is the restore epoch
+  // the editor observed when it loaded (getDashboard's
+  // restoreEpoch). When supplied, the write is refused when a
+  // backup restore advanced the stored epoch since the load, even
+  // when the stored fields still equal the base. Optional:
+  // omitting it keeps the pre-v121 value-only check.
+  baseEpoch: z.number().int().nonnegative().optional(),
   base: z
     .object({
       name: z.string().min(1).max(120),
