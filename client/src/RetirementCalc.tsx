@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 Area,
@@ -407,27 +407,46 @@ export function RetirementCalc() {
      the plan-inputs fold first when it is folded, scroll on a
      later frame, then flash an outline on the field for
      ~1.6s (applied to the element directly and restored
-     afterwards). */
+     afterwards). The Assumptions fields (expected return,
+     volatility) live behind their own collapsed group, which
+     expands via a server round-trip — so open that too when
+     the target lives there, and keep looking for the field
+     briefly instead of giving up after one attempt (v119). */
   const rcFlashTimer = useRef<number | null>(null);
   const jumpToRcField = (fieldId: string) => {
     if (inputsFolded) setInputsFolded(false);
-    window.setTimeout(() => {
+    if (
+      (fieldId === "rc-expected" || fieldId === "rc-vol") &&
+      data?.assumptionsCollapsed
+    ) {
+      setAssumptionsCollapsed.mutate({ collapsed: false });
+    }
+    const started = Date.now();
+    const tryFlash = () => {
       const el = document.getElementById(fieldId);
-      if (!el) return;
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      const prevOutline = el.style.outline;
-      const prevOffset = el.style.outlineOffset;
-      el.style.outline = "2px solid var(--accent)";
-      el.style.outlineOffset = "2px";
-      if (rcFlashTimer.current != null) {
-        window.clearTimeout(rcFlashTimer.current);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        const prevOutline = el.style.outline;
+        const prevOffset = el.style.outlineOffset;
+        el.style.outline = "2px solid var(--accent)";
+        el.style.outlineOffset = "2px";
+        if (rcFlashTimer.current != null) {
+          window.clearTimeout(rcFlashTimer.current);
+        }
+        rcFlashTimer.current = window.setTimeout(() => {
+          el.style.outline = prevOutline;
+          el.style.outlineOffset = prevOffset;
+        }, 1600);
+        return;
       }
-      rcFlashTimer.current = window.setTimeout(() => {
-        el.style.outline = prevOutline;
-        el.style.outlineOffset = prevOffset;
-      }, 1600);
-    }, 150);
+      if (Date.now() - started < 2000) {
+        window.setTimeout(tryFlash, 100);
+      }
+    };
+    window.setTimeout(tryFlash, 150);
   };
+  const rcTapCls =
+    "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -2307,27 +2326,147 @@ export function RetirementCalc() {
      means: Guardrails spends the entered amount as its base, and
      Percent of portfolio has no fixed dollar amount, so its
      entered figure is the percent itself. */
-  const planSummary: string | null = (() => {
+  /* Plan summary (contract v119): the same figures the
+     "Calculated with" tiles carry, as one sentence — each
+     input figure is a provenance tap to its field, exactly
+     like the tiles below. The outcome clause is a solver
+     result and stays plain text. */
+  const planSummary: ReactNode = (() => {
     if (!inputs || !projection) return null;
     const spendPart =
-      inputs.strategy === "percent"
-        ? `spend ${inputs.percentOfPortfolio}% of portfolio/yr (Percent of portfolio)`
-        : inputs.strategy === "guardrails"
-          ? `spend ${fmt(inputs.spendingCents)}/yr (Guardrails)`
-          : inputs.strategy === "phased"
-            ? `spend ${fmt(inputs.spendingCents)}/yr, stepping down ${inputs.phaseDeclinePct}%/yr from age ${inputs.phaseStartAge}`
-            : `spend ${fmt(inputs.spendingCents)}/yr`;
+      inputs.strategy === "percent" ? (
+        <>
+          spend{" "}
+          <button
+            type="button"
+            aria-label="Go to the % of portfolio per year field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-percent")}
+          >
+            {inputs.percentOfPortfolio}%
+          </button>{" "}
+          of portfolio/yr (Percent of portfolio)
+        </>
+      ) : inputs.strategy === "guardrails" ? (
+        <>
+          spend{" "}
+          <button
+            type="button"
+            aria-label="Go to the Annual spending field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-spending")}
+          >
+            {fmt(inputs.spendingCents)}
+          </button>
+          /yr (Guardrails)
+        </>
+      ) : inputs.strategy === "phased" ? (
+        <>
+          spend{" "}
+          <button
+            type="button"
+            aria-label="Go to the Annual spending field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-spending")}
+          >
+            {fmt(inputs.spendingCents)}
+          </button>
+          /yr, stepping down{" "}
+          <button
+            type="button"
+            aria-label="Go to the Step down by field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-phase-decline")}
+          >
+            {inputs.phaseDeclinePct}%
+          </button>
+          /yr from age{" "}
+          <button
+            type="button"
+            aria-label="Go to the Step-down starts at age field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-phase-start")}
+          >
+            {inputs.phaseStartAge}
+          </button>
+        </>
+      ) : (
+        <>
+          spend{" "}
+          <button
+            type="button"
+            aria-label="Go to the Annual spending field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-spending")}
+          >
+            {fmt(inputs.spendingCents)}
+          </button>
+          /yr
+        </>
+      );
     const incomePart =
-      inputs.extraIncomeCents > 0
-        ? `+ ${fmt(inputs.extraIncomeCents)}/yr from age ${inputs.extraIncomeStartAge ?? inputs.retirementAge}`
-        : "no extra income";
+      inputs.extraIncomeCents > 0 ? (
+        <>
+          +{" "}
+          <button
+            type="button"
+            aria-label="Go to the Extra income field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-extra-income")}
+          >
+            {fmt(inputs.extraIncomeCents)}
+          </button>
+          /yr from age{" "}
+          <button
+            type="button"
+            aria-label="Go to the Extra income starts at age field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-extra-start")}
+          >
+            {inputs.extraIncomeStartAge ?? inputs.retirementAge}
+          </button>
+        </>
+      ) : (
+        "no extra income"
+      );
     const outcomePart =
       projection.ending > 0
         ? `money lasts past age ${inputs.endAge}`
         : projection.lastsToAge != null
           ? `money runs out at age ${projection.lastsToAge}`
           : `money runs out by age ${inputs.endAge}`;
-    return `Retire at ${inputs.retirementAge} · ${spendPart} · ${fmt(inputs.startCents)} portfolio at ${stocks}/${bondsPct} · ${incomePart} → ${outcomePart}.`;
+    return (
+      <>
+        Retire at{" "}
+        <button
+          type="button"
+          aria-label="Go to the Retirement age field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-retirement-age")}
+        >
+          {inputs.retirementAge}
+        </button>{" "}
+        · {spendPart} ·{" "}
+        <button
+          type="button"
+          aria-label="Go to the Starting portfolio field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-portfolio")}
+        >
+          {fmt(inputs.startCents)}
+        </button>{" "}
+        portfolio at{" "}
+        <button
+          type="button"
+          aria-label="Go to the Portfolio mix stocks field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-stocks")}
+        >
+          {stocks}
+        </button>
+        /{bondsPct} · {incomePart} → {outcomePart}.
+      </>
+    );
   })();
 
   return (
@@ -2830,14 +2969,45 @@ export function RetirementCalc() {
           <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
             <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
               <p className="text-xs text-[var(--dim)]">Portfolio</p>
-              <p className="tnum text-base font-semibold">{fmt(inputs.startCents)}</p>
+              <p className="tnum text-base font-semibold">
+                <button
+                  type="button"
+                  aria-label="Go to the Starting portfolio field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-portfolio")}
+                >
+                  {fmt(inputs.startCents)}
+                </button>
+              </p>
             </div>
             <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
               <p className="text-xs text-[var(--dim)]">Spending</p>
               <p className="tnum text-base font-semibold">
-                {inputs.strategy === "percent"
-                  ? `${inputs.percentOfPortfolio}% of portfolio/yr`
-                  : `${fmt(inputs.spendingCents)}/yr`}
+                {inputs.strategy === "percent" ? (
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Go to the % of portfolio per year field"
+                      className={rcTapCls}
+                      onClick={() => jumpToRcField("rc-percent")}
+                    >
+                      {inputs.percentOfPortfolio}%
+                    </button>{" "}
+                    of portfolio/yr
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Go to the Annual spending field"
+                      className={rcTapCls}
+                      onClick={() => jumpToRcField("rc-spending")}
+                    >
+                      {fmt(inputs.spendingCents)}
+                    </button>
+                    /yr
+                  </>
+                )}
               </p>
               <p className="text-xs text-[var(--dim)]">
                 {inputs.strategy === "percent"
@@ -2852,12 +3022,46 @@ export function RetirementCalc() {
             <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
               <p className="text-xs text-[var(--dim)]">Ages</p>
               <p className="tnum text-base font-semibold">
-                {inputs.currentAge} → retire {inputs.retirementAge} → end {inputs.endAge}
+                <button
+                  type="button"
+                  aria-label="Go to the Current age field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-current-age")}
+                >
+                  {inputs.currentAge}
+                </button>{" "}
+                → retire{" "}
+                <button
+                  type="button"
+                  aria-label="Go to the Retirement age field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-retirement-age")}
+                >
+                  {inputs.retirementAge}
+                </button>{" "}
+                → end{" "}
+                <button
+                  type="button"
+                  aria-label="Go to the End age field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-end-age")}
+                >
+                  {inputs.endAge}
+                </button>
               </p>
             </div>
             <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
               <p className="text-xs text-[var(--dim)]">Expected return</p>
-              <p className="tnum text-base font-semibold">{(expected * 100).toFixed(2)}%</p>
+              <p className="tnum text-base font-semibold">
+                <button
+                  type="button"
+                  aria-label="Go to the Expected real return field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-expected")}
+                >
+                  {(expected * 100).toFixed(2)}%
+                </button>
+              </p>
             </div>
           </div>
           {inputs.strategy === "guardrails" ? (
@@ -2891,18 +3095,42 @@ export function RetirementCalc() {
                       className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap"
                       style={{ left: `${(raisePos + cutPos) / 2}%` }}
                     >
-                      Adjust ±{adj}%
+                      Adjust{" "}
+                      <button
+                        type="button"
+                        aria-label="Go to the Adjustment size field"
+                        className={rcTapCls}
+                        onClick={() => jumpToRcField("rc-guardrails-adjustment")}
+                      >
+                        ±{adj}%
+                      </button>
                     </span>
                   </div>
                   <div className="relative mt-1 h-4 text-[11px] whitespace-nowrap text-[var(--dim)]">
                     <span className="absolute -translate-x-1/2" style={{ left: `${raisePos}%` }}>
-                      Raise {raise}%
+                      Raise{" "}
+                      <button
+                        type="button"
+                        aria-label="Go to the Raise trigger field"
+                        className={rcTapCls}
+                        onClick={() => jumpToRcField("rc-guardrails-raise")}
+                      >
+                        {raise}%
+                      </button>
                     </span>
                     <span className="absolute -translate-x-1/2" style={{ left: `${startPos}%` }}>
                       start 100%
                     </span>
                     <span className="absolute -translate-x-1/2" style={{ left: `${cutPos}%` }}>
-                      Cut {cut}%
+                      Cut{" "}
+                      <button
+                        type="button"
+                        aria-label="Go to the Cut trigger field"
+                        className={rcTapCls}
+                        onClick={() => jumpToRcField("rc-guardrails-cut")}
+                      >
+                        {cut}%
+                      </button>
                     </span>
                   </div>
                 </div>
@@ -2926,7 +3154,25 @@ export function RetirementCalc() {
               return (
                 <div className="mt-3">
                   <p className="text-xs text-[var(--dim)]">
-                    Phased — spending level until age {inputs.phaseStartAge}, then steps down {inputs.phaseDeclinePct}%/yr
+                    Phased — spending level until age{" "}
+                    <button
+                      type="button"
+                      aria-label="Go to the Step-down starts at age field"
+                      className={rcTapCls}
+                      onClick={() => jumpToRcField("rc-phase-start")}
+                    >
+                      {inputs.phaseStartAge}
+                    </button>
+                    , then steps down{" "}
+                    <button
+                      type="button"
+                      aria-label="Go to the Step down by field"
+                      className={rcTapCls}
+                      onClick={() => jumpToRcField("rc-phase-decline")}
+                    >
+                      {inputs.phaseDeclinePct}%
+                    </button>
+                    /yr
                   </p>
                   <div
                     className="relative mt-1 h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)]"
@@ -2978,9 +3224,45 @@ export function RetirementCalc() {
             </div>
           )}
           <p className="tnum mt-2 text-sm">
-            {stocks}% stocks · Volatility {(vol * 100).toFixed(2)}%
-            {inputs.extraIncomeCents > 0 &&
-              ` · Extra income ${fmt(inputs.extraIncomeCents)}/yr from age ${inputs.extraIncomeStartAge ?? inputs.retirementAge}`}
+            <button
+              type="button"
+              aria-label="Go to the Portfolio mix stocks field"
+              className={rcTapCls}
+              onClick={() => jumpToRcField("rc-stocks")}
+            >
+              {stocks}%
+            </button>{" "}
+            stocks · Volatility{" "}
+            <button
+              type="button"
+              aria-label="Go to the Volatility field"
+              className={rcTapCls}
+              onClick={() => jumpToRcField("rc-vol")}
+            >
+              {(vol * 100).toFixed(2)}%
+            </button>
+            {inputs.extraIncomeCents > 0 && (
+              <>
+                {" · Extra income "}
+                <button
+                  type="button"
+                  aria-label="Go to the Extra income field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-extra-income")}
+                >
+                  {fmt(inputs.extraIncomeCents)}
+                </button>
+                /yr from age{" "}
+                <button
+                  type="button"
+                  aria-label="Go to the Extra income starts at age field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-extra-start")}
+                >
+                  {inputs.extraIncomeStartAge ?? inputs.retirementAge}
+                </button>
+              </>
+            )}
           </p>
           <p className="mt-1 text-xs text-[var(--dim)]" aria-live="polite">
             {defaultDiffLabels.length === 0
@@ -3098,7 +3380,16 @@ export function RetirementCalc() {
             </div>
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Assumed real return</p>
-              <p className="tnum display text-base font-semibold">{(expected * 100).toFixed(2)}% / yr</p>
+              <p className="tnum display text-base font-semibold">
+                <button
+                  type="button"
+                  aria-label="Go to the Expected real return field"
+                  className={rcTapCls}
+                  onClick={() => jumpToRcField("rc-expected")}
+                >
+                  {(expected * 100).toFixed(2)}% / yr
+                </button>
+              </p>
             </div>
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Money lasts to</p>

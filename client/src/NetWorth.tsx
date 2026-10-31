@@ -2894,6 +2894,12 @@ export function NetWorthView() {
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState("");
   const [targetError, setTargetError] = useState("");
+  // Provenance-tap flash timer (contract v119). This MUST live up
+  // here with the other hooks: the loading/error early returns
+  // below run before the jump-and-highlight block, so a useRef
+  // declared down there would change the hook count between the
+  // loading render and the loaded render (React error #310).
+  const nwFlashTimer = useRef<number | null>(null);
 
   const backupsQuery = useQuery({
     queryKey: ["backups"],
@@ -3139,6 +3145,104 @@ export function NetWorthView() {
     setEditorOpen(true);
   }
 
+  /* Jump-and-highlight (contract v119): the provenance-tap
+     mechanism modelled on December's jumpToDecField — open the
+     editor that holds the field first (snapshot editor, single-
+     balance editor, or the target editor), scroll on a later
+     frame, then flash an outline on the field for ~1.6s
+     (applied to the element directly and restored afterwards).
+     The editors are fixed modals with scrollable forms, so the
+     scroll lands inside the open editor. (The flash timer ref
+     lives with the other hooks at the top of this component.) */
+  const nwTapCls =
+    "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
+  const flashNwField = (fieldId: string) => {
+    window.setTimeout(() => {
+      const el = document.getElementById(fieldId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const prevOutline = el.style.outline;
+      const prevOffset = el.style.outlineOffset;
+      el.style.outline = "2px solid var(--accent)";
+      el.style.outlineOffset = "2px";
+      if (nwFlashTimer.current != null) {
+        window.clearTimeout(nwFlashTimer.current);
+      }
+      nwFlashTimer.current = window.setTimeout(() => {
+        el.style.outline = prevOutline;
+        el.style.outlineOffset = prevOffset;
+      }, 1600);
+    }, 150);
+  };
+  // First balance field of a snapshot: the first account (display
+  // order) with a recorded balance; a split balance lands on its
+  // first split part, since a split account shows no whole field.
+  const firstBalanceFieldId = (s: NwSnapshot): string | null => {
+    for (const a of accounts) {
+      const b = s.balances.find((x) => x.accountId === a.id);
+      if (!b) continue;
+      if (balanceHasSplit(b)) {
+        const first = (b.splits ?? [])[0];
+        if (first) return `nw-bal-${a.id}-${bucketKey(first.bucket)}`;
+      }
+      return `nw-bal-${a.id}`;
+    }
+    return null;
+  };
+  // First split field for one bucket in a snapshot: the first
+  // account (display order) carrying a split part in that bucket.
+  const firstSplitFieldId = (
+    s: NwSnapshot,
+    bucket: NwBucket,
+  ): string | null => {
+    for (const a of accounts) {
+      const b = s.balances.find((x) => x.accountId === a.id);
+      if ((b?.splits ?? []).some((p) => p.bucket === bucket)) {
+        return `nw-bal-${a.id}-${bucketKey(bucket)}`;
+      }
+    }
+    return null;
+  };
+  // The balance field for one account in one snapshot (whole, or
+  // its first split part when the balance is split).
+  const accountBalanceFieldId = (
+    s: NwSnapshot,
+    accountId: number,
+  ): string => {
+    const b = s.balances.find((x) => x.accountId === accountId);
+    if (b && balanceHasSplit(b)) {
+      const first = (b.splits ?? [])[0];
+      if (first) return `nw-bal-${accountId}-${bucketKey(first.bucket)}`;
+    }
+    return `nw-bal-${accountId}`;
+  };
+  // The balance field for one account in the single-balance
+  // editor: the whole field, or its first split part when the
+  // balance is split.
+  const oneBalanceFieldId = (s: NwSnapshot, accountId: number): string => {
+    const b = s.balances.find((x) => x.accountId === accountId);
+    if (b && balanceHasSplit(b)) {
+      const first = (b.splits ?? [])[0];
+      if (first) return `nw-one-bal-${bucketKey(first.bucket)}`;
+    }
+    return "nw-one-bal";
+  };
+  const jumpToNwSnapshotField = (s: NwSnapshot, fieldId: string) => {
+    setEditorSnapshot(s);
+    setEditorOpen(true);
+    flashNwField(fieldId);
+  };
+  const jumpToNwBalanceField = (account: NwAccount, snapshot: NwSnapshot) => {
+    setBalanceEdit({ account, snapshot });
+    flashNwField(oneBalanceFieldId(snapshot, account.id));
+  };
+  const jumpToNwTarget = () => {
+    setTargetInput(String((targetCents ?? 0) / 100));
+    setTargetError("");
+    setEditingTarget(true);
+    flashNwField("nw-target-input");
+  };
+
   /* ----- empty state ----- */
   if (snapshots.length === 0 || accounts.length === 0) {
     return (
@@ -3237,6 +3341,19 @@ export function NetWorthView() {
 
   /* ----- KPIs ----- */
   const latestTotal = latest?.totalCents ?? 0;
+  // Provenance-tap landing fields (contract v119) for the
+  // latest snapshot: its first balance field, and its first
+  // split field per bucket.
+  const latestFirstBalanceFieldId = latest
+    ? firstBalanceFieldId(latest)
+    : null;
+  const latestSplitFieldIds = new Map<NwBucket, string>();
+  if (latest) {
+    for (const bucket of NW_SPLIT_BUCKETS) {
+      const fieldId = firstSplitFieldId(latest, bucket);
+      if (fieldId) latestSplitFieldIds.set(bucket, fieldId);
+    }
+  }
   const sinceLastCents = prev ? latestTotal - prev.totalCents : 0;
   const sinceLastPct = prev && prev.totalCents !== 0 ? sinceLastCents / prev.totalCents : 0;
   const ytdCents = ytdBaseline ? latestTotal - ytdBaseline.totalCents : 0;
@@ -3778,7 +3895,20 @@ export function NetWorthView() {
               Net worth
             </p>
             <p className="tnum display mt-1.5 text-3xl font-semibold whitespace-nowrap sm:text-4xl">
-              {fmt(latestTotal)}
+              {latest != null && latestFirstBalanceFieldId != null ? (
+                <button
+                  type="button"
+                  aria-label="Go to the first balance field of the latest snapshot"
+                  className={nwTapCls}
+                  onClick={() =>
+                    jumpToNwSnapshotField(latest, latestFirstBalanceFieldId)
+                  }
+                >
+                  {fmt(latestTotal)}
+                </button>
+              ) : (
+                fmt(latestTotal)
+              )}
             </p>
             <p className="tnum mt-1 text-sm whitespace-nowrap text-[var(--dim)]">
               {latest ? `as of ${fmtDateLong(latest.date)}` : ""}
@@ -4465,12 +4595,33 @@ export function NetWorthView() {
           {bucketEntries.length > 0 && (
             <div className="text-right">
               <p className="tnum display text-xl font-semibold whitespace-nowrap sm:text-2xl">
-                {fmt(bucketSignedTotal)}
+                {latest != null && latestFirstBalanceFieldId != null ? (
+                  <button
+                    type="button"
+                    aria-label="Go to the first balance field of the latest snapshot"
+                    className={nwTapCls}
+                    onClick={() =>
+                      jumpToNwSnapshotField(latest, latestFirstBalanceFieldId)
+                    }
+                  >
+                    {fmt(bucketSignedTotal)}
+                  </button>
+                ) : (
+                  fmt(bucketSignedTotal)
+                )}
               </p>
               {targetCents != null && targetCents > 0 && (
                 <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
                   {((bucketSignedTotal / targetCents) * 100).toFixed(1)}% of the{" "}
-                  {fmt(targetCents)} target
+                  <button
+                    type="button"
+                    aria-label="Go to the Net worth target field"
+                    className={nwTapCls}
+                    onClick={jumpToNwTarget}
+                  >
+                    {fmt(targetCents)}
+                  </button>{" "}
+                  target
                 </p>
               )}
             </div>
@@ -4519,7 +4670,21 @@ export function NetWorthView() {
                     style={{ background: BUCKET_COLORS[s.bucket] }}
                   />
                   <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                  <span>{fmt(s.cents)}</span>
+                  {(() => {
+                    const fieldId = latestSplitFieldIds.get(s.bucket);
+                    return fieldId != null && latest != null ? (
+                      <button
+                        type="button"
+                        aria-label={`Go to the ${bucketLabel(s.bucket)} split field of the latest snapshot`}
+                        className={nwTapCls}
+                        onClick={() => jumpToNwSnapshotField(latest, fieldId)}
+                      >
+                        {fmt(s.cents)}
+                      </button>
+                    ) : (
+                      <span>{fmt(s.cents)}</span>
+                    );
+                  })()}
                   <span className="text-[var(--dim)]">
                     ·{" "}
                     {bucketMixTotal > 0
@@ -4543,7 +4708,21 @@ export function NetWorthView() {
                       style={{ background: BUCKET_COLORS[s.bucket] }}
                     />
                     <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                    <span>{fmt(s.cents)}</span>
+                    {(() => {
+                      const fieldId = latestSplitFieldIds.get(s.bucket);
+                      return fieldId != null && latest != null ? (
+                        <button
+                          type="button"
+                          aria-label={`Go to the ${bucketLabel(s.bucket)} split field of the latest snapshot`}
+                          className={nwTapCls}
+                          onClick={() => jumpToNwSnapshotField(latest, fieldId)}
+                        >
+                          {fmt(s.cents)}
+                        </button>
+                      ) : (
+                        <span>{fmt(s.cents)}</span>
+                      );
+                    })()}
                     <span className="text-[var(--dim)]">
                       — below zero, so it is not in the bar above; it is
                       counted in the total at the top
@@ -4655,12 +4834,28 @@ export function NetWorthView() {
                   Net worth target
                 </p>
                 <p className="tnum display mt-1.5 text-xl font-semibold sm:text-2xl">
-                  {fmt(targetCents ?? 0)}
+                  <button
+                    type="button"
+                    aria-label="Go to the Net worth target field"
+                    className={nwTapCls}
+                    onClick={jumpToNwTarget}
+                  >
+                    {fmt(targetCents ?? 0)}
+                  </button>
                 </p>
                 <p className="tnum mt-1 text-sm text-[var(--dim)]">
-                  {targetProgressFrac != null
-                    ? `${(targetProgressFrac * 100).toFixed(1)}% reached`
-                    : ""}
+                  {targetProgressFrac != null ? (
+                    <button
+                      type="button"
+                      aria-label="Go to the Net worth target field"
+                      className={nwTapCls}
+                      onClick={jumpToNwTarget}
+                    >
+                      {`${(targetProgressFrac * 100).toFixed(1)}% reached`}
+                    </button>
+                  ) : (
+                    ""
+                  )}
                   {targetRemainingCents != null
                     ? ` · ${targetRemainingCents === 0 ? "Target reached" : `${fmt(targetRemainingCents)} remaining`}`
                     : ""}
@@ -5044,7 +5239,7 @@ export function NetWorthView() {
                             const snap =
                               snapshots.find((s) => s.date === latestRec.date) ??
                               null;
-                            if (snap) setBalanceEdit({ account: a, snapshot: snap });
+                            if (snap) jumpToNwBalanceField(a, snap);
                           }}
                         >
                           {fmt(latestRec.cents)}
@@ -5354,7 +5549,12 @@ export function NetWorthView() {
                           type="button"
                           aria-label={`Edit ${a.name} on ${fmtDateLong(s.date)}`}
                           className="underline-offset-2 hover:text-[var(--accent)] hover:underline"
-                          onClick={() => openEditSnapshot(s)}
+                          onClick={() =>
+                            jumpToNwSnapshotField(
+                              s,
+                              accountBalanceFieldId(s, a.id),
+                            )
+                          }
                         >
                           {b ? fmt(b.balanceCents) : "—"}
                         </button>
@@ -5388,9 +5588,24 @@ export function NetWorthView() {
                   </th>
                   {historySnapshots.map((s) => {
                     const t = bucketTotalForSnapshot(s, bucket, kindById, custodialIds);
+                    const fieldId =
+                      t != null ? firstSplitFieldId(s, bucket) : null;
                     return (
                       <td key={s.id} className="py-2 pr-3 text-right whitespace-nowrap">
-                        {t != null ? fmt(t) : "—"}
+                        {t != null && fieldId != null ? (
+                          <button
+                            type="button"
+                            aria-label={`Go to the ${bucketLabel(bucket)} split field in the ${fmtDateLong(s.date)} snapshot`}
+                            className={nwTapCls}
+                            onClick={() => jumpToNwSnapshotField(s, fieldId)}
+                          >
+                            {fmt(t)}
+                          </button>
+                        ) : t != null ? (
+                          fmt(t)
+                        ) : (
+                          "—"
+                        )}
                       </td>
                     );
                   })}
@@ -5451,11 +5666,25 @@ export function NetWorthView() {
                 >
                   Total
                 </th>
-                {historySnapshots.map((s) => (
-                  <td key={s.id} className="py-2 pr-3 text-right whitespace-nowrap">
-                    {fmt(s.totalCents)}
-                  </td>
-                ))}
+                {historySnapshots.map((s) => {
+                  const fieldId = firstBalanceFieldId(s);
+                  return (
+                    <td key={s.id} className="py-2 pr-3 text-right whitespace-nowrap">
+                      {fieldId != null ? (
+                        <button
+                          type="button"
+                          aria-label={`Go to the first balance field of the ${fmtDateLong(s.date)} snapshot`}
+                          className={nwTapCls}
+                          onClick={() => jumpToNwSnapshotField(s, fieldId)}
+                        >
+                          {fmt(s.totalCents)}
+                        </button>
+                      ) : (
+                        fmt(s.totalCents)
+                      )}
+                    </td>
+                  );
+                })}
               </tr>
             </tbody>
           </table>
