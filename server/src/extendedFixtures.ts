@@ -522,6 +522,96 @@ function f2RetirementDefault(core: SpendingCore, currentMonth: string) {
   };
 }
 
+// Round-18 F1 — the chart-months example, run on the core exactly
+// as getDashboard runs it. Monthly True cost Aug $100, Sep $200,
+// Oct $300, Nov $400, Dec $500 (entered month totals, no bills),
+// viewed with the current month fixed at Oct 2026 (the example's
+// current month — the trailing window ends at the current month
+// while the 12-entry history ends at the viewed month). The helpers
+// below mirror the handler line for line: the trailing window's own
+// months (contract v123's trailingMonths, built in the averaging
+// loop from the same eff() figures) and the pre-v123 client slice
+// (the last trailingMonthsCovered history entries), so the fixtures
+// pin both what the chart plots now and how far the old slice
+// disagreed. The rendered check pins the handler and the chart
+// themselves end to end.
+function f1Core(): SpendingCore {
+  return createSpendingCore<CoreYearlyVersion, CoreYearlyBillNamed>({
+    txns: [],
+    yearly: [],
+    yearlyVersions: [],
+    summaries: [
+      { month: "2026-08", cashOutCents: 10000 },
+      { month: "2026-09", cashOutCents: 20000 },
+      { month: "2026-10", cashOutCents: 30000 },
+      { month: "2026-11", cashOutCents: 40000 },
+      { month: "2026-12", cashOutCents: 50000 },
+    ],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: null,
+  });
+}
+
+// getDashboard's trailing window months (contract v123): up to 12
+// months ending at `currentMonth`, starting at the earliest data
+// month — the months the trailing averages cover and the chart plots.
+// meanSmoothed is the mean of the plotted months' bars, avgSmoothed
+// the handler's trailing average over the same loop; the two agree
+// by construction.
+function f1TrailingMonths(core: SpendingCore, currentMonth: string) {
+  const windowStart = shiftMonth(currentMonth, -11);
+  const coveredStart =
+    core.earliest && core.earliest > windowStart ? core.earliest : windowStart;
+  const count =
+    core.earliest == null || coveredStart > currentMonth
+      ? 0
+      : monthsBetween(coveredStart, currentMonth) + 1;
+  const months: { monthNum: number; smoothed: number }[] = [];
+  let sum = 0;
+  for (let i = 0; i < count; i++) {
+    const m = shiftMonth(coveredStart, i);
+    const s = core.eff(m).smoothed;
+    months.push({ monthNum: Number(m.replace("-", "")), smoothed: s });
+    sum += s;
+  }
+  const barSum = months.reduce((s, r) => s + r.smoothed, 0);
+  return {
+    firstMonth: months[0]?.monthNum ?? null,
+    lastMonth: months[months.length - 1]?.monthNum ?? null,
+    months: count,
+    meanSmoothed: count > 0 ? Math.round(barSum / count) : 0,
+    avgSmoothed: count > 0 ? Math.round(sum / count) : 0,
+  };
+}
+
+// The pre-v123 client slice: the last trailingMonthsCovered entries
+// of the 12-entry history ending at the viewed month (months before
+// tracking started carry zero, as the handler's history rows do).
+function f1OldSlice(core: SpendingCore, viewedMonth: string, count: number) {
+  const history: { month: string; smoothed: number }[] = [];
+  for (let i = 11; i >= 0; i--) {
+    const m = shiftMonth(viewedMonth, -i);
+    history.push({
+      month: m,
+      smoothed:
+        core.earliest != null && m < core.earliest ? 0 : core.eff(m).smoothed,
+    });
+  }
+  const slice = history.slice(history.length - count);
+  const sum = slice.reduce((s, r) => s + r.smoothed, 0);
+  const first = slice[0];
+  const last = slice[slice.length - 1];
+  return {
+    firstMonth: first ? Number(first.month.replace("-", "")) : null,
+    lastMonth: last ? Number(last.month.replace("-", "")) : null,
+    mean: slice.length > 0 ? Math.round(sum / slice.length) : 0,
+  };
+}
+
 // The Year Summary's prior-year anchor, selected exactly as the
 // action selects it: the last snapshot dated before Jan 1 of the
 // year — the starting point the Net Worth view's Year to date is
@@ -1377,6 +1467,62 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     note: "Round-18 F2, Retirement default annual spending (current month fixed at Oct 2026): the default annualises the trailing True cost over the window from the earliest data month — ten months Jan–Oct, $200.00 total — so $200.00 ÷ 10 × 12 = $240.00/year. (Pre-v122 the window started in March, eight months, and the default read $270.00/year.)",
     expected: { months: 10, annual: 24000 },
     actual: () => f2RetirementDefault(f2Core(), "2026-10"),
+  },
+  {
+    id: "sp-f1-chart-plots-server-window",
+    kind: "spending",
+    note: "Round-18 F1, chart months (viewed Dec 2026, current month fixed at Oct 2026): the chart plots the trailing window's own months — Aug, Sep, Oct — True cost $100/$200/$300, whose mean is $200.00/month, the same as the averages line. (Pre-v123 the client sliced the last three history entries — Oct, Nov, Dec — whose mean is $400.00/month, $200.00/month above the line.)",
+    expected: {
+      firstMonth: 202608,
+      lastMonth: 202610,
+      months: 3,
+      meanSmoothed: 20000,
+      avgSmoothed: 20000,
+      oldSliceFirstMonth: 202610,
+      oldSliceLastMonth: 202612,
+      oldSliceMean: 40000,
+    },
+    actual: () => {
+      const c = f1Core();
+      const t = f1TrailingMonths(c, "2026-10");
+      const o = f1OldSlice(c, "2026-12", t.months);
+      return {
+        firstMonth: t.firstMonth,
+        lastMonth: t.lastMonth,
+        months: t.months,
+        meanSmoothed: t.meanSmoothed,
+        avgSmoothed: t.avgSmoothed,
+        oldSliceFirstMonth: o.firstMonth,
+        oldSliceLastMonth: o.lastMonth,
+        oldSliceMean: o.mean,
+      };
+    },
+  },
+  {
+    id: "sp-f1-normal-case-unchanged",
+    kind: "spending",
+    note: "Round-18 F1, normal case (viewed Oct 2026, current month Oct 2026): the viewed month IS the current month, so the history's last three entries are the window itself — Aug, Sep, Oct — and the old slice agreed with the window. The fix changes nothing here: the chart plots Aug/Sep/Oct, mean $200.00/month, the same as the averages line.",
+    expected: {
+      firstMonth: 202608,
+      lastMonth: 202610,
+      months: 3,
+      meanSmoothed: 20000,
+      avgSmoothed: 20000,
+      oldSliceMean: 20000,
+    },
+    actual: () => {
+      const c = f1Core();
+      const t = f1TrailingMonths(c, "2026-10");
+      const o = f1OldSlice(c, "2026-10", t.months);
+      return {
+        firstMonth: t.firstMonth,
+        lastMonth: t.lastMonth,
+        months: t.months,
+        meanSmoothed: t.meanSmoothed,
+        avgSmoothed: t.avgSmoothed,
+        oldSliceMean: o.mean,
+      };
+    },
   },
   {
     id: "sp-monthly-total-and-klo",

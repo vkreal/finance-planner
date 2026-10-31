@@ -916,6 +916,27 @@ const monthlyBillInput = z.object({
   keepLightsOn: z.boolean().default(false),
 });
 
+// One month row of the Dashboard's per-month series (contract v123,
+// round-18 F1): shared by `history` (12 months ending at the viewed
+// month) and `trailingMonths` (the trailing window's own months,
+// ending at the current month) so the two can never drift apart in
+// shape.
+const dashboardHistoryRowOut = z.object({
+  month: z.string(),
+  incurredCents: z.number(),
+  cashOutCents: z.number(),
+  smoothedCents: z.number(),
+  yearlyLumpsCents: z.number(),
+  oneOffTotalCents: z.number(),
+  hasOneOff: z.boolean(),
+  // True when this month is after the current calendar month — its
+  // figures were entered ahead and are estimates, the same flag the
+  // entered-ahead rows carry (contract v59, finding F4). Always
+  // false on a trailing-window row: the window never passes the
+  // current month.
+  estimate: z.boolean(),
+});
+
 type RawBillVersionRow = typeof schema.monthlyBillVersions.$inferSelect;
 type BillVersionRow = Omit<RawBillVersionRow, "amountCents"> & { amountCents: number };
 
@@ -3137,7 +3158,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 122;
+export const API_CONTRACT_VERSION = 123;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -6862,6 +6883,14 @@ export const Actions = {
       }),
       remainingOutflowCents: z.number(),
       trailingMonthsCovered: z.number(),
+      // The trailing window's own months (contract v123, round-18
+      // F1): the exact months the trailing averages cover, in
+      // chronological order, each row shaped like a history row.
+      // The Month-mode chart plots these directly — the 12-entry
+      // history ends at the viewed month while this window ends at
+      // the current month, so the chart can no longer slice the
+      // window off the history.
+      trailingMonths: z.array(dashboardHistoryRowOut),
       trailingAvgCents: z.number(),
       avgSmoothedCents: z.number(),
       avgCashOutCents: z.number(),
@@ -6875,22 +6904,7 @@ export const Actions = {
       categories: z.array(
         z.object({ category: z.string(), amountCents: z.number() }),
       ),
-      history: z.array(
-        z.object({
-          month: z.string(),
-          incurredCents: z.number(),
-          cashOutCents: z.number(),
-          smoothedCents: z.number(),
-          yearlyLumpsCents: z.number(),
-          oneOffTotalCents: z.number(),
-          hasOneOff: z.boolean(),
-          // True when this history month is after the current
-          // calendar month — its figures were entered ahead and
-          // are estimates, the same flag the entered-ahead rows
-          // carry (contract v59, finding F4).
-          estimate: z.boolean(),
-        }),
-      ),
+      history: z.array(dashboardHistoryRowOut),
       // Months AFTER the viewed month that already carry entered
       // figures — cash-out items, a directly entered month total, or
       // recorded transactions — each with that month's own effective
@@ -7028,6 +7042,15 @@ export const Actions = {
       const isItemsMonth = itemsByMonth.has(month);
       const smoothedCents = curEff.smoothed;
 
+      // One-offs by month, needed by the trailing-window rows below
+      // as well as the history rows (moved up from the history
+      // section when the window gained its own published months,
+      // contract v123, round-18 F1).
+      const oneOffsByMonth = new Map<string, number>();
+      for (const o of oneOffs) {
+        oneOffsByMonth.set(o.month, (oneOffsByMonth.get(o.month) ?? 0) + o.amountCents);
+      }
+
       // Trailing window: up to 12 months ending at the earlier of
       // the selected month and the current calendar month, and only
       // months from the first month that has data — and
@@ -7048,12 +7071,39 @@ export const Actions = {
       let trailingSum = 0;
       let smoothedSum = 0;
       let cashOutSum = 0;
+      // The window's own months (contract v123, round-18 F1): the
+      // chart plots exactly these — the months the averages above
+      // cover — published here because the 12-entry history ends
+      // at the VIEWED month while this window ends at the current
+      // month, so no slice off the history can recover the window
+      // when the viewed month is after the current month (the
+      // pre-v123 client slice took the last trailingMonthsCovered
+      // history entries and plotted the viewed month's tail
+      // instead). Built in the same loop as the averages, from the
+      // same eff() figures, so the bars and the line are the same
+      // numbers by construction. Window months start at or after
+      // the earliest data month, so no beforeStart zeroing applies;
+      // estimate is false for every window month (the window never
+      // passes the current month) and is carried for shape parity
+      // with the history rows.
+      const trailingMonths = [];
       for (let i = 0; i < trailingMonthsCovered; i++) {
         const m = shiftMonth(coveredStart, i);
         const e = eff(m);
         trailingSum += e.incurred;
         smoothedSum += e.smoothed;
         cashOutSum += e.cashOut;
+        const ooTotal = oneOffsByMonth.get(m) ?? 0;
+        trailingMonths.push({
+          month: m,
+          incurredCents: e.incurred,
+          cashOutCents: e.cashOut,
+          smoothedCents: e.smoothed,
+          yearlyLumpsCents: e.lumps,
+          oneOffTotalCents: ooTotal,
+          hasOneOff: ooTotal !== 0,
+          estimate: m > currentMonthStr,
+        });
       }
       const trailingAvgCents =
         trailingMonthsCovered > 0
@@ -7083,10 +7133,6 @@ export const Actions = {
       // the smoothed formula for those months.
       const reserveCents = core.reserveThrough(month);
 
-      const oneOffsByMonth = new Map<string, number>();
-      for (const o of oneOffs) {
-        oneOffsByMonth.set(o.month, (oneOffsByMonth.get(o.month) ?? 0) + o.amountCents);
-      }
       const monthOneOffs = oneOffs
         .filter((o) => o.month === month)
         .map((o) => ({
@@ -7424,6 +7470,7 @@ export const Actions = {
         ytd,
         remainingOutflowCents: curEff.cashOut - monthlyBillsTotalCents,
         trailingMonthsCovered,
+        trailingMonths,
         trailingAvgCents,
         avgSmoothedCents,
         avgCashOutCents,

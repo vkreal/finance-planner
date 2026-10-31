@@ -1109,13 +1109,18 @@ type SpendingChartDatum = {
 /* Grouped bar chart for the Month-mode Quick view: one pair of bars
    per recorded month — the month's True cost (smoothed) beside its
    Cash out, in chronological order. Fed from getDashboard's own
-   history: the caller passes exactly the trailing window the
-   averages line averages (the last trailingMonthsCovered history
-   entries — the same per-month eff() figures the tiles show), so
-   the bars and the line are the same numbers and can never
-   disagree (the line's figures are the means of exactly these
-   months' bars), and a pair appears automatically when a new
-   month is recorded. Past the viewed month, the series continues with any
+   trailing window: the caller passes the server-published
+   trailingMonths — the exact months the averages line averages
+   (the same per-month eff() figures the tiles show), so the bars
+   and the line are the same numbers and can never disagree (the
+   line's figures are the means of exactly these months' bars),
+   and a pair appears automatically when a new month is recorded.
+   (Before contract v123 the caller sliced the last
+   trailingMonthsCovered entries off the 12-entry history, which
+   ends at the viewed month while the window ends at the current
+   month — so with the viewed month after the current month the
+   chart plotted the viewed month's tail, not the window.)
+   Past the viewed month, the series continues with any
    later month that already has entered figures (getDashboard's
    enteredAheadMonths — cash-out items, an entered month total, or
    recorded payments, each priced by the same eff() computation);
@@ -2740,9 +2745,14 @@ export function App() {
      averages: True cost is avgSmoothedCents and Cash out is
      avgCashOutCents, both averaged by getDashboard over the
      trailing window trailingMonthsCovered names (up to 12
-     months ending at the viewed month, from the first month
-     with data). The window label is reconstructed from that
-     same count, so it names exactly the months averaged. Hidden
+     months ending at the current calendar month, from the first
+     month with data). The window label is read off the
+     server-published trailingMonths — the exact months averaged
+     — so it names the window itself, never a span reconstructed
+     from the viewed month (before contract v123 it was rebuilt
+     ending at the viewed month and named the wrong months
+     whenever the viewed month was after the current month,
+     the same stale assumption as the old chart slice). Hidden
      when fewer than 2 months are covered — an average of one
      month is just the month. (It rendered as a standalone
      highlighted banner between the tiles and the chart card
@@ -2752,17 +2762,21 @@ export function App() {
   const showAvgStrip = data != null && data.trailingMonthsCovered >= 2;
   const avgWindowLabel = (() => {
     if (data == null || data.trailingMonthsCovered < 1) return "";
+    const first = data.trailingMonths[0];
+    const last = data.trailingMonths[data.trailingMonths.length - 1];
+    if (first == null || last == null) return "";
     const covered = data.trailingMonthsCovered;
-    const start = shiftMonth(month, -(covered - 1));
+    const start = first.month;
+    const end = last.month;
     const startShort = MONTH_SHORT[Number(start.slice(5, 7)) - 1] ?? "";
-    const endShort = MONTH_SHORT[Number(month.slice(5, 7)) - 1] ?? "";
+    const endShort = MONTH_SHORT[Number(end.slice(5, 7)) - 1] ?? "";
     if (covered >= 12) {
-      return `Last 12 months · ${startShort} ${start.slice(0, 4)}–${endShort} ${month.slice(0, 4)}`;
+      return `Last 12 months · ${startShort} ${start.slice(0, 4)}–${endShort} ${end.slice(0, 4)}`;
     }
-    if (start.slice(0, 4) === month.slice(0, 4)) {
-      return `${startShort}–${endShort} ${month.slice(0, 4)} · ${covered} months`;
+    if (start.slice(0, 4) === end.slice(0, 4)) {
+      return `${startShort}–${endShort} ${end.slice(0, 4)} · ${covered} months`;
     }
-    return `${startShort} ${start.slice(0, 4)}–${endShort} ${month.slice(0, 4)} · ${covered} months`;
+    return `${startShort} ${start.slice(0, 4)}–${endShort} ${end.slice(0, 4)} · ${covered} months`;
   })();
 
   /* ---- Year view (Quick view) derived display helpers ---- */
@@ -3336,26 +3350,27 @@ export function App() {
                       ytd: data.ytd,
                     })}
                   </div>
-                  {/* True cost vs Cash out bars: the last
-                      trailingMonthsCovered history entries are exactly
-                      the months the averages line averages (the
-                      history's final entry is the viewed month), so
-                      the chart and the line show the same figures.
-                      slice from the end keeps that true for any
-                      covered count, including 0 (no recorded months —
-                      the chart renders its empty state). The chart —
-                      and only the chart — then continues past the
-                      viewed month with enteredAheadMonths: later
-                      months that already have entered figures, each
-                      with its own dashboard figures; the line, tiles
-                      and everything else stay on the viewed month.
-                      The averages line itself renders inside the
-                      chart card, under its subheading (see
-                      averageLine on SpendingTrueCostChart). */}
+                  {/* True cost vs Cash out bars: the server-published
+                      trailingMonths — the trailing window's own months,
+                      the exact months the averages line averages — so
+                      the chart and the line show the same figures (the
+                      12-entry history ends at the viewed month while
+                      the window ends at the current month, so slicing
+                      the window off the history plotted the viewed
+                      month's tail whenever the viewed month was after
+                      the current month — contract v123, round-18 F1).
+                      An empty window (0 covered months) renders the
+                      chart's empty state. The chart — and only the
+                      chart — then continues past the viewed month with
+                      enteredAheadMonths: later months that already
+                      have entered figures, each with its own dashboard
+                      figures; the line, tiles and everything else stay
+                      on the viewed month. The averages line itself
+                      renders inside the chart card, under its
+                      subheading (see averageLine on
+                      SpendingTrueCostChart). */}
                   <SpendingTrueCostChart
-                    months={data.history.slice(
-                      data.history.length - data.trailingMonthsCovered,
-                    )}
+                    months={data.trailingMonths}
                     aheadMonths={data.enteredAheadMonths}
                     averageLine={
                       showAvgStrip
