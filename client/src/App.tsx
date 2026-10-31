@@ -4119,7 +4119,7 @@ export function App() {
                     </div>
                   </div>
                   <div>
-                    <label htmlFor="ci-desc" className={labelCls}>Description</label>
+                    <label htmlFor="ci-desc" className={labelCls}>Name</label>
                     <input id="ci-desc" type="text" required className={inputCls} value={iDesc} onChange={(e) => setIDesc(e.target.value)} placeholder="e.g. Groceries" />
                   </div>
                   <div>

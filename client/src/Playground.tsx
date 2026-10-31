@@ -92,8 +92,11 @@ const STACK_HATCH_STYLE = {
    share the one colour, in the full chart and in the play
    strip's mini bar alike (the colour rides on the marker
    objects buildStackModel returns). The ACA cliff keeps
-   var(--warn) and the 0% gains line keeps the
-   qualified-dividends green (#65a30d); the 20%-floor tick is
+   var(--warn); the 0% gains-end line and its label keep
+   their own pink (#db2777 — contract v114: recoloured off
+   the qualified-dividends green #65a30d the gains segments
+   and legend still use, so the marker can never be read as
+   a segment edge); the 20%-floor tick is
    not part of this scheme. */
 const STACK_MARKER_COLORS = ["#64748b", "#6ea8d8", "#5f6caf", "#7a5c8f"] as const;
 
@@ -132,7 +135,17 @@ type StackSegPos = StackSeg & {
    (contract v86): each label takes the exact colour of the
    dashed guide line it names — the marker's `color`, carried
    through the TickLabel — never a per-label hard-coded hex. */
-type TickLabel = { rate: number; to: number; color: string };
+type TickLabel = {
+  rate: number;
+  to: number;
+  color: string;
+  /* Contract v114: an optional ⓘ note for one tick — the
+     landing bracket's top — composed live by the caller
+     from the same marker figures. Ticks without a note
+     render exactly as before (aria-hidden text only). */
+  note?: string;
+  noteAriaLabel?: string;
+};
 
 const EMPTY_STAGGERED: ReadonlySet<number> = new Set();
 
@@ -214,7 +227,6 @@ function TickStrip({
       <div
         ref={stripRef}
         className={`relative mt-1 ${staggered.size > 0 ? "h-8" : "h-4"}`}
-        aria-hidden="true"
       >
         {ticks.map((m, i) => (
           <span
@@ -227,9 +239,24 @@ function TickStrip({
               left: `clamp(24px, ${taxX(m.to)}%, calc(100% - 24px))`,
               transform: "translateX(-50%)",
               color: m.color,
+              /* A noted tick's bubble must paint above the
+                 chart area below (the z-31 lift of the 0%
+                 InfoNote pattern); the centring transform
+                 traps the bubble's own z-index inside this
+                 span, so the lift rides on the span itself. */
+              zIndex: m.note != null ? 31 : undefined,
             }}
           >
-            {m.rate}% · {fmtDollars(m.to)}
+            <span aria-hidden="true">
+              {m.rate}% · {fmtDollars(m.to)}
+            </span>
+            {m.note != null && (
+              <InfoNote
+                text={m.note}
+                ariaLabel={m.noteAriaLabel ?? `About the ${m.rate}% bracket top`}
+                align={taxX(m.to) > 60 ? "right" : "left"}
+              />
+            )}
           </span>
         ))}
       </div>
@@ -520,6 +547,56 @@ export function Playground() {
      edits are never silently dropped. Null until the first
      read lands. */
   const pgRevisionRef = useRef<number | null>(null);
+  /* Landing-label connector (contract v114): the thin leader
+     line from the floating landing-bracket label down to its
+     dashed bracket-top guide line. The two ends live in
+     different subtrees — the label row above the chart, the
+     guide-line overlay inside the bar area — with a variable
+     set of rows between them (the buffer label row, the tick
+     strip with its measured stagger), so, following the
+     TickStrip precedent, the line's height is MEASURED
+     between the two elements rather than computed from the
+     layout rules. Null until measured, and whenever either
+     end is not rendered (no priced year, no landing marker,
+     or a marker outside the axis, where no dashed line is
+     drawn to connect to). */
+  const stackLabelsRef = useRef<HTMLDivElement | null>(null);
+  const stackChartRef = useRef<HTMLDivElement | null>(null);
+  const stackLinesRef = useRef<HTMLDivElement | null>(null);
+  const [landingLinkH, setLandingLinkH] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const labels = stackLabelsRef.current;
+    const lines = stackLinesRef.current;
+    if (labels == null || lines == null) {
+      setLandingLinkH((prev) => (prev == null ? prev : null));
+      return;
+    }
+    let cancelled = false;
+    const measure = () => {
+      if (cancelled) return;
+      const h =
+        lines.getBoundingClientRect().top -
+        labels.getBoundingClientRect().bottom;
+      const next = h > 0.5 ? h : null;
+      setLandingLinkH((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(labels);
+    observer.observe(lines);
+    if (stackChartRef.current != null) {
+      observer.observe(stackChartRef.current);
+    }
+    window.addEventListener("resize", measure);
+    void document.fonts.ready.then(() => {
+      measure();
+    });
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  });
   // Keep this view's cached copy in step with every save, so
   // leaving and returning within the session re-hydrates the
   // latest form, never a stale one.
@@ -4609,12 +4686,18 @@ export function Playground() {
               if (pg.conversion <= 0) {
                 takeawayParts.push("No pre-tax money out typed");
               } else if (pg.landingBracketPct != null) {
+                // Contract v114: the room-left wording is gone
+                // from this headline sentence (room-left site 1)
+                // — the sentence names the landing bracket only,
+                // exactly as it already did when no room figure
+                // was priced. The other room-left sites (the
+                // income-stack heading's status text, the gains
+                // stack's 0% room segment, the ACA-cliff room
+                // chips) are untouched.
                 takeawayParts.push(
                   pg.landingExactlyFilled
                     ? `Pre-tax money out fills the ${pg.landingBracketPct}% bracket exactly`
-                    : pg.landingRoomLeft != null
-                      ? `Pre-tax money out lands in the ${pg.landingBracketPct}% bracket with ${fmtDollars(pg.landingRoomLeft)} of room left in it`
-                      : `Pre-tax money out lands in the ${pg.landingBracketPct}% bracket`,
+                    : `Pre-tax money out lands in the ${pg.landingBracketPct}% bracket`,
                 );
               } else {
                 takeawayParts.push(
@@ -4694,7 +4777,11 @@ export function Playground() {
                     ? `the ACA line of ${fmtDollars(bufferLine)} (the cliff of ${fmtDollars(cliff)} minus your ${fmtDollars(pgAcaBufferDollars)} safety buffer)`
                     : `the ACA cliff of ${fmtDollars(cliff)}`;
                 if (Math.abs(diff) <= 0.5 && room > 0.5) {
-                  return `Think of two finish lines, and the pre-tax money stops at whichever comes first. Your total income is ${fmtDollars(pg.acaMagi)}, right on ${lineDesc}. The bracket would allow ${fmtDollars(room)} more before the ${pg.landingBracketPct}% bracket ends. That ${fmtDollars(room)} is the distance between the two lines, and the ${lineName} comes first, so it stays unused.`;
+                  // Contract v114: variant A reworded — it names
+                  // the two lines and which comes first, and no
+                  // longer names the room figure (no room-left
+                  // content anywhere in this tooltip).
+                  return `Think of two finish lines, and the pre-tax money stops at whichever comes first. Your total income is ${fmtDollars(pg.acaMagi)}, right on ${lineDesc}. The ${lineName} comes first, so it is the limit here — the top of the ${pg.landingBracketPct}% bracket sits just past it, unused.`;
                 }
                 if (diff > 0.5 && room <= diff + 0.5) {
                   return `Think of two finish lines, and the pre-tax money stops at whichever comes first. The top of the ${pg.landingBracketPct}% bracket is the nearer finish line. Your total income is ${fmtDollars(pg.acaMagi)}, still ${fmtDollars(diff)} under ${lineDesc}. So the bracket top is the limit here, not the ${lineName}.`;
@@ -4702,7 +4789,7 @@ export function Playground() {
                 return null;
               })();
               const stackRow = (
-                label: string,
+                label: ReactNode,
                 value: string,
                 sub?: string,
                 highlightValue?: boolean,
@@ -4849,7 +4936,13 @@ export function Playground() {
                    the v82 ⓘ beside it are removed at the user's
                    direction (the room figure confused more
                    than it helped); position, anchoring, font,
-                   colour, and stagger behaviour are unchanged. */
+                   colour, and stagger behaviour are unchanged.
+                   Contract v114: an ⓘ returns beside the rate
+                   (the landing tooltip, composed from the priced
+                   figures, with no room figure in it), and a
+                   thin connector line drops from the label to
+                   its dashed guide line — see the label block
+                   below. */
                 const showGainsEndLabel = gainsTotal > 0;
                 /* Axis-row stacking (contract v76): whether the
                    cliff and buffer axis labels sit close enough
@@ -4944,11 +5037,18 @@ export function Playground() {
                     : "h-4";
                 const axisMagiRowTop = "";
                 const axisBufferRowTop = axisLinesClose ? "top-4" : "";
+                /* Contract v115: the fallback is an explicit
+                   top-0, not "": the axis-end span now rides
+                   outside the axis block (see its render below),
+                   so it can no longer take the block's top from
+                   its static position inside it — an explicit
+                   top-0 against the shared row box resolves to
+                   exactly that same spot. */
                 const axisEndRowTop = axisLinesClose
                   ? "top-8 sm:top-0"
                   : acaCliffLine != null
                     ? "top-4 sm:top-0"
-                    : "";
+                    : "top-0";
                 return (
                   <div className="mt-3" aria-label="Income stacking chart">
                     <p className="mt-1 text-xs text-[var(--dim)]">
@@ -4962,7 +5062,7 @@ export function Playground() {
                       .
                     </p>
                     {(landingMarker != null || showGainsEndLabel) && (
-                      <div className="relative mt-1">
+                      <div className="relative mt-1" ref={stackLabelsRef}>
                         {showGainsEndLabel && (
                           <div className="relative h-[18px]">
                             <span
@@ -4987,7 +5087,7 @@ export function Playground() {
                               <span
                                 aria-hidden="true"
                                 className="tnum text-[11px]"
-                                style={{ color: "#65a30d" }}
+                                style={{ color: "#db2777" }}
                               >
                                 0% gains end · {fmtDollars(zeroTop)}
                               </span>
@@ -5006,7 +5106,17 @@ export function Playground() {
                                   tail and the v82 ⓘ are removed;
                                   the label stays aria-hidden (its
                                   figure is already in the chart's
-                                  accessible description). */}
+                                  accessible description). Contract
+                                  v114: the ⓘ returns beside the
+                                  rate, carrying the bracket's own
+                                  explainer (the landing tooltip —
+                                  what the bracket is and the
+                                  ordinary taxable income sitting
+                                  in it, composed live; no room
+                                  figure, per the v114 headline
+                                  rule). The label's text, position,
+                                  anchoring, font, colour, and
+                                  z-index are unchanged. */}
                               <span
                                 className="absolute inline-flex items-center whitespace-nowrap"
                                 style={{
@@ -5027,9 +5137,39 @@ export function Playground() {
                                 >
                                   {landingMarker.rate}%
                                 </span>
+                                <InfoNote
+                                  text={`Your ordinary income lands in this bracket — ${fmtDollars(ordinaryTaxable)} of ordinary taxable income sits in the ${landingMarker.rate}% bracket, the rate on your last dollars of ordinary income.`}
+                                  ariaLabel={`About the ${landingMarker.rate}% landing bracket`}
+                                  align={taxX(landingMarker.to) > 60 ? "right" : "left"}
+                                />
                               </span>
                             </div>
                           )}
+                        {/* Landing-label connector (contract
+                            v114): a thin leader line in the
+                            landing marker's own colour, dropped
+                            from the bottom of this label block at
+                            the marker's tick position down to the
+                            top of its dashed guide line — the
+                            height is the measured gap (see
+                            landingLinkH at the component level),
+                            so the line ends exactly where the
+                            dashed line begins, through the buffer
+                            label row and the tick strip, at any
+                            width. Drawn only when the marker's
+                            dashed line is drawn (inAxis). */}
+                        {landingMarker != null && landingMarker.inAxis && landingLinkH != null && (
+                          <div
+                            aria-hidden="true"
+                            className="pointer-events-none absolute"
+                            style={{
+                              left: `${taxX(landingMarker.to)}%`,
+                              top: "100%",
+                              height: landingLinkH,
+                              borderLeft: `1px solid ${landingMarker.color}`,
+                            }}
+                          />
+                        )}
                       </div>
                     )}
                     {/* Buffer label (contract v85): the v79
@@ -5056,20 +5196,42 @@ export function Playground() {
                         themselves and the two-row axis labels
                         below are unchanged. */}
                     {acaCliffLine != null && acaBufferLine != null && (
-                      <div aria-hidden="true" className="relative h-[26px]">
+                      <div className="relative h-[26px]">
+                        {/* Contract v114: the label gains the
+                            buffer ⓘ (the 0% InfoNote pattern —
+                            live-composed text, align by the
+                            label's position, the z-31 lift on
+                            its span, which the centring
+                            transform requires for the bubble to
+                            paint above the chart area). The
+                            label text itself stays aria-hidden
+                            and centred exactly as before; only
+                            the wrapper's aria-hidden comes off,
+                            so the ⓘ button is reachable. */}
                         <span
-                          className="tnum absolute top-0 text-[11px] font-medium whitespace-nowrap"
+                          className="absolute top-0 inline-flex items-center whitespace-nowrap"
                           style={{
-                            color: "var(--dim)",
                             left: `clamp(40px, ${(acaBufferLine.xPct + acaCliffLine.xPct) / 2}%, calc(100% - 40px))`,
                             transform: "translateX(-50%)",
+                            zIndex: 31,
                           }}
                         >
-                          Buffer {fmtDollars(pgAcaBufferDollars)}
+                          <span
+                            aria-hidden="true"
+                            className="tnum text-[11px] font-medium"
+                            style={{ color: "var(--dim)" }}
+                          >
+                            Buffer {fmtDollars(pgAcaBufferDollars)}
+                          </span>
+                          <InfoNote
+                            text={`Your safety margin under the ACA cliff. The cliff is ${fmtDollars(acaCliffLine.cliff)}; the buffer stops your income ${fmtDollars(pgAcaBufferDollars)} short of it, at ${fmtDollars(acaBufferLine.magi)}, so a small surprise doesn't wipe out the whole credit.`}
+                            ariaLabel="About the ACA safety buffer"
+                            align={(acaBufferLine.xPct + acaCliffLine.xPct) / 2 > 60 ? "right" : "left"}
+                          />
                         </span>
                       </div>
                     )}
-                    <div className="relative">
+                    <div className="relative" ref={stackChartRef}>
                       {/* Buffer-span tint (contract v85): the
                           region between the buffer dashed line
                           and the cliff dashed line, filled with
@@ -5117,7 +5279,33 @@ export function Playground() {
                           row itself, and the bar-area wrapper
                           below flows down with it. */}
                       {hasAxisTicks && (
-                        <TickStrip ticks={axisBracketTicks} taxX={taxX} />
+                        <TickStrip
+                          ticks={axisBracketTicks.map((m) => {
+                            /* Contract v114: the landing bracket's
+                               tick carries the bracket-top ⓘ,
+                               composed live from the same marker
+                               figures and the law row's rate list
+                               (the rate past this top is the next
+                               band's rate). Every other tick is
+                               note-free, exactly as before. */
+                            if (
+                              landingMarker == null ||
+                              m.rate !== landingMarker.rate
+                            ) {
+                              return m;
+                            }
+                            const nextRate =
+                              lawForYear(pgYearNum).rates[
+                                markers.findIndex((x) => x.rate === m.rate) + 1
+                              ];
+                            return {
+                              ...m,
+                              note: `The top of the ${m.rate}% bracket: ordinary taxable income up to ${fmtDollars(m.to)}.${nextRate != null ? ` Past this line, the ${nextRate}% rate starts.` : ""}`,
+                              noteAriaLabel: `About the ${m.rate}% bracket top`,
+                            };
+                          })}
+                          taxX={taxX}
+                        />
                       )}
                       <div className="relative">
                       <div
@@ -5161,7 +5349,7 @@ export function Playground() {
                           ))}
                           <div
                             className="absolute top-0 bottom-0 border-l-2 border-dashed"
-                            style={{ left: `${taxX(zeroTop)}%`, borderColor: "#65a30d" }}
+                            style={{ left: `${taxX(zeroTop)}%`, borderColor: "#db2777" }}
                             aria-hidden="true"
                           />
                           {show20 && (
@@ -5207,6 +5395,7 @@ export function Playground() {
                         className="pointer-events-none absolute right-0 bottom-0 left-0"
                         style={{ top: barOverlayTopPx }}
                         aria-hidden="true"
+                        ref={stackLinesRef}
                       >
                         {markers
                           .filter((m) => m.inAxis)
@@ -5226,7 +5415,7 @@ export function Playground() {
                             className="absolute top-0 bottom-0 border-l-2 border-dashed"
                             style={{
                               left: `${taxX(zeroTop)}%`,
-                              borderColor: "#65a30d",
+                              borderColor: "#db2777",
                             }}
                           />
                         )}
@@ -5320,8 +5509,9 @@ export function Playground() {
                       </div>
                       </div>
                     </div>
+                    <div className="relative mt-1">
                     <div
-                      className={`relative mt-1 ${axisHeightCls}`}
+                      className={`relative ${axisHeightCls}`}
                       aria-hidden="true"
                     >
                       <span
@@ -5367,16 +5557,48 @@ export function Playground() {
                           Buffer · MAGI {fmtDollars(acaBufferLine.magi)}
                         </span>
                       )}
-                      <span
-                        className={`tnum absolute text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
-                        style={{ right: 0 }}
-                      >
-                        {fmtDollars(axisTaxableMax)}
-                      </span>
                       {/* Contract v84: the bracket-top tick labels
                           moved to the top ends of their guide
                           lines, above the bar — nothing renders
                           for them in this below-bar block. */}
+                    </div>
+                    {/* Contract v115: the axis-end figure — the
+                        right end of the chart's scale — gains the
+                        ⓘ (the 0% InfoNote pattern: live-composed
+                        copy, align by the label's position, the
+                        z-31 lift on its span). The label sits at
+                        the axis's right end by construction, so
+                        its bubble aligns right. The note's text
+                        carries no figure; the figure beside it is
+                        composed live from axisTaxableMax, exactly
+                        as before — nothing is written in. The span
+                        rides OUTSIDE the aria-hidden axis block,
+                        wrapped with it in one relative row box so
+                        its right anchor and row tops resolve
+                        against the same box the block occupies —
+                        the v114 buffer-label discipline: a button
+                        inside aria-hidden is unreachable, so the
+                        figure text alone carries aria-hidden and
+                        the ⓘ stays reachable. Because the ⓘ is
+                        inside the figure's own span, it travels
+                        with the figure in both layouts: the
+                        desktop axis row, and the phone-width
+                        layout below 640px where axisEndRowTop
+                        drops the figure to a row of its own. The
+                        $0 taxable label and its ⓘ are untouched. */}
+                    <span
+                      className={`tnum absolute inline-flex items-center text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
+                      style={{ right: 0, zIndex: 31 }}
+                    >
+                      <span aria-hidden="true">
+                        {fmtDollars(axisTaxableMax)}
+                      </span>
+                      <InfoNote
+                        text="The right end of the chart's scale. The scale runs a little past the furthest line on the chart so nothing piles up at the right edge — this is where the ruler stops, not income, tax, or a bracket top."
+                        ariaLabel="About the end of the chart's scale"
+                        align="right"
+                      />
+                    </span>
                     </div>
                     <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--dim)]">
                         {(
@@ -5894,6 +6116,31 @@ export function Playground() {
                         fmtDollars(pg.acaMagi),
                         "MAGI plus the untaxed part of Social Security",
                       )}
+                    {/* Cash left after tax (contract v114, fixed
+                        text + ⓘ contract v116): the
+                        engine-priced readout on the same pricing
+                        (pg.cashIn / pg.netTaxBill /
+                        pg.cashLeftAfterTax — never client
+                        arithmetic): all the year's cash in minus
+                        its net tax bill, before any spending. The
+                        fixed subtext carries no figure; the ⓘ
+                        (the 0% InfoNote pattern — live-composed
+                        figures, align by the label's position)
+                        names the cash in and the net tax bill as
+                        priced, and carries the filing sentence
+                        only when the net bill is a refund. */}
+                    {stackRow(
+                      <>
+                        Cash left after tax
+                        <InfoNote
+                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — the total tax less the ACA credit kept and any refundable education credit. It's what's left to spend next year, before any spending.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                          ariaLabel="About the cash left after tax"
+                        />
+                      </>,
+                      fmtDollars(pg.cashLeftAfterTax),
+                      "Cash in minus the net tax bill — what's left to spend next year, before any spending.",
+                      true,
+                    )}
                   </dl>
                   {pg.conversion > 0 && (
                     <p className="mt-2 text-sm">

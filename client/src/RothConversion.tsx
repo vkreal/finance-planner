@@ -7481,21 +7481,27 @@ export function RothConversion() {
       {face === "plan" && (
         <section className={sectionCls} aria-label="What-if questions">
           <h2 className="flex items-center gap-2 text-base font-semibold">
+            <span>What if…</span>
+            {/* Contract v114: the ⓘ sits immediately after
+                the title, and the fold toggle stands alone
+                last at the far-right edge (ml-auto) — the
+                toggle keeps its accessible name, expanded
+                state, and panel wiring exactly as before. */}
+            <InfoNote
+              ariaLabel="About what-if questions"
+              align="left"
+              text="One change at a time, priced from your saved plan through the scenario comparison. Asking a question changes nothing and saves nothing — it just shows how the ending moves."
+            />
             <button
               type="button"
               aria-expanded={whatIfOpen}
               aria-controls="roth-what-if-panel"
-              className="flex flex-1 items-center justify-between gap-3 text-left"
+              aria-label="What if…"
+              className="ml-auto flex items-center"
               onClick={() => setWhatIfFolded(whatIfOpen)}
             >
-              <span>What if…</span>
               <FoldChevron open={whatIfOpen} />
             </button>
-            <InfoNote
-              ariaLabel="About what-if questions"
-              align="right"
-              text="One change at a time, priced from your saved plan through the scenario comparison. Asking a question changes nothing and saves nothing — it just shows how the ending moves."
-            />
           </h2>
           {whatIfOpen && (
             <div id="roth-what-if-panel">

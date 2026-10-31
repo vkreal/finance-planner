@@ -3255,6 +3255,29 @@ export type PlaygroundYearResult = {
   waStandardDeduction: number;
   waTaxableGains: number;
   totalTax: number;
+  // Cash-in / cash-left readouts (contract v114): cashIn is
+  // every dollar of cash the year's entered income brings
+  // in — interest, the TOTAL ordinary dividends (Form 1040
+  // line 3b, its qualified part included, counted once),
+  // other ordinary income, tax-exempt interest, the FULL
+  // Social Security benefits (not just the taxable part),
+  // the year's RMD cash (the priced RMD plus any part of it
+  // already received), the pre-tax money out, and the gross
+  // proceeds of any stock sale (its return-of-basis part
+  // included — it is cash in hand, not income). A harvested
+  // gain is NOT in it: a harvest's proceeds are reinvested
+  // by construction, never cash in hand. netTaxBill
+  // (contract v116) is the year's NET tax bill — totalTax
+  // less the ACA premium credit kept (aca.credit when
+  // priced, else $0) and less the refundable education
+  // credit, the plan score identity's own netting (its
+  // netCost credits both beside the tax). cashLeftAfterTax
+  // is cashIn minus netTaxBill — BEFORE any spending: what
+  // the year leaves in hand once its tax is settled. Pure
+  // readouts of the same pricing; no priced figure moves.
+  netTaxBill: number;
+  cashIn: number;
+  cashLeftAfterTax: number;
   // Bracket landing for the conversion (stacked last): the
   // bracket its last dollar falls in, that bracket's top, the
   // room left in it, and whether it is filled exactly. All null
@@ -4075,6 +4098,30 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     };
   }
 
+  // Cash left after tax (contract v114, net bill exposed
+  // contract v116): the year's cash in (see the field's
+  // note on PlaygroundYearResult) less its net tax bill —
+  // the total tax, less the ACA premium credit kept when
+  // one is priced and less the refundable education credit,
+  // the plan score identity's netting.
+  const cashIn = r2(
+    inp.interest +
+      inp.ordinaryDividends +
+      inp.otherOrdinary +
+      inp.taxExemptInterest +
+      ssBenefits +
+      rmd +
+      rmdAlreadyReceived +
+      inp.conversion +
+      inp.stockSold,
+  );
+  const netTaxBill = r2(
+    r2(priced.federalTax + priced.stateTax) -
+      (aca.credit ?? 0) -
+      priced.educationRefundable,
+  );
+  const cashLeftAfterTax = r2(cashIn - netTaxBill);
+
   return {
     interest: inp.interest,
     ordinaryDividends: inp.ordinaryDividends,
@@ -4149,6 +4196,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     waStandardDeduction: priced.waStandardDeduction,
     waTaxableGains: priced.waTaxableGains,
     totalTax: r2(priced.federalTax + priced.stateTax),
+    netTaxBill,
+    cashIn,
+    cashLeftAfterTax,
     landingBracketPct,
     landingBracketTop,
     landingRoomLeft,

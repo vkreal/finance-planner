@@ -1756,6 +1756,21 @@ export type DecemberCaseResult = {
   // the credit is genuinely unpriced, or a pre-2026 excess
   // repayment is unmodeled. The console renders it verbatim.
   netSettleNote: string | null;
+  // Cash left after tax at the headline draw (contract
+  // v114): the priced year's cash in (pricePlaygroundYear's
+  // cashIn — every dollar of cash the case's entered income
+  // brings in, the draw included) minus this case's net tax
+  // bill, the settlement itself (netSettleAtHeadline), so
+  // the figure is null exactly when no settlement is shown
+  // and netSettleNote names why. Before any spending: what
+  // the year leaves in hand once its tax is settled.
+  cashLeftAtHeadline: number | null;
+  // Cash in at the headline draw (contract v116): the
+  // priced year's cash in (pricePlaygroundYear's cashIn on
+  // the same pricing) — the cash-in figure the cash-left
+  // tooltip names as priced. Null exactly when the
+  // settlement is null, like cashLeftAtHeadline.
+  cashInAtHeadline: number | null;
 };
 
 export type DecemberProjectionResult = {
@@ -2035,6 +2050,12 @@ export function computeDecemberProjection(
       stateTaxAtHeadline: atHeadline.stateTax,
       netSettleAtHeadline,
       netSettleNote,
+      cashLeftAtHeadline:
+        netSettleAtHeadline == null
+          ? null
+          : r2(atHeadline.cashIn - netSettleAtHeadline),
+      cashInAtHeadline:
+        netSettleAtHeadline == null ? null : atHeadline.cashIn,
     };
   });
 

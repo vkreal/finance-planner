@@ -7,6 +7,7 @@ import {
   fmtDollars,
   fmtMoneyInput,
   hintCls,
+  InfoNote,
   inputCls,
   labelCls,
   moneyField,
@@ -1013,7 +1014,7 @@ export function December() {
     likelyCase != null &&
     (state.stateRatePct > 0 || likelyCase.stateTaxAtHeadline > 0);
   const billRow = (
-    label: string,
+    label: ReactNode,
     value: ReactNode,
     opts?: { bold?: boolean; divide?: boolean },
   ) => (
@@ -1248,6 +1249,42 @@ export function December() {
                       { bold: true, divide: true },
                     )
                   )}
+                  {/* Cash left after tax (contract v114, fixed
+                      text + ⓘ contract v116): the priced
+                      year's cash in minus the settlement above
+                      — the engine/core-computed readout
+                      (cashLeftAtHeadline), shown only when a
+                      settlement is shown, before any spending.
+                      The fixed subtext carries no figure; the
+                      ⓘ (the 0% InfoNote pattern —
+                      live-composed figures, align by the
+                      label's position) names the cash in
+                      (cashInAtHeadline) and the net tax bill
+                      (netSettleAtHeadline) as priced, and
+                      carries the filing sentence only when the
+                      net bill is a refund. Same wording as the
+                      Playground face. */}
+                  {likelyCase.cashLeftAtHeadline != null &&
+                    likelyCase.netSettleAtHeadline != null &&
+                    likelyCase.cashInAtHeadline != null && (
+                      <>
+                        {billRow(
+                          <>
+                            Cash left after tax
+                            <InfoNote
+                              text={`Cash in ${fmtDollars(likelyCase.cashInAtHeadline)} minus the net tax bill ${fmtDollars(likelyCase.netSettleAtHeadline)} — the total tax less the ACA credit kept and any refundable education credit. It's what's left to spend next year, before any spending.${likelyCase.netSettleAtHeadline < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                              ariaLabel="About the cash left after tax"
+                            />
+                          </>,
+                          fmtDollars(likelyCase.cashLeftAtHeadline),
+                          { bold: true },
+                        )}
+                        <p className="text-xs text-[var(--dim)]">
+                          Cash in minus the net tax bill — what&rsquo;s
+                          left to spend next year, before any spending.
+                        </p>
+                      </>
+                    )}
                 </div>
                 {likelyCase.educationNonrefundableAtHeadline > 0 && (
                   <p className="mt-2 text-xs text-[var(--dim)]">
