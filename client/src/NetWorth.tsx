@@ -1408,9 +1408,20 @@ function NwImportPanel({
   }, [settingsQuery.data]);
 
   const saveSetup = useMutation({
-    mutationFn: (json: string) => api.saveNwImportSettings({ settingsJson: json }),
+    // Contract v130 (round-19 finding 8): carries the epoch the
+    // panel observed when it loaded its setup (the settings read's
+    // restoreEpoch), so a restore since the panel loaded refuses
+    // the save instead of overwriting the restored setup.
+    mutationFn: (json: string) => api.saveNwImportSettings({ settingsJson: json, baseEpoch: settingsQuery.data?.restoreEpoch ?? 0 }),
     // A failed save never blocks an import — the panel just
     // keeps working with the values on screen.
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setProfileNotice(
+          r.reason ?? "Your import setup couldn't be saved this time — the import itself is unaffected.",
+        );
+      }
+    },
     onError: () =>
       setProfileNotice(
         "Your import setup couldn't be saved this time — the import itself is unaffected.",
@@ -3052,16 +3063,43 @@ export function NetWorthView() {
     onError: (e) => setTargetError(String(e)),
   });
   const setAccountsCollapsed = useMutation({
-    mutationFn: (collapsed: boolean) => api.setNwAccountsCollapsed({ collapsed }),
-    onSuccess: invalidate,
+    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // data on screen.
+    mutationFn: (collapsed: boolean) => api.setNwAccountsCollapsed({ collapsed, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setAccountError(r.reason ?? "That setting could not be saved.");
+        return;
+      }
+      setAccountError("");
+      invalidate();
+    },
   });
   const setHistoryCollapsed = useMutation({
-    mutationFn: (collapsed: boolean) => api.setNwHistoryCollapsed({ collapsed }),
-    onSuccess: invalidate,
+    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // data on screen.
+    mutationFn: (collapsed: boolean) => api.setNwHistoryCollapsed({ collapsed, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setAccountError(r.reason ?? "That setting could not be saved.");
+        return;
+      }
+      setAccountError("");
+      invalidate();
+    },
   });
   const setNwGrowthSince = useMutation({
-    mutationFn: (date: string | null) => api.setNwGrowthSince({ date }),
-    onSuccess: invalidate,
+    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // data on screen.
+    mutationFn: (date: string | null) => api.setNwGrowthSince({ date, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        setAccountError(r.reason ?? "That setting could not be saved.");
+        return;
+      }
+      setAccountError("");
+      invalidate();
+    },
   });
   const setArchived = useMutation({
     // Contract v121 (F3): carries the epoch of the data on screen.

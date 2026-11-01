@@ -2216,24 +2216,44 @@ export function App() {
     },
   });
   const setMonthlyBillsCollapsedAll = useMutation({
+    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillsCollapsedAll">) =>
-      api.setMonthlyBillsCollapsedAll(input),
-    onSuccess: invalidate,
+      api.setMonthlyBillsCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      invalidate();
+    },
   });
   const setYearlyBillsCollapsedAll = useMutation({
+    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyBillsCollapsedAll">) =>
-      api.setYearlyBillsCollapsedAll(input),
-    onSuccess: invalidate,
+      api.setYearlyBillsCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      invalidate();
+    },
   });
   const setByCategoryCollapsedAll = useMutation({
+    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setByCategoryCollapsedAll">) =>
-      api.setByCategoryCollapsedAll(input),
-    onSuccess: invalidate,
+      api.setByCategoryCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      invalidate();
+    },
   });
   const setYearInSpendingCollapsedAll = useMutation({
+    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearInSpendingCollapsedAll">) =>
-      api.setYearInSpendingCollapsedAll(input),
-    onSuccess: invalidate,
+      api.setYearInSpendingCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
+    onSuccess: (r) => {
+      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      invalidate();
+    },
   });
   const setYearlyKeepLightsOn = useMutation({
     // Contract v121 (F3): an immediate setter carries the epoch
@@ -5657,9 +5677,16 @@ function ImportPanel({
   }, [settingsQuery.data]);
 
   const saveSetup = useMutation({
-    mutationFn: (json: string) => api.saveImportSettings({ settingsJson: json }),
+    // Contract v130 (round-19 finding 8): carries the epoch the
+    // panel observed when it loaded its setup (the settings read's
+    // restoreEpoch), so a restore since the panel loaded refuses
+    // the save instead of overwriting the restored setup.
+    mutationFn: (json: string) => api.saveImportSettings({ settingsJson: json, baseEpoch: settingsQuery.data?.restoreEpoch ?? 0 }),
     // A failed save never blocks an import — the panel just
     // keeps working with the values on screen.
+    onSuccess: (r) => {
+      if (!r.ok) setProfileNotice(r.reason ?? "Your import setup couldn't be saved this time — the import itself is unaffected.");
+    },
     onError: () => setProfileNotice("Your import setup couldn't be saved this time — the import itself is unaffected."),
   });
 
@@ -5866,7 +5893,11 @@ function ImportPanel({
         const batch = rows.slice(i, i + BATCH);
         const batchKey = batchKeyFor(batch);
         try {
-          const r = await api.importTransactions({ rows: batch, batchKey });
+          // Contract v130 (round-19 finding 7): carries the epoch
+          // the preview observed when it read the recorded data, so
+          // a restore between preview and confirm refuses the batch
+          // instead of landing rows the preview had cleared.
+          const r = await api.importTransactions({ rows: batch, batchKey, baseEpoch: recordedCashOutEpoch ?? 0 });
           imported += r.imported;
           // This batch is acknowledged; the next batch offered
           // (in this run or a retry) generates a fresh key.

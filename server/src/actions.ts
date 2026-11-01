@@ -3158,7 +3158,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 129;
+export const API_CONTRACT_VERSION = 130;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -5845,11 +5845,11 @@ const ACTION_PURPOSES: Record<string, string> = {
   addTransaction: "Record one spending transaction (checking or card).",
   updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given. BATCH IDEMPOTENCY KEY (contract v64, F02): the optional batchKey makes one batch retry-safe against a lost response — a completed keyed batch is recorded durably (a settings row holding the batch's rows hash and count, committed in the SAME batch as the rows), and a repeat call with the same key and the same rows returns the original { imported } count inserting ZERO additional rows; the same key with DIFFERENT rows is refused with a clear error and inserts nothing; a genuinely new import under a new key inserts identical rows normally (the key guards retries, not content). Requests without a key behave exactly as before. The import panel generates one key per 500-row batch and reuses it when re-offering that batch after a failure.",
+  importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given. BATCH IDEMPOTENCY KEY (contract v64, F02): the optional batchKey makes one batch retry-safe against a lost response — a completed keyed batch is recorded durably (a settings row holding the batch's rows hash and count, committed in the SAME batch as the rows), and a repeat call with the same key and the same rows returns the original { imported } count inserting ZERO additional rows; the same key with DIFFERENT rows is refused with a clear error and inserts nothing; a genuinely new import under a new key inserts identical rows normally (the key guards retries, not content). Requests without a key behave exactly as before. The import panel generates one key per 500-row batch and reuses it when re-offering that batch after a failure. Epoch-checked (contract v130, round-19 finding 7): when the caller supplies `baseEpoch` (getImportData's restoreEpoch as observed at preview), the import is refused with an error when a backup restore has advanced the stored epoch since the preview, inserting zero rows. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
   getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins. restoreEpoch (contract v121) is the dataset's current restore generation — the epoch base the import panel's confirmed cash-out save passes back as baseEpoch.",
-  saveImportSettings: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an import-settings blob (importParseCore); anything else is refused and nothing is stored.",
-  getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
-  saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored.",
+  saveImportSettings: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an import-settings blob (importParseCore); anything else is refused and nothing is stored. Epoch-checked (contract v130, round-19 finding 8): when the caller supplies `baseEpoch` (the settings read's restoreEpoch as observed when the panel loaded its setup), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Also carries restoreEpoch (contract v130, round-19 finding 8): the restore generation the dataset is on, which the panel's setup save passes back as baseEpoch. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
+  saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored. Epoch-checked (contract v130, round-19 finding 8): when the caller supplies `baseEpoch` (the settings read's restoreEpoch as observed when the panel loaded its setup), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
   addYearlyExpense: "Add a yearly or periodic (smoothed) expense bill. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted.",
   updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the parent fields as loaded, plus the version stored for the save's effective month — null when none existed), the write is refused with { ok: false, conflict: true, reason } when any of those no longer matches storage, checked before any write so the parent and every version stay intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist. The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
@@ -5870,10 +5870,10 @@ const ACTION_PURPOSES: Record<string, string> = {
   setMonthlyBillCategory: "Set a monthly bill's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   setYearlyCategory: "Set a yearly/periodic expense's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   setMonthlyBillKeepLightsOn: "Toggle a monthly bill's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setMonthlyBillsCollapsedAll: "Persist the Monthly bills section's collapsed/expanded state.",
-  setYearlyBillsCollapsedAll: "Persist the Yearly & periodic expenses section's collapsed/expanded state.",
-  setByCategoryCollapsedAll: "Persist the By category section's collapsed/expanded state.",
-  setYearInSpendingCollapsedAll: "Persist the Year in spending section's collapsed/expanded state.",
+  setMonthlyBillsCollapsedAll: "Persist the Monthly bills section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setYearlyBillsCollapsedAll: "Persist the Yearly & periodic expenses section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setByCategoryCollapsedAll: "Persist the By category section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setYearInSpendingCollapsedAll: "Persist the Year in spending section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
   getExplainerState: "Read the explainer panel's expanded state.",
   setExplainerExpanded: "Persist the explainer panel's expanded state.",
   getUiFoldState: "Read the generic fold state: the open/closed map for the Spending and Net Worth collapsible pieces not owned by a more specific store (per-month cash-out item lists, the import panels, the reserve settings fold, the Trend anchor note). Only folds left open are carried; an absent id is that fold's default (closed).",
@@ -5917,9 +5917,9 @@ const ACTION_PURPOSES: Record<string, string> = {
   runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state); ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
   runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the eleven source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income (interestYieldCents, then dividendYieldCents — each the yield on the year's opening Taxable balance, reinvested in the engine's mechanics, so its application offsets the year's taxable sales, spending sales first), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits — distinct from runRothCompare's pretaxOutByChoiceCents, which is the conversion plus the pre-tax spending draw and excludes tax-bill debits (contract v127, round-19 finding 11); taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — net of the yield cash applied to them; rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the eleven sources plus spendShortfallCents plus unpaidTaxCents foot to totalNeedCents in every year. unpaidTaxCents is the year's unpaid tax: the part of the assessed tax bill (federal, state, penalty, IRMAA) still owed after every balance the debit chain could draw from was exhausted — reported, never treated as paid (see the unpaidTaxSemantics convention describeApi publishes); neither it nor the shortfall is ever reconciled into a source field. A year whose balances cannot cover its needs foots exactly, by the sum of its unfunded spending and its unpaid tax. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state) and ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Compute-only; saves nothing.",
   getYearSummary: "Year summary for one year: spending figures and Net Worth movement on the same math as their own views. The Keep-the-lights-on floor is priced for the requested year: at the current month for the current year, otherwise at the last month included in that year's totals (or that year's December when it has none).",
-  setNwAccountsCollapsed: "Persist the Net Worth Accounts section's collapsed state.",
-  setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state.",
-  setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
+  setNwAccountsCollapsed: "Persist the Net Worth Accounts section's collapsed state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
   addNwSnapshot: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
   updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the replacement is refused with { ok: false, conflict: true, revision, reason } when the stored revision has moved — by either snapshot writer — and the stored snapshot stays intact; an accepted write bumps the revision and returns it. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the replacement is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match; an editor that loaded after the restore succeeds normally. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
   updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the write is refused with { ok: false, conflict: true, revision, reason } when the snapshot's revision has moved, and an accepted write bumps that same revision — so a whole-snapshot editor holding the older revision conflicts instead of restoring the old balance. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
@@ -8257,17 +8257,32 @@ export const Actions = {
   saveImportSettings: defineAction({
     description: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs.",
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v130 (round-19 finding 8): `baseEpoch` is the restore
+    // epoch the panel observed when it loaded its setup (the
+    // settings read's restoreEpoch). When supplied, the write is
+    // refused when a backup restore advanced the stored epoch since
+    // the load — a panel opened before the restore must not
+    // auto-save its pre-restore blob over the restored setup.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       settingsJson: z.string().min(2).max(60000),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ saved: z.literal(true) }),
+    response: okReasonResponse,
     async handler(
       ctx,
       args,
-    ): Promise<{ saved: true }> {
+    ): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      // Contract v130 (finding 8): the epoch check runs before
+      // the value is parsed or written, so a stale save is refused
+      // even when the blob itself is well-formed.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "import setup");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(args.settingsJson);
@@ -8293,7 +8308,7 @@ export const Actions = {
           set: { value },
         });
       ctx.invalidateQueries();
-      return { saved: true };
+      return { ok: true, reason: "Import setup saved." };
     },
   }),
 
@@ -8312,6 +8327,13 @@ export const Actions = {
     request: z.object({}),
     response: z.object({
       settingsJson: z.string().nullable(),
+      // Restore epoch (contract v130, round-19 finding 8): the
+      // restore generation the dataset is on (the same value
+      // getNetWorth and getDashboard publish). The panel's setup
+      // save passes it back as baseEpoch, so a panel that loaded
+      // before a restore is refused. 0 when no restore has
+      // stamped one.
+      restoreEpoch: z.number().int().nonnegative(),
     }),
     async handler(ctx) {
       const db = ctx.db<typeof schema>();
@@ -8334,7 +8356,7 @@ export const Actions = {
             ));
         }
       }
-      return { settingsJson };
+      return { settingsJson, restoreEpoch: await readStoredRestoreEpoch(db) };
     },
   }),
 
@@ -8345,17 +8367,32 @@ export const Actions = {
   saveNwImportSettings: defineAction({
     description: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs.",
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v130 (round-19 finding 8): `baseEpoch` is the restore
+    // epoch the panel observed when it loaded its setup (the
+    // settings read's restoreEpoch). When supplied, the write is
+    // refused when a backup restore advanced the stored epoch since
+    // the load — a panel opened before the restore must not save
+    // its pre-restore blob over the restored setup. Omitting it
+    // keeps the pre-v130 unchecked behaviour.
     request: z.object({
       settingsJson: z.string().min(2).max(200000),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ saved: z.literal(true) }),
+    response: okReasonResponse,
     async handler(
       ctx,
       args,
-    ): Promise<{ saved: true }> {
+    ): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      // Contract v130 (finding 8): the epoch check runs before
+      // the value is parsed or written, so a stale save is refused
+      // even when the blob itself is well-formed.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Net Worth import setup");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(args.settingsJson);
@@ -8385,25 +8422,40 @@ export const Actions = {
           set: { value },
         });
       ctx.invalidateQueries();
-      return { saved: true };
+      return { ok: true, reason: "Net Worth import setup saved." };
     },
   }),
 
   importTransactions: defineAction({
     description: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows).",
     privileged: [privileged.ensureEncryptionKey],
+    // Contract v130 (round-19 finding 7): `baseEpoch` is the restore
+    // epoch the import preview observed when it read the recorded
+    // data (getImportData's restoreEpoch). When supplied, the import
+    // is refused when a backup restore advanced the stored epoch
+    // since the preview — a restore between preview and confirm
+    // must not land rows the preview had already cleared as
+    // duplicates. Omitting it keeps the pre-v130 unchecked
+    // behaviour.
     request: z.object({
       rows: z.array(txnInput).min(1).max(1000),
       // Optional batch idempotency key (contract v64, F02) — see
       // the import-batch note above the Actions map. Absent =
       // the pre-v64 behaviour exactly.
       batchKey: importBatchKeyField,
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
     response: z.object({ imported: z.number() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
+      // Contract v130 (finding 7): the epoch check runs before
+      // any planning or write, so a restore since the preview
+      // refuses the whole batch with zero rows inserted — the
+      // same restore message the other guarded mutations return.
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "import");
+      if (epochReason) throw new Error(epochReason);
       // ONE call is atomic (API follow-on 3, finding F12; the plan
       // decision lives in ./importCore, the reserved-prefix
       // decision in ./encPrefixCore): the whole batch is planned
@@ -9802,12 +9854,22 @@ export const Actions = {
   // No amount, version, or total is touched.
   setMonthlyBillsCollapsedAll: defineAction({
     description: "Persist the Monthly bills section's collapsed/expanded state.",
+    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       collapsed: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Monthly bills section");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -9819,7 +9881,7 @@ export const Actions = {
           set: { value: args.collapsed ? "1" : "0" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Monthly bills section state saved." };
     },
   }),
 
@@ -9830,12 +9892,22 @@ export const Actions = {
   // No amount, version, or total is touched.
   setYearlyBillsCollapsedAll: defineAction({
     description: "Persist the Yearly & periodic expenses section's collapsed/expanded state.",
+    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       collapsed: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Yearly expenses section");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -9847,7 +9919,7 @@ export const Actions = {
           set: { value: args.collapsed ? "1" : "0" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Yearly expenses section state saved." };
     },
   }),
 
@@ -9858,12 +9930,22 @@ export const Actions = {
   // No amount, version, or total is touched.
   setByCategoryCollapsedAll: defineAction({
     description: "Persist the By category section's collapsed/expanded state.",
+    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       collapsed: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "By category section");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -9875,7 +9957,7 @@ export const Actions = {
           set: { value: args.collapsed ? "1" : "0" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "By category section state saved." };
     },
   }),
 
@@ -9887,12 +9969,22 @@ export const Actions = {
   // total is touched.
   setYearInSpendingCollapsedAll: defineAction({
     description: "Persist the Year in spending section's collapsed/expanded state.",
+    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getDashboard's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       collapsed: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Year in spending section");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -9904,7 +9996,7 @@ export const Actions = {
           set: { value: args.collapsed ? "1" : "0" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Year in spending section state saved." };
     },
   }),
 
@@ -14119,12 +14211,22 @@ export const Actions = {
   // default); the client stores an explicit value on first toggle.
   setNwAccountsCollapsed: defineAction({
     description: "Persist the Net Worth Accounts section's collapsed state.",
+    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       collapsed: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Net Worth Accounts section");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -14136,7 +14238,7 @@ export const Actions = {
           set: { value: args.collapsed ? "1" : "0" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Net Worth Accounts section state saved." };
     },
   }),
 
@@ -14145,12 +14247,22 @@ export const Actions = {
   // Absent = collapsed (the default).
   setNwHistoryCollapsed: defineAction({
     description: "Persist the Net Worth History section's collapsed state.",
+    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       collapsed: z.boolean(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Net Worth History section");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -14162,7 +14274,7 @@ export const Actions = {
           set: { value: args.collapsed ? "1" : "0" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Net Worth History section state saved." };
     },
   }),
 
@@ -14173,12 +14285,22 @@ export const Actions = {
   // baseline to the first snapshot. Display only.
   setNwGrowthSince: defineAction({
     description: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
+    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // epoch the view observed when it loaded (getNetWorth's
+    // restoreEpoch). When supplied, the write is refused when a
+    // backup restore advanced the stored epoch since the load.
+    // Omitting it keeps the pre-v130 unchecked behaviour.
     request: z.object({
       date: z.string().regex(dateRe).nullable(),
+      baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    response: z.object({ ok: z.literal(true) }),
-    async handler(ctx, args): Promise<{ ok: true }> {
+    response: okReasonResponse,
+    async handler(ctx, args): Promise<OkReason> {
       const db = ctx.db<typeof schema>();
+      const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Net Worth Growth baseline");
+      if (epochReason) {
+        return { ok: false, conflict: true, reason: epochReason };
+      }
       await db
         .insert(schema.settings)
         .values({
@@ -14190,7 +14312,7 @@ export const Actions = {
           set: { value: args.date ?? "" },
         });
       ctx.invalidateQueries();
-      return { ok: true };
+      return { ok: true, reason: "Net Worth Growth baseline saved." };
     },
   }),
 
