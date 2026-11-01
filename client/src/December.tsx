@@ -25,6 +25,7 @@ import {
   decemberStateForSave,
   decemberStoredProvenanceOf,
   defaultDecemberState,
+  reresolveDecemberStateForYear,
   resolveDecemberStateAtLoad,
   snapshotFollowPrimaryCents,
   type DecemberCaseKind,
@@ -606,8 +607,12 @@ export function December() {
       setRocCharacterEdited(false);
       setJanPaidCharacterEdited(false);
       setEducationEdited(false);
-      setCarryInEdited(false);
-      setHarvestEdited(false);
+      setCarryInStEdited(false);
+      setCarryInLtEdited(false);
+      setCarryInStWaEdited(false);
+      setCarryInLtWaEdited(false);
+      setHarvestPoolAmountEdited(false);
+      setHarvestPoolBasisPctEdited(false);
       setForm(
         formFromState(
           resolveDecemberStateAtLoad(
@@ -662,21 +667,32 @@ export function December() {
   // first-open preseed's stored value) is what governs,
   // exactly like the beneficiary fact.
   const [educationEdited, setEducationEdited] = useState(false);
-  // Carry-in provenance (v111): whether the user has
-  // edited the capital-loss carry-in controls in this
-  // console since hydration — until then a save preserves
-  // the stored carry-in values, so a Tax Plan record
-  // overlay for the plan's first year is displayed and
-  // priced but never becomes the console's saved answer.
-  const [carryInEdited, setCarryInEdited] = useState(false);
-  // Harvest provenance (v113): whether the user has edited
-  // the harvest pool / basis controls in this console since
-  // hydration — until then a save preserves the stored pool
-  // facts, so a Tax Plan record overlay is displayed and
-  // priced but never becomes the console's saved answer.
-  // The toggle itself is not provenance: it always saves as
-  // displayed.
-  const [harvestEdited, setHarvestEdited] = useState(false);
+  // Carry-in provenance (v111, per field round-17 defect
+  // 3): whether the user has edited EACH capital-loss
+  // carry-in field in this console since hydration — until
+  // then a save preserves the stored carry-in values, so a
+  // Tax Plan record overlay for the plan's first year is
+  // displayed and priced but never becomes the console's
+  // saved answer. One flag per field: editing the long-
+  // term field saves only that field, never the untouched
+  // short-term one beside it.
+  const [carryInStEdited, setCarryInStEdited] = useState(false);
+  const [carryInLtEdited, setCarryInLtEdited] = useState(false);
+  const [carryInStWaEdited, setCarryInStWaEdited] = useState(false);
+  const [carryInLtWaEdited, setCarryInLtWaEdited] = useState(false);
+  // Harvest provenance (v113, per field round-17 defect
+  // 3): whether the user has edited EACH harvest fact in
+  // this console since hydration — until then a save
+  // preserves the stored pool facts, so a Tax Plan record
+  // overlay is displayed and priced but never becomes the
+  // console's saved answer. One flag per fact: editing the
+  // pool amount saves only that fact, never the untouched
+  // basis % beside it. The toggle itself is not
+  // provenance: it always saves as displayed.
+  const [harvestPoolAmountEdited, setHarvestPoolAmountEdited] =
+    useState(false);
+  const [harvestPoolBasisPctEdited, setHarvestPoolBasisPctEdited] =
+    useState(false);
   // Round-6: whether the user has edited each tax-
   // character control in this console since hydration —
   // the matching legacy character flag clears only on
@@ -742,8 +758,12 @@ export function December() {
     setRocCharacterEdited(false);
     setJanPaidCharacterEdited(false);
     setEducationEdited(false);
-    setCarryInEdited(false);
-    setHarvestEdited(false);
+    setCarryInStEdited(false);
+    setCarryInLtEdited(false);
+    setCarryInStWaEdited(false);
+    setCarryInLtWaEdited(false);
+    setHarvestPoolAmountEdited(false);
+    setHarvestPoolBasisPctEdited(false);
     let initial = formFromState(
       decQ.data.hasStored
         ? resolveDecemberStateAtLoad(
@@ -972,8 +992,12 @@ export function December() {
             rocCharacter: rocCharacterEdited,
             janPaidCharacter: janPaidCharacterEdited,
             education: educationEdited,
-            carryIn: carryInEdited,
-            harvest: harvestEdited,
+            carryInSt: carryInStEdited,
+            carryInLt: carryInLtEdited,
+            carryInStWa: carryInStWaEdited,
+            carryInLtWa: carryInLtWaEdited,
+            harvestPoolAmount: harvestPoolAmountEdited,
+            harvestPoolBasisPct: harvestPoolBasisPctEdited,
           },
         ),
         {
@@ -1694,7 +1718,72 @@ export function December() {
       <section className={sectionCls} aria-label="The year">
         <h3 className="text-base font-semibold">The year</h3>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {numField("Tax year", form.taxYear, (v) => set("taxYear", v), {
+          {numField("Tax year", form.taxYear, (v) => {
+            // A year change re-resolves the year-dependent
+            // overlays (round-17 defect 2): the carry-in and
+            // the education students belong to a year, so an
+            // overlay resolved for the old year must not keep
+            // pricing the new one. Only the unedited fields
+            // move — a field the user edited keeps its typed
+            // value exactly — and every other field is left
+            // untouched, so no other typed value is
+            // reformatted or disturbed. When the Tax Plan
+            // record has not loaded there is no overlay to
+            // re-resolve — an overlay can only exist after a
+            // hydration that had the record — so the year
+            // changes alone and the fields keep their stored
+            // values.
+            edit((f) => {
+              const next = { ...f, taxYear: v };
+              if (rothQ.data == null) return next;
+              const year = parseIntOrNull(v) ?? new Date().getFullYear();
+              const reresolved = reresolveDecemberStateForYear(
+                stateFromForm(next),
+                storedProvenanceRef.current,
+                {
+                  carryInSt: carryInStEdited,
+                  carryInLt: carryInLtEdited,
+                  carryInStWa: carryInStWaEdited,
+                  carryInLtWa: carryInLtWaEdited,
+                  education: educationEdited,
+                },
+                recordFactsOf(rothQ.data, year),
+              );
+              if (!carryInStEdited) {
+                next.carryInCapitalLossSt =
+                  decemberNullableMoneyFormValue(
+                    reresolved.carryInCapitalLossSt,
+                  );
+              }
+              if (!carryInLtEdited) {
+                next.carryInCapitalLossLt =
+                  decemberNullableMoneyFormValue(
+                    reresolved.carryInCapitalLossLt,
+                  );
+              }
+              if (!carryInStWaEdited) {
+                next.carryInCapitalLossStWa =
+                  decemberNullableMoneyFormValue(
+                    reresolved.carryInCapitalLossStWa,
+                  );
+              }
+              if (!carryInLtWaEdited) {
+                next.carryInCapitalLossLtWa =
+                  decemberNullableMoneyFormValue(
+                    reresolved.carryInCapitalLossLtWa,
+                  );
+              }
+              if (!educationEdited) {
+                next.educationStudents = (
+                  reresolved.educationStudents ?? []
+                ).map((x) => ({
+                  expenses: moneyStr(x.expenses),
+                  aotcEligible: x.aotcEligible,
+                }));
+              }
+              return next;
+            });
+          }, {
             idLabel: "December tax year",
           })}
           <div>
@@ -1999,25 +2088,25 @@ export function December() {
         </p>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {moneyField("Short-term loss carried in", form.carryInCapitalLossSt, (v) => {
-            setCarryInEdited(true);
+            setCarryInStEdited(true);
             edit((f) => ({ ...f, carryInCapitalLossSt: v }));
           },
           { idLabel: "December carry-in short-term loss" },
           )}
           {moneyField("Long-term loss carried in", form.carryInCapitalLossLt, (v) => {
-            setCarryInEdited(true);
+            setCarryInLtEdited(true);
             edit((f) => ({ ...f, carryInCapitalLossLt: v }));
           },
           { idLabel: "December carry-in long-term loss" },
           )}
           {moneyField("Of the short-term loss, the Washington part", form.carryInCapitalLossStWa, (v) => {
-            setCarryInEdited(true);
+            setCarryInStWaEdited(true);
             edit((f) => ({ ...f, carryInCapitalLossStWa: v }));
           },
           { idLabel: "December carry-in short-term loss Washington part", hint: "Only the part of the loss that came from sales allocated to Washington — that part alone can reduce the Washington capital-gains tax base, and only when this year’s gains actually absorb it." },
           )}
           {moneyField("Of the long-term loss, the Washington part", form.carryInCapitalLossLtWa, (v) => {
-            setCarryInEdited(true);
+            setCarryInLtWaEdited(true);
             edit((f) => ({ ...f, carryInCapitalLossLtWa: v }));
           },
           { idLabel: "December carry-in long-term loss Washington part", hint: "The Washington-allocated part of the long-term loss above." },
@@ -2037,8 +2126,9 @@ export function December() {
           premium credit, and shrinks the safe December draw above by the same
           amount, because the draw is sized with the harvest included. When this
           is switched on, the console sizes the harvest the way the Tax Plan does:
-          the largest gain that stays inside the 0% band, capped by the pool&rsquo;s
-          unrealized gain (the pool less its basis). An entering capital-loss
+          the largest gain that stays inside the 0% band, capped by the remaining
+          pool&rsquo;s unrealized gain (the pool left after this year&rsquo;s sales,
+          less its basis). An entering capital-loss
           carryforward above absorbs harvested gains first, exactly as it absorbs
           any other gain.
         </p>
@@ -2056,13 +2146,13 @@ export function December() {
         </div>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {moneyField("Taxable pool available to sell", form.harvestPoolAmount, (v) => {
-            setHarvestEdited(true);
+            setHarvestPoolAmountEdited(true);
             edit((f) => ({ ...f, harvestPoolAmount: v }));
           },
           { idLabel: "December harvest pool", hint: "The whole taxable pool the harvest can sell from — taxable investments plus cash, the pool the Tax Plan draws on. Leave blank if it hasn’t been entered yet; enter 0 when there is no pool." },
           )}
           {pctField("Basis — % of the pool already taxed", form.harvestPoolBasisPct, (v) => {
-            setHarvestEdited(true);
+            setHarvestPoolBasisPctEdited(true);
             edit((f) => ({ ...f, harvestPoolBasisPct: v }));
           },
           { idLabel: "December harvest basis percent", hint: "The share of the pool that is already-taxed basis. The rest is unrealized gain — the most the harvest can realize. Leave blank if it hasn’t been entered yet; 100% means no gain to harvest." },
@@ -2628,8 +2718,12 @@ export function December() {
                 setRocCharacterEdited(true);
                 setJanPaidCharacterEdited(true);
                 setEducationEdited(true);
-                setCarryInEdited(true);
-                setHarvestEdited(true);
+                setCarryInStEdited(true);
+                setCarryInLtEdited(true);
+                setCarryInStWaEdited(true);
+                setCarryInLtWaEdited(true);
+                setHarvestPoolAmountEdited(true);
+                setHarvestPoolBasisPctEdited(true);
                 setForm(formFromState(blank));
                 setResetArmed(false);
               }}

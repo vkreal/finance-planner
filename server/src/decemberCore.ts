@@ -997,35 +997,42 @@ export function snapshotFollowPrimaryCents(
    console, so an inherited answer can never acquire the
    precedence of an explicit console answer merely
    because an unrelated field was edited and autosaved.
+   The carry-in and harvest flags are PER FIELD (round-17
+   defect 3): each of the four carry-in fields and each of
+   the two harvest facts carries its own edited flag, so
+   editing one field saves only that field — the old
+   grouped flags promoted untouched siblings into
+   explicit console answers.
    The second argument also accepts the round-4 bare
    beneficiary value (boolean / null) for compatibility. */
-export function resolveDecemberStateAtLoad(
+/* The YEAR-DEPENDENT overlays (round-17 defect 2): the
+   education students and the entering capital-loss
+   carryforward — the two resolutions whose answer depends
+   on the console's tax year (the students are the
+   record's entered students FOR that year; the carry-in
+   resolves only when the year is the plan's first year
+   or later). Both are overlays for display and pricing
+   only: a null console value resolves from the record
+   fact, and any entered console value — including an
+   explicit $0 — always wins and is never overwritten.
+   Shared by load resolution (resolveDecemberStateAtLoad
+   below) and by year-change re-resolution
+   (reresolveDecemberStateForYear), so the two can never
+   disagree about what a year resolves to. */
+function resolveYearDependentOverlays(
   state: DecemberState,
-  record: boolean | null | undefined | DecemberRecordFacts,
+  facts: DecemberRecordFacts,
 ): DecemberState {
-  const facts: DecemberRecordFacts =
-    record != null && typeof record === "object"
-      ? record
-      : { primarySoleBeneficiaryOfSpouse: record ?? null };
   let out = state;
-  if (
-    out.primarySoleBeneficiaryOfSpouse == null &&
-    facts.primarySoleBeneficiaryOfSpouse != null
-  ) {
-    out = {
-      ...out,
-      primarySoleBeneficiaryOfSpouse: facts.primarySoleBeneficiaryOfSpouse,
-    };
-  }
   // Education students (v103): a console with NO education
   // input yet (educationStudents null — every blob written
   // before this field existed, and a fresh console) resolves
   // the record's entered students for the December tax year
-  // as an overlay, exactly like the beneficiary fact above:
-  // displayed and priced, never saved as the console's own
-  // until the user edits the education controls here. A
-  // console value that IS entered (any list, even empty)
-  // always governs and is never overwritten.
+  // as an overlay: displayed and priced, never saved as the
+  // console's own until the user edits the education
+  // controls here. A console value that IS entered (any
+  // list, even empty) always governs and is never
+  // overwritten.
   if (out.educationStudents == null && facts.educationStudents != null) {
     out = {
       ...out,
@@ -1049,7 +1056,7 @@ export function resolveDecemberStateAtLoad(
   // an overlay for display and pricing only: a save
   // persists the STORED values for fields the user has
   // not edited in this console (decemberStateForSave's
-  // carryIn flag).
+  // carryIn flags).
   if (facts.planFirstYear != null && out.taxYear >= facts.planFirstYear) {
     const carryPatch: Partial<DecemberState> = {};
     if (out.carryInCapitalLossSt == null && facts.carryInCapitalLossSt != null) {
@@ -1074,6 +1081,31 @@ export function resolveDecemberStateAtLoad(
       out = { ...out, ...carryPatch };
     }
   }
+  return out;
+}
+
+export function resolveDecemberStateAtLoad(
+  state: DecemberState,
+  record: boolean | null | undefined | DecemberRecordFacts,
+): DecemberState {
+  const facts: DecemberRecordFacts =
+    record != null && typeof record === "object"
+      ? record
+      : { primarySoleBeneficiaryOfSpouse: record ?? null };
+  let out = state;
+  if (
+    out.primarySoleBeneficiaryOfSpouse == null &&
+    facts.primarySoleBeneficiaryOfSpouse != null
+  ) {
+    out = {
+      ...out,
+      primarySoleBeneficiaryOfSpouse: facts.primarySoleBeneficiaryOfSpouse,
+    };
+  }
+  // The year-dependent overlays (education students and
+  // the entering carry-in) resolve through the shared
+  // helper, so load and year-change re-resolution agree.
+  out = resolveYearDependentOverlays(out, facts);
   // Gain-harvest pool facts (v113): the record's taxable
   // pool and blended basis resolve into null console facts
   // in ANY year (balance facts, not entering-year balances
@@ -1086,7 +1118,7 @@ export function resolveDecemberStateAtLoad(
   // resolution here this is an overlay for display and
   // pricing only: a save persists the STORED values for
   // fields the user has not edited in this console
-  // (decemberStateForSave's harvest flag).
+  // (decemberStateForSave's per-field harvest flags).
   {
     const harvestPatch: Partial<DecemberState> = {};
     if (out.harvestPoolAmount == null && facts.harvestPoolAmount != null) {
@@ -1169,6 +1201,62 @@ export function resolveDecemberStateAtLoad(
     }
   }
   return out;
+}
+
+/* Year-change re-resolution (round-17 defect 2): when
+   the console's tax year changes, the year-dependent
+   overlays must follow the NEW year — a carry-in resolved
+   for the old year must not keep pricing a year the gate
+   no longer covers, and the education students must be
+   the new year's. `display` is the form's state with the
+   new tax year already set; `stored` is the blob's own
+   provenance (before any load resolution); `edited` says
+   per field whether the user has edited it in this
+   console; `facts` are the record facts FOR THE NEW YEAR
+   (recordFactsOf with the new tax year). For each
+   year-dependent field the user has NOT edited, the
+   display value resets to its stored value and the
+   shared year-dependent resolution re-applies — so an
+   overlay that no longer applies clears, one that still
+   applies re-resolves to the same value, and the new
+   year's students replace the old year's. A field the
+   user HAS edited is never touched, so an explicit
+   console answer survives a year change exactly as it
+   survives a reload. Year-INDEPENDENT overlays (the
+   beneficiary fact, the balance split, the harvest pool
+   facts) are not touched here at all: they do not depend
+   on the year, and re-running the full load resolution
+   would wrongly revive a fact the user deliberately
+   cleared. Pure, so the fixtures pin it. */
+export function reresolveDecemberStateForYear(
+  display: DecemberState,
+  stored: DecemberStoredProvenance,
+  edited: {
+    carryInSt: boolean;
+    carryInLt: boolean;
+    carryInStWa: boolean;
+    carryInLtWa: boolean;
+    education: boolean;
+  },
+  facts: DecemberRecordFacts,
+): DecemberState {
+  const reset: Partial<DecemberState> = {};
+  if (!edited.carryInSt) {
+    reset.carryInCapitalLossSt = stored.carryInCapitalLossSt;
+  }
+  if (!edited.carryInLt) {
+    reset.carryInCapitalLossLt = stored.carryInCapitalLossLt;
+  }
+  if (!edited.carryInStWa) {
+    reset.carryInCapitalLossStWa = stored.carryInCapitalLossStWa;
+  }
+  if (!edited.carryInLtWa) {
+    reset.carryInCapitalLossLtWa = stored.carryInCapitalLossLtWa;
+  }
+  if (!edited.education) {
+    reset.educationStudents = stored.educationStudents;
+  }
+  return resolveYearDependentOverlays({ ...display, ...reset }, facts);
 }
 
 /* The provenance a save must preserve for fields the
@@ -1263,8 +1351,19 @@ export function decemberStateForSave(
     rocCharacter?: boolean;
     janPaidCharacter?: boolean;
     education?: boolean;
-    carryIn?: boolean;
-    harvest?: boolean;
+    // Per-field carry-in flags (round-17 defect 3): each
+    // of the four carry-in fields saves its display value
+    // only when THAT field was edited; an unedited sibling
+    // keeps its stored value even when another carry-in
+    // field was edited.
+    carryInSt?: boolean;
+    carryInLt?: boolean;
+    carryInStWa?: boolean;
+    carryInLtWa?: boolean;
+    // Per-field harvest flags (round-17 defect 3): the
+    // pool amount and the basis % save independently.
+    harvestPoolAmount?: boolean;
+    harvestPoolBasisPct?: boolean;
   },
 ): DecemberState {
   return {
@@ -1272,22 +1371,22 @@ export function decemberStateForSave(
     educationStudents: edited.education
       ? display.educationStudents
       : stored.educationStudents,
-    carryInCapitalLossSt: edited.carryIn
+    carryInCapitalLossSt: edited.carryInSt
       ? display.carryInCapitalLossSt
       : stored.carryInCapitalLossSt,
-    carryInCapitalLossLt: edited.carryIn
+    carryInCapitalLossLt: edited.carryInLt
       ? display.carryInCapitalLossLt
       : stored.carryInCapitalLossLt,
-    carryInCapitalLossStWa: edited.carryIn
+    carryInCapitalLossStWa: edited.carryInStWa
       ? display.carryInCapitalLossStWa
       : stored.carryInCapitalLossStWa,
-    carryInCapitalLossLtWa: edited.carryIn
+    carryInCapitalLossLtWa: edited.carryInLtWa
       ? display.carryInCapitalLossLtWa
       : stored.carryInCapitalLossLtWa,
-    harvestPoolAmount: edited.harvest
+    harvestPoolAmount: edited.harvestPoolAmount
       ? display.harvestPoolAmount
       : stored.harvestPoolAmount,
-    harvestPoolBasisPct: edited.harvest
+    harvestPoolBasisPct: edited.harvestPoolBasisPct
       ? display.harvestPoolBasisPct
       : stored.harvestPoolBasisPct,
     primarySoleBeneficiaryOfSpouse: edited.beneficiary
@@ -1591,6 +1690,69 @@ export function decemberCaseInputs(
       : 0;
   const hasSplitBalance =
     state.pretaxBalancePrimary != null || state.pretaxBalanceSpouse != null;
+  // The year's taxable sale (proceeds and basis — the same
+  // mapping the return below used to inline): with an
+  // entered basis the full proceeds ride with the basis
+  // beside them; without one the gain alone rides (and a
+  // loss rides the basis dial), so the tax still nets it.
+  const saleProceeds = (() => {
+    const basis = state.saleBasis;
+    if (basis != null && totalGain + basis > 0) {
+      return r2(totalGain + basis);
+    }
+    return totalGain > 0 ? totalGain : 0;
+  })();
+  const saleBasisDollars = (() => {
+    const basis = state.saleBasis;
+    if (basis != null && totalGain + basis > 0) {
+      return basis;
+    }
+    return totalGain < 0 ? -totalGain : 0;
+  })();
+  // The harvest's remaining pool (round-17 defect 1): the
+  // plan march harvests AFTER the year's draws and
+  // conversions have settled, capped by the REMAINING
+  // balance's unrealized gain — so the December harvest
+  // must size from the pool left after this year's taxable
+  // sales, not the starting pool: passing the starting pool
+  // harvests gains the year's sales already realized. The
+  // sales that sell it down are the priced sale above plus
+  // the 100%-basis taxable cash (contract v125) — the
+  // pre-tax draw never touches the taxable pool, and the
+  // tax bill settles at filing, not from taxable during
+  // the year. The remaining unrealized gain is exact
+  // whether or not the sale basis was entered: (pool −
+  // proceeds) − (basis − basis used) = available gain −
+  // the year's net gain, and saleProceeds −
+  // saleBasisDollars is that net gain in every branch
+  // above — so a gain-only sale still leaves exactly the
+  // right cap. A depleted pool (or a pool whose basis
+  // covers it) prices a $0 harvest, and a $0 pool / 100%
+  // basis still prices as a fact, never as unpriced.
+  const harvestRemaining = ((): {
+    pool: number | undefined;
+    basisPct: number | undefined;
+  } => {
+    if (!state.harvestOn) return { pool: undefined, basisPct: undefined };
+    const pool = state.harvestPoolAmount;
+    const basisPct = state.harvestPoolBasisPct;
+    if (pool == null || basisPct == null) {
+      return { pool: undefined, basisPct: undefined };
+    }
+    const poolStart = Math.max(0, pool);
+    const basisStart =
+      (Math.min(100, Math.max(0, basisPct)) / 100) * poolStart;
+    const taxableFunded = Math.max(0, state.taxableFunded ?? 0);
+    const poolLeft = Math.max(0, poolStart - saleProceeds - taxableFunded);
+    const basisLeft = Math.max(
+      0,
+      basisStart - saleBasisDollars - taxableFunded,
+    );
+    return {
+      pool: poolLeft,
+      basisPct: poolLeft > 0 ? (basisLeft / poolLeft) * 100 : 0,
+    };
+  })();
   return {
     taxYear: state.taxYear,
     filingStatus: state.filingStatus as FilingStatus,
@@ -1629,20 +1791,8 @@ export function decemberCaseInputs(
     // smaller than the loss (inconsistent input: a real
     // sale's proceeds cannot go negative), so the loss
     // never vanishes from the tax.
-    stockSold: (() => {
-      const basis = state.saleBasis;
-      if (basis != null && totalGain + basis > 0) {
-        return r2(totalGain + basis);
-      }
-      return totalGain > 0 ? totalGain : 0;
-    })(),
-    stockBasis: (() => {
-      const basis = state.saleBasis;
-      if (basis != null && totalGain + basis > 0) {
-        return basis;
-      }
-      return totalGain < 0 ? -totalGain : 0;
-    })(),
+    stockSold: saleProceeds,
+    stockBasis: saleBasisDollars,
     qualifiedDividends: r2(
       state.ytdQualifiedDividends +
         state.remQualifiedDividends[kind] +
@@ -1690,27 +1840,28 @@ export function decemberCaseInputs(
     capitalLossCarryInLt: state.carryInCapitalLossLt ?? undefined,
     capitalLossCarryInStWa: state.carryInCapitalLossStWa ?? undefined,
     capitalLossCarryInLtWa: state.carryInCapitalLossLtWa ?? undefined,
-    // Gain harvest (v113): the console's pool facts ride
-    // the pricer's own harvest dials ONLY while the
-    // harvest toggle is on, so the pricer sizes the
-    // harvest inside every pricing of the year — the zero-
-    // draw pricings, the headline pricing, and every trial
-    // pricing inside the cliff solver — and the solved
-    // December draw is sized WITH the harvest included
-    // (the draw shrinks by the harvested gain when the
-    // cliff target binds). Toggle off passes the dials
-    // absent, so the year prices bit-identically to
+    // Gain harvest (v113, remaining pool round-17 defect
+    // 1): the console's pool facts ride the pricer's own
+    // harvest dials ONLY while the harvest toggle is on, so
+    // the pricer sizes the harvest inside every pricing of
+    // the year — the zero-draw pricings, the headline
+    // pricing, and every trial pricing inside the cliff
+    // solver — and the solved December draw is sized WITH
+    // the harvest included (the draw shrinks by the
+    // harvested gain when the cliff target binds). The
+    // dials carry the REMAINING pool and basis (the
+    // starting facts less this year's taxable sales and
+    // 100%-basis taxable cash, computed above) — the march
+    // harvests from the pool left after the year's draws,
+    // never from the starting pool. Toggle off passes the
+    // dials absent, so the year prices bit-identically to
     // before. Toggle on with a fact still null passes that
     // dial absent too — the pricer then sizes no harvest,
     // and computeDecemberProjection carries the
     // gain-harvest-unpriced qualification on every case
     // instead of letting the $0 read as a priced answer.
-    harvestPoolAmount: state.harvestOn
-      ? (state.harvestPoolAmount ?? undefined)
-      : undefined,
-    harvestPoolBasisPct: state.harvestOn
-      ? (state.harvestPoolBasisPct ?? undefined)
-      : undefined,
+    harvestPoolAmount: harvestRemaining.pool,
+    harvestPoolBasisPct: harvestRemaining.basisPct,
   };
 }
 
@@ -5214,11 +5365,188 @@ export function runDecemberFixtures(): {
     const savedEdited = decemberStateForSave(resolved, stored, {
       beneficiary: false,
       balances: false,
-      carryIn: true,
+      carryInLt: true,
     });
     exact(fail, "an edited save persists the console value", savedEdited.carryInCapitalLossLt, 10000);
+    // Per-field saves (round-17 defect 3): editing one
+    // carry-in field saves only that field — the untouched
+    // siblings keep their stored values.
+    const savedStOnly = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+      carryInSt: true,
+    });
+    exact(fail, "editing ST saves the console ST", savedStOnly.carryInCapitalLossSt, 1000);
+    if (
+      savedStOnly.carryInCapitalLossLt !== null ||
+      savedStOnly.carryInCapitalLossStWa !== null ||
+      savedStOnly.carryInCapitalLossLtWa !== null
+    ) {
+      fail("editing ST alone must not save the untouched LT / WA siblings");
+    }
+    const savedWaOnly = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+      carryInLtWa: true,
+    });
+    exact(fail, "editing LT WA saves the console LT WA", savedWaOnly.carryInCapitalLossLtWa, 2000);
+    if (
+      savedWaOnly.carryInCapitalLossSt !== null ||
+      savedWaOnly.carryInCapitalLossLt !== null ||
+      savedWaOnly.carryInCapitalLossStWa !== null
+    ) {
+      fail("editing LT WA alone must not save the untouched ST / LT / ST WA siblings");
+    }
     if (!decemberState.safeParse(resolved).success) {
       fail("the writer schema should accept resolved carry-in values");
+    }
+  });
+
+  run("dec-reresolve-year-change", (fail) => {
+    // Round-17 defect 2: changing the tax year
+    // re-resolves the year-dependent overlays for the NEW
+    // year. The settlement's worked example: a $10,000 LT
+    // loss entering the plan's first year (2026) still
+    // priced after switching to 2027 (MAGI $62,000 instead
+    // of $65,000) because the year change never
+    // re-resolved. Under the current gate the carry-in
+    // resolves for the first year OR ANY LATER one, so the
+    // stale-overlay case is switching to a year BEFORE the
+    // plan's first year — and the education students are
+    // the new year's, never the old year's.
+    const facts2026: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+      educationStudents: [{ expenses: 4000, aotcEligible: true }],
+    };
+    const fresh = defaultDecemberState(2026);
+    const stored = decemberStoredProvenanceOf(fresh);
+    const none: {
+      carryInSt: boolean;
+      carryInLt: boolean;
+      carryInStWa: boolean;
+      carryInLtWa: boolean;
+      education: boolean;
+    } = {
+      carryInSt: false,
+      carryInLt: false,
+      carryInStWa: false,
+      carryInLtWa: false,
+      education: false,
+    };
+    const display2026 = resolveDecemberStateAtLoad(fresh, facts2026);
+    exact(fail, "2026 resolves the LT carry-in", display2026.carryInCapitalLossLt, 10000);
+    // Switch to 2025 (before the plan's first year): the
+    // carry-in overlay clears and the 2026 students go
+    // with it.
+    const facts2025: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+      educationStudents: [],
+    };
+    const back = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2025 },
+      stored,
+      none,
+      facts2025,
+    );
+    if (
+      back.carryInCapitalLossSt !== null ||
+      back.carryInCapitalLossLt !== null ||
+      back.carryInCapitalLossStWa !== null ||
+      back.carryInCapitalLossLtWa !== null
+    ) {
+      fail("switching before the plan's first year must clear the carry-in overlay");
+    }
+    if ((back.educationStudents ?? []).length !== 0) {
+      fail("switching years must drop the old year's education students");
+    }
+    // Switch to 2027 (the first year or later): the
+    // carry-in still resolves, and the 2027 students
+    // replace the 2026 ones.
+    const facts2027: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+      educationStudents: [{ expenses: 8000, aotcEligible: false }],
+    };
+    const forward = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2027 },
+      stored,
+      none,
+      facts2027,
+    );
+    exact(fail, "2027 still resolves the LT carry-in", forward.carryInCapitalLossLt, 10000);
+    exact(fail, "2027 still resolves the ST carry-in", forward.carryInCapitalLossSt, 1000);
+    if (
+      forward.educationStudents == null ||
+      forward.educationStudents.length !== 1 ||
+      forward.educationStudents[0]!.expenses !== 8000
+    ) {
+      fail("switching years must resolve the new year's education students");
+    }
+    // A field the user edited is never touched by the
+    // year change: an explicit $500 LT answer survives a
+    // switch to 2025, while its unedited siblings clear.
+    const editedLt = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2025, carryInCapitalLossLt: 500 },
+      stored,
+      { ...none, carryInLt: true },
+      facts2025,
+    );
+    exact(fail, "an edited LT carry-in survives the year change", editedLt.carryInCapitalLossLt, 500);
+    if (
+      editedLt.carryInCapitalLossSt !== null ||
+      editedLt.carryInCapitalLossStWa !== null ||
+      editedLt.carryInCapitalLossLtWa !== null
+    ) {
+      fail("unedited carry-in siblings must still clear around an edited field");
+    }
+    const editedEdu = reresolveDecemberStateForYear(
+      {
+        ...display2026,
+        taxYear: 2027,
+        educationStudents: [{ expenses: 9000, aotcEligible: true }],
+      },
+      stored,
+      { ...none, education: true },
+      facts2027,
+    );
+    if (
+      editedEdu.educationStudents == null ||
+      editedEdu.educationStudents.length !== 1 ||
+      editedEdu.educationStudents[0]!.expenses !== 9000
+    ) {
+      fail("edited education students survive the year change");
+    }
+    // Year-independent overlays are not touched: a
+    // deliberately cleared harvest pool is not revived by
+    // a year change (the re-resolution covers only the
+    // year-dependent fields).
+    const cleared = reresolveDecemberStateForYear(
+      {
+        ...display2026,
+        taxYear: 2027,
+        harvestPoolAmount: null,
+        harvestPoolBasisPct: null,
+      },
+      stored,
+      none,
+      { ...facts2027, harvestPoolAmount: 40000, harvestPoolBasisPct: 75 },
+    );
+    if (
+      cleared.harvestPoolAmount !== null ||
+      cleared.harvestPoolBasisPct !== null
+    ) {
+      fail("a year change must not revive a deliberately cleared harvest fact");
     }
   });
 
@@ -5591,6 +5919,96 @@ export function runDecemberFixtures(): {
     }
   });
 
+  run("dec-harvest-remaining-pool-acceptance", (fail) => {
+    // Round-17 defect 1: the harvest sizes from the
+    // REMAINING pool, not the starting pool. The
+    // settlement's worked example: 2026 MFJ, ages 60/58,
+    // $65,000 ordinary income, a $40,000 taxable pool at
+    // 75% basis ($10,000 unrealized), $5,860 of the year's
+    // own gains already realized from a sale with $17,580
+    // of basis (proceeds $23,440). The sales already
+    // realized $5,860 of the pool's gain, so only $4,140
+    // is left to harvest — the starting pool would wrongly
+    // harvest the full $10,000 (MAGI $80,860, credit
+    // $11,946.34, $583.66 of credit lost). The 0% room is
+    // $98,900 − $32,800 ordinary taxable = $66,100, so the
+    // remaining $4,140 fits whole: MAGI $75,000, credit
+    // $12,530, federal tax $3,440 (the gain sits in the 0%
+    // band, exactly as the no-sales F3 case).
+    const entered = base();
+    entered.ytdOtherOrdinary = 65000;
+    entered.ytdCapitalGain = 5860;
+    entered.saleBasis = 17580;
+    entered.aptcTaken = 10000;
+    entered.harvestOn = true;
+    entered.harvestPoolAmount = 40000;
+    entered.harvestPoolBasisPct = 75;
+    const pgEntered = pricePlaygroundYear(
+      decemberCaseInputs(entered, "likely", 0),
+    );
+    exact(fail, "harvested gain from the remaining pool", pgEntered.harvestedGain, 4140);
+    exact(fail, "ACA MAGI with the remaining-pool harvest", pgEntered.acaMagi, 75000);
+    exact(fail, "credit with the remaining-pool harvest", pgEntered.aca.credit, 12530);
+    exact(fail, "federal tax with the remaining-pool harvest", pgEntered.federalTax, 3440);
+    // The same sale WITHOUT an entered basis: the gain
+    // alone rides (proceeds $5,860, basis $0), so the
+    // remaining pool is $34,140 at $30,000 basis — the
+    // remaining unrealized gain is still exactly $4,140.
+    const gainOnly = base();
+    gainOnly.ytdOtherOrdinary = 65000;
+    gainOnly.ytdCapitalGain = 5860;
+    gainOnly.aptcTaken = 10000;
+    gainOnly.harvestOn = true;
+    gainOnly.harvestPoolAmount = 40000;
+    gainOnly.harvestPoolBasisPct = 75;
+    const pgGainOnly = pricePlaygroundYear(
+      decemberCaseInputs(gainOnly, "likely", 0),
+    );
+    exact(fail, "harvested gain without an entered sale basis", pgGainOnly.harvestedGain, 4140);
+    exact(fail, "ACA MAGI without an entered sale basis", pgGainOnly.acaMagi, 75000);
+    exact(fail, "credit without an entered sale basis", pgGainOnly.aca.credit, 12530);
+    // A depleted pool prices a $0 harvest (a fact, never
+    // unpriced): the year's sale took the whole $40,000
+    // pool (proceeds $40,000 = $10,000 gain + $30,000
+    // basis), so nothing is left to harvest from.
+    const depleted = base();
+    depleted.ytdOtherOrdinary = 65000;
+    depleted.ytdCapitalGain = 10000;
+    depleted.saleBasis = 30000;
+    depleted.aptcTaken = 10000;
+    depleted.harvestOn = true;
+    depleted.harvestPoolAmount = 40000;
+    depleted.harvestPoolBasisPct = 75;
+    const pgDepleted = pricePlaygroundYear(
+      decemberCaseInputs(depleted, "likely", 0),
+    );
+    exact(fail, "depleted pool harvests $0", pgDepleted.harvestedGain, 0);
+    exact(fail, "ACA MAGI with a depleted pool", pgDepleted.acaMagi, 75000);
+    exact(fail, "credit with a depleted pool", pgDepleted.aca.credit, 12530);
+    exact(fail, "federal tax with a depleted pool", pgDepleted.federalTax, 3440);
+    if (computeDecemberProjection(depleted).cases[1]!.gainHarvestUnpriced) {
+      fail("a fully-facted depleted pool must not carry the unpriced qualification");
+    }
+    // 100%-basis taxable cash does not shrink the
+    // harvestable gain: $10,000 of taxable funding sells
+    // pool and basis equally, so the remaining unrealized
+    // gain is still $4,140.
+    const funded = base();
+    funded.ytdOtherOrdinary = 65000;
+    funded.ytdCapitalGain = 5860;
+    funded.saleBasis = 17580;
+    funded.taxableFunded = 10000;
+    funded.aptcTaken = 10000;
+    funded.harvestOn = true;
+    funded.harvestPoolAmount = 40000;
+    funded.harvestPoolBasisPct = 75;
+    const pgFunded = pricePlaygroundYear(
+      decemberCaseInputs(funded, "likely", 0),
+    );
+    exact(fail, "harvested gain with 100%-basis taxable funding", pgFunded.harvestedGain, 4140);
+    exact(fail, "ACA MAGI with 100%-basis taxable funding", pgFunded.acaMagi, 75000);
+  });
+
   run("dec-harvest-off-identity", (fail) => {
     // Harvest OFF (the default) prices bit-identically to
     // before this build — including when the pool facts
@@ -5826,10 +6244,32 @@ export function runDecemberFixtures(): {
     const savedEdited = decemberStateForSave(resolved, stored, {
       beneficiary: false,
       balances: false,
-      harvest: true,
+      harvestPoolAmount: true,
+      harvestPoolBasisPct: true,
     });
     exact(fail, "an edited save persists the console pool", savedEdited.harvestPoolAmount, 40000);
     exact(fail, "an edited save persists the console basis", savedEdited.harvestPoolBasisPct, 75);
+    // Per-field saves (round-17 defect 3): editing one
+    // harvest fact saves only that fact — the untouched
+    // sibling keeps its stored value.
+    const savedPoolOnly = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+      harvestPoolAmount: true,
+    });
+    exact(fail, "editing the pool saves the console pool", savedPoolOnly.harvestPoolAmount, 40000);
+    if (savedPoolOnly.harvestPoolBasisPct !== null) {
+      fail("editing the pool alone must not save the untouched basis %");
+    }
+    const savedBasisOnly = decemberStateForSave(resolved, stored, {
+      beneficiary: false,
+      balances: false,
+      harvestPoolBasisPct: true,
+    });
+    exact(fail, "editing the basis saves the console basis", savedBasisOnly.harvestPoolBasisPct, 75);
+    if (savedBasisOnly.harvestPoolAmount !== null) {
+      fail("editing the basis % alone must not save the untouched pool");
+    }
     if (!decemberState.safeParse(resolved).success) {
       fail("the writer schema should accept resolved harvest facts");
     }
