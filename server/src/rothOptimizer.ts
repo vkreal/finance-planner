@@ -3282,10 +3282,15 @@ export type PlaygroundYearResult = {
   // second time. A harvested gain is NOT in it: a harvest's
   // proceeds are reinvested by construction, never cash in hand. netTaxBill
   // (contract v116) is the year's NET tax bill — totalTax
-  // less the ACA premium credit kept (aca.credit when
-  // priced, else $0) and less the refundable education
-  // credit, the plan score identity's own netting (its
-  // netCost credits both beside the tax). cashLeftAfterTax
+  // less the refundable education credit. The ACA premium
+  // credit is NOT subtracted: the annual spending the cash
+  // left is compared against already holds the NET premium
+  // (gross benchmark less the credit), so subtracting the
+  // credit here would double-count it and overstate the
+  // cash left by the credit. (The plan score identity's own
+  // netting still credits both beside the tax — that is the
+  // march's lifetime score, not this single-year cash
+  // readout.) cashLeftAfterTax
   // is cashIn minus netTaxBill — BEFORE any spending: what
   // the year leaves in hand once its tax is settled. Pure
   // readouts of the same pricing; no priced figure moves.
@@ -4126,9 +4131,16 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // Cash left after tax (contract v114, net bill exposed
   // contract v116): the year's cash in (see the field's
   // note on PlaygroundYearResult) less its net tax bill —
-  // the total tax, less the ACA premium credit kept when
-  // one is priced and less the refundable education credit,
-  // the plan score identity's netting.
+  // the total tax, less the refundable education credit.
+  // The ACA premium credit is NOT subtracted here: the
+  // annual spending the cash left is compared against
+  // already holds the NET premium (gross benchmark less
+  // the credit), so subtracting the credit again would
+  // double-count it and overstate the cash left by the
+  // credit. The credit is still priced and shown in the
+  // year's ACA section — it just does not enter the cash
+  // left, because the premium it pays is already netted
+  // out of the spending.
   const cashIn = r2(
     inp.interest +
       inp.ordinaryDividends +
@@ -4147,9 +4159,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       inp.stockSold,
   );
   const netTaxBill = r2(
-    r2(priced.federalTax + priced.stateTax) -
-      (aca.credit ?? 0) -
-      priced.educationRefundable,
+    r2(priced.federalTax + priced.stateTax) - priced.educationRefundable,
   );
   const cashLeftAfterTax = r2(cashIn - netTaxBill);
   // "Enough for the year" (contract v126): cash left after
@@ -4442,6 +4452,18 @@ export function projectPlaygroundYears(
 ): PlaygroundProjection {
   const joint = template.filingStatus === "mfj";
   const birthYearPrimary = template.taxYear - template.agePrimary;
+  /* The walk's starting pre-tax balance is the COMBINED
+     balance (primary + spouse): the walk tracks one balance
+     and prices its RMD on the primary's clock, exactly as
+     before the split-balance build — the split lives in the
+     single-year pricing, not in this simplified walk. The
+     per-year inputs below null the spouse balance out so the
+     pricer never counts it twice (once inside the combined
+     balance, once on its own clock). */
+  const combinedPretaxBalance =
+    template.pretaxBalance == null && template.pretaxBalanceSpouse == null
+      ? null
+      : (template.pretaxBalance ?? 0) + (template.pretaxBalanceSpouse ?? 0);
   // The projection's start age (see the header comment):
   // an earlier from-age moves the WALK's start (the entered
   // starting balances are that first year's balances); a
@@ -4495,9 +4517,9 @@ export function projectPlaygroundYears(
           walkStartSpouseAge,
         )
       : 0) +
-    (template.pretaxBalance != null
+    (combinedPretaxBalance != null
       ? rmdForYear({
-          priorDec31PreTax: template.pretaxBalance,
+          priorDec31PreTax: combinedPretaxBalance,
           agePrimary: walkStartAge,
           ageSpouse: walkStartSpouseAge,
           birthYearPrimary,
@@ -4505,7 +4527,7 @@ export function projectPlaygroundYears(
         }).rmd
       : 0);
   const growth = 1 + opts.returnPct / 100;
-  let pretax: number | null = template.pretaxBalance;
+  let pretax: number | null = combinedPretaxBalance;
   let taxable: number | null = opts.startTaxable;
   let roth = opts.startRoth;
   const years: PlaygroundProjectionYear[] = [];
@@ -4595,6 +4617,10 @@ export function projectPlaygroundYears(
       stockSold: stockSoldEffective,
       stockBasis: stockBasisEffective,
       pretaxBalance: pretax,
+      /* The walk's balance is already the combined total —
+         the spouse balance is nulled here so the pricer
+         does not count it a second time. */
+      pretaxBalanceSpouse: null,
       acaHouseholdSize: householdSize,
       acaConvention: "newest",
     };
@@ -4878,6 +4904,7 @@ export const PLAYGROUND_PASTE_FIELDS = [
   "stockBasis",
   "qualifiedDividends",
   "pretaxBalance",
+  "pretaxBalanceSpouse",
   "spouseSoleBeneficiary",
   "acaHouseholdSize",
   "acaBenchmarkAnnual",
@@ -4895,6 +4922,11 @@ export const PLAYGROUND_PASTE_FIELDS = [
 export const PLAYGROUND_PASTE_OPTIONAL_FIELDS = [
   "residenceState",
   "educationStudents",
+  /* The spouse's pre-tax balance (split-balance build): a
+     paste written before it existed carries no such key and
+     loads with it absent — no spouse balance, no spouse
+     RMD, exactly as before. */
+  "pretaxBalanceSpouse",
 ] as const;
 
 export function playgroundPastePayload(
@@ -4920,6 +4952,7 @@ export function playgroundPastePayload(
     stockBasis: inp.stockBasis,
     qualifiedDividends: inp.qualifiedDividends,
     pretaxBalance: inp.pretaxBalance,
+    pretaxBalanceSpouse: inp.pretaxBalanceSpouse ?? null,
     spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
     acaHouseholdSize: inp.acaHouseholdSize,
     acaBenchmarkAnnual: inp.acaBenchmarkAnnual,
@@ -5029,6 +5062,17 @@ export function parsePlaygroundPaste(
     }
     pretaxBalance = n;
   }
+  /* The spouse's balance is optional (a paste written before
+     the split-balance build carries no such key): absent
+     parses as null — no spouse balance, no spouse RMD. */
+  let pretaxBalanceSpouse: number | null = null;
+  if (r.pretaxBalanceSpouse !== null && r.pretaxBalanceSpouse !== undefined) {
+    const n = num(r.pretaxBalanceSpouse);
+    if (n == null || n < 0) {
+      return fail("That paste’s spouse pre-tax balance is not a valid dollar figure — nothing was loaded.");
+    }
+    pretaxBalanceSpouse = n;
+  }
   let acaHouseholdSize: number | null = null;
   if (r.acaHouseholdSize !== null) {
     const n = num(r.acaHouseholdSize);
@@ -5109,6 +5153,7 @@ export function parsePlaygroundPaste(
       stockBasis,
       qualifiedDividends,
       pretaxBalance,
+      pretaxBalanceSpouse,
       spouseSoleBeneficiary: r.spouseSoleBeneficiary,
       acaHouseholdSize,
       acaBenchmarkAnnual,
@@ -5267,7 +5312,7 @@ export function pricePlanYearDetail(
    pieces the detail priced). It prices nothing of its own:
    the rows come from ONE simulateRothPlan run of the plan
    exactly as given, with the given fixed strategy.
-   CASH IDENTITY: for every row, the eleven source fields plus
+   CASH IDENTITY: for every row, the twelve source fields plus
    spendShortfallCents plus unpaidTaxCents sum to the four
    need fields (totalNeedCents) — totalNeedCents includes the
    full assessed tax, spendShortfallCents is spending-only,
@@ -5304,13 +5349,17 @@ export type RothFundingRow = {
   ssCents: number;
   rmdCents: number;
   otherIncomeCents: number;
+  // Tax-exempt interest applied as cash funding (a twelfth
+  // source — see the RothYearFunding waterfall). $0 in every
+  // year with no tax-exempt interest entered.
+  taxExemptCents: number;
   interestYieldCents: number;
   dividendYieldCents: number;
   pretaxDrawCents: number;
   taxableSoldForSpendingCents: number;
   taxableSoldForTaxCents: number;
   // Spend-from-cash: the part of the year's spending need the
-  // pool's cash sleeve paid (an eleventh source — see the
+  // pool's cash sleeve paid (one of the twelve sources — see the
   // RothYearFunding waterfall in taxEngine.ts). $0 in every
   // year unless the plan sets spendFromCashPct.
   cashSpendCents: number;
@@ -5448,6 +5497,7 @@ export function buildRothFunding(
       ssCents: cents(f.ss),
       rmdCents: cents(f.rmd),
       otherIncomeCents: cents(f.otherIncome),
+      taxExemptCents: cents(f.taxExempt),
       interestYieldCents: cents(f.interestYield),
       dividendYieldCents: cents(f.dividendYield),
       pretaxDrawCents: cents(f.pretaxDraw),
@@ -5499,6 +5549,7 @@ export function buildRothFunding(
       "ssCents",
       "rmdCents",
       "otherIncomeCents",
+      "taxExemptCents",
       "interestYieldCents",
       "dividendYieldCents",
       "pretaxDrawCents",
@@ -5996,6 +6047,12 @@ export type RothCompareScenarioYear = {
   // The year's ACA premium credit kept ($0 when the year
   // prices no credit).
   acaCreditCents: number;
+  // The year's refundable American Opportunity Credit
+  // portion — money the household receives even past a $0
+  // tax bill (the pricer nets it into the net bill, so the
+  // display must too). $0 in every year with no entered
+  // education expenses.
+  educationRefundableCents: number;
   // IRMAA surcharges PAID that year (Medicare premiums, not
   // tax — carried separately so a bill display never folds
   // them into a tax line).
@@ -6130,6 +6187,7 @@ export function runRothCompare(
         totalIncomeCents: toCents(y.agi),
         taxableIncomeCents: toCents(y.taxableIncome),
         acaCreditCents: toCents(y.acaCreditKept),
+        educationRefundableCents: toCents(y.educationRefundable),
         irmaaCents: toCents(y.irmaaPaid),
         conversionCents: toCents(y.conversion),
         pretaxOutByChoiceCents: toCents(y.conversion + y.detail.extraPreTaxDraw),

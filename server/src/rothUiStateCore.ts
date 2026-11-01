@@ -171,6 +171,11 @@ export const playgroundProjTemplateState = z.object({
   stockBasis: z.number(),
   qualifiedDividends: z.number(),
   pretaxBalance: z.number().nullable(),
+  /* The spouse's share of the pre-tax balance, priced on the
+     spouse's own RMD clock — a blob written before this
+     field existed parses it null (no spouse balance, no
+     spouse RMD — the year prices exactly as before). */
+  pretaxBalanceSpouse: z.number().nullable(),
   spouseSoleBeneficiary: z.boolean(),
   acaHouseholdSize: z.number().nullable(),
   acaBenchmarkAnnual: z.number().nullable(),
@@ -205,6 +210,12 @@ export const playgroundFormState = z.object({
   stockBasis: z.string().max(64),
   qualifiedDividends: z.string().max(64),
   pretaxBalance: z.string().max(64),
+  /* The spouse's pre-tax balance (prior Dec 31), as a typed
+     string like every money dial here. A blob written before
+     this field existed parses it blank ("" = no spouse
+     balance = no spouse RMD — the year prices exactly as
+     before). */
+  pretaxBalanceSpouse: z.string().max(64),
   acaHouseholdSize: z.string().max(12),
   acaBenchmark: z.string().max(64),
   // ACA cliff buffer (ACA buffer guide build): the Playground
@@ -339,6 +350,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     stockBasis: "",
     qualifiedDividends: "",
     pretaxBalance: "",
+    pretaxBalanceSpouse: "",
     acaHouseholdSize: "",
     acaBenchmark: "",
     acaBuffer: "5000",
@@ -420,6 +432,12 @@ function parsePgProjTemplate(
   const stockBasis = num(t.stockBasis);
   const qualifiedDividends = num(t.qualifiedDividends);
   const pretaxBalance = numOrNull(t.pretaxBalance);
+  /* Absent (a template written before this field existed)
+     parses as null — no spouse balance, no spouse RMD —
+     so old templates still load and price exactly as
+     before. It is deliberately NOT in the rejection check
+     below. */
+  const pretaxBalanceSpouse = numOrNull(t.pretaxBalanceSpouse);
   const acaHouseholdSize = numOrNull(t.acaHouseholdSize);
   const acaBenchmarkAnnual = numOrNull(t.acaBenchmarkAnnual);
   const stateRatePct = num(t.stateRatePct);
@@ -491,6 +509,7 @@ function parsePgProjTemplate(
     stockBasis,
     qualifiedDividends,
     pretaxBalance,
+    pretaxBalanceSpouse: pretaxBalanceSpouse ?? null,
     spouseSoleBeneficiary: t.spouseSoleBeneficiary as boolean,
     acaHouseholdSize,
     acaBenchmarkAnnual,
@@ -770,6 +789,7 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         stockBasis: str(g.stockBasis, ""),
         qualifiedDividends: str(g.qualifiedDividends, ""),
         pretaxBalance: str(g.pretaxBalance, ""),
+        pretaxBalanceSpouse: str(g.pretaxBalanceSpouse, ""),
         acaHouseholdSize: str(g.acaHouseholdSize, ""),
         acaBenchmark: str(g.acaBenchmark, ""),
         acaBuffer: str(g.acaBuffer, "5000"),

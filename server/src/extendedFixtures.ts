@@ -7179,6 +7179,7 @@ const uiCasCases: {
         stockBasis: 0,
         qualifiedDividends: 9000,
         pretaxBalance: 37028.73,
+        pretaxBalanceSpouse: null,
         spouseSoleBeneficiary: true,
         acaHouseholdSize: null,
         acaBenchmarkAnnual: null,

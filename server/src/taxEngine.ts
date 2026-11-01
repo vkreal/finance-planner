@@ -2297,16 +2297,21 @@ function reinvestYieldIntoTiers(tiers: TierLedger[], amount: number): void {
 }
 
 // Clamp a committed tier ledger to the balance it describes:
-// every tier's basis within [0, its own balance], and the tier
-// balances summing to the settled balance. Reconciliation only
-// ever moves float dust on a correctly mirrored ledger; it
-// exists so no path can commit a ledger whose balances drift
-// from the settled taxable balance or whose basis passes it.
+// the tier balances summing to the settled balance, every
+// tier's basis floored at $0. A basis is dollars paid and
+// may exceed its tier's balance when the tier is underwater
+// (a decline shrank the balance, not the basis) — the
+// reconciler never caps a basis at its tier's balance, so a
+// recovery does not invent a gain. Reconciliation only ever
+// moves float dust on a correctly mirrored ledger; it exists
+// so no path can commit a ledger whose balances drift from
+// the settled taxable balance.
 // A shortfall (tier balances under the settled balance) lands
 // on the inflow tier — or the largest tier when no inflow tier
 // exists yet — as balance with no basis; an excess comes off
 // the tiers pro-rata, each tier's basis following its balance
-// down proportionally before the per-tier basis clamp bites.
+// down proportionally (the basis ratio is preserved — the
+// excess is a balance reconciliation, not a decline).
 function clampTierLedgerToBalance(
   tiers: TierLedger[],
   settledBalance: number,
@@ -2336,7 +2341,11 @@ function clampTierLedgerToBalance(
   }
   for (const t of tiers) {
     t.bal = Math.max(0, t.bal);
-    t.basis = Math.min(Math.max(0, t.basis), t.bal);
+    // Floor only — never a cap at the tier's balance: an
+    // underwater tier's basis exceeds its balance, and that
+    // basis is dollars paid that a recovery must not turn
+    // into a fictitious gain.
+    t.basis = Math.max(0, t.basis);
   }
 }
 
@@ -3303,13 +3312,22 @@ export type RothYearFunding = {
   ss: number;
   rmd: number;
   otherIncome: number;
+  // Tax-exempt interest (municipal-bond interest): cash the
+  // household receives and spends, so a funding source — its
+  // own row, not folded into other income, because it is not
+  // ordinary income. $0 in every year with no tax-exempt
+  // interest entered. (It is NOT yield: the dividend /
+  // interest yield is reinvested and its funding rows are
+  // $0; this is a separate entered annual amount, received
+  // as cash.)
+  taxExempt: number;
   interestYield: number;
   dividendYield: number;
   pretaxDraw: number;
   taxableSoldForSpending: number;
   taxableSoldForTax: number;
   // Spend-from-cash: the part of the year's spending need the
-  // cash sleeve paid (an eleventh funding source; see the
+  // cash sleeve paid (one of the twelve funding sources; see the
   // RothPlanInputs note). It is NOT part of
   // taxableSoldForSpending — that field stays the gain-priced
   // Taxable sales for spending — the cash share sold nothing
@@ -4660,7 +4678,20 @@ export function simulateRothPlan(
       let stateTax = priced.stateTax;
 
       const spendNeed = spendNeedYear;
-      const cashIn = rmd + ssBenefits + inputs.otherOrdinaryAnnual;
+      /* Cash in counts tax-exempt interest: it is cash the
+         household receives (municipal-bond interest), just
+         not taxable — so it funds spending exactly like the
+         RMD, Social Security, and other ordinary income, and
+         leaving it out oversold Taxable by the tax-exempt
+         amount. The Playground pricer already counts it as
+         cash; the march must agree. It is NOT yield: the
+         dividend/interest yield is reinvested, while this is
+         a separate entered annual amount, received as cash. */
+      const cashIn =
+        rmd +
+        ssBenefits +
+        inputs.otherOrdinaryAnnual +
+        inputs.taxExemptInterestAnnual;
       const surplusCash = Math.max(0, cashIn - spendNeed);
       let spendDeficit = Math.max(0, spendNeed - cashIn);
 
@@ -5779,26 +5810,25 @@ export function simulateRothPlan(
         clampTierLedgerToBalance(tierState, taxableBal);
         taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
       } else {
-        taxableBasisDollars = Math.min(
-          Math.max(0, settled.taxableBasisEnd),
-          Math.max(0, taxableBal),
-        );
+        // The settled basis end, floored at $0 — never capped
+        // at the settled balance: the basis is dollars paid
+        // and may exceed the balance when the year left the
+        // pool underwater. Capping it here would destroy paid
+        // basis and invent a gain on recovery.
+        taxableBasisDollars = Math.max(0, settled.taxableBasisEnd);
       }
     } else {
       // Legacy path: the pre-drift harvest-only update, plus
       // the year's reinvested yield (display-only here, like
       // the rest of this ledger — no priced figure reads it),
-      // clamped to the settled balance exactly as the drift
-      // path's settled basis is clamped above: when the yields
-      // outrun the return the unclamped counter could carry a
-      // basis above the balance it describes, and the year's
-      // detail figure (endingTaxableBasis) must never do that.
-      taxableBasisDollars = Math.min(
-        Math.max(
-          0,
-          taxableBasisDollars - settled.taxableDrawn * basisPctClamped + yieldTotal,
-        ),
-        Math.max(0, taxableBal),
+      // floored at $0. Never capped at the settled balance:
+      // when the yields outrun the return the counter can
+      // carry a basis above the balance it describes, and
+      // that is the true basis — dollars paid, not a share
+      // of the balance.
+      taxableBasisDollars = Math.max(
+        0,
+        taxableBasisDollars - settled.taxableDrawn * basisPctClamped + yieldTotal,
       );
     }
     // SPEND-FROM-CASH sleeve commit: the kept settlement's own
@@ -6076,8 +6106,18 @@ export function simulateRothPlan(
     // settlement's own captured amounts.
     const funding: RothYearFunding = ((): RothYearFunding => {
       const spendNeedY = settled.spendNeed;
-      const needsY = spendNeedY + federalTax + penalty + stateTax + irmaaPaid;
-      const cashInY = rmd + ssBenefits + inputs.otherOrdinaryAnnual;
+      /* Cash in counts tax-exempt interest (see the
+         settlement's cashIn above): it is cash the household
+         receives and spends, so it is a funding source here
+         too — its own row, not folded into other income,
+         because it is not ordinary income. The attribution
+         below takes it after the RMD and before other
+         ordinary income. */
+      const cashInY =
+        rmd +
+        ssBenefits +
+        inputs.otherOrdinaryAnnual +
+        inputs.taxExemptInterestAnnual;
       const incomeAppliedY =
         Math.min(cashInY, spendNeedY) + settled.taxFromCash;
       let incLeft = incomeAppliedY;
@@ -6088,33 +6128,29 @@ export function simulateRothPlan(
       };
       const ssApplied = takeIncome(ssBenefits);
       const rmdApplied = takeIncome(rmd);
-      const otherApplied = incomeAppliedY - ssApplied - rmdApplied;
-      const yieldApplied = Math.min(
-        Math.max(0, interestIncome + dividendIncome),
-        Math.max(0, needsY - incomeAppliedY),
-      );
-      const interestApplied = Math.min(interestIncome, yieldApplied);
-      const dividendApplied = yieldApplied - interestApplied;
-      let pretaxDrawY =
+      const taxExemptApplied = takeIncome(inputs.taxExemptInterestAnnual);
+      const otherApplied = incomeAppliedY - ssApplied - rmdApplied - taxExemptApplied;
+      // The year's yield (interest + dividends) is REINVESTED —
+      // it adds to the taxable basis and stays in the balance,
+      // so it is NOT cash funding for this year's needs and
+      // must not appear as a funding source. Presenting it as
+      // funding and offsetting the draws against it (the old
+      // cut() that used to follow) understated the amounts
+      // actually debited: the settlement debited the full
+      // pre-tax draw while the funding row showed it net of
+      // the yield. The draws below report the settled amounts
+      // exactly, and the yield rows are $0 — the yield is
+      // still priced as income and shown in the year's detail
+      // and income stack, just not as funding. With the yield
+      // out, the sources sum to the needs exactly as before.
+      const interestApplied = 0;
+      const dividendApplied = 0;
+      const pretaxDrawY =
         settled.extraDraw + settled.fundTaxPretax + fundHarvestTaxPretax;
-      let taxableSpendY = settled.fundSpendTaxable;
-      let taxableTaxY = settled.fundTaxTaxable + fundHarvestTaxTaxable;
-      let rothDrawY =
+      const taxableSpendY = settled.fundSpendTaxable;
+      const taxableTaxY = settled.fundTaxTaxable + fundHarvestTaxTaxable;
+      const rothDrawY =
         settled.fundSpendRoth + settled.fundTaxRoth + fundHarvestTaxRoth;
-      // The reinvested yield cash offsets the year's taxable
-      // sales first — spending sales, then tax sales — then
-      // the pre-tax draw, then the Roth draw.
-      let offset = yieldApplied;
-      const cut = (amount: number): number => {
-        if (offset <= 0 || amount <= 0) return amount;
-        const c = Math.min(offset, amount);
-        offset -= c;
-        return amount - c;
-      };
-      taxableSpendY = cut(taxableSpendY);
-      taxableTaxY = cut(taxableTaxY);
-      pretaxDrawY = cut(pretaxDrawY);
-      rothDrawY = cut(rothDrawY);
       return {
         spending: r2(spendNeedY),
         federalTax: r2(federalTax + penalty),
@@ -6123,6 +6159,7 @@ export function simulateRothPlan(
         ss: r2(ssApplied),
         rmd: r2(rmdApplied),
         otherIncome: r2(otherApplied),
+        taxExempt: r2(taxExemptApplied),
         interestYield: r2(interestApplied),
         dividendYield: r2(dividendApplied),
         pretaxDraw: r2(pretaxDrawY),
@@ -6176,29 +6213,36 @@ export function simulateRothPlan(
     roth = Math.max(0, rothBal) * yearGrowth;
     taxable = Math.max(0, taxableBal) * yearGrowth;
     hsa = Math.max(0, hsa) * yearGrowth;
-    // Basis dollars do NOT grow with the balance. On a drift
-    // run, a negative-return year (a varied return series) can
-    // shrink the balance below the basis; the basis clamps to
-    // the balance there, holding the invariant (basis share
-    // never rises except via inflows or harvests). With basis
-    // tiers every tier's balance grows at the same rate and
-    // the clamp holds per tier, so no tier's basis ever passes
-    // its own balance.
+    // Basis dollars do NOT grow with the balance — and they do
+    // NOT shrink with it either. On a drift run, a
+    // negative-return year (a varied return series) can shrink
+    // the balance below the basis; the basis survives the
+    // decline untouched, because basis is dollars paid, not a
+    // share of the balance — clamping it to the balance would
+    // destroy paid basis and invent a gain when the balance
+    // recovers. The basis ratio (basis ÷ balance) rises past
+    // 1 while underwater, so the next year's draws price a
+    // loss (drawGainRate goes negative), which is the true
+    // economics. With basis tiers every tier's balance grows
+    // at the same rate and every tier's basis stands, so a
+    // tier can be underwater too. The only floor is $0: a
+    // basis never goes negative.
     if (driftOn) {
       if (tiersActive && tierState) {
         for (const t of tierState) {
           t.bal = Math.max(0, t.bal) * yearGrowth;
-          t.basis = Math.min(t.basis, t.bal);
+          t.basis = Math.max(0, t.basis);
         }
         // Reconcile the grown ledger to the grown balance, so
         // the invariant the commit established (tier balances
-        // sum to the balance; every basis within its tier)
-        // survives growth bit-for-bit rather than by float
-        // approximation.
+        // sum to the balance) survives growth bit-for-bit
+        // rather than by float approximation. The reconciler
+        // floors each tier's basis at $0; it never caps a
+        // basis at its tier's balance.
         clampTierLedgerToBalance(tierState, taxable);
         taxableBasisDollars = tierState.reduce((s, t) => s + t.basis, 0);
       } else {
-        taxableBasisDollars = Math.min(taxableBasisDollars, taxable);
+        taxableBasisDollars = Math.max(0, taxableBasisDollars);
       }
     }
     // The sleeve does NOT grow with the balance (it is a fixed

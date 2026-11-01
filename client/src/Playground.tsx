@@ -543,6 +543,7 @@ const projTemplateToStored = (
   stockBasis: inp.stockBasis,
   qualifiedDividends: inp.qualifiedDividends,
   pretaxBalance: inp.pretaxBalance,
+  pretaxBalanceSpouse: inp.pretaxBalanceSpouse ?? null,
   spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
   acaHouseholdSize: inp.acaHouseholdSize,
   acaBenchmarkAnnual: inp.acaBenchmarkAnnual,
@@ -726,6 +727,14 @@ export function Playground() {
   const [pgBasis, setPgBasis] = useState("");
   const [pgQualDiv, setPgQualDiv] = useState("");
   const [pgPretax, setPgPretax] = useState("");
+  /* Pre-tax balance — spouse (prior Dec 31): the spouse's
+     share of the pre-tax balance, priced on the spouse's own
+     RMD clock (the spouse's age and divisor), not the
+     primary's. The saved-plan-year loader fills it from the
+     march's priorPretaxSpouse; the Net Worth prefill fills
+     it from the spouse's pre-tax start. Blank means no
+     spouse balance, so no spouse RMD is priced. */
+  const [pgPretaxSpouse, setPgPretaxSpouse] = useState("");
   const [pgAcaSize, setPgAcaSize] = useState("");
   const [pgBenchmark, setPgBenchmark] = useState("");
   /* ACA cliff buffer — the "Buffer below the ACA cliff"
@@ -1132,6 +1141,7 @@ export function Playground() {
     setPgBasis(s.stockBasis);
     setPgQualDiv(s.qualifiedDividends);
     setPgPretax(s.pretaxBalance);
+    setPgPretaxSpouse(s.pretaxBalanceSpouse ?? "");
     setPgAcaSize(s.acaHouseholdSize);
     setPgBenchmark(s.acaBenchmark);
     setPgAcaBuffer(s.acaBuffer);
@@ -1207,6 +1217,7 @@ export function Playground() {
     stockBasis: pgBasis,
     qualifiedDividends: pgQualDiv,
     pretaxBalance: pgPretax,
+    pretaxBalanceSpouse: pgPretaxSpouse,
     acaHouseholdSize: pgAcaSize,
     acaBenchmark: pgBenchmark,
     acaBuffer: pgAcaBuffer,
@@ -1506,6 +1517,7 @@ export function Playground() {
     setPgBasis(fmtMoneyInput(inp.stockBasis));
     setPgQualDiv(fmtMoneyInput(inp.qualifiedDividends));
     setPgPretax(moneyOrBlank(inp.pretaxBalance));
+    setPgPretaxSpouse(moneyOrBlank(inp.pretaxBalanceSpouse ?? null));
     setPgAcaSize(inp.acaHouseholdSize != null ? String(inp.acaHouseholdSize) : "");
     setPgBenchmark(moneyOrBlank(inp.acaBenchmarkAnnual));
     // A paste-load is the user's own typed value, not a plan
@@ -1554,6 +1566,7 @@ export function Playground() {
     setPgBasis("");
     setPgQualDiv("");
     setPgPretax("");
+    setPgPretaxSpouse("");
     setPgAcaSize("");
     setPgBenchmark("");
     setPgAcaBuffer("5000");
@@ -1607,6 +1620,7 @@ export function Playground() {
       stockBasis: "",
       qualifiedDividends: "",
       pretaxBalance: "",
+      pretaxBalanceSpouse: "",
       acaHouseholdSize: "",
       acaBenchmark: "",
       acaBuffer: "5000",
@@ -1696,6 +1710,16 @@ export function Playground() {
       stockBasis: money0(pgBasis),
       qualifiedDividends: money0(pgQualDiv),
       pretaxBalance: money0OrNull(pgPretax),
+      /* The spouse's balance rides its own RMD clock (the
+         pricer prices it on the spouse's age and divisor) —
+         the single combined balance it replaced priced the
+         spouse's share on the primary's clock. MFJ only: a
+         spouse balance typed under MFJ stays in the dial
+         when the filing changes, and the pricer ignores it
+         there (its spouse-RMD branch is gated on MFJ), so
+         the adapter nulls it here to match. */
+      pretaxBalanceSpouse:
+        pgFiling === "mfj" ? money0OrNull(pgPretaxSpouse) : null,
       spouseSoleBeneficiary: pgSoleBeneficiary,
       acaHouseholdSize: acaSize != null && acaSize > 0 ? acaSize : null,
       acaBenchmarkAnnual: money0OrNull(pgBenchmark),
@@ -1733,7 +1757,7 @@ export function Playground() {
   }, [
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgConversion,
-    pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
     pgBenchmark, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
     pgAnnualSpendingCents,
@@ -1750,7 +1774,7 @@ export function Playground() {
   }, [
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
-    pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
     pgBenchmark, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
     pgAnnualSpendingCents,
@@ -1875,7 +1899,7 @@ export function Playground() {
     pgHoldOn, pgHeldTarget, pgAcaBuffer,
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
-    pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
     pgBenchmark, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
   ]);
@@ -2082,6 +2106,9 @@ export function Playground() {
     setPgSold(fmtMoneyInput(inp.stockSold));
     setPgBasis(fmtMoneyInput(inp.stockBasis));
     setPgPretax(inp.pretaxBalance == null ? "" : fmtMoneyInput(inp.pretaxBalance));
+    setPgPretaxSpouse(
+      inp.pretaxBalanceSpouse == null ? "" : fmtMoneyInput(inp.pretaxBalanceSpouse),
+    );
     setPgAcaSize(
       inp.acaHouseholdSize != null ? String(inp.acaHouseholdSize) : "",
     );
@@ -2174,8 +2201,19 @@ export function Playground() {
               : null;
     setPgBenchmark(benchPick != null ? fmtMoneyInput(benchPick.value) : "");
     setPgBenchmarkLoaded(benchPick);
-    const pretaxTotal = pgPrefillSource.pretaxStart + (pgPrefillSource.pretaxSpouseStart ?? 0);
-    setPgPretax(pretaxTotal > 0 ? fmtMoneyInput(pretaxTotal) : "");
+    /* The split balances, not their sum: the sum priced the
+       spouse's share on the primary's RMD clock. Each side
+       is blank when $0 (no balance, no RMD on that side). */
+    setPgPretax(
+      pgPrefillSource.pretaxStart > 0
+        ? fmtMoneyInput(pgPrefillSource.pretaxStart)
+        : "",
+    );
+    setPgPretaxSpouse(
+      (pgPrefillSource.pretaxSpouseStart ?? 0) > 0
+        ? fmtMoneyInput(pgPrefillSource.pretaxSpouseStart ?? 0)
+        : "",
+    );
     setPgStateRate(String(pgPrefillSource.stateRatePct));
     setPgResidence(pgPrefillSource.residenceState === "WA" ? "WA" : "other");
     setPgItemizedMortgage(
@@ -2376,6 +2414,7 @@ export function Playground() {
     setPgBasis("");
     setPgQualDiv("");
     setPgPretax("");
+    setPgPretaxSpouse("");
     setPgAcaSize("");
     setPgBenchmark("");
     setPgAcaBuffer("5000");
@@ -2447,10 +2486,38 @@ export function Playground() {
           : 0,
       ),
     );
-    setPgConversion(fmtMoneyInput(y.conversion));
-    setPgSold("");
-    setPgBasis("");
-    setPgPretax(fmtMoneyInput(y.detail.priorPretaxBalance));
+    /* The full spending funding, not just the conversion: the
+       conversion alone drops the extra pre-tax draw and the
+       taxable sales that funded spending and taxes, so the
+       loaded year priced $0 tax on a year the march priced
+       at the cliff. The pre-tax money out is the conversion
+       plus the extra pre-tax draw (both count as ordinary
+       income, as the dial's own info text says); the taxable
+       sales are the funding's spending + tax sales, with the
+       basis the proceeds minus the draw gain the settlement
+       priced on those sales. */
+    setPgConversion(
+      fmtMoneyInput(y.conversion + y.detail.extraPreTaxDraw),
+    );
+    const taxableSold =
+      y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+    setPgSold(taxableSold > 0 ? fmtMoneyInput(taxableSold) : "");
+    setPgBasis(
+      taxableSold > 0
+        ? fmtMoneyInput(taxableSold - y.detail.drawGains)
+        : "",
+    );
+    /* The split balances, not the combined one: the combined
+       balance priced the spouse's share on the primary's RMD
+       clock. The primary keeps the old always-set shape; the
+       spouse is blank when $0 (no spouse balance, no spouse
+       RMD). */
+    setPgPretax(fmtMoneyInput(y.detail.priorPretaxPrimary));
+    setPgPretaxSpouse(
+      y.detail.priorPretaxSpouse > 0
+        ? fmtMoneyInput(y.detail.priorPretaxSpouse)
+        : "",
+    );
     setPgAcaSize(String(y.detail.aca.householdSize));
     setPgBenchmark(
       y.detail.aca.benchmark != null
@@ -2474,7 +2541,7 @@ export function Playground() {
     );
     setPgSoleBeneficiary(inputs.spouseSoleBeneficiary);
     setPgPresetNote(
-      `Loaded ${y.year} from your saved plan — interest ${fmtDollars(y.detail.interestIncome)}, dividends ${fmtDollars(y.detail.dividendIncome)}, pre-tax money out ${fmtDollars(y.conversion)}, priced by the plan before any dial changed. Your saved plan was not changed.`,
+      `Loaded ${y.year} from your saved plan — interest ${fmtDollars(y.detail.interestIncome)}, dividends ${fmtDollars(y.detail.dividendIncome)}, pre-tax money out ${fmtDollars(y.conversion + y.detail.extraPreTaxDraw)}, priced by the plan before any dial changed. Your saved plan was not changed.`,
     );
   };
 
@@ -2572,7 +2639,14 @@ export function Playground() {
           ? `Already past ${pgAcaTargetPhrase} without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - target)} over that line.`
           : `Already past the ACA cliff without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - target)} over the ACA cliff.`;
       }
-      const balRaw = parseDollars(pgPretax);
+      /* The combined balance caps the fill: the money out can
+         come from either spouse's account, and the RMD it is
+         measured against is the total. MFJ only for the
+         spouse's side (a balance typed under MFJ stays in
+         the dial when the filing changes). */
+      const balP = parseDollars(pgPretax);
+      const balS = pgFiling === "mfj" ? parseDollars(pgPretaxSpouse) : null;
+      const balRaw = balP == null && balS == null ? null : (balP ?? 0) + (balS ?? 0);
       if (balRaw != null) {
         const bal = Math.max(0, balRaw);
         const cap = Math.max(0, bal - playgroundResult.rmd);
@@ -2592,7 +2666,13 @@ export function Playground() {
     if (zeroOrd > top + 0.005) {
       return `Already past the ${pgHeldTarget}% top without any pre-tax money out — held at $0, still ${fmtDollars(zeroOrd - top)} over.`;
     }
-    const balRaw = parseDollars(pgPretax);
+    /* The combined balance caps the fill (see the ACA fill
+       above — the money out can come from either spouse's
+       account, and the RMD is the total). MFJ only for the
+       spouse's side, as above. */
+    const balP = parseDollars(pgPretax);
+    const balS = pgFiling === "mfj" ? parseDollars(pgPretaxSpouse) : null;
+    const balRaw = balP == null && balS == null ? null : (balP ?? 0) + (balS ?? 0);
     if (balRaw != null) {
       const bal = Math.max(0, balRaw);
       const cap = Math.max(0, bal - playgroundResult.rmd);
@@ -2705,8 +2785,15 @@ export function Playground() {
      only: it reads pgHoldActive / pgHeldTarget exactly as the
      hold captions do, so toggling Hold off — or typing in the
      conversion dial, which releases the hold via its onEdit —
-     removes the text, and no figure changes in any state. */
-  const pgConversionSummary = `Money out ${pgMoneySummary(pgConversion)} · balance ${pgMoneySummary(pgPretax)}${pgHoldActive && pgHeldTarget === "aca" ? " · Hold the ACA cliff" : ""}`;
+     removes the text, and no figure changes in any state.
+     The balance is the combined pre-tax balance (primary +
+     spouse), like the SS summary above. */
+  const pgConversionSummary = ((): string => {
+    const p = parseDollars(pgPretax);
+    const s = pgFiling === "mfj" ? parseDollars(pgPretaxSpouse) : null;
+    const bal = p == null && s == null ? "—" : fmtDollars(Math.max(0, p ?? 0) + Math.max(0, s ?? 0));
+    return `Money out ${pgMoneySummary(pgConversion)} · balance ${bal}${pgHoldActive && pgHeldTarget === "aca" ? " · Hold the ACA cliff" : ""}`;
+  })();
   const pgStockSummary = ((): string => {
     const sold = Math.max(0, parseDollars(pgSold) ?? 0);
     if (sold <= 0) return "None";
@@ -3805,11 +3892,17 @@ export function Playground() {
                 if (pgHoldOn) setPgHoldOn(false);
               },
             })}
-            {moneyField("Pre-tax balance (prior Dec 31)", pgPretax, setPgPretax, {
+            {moneyField("Pre-tax balance — primary (prior Dec 31)", pgPretax, setPgPretax, {
               hint: "Optional. When entered, the year's RMD is priced on this balance (Joint Life when it applies) and the pre-tax money out is checked against what's left after the RMD.",
               info: "What was in your traditional IRA / 401(k) on the prior Dec 31. Entering it lets the playground price this year's required minimum distribution (RMD) and check the pre-tax money out fits. Blank = no RMD priced.",
               infoAlign: "right",
             })}
+            {pgFiling === "mfj" &&
+              moneyField("Pre-tax balance — spouse (prior Dec 31)", pgPretaxSpouse, setPgPretaxSpouse, {
+                hint: "Optional. When entered, the spouse's RMD is priced on this balance on the spouse's own clock — not the primary's.",
+                info: "What was in your spouse's traditional IRA / 401(k) on the prior Dec 31. The spouse's required minimum distribution is priced on the spouse's own age and divisor. Blank = no spouse balance, no spouse RMD.",
+                infoAlign: "right",
+              })}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="flex items-center text-sm text-[var(--dim)]">
@@ -4820,10 +4913,19 @@ export function Playground() {
               // The entered pre-tax balance as buildPgInputs prices
               // it (negatives clamped to 0) — the readout's RMD
               // subtext and balance watch-out read it from here so
-              // they name the same balance the engine priced.
+              // they name the same balance the engine priced. The
+              // combined balance: the pricer prices the total
+              // (primary + spouse) for the RMD and the
+              // conversion-exceeds-balance watch-out. MFJ only
+              // for the spouse's side (a balance typed under
+              // MFJ stays in the dial when the filing changes).
               const pgPretaxRaw = parseDollars(pgPretax);
+              const pgPretaxSpouseRaw =
+                pgFiling === "mfj" ? parseDollars(pgPretaxSpouse) : null;
               const pgPretaxBalance =
-                pgPretaxRaw == null ? null : Math.max(0, pgPretaxRaw);
+                pgPretaxRaw == null && pgPretaxSpouseRaw == null
+                  ? null
+                  : Math.max(0, (pgPretaxRaw ?? 0) + (pgPretaxSpouseRaw ?? 0));
               const pgBalanceLeftAfterRmd =
                 pgPretaxBalance == null ? null : pgPretaxBalance - pg.rmd;
               const takeawayParts: string[] = [];
@@ -6313,7 +6415,7 @@ export function Playground() {
                       <>
                         Cash left after tax
                         <InfoNote
-                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — the total tax less the ACA credit kept and any refundable education credit. It's what's left to spend next year, before any spending.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — the total tax less any refundable education credit. The ACA premium credit is not subtracted here: the annual spending below already holds the net premium (the credit already taken off), so counting it again would overstate what's left. It's what's left to spend next year, before any spending.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
                           ariaLabel="About the cash left after tax"
                         />
                       </>,

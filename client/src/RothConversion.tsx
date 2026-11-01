@@ -8115,6 +8115,7 @@ export function RothConversion({
                     <th scope="col" className="px-2 py-2 text-right font-medium">Social Security</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">RMD</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Other income</th>
+                    <th scope="col" className="px-2 py-2 text-right font-medium">Tax-exempt interest</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Interest yield</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Dividend yield</th>
                     {yfResult.years.some((y) => y.cashSpendCents > 0) && (
@@ -8131,7 +8132,7 @@ export function RothConversion({
                     const cell = (v: number) => (v === 0 ? "—" : fmtCents(v));
                     const selected = yfYear === r.year;
                     const fundedTotal =
-                      r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents +
+                      r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents +
                       r.dividendYieldCents + r.cashSpendCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents +
                       r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
                     const isShort = fundedTotal < r.totalNeedCents;
@@ -8163,6 +8164,7 @@ export function RothConversion({
                         <td className="tnum px-2 py-2 text-right">{cell(r.ssCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.rmdCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.otherIncomeCents)}</td>
+                        <td className="tnum px-2 py-2 text-right">{cell(r.taxExemptCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.interestYieldCents)}</td>
                         <td className="tnum px-2 py-2 text-right">{cell(r.dividendYieldCents)}</td>
                         {yfResult.years.some((y) => y.cashSpendCents > 0) && (
@@ -8183,7 +8185,7 @@ export function RothConversion({
             const r = yfResult.years.find((y) => y.year === yfYear);
             if (!r) return null;
             const sourcesTotal =
-              r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents +
+              r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents +
               r.dividendYieldCents + r.cashSpendCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents +
               r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
             const needRow = (label: string, v: number) => (
@@ -8221,6 +8223,7 @@ export function RothConversion({
                     {needRow("Social Security", r.ssCents)}
                     {needRow("Required minimum distribution", r.rmdCents)}
                     {needRow("Other income", r.otherIncomeCents)}
+                    {needRow("Tax-exempt interest", r.taxExemptCents)}
                     {needRow("Taxable interest yield", r.interestYieldCents)}
                     {needRow("Taxable dividend yield", r.dividendYieldCents)}
                     {r.cashSpendCents > 0 &&
@@ -10729,9 +10732,18 @@ export function RothConversion({
                             "ACA premium credit",
                             `−${fmtCents(firstDrawYear.acaCreditCents)}`,
                           )}
+                        {firstDrawYear.educationRefundableCents > 0 &&
+                          billRow(
+                            "Refundable education credit",
+                            `−${fmtCents(firstDrawYear.educationRefundableCents)}`,
+                          )}
                         {billRow(
                           "Net tax",
-                          fmtCents(firstDrawYear.federalTaxCents - firstDrawYear.acaCreditCents),
+                          fmtCents(
+                            firstDrawYear.federalTaxCents -
+                              firstDrawYear.acaCreditCents -
+                              firstDrawYear.educationRefundableCents,
+                          ),
                           { bold: true, divide: true },
                         )}
                       </div>

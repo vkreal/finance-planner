@@ -3437,15 +3437,15 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-seeded-small-n",
     kind: "tax",
-    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–40 are different market trials than under the old variable-length draw. Every figure moved: wins 34 → 33, win rate 85% → 82.5%, median advantage $130,788.85 → $129,618.70, p10 −$22,890.85 → −$19,638.95, p90 $377,639.32 → $476,377.44, winner median net $161,901.10 → $161,454.23, Do Nothing median net $308,688.28 → $318,003.38. The note's earlier sentence 'The winner takes 34 of 40 paths' is superseded by this re-pin: the winner now takes 33 of 40.)",
+    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–40 are different market trials than under the old variable-length draw. Every figure moved: wins 34 → 33, win rate 85% → 82.5%, median advantage $130,788.85 → $129,618.70, p10 −$22,890.85 → −$19,638.95, p90 $377,639.32 → $476,377.44, winner median net $161,901.10 → $161,454.23, Do Nothing median net $308,688.28 → $318,003.38. The note's earlier sentence 'The winner takes 34 of 40 paths' is superseded by this re-pin: the winner now takes 33 of 40.) (RE-PINNED in the ENGINES BATCH, F2: the basis clamp is removed — a decline no longer destroys basis, so on down paths the torpedo plan's set-100% basis survives the recovery and later sales price no fictitious gain. The winner-side statistics move to median advantage $129,525.61 / p10 −$19,009.57 / p90 $476,905.12 / winner median net $159,964.47 (winner net cost DOWN ~$1,490 — less tax on the recovered paths); the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved. The new figures were verified by re-running the seeded check twice — identical both times — and by the F2 mechanism probe, which shows a $50,000 sale after a −20%/+25% recovery pricing $0 gain where the clamp priced $10,000.)",
     expected: {
       pathsRun: 40,
       wins: 33,
       winRatePct: 82.5,
-      medianAdvantage: 129618.7,
-      p10Advantage: -19638.95,
-      p90Advantage: 476377.44,
-      winnerMedianNetCost: 161454.23,
+      medianAdvantage: 129525.61,
+      p10Advantage: -19009.57,
+      p90Advantage: 476905.12,
+      winnerMedianNetCost: 159964.47,
       doNothingMedianNetCost: 318003.38,
     },
     actual: () => {
@@ -4415,7 +4415,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "flex-shortfall-on-cut-need",
     kind: "tax",
-    note: "Flexible spending, shortfall measured on the CUT need: mcStatsBase with tiny balances (pre-tax $5,000, Taxable $2,000, Roth $1,000, HSA $0), startYear 2024, flex cut 20 / floor 50 on the base. The first retirement year (2026, age 65) follows a −5% year, so its need is cut to $24,000 (0.8 × $30,000); with $0 cash income that year (Social Security starts at 67, no RMD at 65) the settlement applies $7,828 of the $8,000 balances to spending, leaving spendShortfall $16,172 — the unfunded part of the CUT need ($24,000 − $7,828), pinned from the implementation's first correct run. The flex-off twin's same year needs the full $30,000 and shorts $22,172 — strictly larger, by exactly the $6,000 cut (both years apply the same $7,828 to spending; only the need differs). The funding identity (the eleven sources + spendShortfall = the year's needs) holds on the EFFECTIVE need for the cut row. Series note: the −5 is placed on 2025, the last pre-retirement year (series [+3, −5, then +3 repeated]) — the brief's literal [−5, +3, …] puts the −5 on 2024, whose trigger lands on 2025's $0 pre-retirement need, so no retirement year would ever be cut and the fixture could not pin what it exists to pin; every other briefed parameter (balances, dials, startYear) is unchanged.",
+    note: "Flexible spending, shortfall measured on the CUT need: mcStatsBase with tiny balances (pre-tax $5,000, Taxable $2,000, Roth $1,000, HSA $0), startYear 2024, flex cut 20 / floor 50 on the base. The first retirement year (2026, age 65) follows a −5% year, so its need is cut to $24,000 (0.8 × $30,000); with $0 cash income that year (Social Security starts at 67, no RMD at 65) the settlement applies $7,828 of the $8,000 balances to spending, leaving spendShortfall $16,172 — the unfunded part of the CUT need ($24,000 − $7,828), pinned from the implementation's first correct run. The flex-off twin's same year needs the full $30,000 and shorts $22,172 — strictly larger, by exactly the $6,000 cut (both years apply the same $7,828 to spending; only the need differs). The funding identity (the twelve sources + spendShortfall = the year's needs) holds on the EFFECTIVE need for the cut row. Series note: the −5 is placed on 2025, the last pre-retirement year (series [+3, −5, then +3 repeated]) — the brief's literal [−5, +3, …] puts the −5 on 2024, whose trigger lands on 2025's $0 pre-retirement need, so no retirement year would ever be cut and the fixture could not pin what it exists to pin; every other briefed parameter (balances, dials, startYear) is unchanged.",
     expected: {
       cutSpending: 24000,
       cutShortfall: 16172,
@@ -10694,7 +10694,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-playground-paste-roundtrip-full",
     kind: "tax",
-    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with dividends entered as printed — $4,500 total ordinary (line 3b), of which $1,500 qualified (line 3a), so the non-qualified part priced on the ordinary stack is $3,000. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version.",
+    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with dividends entered as printed — $4,500 total ordinary (line 3b), of which $1,500 qualified (line 3a), so the non-qualified part priced on the ordinary stack is $3,000. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version. (ENGINES BATCH F3: the payload now carries the spouse's pre-tax balance too — pretaxBalanceSpouse, null here — so the round-trip input carries it and the identity still holds.)",
     expected: {
       inputsIdentical: 1,
       magi: 123500,
@@ -10731,6 +10731,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         stockBasis: 15000,
         qualifiedDividends: 1500,
         pretaxBalance: 800000,
+        pretaxBalanceSpouse: null,
         spouseSoleBeneficiary: false,
         acaHouseholdSize: 3,
         acaBenchmarkAnnual: 18000,
@@ -12641,13 +12642,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-pg3-playground-statelessness",
     kind: "tax",
-    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 25 keys (kind + version + the 23 dial fields — the 21 original dials plus residenceState and educationStudents, added by the cold-AI audit fix so a replayed paste reprices the same year) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
+    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 26 keys (kind + version + the 24 dial fields — the 21 original dials plus residenceState and educationStudents, added by the cold-AI audit fix so a replayed paste reprices the same year, plus pretaxBalanceSpouse, added by the engines batch F3 split-balance fix) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
     expected: {
       firstTotalTax: 14600,
       secondTotalTax: 14600,
       deterministic: 1,
       inputsUnmutated: 1,
-      payloadKeys: 25,
+      payloadKeys: 26,
       payloadResultKeys: 0,
     },
     actual: () => {
@@ -13210,7 +13211,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-cliff-buffer-with-yields-lands",
     kind: "tax",
-    note: "ACA CLIFF SAFETY BUFFER with taxable yields (hand-derived): the tax-yield-cliff-cap-draw-shrinks-lands construction (household of 2, cliff $84,600, $200,000 spending drawn Pre-tax first, Taxable $500,000 at 100% basis, window closed, 2% dividend + 1% interest yields = $10,000 + $5,000 of mandatory income) with a $2,500 buffer. The yields take the first $15,000 of the buffered room, so the draw shrinks to $84,600 − $2,500 − $15,000 = $67,100 and ACA MAGI lands on the buffered target $82,100, keeping credit $20,000 − 9.96% × $82,100 = $11,822.84. Tax: AGI $82,100, taxable income $49,900, the ordinary $39,900 taxed $2,480 + 12% × $15,100 = $4,292 with the $10,000 of dividends inside the 0% space — so Taxable ends at $500,000 − $132,900 spill − $4,292 tax = $362,808, basis clamped to the same, and Pre-tax ends at $432,900.",
+    note: "ACA CLIFF SAFETY BUFFER with taxable yields (hand-derived): the tax-yield-cliff-cap-draw-shrinks-lands construction (household of 2, cliff $84,600, $200,000 spending drawn Pre-tax first, Taxable $500,000 at 100% basis, window closed, 2% dividend + 1% interest yields = $10,000 + $5,000 of mandatory income) with a $2,500 buffer. The yields take the first $15,000 of the buffered room, so the draw shrinks to $84,600 − $2,500 − $15,000 = $67,100 and ACA MAGI lands on the buffered target $82,100, keeping credit $20,000 − 9.96% × $82,100 = $11,822.84. Tax: AGI $82,100, taxable income $49,900, the ordinary $39,900 taxed $2,480 + 12% × $15,100 = $4,292 with the $10,000 of dividends inside the 0% space — so Taxable ends at $500,000 − $132,900 spill − $4,292 tax = $362,808, and Pre-tax ends at $432,900. The basis ends at $377,808 — the $500,000 starting basis plus the $15,000 of reinvested yield basis, less the $137,192 of sales at 100% basis ($132,900 spill + $4,292 tax). (ENGINES BATCH F2 re-pin: the basis is no longer clamped to the settled balance, so it stands $15,000 above it — the reinvested yield's basis, which the old clamp discarded.)",
     expected: {
       dividendIncome: 10000,
       interestIncome: 5000,
@@ -13220,7 +13221,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       federalTax: 4292,
       pretaxEnd: 432900,
       taxableEnd: 362808,
-      basisEnd: 362808,
+      basisEnd: 377808,
     },
     actual: () => {
       const res = simulateRothPlan(
@@ -14996,7 +14997,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-dividend-only-year",
     kind: "tax",
-    note: "TAXABLE YIELDS dividend-only year (TAXABLE YIELDS build, fixture b; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, dividend yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's dividends are 5% × $1,000,000 = $50,000, priced on the gains stack: AGI $50,000, taxable income $50,000 − $32,200 standard deduction = $17,800, all of it gains sitting under ordinary taxable income of $0, so the whole $17,800 prices at the 0% gains rate — federal tax $0 — and MAGI is $50,000. The balance grows at the full 5% return to $1,050,000 (the yield is a component of the return, not growth on top); the reinvested $50,000 of basis is clamped to the pre-growth balance, so the basis ledger ends at $1,000,000. The 0%-zone interaction, priced directly: $90,000 of other ordinary income plus $50,000 of qualified dividends gives AGI $140,000, taxable income $107,800 — ordinary taxable income $57,800 (tax $2,480 + 12% × $33,000 = $6,440), gains filling the rest: the 0% space above ordinary income is $98,900 − $57,800 = $41,100 at 0% and the remaining $8,900 at 15% = $1,335, for $7,775 of federal tax. Dividends priced on the ordinary stack instead would tax the full $50,000 at bracket rates and fail every figure.",
+    note: "TAXABLE YIELDS dividend-only year (TAXABLE YIELDS build, fixture b; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, dividend yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's dividends are 5% × $1,000,000 = $50,000, priced on the gains stack: AGI $50,000, taxable income $50,000 − $32,200 standard deduction = $17,800, all of it gains sitting under ordinary taxable income of $0, so the whole $17,800 prices at the 0% gains rate — federal tax $0 — and MAGI is $50,000. The balance grows at the full 5% return to $1,050,000 (the yield is a component of the return, not growth on top); the reinvested $50,000 of basis adds to the ledger dollar-for-dollar, so the basis ends at $1,000,000 + $50,000 = $1,050,000. (ENGINES BATCH F2 re-pin: the old clamp held the basis at the $1,000,000 pre-growth balance; the basis is dollars paid, so the reinvested yield's basis stands.) The 0%-zone interaction, priced directly: $90,000 of other ordinary income plus $50,000 of qualified dividends gives AGI $140,000, taxable income $107,800 — ordinary taxable income $57,800 (tax $2,480 + 12% × $33,000 = $6,440), gains filling the rest: the 0% space above ordinary income is $98,900 − $57,800 = $41,100 at 0% and the remaining $8,900 at 15% = $1,335, for $7,775 of federal tax. Dividends priced on the ordinary stack instead would tax the full $50,000 at bracket rates and fail every figure.",
     expected: {
       dividendIncome: 50000,
       interestIncome: 0,
@@ -15005,7 +15006,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       federalTax: 0,
       gainsAt0: 17800,
       taxableEnd: 1050000,
-      basisEnd: 1000000,
+      basisEnd: 1050000,
       stackAgi: 140000,
       stackOrdinaryTax: 6440,
       stackGainsAt0: 41100,
@@ -15051,7 +15052,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-interest-only-year",
     kind: "tax",
-    note: "TAXABLE YIELDS interest-only year (TAXABLE YIELDS build, fixture c; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, interest yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's interest is 5% × $1,000,000 = $50,000, priced on the ORDINARY stack: AGI $50,000, taxable income $17,800 — all of it ordinary taxable income (gains in taxable income $0) — taxed at the 10% bracket rate for $1,780 of federal tax. The tax is paid from Taxable (100% basis, no gain), leaving $998,220, which grows at the full 5% to $1,048,131; the basis ledger ends at $998,220 (the $50,000 of reinvested interest basis clamps to the settled balance). Interest priced on the gains stack instead would sit in the 0% zone and tax $0. NIIT, priced directly: $300,000 of interest alone (AGI $300,000, over the $250,000 MFJ threshold) prices NIIT 3.8% × min($300,000, $300,000 − $250,000) = $1,900 — interest IS in the §1411(c)(1)(A)(i) base (before the base fix this priced $0) — and $300,000 of qualified dividends prices the same $1,900, with $98,900 of the dividends at 0% and $168,900 at 15% ($25,335), for $27,235 of federal tax.",
+    note: "TAXABLE YIELDS interest-only year (TAXABLE YIELDS build, fixture c; hand-derived from the 2026 law row): Taxable $1,000,000 at 100% basis, interest yield 5%, expected return 5%, no other income, no spending, Do Nothing. The year's interest is 5% × $1,000,000 = $50,000, priced on the ORDINARY stack: AGI $50,000, taxable income $17,800 — all of it ordinary taxable income (gains in taxable income $0) — taxed at the 10% bracket rate for $1,780 of federal tax. The tax is paid from Taxable (100% basis, no gain), leaving $998,220, which grows at the full 5% to $1,048,131; the basis ledger ends at $1,048,220 — the $1,000,000 starting basis plus the $50,000 of reinvested interest basis, less the $1,780 tax sale at 100% basis — $89 above the settled balance, the forgone growth on the sold amount. (ENGINES BATCH F2 re-pin: the old clamp held the basis at $998,220, the settled balance; the basis is dollars paid, so it stands on its own.) Interest priced on the gains stack instead would sit in the 0% zone and tax $0. NIIT, priced directly: $300,000 of interest alone (AGI $300,000, over the $250,000 MFJ threshold) prices NIIT 3.8% × min($300,000, $300,000 − $250,000) = $1,900 — interest IS in the §1411(c)(1)(A)(i) base (before the base fix this priced $0) — and $300,000 of qualified dividends prices the same $1,900, with $98,900 of the dividends at 0% and $168,900 at 15% ($25,335), for $27,235 of federal tax.",
     expected: {
       interestIncome: 50000,
       dividendIncome: 0,
@@ -15060,7 +15061,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       ordinaryTi: 17800,
       gainsInTi: 0,
       taxableEnd: 1048131,
-      basisEnd: 998220,
+      basisEnd: 1048220,
       niitInterestOnly: 1900,
       niitDividends: 1900,
       divGainsAt15: 168900,
@@ -15324,7 +15325,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-cliff-cap-draw-shrinks-lands",
     kind: "tax",
-    note: "TAXABLE YIELDS in a cliff-capped year (TAXABLE YIELDS build, fixture d; hand-derived): the tax-cliff-cap-draw-capped construction (one ACA year, household of 2, cliff $84,600, $200,000 spending drawn Pre-tax first, Taxable $500,000 at 100% basis, conversion window closed) plus a 2% dividend yield and a 1% interest yield on the $500,000 taxable balance — $10,000 of dividends and $5,000 of interest, mandatory income that takes the first $15,000 of cliff room. The capped pre-tax draw shrinks by exactly that room, from the no-yield $84,600 to $69,600, and ACA MAGI still lands exactly on the cliff at $84,600, keeping the same credit: $20,000 − 9.96% × $84,600 = $11,573.84. The year's tax: AGI $84,600, taxable income $52,400 — ordinary taxable income $42,400 (the $5,000 interest plus the $69,600 draw, less the deduction stack) taxed $2,480 + 12% × $17,600 = $4,592, and the $10,000 of dividends inside the 0% gains space at $0. Without the yields the same year taxes $5,792 (the whole $84,600 draw ordinary: $2,480 + 12% × $27,600). Pre-tax ends at $430,400; Taxable ends at $365,008 ($500,000 − $130,400 of spill spending − $4,592 of tax, all at 100% basis; the $15,000 of reinvested yield basis clamps to that balance).",
+    note: "TAXABLE YIELDS in a cliff-capped year (TAXABLE YIELDS build, fixture d; hand-derived): the tax-cliff-cap-draw-capped construction (one ACA year, household of 2, cliff $84,600, $200,000 spending drawn Pre-tax first, Taxable $500,000 at 100% basis, conversion window closed) plus a 2% dividend yield and a 1% interest yield on the $500,000 taxable balance — $10,000 of dividends and $5,000 of interest, mandatory income that takes the first $15,000 of cliff room. The capped pre-tax draw shrinks by exactly that room, from the no-yield $84,600 to $69,600, and ACA MAGI still lands exactly on the cliff at $84,600, keeping the same credit: $20,000 − 9.96% × $84,600 = $11,573.84. The year's tax: AGI $84,600, taxable income $52,400 — ordinary taxable income $42,400 (the $5,000 interest plus the $69,600 draw, less the deduction stack) taxed $2,480 + 12% × $17,600 = $4,592, and the $10,000 of dividends inside the 0% gains space at $0. Without the yields the same year taxes $5,792 (the whole $84,600 draw ordinary: $2,480 + 12% × $27,600). Pre-tax ends at $430,400; Taxable ends at $365,008 ($500,000 − $130,400 of spill spending − $4,592 of tax, all at 100% basis); the basis ends at $380,008 — the $500,000 starting basis plus the $15,000 of reinvested yield basis, less the $134,992 of sales at 100% basis. (ENGINES BATCH F2 re-pin: the old clamp held the basis at the $365,008 settled balance; the basis is dollars paid, so the reinvested yield's basis stands.)",
     expected: {
       dividendIncome: 10000,
       interestIncome: 5000,
@@ -15334,7 +15335,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       federalTax: 4592,
       pretaxEnd: 430400,
       taxableEnd: 365008,
-      basisEnd: 365008,
+      basisEnd: 380008,
       twinDraw: 84600,
       twinFederalTax: 5792,
     },
@@ -15367,7 +15368,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-alone-breaches-cliff",
     kind: "tax",
-    note: "TAXABLE YIELDS alone breach the cliff (TAXABLE YIELDS build, fixture e; hand-derived): the same capped construction with a 20% dividend yield — $100,000 of dividends on the $500,000 balance, itself past the $84,600 cliff before any draw is considered. The yield is mandatory income and is never shrunk to chase the line: the pre-tax spending room is $0, the whole $200,000 need spills to Taxable at 100% basis (no gains), ACA MAGI is the $100,000 of dividends, the year is honestly over the cliff, and the credit is $0 — the 2046 mandatory-RMD precedent (tax-m1-cliff-cap-mandatory-income-unmoved) applied to yield income. The dividends themselves price at $0 of federal tax (taxable income $67,800, all inside the 0% gains space). Taxable ends at $300,000 with its basis clamped to the same $300,000; Pre-tax is untouched at $500,000.",
+    note: "TAXABLE YIELDS alone breach the cliff (TAXABLE YIELDS build, fixture e; hand-derived): the same capped construction with a 20% dividend yield — $100,000 of dividends on the $500,000 balance, itself past the $84,600 cliff before any draw is considered. The yield is mandatory income and is never shrunk to chase the line: the pre-tax spending room is $0, the whole $200,000 need spills to Taxable at 100% basis (no gains), ACA MAGI is the $100,000 of dividends, the year is honestly over the cliff, and the credit is $0 — the 2046 mandatory-RMD precedent (tax-m1-cliff-cap-mandatory-income-unmoved) applied to yield income. The dividends themselves price at $0 of federal tax (taxable income $67,800, all inside the 0% gains space). Taxable ends at $300,000 and its basis ends at $400,000 — the $500,000 starting basis plus the $100,000 of reinvested dividend basis, less the $200,000 spill sale at 100% basis — $100,000 above the settled balance, the reinvested yield's basis standing where the old clamp discarded it. (ENGINES BATCH F2 re-pin.) Pre-tax is untouched at $500,000.",
     expected: {
       dividendIncome: 100000,
       extraDraw: 0,
@@ -15376,7 +15377,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       credit: 0,
       federalTax: 0,
       taxableEnd: 300000,
-      basisEnd: 300000,
+      basisEnd: 400000,
       pretaxEnd: 500000,
     },
     actual: () => {
@@ -15498,7 +15499,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-exceeds-return-clamp-at-balance",
     kind: "tax",
-    note: "TAXABLE YIELDS exceeding the total return — the CLAMP-AT-BALANCE treatment (TAXABLE YIELDS build, fixture h; hand-derived): Taxable $100,000 at 50% basis, a 20% dividend yield plus a 10% interest yield (30% of yield) against a 5% expected return, no spending, Do Nothing, three years. The yields price in full as income every year (2026: $20,000 + $10,000 on $100,000; 2027: $21,000 + $10,500 on $105,000; 2028: $22,050 + $11,025 on $110,250 — under the $32,200 standard deduction in 2026–2027 and inside the 0% gains space in 2028, so federal tax is $0 throughout), and the balance grows at the 5% total return ONLY ($105,000 / $110,250 / $115,762.50) — implied price appreciation is negative and that is fine, because the balance's growth was never decomposed. The reinvested yield basis is added dollar-for-dollar ($50,000 → $80,000 in 2026) until it would pass the balance: in 2027 the ledger would reach $80,000 + $31,500 = $111,500 against a $105,000 settled balance, so it CLAMPS AT THE BALANCE ($105,000; $110,250 in 2028) — the ledger's standing 0 ≤ basis ≤ balance invariant — rather than carrying a basis above the balance that would price modeled capital losses on later draws. The excess yield's basis is capped, never negative-gain.",
+    note: "TAXABLE YIELDS exceeding the total return (TAXABLE YIELDS build, fixture h; hand-derived): Taxable $100,000 at 50% basis, a 20% dividend yield plus a 10% interest yield (30% of yield) against a 5% expected return, no spending, Do Nothing, three years. The yields price in full as income every year (2026: $20,000 + $10,000 on $100,000; 2027: $21,000 + $10,500 on $105,000; 2028: $22,050 + $11,025 on $110,250 — under the $32,200 standard deduction in 2026–2027 and inside the 0% gains space in 2028, so federal tax is $0 throughout), and the balance grows at the 5% total return ONLY ($105,000 / $110,250 / $115,762.50) — implied price appreciation is negative and that is fine, because the balance's growth was never decomposed. The reinvested yield basis is added dollar-for-dollar ($50,000 → $80,000 in 2026; $80,000 + $31,500 = $111,500 in 2027; $111,500 + $33,075 = $144,575 in 2028), and the basis is allowed to stand above the balance — basis is dollars paid, and a yield that exceeds the total return means the price fell, so the balance can sit below the basis it was bought for. (ENGINES BATCH F2 re-pin: the old clamp-at-balance treatment held the ledger at the settled balance — $105,000 in 2027, $110,250 in 2028 — discarding the reinvested yield's basis above the balance; the 0 ≤ basis ≤ balance invariant is retired, replaced by the floor at $0.)",
     expected: {
       y1Div: 20000,
       y1Int: 10000,
@@ -15506,11 +15507,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       y1TaxableEnd: 105000,
       y2Div: 21000,
       y2Int: 10500,
-      y2Basis: 105000,
+      y2Basis: 111500,
       y2TaxableEnd: 110250,
       y3Div: 22050,
       y3Int: 11025,
-      y3Basis: 110250,
+      y3Basis: 144575,
       y3TaxableEnd: 115762.5,
       lifetimeFederalTax: 0,
     },
@@ -15702,15 +15703,15 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-blank-basis-legacy-basis-clamp",
     kind: "tax",
-    note: "TAXABLE YIELDS on a BLANK basis — the legacy display counter clamps at the balance (YIELD FIX build; the Review Pass 3 corner): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) with the basis % left BLANK (taxableBasisPct null, so the record layer maps it to 100 and the engine takes the legacy path) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return. On the legacy path the basis ledger is a display-only counter (draws price at the flat gain %, which is 0 here), and before the fix it added each year's reinvested yield with no balance clamp: in 2029 it printed an endingTaxableBasis of $2,997,898.41 against an endingTaxable balance of $2,732,872.01 — a basis above the balance it describes. The counter now clamps to the year's settled taxable balance exactly as the drift path's settled basis does, so 2029's basis ends at $2,584,276.14, inside the balance in every one of the run's 41 years. The priced figures for the shape DID NOT MOVE — 2029 federal tax is still $22,412.22, the ending taxable balance still $2,732,872.01, and the year's dividend and interest income still $110,564.82 each; the basis figure pinned here is a NEW pin for a previously unpinned display counter, not a re-pin of any priced figure.",
+    note: "TAXABLE YIELDS on a BLANK basis — the legacy display counter (YIELD FIX build; the Review Pass 3 corner): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) with the basis % left BLANK (taxableBasisPct null, so the record layer maps it to 100 and the engine takes the legacy path) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return. On the legacy path the basis ledger is a display-only counter (draws price at the flat gain %, which is 0 here), and it adds each year's reinvested yield with no balance clamp: the counter starts at the $2,400,000 starting balance and each year adds the dividend + interest and subtracts the taxable sales at 100% basis, so 2033 ends at $2,839,815.28 — above the $2,589,081.18 settled balance, the reinvested yield's basis standing where a clamp would have discarded it. The priced figures for the shape DID NOT MOVE — 2033 federal tax is still $19,961.86, the ending taxable balance still $2,589,081.18, and the year's dividend and interest income still $104,730.62 each. (ENGINES BATCH F2 re-pin: the old clamp held the counter at the settled balance — $2,448,303.72 in 2033 — and the case asserted basis-within-balance in every year; the clamp is removed, so the invariant is now the floor at $0 — the counter is non-negative in every one of the run's 41 years, verified by recomputing it from first principles: starting balance + each year's yield − each year's sales, matching the engine to the cent in 2030–2033.)",
     expected: {
       basisBlank: 1,
       y2033FederalTax: 19961.86,
       y2033TaxableEnd: 2589081.18,
       y2033Dividend: 104730.62,
       y2033Interest: 104730.62,
-      y2033Basis: 2448303.72,
-      allYearsBasisWithinBalance: 1,
+      y2033Basis: 2839815.28,
+      allYearsBasisNonNegative: 1,
     },
     actual: () => {
       const saved = {
@@ -15733,7 +15734,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           y2033Dividend: null,
           y2033Interest: null,
           y2033Basis: null,
-          allYearsBasisWithinBalance: 0,
+          allYearsBasisNonNegative: 0,
         };
       }
       const res = simulateRothPlan(inputs, FILL_ACA_ONLY);
@@ -15745,8 +15746,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         y2033Dividend: y?.detail.dividendIncome ?? null,
         y2033Interest: y?.detail.interestIncome ?? null,
         y2033Basis: y?.detail.taxableBasisDollars ?? null,
-        allYearsBasisWithinBalance: res.years.every(
-          (r) => r.detail.taxableBasisDollars <= r.taxableEnd + 0.005,
+        allYearsBasisNonNegative: res.years.every(
+          (r) => r.detail.taxableBasisDollars >= -0.005,
         )
           ? 1
           : 0,
@@ -15848,7 +15849,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       if (!built) return { years: null, maxDiffCents: null, y2032Need: null, y2032Spending: null, y2032Federal: null, y2032PretaxDraw: null, y2032TaxableSpending: null, y2032TaxableTax: null, y2032Magi: null, y2032Credit: null };
       const rows = buildRothFunding(built.inputs, built.strategy);
       const src = (r: (typeof rows)[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
       const y = rows.find((r) => r.year === 2028) ?? null;
       return {
         years: rows.length,
@@ -15867,14 +15868,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-funding-identity-cliff-working-yields-2032",
     kind: "tax",
-    note: "YEAR FUNDING cash identity, cliff shape with the working yield calibration (YEAR FUNDING build, fixture b): the same shape carrying interest 0.6307267152401136% / dividends 0.0788408394050142% of the opening Taxable balance. The identity foots to the cent in every year (maxDiffCents 0), and 2028 reproduces the brief's reference year exactly: needs $169,937.03 total; interest $17,892.90 + dividends $2,236.61 applied as sources; pre-tax draw $93,123.38 (the engine's capped draw); realized draw gains $41,467.11; MAGI exactly $154,720.00; credit $18,920.45. The reinvested yield cash offsets the year's taxable sales spending-first, so Taxable sold for spending is the gross $64,308.70 spill sale less the $20,129.51 of yield applied = $44,179.19, while Taxable sold for the tax bill stays the settlement's $12,504.95. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    note: "YEAR FUNDING cash identity, cliff shape with the working yield calibration (YEAR FUNDING build, fixture b): the same shape carrying interest 0.6307267152401136% / dividends 0.0788408394050142% of the opening Taxable balance. The identity foots to the cent in every year (maxDiffCents 0), and 2028 reproduces the brief's reference year exactly: needs $169,937.03 total; pre-tax draw $93,123.38 (the engine's capped draw); realized draw gains $41,467.11; MAGI exactly $154,720.00; credit $18,920.45. The reinvested yield is NOT cash funding — it adds to the taxable basis and stays in the balance — so the interest and dividend funding rows are $0, and Taxable sold for spending is the gross $64,308.70 spill sale (not the gross less the $20,129.51 of yield applied, $44,179.19, as before), while Taxable sold for the tax bill stays the settlement's $12,504.95. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (RE-PINNED in the ENGINES BATCH, F5: the funding readout no longer presents reinvested yield as cash funding or offsets the draws by it — the draws report the settled amounts exactly. 2032: interest $16,928.30 → $0, dividends $2,116.04 → $0, Taxable sold for spending $28,002.98 → $47,047.32, the gross sale; the need, pre-tax draw, tax sale, draw gains, MAGI, and credit are unmoved, and the identity still foots to the cent.)",
     expected: {
       maxDiffCents: 0,
       y2032Need: 16356872,
-      y2032Interest: 1692830,
-      y2032Dividend: 211604,
+      y2032Interest: 0,
+      y2032Dividend: 0,
       y2032PretaxDraw: 10295268,
-      y2032TaxableSpending: 2800298,
+      y2032TaxableSpending: 4704732,
       y2032TaxableTax: 1356872,
       y2032DrawGains: 3272298,
       y2032Magi: 15472000,
@@ -15899,7 +15900,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       if (!built) return { maxDiffCents: null, y2032Need: null, y2032Interest: null, y2032Dividend: null, y2032PretaxDraw: null, y2032TaxableSpending: null, y2032TaxableTax: null, y2032DrawGains: null, y2032Magi: null, y2032Credit: null };
       const rows = buildRothFunding(built.inputs, built.strategy);
       const src = (r: (typeof rows)[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
       const y = rows.find((r) => r.year === 2032) ?? null;
       return {
         maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
@@ -15941,7 +15942,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       if (!built) return { maxDiffCents: null };
       const rows = buildRothFunding(built.inputs, built.strategy);
       const src = (r: (typeof rows)[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
       return {
         maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
       };
@@ -16041,7 +16042,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       if (!built) return { maxDiffCents: null };
       const rows = buildRothFunding(built.inputs, built.strategy);
       const src = (r: (typeof rows)[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
       return {
         maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
       };
@@ -16067,7 +16068,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       if (!built) return { maxDiffCents: null, anyHarvestYears: null, y2026Harvest: null };
       const rows = buildRothFunding(built.inputs, built.strategy);
       const src = (r: (typeof rows)[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.rothDrawCents + r.salarySurplusCents;
       const y2026 = rows.find((r) => r.year === 2026) ?? null;
       return {
         maxDiffCents: rows.reduce((m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)), 0),
@@ -16163,7 +16164,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-x50-funding-rows",
     kind: "tax",
-    note: "SPEND-FROM-CASH X=50 funding rows (SPEND-FROM-CASH build, fixture 3; note and assertions reconciled by the fixture-honesty repair 2026-10-23 — the previous note derived a $78,716.04 annual share that does not foot and quoted a plan net, 72545094 cents, that matched nothing pinned, while the assertions pinned only nulls for years the funding rows do not contain): the era shape at spendFromCashPct 50 with the $200,000 sleeve, priced from start year 2034 — the built scenario's first funding row, and the first year its rows expose a spending need. Spending is $150,000/yr, so the cash share is 50% of $150,000 = a $75,000 nominal annual share (7500000 cents): the funding rows' cashSpendCents is 7500000 in 2034 and again in 2035; the sleeve then holds 20000000 − 2 × 7500000 = 5000000 cents, which is 2036's partial share, and 2037 is 0 (the sleeve never refills). Those per-year amounts are pinned below exactly as the funding rows compute them. cashSpendCents stands as the ELEVENTH funding source and the eleven sources foot each year's totalNeedCents exactly (maxDiffCents 0 across every funding row) — that footing invariant is the case's other assertion. The plan nets 38685357 cents (an engine-derived regression pin: the verified implementation's lifetime total for this shape, pinned so drift fails loudly). (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH X=50 funding rows (SPEND-FROM-CASH build, fixture 3; note and assertions reconciled by the fixture-honesty repair 2026-10-23 — the previous note derived a $78,716.04 annual share that does not foot and quoted a plan net, 72545094 cents, that matched nothing pinned, while the assertions pinned only nulls for years the funding rows do not contain): the era shape at spendFromCashPct 50 with the $200,000 sleeve, priced from start year 2034 — the built scenario's first funding row, and the first year its rows expose a spending need. Spending is $150,000/yr, so the cash share is 50% of $150,000 = a $75,000 nominal annual share (7500000 cents): the funding rows' cashSpendCents is 7500000 in 2034 and again in 2035; the sleeve then holds 20000000 − 2 × 7500000 = 5000000 cents, which is 2036's partial share, and 2037 is 0 (the sleeve never refills). Those per-year amounts are pinned below exactly as the funding rows compute them. cashSpendCents stands as one of the twelve funding sources and the twelve sources foot each year's totalNeedCents exactly (maxDiffCents 0 across every funding row) — that footing invariant is the case's other assertion. The plan nets 38685357 cents (an engine-derived regression pin: the verified implementation's lifetime total for this shape, pinned so drift fails loudly). (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
     expected: {
       cash2034: 7500000,
       cash2035: 7500000,
@@ -16199,7 +16200,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       const cash = (year: number) =>
         rows.find((r) => r.year === year)?.cashSpendCents ?? null;
       const src = (r: (typeof rows)[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents + r.salarySurplusCents;
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents + r.salarySurplusCents;
       const cmp = runRothCompare(saved, [
         {
           name: "Era X50",
@@ -16880,7 +16881,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-shortfall-funding-identity",
     kind: "tax",
-    note: "SPEND SHORTFALL funding identity (FIX 3): fixture (a)'s shape through buildRothFunding. By hand: the eleven source fields carry only what was actually applied — the $10,000 Taxable sale for spending = 1,000,000¢ — and spendShortfallCents carries the unfunded $40,000 = 4,000,000¢ as itself, never reconciled into a source field; sources + shortfall = 5,000,000¢ = totalNeedCents = spendingCents (the year's only need). Fixture (c)'s 2028 funding row pins the same figure for the late-insolvency year: spendShortfallCents 2,000,000¢ (the $20,000 residual).",
+    note: "SPEND SHORTFALL funding identity (FIX 3): fixture (a)'s shape through buildRothFunding. By hand: the twelve source fields carry only what was actually applied — the $10,000 Taxable sale for spending = 1,000,000¢ — and spendShortfallCents carries the unfunded $40,000 = 4,000,000¢ as itself, never reconciled into a source field; sources + shortfall = 5,000,000¢ = totalNeedCents = spendingCents (the year's only need). Fixture (c)'s 2028 funding row pins the same figure for the late-insolvency year: spendShortfallCents 2,000,000¢ (the $20,000 residual).",
     expected: {
       aSourcesCents: 1000000,
       aSpendShortfallCents: 4000000,
@@ -16891,7 +16892,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
     actual: () => {
       const src = (r: ReturnType<typeof buildRothFunding>[number]) =>
-        r.ssCents + r.rmdCents + r.otherIncomeCents + r.interestYieldCents +
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents +
         r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents +
         r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents +
         r.salarySurplusCents;
@@ -24202,6 +24203,369 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         endingTo95: to95.endingAfterTaxWealth,
         yearsTo110: to110.years.length,
         endingTo110: to110.endingAfterTaxWealth,
+      };
+    },
+  },
+  {
+    id: "tax-engines-basis-survives-decline",
+    kind: "tax",
+    note: "ENGINES BATCH F2 (hand-derived): $100,000 taxable at 100% basis, no pre-tax, $50,000/yr spending from age 57, returns −20% / +25% / +5%. Basis is dollars paid, not a share of the balance: the −20% year shrinks the balance to $80,000 but the basis stands at $100,000; the +25% recovery restores the balance to $100,000 with the basis still $100,000; the 2028 $50,000 spending sale — drawn before growth, so ($100,000 − $50,000) × 1.05 = $52,500 left — realizes $0 gain. Before the fix the basis clamped to the balance on the decline ($80,000), so the same sale realized a $10,000 fictitious gain. The tiered path (two 100%-basis tiers, 60/40) prices identically: basis $100,000 after the decline, $0 draw gains in 2028.",
+    expected: {
+      y2026TaxableEnd: 80000,
+      y2026Basis: 100000,
+      y2027TaxableEnd: 100000,
+      y2027Basis: 100000,
+      y2028DrawGains: 0,
+      y2028TaxableEnd: 52500,
+      tieredY2026Basis: 100000,
+      tieredY2028DrawGains: 0,
+    },
+    actual: () => {
+      const mk = (tiers: boolean) =>
+        basePlan({
+          birthYearPrimary: 1971,
+          birthYearSpouse: 1982,
+          endAgePrimary: 95,
+          retirementAge: 57,
+          pretaxStart: 0,
+          taxableStart: 100000,
+          taxableBasisPct: 100,
+          annualSpending: 50000,
+          expectedReturnPct: 5,
+          ...(tiers
+            ? {
+                taxableTiers: [
+                  { sharePct: 60, basisPct: 100 },
+                  { sharePct: 40, basisPct: 100 },
+                ],
+              }
+            : {}),
+        });
+      const run = simulateRothPlan(mk(false), DO_NOTHING, [-20, 25, 5]);
+      const tiered = simulateRothPlan(mk(true), DO_NOTHING, [-20, 25, 5]);
+      const y26 = run.years[0]!;
+      const y27 = run.years[1]!;
+      const y28 = run.years[2]!;
+      return {
+        y2026TaxableEnd: y26.taxableEnd,
+        y2026Basis: y26.detail.taxableBasisDollars,
+        y2027TaxableEnd: y27.taxableEnd,
+        y2027Basis: y27.detail.taxableBasisDollars,
+        y2028DrawGains: y28.detail.drawGains,
+        y2028TaxableEnd: y28.taxableEnd,
+        tieredY2026Basis: tiered.years[0]!.detail.taxableBasisDollars,
+        tieredY2028DrawGains: tiered.years[2]!.detail.drawGains,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-split-rmd",
+    kind: "tax",
+    note: "ENGINES BATCH F3 (hand-derived): Playground 2046, MFJ, ages 75/64, spouse sole beneficiary. Primary balance $1,000,000, spouse balance $200,000. The primary's RMD divides by the Joint Life divisor at 75 (25.3 — the spouse is the sole beneficiary and more than 10 years younger): $1,000,000 / 25.3 = $39,525.69. The spouse is 64 — under the RMD age — so the spouse's RMD is $0. Total $39,525.69. Pricing the combined $1,200,000 on the primary's clock overstated it at $47,430.83 ($1,200,000 / 25.3). Single-filing control: the same split balances with filing single price the primary RMD on the primary balance alone under the Uniform table (divisor 24.6 at 75): $1,000,000 / 24.6 = $40,650.41, spouse RMD $0 — the spouse balance is ignored when the filing is not MFJ.",
+    expected: {
+      rmd: 39525.69,
+      rmdPrimary: 39525.69,
+      rmdSpouse: 0,
+      combinedRmd: 47430.83,
+      singleRmd: 40650.41,
+      singleRmdSpouse: 0,
+    },
+    actual: () => {
+      const inp = {
+        taxYear: 2046,
+        filingStatus: "mfj" as const,
+        agePrimary: 75,
+        ageSpouse: 64,
+        onMedicarePrimary: true,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        residenceState: "WA" as const,
+        itemizedMortgageInterest: 0,
+        itemizedSaltPaid: 0,
+        itemizedCharitable: 0,
+        itemizedOther: 0,
+        educationStudents: null,
+        annualSpending: null,
+      };
+      const split = pricePlaygroundYear({
+        ...inp,
+        pretaxBalance: 1000000,
+        pretaxBalanceSpouse: 200000,
+      });
+      const combined = pricePlaygroundYear({ ...inp, pretaxBalance: 1200000 });
+      // Single-filing control: the same split balances, but the
+      // filing is single — the spouse balance is ignored (no
+      // spouse RMD), and the primary RMD is on the primary
+      // balance alone under the Uniform table (divisor 24.6 at
+      // 75, not the Joint 25.3 the MFJ case prices):
+      // $1,000,000 / 24.6 = $40,650.41. The adapter relies on
+      // this gate: it nulls the spouse balance for non-MFJ
+      // filings, so a balance typed under MFJ never leaks
+      // into a single year's pricing when the filing changes.
+      const single = pricePlaygroundYear({
+        ...inp,
+        filingStatus: "single",
+        ageSpouse: null,
+        pretaxBalance: 1000000,
+        pretaxBalanceSpouse: 200000,
+        spouseSoleBeneficiary: false,
+      });
+      return {
+        rmd: split.rmd,
+        rmdPrimary: split.rmdPrimary,
+        rmdSpouse: split.rmdSpouse,
+        combinedRmd: combined.rmd,
+        singleRmd: single.rmd,
+        singleRmdSpouse: single.rmdSpouse,
+      };
+    },
+  },
+  {
+    id: "tax-engines-loader-year-reprices",
+    kind: "tax",
+    note: "ENGINES BATCH F1 (hand-derived property): the saved-plan-year loader's inputs must reprice the march year. The 2028 cliff-fill year (spending $180,000, pre-tax $1,500,000, taxable $2,000,000 at 100% basis, household 5, benchmark $36,000) prices a $149,720 pre-tax money out — the conversion plus the extra pre-tax draw — and taxable sales for spending and tax. Feeding exactly those figures into the Playground pricer — conversion + extraPreTaxDraw as the conversion dial, the funding's spending + tax sales as the stock sale with basis = proceeds − drawGains, the split prior balances, and the year's income pieces — reproduces the march year's federal tax to the cent (taxDiff 0). Before the fix the loader carried only the conversion and cleared the sales, so the loaded year priced $0 tax on a year the march priced at the cliff.",
+    expected: { taxDiff: 0 },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2028,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        endAgePrimary: 95,
+        retirementAge: 57,
+        pretaxStart: 1500000,
+        taxableStart: 2000000,
+        taxableBasisPct: 100,
+        annualSpending: 180000,
+        expectedReturnPct: 5,
+        acaHouseholdSize: 5,
+        acaHouseholdSchedule: [{ fromYear: 2036, householdSize: 2 }],
+        acaBenchmarkFamily: 36000,
+        acaBenchmarkCouple: 24000,
+        acaBenchmarkSingle: 16800,
+        drawOrder: ["pretax", "taxable", "roth"],
+      });
+      const cliffFill: RothStrategy = {
+        id: "compare",
+        name: "fill",
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: 5000,
+        },
+      };
+      const y = simulateRothPlan(plan, cliffFill).years[0]!;
+      const taxableSold =
+        y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+      const pg = pricePlaygroundYear({
+        taxYear: y.year,
+        filingStatus: y.filingStatus,
+        agePrimary: y.agePrimary,
+        ageSpouse: y.ageSpouse,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: y.detail.interestIncome,
+        ordinaryDividends: y.detail.dividendIncome,
+        otherOrdinary: y.detail.otherOrdinary,
+        taxExemptInterest: y.detail.taxExemptInterest,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: y.conversion + y.detail.extraPreTaxDraw,
+        stockSold: taxableSold,
+        stockBasis: taxableSold - y.detail.drawGains,
+        qualifiedDividends: y.detail.dividendIncome,
+        pretaxBalance: y.detail.priorPretaxPrimary,
+        pretaxBalanceSpouse: y.detail.priorPretaxSpouse,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: y.detail.aca.householdSize,
+        acaBenchmarkAnnual: y.detail.aca.benchmark,
+        stateRatePct: 0,
+        residenceState: "WA",
+        itemizedMortgageInterest: 0,
+        itemizedSaltPaid: 0,
+        itemizedCharitable: 0,
+        itemizedOther: 0,
+        educationStudents: null,
+        annualSpending: 180000,
+      });
+      return { taxDiff: Math.round((pg.federalTax - y.federalTax) * 100) / 100 };
+    },
+  },
+  {
+    id: "tax-engines-compare-education-refundable",
+    kind: "tax",
+    note: "ENGINES BATCH F4 (hand-derived): 3 AOTC-eligible students with $4,000 of qualified expenses each in 2026. Each student's AOTC is $2,500 (100% of the first $2,000 + 25% of the next $2,000), so $7,500 total; 40% is refundable ($1,000 per student = $3,000). The 2026 federal tax is $0, so no nonrefundable portion applies and the full $3,000 is refundable. The compare year's educationRefundableCents carries $3,000, and the Tax Plan net tax (federal − ACA credit − refundable) is −$3,000 — a $3,000 refund, not $0.",
+    expected: { refundableCents: 300000, displayNetCents: -300000 },
+    actual: () => {
+      const base = mcStatsBase({
+        educationStudents: [
+          { year: 2026, expensesCents: 400000, aotcEligible: true },
+          { year: 2026, expensesCents: 400000, aotcEligible: true },
+          { year: 2026, expensesCents: 400000, aotcEligible: true },
+        ],
+      });
+      const res = runRothCompare(base, [{ name: "Do Nothing", overrides: {} }], 2026);
+      if (!res.ok) return { refundableCents: null, displayNetCents: null };
+      const y26 = res.scenarios[0]!.years.find((y) => y.year === 2026)!;
+      return {
+        refundableCents: y26.educationRefundableCents,
+        displayNetCents:
+          y26.federalTaxCents - y26.acaCreditCents - y26.educationRefundableCents,
+      };
+    },
+  },
+  {
+    id: "tax-engines-funding-reports-debits",
+    kind: "tax",
+    note: "ENGINES BATCH F5 (hand-derived): $100,000 spending, $1,000,000 pre-tax, $1,000,000 taxable at 100% basis, 1% dividend yield ($10,000), MFJ 2026, retire at 55, draw pre-tax first. The spending is funded by a $100,000 pre-tax draw — the funding row reports the full $100,000 the settlement debited. The federal tax is $7,640 (ordinary taxable income $100,000 − $32,200 standard deduction = $67,800: 10% × $24,800 = $2,480 + 12% × $43,000 = $5,160; the $10,000 qualified dividend sits under the $98,900 0% top, so $0 on it), paid from Taxable, so the tax sale is $7,640. The $10,000 dividend yield is reinvested — it adds to the taxable basis and stays in the balance — so its funding row is $0, not $10,000. Before the fix the yield was presented as funding and offset the draws, so the pre-tax row showed $97,640 and the tax sale $0.",
+    expected: {
+      pretaxDraw: 100000,
+      dividendYield: 0,
+      taxableSoldForTax: 7640,
+      federalTax: 7640,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        retirementAge: 55,
+        pretaxStart: 1000000,
+        taxableStart: 1000000,
+        taxableBasisPct: 100,
+        taxableDividendYieldPct: 1,
+        annualSpending: 100000,
+        expectedReturnPct: 5,
+        drawOrder: ["pretax", "taxable", "roth"],
+      });
+      const y = simulateRothPlan(plan, DO_NOTHING).years[0]!;
+      return {
+        pretaxDraw: y.funding.pretaxDraw,
+        dividendYield: y.funding.dividendYield,
+        taxableSoldForTax: y.funding.taxableSoldForTax,
+        federalTax: y.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-engines-tax-exempt-funds-spending",
+    kind: "tax",
+    note: "ENGINES BATCH F6 (hand-derived): the 2028 cliff-fill year (spending $180,000, pre-tax $1,500,000, taxable $2,000,000 at 100% basis, household 5, benchmark $36,000). Without tax-exempt interest the spending sale is $22,624.19. With $10,000 of tax-exempt interest — cash the household receives — the spending sale is still $22,624.19: the $10,000 funds spending dollar-for-dollar, so the taxable sale does not grow by it. Before the fix the march ignored the tax-exempt cash and the sale grew to $32,624.19, overselling Taxable by exactly the $10,000. The funding row carries the $10,000 as its own tax-exempt source, and the year's tax and MAGI are unchanged ($13,078.40 / $149,720 — the draw is cliff-sized, so the income is the same).",
+    expected: {
+      noTeSpendSale: 22624.19,
+      withTeSpendSale: 22624.19,
+      withTeTaxExempt: 10000,
+      withTeTax: 13078.4,
+      withTeMagi: 149720,
+    },
+    actual: () => {
+      const mk = (te: number) =>
+        basePlan({
+          startYear: 2028,
+          birthYearPrimary: 1971,
+          birthYearSpouse: 1982,
+          endAgePrimary: 95,
+          retirementAge: 57,
+          pretaxStart: 1500000,
+          taxableStart: 2000000,
+          taxableBasisPct: 100,
+          annualSpending: 180000,
+          expectedReturnPct: 5,
+          taxExemptInterestAnnual: te,
+          acaHouseholdSize: 5,
+          acaHouseholdSchedule: [{ fromYear: 2036, householdSize: 2 }],
+          acaBenchmarkFamily: 36000,
+          acaBenchmarkCouple: 24000,
+          acaBenchmarkSingle: 16800,
+          drawOrder: ["pretax", "taxable", "roth"],
+        });
+      const cliffFill: RothStrategy = {
+        id: "compare",
+        name: "fill",
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: 5000,
+        },
+      };
+      const noTe = simulateRothPlan(mk(0), cliffFill).years[0]!;
+      const withTe = simulateRothPlan(mk(10000), cliffFill).years[0]!;
+      return {
+        noTeSpendSale: noTe.funding.taxableSoldForSpending,
+        withTeSpendSale: withTe.funding.taxableSoldForSpending,
+        withTeTaxExempt: withTe.funding.taxExempt,
+        withTeTax: withTe.federalTax,
+        withTeMagi: withTe.acaMagi,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-credit-not-double-counted",
+    kind: "tax",
+    note: "ENGINES BATCH F7 (hand-derived): Playground 2028, MFJ, ages 57/46, conversion $149,720 (cliff-sized), household 5, benchmark $36,000, spending $180,000 — which holds the NET premium ($36,000 − $21,087.89 credit = $14,912.11). Federal tax $15,278.40 (taxable income $149,720 − $32,200 = $117,520: 10% × $24,800 = $2,480 + 12% × $76,000 = $9,120 + 22% × $16,720 = $3,678.40); ACA credit kept $21,087.89. The net tax bill is the federal tax alone, $15,278.40 — the credit is NOT subtracted, because the spending already nets it out. Cash in $149,720 − net tax $15,278.40 = cash left $134,441.60; left after spending $134,441.60 − $180,000 = −$45,558.40. Before the fix the credit was subtracted, so the net bill was −$5,809.49 and the cash left overstated by the credit at $155,529.49.",
+    expected: {
+      federalTax: 15278.4,
+      acaCredit: 21087.89,
+      netTaxBill: 15278.4,
+      cashLeftAfterTax: 134441.6,
+      cashLeftVsSpending: -45558.4,
+    },
+    actual: () => {
+      const pg = pricePlaygroundYear({
+        taxYear: 2028,
+        filingStatus: "mfj",
+        agePrimary: 57,
+        ageSpouse: 46,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 149720,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 36000,
+        stateRatePct: 0,
+        residenceState: "WA",
+        itemizedMortgageInterest: 0,
+        itemizedSaltPaid: 0,
+        itemizedCharitable: 0,
+        itemizedOther: 0,
+        educationStudents: null,
+        annualSpending: 180000,
+      });
+      return {
+        federalTax: pg.federalTax,
+        acaCredit: pg.aca?.credit ?? null,
+        netTaxBill: pg.netTaxBill,
+        cashLeftAfterTax: pg.cashLeftAfterTax,
+        cashLeftVsSpending: pg.cashLeftVsSpending,
       };
     },
   },
