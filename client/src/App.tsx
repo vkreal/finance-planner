@@ -531,6 +531,8 @@ function CategoryField({
   // its own wording — the custom-choice label, the custom-input
   // placeholder and aria-label, and the empty-value placeholder
   // option. Defaults keep the bill-category wording unchanged.
+  // Contract v143: the one-off Description field reuses it the same
+  // way, with its own parallel wording.
   customLabel = "Type your own…",
   customPlaceholder = "Type a custom category",
   customAriaLabel = "Custom category",
@@ -4143,7 +4145,16 @@ export function App() {
                   </div>
                   <div>
                     <label htmlFor="o-desc" className={labelCls}>Description</label>
-                    <input id="o-desc" type="text" required className={inputCls} value={oDesc} onChange={(e) => setODesc(e.target.value)} placeholder="e.g. Car repair" />
+                    <CategoryField
+                      id="o-desc"
+                      value={oDesc}
+                      options={data.oneOffDescriptions}
+                      onChange={setODesc}
+                      customLabel="Add a new description…"
+                      customPlaceholder="Type a new description"
+                      customAriaLabel="New description"
+                      placeholderOption="Choose a description…"
+                    />
                   </div>
                   <div>
                     <label htmlFor="o-note" className={labelCls}>Note (optional)</label>

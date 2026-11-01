@@ -3158,7 +3158,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 131;
+export const API_CONTRACT_VERSION = 132;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -6948,6 +6948,13 @@ export const Actions = {
         }),
       ),
       oneOffs: z.array(oneOffOut),
+      // Distinct descriptions across ALL one-offs, most recent first
+      // (contract v143): the one-off Description dropdown's option
+      // list. The dashboard's `oneOffs` holds only the viewed
+      // month's rows, so the dropdown needs this derived list —
+      // every month's descriptions, most recent first, exact
+      // strings only, similar-looking descriptions separate.
+      oneOffDescriptions: z.array(z.string()),
       oneOffsTotalCents: z.number(),
       smoothedExcludingOneOffsCents: z.number(),
       forecast: z.array(
@@ -7168,6 +7175,24 @@ export const Actions = {
           amountCents: o.amountCents,
           note: o.note ?? null,
         }));
+      // Distinct one-off descriptions across all months, most recent
+      // first (contract v143): `oneOffs` is ordered month-ascending
+      // then id-ascending, so walking it backwards yields the most
+      // recent month first and the most recently added first within
+      // a month. Exact strings only — similar-looking descriptions
+      // are separate entries, never merged.
+      const oneOffDescriptions: string[] = [];
+      {
+        const seen = new Set<string>();
+        for (let i = oneOffs.length - 1; i >= 0; i--) {
+          const o = oneOffs[i];
+          if (!o) continue;
+          if (!seen.has(o.description)) {
+            seen.add(o.description);
+            oneOffDescriptions.push(o.description);
+          }
+        }
+      }
       const oneOffsTotalCents = monthOneOffs.reduce((s, o) => s + o.amountCents, 0);
       const smoothedExcludingOneOffsCents = smoothedCents - oneOffsTotalCents;
 
@@ -7518,6 +7543,7 @@ export const Actions = {
         history,
         enteredAheadMonths,
         oneOffs: monthOneOffs,
+        oneOffDescriptions,
         oneOffsTotalCents,
         smoothedExcludingOneOffsCents,
         forecast,
