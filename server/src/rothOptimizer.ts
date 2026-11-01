@@ -3055,6 +3055,15 @@ export type PlaygroundYearInputs = {
   // unpriced-harvest qualification on the settlement.
   harvestPoolAmount?: number | null;
   harvestPoolBasisPct?: number | null;
+  // Annual spending (contract v126, "enough for the year"):
+  // the year's annual spending in dollars, for the
+  // cash-left-vs-spending comparison ONLY — it never enters
+  // the tax pricing (no income, no MAGI, no credit, no tax
+  // reads it), so a year priced with it is bit-identical to
+  // the same year priced without it except for the two
+  // comparison readouts. Absent / null = no spending given,
+  // no comparison is shown.
+  annualSpending?: number | null;
   // ACA guideline convention (Playground projection build):
   // absent / "lookback" = the single-year rule — acaCreditFor
   // prices the coverage year off the PRIOR year's poverty
@@ -3278,6 +3287,17 @@ export type PlaygroundYearResult = {
   netTaxBill: number;
   cashIn: number;
   cashLeftAfterTax: number;
+  // Annual spending for the "enough for the year" comparison
+  // (contract v126): the annualSpending input echoed in
+  // dollars — null when no spending was given — and the
+  // comparison itself: cashLeftAfterTax minus that spending.
+  // Positive = enough for the year, negative = short of a
+  // year's spending. Pure readouts of the same pricing (the
+  // spending never enters the tax); null exactly when no
+  // spending was given, so a year priced without one is
+  // bit-identical.
+  annualSpending: number | null;
+  cashLeftVsSpending: number | null;
   // Bracket landing for the conversion (stacked last): the
   // bracket its last dollar falls in, that bracket's top, the
   // room left in it, and whether it is filled exactly. All null
@@ -4121,6 +4141,13 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       priced.educationRefundable,
   );
   const cashLeftAfterTax = r2(cashIn - netTaxBill);
+  // "Enough for the year" (contract v126): cash left after
+  // tax minus the annual spending — a pure readout, the
+  // spending never entering the tax above. Null when no
+  // spending was given.
+  const annualSpending = inp.annualSpending ?? null;
+  const cashLeftVsSpending =
+    annualSpending == null ? null : r2(cashLeftAfterTax - annualSpending);
 
   return {
     interest: inp.interest,
@@ -4199,6 +4226,8 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     netTaxBill,
     cashIn,
     cashLeftAfterTax,
+    annualSpending,
+    cashLeftVsSpending,
     landingBracketPct,
     landingBracketTop,
     landingRoomLeft,

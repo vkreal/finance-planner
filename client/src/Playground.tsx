@@ -659,6 +659,20 @@ export function Playground() {
     () => pgPrefillSourceFrom(rq.data, retq.data),
     [rq.data, retq.data],
   );
+  /* Annual spending for the "enough for the year" comparison
+     (contract v126): the Tax Plan record's annual spending,
+     falling back to the Retirement calculator's default —
+     the same resolution the prefill source uses above. Null
+     when neither answers, or when the resolved figure is $0
+     (no spending to compare against); the comparison row
+     hides then. In cents, like the record. */
+  const pgAnnualSpendingCents = useMemo(() => {
+    const resolved =
+      rq.data?.saved?.annualSpendingCents ??
+      retq.data?.defaultSpendingAnnualCents ??
+      null;
+    return resolved != null && resolved > 0 ? resolved : null;
+  }, [rq.data, retq.data]);
   const pgPrefillBlockerName = useMemo(
     () => pgPrefillBlocker(rq.data, retq.data),
     [rq.data, retq.data],
@@ -1681,6 +1695,13 @@ export function Playground() {
               expenses: money0(r.expenses),
               aotcEligible: r.aotcEligible,
             })),
+      // Annual spending (contract v126, "enough for the
+      // year"): the resolved spending in dollars, or null
+      // when none is resolved — the engine compares it
+      // against the cash left after tax and never prices it
+      // into the tax.
+      annualSpending:
+        pgAnnualSpendingCents != null ? pgAnnualSpendingCents / 100 : null,
     };
   };
   const playgroundResult: PlaygroundYearResult | null = useMemo(() => {
@@ -1695,6 +1716,7 @@ export function Playground() {
     pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
     pgBenchmark, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
+    pgAnnualSpendingCents,
   ]);
 
   // Zero-conversion pricing of the same dials — the hold
@@ -1711,6 +1733,7 @@ export function Playground() {
     pgSold, pgBasis, pgQualDiv, pgPretax, pgSoleBeneficiary, pgAcaSize,
     pgBenchmark, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
+    pgAnnualSpendingCents,
   ]);
 
   // Bracket-fill chips: set the conversion dial to the exact
@@ -6341,6 +6364,47 @@ export function Playground() {
                       </button>,
                       "Cash in minus the net tax bill — what's left to spend next year, before any spending.",
                       true,
+                    )}
+                    {/* Left after a year's spending (contract
+                        v126, "enough for the year"): cash left
+                        after tax minus the annual spending —
+                        the engine-priced comparison (pg.
+                        cashLeftVsSpending), positive = enough
+                        for the year, negative = short. The
+                        spending is the Tax Plan record's
+                        annual spending (the Retirement
+                        calculator's default when the record
+                        has none); the row hides when no
+                        spending resolves. No provenance tap:
+                        the driving input lives in the Tax Plan
+                        view, which has no cross-view jump
+                        from here, and a tap to the income
+                        inputs would mislead — the comparison
+                        is driven by spending, not income — so
+                        the ⓘ names the spending and its
+                        source instead, and carries the
+                        refund-timing sentence whenever the net
+                        bill is a refund. */}
+                    {pg.cashLeftVsSpending != null && pg.annualSpending != null && (
+                      stackRow(
+                        <>
+                          Left after a year&rsquo;s spending
+                          <InfoNote
+                            text={`Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — the annual spending from the Tax Plan.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                            ariaLabel="About the amount left after a year's spending"
+                          />
+                        </>,
+                        <span
+                          className={`font-bold ${pg.cashLeftVsSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
+                        >
+                          {fmtDollars(pg.cashLeftVsSpending)}
+                        </span>,
+                        pg.cashLeftVsSpending > 0
+                          ? "Enough for the year."
+                          : pg.cashLeftVsSpending < 0
+                            ? "Short of a year's spending."
+                            : "Exactly enough for the year.",
+                      )
                     )}
                   </dl>
                   {pg.conversion > 0 && (

@@ -536,6 +536,15 @@ export function December() {
     queryKey: ["rothplanner"],
     queryFn: () => api.getRothPlanner({}),
   });
+  // Retirement calculator (contract v126): only for the
+  // "enough for the year" comparison's spending fallback —
+  // the Tax Plan record's annual spending, falling back to
+  // this default. Read-only; it never blocks the console
+  // (the comparison row hides until it resolves).
+  const retQ = useQuery({
+    queryKey: ["retirementcalc"],
+    queryFn: () => api.getRetirementCalc({}),
+  });
   const queryClient = useQueryClient();
   const saveMut = useMutation({
     mutationFn: (state: DecemberState) =>
@@ -967,9 +976,24 @@ export function December() {
     edit((f) => ({ ...f, [key]: value }));
 
   const state = useMemo(() => (form ? stateFromForm(form) : null), [form]);
+  /* Annual spending for the "enough for the year" comparison
+     (contract v126): the Tax Plan record's annual spending,
+     falling back to the Retirement calculator's default —
+     the same resolution the Playground uses. Null when
+     neither answers, or when the resolved figure is $0 (no
+     spending to compare against); the comparison row hides
+     then. In cents, like the record; never console state,
+     never saved. */
+  const decAnnualSpendingCents = useMemo(() => {
+    const resolved =
+      rothQ.data?.saved?.annualSpendingCents ??
+      retQ.data?.defaultSpendingAnnualCents ??
+      null;
+    return resolved != null && resolved > 0 ? resolved : null;
+  }, [rothQ.data, retQ.data]);
   const result = useMemo(
-    () => (state ? computeDecemberProjection(state) : null),
-    [state],
+    () => (state ? computeDecemberProjection(state, decAnnualSpendingCents) : null),
+    [state, decAnnualSpendingCents],
   );
 
   /* Jump-and-highlight (contract v69): the provenance-tap
@@ -1399,6 +1423,53 @@ export function December() {
                           Cash in minus the net tax bill — what&rsquo;s
                           left to spend next year, before any spending.
                         </p>
+                        {/* Left after a year's spending (contract
+                            v126, "enough for the year"): cash left
+                            after tax minus the annual spending —
+                            the core-priced comparison (likelyCase.
+                            cashLeftVsSpendingAtHeadline), positive
+                            = enough for the year, negative = short.
+                            The spending is the Tax Plan record's
+                            annual spending (the Retirement
+                            calculator's default when the record
+                            has none); the row hides when no
+                            spending resolves or no settlement is
+                            shown. No provenance tap, for the same
+                            reason as the Playground row: the
+                            driving input lives in the Tax Plan
+                            view, which has no cross-view jump from
+                            here, and a tap to the year-to-date
+                            actuals would mislead — so the ⓘ names
+                            the spending and its source instead,
+                            and carries the refund-timing sentence
+                            whenever the net bill is a refund. */}
+                        {likelyCase.cashLeftVsSpendingAtHeadline != null &&
+                          likelyCase.annualSpendingAtHeadline != null && (
+                            <>
+                              {billRow(
+                                <>
+                                  Left after a year&rsquo;s spending
+                                  <InfoNote
+                                    text={`Cash left after tax ${fmtDollars(likelyCase.cashLeftAtHeadline)} minus annual spending ${fmtDollars(likelyCase.annualSpendingAtHeadline)} — the annual spending from the Tax Plan.${likelyCase.netSettleAtHeadline != null && likelyCase.netSettleAtHeadline < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                                    ariaLabel="About the amount left after a year's spending"
+                                  />
+                                </>,
+                                <span
+                                  className={`font-bold ${likelyCase.cashLeftVsSpendingAtHeadline < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
+                                >
+                                  {fmtDollars(likelyCase.cashLeftVsSpendingAtHeadline)}
+                                </span>,
+                                { bold: true },
+                              )}
+                              <p className="text-xs text-[var(--dim)]">
+                                {likelyCase.cashLeftVsSpendingAtHeadline > 0
+                                  ? "Enough for the year."
+                                  : likelyCase.cashLeftVsSpendingAtHeadline < 0
+                                    ? "Short of a year's spending."
+                                    : "Exactly enough for the year."}
+                              </p>
+                            </>
+                          )}
                       </>
                     )}
                 </div>

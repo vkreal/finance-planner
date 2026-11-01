@@ -1806,6 +1806,18 @@ export type DecemberCaseResult = {
   // tooltip names as priced. Null exactly when the
   // settlement is null, like cashLeftAtHeadline.
   cashInAtHeadline: number | null;
+  // Annual spending and the "enough for the year" comparison
+  // at the headline draw (contract v126): the annual
+  // spending in dollars — the caller's resolved annual
+  // spending (the Tax Plan record's, falling back to the
+  // Retirement calculator's default) — echoed, and
+  // cashLeftAtHeadline minus that spending: positive =
+  // enough for the year, negative = short. A pure readout
+  // of the same pricing (the spending never enters the draw,
+  // MAGI, credit, tax, or settlement); null exactly when no
+  // spending was given or no settlement is shown.
+  annualSpendingAtHeadline: number | null;
+  cashLeftVsSpendingAtHeadline: number | null;
 };
 
 export type DecemberProjectionResult = {
@@ -1837,6 +1849,13 @@ const UNPRICED: DecemberProjectionResult = {
    result, no state read or written. */
 export function computeDecemberProjection(
   state: DecemberState,
+  // Annual spending in CENTS (contract v126): the caller's
+  // resolved annual spending — the Tax Plan record's
+  // annualSpendingCents, falling back to the Retirement
+  // calculator's default. Optional, never console state and
+  // never saved; absent / null = no comparison is shown and
+  // every other figure prices exactly as before.
+  annualSpendingCents?: number | null,
 ): DecemberProjectionResult {
   if (state.agePrimary == null || state.agePrimary <= 0) {
     return {
@@ -1962,6 +1981,14 @@ export function computeDecemberProjection(
   // unchanged: the solver sizes the pre-tax draw by MAGI
   // room, and this amount uses none.
   const taxableFunded = Math.max(0, state.taxableFunded ?? 0);
+  // "Enough for the year" (contract v126): the annual
+  // spending in dollars, or null when none was given. A
+  // comparison-only figure — it never enters the draw, MAGI,
+  // credit, tax, or settlement below.
+  const annualSpending =
+    annualSpendingCents != null && annualSpendingCents > 0
+      ? annualSpendingCents / 100
+      : null;
   const cases: DecemberCaseResult[] = DECEMBER_CASE_KINDS.map((kind, i) => {
     const zero = zeroResults[i]!;
     const atHeadline = pricePlaygroundYear(
@@ -2057,6 +2084,14 @@ export function computeDecemberProjection(
         : effectiveFinalCredit == null
           ? "No benchmark premium is entered, so the ACA credit can't be priced and no single settlement figure is shown."
           : "For years before 2026 the advance-credit repayment isn't modeled, so no single settlement figure is shown.";
+    // Cash left after tax (contract v114/v125) — computed
+    // once here and reused by the "enough for the year"
+    // comparison below, so the two figures can never drift
+    // apart.
+    const cashLeftAtHeadline: number | null =
+      netSettleAtHeadline == null
+        ? null
+        : r2(atHeadline.cashIn + taxableFunded - netSettleAtHeadline);
     return {
       kind,
       nonDrawAcaMagi: zero.acaMagi,
@@ -2094,14 +2129,20 @@ export function computeDecemberProjection(
       stateTaxAtHeadline: atHeadline.stateTax,
       netSettleAtHeadline,
       netSettleNote,
-      cashLeftAtHeadline:
-        netSettleAtHeadline == null
-          ? null
-          : r2(atHeadline.cashIn + taxableFunded - netSettleAtHeadline),
+      cashLeftAtHeadline,
       cashInAtHeadline:
         netSettleAtHeadline == null
           ? null
           : r2(atHeadline.cashIn + taxableFunded),
+      // "Enough for the year" (contract v126): the annual
+      // spending echoed, and cash left minus that spending.
+      // Null exactly when no spending was given or no
+      // settlement is shown.
+      annualSpendingAtHeadline: annualSpending,
+      cashLeftVsSpendingAtHeadline:
+        cashLeftAtHeadline == null || annualSpending == null
+          ? null
+          : r2(cashLeftAtHeadline - annualSpending),
     };
   });
 
@@ -5775,6 +5816,65 @@ export function runDecemberFixtures(): {
       if (c.cashInAtHeadline !== null) fail("cash in should be null without a settlement");
       if (c.cashLeftAtHeadline !== null) fail("cash left should be null without a settlement");
     }
+  });
+
+  run("dec-cash-left-vs-spending-surplus", (fail) => {
+    // "Enough for the year" (contract v126), surplus: the
+    // baseline likely case leaves $74,479.84 cash left after
+    // tax (pinned by the headline fixture); against $60,000
+    // of annual spending the year is enough by $14,479.84.
+    // The spending is comparison-only: the draw, MAGI,
+    // credit, tax, settlement, and cash left are unchanged
+    // in every case, and each case's comparison is its own
+    // cash left minus the spending.
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    const r = computeDecemberProjection(s, 6000000);
+    if (!r.priced) return fail("not priced");
+    near(fail, "headline draw unchanged", r.headlineDraw, 29600);
+    for (const c of r.cases) {
+      if (c.cashLeftAtHeadline == null) return fail("cash left should be priced");
+      exact(fail, "spending echoed", c.annualSpendingAtHeadline, 60000);
+      near(fail, "case comparison", c.cashLeftVsSpendingAtHeadline, c.cashLeftAtHeadline - 60000);
+    }
+    const likely = r.cases[1]!;
+    exact(fail, "likely cash left unchanged", likely.cashLeftAtHeadline, 74479.84);
+    exact(fail, "likely surplus", likely.cashLeftVsSpendingAtHeadline, 14479.84);
+  });
+
+  run("dec-cash-left-vs-spending-shortfall", (fail) => {
+    // "Enough for the year" (contract v126), shortfall: the
+    // same baseline against $80,000 of annual spending is
+    // short by $5,520.16 (74,479.84 − 80,000), a negative
+    // comparison. Nothing else moves.
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    const r = computeDecemberProjection(s, 8000000);
+    if (!r.priced) return fail("not priced");
+    const likely = r.cases[1]!;
+    exact(fail, "likely cash left unchanged", likely.cashLeftAtHeadline, 74479.84);
+    exact(fail, "likely shortfall", likely.cashLeftVsSpendingAtHeadline, -5520.16);
+    for (const c of r.cases) {
+      if (c.cashLeftAtHeadline == null) return fail("cash left should be priced");
+      near(fail, "case comparison", c.cashLeftVsSpendingAtHeadline, c.cashLeftAtHeadline - 80000);
+    }
+  });
+
+  run("dec-cash-left-vs-spending-absent", (fail) => {
+    // The null contract: with no spending given, both new
+    // fields are null in every case and every other figure
+    // prices exactly as the baseline — the comparison adds
+    // nothing and changes nothing.
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    near(fail, "headline draw unchanged", r.headlineDraw, 29600);
+    for (const c of r.cases) {
+      if (c.annualSpendingAtHeadline !== null) fail("spending should be null when none was given");
+      if (c.cashLeftVsSpendingAtHeadline !== null) fail("comparison should be null when none was given");
+    }
+    exact(fail, "likely cash left unchanged", r.cases[1]!.cashLeftAtHeadline, 74479.84);
   });
 
   run("dec-taxable-funded-save-round-trip", (fail) => {

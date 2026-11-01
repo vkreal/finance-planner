@@ -284,6 +284,14 @@ export const playgroundYearIn = z.object({
     )
     .max(12)
     .optional(),
+  // Annual spending (contract v126, "enough for the year"):
+  // OPTIONAL so payloads from before this build keep
+  // validating — absent prices the year exactly as before,
+  // with no comparison shown. The year's annual spending in
+  // CENTS (the Tax Plan record's annualSpendingCents); the
+  // engine compares it against the cash left after tax and
+  // never prices it into the tax.
+  annualSpendingCents: z.number().int().min(0).nullable().optional(),
 });
 export type PlaygroundYearArgs = z.infer<typeof playgroundYearIn>;
 
@@ -336,6 +344,10 @@ export function playgroundInputsFromArgs(
     // Education students (T6): carried verbatim; absent =
     // no students, so the year prices exactly as before.
     educationStudents: args.educationStudents ?? null,
+    // Annual spending (contract v126): cents to dollars;
+    // absent / null = no spending given, no comparison.
+    annualSpending:
+      args.annualSpendingCents != null ? args.annualSpendingCents / 100 : null,
   };
 }
 

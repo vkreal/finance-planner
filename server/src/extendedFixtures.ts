@@ -153,8 +153,10 @@ import {
 DO_NOTHING_SPEC,
 joinRothBlob,
 optimizerImprovements,
+pricePlaygroundYear,
 runRothCompare,
 splitRothBlob,
+type PlaygroundYearInputs,
 type RothCompareBaseSaved,
 type RothCompareOverrides,
 type ScoredCandidate,
@@ -1368,6 +1370,38 @@ export type ExtendedFixtureCase = {
 };
 
 const billById = (id: number) => YEARLY.find((y) => y.id === id) as CoreYearlyBillNamed;
+
+// "Enough for the year" (contract v126): the shared Playground
+// year for the cash-left-vs-spending fixtures — 2026, MFJ,
+// ages 60/58, $1,000 interest + $50,000 other ordinary income,
+// nothing else. Cash in $51,000; the 2026 MFJ standard
+// deduction $32,200 leaves $18,800 taxable at 10% = $1,880
+// federal tax, so cash left after tax is $49,120. (Verified
+// by hand from the engine's own law row: 51,000 − 32,200 =
+// 18,800; 18,800 × 10% = 1,880; 51,000 − 1,880 = 49,120.)
+const PG_VS_SPENDING_BASE: PlaygroundYearInputs = {
+  taxYear: 2026,
+  filingStatus: "mfj",
+  agePrimary: 60,
+  ageSpouse: 58,
+  onMedicarePrimary: false,
+  onMedicareSpouse: false,
+  interest: 1000,
+  ordinaryDividends: 0,
+  otherOrdinary: 50000,
+  taxExemptInterest: 0,
+  ssPrimary: 0,
+  ssSpouse: 0,
+  conversion: 0,
+  stockSold: 0,
+  stockBasis: 0,
+  qualifiedDividends: 0,
+  pretaxBalance: null,
+  spouseSoleBeneficiary: false,
+  acaHouseholdSize: null,
+  acaBenchmarkAnnual: null,
+  stateRatePct: 0,
+};
 
 export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
@@ -6587,6 +6621,56 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         dupKeptCheapestGainCents: gains[0] ?? null,
         doNothingExcluded: out.some((o) => o.candidate.spec.key === DO_NOTHING_SPEC.key) ? 0 : 1,
         subCentExcluded: out.some((o) => o.candidate.spec.key === "c") ? 0 : 1,
+      };
+    },
+  },
+  {
+    id: "pg-cash-left-vs-spending-surplus",
+    kind: "apicontract",
+    note: "Enough for the year (contract v126), surplus: the year leaves $49,120 cash left after tax; against $40,000 of annual spending it is enough by $9,120 (49,120 − 40,000). The spending never enters the tax — cash left is identical with and without it.",
+    expected: { cashLeft: 4912000, vsSpending: 912000, echoed: 4000000, identityHolds: 1, cashLeftUnchanged: 1 },
+    actual: () => {
+      const withSpend = pricePlaygroundYear({ ...PG_VS_SPENDING_BASE, annualSpending: 40000 });
+      const plain = pricePlaygroundYear(PG_VS_SPENDING_BASE);
+      return {
+        cashLeft: Math.round(withSpend.cashLeftAfterTax * 100),
+        vsSpending: withSpend.cashLeftVsSpending == null ? null : Math.round(withSpend.cashLeftVsSpending * 100),
+        echoed: withSpend.annualSpending == null ? null : Math.round(withSpend.annualSpending * 100),
+        identityHolds:
+          withSpend.cashLeftVsSpending === Math.round((withSpend.cashLeftAfterTax - 40000) * 100) / 100 ? 1 : 0,
+        cashLeftUnchanged: withSpend.cashLeftAfterTax === plain.cashLeftAfterTax ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "pg-cash-left-vs-spending-shortfall",
+    kind: "apicontract",
+    note: "Enough for the year (contract v126), shortfall: the same year against $80,000 of annual spending is short by $30,880 (49,120 − 80,000), a negative comparison. Nothing else moves.",
+    expected: { cashLeft: 4912000, vsSpending: -3088000, echoed: 8000000, identityHolds: 1, cashLeftUnchanged: 1 },
+    actual: () => {
+      const withSpend = pricePlaygroundYear({ ...PG_VS_SPENDING_BASE, annualSpending: 80000 });
+      const plain = pricePlaygroundYear(PG_VS_SPENDING_BASE);
+      return {
+        cashLeft: Math.round(withSpend.cashLeftAfterTax * 100),
+        vsSpending: withSpend.cashLeftVsSpending == null ? null : Math.round(withSpend.cashLeftVsSpending * 100),
+        echoed: withSpend.annualSpending == null ? null : Math.round(withSpend.annualSpending * 100),
+        identityHolds:
+          withSpend.cashLeftVsSpending === Math.round((withSpend.cashLeftAfterTax - 80000) * 100) / 100 ? 1 : 0,
+        cashLeftUnchanged: withSpend.cashLeftAfterTax === plain.cashLeftAfterTax ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "pg-cash-left-vs-spending-absent",
+    kind: "apicontract",
+    note: "Enough for the year (contract v126), null contract: with no spending given, both new fields are null and cash left prices exactly as the baseline — the comparison adds nothing and changes nothing.",
+    expected: { cashLeft: 4912000, vsSpending: null, echoed: null },
+    actual: () => {
+      const plain = pricePlaygroundYear(PG_VS_SPENDING_BASE);
+      return {
+        cashLeft: Math.round(plain.cashLeftAfterTax * 100),
+        vsSpending: plain.cashLeftVsSpending,
+        echoed: plain.annualSpending,
       };
     },
   }
