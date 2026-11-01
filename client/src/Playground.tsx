@@ -1025,6 +1025,12 @@ export function Playground() {
       }, 3000);
     }, 150);
   };
+  // Provenance taps (contract v134): only INPUT values are taps
+  // — the ACA buffer figure, whose displayed value is the typed
+  // buffer dial. Computed figures (tax, cash left, ACA credit,
+  // MAGI, cliff, excise) are plain text: a computed result has
+  // no single source field, so any target misleads, and the ⓘ
+  // explains the computation instead.
   const pgTapCls =
     "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
 
@@ -3102,14 +3108,7 @@ export function Playground() {
                   <span>
                     Total federal tax{" "}
                     <span className="font-bold text-[var(--accent)]">
-                      <button
-                        type="button"
-                        aria-label="Go to the income inputs"
-                        className={pgTapCls}
-                        onClick={() => jumpToPgField("roth-Interest", "income")}
-                      >
-                        {fmtDollars(pg?.federalTax ?? 0)}
-                      </button>
+                      {fmtDollars(pg?.federalTax ?? 0)}
                     </span>
                   </span>
                   {pg != null && pg.stateTax > 0 && (
@@ -3120,14 +3119,7 @@ export function Playground() {
                       <span>
                         Total tax{" "}
                         <span className="font-bold text-[var(--accent)]">
-                          <button
-                            type="button"
-                            aria-label="Go to the income inputs"
-                            className={pgTapCls}
-                            onClick={() => jumpToPgField("roth-Interest", "income")}
-                          >
-                            {fmtDollarsExact(pg.totalTax)}
-                          </button>
+                          {fmtDollarsExact(pg.totalTax)}
                         </span>
                       </span>
                     </span>
@@ -3137,14 +3129,7 @@ export function Playground() {
                   </span>
                   <span>
                     MAGI{" "}
-                    <button
-                      type="button"
-                      aria-label="Go to the income inputs"
-                      className={pgTapCls}
-                      onClick={() => jumpToPgField("roth-Interest", "income")}
-                    >
-                      {fmtDollars(pg?.magi ?? 0)}
-                    </button>
+                    {fmtDollars(pg?.magi ?? 0)}
                     {pg != null && (
                       <InfoNote
                         text={magiNote}
@@ -3221,16 +3206,7 @@ export function Playground() {
                         <span>
                           Est. ACA credit{" "}
                           <span className="font-bold text-[var(--accent)]">
-                            <button
-                              type="button"
-                              aria-label="Go to the ACA benchmark premium / yr field"
-                              className={pgTapCls}
-                              onClick={() =>
-                                jumpToPgField("roth-ACA-benchmark-premium-yr", "aca")
-                              }
-                            >
-                              {fmtDollars(pg.aca.credit)}
-                            </button>
+                            {fmtDollars(pg.aca.credit)}
                           </span>
                         </span>
                       </span>
@@ -3245,12 +3221,12 @@ export function Playground() {
                       whenever a year is priced, after the
                       credit — the credit is already inside the
                       net tax bill, so cash left is the
-                      concluding figure of the line. The tap
-                      follows the v124 F8 rule: cash left has
-                      no single driving input, so it jumps to
-                      the income inputs, the same target and
-                      label as the Tax-for-the-year card's
-                      cash-left figure. No "left after a year's
+                      concluding figure of the line. No tap
+                      (contract v134): a computed figure has
+                      no single source field, so it is plain
+                      text — the ⓘ on the Tax-for-the-year
+                      card's cash-left figure explains the
+                      computation. No "left after a year's
                       spending" comparison here — that row lives
                       on the Tax-for-the-year card only. */}
                   {pg != null && (
@@ -3261,16 +3237,7 @@ export function Playground() {
                       <span>
                         Cash left after tax{" "}
                         <span className="font-bold text-[var(--accent)]">
-                          <button
-                            type="button"
-                            aria-label="Go to the income inputs"
-                            className={pgTapCls}
-                            onClick={() =>
-                              jumpToPgField("roth-Interest", "income")
-                            }
-                          >
-                            {fmtDollars(pg.cashLeftAfterTax)}
-                          </button>
+                          {fmtDollars(pg.cashLeftAfterTax)}
                         </span>
                       </span>
                     </span>
@@ -6202,16 +6169,7 @@ export function Playground() {
                   ) : (
                     <p className="mt-1 text-sm">
                       ACA cliff for a household of {pg.aca.householdSize}:{" "}
-                      <button
-                        type="button"
-                        aria-label="Go to the ACA household size field"
-                        className={pgTapCls}
-                        onClick={() =>
-                          jumpToPgField("roth-ACA-household-size")
-                        }
-                      >
-                        {fmtDollars(pg.aca.cliff)}
-                      </button>{" "}
+                      {fmtDollars(pg.aca.cliff)}{" "}
                       (400% of the poverty line).{" "}
                       {pg.aca.overCliff
                         ? `ACA household income is over the cliff by ${fmtDollars(-(pg.aca.positionDollars ?? 0))} — the premium credit is $0 at the cliff.`
@@ -6221,16 +6179,7 @@ export function Playground() {
                           <>
                             {" — estimated credit "}
                             <span className="font-bold text-[var(--accent)]">
-                              <button
-                                type="button"
-                                aria-label="Go to the ACA benchmark premium / yr field"
-                                className={pgTapCls}
-                                onClick={() =>
-                                  jumpToPgField("roth-ACA-benchmark-premium-yr", "aca")
-                                }
-                              >
-                                {fmtDollars(pg.aca.credit)}
-                              </button>
+                              {fmtDollars(pg.aca.credit)}
                             </span>
                             {" at the ACA benchmark premium entered."}
                           </>
@@ -6282,39 +6231,18 @@ export function Playground() {
                   <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
                     {stackRow(
                       "Federal tax on ordinary income",
-                      <button
-                        type="button"
-                        aria-label="Go to the income inputs"
-                        className={pgTapCls}
-                        onClick={() => jumpToPgField("roth-Interest", "income")}
-                      >
-                        {fmtDollars(pg.ordinaryTax)}
-                      </button>,
+                      fmtDollars(pg.ordinaryTax),
                     )}
                     {stackRow(
                       "Federal tax on gains",
-                      <button
-                        type="button"
-                        aria-label="Go to the Stock sold field"
-                        className={pgTapCls}
-                        onClick={() => jumpToPgField("roth-Stock-sold", "stock")}
-                      >
-                        {fmtDollars(pg.ltcgTax + pg.niit)}
-                      </button>,
+                      fmtDollars(pg.ltcgTax + pg.niit),
                       pg.niit > 0
                         ? `${fmtDollars(pg.ltcgTax)} gains tax + ${fmtDollars(pg.niit)} NIIT`
                         : undefined,
                     )}
                     {stackRow(
                       "Total federal tax",
-                      <button
-                        type="button"
-                        aria-label="Go to the income inputs"
-                        className={pgTapCls}
-                        onClick={() => jumpToPgField("roth-Interest", "income")}
-                      >
-                        {fmtDollars(pg.federalTax)}
-                      </button>,
+                      fmtDollars(pg.federalTax),
                       undefined,
                       true,
                     )}
@@ -6354,52 +6282,18 @@ export function Playground() {
                         `Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) did not beat the regular tax.`,
                       )}
                     {pg.stateTax > 0 &&
-                      stackRow(
-                        "State tax",
-                        <button
-                          type="button"
-                          aria-label="Go to the income inputs"
-                          className={pgTapCls}
-                          onClick={() => jumpToPgField("roth-Interest", "income")}
-                        >
-                          {fmtDollars(pg.stateTax)}
-                        </button>,
-                      )}
+                      stackRow("State tax", fmtDollars(pg.stateTax))}
                     {pgResidence === "WA" &&
                       stackRow(
                         "Washington capital-gains excise",
-                        <button
-                          type="button"
-                          aria-label="Go to the Stock sold field"
-                          className={pgTapCls}
-                          onClick={() => jumpToPgField("roth-Stock-sold", "stock")}
-                        >
-                          {fmtDollars(pg.stateTax)}
-                        </button>,
+                        fmtDollars(pg.stateTax),
                         `${fmtDollars(pg.waGains)} of gains − ${fmtDollars(pg.waStandardDeduction)} standard deduction = ${fmtDollars(pg.waTaxableGains)} taxable`,
                       )}
-                    {stackRow(
-                      "MAGI",
-                      <button
-                        type="button"
-                        aria-label="Go to the income inputs"
-                        className={pgTapCls}
-                        onClick={() => jumpToPgField("roth-Interest", "income")}
-                      >
-                        {fmtDollars(pg.magi)}
-                      </button>,
-                    )}
+                    {stackRow("MAGI", fmtDollars(pg.magi))}
                     {pg.acaMagi !== pg.magi &&
                       stackRow(
                         "ACA household income",
-                        <button
-                          type="button"
-                          aria-label="Go to the income inputs"
-                          className={pgTapCls}
-                          onClick={() => jumpToPgField("roth-Interest", "income")}
-                        >
-                          {fmtDollars(pg.acaMagi)}
-                        </button>,
+                        fmtDollars(pg.acaMagi),
                         "MAGI plus the untaxed part of Social Security",
                       )}
                     {/* Cash left after tax (contract v114, fixed
@@ -6423,14 +6317,7 @@ export function Playground() {
                           ariaLabel="About the cash left after tax"
                         />
                       </>,
-                      <button
-                        type="button"
-                        aria-label="Go to the income inputs"
-                        className={pgTapCls}
-                        onClick={() => jumpToPgField("roth-Interest", "income")}
-                      >
-                        {fmtDollars(pg.cashLeftAfterTax)}
-                      </button>,
+                      fmtDollars(pg.cashLeftAfterTax),
                       "Cash in minus the net tax bill — what's left to spend next year, before any spending.",
                       true,
                     )}

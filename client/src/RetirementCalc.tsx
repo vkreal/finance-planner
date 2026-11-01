@@ -2411,7 +2411,7 @@ export function RetirementCalc({
             type="button"
             aria-label="Go to the Annual spending field in the Tax Plan"
             className={rcTapCls}
-            onClick={() => jumpToRoth("roth-Annual-spending", "household")}
+            onClick={jumpToRoth("roth-Annual-spending", "household")}
           >
             {fmt(inputs.spendingCents)}
           </button>
@@ -2424,7 +2424,7 @@ export function RetirementCalc({
             type="button"
             aria-label="Go to the Annual spending field in the Tax Plan"
             className={rcTapCls}
-            onClick={() => jumpToRoth("roth-Annual-spending", "household")}
+            onClick={jumpToRoth("roth-Annual-spending", "household")}
           >
             {fmt(inputs.spendingCents)}
           </button>
@@ -2454,7 +2454,7 @@ export function RetirementCalc({
             type="button"
             aria-label="Go to the Annual spending field in the Tax Plan"
             className={rcTapCls}
-            onClick={() => jumpToRoth("roth-Annual-spending", "household")}
+            onClick={jumpToRoth("roth-Annual-spending", "household")}
           >
             {fmt(inputs.spendingCents)}
           </button>
@@ -2499,7 +2499,7 @@ export function RetirementCalc({
           type="button"
           aria-label="Go to the Retirement age field in the Tax Plan"
           className={rcTapCls}
-          onClick={() => jumpToRoth("roth-Retirement-age", "household")}
+          onClick={jumpToRoth("roth-Retirement-age", "household")}
         >
           {inputs.retirementAge}
         </button>{" "}
@@ -3033,7 +3033,7 @@ export function RetirementCalc({
                       type="button"
                       aria-label="Go to the Annual spending field in the Tax Plan"
                       className={rcTapCls}
-                      onClick={() => jumpToRoth("roth-Annual-spending", "household")}
+                      onClick={jumpToRoth("roth-Annual-spending", "household")}
                     >
                       {fmt(inputs.spendingCents)}
                     </button>
@@ -3058,7 +3058,7 @@ export function RetirementCalc({
                   type="button"
                   aria-label="Go to your birth year in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRoth("roth-Your-birth-year", "household")}
+                  onClick={jumpToRoth("roth-Your-birth-year", "household")}
                 >
                   {inputs.currentAge}
                 </button>{" "}
@@ -3067,7 +3067,7 @@ export function RetirementCalc({
                   type="button"
                   aria-label="Go to the Retirement age field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRoth("roth-Retirement-age", "household")}
+                  onClick={jumpToRoth("roth-Retirement-age", "household")}
                 >
                   {inputs.retirementAge}
                 </button>{" "}
@@ -3076,7 +3076,7 @@ export function RetirementCalc({
                   type="button"
                   aria-label="Go to the Plan end age field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRoth("roth-Plan-end-age", "household")}
+                  onClick={jumpToRoth("roth-Plan-end-age", "household")}
                 >
                   {inputs.endAge}
                 </button>
@@ -3089,7 +3089,7 @@ export function RetirementCalc({
                   type="button"
                   aria-label="Go to the Expected return field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRoth("roth-Expected-return", "advanced")}
+                  onClick={jumpToRoth("roth-Expected-return", "advanced")}
                 >
                   {(expected * 100).toFixed(2)}%
                 </button>
@@ -3417,7 +3417,7 @@ export function RetirementCalc({
                   type="button"
                   aria-label="Go to the Expected return field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRoth("roth-Expected-return", "advanced")}
+                  onClick={jumpToRoth("roth-Expected-return", "advanced")}
                 >
                   {(expected * 100).toFixed(2)}% / yr
                 </button>
@@ -3929,7 +3929,7 @@ export function RetirementCalc({
                     type="button"
                     aria-label="Go to the Retirement age field in the Tax Plan"
                     className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
-                    onClick={() => jumpToRoth("roth-Retirement-age", "household")}
+                    onClick={jumpToRoth("roth-Retirement-age", "household")}
                   >
                     {inputs.retirementAge}
                   </button>
@@ -3938,7 +3938,7 @@ export function RetirementCalc({
                     type="button"
                     aria-label="Go to the Plan end age field in the Tax Plan"
                     className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
-                    onClick={() => jumpToRoth("roth-Plan-end-age", "household")}
+                    onClick={jumpToRoth("roth-Plan-end-age", "household")}
                   >
                     {inputs.endAge}
                   </button>
