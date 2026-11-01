@@ -33,6 +33,7 @@ displayedMoneyDeltaCents,
 displayedRateDeltaPoints,
 effectiveGuardrails,
 effectivePhased,
+EXPECTED_RETURN_DEFAULT,
 EXTRA_INCOME_DEFAULT_CENTS,
 EXTRA_INCOME_START_AGE_DEFAULT,
 GUARDRAILS_ADJUSTMENT_DEFAULT,
@@ -417,9 +418,9 @@ export function RetirementCalc() {
     if (inputsFolded) setInputsFolded(false);
     if (
       (fieldId === "rc-expected" || fieldId === "rc-vol") &&
-      data?.assumptionsCollapsed
+      assumptionsCollapsed
     ) {
-      setAssumptionsCollapsed.mutate({ collapsed: false });
+      handleAssumptionsCollapsedChange(false);
     }
     const started = Date.now();
     const tryFlash = () => {
@@ -508,6 +509,13 @@ export function RetirementCalc() {
   // preference, and with nothing ever stored the field opens
   // per month.
   const [spendingUnit, setSpendingUnit] = useState<"year" | "month">("month");
+  // Assumptions group collapse flag: optimistic — the section flips
+  // immediately from local state and the choice persists in the
+  // background (contract v132). Before the first read lands the
+  // group shows collapsed, the stored default. The server action
+  // never refuses (no epoch guard), so no revert is needed.
+  const [assumptionsOverride, setAssumptionsOverride] = useState<boolean | null>(null);
+  const assumptionsCollapsed = assumptionsOverride ?? data?.assumptionsCollapsed ?? true;
   // Raw monthly text while the spending field is focused in
   // per-month mode, so typing is never rewritten mid-edit; the
   // canonical annual string is updated on every keystroke.
@@ -519,7 +527,7 @@ export function RetirementCalc() {
   const [extraIncome, setExtraIncome] = useState("");
   const [extraStartAge, setExtraStartAge] = useState(String(EXTRA_INCOME_START_AGE_DEFAULT));
   const [expectedPct, setExpectedPct] = useState(
-    String(Math.round(blendedExpected(STOCKS_PCT_DEFAULT) * 100) / 100),
+    String(EXPECTED_RETURN_DEFAULT),
   );
   const [volPct, setVolPct] = useState(
     String(Math.round(blendedVol(STOCKS_PCT_DEFAULT) * 100) / 100),
@@ -606,7 +614,7 @@ export function RetirementCalc() {
           ? ""
           : String(EXTRA_INCOME_START_AGE_DEFAULT),
     );
-    const exp = s?.expectedReturnPct ?? blendedExpected(stocks);
+    const exp = s?.expectedReturnPct ?? EXPECTED_RETURN_DEFAULT;
     const vol = s?.volatilityPct ?? blendedVol(stocks);
     setExpectedPct(String(Math.round(exp * 100) / 100));
     setVolPct(String(Math.round(vol * 100) / 100));
@@ -890,8 +898,8 @@ export function RetirementCalc() {
   // cost annualised — and the built-in defaults for the rest
   // (current age from the birth year stored in the Roth inputs —
   // the server's defaultCurrentAge, retirement age 57, end age 95,
-  // stocks 95% with its blended expected return / volatility,
-  // extra income blank (none) with its start age defaulting to
+  // stocks 95% with the 5% expected-return default and its blended
+  // volatility, extra income blank (none) with its start age defaulting to
   // 67, the Constant spending
   // strategy at 5% for the percent input, the professional
   // guardrails knobs 120 / 80 / 10, and the phased knobs 75 / 1). The reset values are saved immediately through
@@ -904,7 +912,7 @@ export function RetirementCalc() {
     const defaultCurrentAge = data.defaultCurrentAge;
     const defaultStocks = STOCKS_PCT_DEFAULT;
     const defaultEndAge = 95;
-    const exp = blendedExpected(defaultStocks);
+    const exp = EXPECTED_RETURN_DEFAULT;
     const vol = blendedVol(defaultStocks);
     const expStr = String(Math.round(exp * 100) / 100);
     const volStr = String(Math.round(vol * 100) / 100);
@@ -1522,6 +1530,15 @@ export function RetirementCalc() {
     },
   });
 
+  // Optimistic flip for the Assumptions group (contract v132):
+  // the section re-renders from local state at once; the mutation
+  // persists the choice in the background and its refetch then
+  // agrees with what is already shown.
+  const handleAssumptionsCollapsedChange = (collapsed: boolean) => {
+    setAssumptionsOverride(collapsed);
+    setAssumptionsCollapsed.mutate({ collapsed });
+  };
+
   // Spending-field unit toggle: display only, persisted
   // server-side in settings through the same mechanism (see
   // setRetirementSpendingUnit). A flip updates the local unit
@@ -2008,7 +2025,7 @@ export function RetirementCalc() {
       inputs.extraIncomeStartAge !== EXTRA_INCOME_START_AGE_DEFAULT
     )
       defaultDiffLabels.push("Extra income start age");
-    if (expPct !== Math.round(blendedExpected(STOCKS_PCT_DEFAULT) * 100) / 100)
+    if (expPct !== EXPECTED_RETURN_DEFAULT)
       defaultDiffLabels.push("Expected return");
     if (volPctShown !== Math.round(blendedVol(STOCKS_PCT_DEFAULT) * 100) / 100)
       defaultDiffLabels.push("Volatility");
@@ -2917,17 +2934,16 @@ export function RetirementCalc() {
             <h3 className="display text-base font-semibold">Assumptions</h3>
             <button
               type="button"
-              aria-label={data.assumptionsCollapsed ? "Expand Assumptions" : "Collapse Assumptions"}
-              aria-expanded={!data.assumptionsCollapsed}
+              aria-label={assumptionsCollapsed ? "Expand Assumptions" : "Collapse Assumptions"}
+              aria-expanded={!assumptionsCollapsed}
               aria-controls="rc-assumptions-fields"
-              disabled={setAssumptionsCollapsed.isPending}
-              onClick={() => setAssumptionsCollapsed.mutate({ collapsed: !data.assumptionsCollapsed })}
-              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-medium text-[var(--text)] hover:text-[var(--accent)] disabled:opacity-50"
+              onClick={() => handleAssumptionsCollapsedChange(!assumptionsCollapsed)}
+              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-medium text-[var(--text)] hover:text-[var(--accent)]"
             >
-              {data.assumptionsCollapsed ? "Expand" : "Collapse"}
+              {assumptionsCollapsed ? "Expand" : "Collapse"}
             </button>
           </div>
-          {!data.assumptionsCollapsed && (
+          {!assumptionsCollapsed && (
             <div id="rc-assumptions-fields" className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
               <div>
                 <label htmlFor="rc-expected" className={labelCls}>Expected real return (%)</label>

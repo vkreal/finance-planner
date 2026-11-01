@@ -3062,6 +3062,14 @@ export function NetWorthView() {
     },
     onError: (e) => setTargetError(String(e)),
   });
+  // Accounts / History collapse flags: optimistic — each section
+  // flips immediately from local state and the choice persists in
+  // the background (contract v132). Before the first read lands
+  // each shows collapsed, the stored default. On a refused write
+  // (a restore since the load) the override is dropped so the
+  // section shows the stored value again.
+  const [accountsOverride, setAccountsOverride] = useState<boolean | null>(null);
+  const [historyOverride, setHistoryOverride] = useState<boolean | null>(null);
   const setAccountsCollapsed = useMutation({
     // Contract v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
@@ -3069,6 +3077,7 @@ export function NetWorthView() {
     onSuccess: (r) => {
       if (!r.ok) {
         setAccountError(r.reason ?? "That setting could not be saved.");
+        setAccountsOverride(null);
         return;
       }
       setAccountError("");
@@ -3082,6 +3091,7 @@ export function NetWorthView() {
     onSuccess: (r) => {
       if (!r.ok) {
         setAccountError(r.reason ?? "That setting could not be saved.");
+        setHistoryOverride(null);
         return;
       }
       setAccountError("");
@@ -3190,9 +3200,30 @@ export function NetWorthView() {
     kindById,
     custodialIds,
     includeProperty,
-    accountsCollapsed,
-    historyCollapsed,
+    accountsCollapsed: storedAccountsCollapsed,
+    historyCollapsed: storedHistoryCollapsed,
   } = model;
+  // Effective collapsed state: the optimistic override wins once
+  // the user has toggled, otherwise the stored value (contract
+  // v132). The whole section — button, body, and messages — reads
+  // these, so a toggle flips the section at once.
+  const accountsCollapsed = accountsOverride ?? storedAccountsCollapsed;
+  const historyCollapsed = historyOverride ?? storedHistoryCollapsed;
+
+  // Optimistic flips (contract v132): the section re-renders from
+  // local state at once; the mutation persists the choice in the
+  // background and its refetch then agrees with what is already
+  // shown. A rapid second click reads the already-flipped local
+  // value, so it sends the opposite choice instead of repeating
+  // the first.
+  const handleAccountsCollapsedChange = (collapsed: boolean) => {
+    setAccountsOverride(collapsed);
+    setAccountsCollapsed.mutate(collapsed);
+  };
+  const handleHistoryCollapsedChange = (collapsed: boolean) => {
+    setHistoryOverride(collapsed);
+    setHistoryCollapsed.mutate(collapsed);
+  };
   const activeAccounts = accounts.filter((a) => !a.archived);
   const latestPropertyNet = latest
     ? propertyNetForSnapshot(latest, kindById)
@@ -5193,8 +5224,7 @@ export function NetWorthView() {
             aria-expanded={!accountsCollapsed}
             aria-label={accountsCollapsed ? "Expand Accounts" : "Collapse Accounts"}
             className={btnGhost}
-            disabled={setAccountsCollapsed.isPending}
-            onClick={() => setAccountsCollapsed.mutate(!accountsCollapsed)}
+            onClick={() => handleAccountsCollapsedChange(!accountsCollapsed)}
           >
             {accountsCollapsed ? "Expand" : "Collapse"}
           </button>
@@ -5546,8 +5576,7 @@ export function NetWorthView() {
             aria-expanded={!historyCollapsed}
             aria-label={historyCollapsed ? "Expand History" : "Collapse History"}
             className={btnGhost}
-            disabled={setHistoryCollapsed.isPending}
-            onClick={() => setHistoryCollapsed.mutate(!historyCollapsed)}
+            onClick={() => handleHistoryCollapsedChange(!historyCollapsed)}
           >
             {historyCollapsed ? "Expand" : "Collapse"}
           </button>

@@ -1861,6 +1861,31 @@ export function App() {
 
   const data = dash.data;
 
+  // Collapse-all flags: optimistic — each section flips immediately
+  // from local state and the choice persists in the background
+  // (contract v132). Before the first read lands each shows
+  // collapsed, the stored default. On a refused write (a restore
+  // since the load) the override is dropped so the section shows
+  // the stored value again. A rapid second click reads the
+  // already-flipped local value, so it sends the opposite choice
+  // instead of repeating the first.
+  const [monthlyBillsCollapsedAllOverride, setMonthlyBillsCollapsedAllOverride] =
+    useState<boolean | null>(null);
+  const [yearlyBillsCollapsedAllOverride, setYearlyBillsCollapsedAllOverride] =
+    useState<boolean | null>(null);
+  const [byCategoryCollapsedAllOverride, setByCategoryCollapsedAllOverride] =
+    useState<boolean | null>(null);
+  const [yearInSpendingCollapsedAllOverride, setYearInSpendingCollapsedAllOverride] =
+    useState<boolean | null>(null);
+  const monthlyBillsCollapsedAll =
+    monthlyBillsCollapsedAllOverride ?? data?.monthlyBillsCollapsedAll ?? true;
+  const yearlyBillsCollapsedAll =
+    yearlyBillsCollapsedAllOverride ?? data?.yearlyBillsCollapsedAll ?? true;
+  const byCategoryCollapsedAll =
+    byCategoryCollapsedAllOverride ?? data?.byCategoryCollapsedAll ?? true;
+  const yearInSpendingCollapsedAll =
+    yearInSpendingCollapsedAllOverride ?? data?.yearInSpendingCollapsedAll ?? true;
+
   /* Quick view navigation: smooth-scroll to a section, flash a
      highlight ring on it for ~1.5s, and (for the collapsible targets)
      expand the section through its persisted toggle action when it is
@@ -1877,16 +1902,16 @@ export function App() {
       /* The roster fold opens (persisted) as part of the scroll, so
          the tile tap never lands on a collapsed section. */
       if (!monthlyBillsOpen) setMonthlyBillsOpen(true);
-      if (data?.monthlyBillsCollapsedAll) {
-        setMonthlyBillsCollapsedAll.mutate({ collapsed: false });
+      if (monthlyBillsCollapsedAll) {
+        handleMonthlyBillsCollapsedAllChange(false);
       }
     }
     if (id === "section-yearly-expenses") {
       /* The roster fold opens (persisted) as part of the scroll, so
          the tile tap never lands on a collapsed section. */
       if (!yearlyBillsOpen) setYearlyBillsOpen(true);
-      if (data?.yearlyBillsCollapsedAll) {
-        setYearlyBillsCollapsedAll.mutate({ collapsed: false });
+      if (yearlyBillsCollapsedAll) {
+        handleYearlyBillsCollapsedAllChange(false);
       }
     }
     document
@@ -2221,7 +2246,10 @@ export function App() {
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillsCollapsedAll">) =>
       api.setMonthlyBillsCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
-      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      if (!r.ok) {
+        setActionMsg(r.reason ?? "That setting could not be saved.");
+        setMonthlyBillsCollapsedAllOverride(null);
+      }
       invalidate();
     },
   });
@@ -2231,7 +2259,10 @@ export function App() {
     mutationFn: (input: ApiRequest<typeof api, "setYearlyBillsCollapsedAll">) =>
       api.setYearlyBillsCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
-      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      if (!r.ok) {
+        setActionMsg(r.reason ?? "That setting could not be saved.");
+        setYearlyBillsCollapsedAllOverride(null);
+      }
       invalidate();
     },
   });
@@ -2241,7 +2272,10 @@ export function App() {
     mutationFn: (input: ApiRequest<typeof api, "setByCategoryCollapsedAll">) =>
       api.setByCategoryCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
-      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      if (!r.ok) {
+        setActionMsg(r.reason ?? "That setting could not be saved.");
+        setByCategoryCollapsedAllOverride(null);
+      }
       invalidate();
     },
   });
@@ -2251,10 +2285,34 @@ export function App() {
     mutationFn: (input: ApiRequest<typeof api, "setYearInSpendingCollapsedAll">) =>
       api.setYearInSpendingCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
-      if (!r.ok) setActionMsg(r.reason ?? "That setting could not be saved.");
+      if (!r.ok) {
+        setActionMsg(r.reason ?? "That setting could not be saved.");
+        setYearInSpendingCollapsedAllOverride(null);
+      }
       invalidate();
     },
   });
+
+  // Optimistic flips (contract v132): each section re-renders from
+  // local state at once; the mutation persists the choice in the
+  // background and its refetch then agrees with what is already
+  // shown.
+  const handleMonthlyBillsCollapsedAllChange = (collapsed: boolean) => {
+    setMonthlyBillsCollapsedAllOverride(collapsed);
+    setMonthlyBillsCollapsedAll.mutate({ collapsed });
+  };
+  const handleYearlyBillsCollapsedAllChange = (collapsed: boolean) => {
+    setYearlyBillsCollapsedAllOverride(collapsed);
+    setYearlyBillsCollapsedAll.mutate({ collapsed });
+  };
+  const handleByCategoryCollapsedAllChange = (collapsed: boolean) => {
+    setByCategoryCollapsedAllOverride(collapsed);
+    setByCategoryCollapsedAll.mutate({ collapsed });
+  };
+  const handleYearInSpendingCollapsedAllChange = (collapsed: boolean) => {
+    setYearInSpendingCollapsedAllOverride(collapsed);
+    setYearInSpendingCollapsedAll.mutate({ collapsed });
+  };
   const setYearlyKeepLightsOn = useMutation({
     // Contract v121 (F3): an immediate setter carries the epoch
     // of the data on screen.
@@ -3831,20 +3889,18 @@ export function App() {
                     <button
                       type="button"
                       className={btnGhost}
-                      aria-expanded={!data.byCategoryCollapsedAll}
+                      aria-expanded={!byCategoryCollapsedAll}
                       aria-controls="by-category-list"
                       onClick={() =>
-                        setByCategoryCollapsedAll.mutate({
-                          collapsed: !data.byCategoryCollapsedAll,
-                        })
+                        handleByCategoryCollapsedAllChange(!byCategoryCollapsedAll)
                       }
                     >
-                      {data.byCategoryCollapsedAll ? "Expand all" : "Collapse all"}
+                      {byCategoryCollapsedAll ? "Expand all" : "Collapse all"}
                     </button>
                   )}
                 </div>
               </div>
-              {!data.byCategoryCollapsedAll && (
+              {!byCategoryCollapsedAll && (
               <Explainer
                 id="spending.byCategory"
                 label="By category"
@@ -3866,7 +3922,7 @@ export function App() {
                 </p>
               </Explainer>
               )}
-              {!data.byCategoryCollapsedAll && (data.categoryBreakdown.length === 0 ? (
+              {!byCategoryCollapsedAll && (data.categoryBreakdown.length === 0 ? (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-3 text-sm text-[var(--dim)]">
                   No bills yet. Add monthly or smoothed bills and they'll be
                   grouped here by category.
@@ -3898,7 +3954,7 @@ export function App() {
                   ))}
                 </ul>
               ))}
-              {!data.byCategoryCollapsedAll && data.categoryBreakdown.length > 0 && (
+              {!byCategoryCollapsedAll && data.categoryBreakdown.length > 0 && (
                 <dl className="tnum mt-3 space-y-1 border-t border-[var(--border)] pt-3 text-base">
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
                     <dt>Monthly bills total</dt>
@@ -4568,15 +4624,13 @@ export function App() {
                     <button
                       type="button"
                       className={btnGhost}
-                      aria-expanded={!data.monthlyBillsCollapsedAll}
+                      aria-expanded={!monthlyBillsCollapsedAll}
                       aria-controls="monthly-bills-list"
                       onClick={() =>
-                        setMonthlyBillsCollapsedAll.mutate({
-                          collapsed: !data.monthlyBillsCollapsedAll,
-                        })
+                        handleMonthlyBillsCollapsedAllChange(!monthlyBillsCollapsedAll)
                       }
                     >
-                      {data.monthlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
+                      {monthlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
                     </button>
                   </div>
                   <ul id="monthly-bills-list" className="mt-2 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
@@ -4585,7 +4639,7 @@ export function App() {
                         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
                           <div className="min-w-0">
                             <p className="truncate text-base font-medium">{b.name}</p>
-                            {!data.monthlyBillsCollapsedAll && (
+                            {!monthlyBillsCollapsedAll && (
                               <p className="text-xs text-[var(--dim)]">
                                 paid from {b.paidBy}
                                 {b.notes ? ` · ${b.notes}` : ""}
@@ -4598,7 +4652,7 @@ export function App() {
                                 ? `${fmt(b.amountCents)}/mo`
                                 : "not yet in effect"}
                             </span>
-                            {!data.monthlyBillsCollapsedAll && (
+                            {!monthlyBillsCollapsedAll && (
                               <>
                                 <button type="button" aria-label={`Edit ${b.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditBill(b)}>
                                   Edit
@@ -4610,7 +4664,7 @@ export function App() {
                             )}
                           </div>
                         </div>
-                        {!data.monthlyBillsCollapsedAll && (
+                        {!monthlyBillsCollapsedAll && (
                           <div>
                         <label className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                           <span className="text-[var(--dim)]">Category</span>
@@ -5131,15 +5185,13 @@ export function App() {
                       <button
                         type="button"
                         className={`${btnGhost} ml-auto`}
-                        aria-expanded={!data.yearlyBillsCollapsedAll}
+                        aria-expanded={!yearlyBillsCollapsedAll}
                         aria-controls="yearly-bills-list"
                         onClick={() =>
-                          setYearlyBillsCollapsedAll.mutate({
-                            collapsed: !data.yearlyBillsCollapsedAll,
-                          })
+                          handleYearlyBillsCollapsedAllChange(!yearlyBillsCollapsedAll)
                         }
                       >
-                        {data.yearlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
+                        {yearlyBillsCollapsedAll ? "Expand all" : "Collapse all"}
                       </button>
                     )}
                   </div>
@@ -5229,7 +5281,7 @@ export function App() {
                           </span>
                         )}
                       </div>
-                      {!data.yearlyBillsCollapsedAll && (
+                      {!yearlyBillsCollapsedAll && (
                         <div className="ml-auto flex shrink-0 gap-1">
                           <button type="button" aria-label={`Edit ${y.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditYearly(y)}>
                             Edit
@@ -5240,7 +5292,7 @@ export function App() {
                         </div>
                       )}
                     </div>
-                    {!data.yearlyBillsCollapsedAll && (
+                    {!yearlyBillsCollapsedAll && (
                       <>
                     <label className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                       <span className="text-[var(--dim)]">Category</span>
@@ -5453,11 +5505,9 @@ export function App() {
                 the sections' persisted Collapse all / Expand all
                 system and defaults to collapsed on first load. */}
             <YearInSpendingBlock
-              collapsed={data.yearInSpendingCollapsedAll}
+              collapsed={yearInSpendingCollapsedAll}
               onToggleCollapsed={() =>
-                setYearInSpendingCollapsedAll.mutate({
-                  collapsed: !data.yearInSpendingCollapsedAll,
-                })
+                handleYearInSpendingCollapsedAllChange(!yearInSpendingCollapsedAll)
               }
             />
 

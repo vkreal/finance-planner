@@ -165,6 +165,13 @@ export const EXTRA_INCOME_START_AGE_DEFAULT = 67;
 // stocks % is always used exactly as saved; this value only ever
 // fills a blank / never-set field.
 export const STOCKS_PCT_DEFAULT = 95;
+// Factory default for Expected return — what a fresh start seeds
+// and what Reset to defaults restores. The blended return (6.75%
+// at the 95% stocks mix) proved too optimistic, so the default is
+// a flat 5% (contract v132). Volatility still defaults to the
+// blend. A saved expected return is always used exactly as saved;
+// this value only ever fills a blank / never-set field.
+export const EXPECTED_RETURN_DEFAULT = 5;
 
 // Effective guardrails knobs from raw (possibly null / blank)
 // values: a blank knob falls back to its professional default —
