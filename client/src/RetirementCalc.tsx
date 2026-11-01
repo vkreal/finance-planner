@@ -18,6 +18,7 @@ import { api, type ApiResponse } from "./api";
 import { Explainer } from "./Explainer";
 import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
+import type { RothSectionId } from "./RothConversion";
 import {
 HISTORICAL,
 HISTORICAL_SOURCE_NAME,
@@ -359,11 +360,6 @@ function formatMonthlyDisplay(annualStr: string): string {
     maximumFractionDigits: 2,
   })}`;
 }
-function monthlyRawFromAnnual(annualStr: string): string {
-  const cents = parseMoney(annualStr);
-  if (cents == null) return annualStr;
-  return String(Math.round(cents / 12) / 100);
-}
 function formatPctDisplay(s: string): string {
   const n = parseNum(s);
   if (n == null) return s;
@@ -377,13 +373,50 @@ const btnPrimary =
 
 type Tab = "projection" | "historical" | "montecarlo" | "maxspending";
 
-export function RetirementCalc() {
+export function RetirementCalc({
+  onJumpToRothField,
+}: {
+  // Cross-view jump (contract v133): tapping a plan-sourced
+  // field asks App to switch to the Tax Plan view and jump to
+  // the field it came from.
+  onJumpToRothField?: (fieldId: string, section?: RothSectionId) => void;
+}) {
   const queryClient = useQueryClient();
   const q = useQuery({
     queryKey: ["retirementcalc"],
     queryFn: () => api.getRetirementCalc({}),
   });
   const data: CalcData | undefined = q.data;
+  // The Tax Plan record (contract v133): the single source of
+  // truth for the five shared plan fields — spending,
+  // retirement age, current age (from the birth year it
+  // stores), end age, and expected return. Same query key as
+  // the Tax Plan view, so the record is shared, not fetched
+  // twice.
+  const rothQ = useQuery({
+    queryKey: ["rothplanner"],
+    queryFn: () => api.getRothPlanner({}),
+  });
+  // The five plan-sourced values (contract v133): the Tax Plan
+  // record's figures where it has them, else the same
+  // fallbacks a fresh first open uses — trailing True cost
+  // for spending, the birth-year current age the server
+  // already derives from the Tax Plan record, 57 / 95 for the
+  // ages, and the 5% expected-return default. Current age is
+  // NOT read from the Tax Plan record directly (it stores a
+  // birth year, not an age): getRetirementCalc's
+  // defaultCurrentAge is that birth year turned into an age.
+  const sourced = useMemo(() => {
+    const rp = rothQ.data?.saved;
+    return {
+      spendingCents:
+        rp?.annualSpendingCents ?? data?.defaultSpendingAnnualCents ?? 0,
+      currentAge: data?.defaultCurrentAge ?? 55,
+      retirementAge: rp?.retirementAge ?? RETIREMENT_AGE_DEFAULT,
+      endAge: rp?.endAge ?? 95,
+      expectedReturnPct: rp?.expectedReturnPct ?? EXPECTED_RETURN_DEFAULT,
+    };
+  }, [rothQ.data, data]);
 
   const [tab, setTab] = useState<Tab>("projection");
   /* Plan-inputs form fold: the whole inputs panel collapses
@@ -408,18 +441,17 @@ export function RetirementCalc() {
      the plan-inputs fold first when it is folded, scroll on a
      later frame, then flash an outline on the field for
      ~1.6s (applied to the element directly and restored
-     afterwards). The Assumptions fields (expected return,
-     volatility) live behind their own collapsed group, which
-     expands via a server round-trip — so open that too when
-     the target lives there, and keep looking for the field
-     briefly instead of giving up after one attempt (v119). */
+     afterwards). The Volatility field lives behind its own
+     collapsed Assumptions group, which expands via a server
+     round-trip — so open that too when the target lives
+     there, and keep looking for the field briefly instead of
+     giving up after one attempt (v119). (The five plan fields
+     no longer live here — contract v133 — so their taps go to
+     the Tax Plan through jumpToRoth instead.) */
   const rcFlashTimer = useRef<number | null>(null);
   const jumpToRcField = (fieldId: string) => {
     if (inputsFolded) setInputsFolded(false);
-    if (
-      (fieldId === "rc-expected" || fieldId === "rc-vol") &&
-      assumptionsCollapsed
-    ) {
+    if (fieldId === "rc-vol" && assumptionsCollapsed) {
       handleAssumptionsCollapsedChange(false);
     }
     const started = Date.now();
@@ -448,6 +480,18 @@ export function RetirementCalc() {
   };
   const rcTapCls =
     "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
+  // A plan-sourced field (contract v133): it looks like the
+  // input it replaces (same box, same size) but it is a tap to
+  // the Tax Plan field it came from, not an input — the dotted
+  // underline marks it as a tap, like the summary tiles.
+  const sourcedFieldCls =
+    "block w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-left text-base text-[var(--text)] underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
+  // A plan-sourced tap (contract v133): one call site per
+  // field, so the Tax Plan field id and section live next to
+  // the value they explain.
+  const jumpToRoth = (fieldId: string, section: RothSectionId) => () => {
+    onJumpToRothField?.(fieldId, section);
+  };
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -516,10 +560,6 @@ export function RetirementCalc() {
   // never refuses (no epoch guard), so no revert is needed.
   const [assumptionsOverride, setAssumptionsOverride] = useState<boolean | null>(null);
   const assumptionsCollapsed = assumptionsOverride ?? data?.assumptionsCollapsed ?? true;
-  // Raw monthly text while the spending field is focused in
-  // per-month mode, so typing is never rewritten mid-edit; the
-  // canonical annual string is updated on every keystroke.
-  const [spendingMonthDraft, setSpendingMonthDraft] = useState("");
   const [currentAge, setCurrentAge] = useState("55");
   const [retirementAge, setRetirementAge] = useState(String(RETIREMENT_AGE_DEFAULT));
   const [endAge, setEndAge] = useState("95");
@@ -559,11 +599,14 @@ export function RetirementCalc() {
      conflict path (a refused save re-shows the latest saved
      version). `saved` may be null (no saved record): every
      field then falls back to the load defaults in `d`, exactly
-     as a fresh first open does. */
+     as a fresh first open does. The five plan fields — spending,
+     current age, retirement age, end age, expected return —
+     come from the Tax Plan record (contract v133) and are NOT
+     read from this view's saved copies: those copies are
+     vestigial (kept in the record, ignored on load). */
   const hydrateFromSaved = (saved: CalcData["saved"], d: CalcData) => {
     const s = saved;
     const data = d;
-    const curAge = s?.currentAge ?? data.defaultCurrentAge;
     const stocks = s?.stocksPct ?? STOCKS_PCT_DEFAULT;
     setPortfolio(
       s?.portfolioCents != null
@@ -582,25 +625,13 @@ export function RetirementCalc() {
         s.portfolioCents === data.nwTotalCents ||
         s.portfolioCents === data.defaultPortfolioCents,
     );
-    setSpending(
-      s?.spendingCents != null
-        ? String(s.spendingCents / 100)
-        : String(data.defaultSpendingAnnualCents / 100),
-    );
+    setSpending(String(sourced.spendingCents / 100));
     // The remembered spending-field unit wins on load; the
     // server resolves "month" when nothing was ever stored.
     setSpendingUnit(data.spendingUnit);
-    setCurrentAge(String(curAge));
-    // A fresh state (no saved inputs at all) opens on the plan
-    // defaults — retirement age 57, extra income blank (none),
-    // extra income start age 67. A saved state is shown exactly
-    // as saved: a saved blank retirement age reloads as the
-    // current age, and a saved $0 / blank extra income stays
-    // blank (none).
-    setRetirementAge(
-      String(s?.retirementAge ?? (s ? curAge : RETIREMENT_AGE_DEFAULT)),
-    );
-    setEndAge(String(s?.endAge ?? 95));
+    setCurrentAge(String(sourced.currentAge));
+    setRetirementAge(String(sourced.retirementAge));
+    setEndAge(String(sourced.endAge));
     setStocksPct(String(stocks));
     setExtraIncome(
       s?.extraIncomeCents != null && s.extraIncomeCents > 0
@@ -614,7 +645,7 @@ export function RetirementCalc() {
           ? ""
           : String(EXTRA_INCOME_START_AGE_DEFAULT),
     );
-    const exp = s?.expectedReturnPct ?? EXPECTED_RETURN_DEFAULT;
+    const exp = sourced.expectedReturnPct;
     const vol = s?.volatilityPct ?? blendedVol(stocks);
     setExpectedPct(String(Math.round(exp * 100) / 100));
     setVolPct(String(Math.round(vol * 100) / 100));
@@ -641,6 +672,24 @@ export function RetirementCalc() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, init]);
 
+  // Keep the five plan-sourced fields on the Tax Plan record
+  // (contract v133): whenever the record lands or changes —
+  // first load, a Tax Plan save, a refetch — the five states
+  // follow it. The autosave below then persists the same
+  // values into this view's record, so the record stays in
+  // sync; the next refetch returns the same values, so there
+  // is no loop (setting a state to its current value is a
+  // no-op in React).
+  useEffect(() => {
+    if (!init) return;
+    setSpending(String(sourced.spendingCents / 100));
+    setCurrentAge(String(sourced.currentAge));
+    setRetirementAge(String(sourced.retirementAge));
+    setEndAge(String(sourced.endAge));
+    setExpectedPct(String(Math.round(sourced.expectedReturnPct * 100) / 100));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourced, init]);
+
   // Keep both tracked revisions in step with every refetch (the
   // server invalidates this query after writes, ours included —
   // and this view's scenario mutations adopt state through
@@ -655,15 +704,17 @@ export function RetirementCalc() {
     }
   }, [data]);
 
-  // When the mix changes, follow the blended defaults for expected
-  // return / volatility unless the user has typed their own values.
+  // When the mix changes, follow the blended default for
+  // volatility unless the user has typed their own value.
+  // Expected return does NOT follow the blend (contract v133):
+  // it comes from the Tax Plan record, so a mix change leaves
+  // it where the plan has it.
   useEffect(() => {
     if (!init) return;
     const stocks = parseNum(stocksPct);
     if (stocks == null || stocks < 0 || stocks > 100) return;
     const exp = String(Math.round(blendedExpected(stocks) * 100) / 100);
     const vol = String(Math.round(blendedVol(stocks) * 100) / 100);
-    if (expectedPct === prevBlend.current.exp) setExpectedPct(exp);
     if (volPct === prevBlend.current.vol) setVolPct(vol);
     prevBlend.current = { exp, vol };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -888,31 +939,35 @@ export function RetirementCalc() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [init, portfolio, portfolioFollowing, spending, currentAge, retirementAge, endAge, stocksPct, extraIncome, extraStartAge, expectedPct, volPct, strategy, percentOfPortfolio, guardrailsCutPct, guardrailsRaisePct, guardrailsAdjustmentPct, phaseStartAge, phaseDeclinePct]);
 
-  // Reset every input to the same defaults a fresh first open
-  // computes (see the init effect above): portfolio and spending
-  // from the live defaults the server computed for this load —
+  // Reset every Retirement-owned input to the same defaults a
+  // fresh first open computes (see the init effect above):
   // portfolio is the Net Worth-following figure (the latest Net
   // Worth total respecting the current Include house & mortgage
   // toggle, minus the 529 bucket) and keeps following Net Worth
-  // (it saves as null, like a fresh open), spending is the trailing True
-  // cost annualised — and the built-in defaults for the rest
-  // (current age from the birth year stored in the Roth inputs —
-  // the server's defaultCurrentAge, retirement age 57, end age 95,
-  // stocks 95% with the 5% expected-return default and its blended
-  // volatility, extra income blank (none) with its start age defaulting to
-  // 67, the Constant spending
-  // strategy at 5% for the percent input, the professional
-  // guardrails knobs 120 / 80 / 10, and the phased knobs 75 / 1). The reset values are saved immediately through
-  // the same save action as any other edit, so they persist and the
-  // engines re-run on them as soon as state updates. Saved
-  // scenarios are NOT touched: the server merges every save with
-  // the stored scenarios.
+  // (it saves as null, like a fresh open), and the built-in
+  // defaults for the rest (stocks 95% with its blended
+  // volatility, extra income blank (none) with its start age
+  // defaulting to 67, the Constant spending strategy at 5% for
+  // the percent input, the professional guardrails knobs 120 /
+  // 80 / 10, and the phased knobs 75 / 1). The five plan fields
+  // — spending, current age, retirement age, end age, expected
+  // return — are NOT reset (contract v133): they come from the
+  // Tax Plan record, so the reset leaves them where the plan
+  // has them and saves those values through unchanged. The
+  // reset values are saved immediately through the same save
+  // action as any other edit, so they persist and the engines
+  // re-run on them as soon as state updates. Saved scenarios
+  // are NOT touched: the server merges every save with the
+  // stored scenarios.
   const handleResetToDefaults = () => {
     if (!data) return;
-    const defaultCurrentAge = data.defaultCurrentAge;
     const defaultStocks = STOCKS_PCT_DEFAULT;
-    const defaultEndAge = 95;
-    const exp = EXPECTED_RETURN_DEFAULT;
+    // The plan-sourced expected return (contract v133): the
+    // reset keeps it where the Tax Plan has it. prevBlend
+    // records it alongside the blend volatility for the reset
+    // mix (95% stocks), so the blend-following effect compares
+    // volatility against the right baseline afterwards.
+    const exp = sourced.expectedReturnPct;
     const vol = blendedVol(defaultStocks);
     const expStr = String(Math.round(exp * 100) / 100);
     const volStr = String(Math.round(vol * 100) / 100);
@@ -924,14 +979,9 @@ export function RetirementCalc() {
     pendingSaveOkRef.current = null;
     setPortfolio(String(data.defaultPortfolioCents / 100));
     setPortfolioFollowing(true);
-    setSpending(String(data.defaultSpendingAnnualCents / 100));
-    setCurrentAge(String(defaultCurrentAge));
-    setRetirementAge(String(RETIREMENT_AGE_DEFAULT));
-    setEndAge(String(defaultEndAge));
     setStocksPct(String(defaultStocks));
     setExtraIncome("");
     setExtraStartAge(String(EXTRA_INCOME_START_AGE_DEFAULT));
-    setExpectedPct(expStr);
     setVolPct(volStr);
     setStrategy("constant");
     setPercentOfPortfolio("5");
@@ -947,10 +997,12 @@ export function RetirementCalc() {
       // Net Worth-following figure (latest total minus the 529
       // bucket) and keeps following future snapshots.
       portfolioCents: null,
-      spendingCents: data.defaultSpendingAnnualCents,
-      currentAge: defaultCurrentAge,
-      retirementAge: RETIREMENT_AGE_DEFAULT,
-      endAge: defaultEndAge,
+      // The five plan fields (contract v133): carried through
+      // at the Tax Plan record's values, not reset.
+      spendingCents: sourced.spendingCents,
+      currentAge: sourced.currentAge,
+      retirementAge: sourced.retirementAge,
+      endAge: sourced.endAge,
       stocksPct: defaultStocks,
       extraIncomeCents: EXTRA_INCOME_DEFAULT_CENTS,
       extraIncomeStartAge: EXTRA_INCOME_START_AGE_DEFAULT,
@@ -1005,12 +1057,14 @@ export function RetirementCalc() {
     // engines never run a different plan than the saved one:
     // a blank portfolio is saved as null and reloads as the
     // Net Worth-following figure (the latest net worth total
-    // minus the 529 bucket); a blank spending reloads as the
-    // trailing True cost default; blank ages reload as the
-    // birth-year current-age default / the current age / 95. (The
-    // Percent strategy never reads the annual spending input — its
-    // field is hidden — so a cleared spending field falls back to
-    // 0 there, which that strategy ignores.)
+    // minus the 529 bucket). The five plan fields (spending,
+    // ages, expected return) are sourced from the Tax Plan
+    // record (contract v133) and are never blank in practice;
+    // the fallbacks below are the same values the sourcing
+    // itself falls back to, so they agree. (The Percent
+    // strategy never reads the annual spending input — its
+    // field is hidden — so a cleared spending field falls back
+    // to 0 there, which that strategy ignores.)
     const start = parseMoney(portfolio) ?? (data ? data.defaultPortfolioCents : null);
     const spend =
       parseMoney(spending) ??
@@ -1570,16 +1624,24 @@ export function RetirementCalc() {
     saveScenario.mutate(buildSavePayloadRef.current());
   };
 
-  // Load an input set into the fields: replace every input field
-  // with the set's values (nulls fall back exactly as a fresh load
-  // would interpret them) and persist immediately through the
-  // normal save action. Used both by Load-a-scenario and by
-  // Back to my plan (with the baseline input set), so going back
-  // writes the baseline back through exactly the same path and the
-  // saved record ends up byte-identical to the baseline.
+  // Load an input set into the fields: replace every
+  // Retirement-owned input field with the set's values (nulls
+  // fall back exactly as a fresh load would interpret them)
+  // and persist immediately through the normal save action.
+  // Used both by Load-a-scenario and by Back to my plan (with
+  // the baseline input set), so going back writes the baseline
+  // back through exactly the same path. The five plan fields
+  // — spending, current age, retirement age, end age,
+  // expected return — are NOT loaded from the scenario
+  // (contract v133): they come from the Tax Plan record, and
+  // the save carries the Tax Plan's values for them, so a
+  // scenario can vary only the Retirement-owned inputs — and
+  // "Back to my plan" restores the baseline's Retirement-owned
+  // inputs while the five plan fields stay where the Tax Plan
+  // has them (identical to the baseline's when the plan has
+  // not changed since the open).
   const applyPlanInputs = (sc: Omit<Scenario, "name">) => {
     if (!data) return;
-    const curAge = sc.currentAge ?? data.defaultCurrentAge;
     const scStocks = sc.stocksPct ?? STOCKS_PCT_DEFAULT;
     setPortfolio(
       sc.portfolioCents != null
@@ -1591,14 +1653,6 @@ export function RetirementCalc() {
     // Worth-following figure); one with a frozen portfolio is a
     // set value, used as-is.
     setPortfolioFollowing(sc.portfolioCents == null);
-    setSpending(
-      sc.spendingCents != null
-        ? String(sc.spendingCents / 100)
-        : String(data.defaultSpendingAnnualCents / 100),
-    );
-    setCurrentAge(String(curAge));
-    setRetirementAge(String(sc.retirementAge ?? curAge));
-    setEndAge(String(sc.endAge ?? 95));
     setStocksPct(String(scStocks));
     setExtraIncome(
       sc.extraIncomeCents != null && sc.extraIncomeCents > 0
@@ -1608,9 +1662,7 @@ export function RetirementCalc() {
     setExtraStartAge(
       sc.extraIncomeStartAge != null ? String(sc.extraIncomeStartAge) : "",
     );
-    const exp = sc.expectedReturnPct ?? blendedExpected(scStocks);
     const volS = sc.volatilityPct ?? blendedVol(scStocks);
-    setExpectedPct(String(Math.round(exp * 100) / 100));
     setVolPct(String(Math.round(volS * 100) / 100));
     setStrategy(sc.strategy ?? "constant");
     setPercentOfPortfolio(String(sc.percentOfPortfolio ?? 5));
@@ -1622,7 +1674,7 @@ export function RetirementCalc() {
     setPhaseStartAge(String(sc.phaseStartAge ?? PHASE_START_AGE_DEFAULT));
     setPhaseDeclinePct(String(sc.phaseDeclinePct ?? PHASE_DECLINE_PCT_DEFAULT));
     prevBlend.current = {
-      exp: String(Math.round(blendedExpected(scStocks) * 100) / 100),
+      exp: String(Math.round(sourced.expectedReturnPct * 100) / 100),
       vol: String(Math.round(blendedVol(scStocks) * 100) / 100),
     };
     if (saveTimer.current != null) {
@@ -1633,14 +1685,16 @@ export function RetirementCalc() {
     pendingSaveOkRef.current = null;
     const payload: Parameters<typeof api.saveRetirementCalc>[0] = {
       portfolioCents: sc.portfolioCents,
-      spendingCents: sc.spendingCents,
-      currentAge: sc.currentAge,
-      retirementAge: sc.retirementAge,
-      endAge: sc.endAge,
+      // The five plan fields (contract v133): the Tax Plan
+      // record's values, not the scenario's.
+      spendingCents: sourced.spendingCents,
+      currentAge: sourced.currentAge,
+      retirementAge: sourced.retirementAge,
+      endAge: sourced.endAge,
       stocksPct: sc.stocksPct,
       extraIncomeCents: sc.extraIncomeCents,
       extraIncomeStartAge: sc.extraIncomeStartAge,
-      expectedReturnPct: sc.expectedReturnPct,
+      expectedReturnPct: sourced.expectedReturnPct,
       volatilityPct: sc.volatilityPct,
       strategy: sc.strategy,
       percentOfPortfolio: sc.percentOfPortfolio,
@@ -1863,23 +1917,19 @@ export function RetirementCalc() {
 
   /* Annual spending provenance note (rendered directly under the
      field through the same More/Less Explainer pattern as the
-     Starting portfolio note): the field is a STORED number — it
-     was seeded from the trailing True cost figure the server
-     computes (defaultSpendingAnnualCents) but does not follow it.
-     While the field's effective value equals that figure, the
-     short line says where it came from; when it differs, the
-     short line names the field as the user's entry and the
-     current trailing figure, and the "Use $X" control under the
-     note writes the trailing figure into the field through the
-     normal autosave path. The trailing figure and its window
-     (start/end months, months averaged) come only from the
-     server response — the client never recomputes True cost.
-     The More detail names both figures whenever they differ, so
-     a trailing figure that has moved since the entry was set
-     shows the gap plainly instead of silently drifting. */
+     Starting portfolio note): the value comes from the Tax Plan
+     record (contract v133) — this view uses it as-is and never
+     edits it. While it equals the trailing True cost figure,
+     the short line says so; when it differs, the short line
+     names the trailing figure for reference. The trailing
+     figure and its window (start/end months, months averaged)
+     come only from the server response — the client never
+     recomputes True cost. The More detail names both figures
+     whenever they differ, so a Tax Plan spending set apart
+     from the trailing figure shows the gap plainly. */
   const trailingSpendingCents = data.defaultSpendingAnnualCents;
   // The tracked average's monthly presentation for per-month
-  // entry mode: the annual figure ÷ 12, rounded to cents for
+  // display mode: the annual figure ÷ 12, rounded to cents for
   // display (15000000 annual cents → 1250000 monthly cents).
   const trailingMonthlyCents = Math.round(trailingSpendingCents / 12);
   // A blank (or unparseable) field runs on the trailing figure —
@@ -1903,23 +1953,31 @@ export function RetirementCalc() {
       : `last ${data.defaultSpendingMonths} months`;
   const spendingShortLine = spendingEqualsTrailing ? (
     <>
-      From your {spendingMonthsPhrase} of spending (True cost).{" "}
+      From the Tax Plan — it matches your {spendingMonthsPhrase} of spending (True cost). Tap
+      the value to change it there.{" "}
       {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Tax Plan view models that tax year by year."}
     </>
   ) : (
     <>
-      Your entry · your {spendingMonthsPhrase} of spending averages{" "}
+      From the Tax Plan. Your {spendingMonthsPhrase} of spending averages{" "}
       {spendingUnit === "month"
         ? `${fmt(trailingMonthlyCents)}/mo`
         : fmt(trailingSpendingCents)}
-      {". "}
+      {" a year for reference. "}
+      Tap the value to change it there.{" "}
       {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Tax Plan view models that tax year by year."}
     </>
   );
   const spendingMore = spendingEqualsTrailing ? (
     <>
       <p>
-        This value is your trailing True cost figure:{" "}
+        This value comes from the Tax Plan — it is the plan&rsquo;s
+        annual spending, and this view uses it as-is. To change it,
+        tap the value above: it jumps to the spending field in the
+        Tax Plan, which is the one place the figure is set.
+      </p>
+      <p>
+        It matches your trailing True cost figure:{" "}
         {spendingUnit === "month"
           ? `${fmt(trailingMonthlyCents)}/mo`
           : `${fmt(trailingSpendingCents)} a year`}{" "}
@@ -1927,20 +1985,17 @@ export function RetirementCalc() {
         dashboard averages: each month&rsquo;s spending with yearly and
         periodic bills spread evenly across the year.
       </p>
-      <p>
-        This field is a stored number — it does not follow your
-        spending on its own. As new months are added the trailing
-        figure can move; when it no longer matches this value, this
-        line will show both figures and offer the new one. Type your
-        own value to use it as-is, or clear the field to use the
-        trailing figure.
-      </p>
     </>
   ) : (
     <>
       <p>
-        Your entry is {fmt(effectiveSpendingCents)} a year. Your{" "}
-        {spendingMonthsPhrase} of spending (True cost) now average{" "}
+        This value comes from the Tax Plan — it is the plan&rsquo;s
+        annual spending, and this view uses it as-is. To change it,
+        tap the value above: it jumps to the spending field in the
+        Tax Plan, which is the one place the figure is set.
+      </p>
+      <p>
+        Your {spendingMonthsPhrase} of spending (True cost) now averages{" "}
         {spendingUnit === "month"
           ? `${fmt(trailingMonthlyCents)}/mo`
           : `${fmt(trailingSpendingCents)} a year`}{" "}
@@ -1949,45 +2004,31 @@ export function RetirementCalc() {
         {spendingUnit === "month"
           ? `${fmt(Math.round(Math.abs(effectiveSpendingCents - trailingSpendingCents) / 12))}/mo`
           : fmt(Math.abs(effectiveSpendingCents - trailingSpendingCents))}{" "}
-        apart, so the trailing figure no longer matches your entry: it
-        may have moved as new months were added, or the entry may have
-        been typed to differ.
-      </p>
-      <p>
-        This field does not follow your spending automatically — it
-        stays at your entry until you change it. Use the &ldquo;Use{" "}
-        {spendingUnit === "month"
-          ? `${fmt(trailingMonthlyCents)}/mo`
-          : fmt(trailingSpendingCents)}
-        &rdquo; control to switch to the
-        trailing figure, type your own value, or clear the field to
-        use the trailing figure.
+        apart, so the Tax Plan&rsquo;s spending was set to differ from
+        the trailing figure — for example, to hold a cost the
+        tracker does not.
       </p>
     </>
   );
-  // Write the trailing figure through the normal save path: set
-  // the field exactly as if it had been typed, so the debounced
-  // autosave persists it and the engines re-run on it — no
-  // separate write, and the line returns to the equals state once
-  // the value lands.
-  const handleUseTrailingSpending = () => {
-    setSpending(String(trailingSpendingCents / 100));
-  };
 
   /* Which effective inputs differ from the fresh-open defaults
-     (the same values Reset to defaults restores: live portfolio /
-     trailing-spending defaults, ages birth-year-default / 57 / 95, 95% stocks with
-     its blended return / volatility, extra income blank (none)
-     with a start age of 67, Constant strategy at 5%). Compared on the EFFECTIVE values the engines
-     actually use — clamped ages, blank return / volatility read as
-     the blend — so the strip below never claims "defaults" for a
-     plan the engines are not running, or "custom" for one they are
-     running as defaults. Fields a strategy does not use are not
-     compared (the $ spending under Percent, the % under the
-     others, the income start age when there is no income). */
+     (the same values Reset to defaults restores: live portfolio,
+     95% stocks with its blended volatility, extra income blank
+     (none) with a start age of 67, Constant strategy at 5%).
+     The five plan fields — spending, current age, retirement
+     age, end age, expected return — are NOT compared here
+     (contract v133): they come from the Tax Plan record, so
+     they ARE the plan values and never count as a diff.
+     Compared on the EFFECTIVE values the engines actually use
+     — clamped ages, blank return / volatility read as the
+     blend — so the strip below never claims "defaults" for a
+     plan the engines are not running, or "custom" for one they
+     are running as defaults. Fields a strategy does not use
+     are not compared (the $ spending under Percent, the %
+     under the others, the income start age when there is no
+     income). */
   const defaultDiffLabels: string[] = [];
   if (inputs) {
-    const expPct = Math.round(expected * 10000) / 100;
     const volPctShown = Math.round(vol * 10000) / 100;
     if (inputs.startCents !== data.defaultPortfolioCents)
       defaultDiffLabels.push("Starting portfolio");
@@ -1996,8 +2037,6 @@ export function RetirementCalc() {
     if (inputs.strategy === "percent") {
       if (inputs.percentOfPortfolio !== 5)
         defaultDiffLabels.push("% of portfolio");
-    } else if (inputs.spendingCents !== data.defaultSpendingAnnualCents) {
-      defaultDiffLabels.push("Annual spending");
     }
     if (inputs.strategy === "guardrails") {
       if (inputs.guardrailsCutPct !== GUARDRAILS_CUT_DEFAULT)
@@ -2014,9 +2053,6 @@ export function RetirementCalc() {
         defaultDiffLabels.push(`Phased step-down ${inputs.phaseDeclinePct}%/yr`);
     }
     if (stocks !== STOCKS_PCT_DEFAULT) defaultDiffLabels.push("Stocks %");
-    if (inputs.currentAge !== data.defaultCurrentAge) defaultDiffLabels.push("Current age");
-    if (inputs.retirementAge !== RETIREMENT_AGE_DEFAULT) defaultDiffLabels.push("Retirement age");
-    if (inputs.endAge !== 95) defaultDiffLabels.push("End age");
     if (inputs.extraIncomeCents !== EXTRA_INCOME_DEFAULT_CENTS)
       defaultDiffLabels.push("Extra income");
     if (
@@ -2025,8 +2061,6 @@ export function RetirementCalc() {
       inputs.extraIncomeStartAge !== EXTRA_INCOME_START_AGE_DEFAULT
     )
       defaultDiffLabels.push("Extra income start age");
-    if (expPct !== EXPECTED_RETURN_DEFAULT)
-      defaultDiffLabels.push("Expected return");
     if (volPctShown !== Math.round(blendedVol(STOCKS_PCT_DEFAULT) * 100) / 100)
       defaultDiffLabels.push("Volatility");
   }
@@ -2375,9 +2409,9 @@ export function RetirementCalc() {
           spend{" "}
           <button
             type="button"
-            aria-label="Go to the Annual spending field"
+            aria-label="Go to the Annual spending field in the Tax Plan"
             className={rcTapCls}
-            onClick={() => jumpToRcField("rc-spending")}
+            onClick={() => jumpToRoth("roth-Annual-spending", "household")}
           >
             {fmt(inputs.spendingCents)}
           </button>
@@ -2388,9 +2422,9 @@ export function RetirementCalc() {
           spend{" "}
           <button
             type="button"
-            aria-label="Go to the Annual spending field"
+            aria-label="Go to the Annual spending field in the Tax Plan"
             className={rcTapCls}
-            onClick={() => jumpToRcField("rc-spending")}
+            onClick={() => jumpToRoth("roth-Annual-spending", "household")}
           >
             {fmt(inputs.spendingCents)}
           </button>
@@ -2418,9 +2452,9 @@ export function RetirementCalc() {
           spend{" "}
           <button
             type="button"
-            aria-label="Go to the Annual spending field"
+            aria-label="Go to the Annual spending field in the Tax Plan"
             className={rcTapCls}
-            onClick={() => jumpToRcField("rc-spending")}
+            onClick={() => jumpToRoth("roth-Annual-spending", "household")}
           >
             {fmt(inputs.spendingCents)}
           </button>
@@ -2463,9 +2497,9 @@ export function RetirementCalc() {
         Retire at{" "}
         <button
           type="button"
-          aria-label="Go to the Retirement age field"
+          aria-label="Go to the Retirement age field in the Tax Plan"
           className={rcTapCls}
-          onClick={() => jumpToRcField("rc-retirement-age")}
+          onClick={() => jumpToRoth("roth-Retirement-age", "household")}
         >
           {inputs.retirementAge}
         </button>{" "}
@@ -2678,19 +2712,40 @@ export function RetirementCalc() {
           <h3 className="display text-base font-semibold">You</h3>
           <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
             <div>
-              <label htmlFor="rc-current-age" className={labelCls}>Current age</label>
-              <input id="rc-current-age" type="text" inputMode="numeric" className={inputCls} value={currentAge} onChange={(e) => setCurrentAge(e.target.value)} />
-              <p className="mt-1 text-xs text-[var(--dim)]">Blank = {data.defaultCurrentAge}{data.defaultCurrentAgeFromBirthYear ? " (from your birth year)" : ""}.</p>
+              <span className={labelCls}>Current age</span>
+              <button
+                type="button"
+                aria-label="Go to your birth year in the Tax Plan"
+                onClick={jumpToRoth("roth-Your-birth-year", "household")}
+                className={sourcedFieldCls}
+              >
+                {currentAge}
+              </button>
+              <p className="mt-1 text-xs text-[var(--dim)]">From the Tax Plan — your birth year there sets this age. Tap the value to change it there.</p>
             </div>
             <div>
-              <label htmlFor="rc-retirement-age" className={labelCls}>Retirement age</label>
-              <input id="rc-retirement-age" type="text" inputMode="numeric" className={inputCls} value={retirementAge} onChange={(e) => setRetirementAge(e.target.value)} />
-              <p className="mt-1 text-xs text-[var(--dim)]">Later than today? The portfolio grows with no withdrawals until then. Blank = your current age.</p>
+              <span className={labelCls}>Retirement age</span>
+              <button
+                type="button"
+                aria-label="Go to retirement age in the Tax Plan"
+                onClick={jumpToRoth("roth-Retirement-age", "household")}
+                className={sourcedFieldCls}
+              >
+                {retirementAge}
+              </button>
+              <p className="mt-1 text-xs text-[var(--dim)]">From the Tax Plan. Later than today? The portfolio grows with no withdrawals until then. Tap the value to change it there.</p>
             </div>
             <div>
-              <label htmlFor="rc-end-age" className={labelCls}>End age</label>
-              <input id="rc-end-age" type="text" inputMode="numeric" className={inputCls} value={endAge} onChange={(e) => setEndAge(e.target.value)} />
-              <p className="mt-1 text-xs text-[var(--dim)]">The age the plan is tested to. Blank = 95.</p>
+              <span className={labelCls}>End age</span>
+              <button
+                type="button"
+                aria-label="Go to plan end age in the Tax Plan"
+                onClick={jumpToRoth("roth-Plan-end-age", "household")}
+                className={sourcedFieldCls}
+              >
+                {endAge}
+              </button>
+              <p className="mt-1 text-xs text-[var(--dim)]">From the Tax Plan — the age the plan is tested to. Tap the value to change it there.</p>
             </div>
           </div>
         </div>
@@ -2725,17 +2780,17 @@ export function RetirementCalc() {
             ) : (
               <div className="col-span-2 lg:col-span-1">
                 <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                  <label htmlFor="rc-spending" className="block text-sm font-medium text-[var(--text)]">
+                  <span className="block text-sm font-medium text-[var(--text)]">
                     {spendingUnit === "month" ? "Spending per month ($)" : "Annual spending ($)"}
-                  </label>
+                  </span>
                   <div
                     role="group"
-                    aria-label="Spending entry period"
+                    aria-label="Spending display period"
                     className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
                   >
                     <button
                       type="button"
-                      aria-label="Enter spending per year"
+                      aria-label="Show spending per year"
                       aria-pressed={spendingUnit === "year"}
                       onClick={() => handleSpendingUnitChange("year")}
                       className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
@@ -2744,7 +2799,7 @@ export function RetirementCalc() {
                     </button>
                     <button
                       type="button"
-                      aria-label="Enter spending per month"
+                      aria-label="Show spending per month"
                       aria-pressed={spendingUnit === "month"}
                       onClick={() => handleSpendingUnitChange("month")}
                       className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
@@ -2753,52 +2808,16 @@ export function RetirementCalc() {
                     </button>
                   </div>
                 </div>
-                <input
-                  id="rc-spending"
-                  type="text"
-                  inputMode="decimal"
-                  className={inputCls}
-                  value={
-                    spendingUnit === "month"
-                      ? focusField === "spending"
-                        ? spendingMonthDraft
-                        : formatMonthlyDisplay(spending)
-                      : focusField === "spending"
-                        ? spending
-                        : formatMoneyDisplay(spending)
-                  }
-                  onFocus={() => {
-                    setFocusField("spending");
-                    if (spendingUnit === "month") {
-                      setSpendingMonthDraft(monthlyRawFromAnnual(spending));
-                    }
-                  }}
-                  onBlur={() => setFocusField(null)}
-                  onChange={(e) => {
-                    if (spendingUnit === "month") {
-                      const raw = e.target.value;
-                      setSpendingMonthDraft(raw);
-                      const cleaned = raw.replace(/[$,\s]/g, "");
-                      const monthlyDollars =
-                        cleaned === "" ? NaN : Number(cleaned);
-                      // Cents-exact: a typed monthly amount becomes
-                      // the stored annual value at exactly monthly
-                      // × 12 — Math.round(monthlyDollars × 1200)
-                      // cents, never rounded to a prettier annual
-                      // figure. Blank / unparseable text is carried
-                      // through untouched, so the blank-means-
-                      // trailing fallback works exactly as in
-                      // per-year mode.
-                      setSpending(
-                        Number.isFinite(monthlyDollars)
-                          ? String(Math.round(monthlyDollars * 1200) / 100)
-                          : raw,
-                      );
-                    } else {
-                      setSpending(e.target.value);
-                    }
-                  }}
-                />
+                <button
+                  type="button"
+                  aria-label="Go to annual spending in the Tax Plan"
+                  onClick={jumpToRoth("roth-Annual-spending", "household")}
+                  className={sourcedFieldCls}
+                >
+                  {spendingUnit === "month"
+                    ? formatMonthlyDisplay(spending)
+                    : formatMoneyDisplay(spending)}
+                </button>
                 {spendingUnit === "month" && (
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     = {fmt(effectiveSpendingCents)}/yr
@@ -2813,22 +2832,6 @@ export function RetirementCalc() {
                 >
                   {spendingMore}
                 </Explainer>
-                {!spendingEqualsTrailing && (
-                  <button
-                    type="button"
-                    aria-label={
-                      spendingUnit === "month"
-                        ? `Use ${fmt(trailingMonthlyCents)}/mo for annual spending`
-                        : `Use ${fmt(trailingSpendingCents)} for annual spending`
-                    }
-                    onClick={handleUseTrailingSpending}
-                    className="mt-1.5 rounded-[var(--radius)] border border-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--accent)]"
-                  >
-                    {spendingUnit === "month"
-                      ? `Use ${fmt(trailingMonthlyCents)}/mo`
-                      : `Use ${fmt(trailingSpendingCents)}`}
-                  </button>
-                )}
                 {strategy === "guardrails" && (
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     Base spending for the guardrails strategy — it adjusts by the adjustment size below when the withdrawal rate drifts too far from its starting rate.
@@ -2946,9 +2949,16 @@ export function RetirementCalc() {
           {!assumptionsCollapsed && (
             <div id="rc-assumptions-fields" className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
               <div>
-                <label htmlFor="rc-expected" className={labelCls}>Expected real return (%)</label>
-                <input id="rc-expected" type="text" inputMode="decimal" className={inputCls} value={focusField === "expected" ? expectedPct : formatPctDisplay(expectedPct)} onFocus={() => setFocusField("expected")} onBlur={() => setFocusField(null)} onChange={(e) => setExpectedPct(e.target.value)} />
-                <p className="mt-1 text-xs text-[var(--dim)]">Used by Projection &amp; Monte Carlo. Blend default: stocks 7%, bonds 2%. Blank = the blend default for your mix.</p>
+                <span className={labelCls}>Expected real return (%)</span>
+                <button
+                  type="button"
+                  aria-label="Go to expected return in the Tax Plan"
+                  onClick={jumpToRoth("roth-Expected-return", "advanced")}
+                  className={sourcedFieldCls}
+                >
+                  {formatPctDisplay(expectedPct)}
+                </button>
+                <p className="mt-1 text-xs text-[var(--dim)]">From the Tax Plan. Used by Projection &amp; Monte Carlo. Tap the value to change it there.</p>
               </div>
               <div>
                 <label htmlFor="rc-vol" className={labelCls}>Volatility (%)</label>
@@ -3021,9 +3031,9 @@ export function RetirementCalc() {
                   <>
                     <button
                       type="button"
-                      aria-label="Go to the Annual spending field"
+                      aria-label="Go to the Annual spending field in the Tax Plan"
                       className={rcTapCls}
-                      onClick={() => jumpToRcField("rc-spending")}
+                      onClick={() => jumpToRoth("roth-Annual-spending", "household")}
                     >
                       {fmt(inputs.spendingCents)}
                     </button>
@@ -3046,27 +3056,27 @@ export function RetirementCalc() {
               <p className="tnum text-base font-semibold">
                 <button
                   type="button"
-                  aria-label="Go to the Current age field"
+                  aria-label="Go to your birth year in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRcField("rc-current-age")}
+                  onClick={() => jumpToRoth("roth-Your-birth-year", "household")}
                 >
                   {inputs.currentAge}
                 </button>{" "}
                 → retire{" "}
                 <button
                   type="button"
-                  aria-label="Go to the Retirement age field"
+                  aria-label="Go to the Retirement age field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRcField("rc-retirement-age")}
+                  onClick={() => jumpToRoth("roth-Retirement-age", "household")}
                 >
                   {inputs.retirementAge}
                 </button>{" "}
                 → end{" "}
                 <button
                   type="button"
-                  aria-label="Go to the End age field"
+                  aria-label="Go to the Plan end age field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRcField("rc-end-age")}
+                  onClick={() => jumpToRoth("roth-Plan-end-age", "household")}
                 >
                   {inputs.endAge}
                 </button>
@@ -3077,9 +3087,9 @@ export function RetirementCalc() {
               <p className="tnum text-base font-semibold">
                 <button
                   type="button"
-                  aria-label="Go to the Expected real return field"
+                  aria-label="Go to the Expected return field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRcField("rc-expected")}
+                  onClick={() => jumpToRoth("roth-Expected-return", "advanced")}
                 >
                   {(expected * 100).toFixed(2)}%
                 </button>
@@ -3405,9 +3415,9 @@ export function RetirementCalc() {
               <p className="tnum display text-base font-semibold">
                 <button
                   type="button"
-                  aria-label="Go to the Expected real return field"
+                  aria-label="Go to the Expected return field in the Tax Plan"
                   className={rcTapCls}
-                  onClick={() => jumpToRcField("rc-expected")}
+                  onClick={() => jumpToRoth("roth-Expected-return", "advanced")}
                 >
                   {(expected * 100).toFixed(2)}% / yr
                 </button>
@@ -3917,18 +3927,18 @@ export function RetirementCalc() {
                   No retired years to solve against: the retirement age (
                   <button
                     type="button"
-                    aria-label="Go to the Retirement age field"
+                    aria-label="Go to the Retirement age field in the Tax Plan"
                     className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
-                    onClick={() => jumpToRcField("rc-retirement-age")}
+                    onClick={() => jumpToRoth("roth-Retirement-age", "household")}
                   >
                     {inputs.retirementAge}
                   </button>
                   ) is not before the plan&rsquo;s end age (
                   <button
                     type="button"
-                    aria-label="Go to the End age field"
+                    aria-label="Go to the Plan end age field in the Tax Plan"
                     className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
-                    onClick={() => jumpToRcField("rc-end-age")}
+                    onClick={() => jumpToRoth("roth-Plan-end-age", "household")}
                   >
                     {inputs.endAge}
                   </button>

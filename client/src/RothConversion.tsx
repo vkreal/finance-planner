@@ -258,7 +258,7 @@ const asDrawOrderKey = (k: string): NonNullable<SavePayload["drawOrder"]> =>
     ? k
     : DEFAULT_DRAW_ORDER_KEY) as NonNullable<SavePayload["drawOrder"]>;
 
-type RothSectionId = "household" | "money" | "income" | "aca" | "advanced";
+export type RothSectionId = "household" | "money" | "income" | "aca" | "advanced";
 // The three results workspaces the segmented control switches
 // between: the fill-to-target plan result, the lifetime-tax
 // optimizer, and the strategy comparison + saved scenarios.
@@ -387,7 +387,15 @@ function WatchOutsPanel({
   );
 }
 
-export function RothConversion() {
+// Cross-view jump target (contract v133): App passes the Tax
+// Plan field a Retirement-view tap asked for, when it switches
+// this view in. The effect below jumps to it once the plan has
+// loaded; the nonce makes each target fire exactly once.
+export function RothConversion({
+  jumpTarget,
+}: {
+  jumpTarget?: { fieldId: string; section?: RothSectionId; nonce: number } | null;
+}) {
   const queryClient = useQueryClient();
   const rq = useQuery({ queryKey: ["rothplanner"], queryFn: () => api.getRothPlanner({}) });
   const retq = useQuery({
@@ -1008,6 +1016,31 @@ export function RothConversion() {
     );
     setUiInit(true);
   }, [uiq.data, uiInit]);
+  // Cross-view jump (contract v133): when App switches this
+  // view in with a jump target (a Retirement-view tap), jump
+  // to the field once the plan AND the UI state have loaded —
+  // the fields only exist once the saved record lands. The
+  // nonce ref makes each target fire exactly once; a later
+  // refetch of the plan does not re-jump. (This hook sits
+  // right after the UI-state init effect, NOT next to
+  // jumpToField: the "render" section below returns early
+  // while the plan is loading (and on load error), so a hook
+  // placed after those early returns would not run on the
+  // loading render but would run once the plan lands — a
+  // hook-count mismatch that crashes the view. And it must
+  // run after the UI-state init: that effect overwrites
+  // openSections from the server, so a jump that opened a
+  // closed-by-default section (Advanced) before it ran would
+  // be undone. Declared after it, this effect runs after it
+  // in the same commit, so the section-open sticks.)
+  const lastJumpNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!jumpTarget || jumpTarget.nonce === lastJumpNonce.current) return;
+    if (!data || !uiq.data) return;
+    lastJumpNonce.current = jumpTarget.nonce;
+    jumpToField(jumpTarget.fieldId, jumpTarget.section);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpTarget, data, uiq.data]);
   // Keep the tracked revision in step with refetches (the
   // server invalidates this query after writes, ours included).
   // A stale in-flight refetch can only move it backwards into a
