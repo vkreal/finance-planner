@@ -49,6 +49,23 @@ export function parseNum(s: string): number | null {
 export function fmtMoneyInput(dollars: number): string {
   return dollars.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
+// Monthly raw form (contract v140, shared v141): the monthly
+// figure as a plain number string (no $ or commas) for the
+// focused per-month input, so an edit starts from what was
+// displayed. The monthly cents are rounded to the cent. A typed
+// monthly amount turns into annual at exactly monthly × 12
+// (monthlyToAnnual below); blank and unparseable text pass
+// through exactly as typed, so the field shows what was typed.
+export function monthlyRaw(annualStr: string): string {
+  const cents = parseMoney(annualStr);
+  if (cents == null) return annualStr;
+  return String(Math.round(cents / 12) / 100);
+}
+export function monthlyToAnnual(monthlyStr: string): string {
+  const cents = parseMoney(monthlyStr);
+  if (cents == null) return monthlyStr;
+  return String((cents * 12) / 100);
+}
 export function parseIntField(s: string): number | null {
   const n = parseNum(s);
   return n == null ? null : Math.round(n);

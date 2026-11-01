@@ -27,6 +27,8 @@ InfoNote,
 inputCls,
 labelCls,
 moneyField,
+monthlyRaw,
+monthlyToAnnual,
 numField,
 parseDollars,
 parseIntField,
@@ -560,6 +562,37 @@ export function RothConversion({
   const [flexCutPct, setFlexCutPct] = useState<number | null>(null);
   const [flexFloorPct, setFlexFloorPct] = useState<number | null>(null);
   const [spending, setSpending] = useState("");
+  // Per year / per month entry unit for the "Yearly spending"
+  // field (contract v141): mirrors the Retirement view's
+  // spending field. "year" shows and edits the stored annual
+  // dollars directly (the long-standing behaviour); "month"
+  // shows annual ÷ 12 and turns a typed monthly amount into
+  // annual at exactly monthly × 12. The stored value is annual
+  // dollars everywhere, and switching units never rewrites it.
+  // The unit is a local display preference (not persisted, no
+  // new stored field, no new action); the field opens per year,
+  // the Tax Plan's long-standing display.
+  const [spendingUnit, setSpendingUnit] = useState<"year" | "month">("year");
+  // Per-month draft (contract v141): while the spending field
+  // is focused in per-month mode, the input shows the monthly
+  // figure as the user types it — the stored state is annual
+  // dollars, so the typed monthly string lives here until blur,
+  // and each keystroke also writes the annual equivalent
+  // (monthly × 12) into the spending state. Without this the
+  // focused field would re-derive the monthly figure from the
+  // annual state on every keystroke and rewrite what was typed.
+  // Null whenever the field is not focused in per-month mode.
+  const [spendingMonthlyDraft, setSpendingMonthlyDraft] = useState<string | null>(null);
+  // The monthly figure for display when the field is not
+  // focused in per-month mode: the annual figure divided by
+  // twelve, rounded to the cent and grouped like the money
+  // fields (the $ itself is the field's separate adornment).
+  // Blank and unparseable text pass through exactly as typed.
+  const monthlySpendingDisplay = (): string => {
+    const cents = parseMoney(spending);
+    if (cents == null) return spending;
+    return fmtMoneyInput(Math.round(cents / 12) / 100);
+  };
   const [retirementAge, setRetirementAge] = useState("");
   const [endAge, setEndAge] = useState("95");
   const [expectedPct, setExpectedPct] = useState("");
@@ -6393,10 +6426,90 @@ export function RothConversion({
 
           <h3 className="mt-5 text-sm font-semibold">2. How much do you spend in a year?</h3>
           <div className="mt-2 max-w-xs">
-            {moneyField("Yearly spending", spending, setSpending, {
-              idLabel: "Change the plan — yearly spending",
-              changed: changedFields.spending,
-            })}
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+              <label
+                className="block text-sm font-medium text-[var(--text)]"
+                htmlFor="roth-Change-the-plan-yearly-spending"
+              >
+                {spendingUnit === "month" ? "Monthly spending" : "Yearly spending"}
+                {changedFields.spending && <ChangedMark />}
+              </label>
+              <div
+                role="group"
+                aria-label="Spending display period"
+                className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+              >
+                <button
+                  type="button"
+                  aria-label="Show spending per year"
+                  aria-pressed={spendingUnit === "year"}
+                  onClick={() => setSpendingUnit("year")}
+                  className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                >
+                  per year
+                </button>
+                <button
+                  type="button"
+                  aria-label="Show spending per month"
+                  aria-pressed={spendingUnit === "month"}
+                  onClick={() => setSpendingUnit("month")}
+                  className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                >
+                  per month
+                </button>
+              </div>
+            </div>
+            <div className="relative">
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
+              >
+                $
+              </span>
+              <input
+                id="roth-Change-the-plan-yearly-spending"
+                aria-label={
+                  spendingUnit === "month"
+                    ? "Change the plan — monthly spending"
+                    : "Change the plan — yearly spending"
+                }
+                className={`${inputCls} pl-7`}
+                inputMode="decimal"
+                value={
+                  spendingUnit === "month"
+                    ? (spendingMonthlyDraft ?? monthlySpendingDisplay())
+                    : spending
+                }
+                onFocus={() => {
+                  if (spendingUnit === "month") {
+                    setSpendingMonthlyDraft(monthlyRaw(spending));
+                  }
+                }}
+                onBlur={() => {
+                  if (spendingUnit === "month") {
+                    setSpendingMonthlyDraft(null);
+                  }
+                  // The annual state is canonicalized on blur,
+                  // exactly as the money field did before this
+                  // toggle: the same numeric value, grouped.
+                  const d = parseDollars(spending);
+                  if (d != null) setSpending(fmtMoneyInput(d));
+                }}
+                onChange={(e) => {
+                  if (spendingUnit === "month") {
+                    setSpendingMonthlyDraft(e.target.value);
+                    setSpending(monthlyToAnnual(e.target.value));
+                  } else {
+                    setSpending(e.target.value);
+                  }
+                }}
+              />
+            </div>
+            {spendingUnit === "month" && (
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                = ${fmtMoneyInput((parseMoney(spending) ?? 0) / 100)}/yr
+              </p>
+            )}
           </div>
 
           <h3 className="mt-5 text-sm font-semibold">3. When does Social Security start?</h3>
