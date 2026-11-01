@@ -5111,6 +5111,46 @@ export function Playground() {
                   taxX,
                   hatchStyle,
                 } = stackModel;
+                /* Legend provenance taps (contract v144): only the
+                   legend items that ARE a dial input are taps —
+                   they jump to that input field (scroll + flash,
+                   via jumpToPgField). The others stay plain text,
+                   per the standing rule that computed figures are
+                   never taps:
+                   - Interest → the Interest dial (income section).
+                   - Pre-tax money out → the Pre-tax money out
+                     (draw or conversion) dial (conversion section).
+                   - Qualified dividends → the Qualified dividends
+                     (line 3a) dial (stock section).
+                   Plain text, no tap:
+                   - Deductions — the standard deduction from the
+                     year's law table (the standard won over the
+                     itemized inputs); no input field.
+                   - Ordinary dividends (non-qualified part) —
+                     ordinary total minus qualified, computed from
+                     TWO inputs, so no single source field.
+                   Field ids are the moneyField ids (roth- + the
+                   label with non-alphanumerics as dashes). */
+                const legendTapTargets: Record<
+                  string,
+                  { fieldId: string; section: PgSectionId; ariaLabel: string }
+                > = {
+                  interest: {
+                    fieldId: "roth-Interest",
+                    section: "income",
+                    ariaLabel: "Go to the Interest field",
+                  },
+                  conv: {
+                    fieldId: "roth-Pre-tax-money-out-draw-or-conversion-",
+                    section: "conversion",
+                    ariaLabel: "Go to the Pre-tax money out field",
+                  },
+                  qualdiv: {
+                    fieldId: "roth-Qualified-dividends-line-3a-",
+                    section: "stock",
+                    ariaLabel: "Go to the Qualified dividends field",
+                  },
+                };
                 /* ACA cliff line — presentation ONLY, derived
                    from the priced result in the chart's own
                    coordinates: the line sits at the taxable-axis
@@ -5901,19 +5941,40 @@ export function Playground() {
                             </span>
                           </span>
                         )}
-                        {legendSegs.map((s) => (
-                          <span key={s.key} className="inline-flex items-center gap-1.5">
-                            <span
-                              className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-                              style={{ background: s.color }}
-                              aria-hidden="true"
-                            />
-                            {s.label}{" "}
-                            <span className="tnum font-medium text-[var(--text)]">
-                              {fmtDollars(s.amount)}
+                        {legendSegs.map((s) => {
+                          const tap = legendTapTargets[s.key];
+                          const text = (
+                            <>
+                              {s.label}{" "}
+                              <span className="tnum font-medium text-[var(--text)]">
+                                {fmtDollars(s.amount)}
+                              </span>
+                            </>
+                          );
+                          return (
+                            <span key={s.key} className="inline-flex items-center gap-1.5">
+                              <span
+                                className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                                style={{ background: s.color }}
+                                aria-hidden="true"
+                              />
+                              {tap ? (
+                                <button
+                                  type="button"
+                                  aria-label={tap.ariaLabel}
+                                  className={pgTapCls}
+                                  onClick={() =>
+                                    jumpToPgField(tap.fieldId, tap.section)
+                                  }
+                                >
+                                  {text}
+                                </button>
+                              ) : (
+                                text
+                              )}
                             </span>
-                          </span>
-                        ))}
+                          );
+                        })}
                     </p>
                     {visibleOrdSegs.length === 0 && gainsTotal <= 0 && (
                       <p className="mt-1 text-xs text-[var(--dim)]" role="note">
