@@ -299,30 +299,77 @@ const ROTH_MODE_OPTIONS_SHOWN = ROTH_MODE_OPTIONS.filter(
    Folding is visual only: the warnings are computed by the caller
    exactly as before and rendered unchanged when open.
    GROUPING (presentation only — the engine's watch-out generation
-   is untouched): warnings whose full rendered text is identical,
-   figures included, collapse into one row, in first-appearance
-   order, headed by the years and ages they cover. A group whose
-   years run consecutively is headed by its first–last range; a
-   group whose years do not run consecutively lists each year and
-   age, so the heading never claims a year the warning did not
-   fire in. A warning that occurs once renders exactly as before,
-   with its single year and age. No warning text changes, no
-   warning is dropped, and severity and icon are unchanged. */
+   is untouched): warnings of the same kind collapse into one row,
+   in first-appearance order, headed by the years and ages they
+   cover. The kind is the warning's text with its dollar figures
+   stripped — never the figures themselves — so years whose only
+   difference is the MAGI are the same warning. A figure that is
+   the same in every grouped year renders as itself; a figure
+   that varies renders as its min–max range (the ACA cliff stays
+   a single figure when it is the same in every year; the MAGI
+   becomes a range). A group whose years run consecutively is
+   headed by its first–last range; a group whose years do not run
+   consecutively lists each year and age, so the heading never
+   claims a year the warning did not fire in. A warning that
+   occurs once renders exactly as before, with its single year
+   and age. No warning text changes, no warning is dropped, and
+   severity and icon are unchanged. */
 const watchOutItemCls =
   "tnum inline-flex max-w-full items-start gap-1.5 rounded-[var(--radius)] border border-[var(--border)] px-2.5 py-1.5 text-xs text-[var(--text)] sm:text-sm";
 type WatchOutWarning = { year: number; age: number; kind: string; text: string };
-type GroupedWatchOut = { text: string; years: number[]; ages: number[] };
+// A grouped row keeps the warning's template — its text with
+// each dollar figure replaced by a placeholder — plus the
+// figures each grouped year carried, so the row can render a
+// figure as itself when it agrees across the years and as a
+// min–max range when it varies.
+type GroupedWatchOut = {
+  template: string;
+  years: number[];
+  ages: number[];
+  amounts: number[][];
+};
+const WATCH_OUT_AMOUNT = /\$[\d,]+(?:\.\d{2})?/g;
+const WATCH_OUT_SLOT = "[AMT]";
+function watchOutTemplate(text: string): string {
+  return text.replace(WATCH_OUT_AMOUNT, WATCH_OUT_SLOT);
+}
+function watchOutAmounts(text: string): number[] {
+  return [...text.matchAll(WATCH_OUT_AMOUNT)].map((m) =>
+    Number(m[0].slice(1).replace(/,/g, "")),
+  );
+}
+function groupedWatchOutText(group: GroupedWatchOut): string {
+  // Rebuild the row's text from its template: each placeholder
+  // slot takes the figure that slot carried in every grouped
+  // year — one value when they agree, the min–max range when
+  // they do not.
+  let slot = 0;
+  return group.template.replaceAll(WATCH_OUT_SLOT, () => {
+    const values = group.amounts.map((a) => a[slot] ?? 0);
+    slot += 1;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    return min === max ? fmtDollars(min) : `${fmtDollars(min)}–${fmtDollars(max)}`;
+  });
+}
 function groupWatchOuts(warnings: WatchOutWarning[]): GroupedWatchOut[] {
   const groups: GroupedWatchOut[] = [];
-  const byText = new Map<string, GroupedWatchOut>();
+  const byKind = new Map<string, GroupedWatchOut>();
   for (const w of warnings) {
-    const existing = byText.get(w.text);
+    const key = `${w.kind}\n${watchOutTemplate(w.text)}`;
+    const existing = byKind.get(key);
     if (existing) {
       existing.years.push(w.year);
       existing.ages.push(w.age);
+      existing.amounts.push(watchOutAmounts(w.text));
     } else {
-      const group: GroupedWatchOut = { text: w.text, years: [w.year], ages: [w.age] };
-      byText.set(w.text, group);
+      const group: GroupedWatchOut = {
+        template: watchOutTemplate(w.text),
+        years: [w.year],
+        ages: [w.age],
+        amounts: [watchOutAmounts(w.text)],
+      };
+      byKind.set(key, group);
       groups.push(group);
     }
   }
@@ -377,7 +424,7 @@ function WatchOutsPanel({
               <span aria-hidden="true">⚠</span>
               <span>
                 <strong>{watchOutHeading(g)}</strong>{" "}
-                {g.text}
+                {groupedWatchOutText(g)}
               </span>
             </span>
           ))}
@@ -10333,17 +10380,29 @@ export function RothConversion({
           year's "Show the math" panel under the table below. */}
       {showPlanWorkspace && planInputs && mainResult && (() => {
         const planYears = mainResult.years;
+        // Income-stack palette (contract v136, "brighter, same
+        // colors"): every segment one step brighter than the
+        // muted 600-level it replaced, same hue — the dark
+        // background washed the old set out, and the two teals
+        // read as one block. The teals are separated by
+        // lightness: the conversion is the darker teal, the
+        // spending draw the brighter one. The Playground's
+        // single-year and projection charts carry the same
+        // brightened set for the segments they share, so the
+        // charts stay in sync. The ACA cliff line, the 0%
+        // gains-end marker, and the line-chart strokes are not
+        // income segments and keep their own colors.
         const segDefs = [
-          { key: "interest", label: "Interest", color: "#2563eb", amount: (y: RothYear) => y.detail.interestIncome },
-          { key: "qualdiv", label: "Qualified dividends", color: "#65a30d", amount: (y: RothYear) => y.detail.dividendIncome },
-          { key: "other", label: "Other ordinary income", color: "#d97706", amount: (y: RothYear) => y.detail.otherOrdinary },
-          { key: "ss", label: "Taxable Social Security", color: "#dc2626", amount: (y: RothYear) => y.detail.ssTaxable },
-          { key: "rmd", label: "RMD", color: "#7c3aed", amount: (y: RothYear) => y.rmd },
-          { key: "conv", label: "Pre-tax money out", color: "#14705a", amount: (y: RothYear) => y.conversion },
-          { key: "extra", label: "Pre-tax draw for spending", color: "#14b8a6", amount: (y: RothYear) => y.detail.extraPreTaxDraw },
-          { key: "gains", label: "Long-term gains", color: "#ea580c", amount: (y: RothYear) => y.detail.ltcg },
-          { key: "taxexempt", label: "Tax-exempt interest", color: "#94a3b8", amount: (y: RothYear) => y.detail.taxExemptInterest },
-          { key: "lossallow", label: "Capital-loss allowance", color: "#475569", amount: (y: RothYear) => -y.detail.lossAllowance },
+          { key: "interest", label: "Interest", color: "#3b82f6", amount: (y: RothYear) => y.detail.interestIncome },
+          { key: "qualdiv", label: "Qualified dividends", color: "#84cc16", amount: (y: RothYear) => y.detail.dividendIncome },
+          { key: "other", label: "Other ordinary income", color: "#f59e0b", amount: (y: RothYear) => y.detail.otherOrdinary },
+          { key: "ss", label: "Taxable Social Security", color: "#ef4444", amount: (y: RothYear) => y.detail.ssTaxable },
+          { key: "rmd", label: "RMD", color: "#8b5cf6", amount: (y: RothYear) => y.rmd },
+          { key: "conv", label: "Pre-tax money out", color: "#0f766e", amount: (y: RothYear) => y.conversion },
+          { key: "extra", label: "Pre-tax draw for spending", color: "#2dd4bf", amount: (y: RothYear) => y.detail.extraPreTaxDraw },
+          { key: "gains", label: "Long-term gains", color: "#f97316", amount: (y: RothYear) => y.detail.ltcg },
+          { key: "taxexempt", label: "Tax-exempt interest", color: "#cbd5e1", amount: (y: RothYear) => y.detail.taxExemptInterest },
+          { key: "lossallow", label: "Capital-loss allowance", color: "#64748b", amount: (y: RothYear) => -y.detail.lossAllowance },
         ] as const;
         const stackTotal = (y: RothYear): number =>
           segDefs.reduce((a, d) => a + d.amount(y), 0);

@@ -3443,19 +3443,12 @@ export function NetWorthView() {
 
   /* ----- KPIs ----- */
   const latestTotal = latest?.totalCents ?? 0;
-  // Provenance-tap landing fields (contract v119) for the
-  // latest snapshot: its first balance field, and its first
-  // split field per bucket.
-  const latestFirstBalanceFieldId = latest
-    ? firstBalanceFieldId(latest)
-    : null;
-  const latestSplitFieldIds = new Map<NwBucket, string>();
-  if (latest) {
-    for (const bucket of NW_SPLIT_BUCKETS) {
-      const fieldId = firstSplitFieldId(latest, bucket);
-      if (fieldId) latestSplitFieldIds.set(bucket, fieldId);
-    }
-  }
+  // The headline total, the bucket total, the bucket amounts,
+  // and the "% reached" are computed figures, so they render as
+  // plain text, not taps (contract v136): a computed figure has
+  // no single source field to jump to. The per-account balance
+  // taps below still jump to their real fields, via
+  // firstBalanceFieldId / firstSplitFieldId.
   const sinceLastCents = prev ? latestTotal - prev.totalCents : 0;
   const sinceLastPct = prev && prev.totalCents !== 0 ? sinceLastCents / prev.totalCents : 0;
   const ytdCents = ytdBaseline ? latestTotal - ytdBaseline.totalCents : 0;
@@ -3997,20 +3990,7 @@ export function NetWorthView() {
               Net worth
             </p>
             <p className="tnum display mt-1.5 text-3xl font-semibold whitespace-nowrap sm:text-4xl">
-              {latest != null && latestFirstBalanceFieldId != null ? (
-                <button
-                  type="button"
-                  aria-label="Go to the first balance field of the latest snapshot"
-                  className={nwTapCls}
-                  onClick={() =>
-                    jumpToNwSnapshotField(latest, latestFirstBalanceFieldId)
-                  }
-                >
-                  {fmt(latestTotal)}
-                </button>
-              ) : (
-                fmt(latestTotal)
-              )}
+              {fmt(latestTotal)}
             </p>
             <p className="tnum mt-1 text-sm whitespace-nowrap text-[var(--dim)]">
               {latest ? `as of ${fmtDateLong(latest.date)}` : ""}
@@ -4697,20 +4677,7 @@ export function NetWorthView() {
           {bucketEntries.length > 0 && (
             <div className="text-right">
               <p className="tnum display text-xl font-semibold whitespace-nowrap sm:text-2xl">
-                {latest != null && latestFirstBalanceFieldId != null ? (
-                  <button
-                    type="button"
-                    aria-label="Go to the first balance field of the latest snapshot"
-                    className={nwTapCls}
-                    onClick={() =>
-                      jumpToNwSnapshotField(latest, latestFirstBalanceFieldId)
-                    }
-                  >
-                    {fmt(bucketSignedTotal)}
-                  </button>
-                ) : (
-                  fmt(bucketSignedTotal)
-                )}
+                {fmt(bucketSignedTotal)}
               </p>
               {targetCents != null && targetCents > 0 && (
                 <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
@@ -4772,21 +4739,7 @@ export function NetWorthView() {
                     style={{ background: BUCKET_COLORS[s.bucket] }}
                   />
                   <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                  {(() => {
-                    const fieldId = latestSplitFieldIds.get(s.bucket);
-                    return fieldId != null && latest != null ? (
-                      <button
-                        type="button"
-                        aria-label={`Go to the ${bucketLabel(s.bucket)} split field of the latest snapshot`}
-                        className={nwTapCls}
-                        onClick={() => jumpToNwSnapshotField(latest, fieldId)}
-                      >
-                        {fmt(s.cents)}
-                      </button>
-                    ) : (
-                      <span>{fmt(s.cents)}</span>
-                    );
-                  })()}
+                  <span>{fmt(s.cents)}</span>
                   <span className="text-[var(--dim)]">
                     ·{" "}
                     {bucketMixTotal > 0
@@ -4810,21 +4763,7 @@ export function NetWorthView() {
                       style={{ background: BUCKET_COLORS[s.bucket] }}
                     />
                     <span className="font-medium">{bucketLabel(s.bucket)}</span>
-                    {(() => {
-                      const fieldId = latestSplitFieldIds.get(s.bucket);
-                      return fieldId != null && latest != null ? (
-                        <button
-                          type="button"
-                          aria-label={`Go to the ${bucketLabel(s.bucket)} split field of the latest snapshot`}
-                          className={nwTapCls}
-                          onClick={() => jumpToNwSnapshotField(latest, fieldId)}
-                        >
-                          {fmt(s.cents)}
-                        </button>
-                      ) : (
-                        <span>{fmt(s.cents)}</span>
-                      );
-                    })()}
+                    <span>{fmt(s.cents)}</span>
                     <span className="text-[var(--dim)]">
                       — below zero, so it is not in the bar above; it is
                       counted in the total at the top
@@ -4946,18 +4885,9 @@ export function NetWorthView() {
                   </button>
                 </p>
                 <p className="tnum mt-1 text-sm text-[var(--dim)]">
-                  {targetProgressFrac != null ? (
-                    <button
-                      type="button"
-                      aria-label="Go to the Net worth target field"
-                      className={nwTapCls}
-                      onClick={jumpToNwTarget}
-                    >
-                      {`${(targetProgressFrac * 100).toFixed(1)}% reached`}
-                    </button>
-                  ) : (
-                    ""
-                  )}
+                  {targetProgressFrac != null
+                    ? `${(targetProgressFrac * 100).toFixed(1)}% reached`
+                    : ""}
                   {targetRemainingCents != null
                     ? ` · ${targetRemainingCents === 0 ? "Target reached" : `${fmt(targetRemainingCents)} remaining`}`
                     : ""}

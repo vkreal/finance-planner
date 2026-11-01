@@ -306,15 +306,15 @@ function buildStackModel(
   const tops = law.brackets[fs];
   const rates = law.rates;
   const ordSegs: StackSeg[] = [
-    { key: "interest", label: "Interest", amount: pg.interest, color: "#2563eb" },
-    { key: "orddiv", label: "Ordinary dividends (non-qualified part)", short: "Ord dividends", amount: pg.nonQualifiedDividends, color: "#0891b2" },
-    { key: "other", label: "Other ordinary income", short: "Other income", amount: pg.otherOrdinary, color: "#d97706" },
-    { key: "ss", label: "Taxable Social Security", short: "Taxable SS", amount: pg.ssTaxable, color: "#dc2626" },
+    { key: "interest", label: "Interest", amount: pg.interest, color: "#3b82f6" },
+    { key: "orddiv", label: "Ordinary dividends (non-qualified part)", short: "Ord dividends", amount: pg.nonQualifiedDividends, color: "#06b6d4" },
+    { key: "other", label: "Other ordinary income", short: "Other income", amount: pg.otherOrdinary, color: "#f59e0b" },
+    { key: "ss", label: "Taxable Social Security", short: "Taxable SS", amount: pg.ssTaxable, color: "#ef4444" },
   ];
   if (pg.rmdPriced) {
-    ordSegs.push({ key: "rmd", label: "RMD", amount: pg.rmd, color: "#7c3aed" });
+    ordSegs.push({ key: "rmd", label: "RMD", amount: pg.rmd, color: "#8b5cf6" });
   }
-  ordSegs.push({ key: "conv", label: "Pre-tax money out", short: "Pre-tax out", amount: pg.conversion, color: "#14705a" });
+  ordSegs.push({ key: "conv", label: "Pre-tax money out", short: "Pre-tax out", amount: pg.conversion, color: "#0f766e" });
   const visibleOrdSegs = ordSegs.filter((s) => s.amount !== 0);
   const grossOrd = ordSegs.reduce((a, s) => a + s.amount, 0);
   const deductions = pg.deductions;
@@ -406,13 +406,13 @@ function buildStackModel(
   const gainsSegs: StackSeg[] = [];
   if (gainsTotal > 0 && pg.stockGain >= 0) {
     if (pg.qualifiedDividends > 0) {
-      gainsSegs.push({ key: "qualdiv", label: "Qualified dividends", short: "Qual div", amount: pg.qualifiedDividends, color: "#65a30d" });
+      gainsSegs.push({ key: "qualdiv", label: "Qualified dividends", short: "Qual div", amount: pg.qualifiedDividends, color: "#84cc16" });
     }
     if (pg.stockGain > 0) {
-      gainsSegs.push({ key: "ltgain", label: "Long-term gain", short: "LT gain", amount: pg.stockGain, color: "#ea580c" });
+      gainsSegs.push({ key: "ltgain", label: "Long-term gain", short: "LT gain", amount: pg.stockGain, color: "#f97316" });
     }
   } else if (gainsTotal > 0) {
-    gainsSegs.push({ key: "ltgainnet", label: "Long-term gains (net)", short: "LT gains", amount: gainsTotal, color: "#ea580c" });
+    gainsSegs.push({ key: "ltgainnet", label: "Long-term gains (net)", short: "LT gains", amount: gainsTotal, color: "#f97316" });
   }
   let gCum = grossOrd;
   const gainsPos: StackSegPos[] = gainsSegs.map((s) => {
@@ -4409,12 +4409,12 @@ export function Playground() {
                     const proj = pgProjection;
                     const n = proj.years.length;
                     const segDefs = [
-                      { key: "interest", label: "Interest", color: "#2563eb" },
-                      { key: "orddiv", label: "Ordinary dividends (non-qualified part)", color: "#0891b2" },
-                      { key: "other", label: "Other ordinary income", color: "#d97706" },
-                      { key: "ss", label: "Taxable Social Security", color: "#dc2626" },
-                      { key: "rmd", label: "RMD", color: "#7c3aed" },
-                      { key: "conv", label: "Pre-tax money out", color: "#14705a" },
+                      { key: "interest", label: "Interest", color: "#3b82f6" },
+                      { key: "orddiv", label: "Ordinary dividends (non-qualified part)", color: "#06b6d4" },
+                      { key: "other", label: "Other ordinary income", color: "#f59e0b" },
+                      { key: "ss", label: "Taxable Social Security", color: "#ef4444" },
+                      { key: "rmd", label: "RMD", color: "#8b5cf6" },
+                      { key: "conv", label: "Pre-tax money out", color: "#0f766e" },
                     ] as const;
                     const segAmount = (
                       r: PlaygroundYearResult,
