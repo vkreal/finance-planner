@@ -162,10 +162,13 @@ function TickStrip({
   const [staggered, setStaggered] =
     useState<ReadonlySet<number>>(EMPTY_STAGGERED);
   /* Contract v120: which noted ticks have their tooltip open —
-     the open tick's span lifts to 41, above its z-31 siblings,
+     the open tick's span lifts to 25, above its z-20 siblings,
      while its bubble is open, so the bubble paints above the
      neighbouring tick labels instead of underneath them; it
-     drops back to 31 when the bubble closes. A set, not a single
+     drops back to 20 when the bubble closes. Contract v129:
+     both levels sit below the z-30 sticky play strip, so the
+     tick labels slide under the strip when the chart scrolls
+     under it instead of painting over its text. A set, not a single
      holder, so a pinned tick stays lifted while another tick is
      hovered. The updater is identity-guarded: re-reporting the
      same open/closed value returns the same set, so no render
@@ -260,15 +263,18 @@ function TickStrip({
               transform: "translateX(-50%)",
               color: m.color,
               /* A noted tick's bubble must paint above the
-                 chart area below (the z-31 lift of the 0%
+                 chart area below (the z-20 lift of the 0%
                  InfoNote pattern); the centring transform
                  traps the bubble's own z-index inside this
                  span, so the lift rides on the span itself.
                  Contract v120: while the tick's own bubble
-                 is open the span lifts to 41, above its
+                 is open the span lifts to 25, above its
                  sibling ticks, so the bubble paints above
-                 them too. */
-              zIndex: m.note != null ? (openNotes.has(m.rate) ? 41 : 31) : undefined,
+                 them too. Contract v129: both levels sit
+                 below the z-30 sticky play strip, so the
+                 tick labels slide under the strip when the
+                 chart scrolls under it. */
+              zIndex: m.note != null ? (openNotes.has(m.rate) ? 25 : 20) : undefined,
             }}
           >
             <span aria-hidden="true">
@@ -590,10 +596,18 @@ export function Playground() {
   const stackLinesRef = useRef<HTMLDivElement | null>(null);
   const [landingLinkH, setLandingLinkH] = useState<number | null>(null);
   /* Contract v120: which income-stack chart labels have their
-     tooltip open — the open label's span lifts to 41, above its
-     z-31 siblings, while its bubble is open, so the bubble
+     tooltip open — the open label's span lifts to 25, above its
+     z-20 siblings, while its bubble is open, so the bubble
      paints above the neighbouring labels instead of underneath
-     them; it drops back to 31 when the bubble closes. A set, not
+     them; it drops back to 20 when the bubble closes. Contract
+     v129: both levels sit below the z-30 sticky play strip, so
+     the labels slide under the strip when the chart scrolls
+     under it instead of painting over its text — the v82/v87
+     lift had them at 31, above the strip, which is the overlap
+     the user reported — while staying above the chart-area
+     content (the z-10 marker, the z-1 gains track, the bars
+     and tints), so each label's bubble still paints above the
+     chart area below it. A set, not
      a single holder, so a pinned label stays lifted while
      another label is hovered. The updater is identity-guarded:
      re-reporting the same open/closed value returns the same
@@ -608,7 +622,7 @@ export function Playground() {
       else next.delete(id);
       return next;
     });
-  const chartLabelZ = (id: string) => (openChartLabels.has(id) ? 41 : 31);
+  const chartLabelZ = (id: string) => (openChartLabels.has(id) ? 25 : 20);
   useLayoutEffect(() => {
     const labels = stackLabelsRef.current;
     const lines = stackLinesRef.current;
@@ -3185,9 +3199,9 @@ export function Playground() {
                       </span>
                     </span>
                   )}
-                  {/* Est. ACA credit (contract v80): the final
-                      segment of the figures line, read live off
-                      the priced year's own ACA premium credit
+                  {/* Est. ACA credit (contract v80): the segment
+                      before the concluding cash-left figure, read
+                      live off the priced year's own ACA premium credit
                       (pg.aca.credit — null when no benchmark
                       premium was entered, $0 over the cliff),
                       rounded to whole dollars by fmtDollars like
@@ -3221,6 +3235,46 @@ export function Playground() {
                         </span>
                       </span>
                     )}
+                  {/* Cash left after tax (contract v129): the
+                      year's bottom line, read live off the
+                      priced year's own cash left
+                      (pg.cashLeftAfterTax — cash in minus the
+                      net tax bill, before any spending),
+                      rounded to whole dollars by fmtDollars
+                      like the tax figure beside it. It renders
+                      whenever a year is priced, after the
+                      credit — the credit is already inside the
+                      net tax bill, so cash left is the
+                      concluding figure of the line. The tap
+                      follows the v124 F8 rule: cash left has
+                      no single driving input, so it jumps to
+                      the income inputs, the same target and
+                      label as the Tax-for-the-year card's
+                      cash-left figure. No "left after a year's
+                      spending" comparison here — that row lives
+                      on the Tax-for-the-year card only. */}
+                  {pg != null && (
+                    <span className="contents">
+                      <span aria-hidden="true" className="text-[var(--dim)]">
+                        ·
+                      </span>
+                      <span>
+                        Cash left after tax{" "}
+                        <span className="font-bold text-[var(--accent)]">
+                          <button
+                            type="button"
+                            aria-label="Go to the income inputs"
+                            className={pgTapCls}
+                            onClick={() =>
+                              jumpToPgField("roth-Interest", "income")
+                            }
+                          >
+                            {fmtDollars(pg.cashLeftAfterTax)}
+                          </button>
+                        </span>
+                      </span>
+                    </span>
+                  )}
                 </p>
               </div>
             );
@@ -5206,9 +5260,13 @@ export function Playground() {
                                    the downward-opening bubble.
                                    Contract v120: while this label's
                                    own bubble is open the span lifts
-                                   to 41, above its sibling labels,
+                                   to 25, above its sibling labels,
                                    so the bubble paints above them
-                                   too. */
+                                   too. Contract v129: the lift is
+                                   z-20, below the z-30 sticky play
+                                   strip, so the label slides under
+                                   the strip when the chart scrolls
+                                   under it. */
                                 zIndex: chartLabelZ("zero"),
                               }}
                             >
@@ -5252,14 +5310,21 @@ export function Playground() {
                                   color: landingMarker.color,
                                   left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
                                   transform: "translateX(-50%)",
-                                  /* Stacking lift retained unchanged
-                                     from the v82 ⓘ (z-31, above
-                                     the z-30 sticky play strip):
-                                     removing the ⓘ must not move
-                                     the label's paint order.
+                                  /* Stacking lift (contract v129):
+                                     the label rides at z-20 — above
+                                     the chart-area content below it
+                                     but below the z-30 sticky play
+                                     strip, so it slides under the
+                                     strip when the chart scrolls
+                                     under it instead of painting
+                                     over its text (the v82 lift had
+                                     it at z-31, above the strip,
+                                     which is the overlap the user
+                                     reported); removing the ⓘ must
+                                     not move the label's paint order.
                                      Contract v120: while this
                                      label's own bubble is open the
-                                     span lifts to 41, above its
+                                     span lifts to 25, above its
                                      sibling labels, so the bubble
                                      paints above them too. */
                                   zIndex: chartLabelZ("landing"),
@@ -5335,7 +5400,7 @@ export function Playground() {
                         {/* Contract v114: the label gains the
                             buffer ⓘ (the 0% InfoNote pattern —
                             live-composed text, align by the
-                            label's position, the z-31 lift on
+                            label's position, the z-20 lift on
                             its span, which the centring
                             transform requires for the bubble to
                             paint above the chart area). The
@@ -5349,9 +5414,11 @@ export function Playground() {
                             left: `clamp(40px, ${(acaBufferLine.xPct + acaCliffLine.xPct) / 2}%, calc(100% - 40px))`,
                             transform: "translateX(-50%)",
                             /* Contract v120: while this label's own
-                               bubble is open the span lifts to 41,
+                               bubble is open the span lifts to 25,
                                above its sibling labels, so the
-                               bubble paints above them too. */
+                               bubble paints above them too. Contract
+                               v129: the lift is z-20, below the z-30
+                               sticky play strip. */
                             zIndex: chartLabelZ("buffer"),
                           }}
                         >
@@ -5706,7 +5773,7 @@ export function Playground() {
                         right end of the chart's scale — gains the
                         ⓘ (the 0% InfoNote pattern: live-composed
                         copy, align by the label's position, the
-                        z-31 lift on its span). The label sits at
+                        z-20 lift on its span). The label sits at
                         the axis's right end by construction, so
                         its bubble aligns right. The note's text
                         carries no figure; the figure beside it is
@@ -5729,9 +5796,11 @@ export function Playground() {
                     <span
                       className={`tnum absolute inline-flex items-center text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
                       /* Contract v120: while this label's own
-                         bubble is open the span lifts to 41,
+                         bubble is open the span lifts to 25,
                          above its sibling labels, so the bubble
-                         paints above them too. */
+                         paints above them too. Contract v129:
+                         the lift is z-20, below the z-30 sticky
+                         play strip. */
                       style={{ right: 0, zIndex: chartLabelZ("axisEnd") }}
                     >
                       <span aria-hidden="true">
