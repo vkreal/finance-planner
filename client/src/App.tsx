@@ -527,14 +527,29 @@ function CategoryField({
   value,
   options,
   onChange,
+  // Contract v139: the cash-out Name field reuses this picker with
+  // its own wording — the custom-choice label, the custom-input
+  // placeholder and aria-label, and the empty-value placeholder
+  // option. Defaults keep the bill-category wording unchanged.
+  customLabel = "Type your own…",
+  customPlaceholder = "Type a custom category",
+  customAriaLabel = "Custom category",
+  placeholderOption,
 }: {
   id: string;
   value: string;
   options: string[];
   onChange: (next: string) => void;
+  customLabel?: string;
+  customPlaceholder?: string;
+  customAriaLabel?: string;
+  placeholderOption?: string;
 }) {
   const isKnown = options.includes(value);
-  const [custom, setCustom] = useState(!isKnown);
+  // An empty value starts in select mode (not custom mode): a fresh
+  // form shows the dropdown with the placeholder option, and the
+  // text input appears only after picking the custom choice.
+  const [custom, setCustom] = useState(value !== "" && !isKnown);
   const selectValue = custom ? CUSTOM_CATEGORY : value;
   return (
     <>
@@ -542,6 +557,7 @@ function CategoryField({
         id={id}
         className={inputCls}
         value={selectValue}
+        required
         onChange={(e) => {
           const v = e.target.value;
           if (v === CUSTOM_CATEGORY) {
@@ -553,10 +569,13 @@ function CategoryField({
           }
         }}
       >
+        {placeholderOption != null && value === "" && !custom && (
+          <option value="" disabled>{placeholderOption}</option>
+        )}
         {options.map((c) => (
           <option key={c} value={c}>{c}</option>
         ))}
-        <option value={CUSTOM_CATEGORY}>Type your own…</option>
+        <option value={CUSTOM_CATEGORY}>{customLabel}</option>
       </select>
       {custom && (
         <input
@@ -564,9 +583,10 @@ function CategoryField({
           type="text"
           className={`${inputCls} mt-2`}
           value={value}
+          required
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Type a custom category"
-          aria-label="Custom category"
+          placeholder={customPlaceholder}
+          aria-label={customAriaLabel}
         />
       )}
     </>
@@ -1965,6 +1985,34 @@ export function App() {
     for (const c of data?.billCategories ?? []) s.add(c);
     return [...s];
   }, [data]);
+
+  // Cash-out item Name options (contract v139): the distinct names
+  // already on cash-out items, most recent first, so last month's
+  // names sit at the top. Exact strings only — similar-looking names
+  // are separate entries, never merged. Derived from cashOutMonths
+  // (every month with items); cashOutItems alone holds only the
+  // selected month. cashOutMonths is oldest-first and each month's
+  // items are day-ascending, so both are walked backwards.
+  const cashOutNameOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const names: string[] = [];
+    const months = data?.cashOutMonths ?? [];
+    for (let m = months.length - 1; m >= 0; m--) {
+      const month = months[m];
+      if (!month) continue;
+      const items = month.items;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (!it) continue;
+        const d = it.description;
+        if (!seen.has(d)) {
+          seen.add(d);
+          names.push(d);
+        }
+      }
+    }
+    return names;
+  }, [data?.cashOutMonths]);
 
   const addTxn = useMutation({
     mutationFn: (input: TxnInput) => api.addTransaction(input),
@@ -4367,7 +4415,16 @@ export function App() {
                   </div>
                   <div>
                     <label htmlFor="ci-desc" className={labelCls}>Name</label>
-                    <input id="ci-desc" type="text" required className={inputCls} value={iDesc} onChange={(e) => setIDesc(e.target.value)} placeholder="e.g. Groceries" />
+                    <CategoryField
+                      id="ci-desc"
+                      value={iDesc}
+                      options={cashOutNameOptions}
+                      onChange={setIDesc}
+                      customLabel="Add a new name…"
+                      customPlaceholder="Type a new name"
+                      customAriaLabel="New name"
+                      placeholderOption="Choose a name…"
+                    />
                   </div>
                   <div>
                     <label htmlFor="ci-note" className={labelCls}>Note (optional)</label>
