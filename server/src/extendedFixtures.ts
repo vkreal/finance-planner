@@ -485,6 +485,34 @@ function f2Core(): SpendingCore {
   });
 }
 
+// Round-19 F9 core: the same data shape as f2Core, but the
+// reserve-start setting is Jun 2026 while the earliest data month
+// is Jan 2026 — the two months the Explorer default must
+// distinguish (the default reads the earliest, not the reserve
+// start).
+function f9Core(): SpendingCore {
+  const yearly: CoreYearlyBillNamed[] = [
+    { id: 1, name: "LightsBill", frequency: "yearly", expectedCents: 12000, dueMonth: null, backfillBeforeFirstVersion: 0, keepLightsOn: 1 },
+  ];
+  const yearlyVersions: CoreYearlyVersion[] = [
+    { id: 1, expenseId: 1, effectiveFrom: "2026-01", expectedCents: 12000, frequency: "yearly" },
+  ];
+  return createSpendingCore({
+    txns: [
+      { date: "2026-01-15", kind: "spending", sourceType: "checking", amountCents: 10000, yearlyExpenseId: null },
+    ],
+    yearly,
+    yearlyVersions,
+    summaries: [],
+    cashOutItems: [],
+    bills: [],
+    billVersions: [],
+    oneOffs: [],
+    openingReserveCents: 0,
+    reserveStartSetting: "2026-06",
+  });
+}
+
 // getDashboard's YTD loop for one year, viewed month `month`.
 function f2Ytd(core: SpendingCore, month: string) {
   const jan = `${month.slice(0, 4)}-01`;
@@ -1710,6 +1738,19 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         reserveStartMonth: c.reserveStartMonth ? Number(c.reserveStartMonth.replace("-", "")) : null,
         janHasData: c.monthHasData("2026-01") ? 1 : 0,
         febHasData: c.monthHasData("2026-02") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "sp-f9-explorer-default-earliest",
+    kind: "spending",
+    note: "Round-19 F9: Slice & dice defaults its From month to the earliest data month, not the reserve-start setting. First transaction Jan 2026 with the reserve-start setting Jun 2026: the shared earliest is Jan 2026 while the reserve start is Jun 2026 — the two months differ, so the Explorer default must read the earliest. (Pre-v128 the client passed the reserve start, so the Explorer opened Jun–Oct and hid Jan–May.)",
+    expected: { earliestMonth: 202601, reserveStartMonth: 202606 },
+    actual: () => {
+      const c = f9Core();
+      return {
+        earliestMonth: c.earliest ? Number(c.earliest.replace("-", "")) : null,
+        reserveStartMonth: c.reserveStartMonth ? Number(c.reserveStartMonth.replace("-", "")) : null,
       };
     },
   },

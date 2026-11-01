@@ -2840,10 +2840,10 @@ export function App() {
         {/* Grouped by kind, one card per group (2026-10-25,
             option C, replacing the option-A captioned tile grids):
             the first four stats describe the viewed period, inside
-            one card captioned by the caller — "This month" in
-            Month mode, "This year" in Year mode, since the view
-            header already names the specific month/year; the
-            last two are standing roster rates that do not change
+            one card captioned "This month" by the caller in both
+            modes — the tiles always show one month's figures, and
+            the view header already names the specific month/year;
+            the last two are standing roster rates that do not change
             with the period, inside their own "Standing rates"
             card. Inside
             each card the stats are borderless cells divided by
@@ -3280,7 +3280,7 @@ export function App() {
             {showExplorer && (
               <ExplorerModal
                 viewedMonth={month}
-                earliestMonth={data.reserveStartMonth ?? data.summaries[0]?.month ?? null}
+                earliestMonth={data.earliest ?? data.summaries[0]?.month ?? null}
                 initialGroupBy={explorerGroupBy}
                 onClose={() => setShowExplorer(false)}
               />
@@ -3467,7 +3467,7 @@ export function App() {
                         <div className="mt-2.5">
                           {renderMonthTiles({
                             idPrefix: m.month,
-                            periodCaption: "This year",
+                            periodCaption: "This month",
                             trueCostCents: m.trueCostCents,
                             cashOutCents: m.cashOutCents,
                             totalMonthlyCents: m.totalMonthlyCents,

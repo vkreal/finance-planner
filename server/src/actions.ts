@@ -3158,7 +3158,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 127;
+export const API_CONTRACT_VERSION = 128;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -6914,6 +6914,12 @@ export const Actions = {
       divergenceCents: z.number(),
       divergencePct: z.number(),
       reserveCents: z.number(),
+      // The earliest data month (contract v128, round-19 F9): the
+      // shared earliest definition (transactions, summaries, items,
+      // one-offs, bill-effective months) — published so Slice & dice
+      // can default its From month to it instead of the reserve-start
+      // setting, which is a different month when the setting is set.
+      earliest: z.string().nullable(),
       reserveStartMonth: z.string().nullable(),
       openingReserveCents: z.number(),
       hasAnyData: z.boolean(),
@@ -7494,6 +7500,7 @@ export const Actions = {
         divergenceCents,
         divergencePct,
         reserveCents,
+        earliest: earliest ?? null,
         reserveStartMonth: reserveStartMonth ?? null,
         openingReserveCents,
         hasAnyData:

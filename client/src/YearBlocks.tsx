@@ -376,7 +376,10 @@ export function YearInSpendingBlock({
                     <p className="mt-3 text-sm text-[var(--dim)]">
                       Average month {fmt(data.spending.averageTrueCostCents)} — the
                       keep-the-lights-on floor is{" "}
-                      {fmt(data.spending.keepLightsOnFloorCents)}/mo at today&apos;s bills.
+                      {fmt(data.spending.keepLightsOnFloorCents)}/mo{" "}
+                      {selectedYear === currentYear
+                        ? "at today's bills."
+                        : `at ${selectedYear}'s bills.`}
                     </p>
                   </div>
                   {data.spending.excludedPayments.map((p) => (
