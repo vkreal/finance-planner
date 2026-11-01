@@ -3194,7 +3194,7 @@ export function Playground() {
                 <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
                   <span>
                     Total federal tax{" "}
-                    <span className="font-bold text-[var(--accent)]">
+                    <span className="font-bold text-[var(--bad)]">
                       {fmtDollars(pg?.federalTax ?? 0)}
                     </span>
                   </span>
@@ -5039,12 +5039,16 @@ export function Playground() {
                 value: ReactNode,
                 sub?: string,
                 highlightValue?: boolean,
+                // The highlight color for a highlighted value:
+                // the teal accent by default; a caller that
+                // prices money owed passes the red owed color.
+                highlightClass = "text-[var(--accent)]",
               ) => (
                 <div>
                   <dt className="text-[var(--dim)]">{label}</dt>
                   <dd className="tnum font-medium">
                     {highlightValue ? (
-                      <span className="font-bold text-[var(--accent)]">{value}</span>
+                      <span className={`font-bold ${highlightClass}`}>{value}</span>
                     ) : (
                       value
                     )}
@@ -6347,6 +6351,9 @@ export function Playground() {
                       fmtDollars(pg.federalTax),
                       undefined,
                       true,
+                      // Money owed: the same red as the negative
+                      // "Left after a year's spending" below.
+                      "text-[var(--bad)]",
                     )}
                     {pg.educationAotc > 0 &&
                       stackRow(
