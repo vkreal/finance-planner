@@ -70,7 +70,7 @@ import {
 } from "./foldState";
 import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
-import { RothConversion, type RothSectionId } from "./RothConversion";
+import { RothConversion } from "./RothConversion";
 import { Playground } from "./Playground";
 import { YearInSpendingBlock } from "./YearBlocks";
 import { FoldChevron } from "./FoldChevron";
@@ -1668,20 +1668,6 @@ export function App() {
      "networth" is its own self-contained view — while it is active
      none of the spending sections render. In-session only. */
   const [topView, setTopView] = useState<"spending" | "networth" | "retirement" | "roth" | "playground">("spending");
-  // Cross-view jump target (contract v133): a Retirement-view
-  // tap on a plan-sourced field asks for the Tax Plan field it
-  // came from. The handler switches this view in and hands the
-  // target to the Tax Plan view, which jumps to the field once
-  // its plan has loaded. The nonce makes each tap fire once.
-  const [rothJump, setRothJump] = useState<{
-    fieldId: string;
-    section?: RothSectionId;
-    nonce: number;
-  } | null>(null);
-  const handleJumpToRothField = (fieldId: string, section?: RothSectionId) => {
-    setRothJump({ fieldId, section, nonce: Date.now() });
-    setTopView("roth");
-  };
   const [viewYear, setViewYear] = useState<number>(() =>
     Number(currentMonth().slice(0, 4)),
   );
@@ -3252,7 +3238,7 @@ export function App() {
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
-          <RetirementCalc onJumpToRothField={handleJumpToRothField} />
+          <RetirementCalc />
         </main>
       </div>
     );
@@ -3264,7 +3250,7 @@ export function App() {
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
-          <RothConversion jumpTarget={rothJump} />
+          <RothConversion />
         </main>
       </div>
     );
