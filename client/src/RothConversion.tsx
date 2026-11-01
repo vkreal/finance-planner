@@ -1654,6 +1654,17 @@ export function RothConversion() {
   const saveTimer = useRef<number | null>(null);
   const pendingSave = useRef<SavePayload | null>(null);
   const saveInFlightRef = useRef(false);
+  // Contract v131 — settled-value gate: the debounced autosave
+  // must only persist values the user has finished editing. A
+  // field is settled once focus has left it; while an autosaved
+  // input still has focus the value in it may be half-typed, so
+  // a save that comes due then must wait instead of persisting
+  // the intermediate text (a half-typed "15" in the spending
+  // field was saved as $15/yr before this gate). The root div
+  // tracks focus (onFocus/onBlur below); firePendingSave reads
+  // this ref, and the blur handler flushes a deferred save once
+  // focus leaves the view.
+  const formFocusedRef = useRef(false);
   const save = useMutation({
     mutationFn: (input: SavePayload) =>
       api.saveRothInputs({ ...input, baseRevision: planRevisionRef.current }),
@@ -1686,6 +1697,15 @@ export function RothConversion() {
   saveMutateRef.current = save.mutate;
   const firePendingSave = () => {
     if (!pendingSave.current) return;
+    if (formFocusedRef.current) {
+      // Contract v131 — settled-value gate: the user is still
+      // editing inside the form, so the pending payload may hold
+      // a half-typed value. Do not persist it. The pending save
+      // stays queued (the timer has already fired, so nothing
+      // re-fires it) and the root div's blur handler flushes it
+      // once focus leaves the view and the value is settled.
+      return;
+    }
     if (saveInFlightRef.current) {
       // A save is already in flight: wait for it to settle (its
       // returned revision becomes the base) and re-fire.
@@ -1705,10 +1725,17 @@ export function RothConversion() {
   useEffect(() => {
     return () => {
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
-      if (pendingSave.current) {
+      // Contract v131 — settled-value gate: only flush a pending
+      // save on unmount when the form is settled. If an input
+      // still has focus the value may be half-typed; dropping it
+      // keeps the last good saved record instead of persisting
+      // the intermediate text. (In the normal navigate-away case
+      // the blur already flushed it before the unmount runs, so
+      // this branch only matters for unmounts without a blur.)
+      if (pendingSave.current && !formFocusedRef.current) {
         saveMutateRef.current(pendingSave.current);
-        pendingSave.current = null;
       }
+      pendingSave.current = null;
     };
   }, []);
 
@@ -5956,7 +5983,83 @@ export function RothConversion() {
   }
 
   return (
-    <div>
+    <div
+      // Contract v131 — settled-value gate: focus tracking for
+      // the autosave. onFocus fires (bubbling) when any
+      // descendant takes focus; the gate only counts editable
+      // fields (input/select/textarea) — a focused button is not
+      // itself an edit in progress. onBlur fires (bubbling) when
+      // focus leaves a descendant: a move to another editable
+      // field inside the view keeps the gate on, while leaving
+      // the view means the value just edited is settled, so a
+      // deferred save flushes. A move to a non-editable element
+      // inside the view (for example a button) does NOT flush
+      // and cancels the pending timer: the button may discard
+      // the edit (Back to saved) or change another value (which
+      // schedules its own save), so the pending save stays queued
+      // and flushes only once focus actually leaves the view, or
+      // an editable field regains focus and its value settles.
+      // A blur whose target is no longer in the document (the
+      // focused element was unmounted by a re-render, e.g. the
+      // Back to saved button swapping for its confirm prompt)
+      // is not the user leaving the view and does not flush.
+      onFocus={(e) => {
+        const t = e.target as HTMLElement | null;
+        if (
+          t instanceof HTMLInputElement ||
+          t instanceof HTMLSelectElement ||
+          t instanceof HTMLTextAreaElement ||
+          (t != null && t.isContentEditable)
+        ) {
+          formFocusedRef.current = true;
+        }
+      }}
+      onBlur={(e) => {
+        const next = e.relatedTarget as HTMLElement | null;
+        const nextIsEditable =
+          next instanceof HTMLInputElement ||
+          next instanceof HTMLSelectElement ||
+          next instanceof HTMLTextAreaElement ||
+          (next != null && next.isContentEditable);
+        if (next != null && nextIsEditable && e.currentTarget.contains(next)) return;
+        if (next != null && e.currentTarget.contains(next)) {
+          // Focus moved to a non-editable element inside the view
+          // (a button): do not flush — the button may discard the
+          // edit. Cancel the pending timer, too: the timer was
+          // armed while the value was half-typed, and if it were
+          // left live it would fire once the ref below is no
+          // longer blocking and persist the intermediate text.
+          // The payload stays queued, and the gate stays closed
+          // (ref true), so a later fire is blocked as well. The
+          // pending save flushes only once focus actually leaves
+          // the view, or an editable field regains focus and its
+          // value settles (which schedules its own save).
+          if (saveTimer.current != null) {
+            window.clearTimeout(saveTimer.current);
+            saveTimer.current = null;
+          }
+          formFocusedRef.current = true;
+          return;
+        }
+        // Focus left the view — but only flush if the element
+        // that lost focus is still in the document. A re-render
+        // can unmount the focused element (for example the Back
+        // to saved button is swapped for its confirm prompt when
+        // clicked), and that removal fires a blur with no
+        // relatedTarget: the user did not leave the view, and
+        // flushing there would persist the half-typed value
+        // before the discard runs.
+        if (
+          e.target != null &&
+          e.target instanceof Node &&
+          !e.target.isConnected
+        ) {
+          return;
+        }
+        formFocusedRef.current = false;
+        firePendingSave();
+      }}
+    >
       <h1 className="pt-5 text-xl font-semibold">
         Tax Plan
         <InfoNote
