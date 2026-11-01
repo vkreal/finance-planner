@@ -6278,9 +6278,9 @@ export function Playground() {
                         "Washington capital-gains excise",
                         <button
                           type="button"
-                          aria-label="Go to the income inputs"
+                          aria-label="Go to the Stock sold field"
                           className={pgTapCls}
-                          onClick={() => jumpToPgField("roth-Interest", "income")}
+                          onClick={() => jumpToPgField("roth-Stock-sold", "stock")}
                         >
                           {fmtDollars(pg.stateTax)}
                         </button>,

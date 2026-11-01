@@ -90,6 +90,11 @@ type DecForm = {
   harvestOn: boolean;
   harvestPoolAmount: string;
   harvestPoolBasisPct: string;
+  // Taxable cash for the year (contract v125): nullable
+  // money like the harvest pool amount (blank vs $0 are
+  // distinct facts) — cash taken from taxable at 100%
+  // basis, on top of the pre-tax draw, never part of it.
+  taxableFunded: string;
   ytdSsPrimary: string;
   ytdSsSpouse: string;
   remCapDist: RangeForm;
@@ -304,6 +309,7 @@ function formFromState(s: DecemberState): DecForm {
     carryInCapitalLossLtWa: decemberNullableMoneyFormValue(s.carryInCapitalLossLtWa),
     harvestOn: s.harvestOn,
     harvestPoolAmount: decemberNullableMoneyFormValue(s.harvestPoolAmount),
+    taxableFunded: decemberNullableMoneyFormValue(s.taxableFunded),
     harvestPoolBasisPct:
       s.harvestPoolBasisPct == null ? "" : String(s.harvestPoolBasisPct),
     ytdSsPrimary: moneyStr(s.ytdSsPrimary),
@@ -431,6 +437,10 @@ function stateFromForm(f: DecForm): DecemberState {
       f.harvestPoolBasisPct.trim() === ""
         ? null
         : Math.min(100, clamp0(parseMoney(f.harvestPoolBasisPct))),
+    taxableFunded: (() => {
+      const n = decemberNullableMoneyFromFormValue(f.taxableFunded);
+      return n == null ? null : clamp0(n);
+    })(),
     ytdSsPrimary: clamp0(parseMoney(f.ytdSsPrimary)),
     ytdSsSpouse: f.filingStatus === "mfj" ? clamp0(parseMoney(f.ytdSsSpouse)) : 0,
     remCapDist: rg0(f.remCapDist),
@@ -1302,6 +1312,18 @@ export function December() {
                         {fmtDollars(likelyCase.harvestedGainAtHeadline)}
                       </button>,
                     )}
+                  {state.taxableFunded != null && state.taxableFunded > 0 &&
+                    billRow(
+                      "Taxable cash (100% basis)",
+                      <button
+                        type="button"
+                        aria-label="Go to the Taxable cash for the year field"
+                        className={decTapCls}
+                        onClick={() => jumpToDecField("roth-December-taxable-cash")}
+                      >
+                        {fmtDollars(state.taxableFunded)}
+                      </button>,
+                    )}
                   {likelyCase.excessAptcRepayment != null &&
                     likelyCase.excessAptcRepayment > 0 &&
                     billRow(
@@ -1916,6 +1938,35 @@ export function December() {
             room the harvest would otherwise use.
           </p>
         )}
+      </section>
+
+      {/* Taxable cash for the year (contract v125) */}
+      <section className={sectionCls} aria-label="Taxable cash for the year">
+        <h3 className="text-base font-semibold">Taxable cash for the year</h3>
+        <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
+          Cash taken from taxable at 100% basis for the year — the money
+          that pays the tax bill and the spending the pre-tax draw does not
+          cover. A 100%-basis sale realizes no gain, so it adds nothing to
+          MAGI: it does not change the maximum safe pre-tax draw above, the
+          credit, or the tax. It is money in addition to the draw, not part
+          of it — cash left after tax above rises by this amount, dollar for
+          dollar.
+        </p>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {moneyField("Taxable cash for the year (100% basis)", form.taxableFunded, (v) =>
+            set("taxableFunded", v),
+          { idLabel: "December taxable cash", hint: "Cash from taxable at 100% basis — the part already taxed, so selling it realizes no gain and adds nothing to MAGI. Leave blank if none; enter 0 when explicitly none." },
+          )}
+        </div>
+        {(() => {
+          const n = decemberNullableMoneyFromFormValue(form.taxableFunded);
+          return n != null && n > 0 ? (
+            <p className="tnum mt-3 max-w-3xl text-sm text-[var(--dim)]">
+              Cash left after tax above includes this {fmtDollars(n)} — the
+              maximum safe pre-tax draw is unchanged.
+            </p>
+          ) : null;
+        })()}
       </section>
 
       {/* Remaining ranges */}

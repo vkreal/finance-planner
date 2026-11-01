@@ -153,6 +153,28 @@ export const decemberState = z.object({
   harvestOn: z.boolean(),
   harvestPoolAmount: z.number().finite().min(0).nullable(),
   harvestPoolBasisPct: z.number().finite().min(0).max(100).nullable(),
+  // Taxable cash for the year (contract v125): cash taken
+  // from taxable at 100% basis for the year — the
+  // operating model's "tax from taxable (100%-basis cash
+  // first)". It adds $0 to MAGI (a 100%-basis sale realizes
+  // no gain), so it uses no MAGI room and the cliff
+  // solver's answer — the maximum safe pre-tax draw — is
+  // INVARIANT to it: the draw is sized by MAGI room, and
+  // this amount is a cash quantity, not a MAGI quantity.
+  // The harvest precedent is the same rule in the other
+  // direction: the harvest (a gain) shrinks the draw by the
+  // harvested gain because it ADDS MAGI; a $0-MAGI item
+  // moves the draw by $0. So the amount is additional cash
+  // ON TOP of the draw, not part of it — it raises cash-in
+  // and cash-left dollar for dollar (see
+  // computeDecemberProjection) while the pre-tax draw,
+  // MAGI, credit, tax, and settlement are unchanged. A
+  // blob written before this field existed parses a missing
+  // key as null and prices exactly as before this build.
+  // NULLABLE: null = no input yet, $0 = explicitly none.
+  // A plain console answer (no Tax Plan record resolution,
+  // no provenance flag): it saves as displayed.
+  taxableFunded: z.number().finite().min(0).nullable(),
   ytdSsPrimary: z.number().finite().min(0),
   ytdSsSpouse: z.number().finite().min(0),
   // Remaining expected income (December stragglers), per line.
@@ -401,6 +423,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     harvestOn: false,
     harvestPoolAmount: null,
     harvestPoolBasisPct: null,
+    taxableFunded: null,
     ytdSsPrimary: 0,
     ytdSsSpouse: 0,
     remCapDist: rangeDefault(),
@@ -661,6 +684,14 @@ export function parseDecemberState(
   if (hvBasis.seen && (hvBasis.value == null || hvBasis.value <= 100)) {
     out.harvestPoolBasisPct = hvBasis.value;
   }
+  // Taxable cash for the year (contract v125): nullable
+  // like the harvest facts — a missing key (every blob
+  // written before this field existed) and an explicit null
+  // both read as NO INPUT YET, an entered amount (including
+  // an explicit $0) reads as written, so a pre-v125 blob
+  // prices exactly as it did.
+  const txFunded = nullableNonNeg("taxableFunded");
+  if (txFunded.seen) out.taxableFunded = txFunded.value;
   nonNeg("rmdAlreadyReceived", (n) => (out.rmdAlreadyReceived = n));
   if (typeof p.spouseSoleBeneficiary === "boolean") {
     out.spouseSoleBeneficiary = p.spouseSoleBeneficiary;
@@ -1759,15 +1790,19 @@ export type DecemberCaseResult = {
   // Cash left after tax at the headline draw (contract
   // v114): the priced year's cash in (pricePlaygroundYear's
   // cashIn — every dollar of cash the case's entered income
-  // brings in, the draw included) minus this case's net tax
-  // bill, the settlement itself (netSettleAtHeadline), so
-  // the figure is null exactly when no settlement is shown
-  // and netSettleNote names why. Before any spending: what
-  // the year leaves in hand once its tax is settled.
+  // brings in, the draw included) plus the taxable cash
+  // for the year (contract v125 — 100%-basis cash, $0
+  // MAGI, added at the assembly, never inside the priced
+  // year) minus this case's net tax bill, the settlement
+  // itself (netSettleAtHeadline), so the figure is null
+  // exactly when no settlement is shown and netSettleNote
+  // names why. Before any spending: what the year leaves
+  // in hand once its tax is settled.
   cashLeftAtHeadline: number | null;
   // Cash in at the headline draw (contract v116): the
   // priced year's cash in (pricePlaygroundYear's cashIn on
-  // the same pricing) — the cash-in figure the cash-left
+  // the same pricing) plus the taxable cash for the year
+  // (contract v125) — the cash-in figure the cash-left
   // tooltip names as priced. Null exactly when the
   // settlement is null, like cashLeftAtHeadline.
   cashInAtHeadline: number | null;
@@ -1918,6 +1953,15 @@ export function computeDecemberProjection(
   const gainHarvestUnpriced =
     state.harvestOn &&
     (state.harvestPoolAmount == null || state.harvestPoolBasisPct == null);
+  // Taxable cash for the year (contract v125): cash taken
+  // from taxable at 100% basis — $0 MAGI, so it never
+  // enters the priced year above (the solver, the cases'
+  // MAGI, credit, and taxes are all priced without it) and
+  // is added to cash-in / cash-left at the assembly below,
+  // dollar for dollar, in every case. The headline draw is
+  // unchanged: the solver sizes the pre-tax draw by MAGI
+  // room, and this amount uses none.
+  const taxableFunded = Math.max(0, state.taxableFunded ?? 0);
   const cases: DecemberCaseResult[] = DECEMBER_CASE_KINDS.map((kind, i) => {
     const zero = zeroResults[i]!;
     const atHeadline = pricePlaygroundYear(
@@ -2053,9 +2097,11 @@ export function computeDecemberProjection(
       cashLeftAtHeadline:
         netSettleAtHeadline == null
           ? null
-          : r2(atHeadline.cashIn - netSettleAtHeadline),
+          : r2(atHeadline.cashIn + taxableFunded - netSettleAtHeadline),
       cashInAtHeadline:
-        netSettleAtHeadline == null ? null : atHeadline.cashIn,
+        netSettleAtHeadline == null
+          ? null
+          : r2(atHeadline.cashIn + taxableFunded),
     };
   });
 
@@ -5647,6 +5693,114 @@ export function runDecemberFixtures(): {
     if (!decemberState.safeParse(resolved).success) {
       fail("the writer schema should accept resolved harvest facts");
     }
+  });
+
+  run("dec-taxable-funded-acceptance", (fail) => {
+    // Contract v125: cash taken from taxable at 100% basis
+    // is $0 MAGI, so it uses no MAGI room and the cliff
+    // solver's answer — the maximum safe pre-tax draw — is
+    // invariant to it. The draw is sized by MAGI room; the
+    // taxable amount is a cash quantity, not a MAGI one
+    // (the harvest precedent is the same rule the other
+    // way: a gain shrinks the draw by the gain because it
+    // ADDS MAGI; a $0-MAGI item moves it by $0). The
+    // amount is additional cash ON TOP of the draw: the
+    // pre-tax draw, MAGI, credit, tax, and settlement are
+    // unchanged, and cash-in / cash-left rise dollar for
+    // dollar. Baseline is the headline fixture's state
+    // (other ordinary $50,000): headline $29,600, MAGI
+    // $79,600, credit $12,071.84, federal tax $5,192, net
+    // settle $5,120.16, cash in $79,600, cash left
+    // $74,479.84. With $10,000 of taxable cash the cash
+    // figures rise by exactly $10,000 and nothing else
+    // moves — in every case.
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    s.taxableFunded = 10000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    near(fail, "headline draw unchanged", r.headlineDraw, 29600);
+    for (const c of r.cases) {
+      near(fail, "magi unchanged", c.magiAtHeadline, 79600);
+      near(fail, "credit unchanged", c.creditAtHeadline, 12071.84);
+      near(fail, "federal tax unchanged", c.federalTaxAtHeadline, 5192);
+      near(fail, "net settle unchanged", c.netSettleAtHeadline, 5120.16);
+      near(fail, "cash in +$10,000", c.cashInAtHeadline, 89600);
+      near(fail, "cash left +$10,000", c.cashLeftAtHeadline, 84479.84);
+    }
+  });
+
+  run("dec-taxable-funded-zero-identity", (fail) => {
+    // The $0-vs-nonzero boundary: an explicit $0 and no
+    // input at all price bit-identically — every figure,
+    // in every case, equal to the baseline run.
+    const plain = base();
+    plain.ytdOtherOrdinary = 50000;
+    const zero = base();
+    zero.ytdOtherOrdinary = 50000;
+    zero.taxableFunded = 0;
+    const a = computeDecemberProjection(plain);
+    const b = computeDecemberProjection(zero);
+    if (a.headlineDraw !== b.headlineDraw) fail("headline differs at $0");
+    for (let i = 0; i < 3; i++) {
+      const ca = a.cases[i]!;
+      const cb = b.cases[i]!;
+      if (ca.magiAtHeadline !== cb.magiAtHeadline) fail(`case ${i} magi differs at $0`);
+      if (ca.creditAtHeadline !== cb.creditAtHeadline) fail(`case ${i} credit differs at $0`);
+      if (ca.federalTaxAtHeadline !== cb.federalTaxAtHeadline) fail(`case ${i} tax differs at $0`);
+      if (ca.netSettleAtHeadline !== cb.netSettleAtHeadline) fail(`case ${i} settle differs at $0`);
+      if (ca.cashInAtHeadline !== cb.cashInAtHeadline) fail(`case ${i} cash in differs at $0`);
+      if (ca.cashLeftAtHeadline !== cb.cashLeftAtHeadline) fail(`case ${i} cash left differs at $0`);
+    }
+    exact(fail, "cash in at $0", b.cases[1]!.cashInAtHeadline, 79600);
+    exact(fail, "cash left at $0", b.cases[1]!.cashLeftAtHeadline, 74479.84);
+  });
+
+  run("dec-taxable-funded-null-settlement", (fail) => {
+    // The null contract: when no settlement is shown (here
+    // the credit is genuinely unpriced — no benchmark
+    // entered, marketplace-eligible household), cash-in and
+    // cash-left stay null even with taxable cash entered —
+    // the amount never invents a settlement. The draw is
+    // still sized (the cliff applies), so it is unchanged.
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    s.acaBenchmarkAnnual = null;
+    s.taxableFunded = 10000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    near(fail, "headline draw unchanged", r.headlineDraw, 29600);
+    for (const c of r.cases) {
+      if (c.netSettleAtHeadline !== null) fail("settlement should be null without a benchmark");
+      if (c.cashInAtHeadline !== null) fail("cash in should be null without a settlement");
+      if (c.cashLeftAtHeadline !== null) fail("cash left should be null without a settlement");
+    }
+  });
+
+  run("dec-taxable-funded-save-round-trip", (fail) => {
+    // Persistence: the field survives a serialize/parse
+    // round trip; a blob written before it existed parses
+    // it as null; the writer schema accepts it; and it is
+    // a plain console answer — decemberStateForSave passes
+    // it through as displayed with no edited flag (no
+    // record resolution, no provenance entry).
+    const s = { ...defaultDecemberState(2026), taxableFunded: 10000 };
+    const blob = serializeDecemberState(s, 1);
+    const back = parseDecemberState(blob, 2026);
+    exact(fail, "round-tripped amount", back.taxableFunded, 10000);
+    const legacy = parseDecemberState(JSON.stringify({ taxYear: 2026 }), 2026);
+    if (legacy.taxableFunded !== null) fail("a blob without the key should parse null");
+    if (!decemberState.safeParse(s).success) {
+      fail("the writer schema should accept the new field");
+    }
+    const fresh = defaultDecemberState(2026);
+    const stored = decemberStoredProvenanceOf(fresh);
+    const saved = decemberStateForSave(
+      { ...fresh, taxableFunded: 10000 },
+      stored,
+      { beneficiary: false, balances: false },
+    );
+    exact(fail, "save passes it through", saved.taxableFunded, 10000);
   });
 
   return {
