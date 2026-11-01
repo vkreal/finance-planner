@@ -10458,7 +10458,7 @@ export function RothConversion() {
               // draw for spending (an RMD alone is not a draw
               // decision, so it does not open the mini bill).
               const firstDrawYear =
-                planYears.find((y) => y.pretaxDrawCents > 0) ?? null;
+                planYears.find((y) => y.pretaxOutByChoiceCents > 0) ?? null;
               const billRow = (
                 label: string,
                 value: string,

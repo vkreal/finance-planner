@@ -107,6 +107,24 @@ export const decemberState = z.object({
   // Realized capital result so far — SIGNED (negative = a net
   // realized loss), like the engine's own stock gain.
   ytdCapitalGain: z.number().finite(),
+  // Cost basis of the sales behind the year's gains
+  // (contract v127, round-19 finding 4): the basis
+  // returned on the sales whose gains feed the total above
+  // (year-to-date sales, planned sales, January-paid and
+  // K-1 gains that came from sales). A sale's proceeds are
+  // its gain PLUS its basis, and the shared engine's
+  // cash-in counts the proceeds — so without this field
+  // cash-in counted only the gain and silently dropped the
+  // basis. NULLABLE, and null and $0 are different facts:
+  // null = no input yet (the basis is unknown — the old
+  // gain-only mapping stands, and the field's hint says
+  // cash left counts only the gains until it is entered);
+  // $0 = explicitly no basis (a zero-basis sale). A blob
+  // written before this field existed parses a missing key
+  // as null and prices exactly as before this build. A
+  // plain console answer (no Tax Plan record resolution,
+  // no provenance flag): it saves as displayed.
+  saleBasis: z.number().finite().min(0).nullable(),
   // Capital-loss carryforward ENTERING this year (contract
   // v111, round-17 fix F1+F2): the banked short-term and
   // long-term losses from prior years still unused as this
@@ -416,6 +434,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
     ytdQualifiedDividends: 0,
     ytdTaxExemptInterest: 0,
     ytdCapitalGain: 0,
+    saleBasis: null,
     carryInCapitalLossSt: null,
     carryInCapitalLossLt: null,
     carryInCapitalLossStWa: null,
@@ -668,6 +687,8 @@ export function parseDecemberState(
   if (ciStWa.seen) out.carryInCapitalLossStWa = ciStWa.value;
   const ciLtWa = nullableNonNeg("carryInCapitalLossLtWa");
   if (ciLtWa.seen) out.carryInCapitalLossLtWa = ciLtWa.value;
+  const sb = nullableNonNeg("saleBasis");
+  if (sb.seen) out.saleBasis = sb.value;
   // Gain harvest (v113): the toggle reads as a plain
   // boolean (absent = off, the default above); the two
   // facts are nullable like the carry-in — a missing key
@@ -866,13 +887,20 @@ export type DecemberRecordFacts = {
   // The Tax Plan record's entering capital-loss
   // carryforward (v111), in dollars: the record's
   // capitalLossCarryIn* Cents converted. That balance is
-  // the loss entering the plan's FIRST year, so it
-  // answers the December console ONLY for that year —
-  // planFirstYear is that year (the record's execution
-  // year), and load resolution applies the carry-in facts
-  // only when the console's taxYear equals it. Absent /
-  // null per field = the record does not answer that
-  // field.
+  // the loss entering the plan's FIRST year, so it answers
+  // the December console for that year AND every later one
+  // (contract v127, round-19 finding 3): the plan march
+  // applies the carry-in at its first year unconditionally
+  // (planInputsFromSaved passes it through with no
+  // reference to executionYear), so a record saved in a
+  // prior year still carries its loss into the current
+  // year's December pricing — the old equals-only gate
+  // dropped a valid overlay the moment a calendar year
+  // passed without a plan save. It does NOT answer a year
+  // BEFORE the plan's first year (the loss had not entered
+  // the plan yet). planFirstYear is that first year (the
+  // record's execution year). Absent / null per field = the
+  // record does not answer that field.
   carryInCapitalLossSt?: number | null;
   carryInCapitalLossLt?: number | null;
   carryInCapitalLossStWa?: number | null;
@@ -895,6 +923,34 @@ export type DecemberRecordFacts = {
   harvestPoolAmount?: number | null;
   harvestPoolBasisPct?: number | null;
 };
+
+/* The snapshot-followed primary (contract v127, round-19
+   finding 1): when the Tax Plan record's primary pre-tax
+   balance follows the Net Worth snapshot (a null
+   pretaxCents) and the spouse's amount is explicit, the
+   primary is the snapshot's pre-tax total MINUS the
+   spouse's amount — exactly the resolution
+   resolvePlanBalances applies in the plan march (a null
+   pretaxCents resolves to max(0, snapshot − spouse)). The
+   full snapshot is the HOUSEHOLD's pre-tax total, not the
+   primary's alone: reading it as the primary's
+   double-counts the spouse's share — once inside the
+   primary's full-snapshot amount and once as the spouse's
+   own amount — inflating the pool by the spouse's share
+   and overstating the gross RMD. Floored at $0; a null
+   snapshot answers null, and no spouse amount leaves the
+   snapshot whole. The December console uses this in both
+   places it reads the record's primary (recordFactsOf and
+   the first-open preseed), so the console, the record
+   facts, and the march can never disagree about the
+   primary's amount. Pure, so the fixtures pin it. */
+export function snapshotFollowPrimaryCents(
+  snapPretaxCents: number | null | undefined,
+  spouseCents: number | null | undefined,
+): number | null {
+  if (snapPretaxCents == null) return null;
+  return Math.max(0, snapPretaxCents - (spouseCents ?? 0));
+}
 
 /* Round-4 fix, round-5 extension — load-time resolution,
    the exact function the December view's hydration runs.
@@ -976,14 +1032,17 @@ export function resolveDecemberStateAtLoad(
       educationStudents: facts.educationStudents,
     };
   }
-  // Entering capital-loss carryforward (v111): the Tax
+  // Entering capital-loss carryforward (v111, gate
+  // widened contract v127, round-19 finding 3): the Tax
   // Plan record's carry-in is the balance entering the
   // plan's FIRST year, so it resolves into the console
-  // ONLY when the console's tax year IS that year
-  // (planFirstYear — the record's execution year); in any
-  // other year the record's balance says nothing about
-  // this year's entering loss and no overlay applies.
-  // Per field: a null console value (no input yet)
+  // when the console's tax year is that year OR ANY LATER
+  // one — the plan march applies the carry-in at its first
+  // year unconditionally, so a record saved in a prior year
+  // still carries its loss into the current year's December
+  // pricing. It does NOT resolve for a year before the
+  // plan's first year (the loss had not entered the plan
+  // yet). Per field: a null console value (no input yet)
   // resolves from the record fact; any entered console
   // value — including an explicit $0 — always wins and is
   // never overwritten. Like every resolution here this is
@@ -991,7 +1050,7 @@ export function resolveDecemberStateAtLoad(
   // persists the STORED values for fields the user has
   // not edited in this console (decemberStateForSave's
   // carryIn flag).
-  if (facts.planFirstYear != null && out.taxYear === facts.planFirstYear) {
+  if (facts.planFirstYear != null && out.taxYear >= facts.planFirstYear) {
     const carryPatch: Partial<DecemberState> = {};
     if (out.carryInCapitalLossSt == null && facts.carryInCapitalLossSt != null) {
       carryPatch.carryInCapitalLossSt = facts.carryInCapitalLossSt;
@@ -1553,8 +1612,37 @@ export function decemberCaseInputs(
     ssPrimary: state.ytdSsPrimary,
     ssSpouse: joint ? state.ytdSsSpouse : 0,
     conversion: Math.max(0, draw),
-    stockSold: totalGain > 0 ? totalGain : 0,
-    stockBasis: totalGain < 0 ? -totalGain : 0,
+    // Sale proceeds (contract v127, round-19 finding 4):
+    // the console collects gains only, so the shared
+    // engine's cash-in counted only the gain as cash in
+    // hand and silently dropped the basis returned on
+    // every sale. A sale's proceeds are its gain plus its
+    // basis, so with an entered basis the engine gets the
+    // full proceeds (stockSold) with the basis beside it
+    // (stockBasis) — it nets the same gain (proceeds −
+    // basis) for tax, and cash-in counts the proceeds. A
+    // loss sale still brings its proceeds in (proceeds =
+    // basis − |loss|). Without an entered basis (null) the
+    // old mapping stands — a gain alone, and a loss riding
+    // the basis dial so the tax still nets it — and the
+    // same fallback applies when an entered basis is
+    // smaller than the loss (inconsistent input: a real
+    // sale's proceeds cannot go negative), so the loss
+    // never vanishes from the tax.
+    stockSold: (() => {
+      const basis = state.saleBasis;
+      if (basis != null && totalGain + basis > 0) {
+        return r2(totalGain + basis);
+      }
+      return totalGain > 0 ? totalGain : 0;
+    })(),
+    stockBasis: (() => {
+      const basis = state.saleBasis;
+      if (basis != null && totalGain + basis > 0) {
+        return basis;
+      }
+      return totalGain < 0 ? -totalGain : 0;
+    })(),
     qualifiedDividends: r2(
       state.ytdQualifiedDividends +
         state.remQualifiedDividends[kind] +
@@ -5057,13 +5145,18 @@ export function runDecemberFixtures(): {
   });
 
   run("dec-carryforward-resolution-and-save-rules", (fail) => {
-    // Load resolution (v111): the record's carry-in is the
-    // balance entering the plan's FIRST year, so it
-    // resolves only when the console's tax year IS that
-    // year; per field, null resolves and any entered value
-    // (including $0) wins. Save derivation: an unedited
-    // carry-in saves its STORED value, never the resolved
-    // overlay.
+    // Load resolution (v111, gate widened v127, round-19
+    // finding 3): the record's carry-in is the balance
+    // entering the plan's FIRST year, so it resolves when
+    // the console's tax year is that year OR ANY LATER one
+    // — the plan march applies it at its first year
+    // unconditionally, so a record saved in a prior year
+    // still carries its loss into the current year's
+    // December pricing. It does NOT resolve for a year
+    // before the plan's first year. Per field, null
+    // resolves and any entered value (including $0) wins.
+    // Save derivation: an unedited carry-in saves its
+    // STORED value, never the resolved overlay.
     const facts: DecemberRecordFacts = {
       planFirstYear: 2026,
       carryInCapitalLossSt: 1000,
@@ -5077,17 +5170,23 @@ export function runDecemberFixtures(): {
     exact(fail, "resolved LT", resolved.carryInCapitalLossLt, 10000);
     exact(fail, "resolved ST WA", resolved.carryInCapitalLossStWa, 250);
     exact(fail, "resolved LT WA", resolved.carryInCapitalLossLtWa, 2000);
-    const otherYear = resolveDecemberStateAtLoad(
+    const laterYear = resolveDecemberStateAtLoad(
       { ...defaultDecemberState(2026), taxYear: 2027 },
       facts,
     );
+    exact(fail, "a later year still resolves ST", laterYear.carryInCapitalLossSt, 1000);
+    exact(fail, "a later year still resolves LT", laterYear.carryInCapitalLossLt, 10000);
+    const earlierYear = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), taxYear: 2025 },
+      facts,
+    );
     if (
-      otherYear.carryInCapitalLossSt !== null ||
-      otherYear.carryInCapitalLossLt !== null ||
-      otherYear.carryInCapitalLossStWa !== null ||
-      otherYear.carryInCapitalLossLtWa !== null
+      earlierYear.carryInCapitalLossSt !== null ||
+      earlierYear.carryInCapitalLossLt !== null ||
+      earlierYear.carryInCapitalLossStWa !== null ||
+      earlierYear.carryInCapitalLossLtWa !== null
     ) {
-      fail("no resolution should apply outside the plan's first year");
+      fail("no resolution should apply before the plan's first year");
     }
     const entered = resolveDecemberStateAtLoad(
       {
@@ -5901,6 +6000,178 @@ export function runDecemberFixtures(): {
       { beneficiary: false, balances: false },
     );
     exact(fail, "save passes it through", saved.taxableFunded, 10000);
+  });
+
+  /* ---- Contract v127 fixtures: round-19 December figures
+     (findings 1–4) ---- */
+
+  run("dec-finding1-snapshot-follow-primary", (fail) => {
+    // Round-19 finding 1 (MUST): when the Tax Plan
+    // record's primary pre-tax balance follows the Net
+    // Worth snapshot and the spouse's amount is explicit,
+    // the primary is the snapshot's total MINUS the
+    // spouse's amount — the full snapshot is the
+    // household's total, not the primary's alone. The
+    // helper is the single source the console's
+    // recordFactsOf and first-open preseed both use, so
+    // the unit pins the exact code the client runs.
+    exact(fail, "snapshot minus spouse", snapshotFollowPrimaryCents(100000000, 20000000), 80000000);
+    exact(fail, "no spouse leaves the snapshot whole", snapshotFollowPrimaryCents(100000000, null), 100000000);
+    if (snapshotFollowPrimaryCents(null, 20000000) !== null) fail("no snapshot should answer null");
+    exact(fail, "spouse above the snapshot floors at $0", snapshotFollowPrimaryCents(15000000, 20000000), 0);
+    // And the load allocation, given the corrected 4:1
+    // record facts, splits the saved combined total 4:1 —
+    // not the 5:1 the old full-snapshot facts produced.
+    const facts: DecemberRecordFacts = {
+      pretaxBalancePrimary: 800000,
+      pretaxBalanceSpouse: 200000,
+    };
+    const stored = { ...defaultDecemberState(2028), taxYear: 2028, pretaxBalance: 1000000 };
+    const resolved = resolveDecemberStateAtLoad(stored, facts);
+    exact(fail, "allocated primary", resolved.pretaxBalancePrimary, 800000);
+    exact(fail, "allocated spouse", resolved.pretaxBalanceSpouse, 200000);
+    exact(fail, "shares sum to the saved total", (resolved.pretaxBalancePrimary ?? 0) + (resolved.pretaxBalanceSpouse ?? 0), 1000000);
+  });
+
+  run("dec-finding2-rmd-already-received-cash-in", (fail) => {
+    // Round-19 finding 2 (SHOULD): cash-in counted the
+    // received RMD twice — once inside other ordinary
+    // income (where the console's own hint says it
+    // belongs) and once as its own term — overstating
+    // cash left by exactly the received amount. The
+    // settled example: tax year 2028, primary 75, spouse
+    // 64, MFJ, primary on Medicare, household 2,
+    // benchmark $12,000, YTD other ordinary $10,000 (of
+    // which $4,000 is RMD already received), $4,000
+    // received, primary pre-tax balance $1,000,000.
+    // True cash in is $10,000 + the $35,525.69 net RMD +
+    // the $36,034.31 headline draw = $81,560; true cash
+    // left $80,927.42. MAGI, the headline draw, and the
+    // tax were already correct and must not move.
+    const s = {
+      ...defaultDecemberState(2028),
+      taxYear: 2028,
+      agePrimary: 75,
+      ageSpouse: 64,
+      onMedicarePrimary: true,
+      acaHouseholdSize: 2,
+      acaBenchmarkAnnual: 12000,
+      aptcTaken: 0,
+    };
+    s.ytdOtherOrdinary = 10000;
+    s.rmdAlreadyReceived = 4000;
+    s.pretaxBalancePrimary = 1000000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    near(fail, "headline draw unchanged", r.headlineDraw, 36034.31);
+    const likely = r.cases[1]!;
+    near(fail, "magi unchanged", likely.magiAtHeadline, 81560);
+    near(fail, "cash in counts the RMD once", likely.cashInAtHeadline, 81560);
+    near(fail, "cash left no longer overstated", likely.cashLeftAtHeadline, 80927.42);
+  });
+
+  run("dec-finding3-carry-in-prior-year", (fail) => {
+    // Round-19 finding 3 (SHOULD): the carry-in gate
+    // dropped a valid overlay the moment a calendar year
+    // passed without a plan save. The settled example:
+    // a record last saved in 2025 carrying a $3,000
+    // short-term loss carry-in, December 2026 — the
+    // overlay now applies, and the year's federal tax
+    // prices $16,390 with the loss against $16,840
+    // without it (2026, MFJ, $150,000 other ordinary,
+    // $10,000 long-term gain).
+    const facts: DecemberRecordFacts = {
+      planFirstYear: 2025,
+      carryInCapitalLossSt: 3000,
+    };
+    const fresh = { ...defaultDecemberState(2026), taxYear: 2026 };
+    const resolved = resolveDecemberStateAtLoad(fresh, facts);
+    exact(fail, "prior-year carry-in resolves", resolved.carryInCapitalLossSt, 3000);
+    const noCarry = {
+      ...defaultDecemberState(2026),
+      agePrimary: 60,
+      ageSpouse: 58,
+      acaHouseholdSize: 2,
+      acaBenchmarkAnnual: 20000,
+      aptcTaken: 0,
+    };
+    noCarry.ytdOtherOrdinary = 150000;
+    noCarry.ytdCapitalGain = 10000;
+    const withCarry = { ...noCarry, carryInCapitalLossSt: 3000 };
+    const pgNo = pricePlaygroundYear(decemberCaseInputs(noCarry, "likely", 0));
+    const pgWith = pricePlaygroundYear(decemberCaseInputs(withCarry, "likely", 0));
+    exact(fail, "federal tax without the carry-in", pgNo.federalTax, 16840);
+    exact(fail, "federal tax with the carry-in", pgWith.federalTax, 16390);
+  });
+
+  run("dec-finding4-sale-proceeds-cash-in", (fail) => {
+    // Round-19 finding 4 (SHOULD): cash-in counted only
+    // the gain on stock sales and silently dropped the
+    // basis returned on every sale. The settled example:
+    // a $50,000 sale with a $40,000 basis, realizing a
+    // $10,000 gain, entered as YTD capital gain — with
+    // the $40,000 basis entered, cash-in is the full
+    // $119,600 of proceeds and cash left $119,679.84.
+    // The pricing (MAGI, tax, settlement) is unaffected:
+    // the same state without a basis prices identical
+    // MAGI and tax, and cash-in / cash-left lower by
+    // exactly the $40,000 basis.
+    const s = {
+      ...defaultDecemberState(2026),
+      agePrimary: 57,
+      ageSpouse: 46,
+      acaHouseholdSize: 2,
+      acaBenchmarkAnnual: 12000,
+      aptcTaken: 0,
+    };
+    s.ytdCapitalGain = 10000;
+    const noBasis = computeDecemberProjection(s);
+    const withBasis = computeDecemberProjection({ ...s, saleBasis: 40000 });
+    if (!noBasis.priced || !withBasis.priced) return fail("not priced");
+    const likelyNo = noBasis.cases[1]!;
+    const likelyWith = withBasis.cases[1]!;
+    near(fail, "headline draw unchanged", withBasis.headlineDraw, 69600);
+    near(fail, "cash in counts the proceeds", likelyWith.cashInAtHeadline, 119600);
+    near(fail, "cash left counts the proceeds", likelyWith.cashLeftAtHeadline, 119679.84);
+    if (likelyWith.magiAtHeadline !== likelyNo.magiAtHeadline) fail("magi must not move with the basis");
+    if (likelyWith.federalTaxAtHeadline !== likelyNo.federalTaxAtHeadline) fail("federal tax must not move with the basis");
+    if (likelyWith.netSettleAtHeadline !== likelyNo.netSettleAtHeadline) fail("settlement must not move with the basis");
+    near(fail, "cash in without a basis is the gain alone", likelyNo.cashInAtHeadline, 79600);
+    near(fail, "cash left without a basis is short the basis", likelyNo.cashLeftAtHeadline, 79679.84);
+    // A loss sale still brings its proceeds in: a
+    // −$10,000 loss on a $60,000 basis is $50,000 of
+    // cash in hand, and the loss still nets for tax.
+    const loss = { ...s, ytdCapitalGain: -10000, saleBasis: 60000 };
+    const pgLoss = pricePlaygroundYear(decemberCaseInputs(loss, "likely", 0));
+    exact(fail, "loss sale cash in counts the proceeds", pgLoss.cashIn, 50000);
+    exact(fail, "loss still nets for tax", pgLoss.ltcgNet, -10000);
+  });
+
+  run("dec-finding4-sale-basis-save-round-trip", (fail) => {
+    // Persistence: the basis field survives a
+    // serialize/parse round trip; a blob written before
+    // it existed parses it as null; the writer schema
+    // accepts it; and it is a plain console answer —
+    // decemberStateForSave passes it through as displayed
+    // with no edited flag (no record resolution, no
+    // provenance entry).
+    const s = { ...defaultDecemberState(2026), saleBasis: 40000 };
+    const blob = serializeDecemberState(s, 1);
+    const back = parseDecemberState(blob, 2026);
+    exact(fail, "round-tripped basis", back.saleBasis, 40000);
+    const legacy = parseDecemberState(JSON.stringify({ taxYear: 2026 }), 2026);
+    if (legacy.saleBasis !== null) fail("a blob without the key should parse null");
+    if (!decemberState.safeParse(s).success) {
+      fail("the writer schema should accept the new field");
+    }
+    const fresh = defaultDecemberState(2026);
+    const stored = decemberStoredProvenanceOf(fresh);
+    const saved = decemberStateForSave(
+      { ...fresh, saleBasis: 40000 },
+      stored,
+      { beneficiary: false, balances: false },
+    );
+    exact(fail, "save passes it through", saved.saleBasis, 40000);
   });
 
   return {

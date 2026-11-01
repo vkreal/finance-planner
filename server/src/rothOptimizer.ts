@@ -3270,12 +3270,17 @@ export type PlaygroundYearResult = {
   // line 3b, its qualified part included, counted once),
   // other ordinary income, tax-exempt interest, the FULL
   // Social Security benefits (not just the taxable part),
-  // the year's RMD cash (the priced RMD plus any part of it
-  // already received), the pre-tax money out, and the gross
+  // the year's RMD cash, the pre-tax money out, and the gross
   // proceeds of any stock sale (its return-of-basis part
-  // included — it is cash in hand, not income). A harvested
-  // gain is NOT in it: a harvest's proceeds are reinvested
-  // by construction, never cash in hand. netTaxBill
+  // included — it is cash in hand, not income). The RMD cash
+  // is counted ONCE (contract v127, round-19 finding 2):
+  // the part already received sits inside other ordinary
+  // income — the input contract states it is already
+  // counted in the entered income — and the priced net RMD
+  // is the part still to come, so the two together are the
+  // gross RMD with no term added for the received part a
+  // second time. A harvested gain is NOT in it: a harvest's
+  // proceeds are reinvested by construction, never cash in hand. netTaxBill
   // (contract v116) is the year's NET tax bill — totalTax
   // less the ACA premium credit kept (aca.credit when
   // priced, else $0) and less the refundable education
@@ -4130,8 +4135,14 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       inp.otherOrdinary +
       inp.taxExemptInterest +
       ssBenefits +
+      // Contract v127 (round-19 finding 2): NO
+      // rmdAlreadyReceived term here — the received part is
+      // already inside otherOrdinary (the input contract),
+      // and rmd above is the net part still to come, so the
+      // two together count the gross RMD exactly once. An
+      // extra term overstated cash-in by the received
+      // amount.
       rmd +
-      rmdAlreadyReceived +
       inp.conversion +
       inp.stockSold,
   );
@@ -5964,9 +5975,15 @@ export function buildCompareScenario(
    off the same RothYear rows the scenario's lifetime totals
    sum, so a per-year display can never disagree with the
    lifetime figures beside it. Display only: no score, ranking,
-   or delta is derived from them. pretaxDrawCents is the year's
-   pre-tax money out by choice — its conversion plus its
-   pre-tax draw for spending (an RMD alone is not in it). */
+   or delta is derived from them. pretaxOutByChoiceCents is
+   the year's pre-tax money out by choice — its conversion
+   plus its pre-tax draw for spending (an RMD alone is not
+   in it). It is NOT the funding run's pretaxDrawCents
+   (contract v127, round-19 finding 11): that field is the
+   extra spending draw plus pre-tax amounts applied to the
+   tax bill, and excludes the conversion — the shared name
+   used to say they were the same quantity, and they are
+   not. */
 export type RothCompareScenarioYear = {
   year: number;
   agePrimary: number;
@@ -5984,7 +6001,7 @@ export type RothCompareScenarioYear = {
   // them into a tax line).
   irmaaCents: number;
   conversionCents: number;
-  pretaxDrawCents: number;
+  pretaxOutByChoiceCents: number;
 };
 
 export type RothCompareScenarioResult = {
@@ -6115,7 +6132,7 @@ export function runRothCompare(
         acaCreditCents: toCents(y.acaCreditKept),
         irmaaCents: toCents(y.irmaaPaid),
         conversionCents: toCents(y.conversion),
-        pretaxDrawCents: toCents(y.conversion + y.detail.extraPreTaxDraw),
+        pretaxOutByChoiceCents: toCents(y.conversion + y.detail.extraPreTaxDraw),
       })),
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),

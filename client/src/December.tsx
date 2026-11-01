@@ -26,6 +26,7 @@ import {
   decemberStoredProvenanceOf,
   defaultDecemberState,
   resolveDecemberStateAtLoad,
+  snapshotFollowPrimaryCents,
   type DecemberCaseKind,
   type DecemberRecordFacts,
   type DecemberState,
@@ -73,6 +74,11 @@ type DecForm = {
   ytdQualifiedDividends: string;
   ytdTaxExemptInterest: string;
   ytdCapitalGain: string;
+  // Cost basis of the sales behind the year's gains
+  // (contract v127, round-19 finding 4): nullable money
+  // like the carry-in fields — null (blank) and $0 are
+  // distinct facts (no input yet vs explicitly no basis).
+  saleBasis: string;
   // Capital losses carried into this year (contract v111):
   // nullable money like the balances — null (blank) and $0
   // are distinct facts (no input yet vs explicitly none),
@@ -170,15 +176,24 @@ type DecForm = {
 
 /* The Tax Plan record facts load resolution draws on,
    in December dollars: the record's beneficiary answer
-   and its per-owner pre-tax split (the primary's amount
-   falls back to the snapshot's pre-tax total, the same
-   fallback the first-open preseed uses). */
+   and its per-owner pre-tax split. The primary's amount
+   falls back to the snapshot-followed primary — the
+   snapshot's pre-tax total MINUS an explicit spouse
+   amount (snapshotFollowPrimaryCents, the same resolution
+   the plan march applies) — never to the full snapshot,
+   which would double-count the spouse's share (contract
+   v127, round-19 finding 1). */
 function recordFactsOf(
   data: ApiResponse<typeof api, "getRothPlanner"> | undefined,
   taxYear?: number,
 ): DecemberRecordFacts {
   const s = data?.saved;
-  const primaryCents = s?.pretaxCents ?? data?.snapshot?.pretaxCents ?? null;
+  const primaryCents =
+    s?.pretaxCents ??
+    snapshotFollowPrimaryCents(
+      data?.snapshot?.pretaxCents,
+      s?.pretaxSpouseCents,
+    );
   return {
     primarySoleBeneficiaryOfSpouse:
       s?.primarySoleBeneficiaryOfSpouse ?? null,
@@ -189,9 +204,14 @@ function recordFactsOf(
     // (v111): the record's capitalLossCarryIn* Cents
     // converted to dollars, plus planFirstYear — the
     // record's execution year, the year that carry-in
-    // enters. Load resolution applies the carry-in only
-    // when the December year is that year. Null per field
-    // when the record does not answer.
+    // enters. Load resolution applies the carry-in when
+    // the December year is that year OR ANY LATER one
+    // (contract v127, round-19 finding 3): the plan march
+    // applies it at its first year unconditionally, so a
+    // record saved in a prior year still carries its loss
+    // into the current year's December pricing. It does
+    // not apply to a year before the plan's first year.
+    // Null per field when the record does not answer.
     carryInCapitalLossSt:
       s?.capitalLossCarryInStCents != null
         ? s.capitalLossCarryInStCents / 100
@@ -300,6 +320,7 @@ function formFromState(s: DecemberState): DecForm {
     ytdQualifiedDividends: moneyStr(s.ytdQualifiedDividends),
     ytdTaxExemptInterest: moneyStr(s.ytdTaxExemptInterest),
     ytdCapitalGain: moneyStr(s.ytdCapitalGain),
+    saleBasis: decemberNullableMoneyFormValue(s.saleBasis),
     // Carry-in losses render through the nullable-money
     // converter like the balances: null shows blank, an
     // entered $0 shows "0" — the distinction is a fact.
@@ -412,6 +433,10 @@ function stateFromForm(f: DecForm): DecemberState {
     ytdQualifiedDividends: clamp0(parseMoney(f.ytdQualifiedDividends)),
     ytdTaxExemptInterest: clamp0(parseMoney(f.ytdTaxExemptInterest)),
     ytdCapitalGain: parseMoney(f.ytdCapitalGain),
+    saleBasis: (() => {
+      const n = decemberNullableMoneyFromFormValue(f.saleBasis);
+      return n == null ? null : clamp0(n);
+    })(),
     carryInCapitalLossSt: (() => {
       const n = decemberNullableMoneyFromFormValue(f.carryInCapitalLossSt);
       return n == null ? null : clamp0(n);
@@ -762,7 +787,13 @@ export function December() {
         // Each owner's pre-tax balance seeds their own
         // field — the record's own fields, never summed —
         // so each owner's RMD prices on their own clock.
-        const primaryPretaxCents = s.pretaxCents ?? snap?.pretaxCents ?? null;
+        // A null record primary follows the snapshot MINUS
+        // an explicit spouse amount (contract v127,
+        // round-19 finding 1): the full snapshot is the
+        // household's total, not the primary's alone.
+        const primaryPretaxCents =
+          s.pretaxCents ??
+          snapshotFollowPrimaryCents(snap?.pretaxCents, s.pretaxSpouseCents);
         const spousePretaxCents = s.pretaxSpouseCents ?? null;
         initial = {
           ...initial,
@@ -1779,6 +1810,45 @@ export function December() {
               </p>
             );
           })()}
+        {decQ.data?.state &&
+          decQ.data.state.pretaxSplitExplicit &&
+          decQ.data.state.pretaxBalancePrimary != null &&
+          decQ.data.state.pretaxBalanceSpouse != null &&
+          !balancesEdited &&
+          (() => {
+            // Contract v127 (round-19 finding 1): the
+            // explicit-split case the two notes above do
+            // not cover — this console prices its OWN
+            // per-owner split, not the record's, so when
+            // the two splits' totals disagree, name both.
+            // An explicit split is a deliberate override
+            // and it governs; the note exists so the
+            // disagreement is never silent (a split saved
+            // before the snapshot-minus-spouse fix can
+            // otherwise carry a double-counted primary
+            // with no warning at all).
+            const facts = recordFactsOf(rothQ.data);
+            if (
+              facts.pretaxBalancePrimary == null ||
+              facts.pretaxBalanceSpouse == null
+            ) {
+              return null;
+            }
+            const recordSum =
+              facts.pretaxBalancePrimary + facts.pretaxBalanceSpouse;
+            const consoleSum =
+              decQ.data!.state.pretaxBalancePrimary! +
+              decQ.data!.state.pretaxBalanceSpouse!;
+            if (Math.abs(recordSum - consoleSum) <= 0.01) return null;
+            return (
+              <p className="mt-2 max-w-3xl text-sm text-[var(--dim)]" role="note">
+                Balance totals differ: this console’s per-owner balances add
+                to {fmtDollars(consoleSum)}, while your Tax Plan record’s add
+                to {fmtDollars(recordSum)}. This console prices its own
+                explicit split.
+              </p>
+            );
+          })()}
         <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -1895,6 +1965,13 @@ export function December() {
           {moneyField("Realized capital gain / loss so far", form.ytdCapitalGain, (v) =>
             set("ytdCapitalGain", v),
           { idLabel: "December YTD capital gain", hint: "Signed — enter a net loss as a negative amount." },
+          )}
+          {moneyField("Cost basis of the sales behind that gain", form.saleBasis, (v) =>
+            set("saleBasis", v),
+          {
+            idLabel: "December sale basis",
+            hint: "The basis returned on the sales behind the gains above — a sale's proceeds are its gain plus its basis, and cash left counts the proceeds. Leave blank when there were no sales, or when the basis is unknown (cash left counts only the gains until the basis is entered). Distributions have no basis.",
+          },
           )}
           {moneyField("Social Security — primary", form.ytdSsPrimary, (v) =>
             set("ytdSsPrimary", v),
