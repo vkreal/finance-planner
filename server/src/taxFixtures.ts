@@ -20977,7 +20977,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-return-prefill-mapping",
     kind: "tax",
-    note: "Playground prefill mapping for the plan record's tax-return actuals (1040 LINES build): round illustrative values only — line 2b taxable interest $1,000, line 3a qualified dividends $2,500, line 3b ordinary dividends $4,000 (stored as integer cents 100000 / 250000 / 400000) — map through taxReturnPrefillDollars (the exact function the Playground's \"Start from my numbers\" calls) to the dial values interest $1,000, qualified dividends $2,500, ordinary dividends $4,000: interest ← 2b, qualified ← 3a, and ordinary ← the 3b TOTAL as written (never the $1,500 non-qualified remainder). A blank record (all three null) maps to three nulls — blank dials, nothing invented — and a partial record (only 3b entered) maps only that line, the other two staying null.",
+    note: "Playground prefill mapping for the plan record's tax-return actuals (1040 LINES build): round illustrative values only — line 2b taxable interest $1,000, line 3a qualified dividends $2,500, line 3b ordinary dividends $4,000 (stored as integer cents 100000 / 250000 / 400000), from the 2025 return — map through taxReturnPrefillDollars (the exact function the Playground's \"Start from my numbers\" calls) to the dial values interest $1,000, qualified dividends $2,500, ordinary dividends $4,000: interest ← 2b, qualified ← 3a, and ordinary ← the 3b TOTAL as written (never the $1,500 non-qualified remainder). A blank record (all three null) maps to three nulls — blank dials, nothing invented — and a partial record (only 3b entered) maps only that line, the other two staying null. The return year rides the stored shape but is not a dial: the mapping returns the three dollar values only, so the year (2025 on the full record, null on the blank and partial) changes none of them.",
     expected: {
       interest: 1000,
       qualified: 2500,
@@ -20993,6 +20993,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           taxReturnInterestCents: 100000,
           taxReturnQualifiedDividendsCents: 250000,
           taxReturnOrdinaryDividendsCents: 400000,
+          taxReturnYear: 2025,
         }),
       );
       const blank = taxReturnPrefillDollars(
@@ -21000,6 +21001,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           taxReturnInterestCents: null,
           taxReturnQualifiedDividendsCents: null,
           taxReturnOrdinaryDividendsCents: null,
+          taxReturnYear: null,
         }),
       );
       const partial = taxReturnPrefillDollars(
@@ -21007,6 +21009,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           taxReturnInterestCents: null,
           taxReturnQualifiedDividendsCents: null,
           taxReturnOrdinaryDividendsCents: 400000,
+          taxReturnYear: null,
         }),
       );
       return {
@@ -21023,20 +21026,22 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-return-saved-shape-round-trip",
     kind: "tax",
-    note: "Saved-shape round-trip for the three tax-return fields (1040 LINES build): the stored shape {taxReturnInterestCents 123400, taxReturnQualifiedDividendsCents 567800, taxReturnOrdinaryDividendsCents 901200} parses back with all three values exactly, and split/join of the blob carrying it is byte-identical. The all-null shape parses to three nulls (count 3) — a line not entered stays null, never coerced to $0 — and an absent shape (a record written before this build) parses to the same three nulls.",
+    note: "Saved-shape round-trip for the tax-return fields (1040 LINES build, year added contract v147): the stored shape {taxReturnInterestCents 123400, taxReturnQualifiedDividendsCents 567800, taxReturnOrdinaryDividendsCents 901200, taxReturnYear 2025} parses back with all four values exactly, and split/join of the blob carrying it is byte-identical. The all-null shape parses to four nulls (count 4) — a line not entered stays null, never coerced to $0, and a missing year stays null, never defaulted — and an absent shape (a record written before this build) parses to the same four nulls.",
     expected: {
       interest: 123400,
       qualified: 567800,
       ordinary: 901200,
+      year: 2025,
       byteIdentical: 1,
-      allNullCount: 3,
-      absentNullCount: 3,
+      allNullCount: 4,
+      absentNullCount: 4,
     },
     actual: () => {
       const stored = {
         taxReturnInterestCents: 123400,
         taxReturnQualifiedDividendsCents: 567800,
         taxReturnOrdinaryDividendsCents: 901200,
+        taxReturnYear: 2025,
       };
       const plain = JSON.stringify({ inputs: stored, scenarios: [] });
       const split = splitRothBlob(plain);
@@ -21048,12 +21053,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         taxReturnInterestCents: null,
         taxReturnQualifiedDividendsCents: null,
         taxReturnOrdinaryDividendsCents: null,
+        taxReturnYear: null,
       });
       const absent = parseRothTaxReturn({});
       return {
         interest: parsed.taxReturnInterestCents,
         qualified: parsed.taxReturnQualifiedDividendsCents,
         ordinary: parsed.taxReturnOrdinaryDividendsCents,
+        year: parsed.taxReturnYear,
         byteIdentical: joined === plain ? 1 : 0,
         allNullCount: Object.values(allNull).filter((v) => v === null).length,
         absentNullCount: Object.values(absent).filter((v) => v === null).length,

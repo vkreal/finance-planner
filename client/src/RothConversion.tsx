@@ -612,7 +612,8 @@ export function RothConversion({
   const [taxExempt, setTaxExempt] = useState("");
   const [convertedAlready, setConvertedAlready] = useState("");
   // Tax-return actuals (Form 1040 lines 2b / 3a / 3b from the
-  // household's most recent return): plan-record-only fields,
+  // household's most recent return, plus the calendar year of
+  // that return — contract v147): plan-record-only fields,
   // following the execution / gift pattern — they save WITH the
   // plan record under their own taxReturn* keys (via
   // buildInputsPayload only) and are read by exactly one thing:
@@ -623,6 +624,7 @@ export function RothConversion({
   const [taxReturnInterest, setTaxReturnInterest] = useState("");
   const [taxReturnQualDiv, setTaxReturnQualDiv] = useState("");
   const [taxReturnOrdDiv, setTaxReturnOrdDiv] = useState("");
+  const [taxReturnYear, setTaxReturnYear] = useState("");
   const [winStart, setWinStart] = useState("");
   const [winStop, setWinStop] = useState("");
   const [payTaxFrom, setPayTaxFrom] = useState<"taxable" | "conversion">("taxable");
@@ -1664,13 +1666,16 @@ export function RothConversion({
       setGiftSaleAge(gNum(g.giftSaleAge));
     }
     // Tax-return actuals: the saved Form 1040 lines, blank on
-    // any record written before these fields existed.
+    // any record written before these fields existed — and the
+    // return year, blank on any record written before v147.
     {
       const t = data.taxReturn;
       const tMoney = (c: number | null) => (c == null ? "" : fmtMoneyInput(c / 100));
+      const tNum = (n: number | null) => (n == null ? "" : String(n));
       setTaxReturnInterest(tMoney(t.taxReturnInterestCents));
       setTaxReturnQualDiv(tMoney(t.taxReturnQualifiedDividendsCents));
       setTaxReturnOrdDiv(tMoney(t.taxReturnOrdinaryDividendsCents));
+      setTaxReturnYear(tNum(t.taxReturnYear));
     }
     // Record the seeded defaults for the "Calculated with"
     // diff (see seedDefaultsList above).
@@ -1747,9 +1752,11 @@ export function RothConversion({
     {
       const t = res.taxReturn;
       const tMoney = (c: number | null) => (c == null ? "" : fmtMoneyInput(c / 100));
+      const tNum = (n: number | null) => (n == null ? "" : String(n));
       setTaxReturnInterest(tMoney(t.taxReturnInterestCents));
       setTaxReturnQualDiv(tMoney(t.taxReturnQualifiedDividendsCents));
       setTaxReturnOrdDiv(tMoney(t.taxReturnOrdinaryDividendsCents));
+      setTaxReturnYear(tNum(t.taxReturnYear));
     }
     defaultsRef.current = seedDefaultsList(snap);
     planRevisionRef.current = res.revision;
@@ -2055,10 +2062,16 @@ export function RothConversion({
       // The tax-return actuals save WITH the plan record too,
       // under their own taxReturn* keys — the only other reader
       // is the Playground's "Start from my numbers" prefill.
-      // Scenarios and every pricing run never see them.
+      // Scenarios and every pricing run never see them. The
+      // year is clamped to a sane range (2000–2100), like the
+      // other year fields in this payload.
       taxReturnInterestCents: parseMoney(taxReturnInterest),
       taxReturnQualifiedDividendsCents: parseMoney(taxReturnQualDiv),
       taxReturnOrdinaryDividendsCents: parseMoney(taxReturnOrdDiv),
+      taxReturnYear: (() => {
+        const n = parseIntField(taxReturnYear);
+        return n == null ? null : Math.min(2100, Math.max(2000, n));
+      })(),
     };
   };
 
@@ -2188,7 +2201,7 @@ export function RothConversion({
     mcVolatility,
     giftAge, giftAmount, giftBasis, giftKidBirthYear, giftKidStudent,
     giftKidOtherIncome, giftSaleAge,
-    taxReturnInterest, taxReturnQualDiv, taxReturnOrdDiv,
+    taxReturnInterest, taxReturnQualDiv, taxReturnOrdDiv, taxReturnYear,
   ]);
 
   /* ---------------- scenarios ---------------- */
@@ -4054,6 +4067,7 @@ export function RothConversion({
     taxReturnInterest: moneyChanged(taxReturnInterest, data?.taxReturn.taxReturnInterestCents),
     taxReturnQualDiv: moneyChanged(taxReturnQualDiv, data?.taxReturn.taxReturnQualifiedDividendsCents),
     taxReturnOrdDiv: moneyChanged(taxReturnOrdDiv, data?.taxReturn.taxReturnOrdinaryDividendsCents),
+    taxReturnYear: intChanged(taxReturnYear, data?.taxReturn.taxReturnYear),
     acaSize: intChanged(acaSize, savedResolved?.acaHouseholdSize),
     acaSteps: acaStepsChanged,
     benchCouple: moneyChanged(benchCouple, savedResolved?.acaBenchmarkCoupleCents),
@@ -7172,7 +7186,7 @@ export function RothConversion({
         </div>
       ))}
 
-      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv"])} changed` : ""), (
+      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv", "taxReturnYear"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv", "taxReturnYear"])} changed` : ""), (
         <>
           <p className="text-sm text-[var(--dim)]">
             From the retirement year, while anyone in the household is under 65, the household is priced as on the marketplace, and ACA MAGI sets the premium credit. Above 400% of the poverty line the credit is $0 — the whole year's credit is lost.
@@ -7278,9 +7292,16 @@ export function RothConversion({
               hint: "The total, including the line 3a qualified part. Prefill only — see the note below.",
               changed: changedFields.taxReturnOrdDiv,
             })}
+            {numField("Tax return year", taxReturnYear, setTaxReturnYear, {
+              hint: "The tax year the three Form 1040 figures above are from — your most recent filed return. Enter it once; the Playground shows it on the fields it prefills.",
+              changed: changedFields.taxReturnYear,
+            })}
           </div>
           <p className="mt-3 text-xs text-[var(--dim)]">
-            The three Form 1040 lines above are your most recent tax return&rsquo;s
+            The three Form 1040 lines above are{" "}
+            {taxReturnYear
+              ? `your ${parseIntField(taxReturnYear) ?? taxReturnYear} return\u2019s`
+              : "your most recent tax return\u2019s"}{" "}
             actuals. They are used for one thing only: the Playground&rsquo;s
             &ldquo;Start from my numbers&rdquo; fills its Interest and Dividends
             fields from them. This plan does not price them — it models interest

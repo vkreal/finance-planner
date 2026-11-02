@@ -3120,12 +3120,16 @@ const rothGiftResponse = z.object({ ...rothGiftFields });
    describeApi publishes). All nullable integer cents; null on
    records written before this build = blank = that line not
    entered, so an untouched record is exactly as before.
-   Adding these three fields grows the saveRothInputs request
-   from 67 to 70 fields. */
+   The fourth field (contract v147) is the calendar year of
+   the return the three amounts are from — a nullable integer
+   year, null on records written before it existed (= year not
+   recorded). Adding these four fields grows the saveRothInputs
+   request from 67 to 71 fields. */
 const rothTaxReturnFields = {
   taxReturnInterestCents: z.number().int().nullable(),
   taxReturnQualifiedDividendsCents: z.number().int().nullable(),
   taxReturnOrdinaryDividendsCents: z.number().int().nullable(),
+  taxReturnYear: z.number().int().min(2000).max(2100).nullable(),
 };
 const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // The stored tax-return shape, its ONE parse, and the prefill
@@ -3158,7 +3162,7 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 132;
+export const API_CONTRACT_VERSION = 133;
 const ENGINE_VERSION = "engine-1";
 
 const provenanceOut = z.object({
@@ -12138,6 +12142,7 @@ export const Actions = {
         taxReturnInterestCents: args.taxReturnInterestCents,
         taxReturnQualifiedDividendsCents: args.taxReturnQualifiedDividendsCents,
         taxReturnOrdinaryDividendsCents: args.taxReturnOrdinaryDividendsCents,
+        taxReturnYear: args.taxReturnYear,
       };
       const blob = await readRothBlob(db, key);
       // Fast-path CAS check on the decrypted read (the strict

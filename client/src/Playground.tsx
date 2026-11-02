@@ -683,6 +683,25 @@ export function Playground() {
     () => pgPrefillSourceFrom(rq.data, retq.data),
     [rq.data, retq.data],
   );
+  /* The return year behind the stored 1040 figures (contract
+     v147): the stored year when the record names one, else the
+     last filed year — a return for the current year cannot have
+     been filed yet — so a record written before the year field
+     existed still resolves to the return the figures came from.
+     The "as filed" preset uses this one value for its name and
+     for the tax year it loads into; the prefill uses it to tell
+     the return year itself apart from any other year. */
+  const pgTaxReturnYear =
+    pgPrefillSource?.taxReturnYear ?? (new Date().getFullYear() - 1);
+  /* The phrase the three income dials use for the return's
+     provenance: the year when the record names it ("your 2025
+     return"), else "your most recent return" with no year
+     asserted — the amounts are the most recent return's by
+     construction, but the year itself was never recorded. */
+  const pgReturnYearPhrase =
+    pgPrefillSource?.taxReturnYear != null
+      ? `your ${pgPrefillSource.taxReturnYear} return`
+      : "your most recent return";
   /* Annual spending for the "enough for the year" comparison
      (contract v126): the Tax Plan record's annual spending,
      falling back to the Retirement calculator's default —
@@ -2311,9 +2330,16 @@ export function Playground() {
   // that person's claim age, else $0; the ACA size follows the
   // plan's step-down year; the benchmark keys on who is on the
   // marketplace that year (see the pick below). Interest and
-  // the two dividend dials come from the plan record's
-  // tax-return actuals (Form 1040 lines 2b / 3a / 3b — the only
-  // figures those fields feed). Starting here
+  // the two dividend dials resolve for the CHOSEN tax year
+  // (contract v147): when the chosen year IS the return year,
+  // the stored return figures are that year's actuals and load
+  // as before; otherwise, when the saved plan prices the chosen
+  // year, its priced interest and dividends for that year load
+  // instead (the yield-based estimate — the same figures "a
+  // year from my saved plan" loads), so a current/future year
+  // no longer defaults to the flat prior-year figure; when the
+  // plan does not price the chosen year, the return figures
+  // load as the best available estimate. Starting here
   // never writes the plan, and editing the dials never writes
   // back — the prefilled dials simply become the remembered
   // form state, like typed values.
@@ -2435,26 +2461,41 @@ export function Playground() {
           aotcEligible: e.aotcEligible,
         })),
     );
-    // Tax-return actuals (1040 LINES build): the plan record's
-    // Form 1040 lines fill the three income dials — interest ←
+    // Tax-return actuals (1040 LINES build, yield-first
+    // contract v147): the three income dials resolve for the
+    // chosen tax year. When the chosen year IS the return year,
+    // the stored figures are that year's actuals — interest ←
     // line 2b, qualified dividends ← line 3a, ordinary
     // dividends ← the line 3b TOTAL (the dial takes the total;
-    // the pricer derives the non-qualified part). A line the
-    // plan has not entered leaves its dial blank.
+    // the pricer derives the non-qualified part). Otherwise,
+    // when the saved plan prices the chosen year, its priced
+    // interest and dividends for that year load instead (the
+    // plan's dividend income rides the gains stack, so it loads
+    // as both the total and the qualified part, counted once —
+    // the same figures "a year from my saved plan" loads).
+    // When the plan does not price the chosen year, the return
+    // figures load as the best available estimate. A line the
+    // chosen source has not entered leaves its dial blank.
+    const pgPricedYear =
+      pgSavedPlanYears?.years.find((y) => y.year === taxYear) ?? null;
+    const pgUseReturnFigures = taxYear === pgTaxReturnYear || pgPricedYear == null;
+    const pgIncomeInterest = pgUseReturnFigures
+      ? pgPrefillSource.taxReturnInterest
+      : pgPricedYear.detail.interestIncome;
+    const pgIncomeQualDiv = pgUseReturnFigures
+      ? pgPrefillSource.taxReturnQualifiedDividends
+      : pgPricedYear.detail.dividendIncome;
+    const pgIncomeOrdDiv = pgUseReturnFigures
+      ? pgPrefillSource.taxReturnOrdinaryDividends
+      : pgPricedYear.detail.dividendIncome;
     setPgInterest(
-      pgPrefillSource.taxReturnInterest != null
-        ? fmtMoneyInput(pgPrefillSource.taxReturnInterest)
-        : "",
+      pgIncomeInterest != null ? fmtMoneyInput(pgIncomeInterest) : "",
     );
     setPgQualDiv(
-      pgPrefillSource.taxReturnQualifiedDividends != null
-        ? fmtMoneyInput(pgPrefillSource.taxReturnQualifiedDividends)
-        : "",
+      pgIncomeQualDiv != null ? fmtMoneyInput(pgIncomeQualDiv) : "",
     );
     setPgOrdDiv(
-      pgPrefillSource.taxReturnOrdinaryDividends != null
-        ? fmtMoneyInput(pgPrefillSource.taxReturnOrdinaryDividends)
-        : "",
+      pgIncomeOrdDiv != null ? fmtMoneyInput(pgIncomeOrdDiv) : "",
     );
     setPgSoleBeneficiary(pgPrefillSource.spouseSoleBeneficiary);
   };
@@ -2521,15 +2562,20 @@ export function Playground() {
     }
   }, [pgSavedPlanYears, pgPlanPresetYear]);
 
-  /* "My 2026 as filed": the tax year becomes 2026 and the
-     three income dials take the Form 1040 figures stored on
-     the plan record (lines 2b / 3a / 3b — the prefill source's
+  /* "My <return year> return as filed" (contract v147): the
+     tax year becomes the RETURN year itself and the three
+     income dials take the Form 1040 figures stored on the plan
+     record (lines 2b / 3a / 3b — the prefill source's
      tax-return figures, the same mapping "Start from my
-     numbers" uses). A partial load, like typing those four
-     values: every other dial stands, and a held fill target
-     is untouched — the hold effect re-solves against the new
-     income exactly as it does for a typed change. A line the
-     record has not entered leaves its dial blank. */
+     numbers" uses for the return year). The preset is named
+     for the year it loads — the stored return year, or the last
+     filed year when the record predates the year field — never
+     for the current year: a return for the current year cannot
+     have been filed yet. A partial load, like typing those
+     four values: every other dial stands, and a held fill
+     target is untouched — the hold effect re-solves against the
+     new income exactly as it does for a typed change. A line
+     the record has not entered leaves its dial blank. */
   const applyPgAsFiled = () => {
     if (!pgPrefillSource) return;
     // Only lines the record actually holds are loaded — a line
@@ -2543,7 +2589,7 @@ export function Playground() {
       return;
     }
     pgForceWholesaleRef.current = true;
-    setPgYear("2026");
+    setPgYear(String(pgTaxReturnYear));
     if (pgPrefillSource.taxReturnInterest != null) {
       setPgInterest(fmtMoneyInput(pgPrefillSource.taxReturnInterest));
     }
@@ -2572,7 +2618,7 @@ export function Playground() {
       );
     }
     setPgPresetNote(
-      `Loaded your 2026 as filed — ${loadedBits.join(", ")}. Every other dial is as it was.`,
+      `Loaded your ${pgTaxReturnYear} return as filed — ${loadedBits.join(", ")}. Every other dial is as it was.`,
     );
   };
 
@@ -3784,7 +3830,7 @@ export function Playground() {
                 </span>
                 <span className="mt-0.5 block text-sm text-[var(--dim)]">
                   {pgPresetNote ??
-                    "My 2026 as filed · a year from my saved plan · a blank year"}
+                    `My ${pgTaxReturnYear} return as filed · a year from my saved plan · a blank year`}
                 </span>
               </span>
               <button
@@ -3806,16 +3852,16 @@ export function Playground() {
               <div id="playground-known-points">
             <div className="mt-2 grid gap-2 sm:grid-cols-3">
               <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
-                <p className="text-sm font-semibold">My 2026 as filed</p>
+                <p className="text-sm font-semibold">My {pgTaxReturnYear} return as filed</p>
                 <p className="mt-1 text-xs text-[var(--dim)]">
                   {pgPrefillSource?.taxReturnInterest != null ||
                   pgPrefillSource?.taxReturnOrdinaryDividends != null
-                    ? `The Form 1040 figures on your plan record — interest ${fmtDollars(pgPrefillSource?.taxReturnInterest ?? 0)}, qualified dividends ${fmtDollars(pgPrefillSource?.taxReturnQualifiedDividends ?? 0)}, ordinary dividends ${fmtDollars(pgPrefillSource?.taxReturnOrdinaryDividends ?? 0)}. Loads the year 2026 and those three dials; every other dial stays as it is.`
+                    ? `The Form 1040 figures on your plan record — interest ${fmtDollars(pgPrefillSource?.taxReturnInterest ?? 0)}, qualified dividends ${fmtDollars(pgPrefillSource?.taxReturnQualifiedDividends ?? 0)}, ordinary dividends ${fmtDollars(pgPrefillSource?.taxReturnOrdinaryDividends ?? 0)} — from ${pgReturnYearPhrase}. Loads the year ${pgTaxReturnYear} and those three dials; every other dial stays as it is.`
                     : "The Form 1040 figures stored on your plan record. No figures are stored yet, so there is nothing to load."}
                 </p>
                 <button
                   type="button"
-                  aria-label="Load my 2026 as filed"
+                  aria-label={`Load my ${pgTaxReturnYear} return as filed`}
                   className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
                   disabled={
                     !pgPrefillSource ||
@@ -4068,11 +4114,12 @@ export function Playground() {
           {pgSectionCard("income", "Income for the year", pgIncomeSummary, (
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {moneyField("Interest", pgInterest, setPgInterest, {
-              info: "Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income.",
+              hint: `Stored figure from ${pgReturnYearPhrase}, line 2b — last year's actual; update after you file.`,
+              info: `Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income. The stored return figure is from ${pgReturnYearPhrase} — last year's actual; update after you file.`,
             })}
             {moneyField("Ordinary dividends — total (line 3b)", pgOrdDiv, setPgOrdDiv, {
-              hint: "Type it exactly as printed on the Form 1040 (line 3b). It includes the qualified dividends (line 3a) — they are counted once, not added again.",
-              info: "All the ordinary dividends for the year — the total on Form 1040 line 3b (your 1099-DIV's total ordinary dividends). That total already includes the qualified dividends on line 3a: the qualified part is priced at the lower gains rates and the rest at ordinary rates, with the total counted once.",
+              hint: `Stored figure from ${pgReturnYearPhrase}, line 3b — last year's actual; update after you file. Type it exactly as printed on the Form 1040 (line 3b). It includes the qualified dividends (line 3a) — they are counted once, not added again.`,
+              info: `All the ordinary dividends for the year — the total on Form 1040 line 3b (your 1099-DIV's total ordinary dividends). That total already includes the qualified dividends on line 3a: the qualified part is priced at the lower gains rates and the rest at ordinary rates, with the total counted once. The stored return figure is from ${pgReturnYearPhrase} — last year's actual; update after you file.`,
               infoAlign: "right",
             })}
             {moneyField("Other ordinary income (wages, pension)", pgOther, setPgOther, {
@@ -4214,8 +4261,8 @@ export function Playground() {
               infoAlign: "right",
             })}
             {moneyField("Qualified dividends (line 3a)", pgQualDiv, setPgQualDiv, {
-              hint: "Part of the line 3b total above — not in addition to it.",
-              info: "Dividends that qualify for the lower tax rate — Form 1040 line 3a, exactly as printed. This amount is part of the total ordinary dividends (line 3b) you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates.",
+              hint: `Stored figure from ${pgReturnYearPhrase}, line 3a — last year's actual; update after you file. Part of the line 3b total above — not in addition to it.`,
+              info: `Dividends that qualify for the lower tax rate — Form 1040 line 3a, exactly as printed on ${pgReturnYearPhrase}. This amount is part of the total ordinary dividends (line 3b) you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates. Last year's actual — update after you file.`,
             })}
           </div>
           {pgDividendPairNote && (
@@ -7062,10 +7109,15 @@ type PgPrefillSource = {
   // qualified dividends ← line 3a, ordinary dividends ← the
   // line 3b TOTAL. These are the ONLY plan figures behind the
   // prefill's Interest / dividend dials: the plan itself prices
-  // yields, never these amounts.
+  // yields, never these amounts. The return year (contract
+  // v147) is the calendar year those amounts are from (null =
+  // the record predates the year field — year not recorded);
+  // the prefill and the "as filed" preset resolve it to the
+  // last filed year when it is null (see pgTaxReturnYear).
   taxReturnInterest: number | null;
   taxReturnQualifiedDividends: number | null;
   taxReturnOrdinaryDividends: number | null;
+  taxReturnYear: number | null;
   spouseSoleBeneficiary: boolean;
   // Projection defaults (projection build): the plan's
   // resolved expected return and its starting taxable / Roth
@@ -7172,6 +7224,7 @@ function pgPrefillSourceFrom(
     taxReturnInterest: taxReturnDollars.interest,
     taxReturnQualifiedDividends: taxReturnDollars.qualifiedDividends,
     taxReturnOrdinaryDividends: taxReturnDollars.ordinaryDividends,
+    taxReturnYear: data.taxReturn.taxReturnYear ?? null,
     spouseSoleBeneficiary: s ? (s.spouseSoleBeneficiary ?? true) : true,
     expectedReturnPct: expRet,
     taxableStart:

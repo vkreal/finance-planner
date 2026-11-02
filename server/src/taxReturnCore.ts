@@ -1,21 +1,34 @@
 // Tax-return actuals on the Roth plan record — the household's
 // most recent Form 1040 lines 2b / 3a / 3b, saved WITH the plan
 // record under their own taxReturn* keys, following the
-// execution / mcCheck / gift plan-record-only pattern exactly.
+// execution / mcCheck / gift plan-record-only pattern exactly,
+// PLUS the calendar year of that return (contract v147).
 //
 // The three amounts exist for ONE purpose: they are the source
 // of the Playground's "Start from my numbers" prefill for its
 // Interest / Qualified dividends / Ordinary dividends dials
-// (see taxReturnPrefillDollars below). Plan pricing NEVER reads
-// them: they are deliberately NOT part of rothInputFields, so
-// they never enter a scenario, never reach planInputsFromSaved,
-// and never affect the Plan / Optimize / Compare / Work years /
-// funding runs — those keep modelling interest and dividends
-// from the plan's yield fields (taxableInterestYieldPct /
-// taxableDividendYieldPct), exactly as before this build. The
-// tax suite's tax-return-pricing-identity fixture pins that
-// isolation: the saved plan prices bit-identically with the
-// fields set or blank.
+// (see taxReturnPrefillDollars below) and of the "as filed"
+// preset, which loads them into the return year itself. Plan
+// pricing NEVER reads them: they are deliberately NOT part of
+// rothInputFields, so they never enter a scenario, never reach
+// planInputsFromSaved, and never affect the Plan / Optimize /
+// Compare / Work years / funding runs — those keep modelling
+// interest and dividends from the plan's yield fields
+// (taxableInterestYieldPct / taxableDividendYieldPct), exactly
+// as before this build. The tax suite's
+// tax-return-pricing-identity fixture pins that isolation: the
+// saved plan prices bit-identically with the fields set or
+// blank.
+//
+// The year is a fact ABOUT the amounts — which return they
+// came from — so it is stored WITH them, never derived from
+// today's date: deriving it would drift every year while the
+// amounts stay put, and a return for the current year cannot
+// have been filed yet. Null means the record was written
+// before the year field existed (year not recorded); the
+// amounts are still the most recent return's, and the
+// Playground says so without naming a year until one is
+// entered in the Tax Plan view.
 //
 // All money here is integer CENTS, like the record's other
 // money fields; the prefill converts to dollars at the dial
@@ -23,13 +36,15 @@
 
 /* ---------------- Saved tax-return shape ----------------
    The three Form 1040 actuals as stored in the saved plan
-   record. This is the ONE parse of that stored shape:
+   record, plus the calendar year of the return they are from
+   (contract v147). This is the ONE parse of that stored shape:
    saveRothInputs writes it, getRothPlanner returns it (its own
    taxReturn block — server/src/actions.ts imports this parse),
    and the accuracy fixtures pin its round-trip. Every field is
    nullable and null is preserved exactly: null means "not
    entered" — the household has not typed that line — and is
-   never coerced to $0 on read, on hydration, or on save. */
+   never coerced to $0 on read, on hydration, or on save; null
+   on the year means the return year was not recorded. */
 export type RothTaxReturnStored = {
   // Form 1040 line 2b — taxable interest.
   taxReturnInterestCents: number | null;
@@ -38,12 +53,16 @@ export type RothTaxReturnStored = {
   // Form 1040 line 3b — ordinary dividends, the TOTAL (which
   // includes the line 3a qualified part).
   taxReturnOrdinaryDividendsCents: number | null;
+  // The calendar year of the return the three amounts are
+  // from (contract v147) — the most recent filed return.
+  taxReturnYear: number | null;
 };
 
 export const BLANK_ROTH_TAX_RETURN: RothTaxReturnStored = {
   taxReturnInterestCents: null,
   taxReturnQualifiedDividendsCents: null,
   taxReturnOrdinaryDividendsCents: null,
+  taxReturnYear: null,
 };
 
 export function parseRothTaxReturn(raw: unknown): RothTaxReturnStored {
@@ -51,10 +70,16 @@ export function parseRothTaxReturn(raw: unknown): RothTaxReturnStored {
   const r = raw as Record<string, unknown>;
   const num = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
+  // The year is lenient like the amounts: a finite integer
+  // calendar year in a sane range, else null — a record
+  // written before this field existed simply has no year key.
+  const year = (v: unknown): number | null =>
+    typeof v === "number" && Number.isInteger(v) && v >= 2000 && v <= 2100 ? v : null;
   return {
     taxReturnInterestCents: num(r.taxReturnInterestCents),
     taxReturnQualifiedDividendsCents: num(r.taxReturnQualifiedDividendsCents),
     taxReturnOrdinaryDividendsCents: num(r.taxReturnOrdinaryDividendsCents),
+    taxReturnYear: year(r.taxReturnYear),
   };
 }
 
