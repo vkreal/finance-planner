@@ -3503,14 +3503,14 @@ export function Playground() {
                       whenever a year is priced, after the
                       credit — the credit is already inside the
                       net tax bill, so cash left is the
-                      concluding figure of the line. No tap
+                      concluding figure of the line, followed
+                      (contract v142) by the "left after a
+                      year's spending" comparison. No tap
                       (contract v134): a computed figure has
                       no single source field, so it is plain
                       text — the ⓘ on the Tax-for-the-year
                       card's cash-left figure explains the
-                      computation. No "left after a year's
-                      spending" comparison here — that row lives
-                      on the Tax-for-the-year card only. */}
+                      computation. */}
                   {pg != null && (
                     <span className="contents">
                       <span aria-hidden="true" className="text-[var(--dim)]">
@@ -3524,6 +3524,36 @@ export function Playground() {
                       </span>
                     </span>
                   )}
+                  {/* Left after a year's spending (contract
+                      v142): the same comparison the
+                      Tax-for-the-year card carries (cash left
+                      after tax minus the annual spending),
+                      right after the cash-left figure, so the
+                      strip ends on whether the year covers
+                      spending. Same figure and colour rule as
+                      the card row — red when short, teal when
+                      enough. It renders only when spending
+                      resolves, like the card row. No tap
+                      (contract v134): a computed figure has
+                      no single source field, so it is plain
+                      text. */}
+                  {pg != null &&
+                    pg.cashLeftVsSpending != null &&
+                    pg.annualSpending != null && (
+                      <span className="contents">
+                        <span aria-hidden="true" className="text-[var(--dim)]">
+                          ·
+                        </span>
+                        <span>
+                          Left after a year&rsquo;s spending{" "}
+                          <span
+                            className={`font-bold ${pg.cashLeftVsSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
+                          >
+                            {fmtDollars(pg.cashLeftVsSpending)}
+                          </span>
+                        </span>
+                      </span>
+                    )}
                 </p>
               </div>
             );
@@ -5407,24 +5437,28 @@ export function Playground() {
                   taxX,
                   hatchStyle,
                 } = stackModel;
-                /* Legend provenance taps (contract v144): only the
-                   legend items that ARE a dial input are taps —
-                   they jump to that input field (scroll + flash,
-                   via jumpToPgField). The others stay plain text,
-                   per the standing rule that computed figures are
-                   never taps:
+                /* Legend provenance taps (contract v144, extended
+                   v142): only the legend items that ARE a dial
+                   input are taps — they jump to that input field
+                   (scroll + flash, via jumpToPgField). The others
+                   stay plain text, per the standing rule that
+                   computed figures are never taps:
                    - Interest → the Interest dial (income section).
                    - Pre-tax money out → the Pre-tax money out
                      (draw or conversion) dial (conversion section).
                    - Qualified dividends → the Qualified dividends
                      (line 3a) dial (stock section).
+                   - Ordinary dividends (non-qualified part) →
+                     the Ordinary dividends total (line 3b) dial
+                     (income section, contract v142): the
+                     non-qualified figure itself is computed
+                     (ordinary total minus qualified, from TWO
+                     inputs), so the tap goes to the parent
+                     figure it belongs to — the total dial.
                    Plain text, no tap:
                    - Deductions — the standard deduction from the
                      year's law table (the standard won over the
                      itemized inputs); no input field.
-                   - Ordinary dividends (non-qualified part) —
-                     ordinary total minus qualified, computed from
-                     TWO inputs, so no single source field.
                    Field ids are the moneyField ids (roth- + the
                    label with non-alphanumerics as dashes). */
                 const legendTapTargets: Record<
@@ -5435,6 +5469,11 @@ export function Playground() {
                     fieldId: "roth-Interest",
                     section: "income",
                     ariaLabel: "Go to the Interest field",
+                  },
+                  orddiv: {
+                    fieldId: "roth-Ordinary-dividends-total-line-3b-",
+                    section: "income",
+                    ariaLabel: "Go to the Ordinary dividends field",
                   },
                   conv: {
                     fieldId: "roth-Pre-tax-money-out-draw-or-conversion-",
