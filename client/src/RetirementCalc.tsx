@@ -391,16 +391,6 @@ function formatPctDisplay(s: string): string {
 }
 const inputCls =
   "w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-base text-[var(--text)]";
-// Inline inputs (contract v140): the header summary's values are
-// editable in place, so they sit inside the sentence as compact
-// inputs — same border and surface as the form inputs, sized to
-// the value they hold (ages narrow, money wider).
-const inlineAgeCls =
-  "inline-block w-14 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-sm text-[var(--text)]";
-const inlineMoneyCls =
-  "inline-block w-28 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-sm text-[var(--text)]";
-const inlinePctCls =
-  "inline-block w-16 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-sm text-[var(--text)]";
 const labelCls = "block text-sm font-medium text-[var(--text)] mb-1";
 const btnPrimary =
   "rounded-[var(--radius)] bg-[var(--accent)] px-4 py-2 text-base font-medium text-white disabled:opacity-50";
@@ -464,9 +454,11 @@ export function RetirementCalc() {
   );
   const inputsOpen = !inputsFolded;
   // (Contract v140 — one source, multiple edit locations: the
-  // provenance taps are gone. Every value this view shows is
-  // either an editable input in place or plain text; nothing
-  // jumps to the Tax Plan any more.)
+  // provenance taps to the Tax Plan are gone. Every value this
+  // view shows is either an editable input in place or plain
+  // text, except the header summary's values, which are taps
+  // back to the fields below (contract v146); nothing jumps to
+  // the Tax Plan any more.)
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -485,6 +477,56 @@ export function RetirementCalc() {
   // silent. Driven by the effect after the engine memos.
   const [resultsFlash, setResultsFlash] = useState(false);
   const flashTimer = useRef<number | null>(null);
+  /* Jump-and-highlight (contract v146): the header-summary taps —
+     mirror the Playground's jumpToPgField. The inputs panel is
+     folded shut, the target fields are not rendered, so unfold it
+     first, then scroll on a later frame and flash an outline +
+     tint on the field for a fixed 3s. A new jump restores the
+     previous field first, so a highlight can never stick. */
+  const rcFlashTimer = useRef<number | null>(null);
+  const rcFlashEl = useRef<HTMLElement | null>(null);
+  const rcFlashPrev = useRef<{
+    outline: string;
+    outlineOffset: string;
+    background: string;
+  } | null>(null);
+  const jumpToRcField = (fieldId: string) => {
+    if (!inputsOpen) setInputsFolded(false);
+    window.setTimeout(() => {
+      const el = document.getElementById(fieldId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (rcFlashEl.current != null && rcFlashPrev.current != null) {
+        const old = rcFlashEl.current;
+        old.style.outline = rcFlashPrev.current.outline;
+        old.style.outlineOffset = rcFlashPrev.current.outlineOffset;
+        old.style.background = rcFlashPrev.current.background;
+      }
+      if (rcFlashTimer.current != null) {
+        window.clearTimeout(rcFlashTimer.current);
+      }
+      const prev = {
+        outline: el.style.outline,
+        outlineOffset: el.style.outlineOffset,
+        background: el.style.background,
+      };
+      rcFlashPrev.current = prev;
+      rcFlashEl.current = el;
+      el.style.outline = "2px solid var(--accent)";
+      el.style.outlineOffset = "2px";
+      el.style.background =
+        "color-mix(in srgb, var(--accent) 15%, transparent)";
+      rcFlashTimer.current = window.setTimeout(() => {
+        el.style.outline = prev.outline;
+        el.style.outlineOffset = prev.outlineOffset;
+        el.style.background = prev.background;
+        rcFlashEl.current = null;
+        rcFlashPrev.current = null;
+      }, 3000);
+    }, 150);
+  };
+  const rcTapCls =
+    "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
   // Inline rename: which scenario is being renamed, and the draft name.
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -2552,98 +2594,93 @@ export function RetirementCalc() {
      means: Guardrails spends the entered amount as its base, and
      Percent of portfolio has no fixed dollar amount, so its
      entered figure is the percent itself. */
-  /* Plan summary (contract v119, editable in place v140): the
-     same figures the "Calculated with" tiles carry, as one
-     sentence — each input figure is an editable input in place
-     (contract v140, one source with multiple edit locations),
-     writing through to its home record on the autosave. The
-     outcome clause is a solver result and stays plain text.
-     The extra-income inputs stay mounted while focused, so
-     clearing the amount does not unmount the field mid-edit —
-     once blurred with no amount it reads "no extra income"
-     again, as before. */
+  /* Plan summary (contract v119; editable in place v140,
+     reverted to taps v146): the same figures the "Calculated
+     with" tiles carry, as one sentence — each input figure is a
+     dotted-underlined tap that jumps to its field below (scroll
+     + flash, via jumpToRcField), unfolding the inputs panel
+     first if it is folded shut. The fields below stay editable
+     in place (contract v140, one source with multiple edit
+     locations); the sentence itself edits nothing. The outcome
+     clause is a solver result and stays plain text. The
+     extra-income taps only exist while the extra-income inputs
+     are shown — otherwise the sentence reads "no extra income"
+     as before. Mapping correction, recorded plainly: the
+     sentence's "95/5" is the portfolio mix (stocks % / bonds
+     %), not the end age or the expected return — the sentence
+     carries no end-age or expected-return figure, so those edit
+     where they appear (end age in You, expected return in
+     Assumptions) and have no tap here. */
   const planSummary: ReactNode = (() => {
     if (!inputs || !projection) return null;
     const spendPart =
       inputs.strategy === "percent" ? (
         <>
           spend{" "}
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="% of portfolio per year"
-            className={inlinePctCls}
-            value={percentOfPortfolio}
-            onFocus={() => setFocusField("percentOfPortfolio")}
-            onBlur={() => setFocusField(null)}
-            onChange={(e) => setPercentOfPortfolio(e.target.value)}
-          />
+          <button
+            type="button"
+            aria-label="Go to the % of portfolio per year field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-percent")}
+          >
+            {percentOfPortfolio}
+          </button>
           % of portfolio/yr (Percent of portfolio)
         </>
       ) : inputs.strategy === "guardrails" ? (
         <>
           spend{" "}
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="Annual spending"
-            className={inlineMoneyCls}
-            value={focusField === "spending" ? spending : formatMoneyDisplay(spending)}
-            onFocus={() => setFocusField("spending")}
-            onBlur={() => setFocusField(null)}
-            onChange={(e) => setSpending(e.target.value)}
-          />
+          <button
+            type="button"
+            aria-label="Go to the Annual spending field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-spending")}
+          >
+            {formatMoneyDisplay(spending)}
+          </button>
           /yr (Guardrails)
         </>
       ) : inputs.strategy === "phased" ? (
         <>
           spend{" "}
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="Annual spending"
-            className={inlineMoneyCls}
-            value={focusField === "spending" ? spending : formatMoneyDisplay(spending)}
-            onFocus={() => setFocusField("spending")}
-            onBlur={() => setFocusField(null)}
-            onChange={(e) => setSpending(e.target.value)}
-          />
+          <button
+            type="button"
+            aria-label="Go to the Annual spending field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-spending")}
+          >
+            {formatMoneyDisplay(spending)}
+          </button>
           /yr, stepping down{" "}
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="Step down by percent per year"
-            className={inlinePctCls}
-            value={phaseDeclinePct}
-            onFocus={() => setFocusField("phaseDeclinePct")}
-            onBlur={() => setFocusField(null)}
-            onChange={(e) => setPhaseDeclinePct(e.target.value)}
-          />
+          <button
+            type="button"
+            aria-label="Go to the Step down by percent per year field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-phase-decline")}
+          >
+            {phaseDeclinePct}
+          </button>
           %/yr from age{" "}
-          <input
-            type="text"
-            inputMode="numeric"
-            aria-label="Step-down starts at age"
-            className={inlineAgeCls}
-            value={phaseStartAge}
-            onFocus={() => setFocusField("phaseStartAge")}
-            onBlur={() => setFocusField(null)}
-            onChange={(e) => setPhaseStartAge(e.target.value)}
-          />
+          <button
+            type="button"
+            aria-label="Go to the Step-down starts at age field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-phase-start")}
+          >
+            {phaseStartAge}
+          </button>
         </>
       ) : (
         <>
           spend{" "}
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="Annual spending"
-            className={inlineMoneyCls}
-            value={focusField === "spending" ? spending : formatMoneyDisplay(spending)}
-            onFocus={() => setFocusField("spending")}
-            onBlur={() => setFocusField(null)}
-            onChange={(e) => setSpending(e.target.value)}
-          />
+          <button
+            type="button"
+            aria-label="Go to the Annual spending field"
+            className={rcTapCls}
+            onClick={() => jumpToRcField("rc-spending")}
+          >
+            {formatMoneyDisplay(spending)}
+          </button>
           /yr
         </>
       );
@@ -2654,27 +2691,23 @@ export function RetirementCalc() {
     const incomePart = showExtraIncomeInput ? (
       <>
         +{" "}
-        <input
-          type="text"
-          inputMode="decimal"
-          aria-label="Extra income per year"
-          className={inlineMoneyCls}
-          value={focusField === "extraIncome" ? extraIncome : formatMoneyDisplay(extraIncome)}
-          onFocus={() => setFocusField("extraIncome")}
-          onBlur={() => setFocusField(null)}
-          onChange={(e) => setExtraIncome(e.target.value)}
-        />
+        <button
+          type="button"
+          aria-label="Go to the Extra income per year field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-extra-income")}
+        >
+          {formatMoneyDisplay(extraIncome)}
+        </button>
         /yr from age{" "}
-        <input
-          type="text"
-          inputMode="numeric"
-          aria-label="Extra income starts at age"
-          className={inlineAgeCls}
-          value={extraStartAge}
-          onFocus={() => setFocusField("extraStartAge")}
-          onBlur={() => setFocusField(null)}
-          onChange={(e) => setExtraStartAge(e.target.value)}
-        />
+        <button
+          type="button"
+          aria-label="Go to the Extra income starts at age field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-extra-start")}
+        >
+          {extraStartAge}
+        </button>
       </>
     ) : (
       "no extra income"
@@ -2688,41 +2721,32 @@ export function RetirementCalc() {
     return (
       <>
         Retire at{" "}
-        <input
-          type="text"
-          inputMode="numeric"
-          aria-label="Retirement age"
-          className={inlineAgeCls}
-          value={retirementAge}
-          onFocus={() => setFocusField("retirementAge")}
-          onBlur={() => setFocusField(null)}
-          onChange={(e) => setRetirementAge(e.target.value)}
-        />{" "}
+        <button
+          type="button"
+          aria-label="Go to the Retirement age field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-retirement-age")}
+        >
+          {retirementAge}
+        </button>{" "}
         · {spendPart} ·{" "}
-        <input
-          type="text"
-          inputMode="decimal"
-          aria-label="Starting portfolio"
-          className={inlineMoneyCls}
-          value={focusField === "portfolio" ? portfolio : formatMoneyDisplay(portfolio)}
-          onFocus={() => setFocusField("portfolio")}
-          onBlur={() => setFocusField(null)}
-          onChange={(e) => {
-            setPortfolio(e.target.value);
-            setPortfolioFollowing(e.target.value.trim() === "");
-          }}
-        />{" "}
+        <button
+          type="button"
+          aria-label="Go to the Starting portfolio field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-portfolio")}
+        >
+          {formatMoneyDisplay(portfolio)}
+        </button>{" "}
         portfolio at{" "}
-        <input
-          type="text"
-          inputMode="decimal"
-          aria-label="Portfolio mix stocks percent"
-          className={inlinePctCls}
-          value={stocksPct}
-          onFocus={() => setFocusField("stocksPct")}
-          onBlur={() => setFocusField(null)}
-          onChange={(e) => setStocksPct(e.target.value)}
-        />
+        <button
+          type="button"
+          aria-label="Go to the Portfolio mix stocks percent field"
+          className={rcTapCls}
+          onClick={() => jumpToRcField("rc-stocks")}
+        >
+          {stocksPct}
+        </button>
         /{bondsPct} · {incomePart} → {outcomePart}.
       </>
     );
