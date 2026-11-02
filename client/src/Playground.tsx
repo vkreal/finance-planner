@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import { usePersistedFold } from "./foldState";
 import { FoldChevron } from "./FoldChevron";
@@ -15,9 +15,12 @@ InfoNote,
 inputCls,
 labelCls,
 moneyField,
+monthlyRaw,
+monthlyToAnnual,
 numField,
 parseDollars,
 parseIntField,
+parseMoney,
 parseNum,
 pctField,
 sectionCls,
@@ -517,6 +520,12 @@ type PgHeldTarget = number | "aca";
    field) — the form's dials in their own typed-string units. */
 type PgSavedForm = ApiResponse<typeof api, "getRothUiState">["playground"];
 
+/* The Tax Plan record's writer (saveRothInputs) — the
+   Spending dial's write-through (contract v145) saves
+   through it, the same writer the Tax Plan and Retirement
+   views use. */
+type RothSavePayload = Parameters<typeof api.saveRothInputs>[0];
+
 /* The projection template snapshot in the store's shape, and
    back: the store carries exactly the engine-input fields the
    projection runs from (see playgroundProjTemplateState in
@@ -688,6 +697,181 @@ export function Playground() {
       null;
     return resolved != null && resolved > 0 ? resolved : null;
   }, [rq.data, retq.data]);
+  /* Spending dial (contract v145) — ONE SOURCE, multiple edit
+     locations: the annual spending lives in the Tax Plan
+     record, and this field edits it in place here, writing
+     through to it via saveRothInputs — the record's own
+     writer, with its CAS revision — exactly as the Tax Plan
+     and Retirement spending fields do. It is NOT a local
+     Playground-only what-if dial: an edit here changes the
+     saved plan's spending. The field carries the same per year
+     / per month toggle as the Tax Plan's "Yearly spending"
+     field (v141): per year shows and edits the stored annual
+     dollars directly; per month shows annual ÷ 12 and turns a
+     typed monthly amount into annual at exactly monthly × 12,
+     with a reference line under the field showing the annual
+     equivalent. The unit is a local display preference (not
+     persisted, no new stored field, no new action); the field
+     opens per year. The per-month draft keeps what was typed
+     while the field is focused in per-month mode, so a
+     half-typed monthly figure is never rewritten mid-edit.
+     The comparison (buildPgInputs' annualSpending) reads the
+     local field when it parses to a positive figure, so the
+     "Left after a year's spending" row updates live as the
+     figure is typed, and falls back to the record's figure
+     while the field is blank or unparseable, so the row never
+     vanishes mid-edit. The spending never prices into the tax
+     — the engine compares it against the cash left after tax
+     only — and the Projection face keeps its no-spending
+     convention: this dial lives in the Single-year dials
+     group, which the Projection face never renders. */
+  const [pgSpending, setPgSpending] = useState("");
+  const [pgSpendingUnit, setPgSpendingUnit] = useState<"year" | "month">("year");
+  const [pgSpendingMonthlyDraft, setPgSpendingMonthlyDraft] = useState<string | null>(null);
+  const [pgSpendingMsg, setPgSpendingMsg] = useState<string | null>(null);
+  const pgSpendingFocusedRef = useRef(false);
+  // Sourced from the Tax Plan record (falling back to the
+  // Retirement calculator's default, the same resolution as
+  // pgAnnualSpendingCents above): the field shows the stored
+  // figure, and re-shows it whenever the record changes —
+  // after this view's own save, or an edit in the Tax Plan or
+  // Retirement. Never while the field is focused, so a
+  // half-typed value is never clobbered by a refetch.
+  const pgSpendingSourceCents =
+    rq.data?.saved?.annualSpendingCents ??
+    retq.data?.defaultSpendingAnnualCents ??
+    null;
+  useEffect(() => {
+    if (pgSpendingSourceCents == null) return;
+    if (pgSpendingFocusedRef.current) return;
+    const next = fmtMoneyInput(pgSpendingSourceCents / 100);
+    setPgSpending((prev) => (prev === next ? prev : next));
+  }, [pgSpendingSourceCents]);
+  // The spending the comparison prices (contract v145): the
+  // local field when it parses to a positive figure, else the
+  // record's figure — so the row updates live while typing
+  // and never vanishes on a blank or unparseable draft.
+  const pgSpendingCents = useMemo(() => {
+    const local = parseMoney(pgSpending);
+    if (local != null && local > 0) return local;
+    return pgAnnualSpendingCents;
+  }, [pgSpending, pgAnnualSpendingCents]);
+  // Monthly display when the field is not focused in
+  // per-month mode: the annual figure divided by twelve,
+  // rounded to the cent and grouped like the money fields.
+  const pgMonthlySpendingDisplay = (): string => {
+    const cents = parseMoney(pgSpending);
+    if (cents == null) return pgSpending;
+    return fmtMoneyInput(Math.round(cents / 12) / 100);
+  };
+  /* Tax Plan write-through (contract v145, mirroring the
+     Retirement view's v140 write-through for this one field):
+     the payload is the fetched record itself, flattened (its
+     inputs, execution, market-check, gift, and tax-return
+     blocks, minus the execution block's read-only
+     rolledOver/clearedYear), with only annualSpendingCents
+     replaced by the field's current value. A blank or
+     unparseable field keeps the record's current value instead
+     of overwriting it with null, so a half-typed edit can
+     never blank a stored value, and an unchanged value saves
+     nothing. The save is queued on change and fires at once
+     when the field is not focused, and on blur when it is
+     (the settled-value gate, contract v131) — never while a
+     half-typed value is in the field. Saves are serialized,
+     and a conflict re-reads the record (the sourced effect
+     then re-shows the stored values) and says so plainly.
+     When there is no saved Tax Plan record yet, there is
+     nothing to write through to and the edit stays in this
+     view only. */
+  const pgRothRevisionRef = useRef(0);
+  useEffect(() => {
+    if (rq.data) pgRothRevisionRef.current = rq.data.revision;
+  }, [rq.data]);
+  const pgRothSaveTimer = useRef<number | null>(null);
+  const pendingPgRothSave = useRef<RothSavePayload | null>(null);
+  const pgRothSaveInFlightRef = useRef(false);
+  const pgRothSave = useMutation({
+    mutationFn: (input: RothSavePayload) =>
+      api.saveRothInputs({ ...input, baseRevision: pgRothRevisionRef.current }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        pgRothRevisionRef.current = res.revision;
+        // The Tax Plan view reads the same query key, so it
+        // picks the new values up on its next render — and
+        // this view's own rq refetches the saved figure.
+        pgQueryClient.invalidateQueries({ queryKey: ["rothplanner"] });
+        return;
+      }
+      // Conflict: a newer Tax Plan save landed first. Re-read
+      // the record — the sourced effect re-shows the stored
+      // values — and say plainly what happened.
+      pgRothRevisionRef.current = res.revision;
+      pgQueryClient.invalidateQueries({ queryKey: ["rothplanner"] });
+      setPgSpendingMsg(
+        "This plan was changed in the Tax Plan (or another tab), so the spending edit just made here was not kept. The latest saved version is shown now.",
+      );
+    },
+  });
+  const pgRothSaveMutateRef = useRef(pgRothSave.mutate);
+  pgRothSaveMutateRef.current = pgRothSave.mutate;
+  const buildPgRothSavePayload = (): RothSavePayload | null => {
+    const rp = rq.data;
+    if (!rp || !rp.saved) return null;
+    const cents = parseMoney(pgSpending);
+    const next = cents ?? rp.saved.annualSpendingCents;
+    if (next === rp.saved.annualSpendingCents) return null;
+    const { rolledOver: _rolledOver, clearedYear: _clearedYear, ...execution } = rp.execution;
+    return {
+      ...rp.saved,
+      ...execution,
+      ...rp.mcCheck,
+      ...rp.gift,
+      ...rp.taxReturn,
+      annualSpendingCents: next,
+    };
+  };
+  const buildPgRothSavePayloadRef = useRef(buildPgRothSavePayload);
+  buildPgRothSavePayloadRef.current = buildPgRothSavePayload;
+  const firePendingPgRothSave = () => {
+    if (!pendingPgRothSave.current) return;
+    if (pgSpendingFocusedRef.current) {
+      // Settled-value gate: the field is still being edited,
+      // so the pending payload may hold a half-typed value.
+      // Hold it — the blur flush below sends it once focus
+      // leaves.
+      return;
+    }
+    if (pgRothSaveInFlightRef.current) {
+      if (pgRothSaveTimer.current != null) window.clearTimeout(pgRothSaveTimer.current);
+      pgRothSaveTimer.current = window.setTimeout(firePendingPgRothSave, 300);
+      return;
+    }
+    const payload = pendingPgRothSave.current;
+    pendingPgRothSave.current = null;
+    pgRothSaveInFlightRef.current = true;
+    pgRothSaveMutateRef.current(payload, {
+      onSettled: () => {
+        pgRothSaveInFlightRef.current = false;
+      },
+    });
+  };
+  const firePendingPgRothSaveRef = useRef(firePendingPgRothSave);
+  firePendingPgRothSaveRef.current = firePendingPgRothSave;
+  const queuePgRothSave = () => {
+    const payload = buildPgRothSavePayloadRef.current();
+    if (!payload) return;
+    pendingPgRothSave.current = payload;
+    firePendingPgRothSaveRef.current();
+  };
+  const queuePgRothSaveRef = useRef(queuePgRothSave);
+  queuePgRothSaveRef.current = queuePgRothSave;
+  // Queue the write-through whenever the field changes; the
+  // fire sends it at once when the field is not focused, and
+  // the blur flush on the input sends it once focus leaves.
+  useEffect(() => {
+    queuePgRothSaveRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pgSpending]);
   const pgPrefillBlockerName = useMemo(
     () => pgPrefillBlocker(rq.data, retq.data),
     [rq.data, retq.data],
@@ -697,8 +881,10 @@ export function Playground() {
      in the app's UI-state store (see the persistence block
      below) so the form remembers them between sessions, but
      nothing here is ever saved to the plan record or enters a
-     scenario: the playground prices ONE standalone year from
-     typed dials through the shared engine
+     scenario — except the Spending dial (contract v145), which
+     edits the Tax Plan record's annual spending in place and
+     writes through to it. The playground prices ONE standalone
+     year from typed dials through the shared engine
      (pricePlaygroundYear in rothOptimizer.ts) so a user can ask
      "what if I convert $X and sell $Y of stock?" without
      touching the plan. "Start from my numbers" prefills the
@@ -876,13 +1062,14 @@ export function Playground() {
      sections open. Folding is visual only: the pricing below
      reads the dial state above, so values typed in a folded
      section keep pricing exactly as if the section were open. */
-  type PgSectionId = "year" | "income" | "conversion" | "stock" | "aca";
+  type PgSectionId = "year" | "income" | "conversion" | "stock" | "aca" | "spending";
   const PG_SECTIONS_OPEN: Record<PgSectionId, boolean> = {
     year: true,
     income: true,
     conversion: true,
     stock: true,
     aca: true,
+    spending: true,
   };
   const [pgOpenSections, setPgOpenSections] =
     useState<Record<PgSectionId, boolean>>(PG_SECTIONS_OPEN);
@@ -1740,12 +1927,13 @@ export function Playground() {
               aotcEligible: r.aotcEligible,
             })),
       // Annual spending (contract v126, "enough for the
-      // year"): the resolved spending in dollars, or null
-      // when none is resolved — the engine compares it
-      // against the cash left after tax and never prices it
-      // into the tax.
+      // year", live from the Spending dial in v145): the
+      // field's figure when it parses to a positive amount,
+      // else the resolved record figure — or null when none
+      // is resolved. The engine compares it against the cash
+      // left after tax and never prices it into the tax.
       annualSpending:
-        pgAnnualSpendingCents != null ? pgAnnualSpendingCents / 100 : null,
+        pgSpendingCents != null ? pgSpendingCents / 100 : null,
     };
   };
   const playgroundResult: PlaygroundYearResult | null = useMemo(() => {
@@ -1760,7 +1948,7 @@ export function Playground() {
     pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
     pgBenchmark, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
-    pgAnnualSpendingCents,
+    pgSpendingCents,
   ]);
 
   // Zero-conversion pricing of the same dials — the hold
@@ -1777,7 +1965,7 @@ export function Playground() {
     pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
     pgBenchmark, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
-    pgAnnualSpendingCents,
+    pgSpendingCents,
   ]);
 
   // Bracket-fill chips: set the conversion dial to the exact
@@ -2815,6 +3003,13 @@ export function Playground() {
       pgResidence === "WA" ? "Washington" : "other state",
       rate,
     ].join(" · ");
+  })();
+  /* The Spending dial's header summary (contract v145): the
+     annual spending figure the "Left after a year's spending"
+     comparison prices, or "—" when none resolves. */
+  const pgSpendingSummary = ((): string => {
+    const cents = pgSpendingCents;
+    return cents != null ? `${fmtDollars(cents / 100)} per year` : "—";
   })();
   /* The Projection panel's header summary, same treatment:
      the template year it runs from, the projected age window
@@ -4145,6 +4340,107 @@ export function Playground() {
                 </button>
               )}
             </div>
+          </div>
+          ))}
+
+          {pgSectionCard("spending", "Spending", pgSpendingSummary, (
+          <div className="mt-2 max-w-xs">
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+              <label
+                className="block text-sm font-medium text-[var(--text)]"
+                htmlFor="roth-pg-spending"
+              >
+                {pgSpendingUnit === "month" ? "Monthly spending" : "Spending per year"}
+              </label>
+              <div
+                role="group"
+                aria-label="Spending display period"
+                className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+              >
+                <button
+                  type="button"
+                  aria-label="Show spending per year"
+                  aria-pressed={pgSpendingUnit === "year"}
+                  onClick={() => setPgSpendingUnit("year")}
+                  className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                >
+                  per year
+                </button>
+                <button
+                  type="button"
+                  aria-label="Show spending per month"
+                  aria-pressed={pgSpendingUnit === "month"}
+                  onClick={() => setPgSpendingUnit("month")}
+                  className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                >
+                  per month
+                </button>
+              </div>
+            </div>
+            <div className="relative">
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
+              >
+                $
+              </span>
+              <input
+                id="roth-pg-spending"
+                aria-label={
+                  pgSpendingUnit === "month"
+                    ? "Playground — monthly spending"
+                    : "Playground — spending per year"
+                }
+                className={`${inputCls} pl-7`}
+                inputMode="decimal"
+                value={
+                  pgSpendingUnit === "month"
+                    ? (pgSpendingMonthlyDraft ?? pgMonthlySpendingDisplay())
+                    : pgSpending
+                }
+                onFocus={() => {
+                  pgSpendingFocusedRef.current = true;
+                  if (pgSpendingUnit === "month") {
+                    setPgSpendingMonthlyDraft(monthlyRaw(pgSpending));
+                  }
+                }}
+                onBlur={() => {
+                  pgSpendingFocusedRef.current = false;
+                  if (pgSpendingUnit === "month") {
+                    setPgSpendingMonthlyDraft(null);
+                  }
+                  // The annual state is canonicalized on blur,
+                  // exactly as the Tax Plan's spending field
+                  // does: the same numeric value, grouped.
+                  const d = parseDollars(pgSpending);
+                  if (d != null) setPgSpending(fmtMoneyInput(d));
+                  // Blur flush: the value is settled now, so
+                  // send any held Tax Plan write-through.
+                  firePendingPgRothSaveRef.current();
+                }}
+                onChange={(e) => {
+                  if (pgSpendingUnit === "month") {
+                    setPgSpendingMonthlyDraft(e.target.value);
+                    setPgSpending(monthlyToAnnual(e.target.value));
+                  } else {
+                    setPgSpending(e.target.value);
+                  }
+                }}
+              />
+            </div>
+            {pgSpendingUnit === "month" && (
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                = ${fmtMoneyInput((parseMoney(pgSpending) ?? 0) / 100)}/yr
+              </p>
+            )}
+            <p className="mt-1 text-xs text-[var(--dim)]">
+              The Tax Plan&rsquo;s annual spending — editing here changes the saved plan, like editing it in the Tax Plan or Retirement. It only sets the &ldquo;Left after a year&rsquo;s spending&rdquo; comparison below; it never changes the tax.
+            </p>
+            {pgSpendingMsg != null && (
+              <p className="mt-1 text-xs text-[var(--bad)]" role="note">
+                {pgSpendingMsg}
+              </p>
+            )}
           </div>
           ))}
             </>
@@ -6500,15 +6796,14 @@ export function Playground() {
                         spending is the Tax Plan record's
                         annual spending (the Retirement
                         calculator's default when the record
-                        has none); the row hides when no
-                        spending resolves. No provenance tap:
-                        the driving input lives in the Tax Plan
-                        view, which has no cross-view jump
-                        from here, and a tap to the income
-                        inputs would mislead — the comparison
-                        is driven by spending, not income — so
-                        the ⓘ names the spending and its
-                        source instead, and carries the
+                        has none), now editable in this view's
+                        Spending dial (contract v145, one
+                        source); the row hides when no spending
+                        resolves. No provenance tap: a tap to
+                        the income inputs would mislead — the
+                        comparison is driven by spending, not
+                        income — so the ⓘ names the spending
+                        and its source instead, and carries the
                         refund-timing sentence whenever the net
                         bill is a refund. */}
                     {pg.cashLeftVsSpending != null && pg.annualSpending != null && (

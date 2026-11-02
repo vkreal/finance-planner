@@ -314,6 +314,8 @@ export const playgroundFormState = z.object({
     conversion: z.boolean(),
     stock: z.boolean(),
     aca: z.boolean(),
+    // Contract v145: the Playground's Spending dial section.
+    spending: z.boolean(),
   }),
   // The two super-group folds ("Single-year dials" /
   // "Projection dials") that group the section cards
@@ -327,7 +329,7 @@ export const playgroundFormState = z.object({
   }),
 });
 export type PlaygroundFormState = z.infer<typeof playgroundFormState>;
-const PG_SECTION_IDS = ["year", "income", "conversion", "stock", "aca"] as const;
+const PG_SECTION_IDS = ["year", "income", "conversion", "stock", "aca", "spending"] as const;
 // The fresh Playground form — exactly the state the view
 // opens with when nothing is stored, and the state "Reset
 // playground" returns it to.
@@ -384,7 +386,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     projAcaStepYear: "",
     projSelectedYear: null,
     projTemplate: null,
-    openSections: { year: true, income: true, conversion: true, stock: true, aca: true },
+    openSections: { year: true, income: true, conversion: true, stock: true, aca: true, spending: true },
     groupOpen: { single: true, projection: true },
   };
 }
@@ -531,6 +533,7 @@ function parsePgOpenSections(
     conversion: true,
     stock: true,
     aca: true,
+    spending: true,
   };
   if (v == null || typeof v !== "object" || Array.isArray(v)) return out;
   const o = v as Record<string, unknown>;
