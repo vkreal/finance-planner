@@ -2,7 +2,7 @@
 
 # 🐷 Finance Planner
 
-**Spending · Net Worth · Retirement · Roth Conversion · Playground**
+**Spending · Net Worth · Retirement · Tax Plan · Playground**
 *One planner where the numbers you plan with are the numbers a real tax engine computes.*
 
 <br/>
@@ -31,7 +31,7 @@ Finance Planner connects the questions households actually ask when retirement g
 | What do we really spend each month? | **Spending** |
 | What do we own — and in which tax buckets? | **Net Worth** |
 | How long does the money last? | **Retirement** |
-| Which account should each year's spending come from? | **Roth Conversion** |
+| Which account should each year's spending come from? | **Tax Plan** |
 | What does *this one year* look like, tax-wise? | **Playground** |
 
 …including the hard one most tools skip: **how to draw down pre-tax savings without tripping the ACA premium-credit cliff or Medicare IRMAA tiers.**
@@ -43,7 +43,7 @@ If you're an AI assistant analyzing a household's plan with this repo, start wit
 ## 🧭 The five views
 
 ### 💸 Spending
-Monthly spending measured the way money actually leaves the bank. Yearly and periodic bills (property tax, insurance) are smoothed into a true monthly cost next to the cash that went out, with a *"keep the lights on"* floor for the bills that can't be paused — plus slice-and-dice by category, bill, or month range.
+Monthly spending measured the way money actually leaves the bank. Yearly and periodic bills (property tax, insurance) are smoothed into a true monthly cost next to the cash that went out, with a *"keep the lights on"* floor for the bills that can't be paused — plus slice-and-dice by category, bill, or month range. A settable spending target is drawn as a dashed line across the monthly charts, and the hero compares your true monthly cost against it; the editable **Spending target per year** field (with a per year / per month pill) writes through to the Tax Plan record, so the target stays in step with the plan.
 
 ### 🏦 Net Worth
 A snapshot history of every account, each balance splittable across tax buckets — **Pre-tax · Taxable · Roth · HSA · College/529 · Cash**. Custodial accounts record without counting toward totals, property can be shown or hidden, and progress tracks against a target you set.
@@ -51,7 +51,7 @@ A snapshot history of every account, each balance splittable across tax buckets 
 ### 📈 Retirement
 The whole pile, projected: deterministic growth, Monte Carlo simulation, and historical market sequences, with per-year detail you can drill into. Spending strategies include flat, phased (level, then gently declining), and **guardrails** that trim spending after down years — and a solver finds the maximum sustainable spending for a target success rate.
 
-### 🔀 Roth Conversion
+### 🔀 Tax Plan
 A multi-year, year-by-year plan for drawing down pre-tax money: ACA cliffs and benchmark premiums by household size, IRMAA tiers, tax brackets, the 0% / 15% / 20% capital-gains staircase, RMDs (Joint Life Table divisors included), Social Security timing, and survivor scenarios. The **Strategy Lab** scores saved strategies side by side — pre-tax first vs. taxable first, cliff-capped vs. bracket fills — on lifetime cost *and* ending wealth. The **Pretax Spending** tab answers the simple version: *how long does the pre-tax money last?*
 
 ### 🎛️ Playground
@@ -80,7 +80,7 @@ Most retirement tools optimize tax brackets and stop there. Finance Planner was 
 
 ## ♟️ Strategies you can model
 
-The Roth Conversion planner doesn't prescribe a strategy — it prices the ones households actually weigh, on your own numbers, and scores each on lifetime cost *and* ending wealth:
+The Tax Plan planner doesn't prescribe a strategy — it prices the ones households actually weigh, on your own numbers, and scores each on lifetime cost *and* ending wealth:
 
 - **Do nothing (the baseline).** Spend from pre-tax, convert nothing, cap nothing. Every other plan has to beat this honestly — including the tax an heir will owe on whatever pre-tax money is left.
 - **Cliff-capped draw.** Size each year's pre-tax draw to land just under the ACA premium-credit cliff, so the draw doubles as spending money without forfeiting the credit.
