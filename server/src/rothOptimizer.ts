@@ -37,7 +37,7 @@
 //     marginal rate would exceed the strategy's own bracket rate;
 //   · the ACA bunching variant (for non-cliff ceilings): in ACA
 //     years, alternate a big conversion year with a $0 year;
-//   · the gain-harvesting variant (contract v56): when the
+//   · the gain-harvesting variant (build v56): when the
 //     plan holds a taxable balance with basis below 100%
 //     (harvestGatePasses), EVERY conversion candidate above
 //     also gets a gainsHarvest twin; when the gate fails no
@@ -63,6 +63,7 @@ ALL_DRAW_ORDERS,
 DEFAULT_DRAW_ORDER,
 NO_CEILINGS,
 acaCreditFor,
+acaEmbeddedNetPremiumFor,
 acaFirstStepYear,
 acaHouseholdSizeForYear,
 applyLossLedger,
@@ -98,6 +99,10 @@ lawForYear,
 rmdAgeForBirthYear,
 } from "./taxLaw";
 import { irmaaTierFor, irmaaTierUpTo } from "./taxEngine";
+import {
+  impliedYieldPctsFromTaxReturn,
+  type RothTaxReturnStored,
+} from "./taxReturnCore";
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -326,7 +331,7 @@ export type OptimizerCandidateSpec = {
   windowLabel: string;
   guardrail: boolean;
   bunching: boolean;
-  // Gain harvesting (contract v56): true = this candidate is
+  // Gain harvesting (build v56): true = this candidate is
   // the harvest twin of the same ceilings/window/variant/order
   // — it prices with gainsHarvest on. Absent = false, so every
   // pre-existing literal keeps its meaning. Do Nothing never
@@ -336,7 +341,7 @@ export type OptimizerCandidateSpec = {
   drawOrder: DrawOrder;
 };
 
-/* Gain-harvesting gate (contract v56): harvest twins are
+/* Gain-harvesting gate (build v56): harvest twins are
    generated only when harvesting can bind on the resolved
    plan inputs — the resolved taxable balance is above $0 AND
    the blended basis is below 100%. With tiers the blended
@@ -550,7 +555,7 @@ export function buildOptimizerCandidates(
     drawOrder: DrawOrder,
   ) => {
     addOne(ceilings, window, guardrail, bunching, drawOrder, false);
-    // Gain-harvesting twin (contract v56): EVERY generated
+    // Gain-harvesting twin (build v56): EVERY generated
     // conversion candidate also gets a gainsHarvest twin when
     // the gate passes. Do Nothing is never generated here, so
     // it never gets a twin.
@@ -716,7 +721,7 @@ export type OptimizerResult = {
   scored: ScoredCandidate[];
 };
 
-/* ---------------- Priced levers vs the entered plan (contract v69) ----
+/* ---------------- Priced levers vs the entered plan (build v69) ----
    The "What would improve this plan" list: the top few DISTINCT
    candidates the search priced whose lifetime net cost BEATS the
    entered plan's own priced net cost. The entered plan is priced
@@ -836,7 +841,7 @@ export function runOptimizer(
    bit for bit as before. When no candidate can meet the floor
    (a locked claim below it, or the single-combination path),
    the same plain-best winner is still crowned, but the result
-   reports the conflict honestly (contract v56): the joint
+   reports the conflict honestly (build v56): the joint
    result's claimAgeFloorMet is false and the result note
    states the conflict plainly instead of asserting the winner
    meets the floor. */
@@ -883,7 +888,7 @@ export type JointSearchInfo = {
   // The plan's draw order, kept by every combination the joint
   // search prices — named in the result note.
   drawOrderLabel: string;
-  // Floor-conflict honesty (contract v56): whether the crowned
+  // Floor-conflict honesty (build v56): whether the crowned
   // winner meets the claiming-age floor, the winner's primary
   // claiming age, whether the winner is the floor-exempt Do
   // Nothing benchmark, and whether the claim-age table is
@@ -927,7 +932,7 @@ export type ClaimAgeRow = {
 export type JointOptimizerResult = OptimizerResult & {
   jointSearch: JointSearchInfo;
   claimAgeTable: ClaimAgeRow[];
-  // Floor-conflict honesty (contract v56): null when no
+  // Floor-conflict honesty (build v56): null when no
   // claimAgeFloor is set; true when the crowned winner's
   // primary claiming age is at or above the floor (or there
   // is no primary claiming age to violate it, or the winner
@@ -1070,7 +1075,7 @@ const SCREEN_CEILINGS: FillCeilings[] = [
 ];
 
 function screenSpecs(inputs: RothPlanInputs): OptimizerCandidateSpec[] {
-  // Stage-1 screen stays harvest-free (contract v56): the
+  // Stage-1 screen stays harvest-free (build v56): the
   // screen set is built from the non-harvest candidates only.
   // That is safe ONLY because stage 2 fully prices every
   // combination's full candidate set — harvest twins included,
@@ -1137,7 +1142,7 @@ function computeJointOptimizer(inputs: RothPlanInputs): JointOptimizerResult {
   }
   if (combos.length <= 1) {
     const res = runOptimizer(inputs);
-    // Single-combination / locked path (contract v56): this
+    // Single-combination / locked path (build v56): this
     // path never applied the floor eligibility filter, and it
     // still crowns the same winner — but the floor conflict is
     // now reported honestly via claimAgeFloorMet and the note.
@@ -1345,7 +1350,7 @@ export function jointSearchNote(info: JointSearchInfo): string {
       ? "every combination priced against the full strategy set"
       : `the best ${info.finalistCombos} priced against the full strategy set`;
   // The claim floor's effect, in plain words, when one is set.
-  // Floor-conflict honesty (contract v56): when the crowned
+  // Floor-conflict honesty (build v56): when the crowned
   // winner claims below the floor (claimAgeFloorMet === false),
   // the note states the conflict plainly — naming the floor and
   // the winner's actual primary claiming age, and the locked
@@ -1566,7 +1571,7 @@ export const ROTH_MC_CHECK_SEED = 12345;
 export const ROTH_MC_CHECK_PATHS = 250;
 
 // Fixed stream stride for runRothMonteCarloStats (F3,
-// batch-independent streams) and, since contract v110 (round-16
+// batch-independent streams) and, since build v110 (round-16
 // F2), for runRothMonteCarloCheck as well: both runs draw
 // exactly this many standardized shocks per path from the
 // shared stream, whatever scenarios are in the call, so a
@@ -1728,7 +1733,7 @@ export function runRothMonteCarloCheck(
   const years =
     inputs.endAgePrimary - (inputs.startYear - inputs.birthYearPrimary) + 1;
   for (let i = 0; i < opts.pathCount; i++) {
-    // Draw the fixed-stride shock vector first (contract v110,
+    // Draw the fixed-stride shock vector first (build v110,
     // round-16 F2: the same MC_STREAM_STRIDE_YEARS stride the
     // stats run draws), then price BOTH candidates from the
     // horizon prefix of that same vector — paired paths by
@@ -1851,7 +1856,15 @@ export function runRothMonteCarloStats(
   base: RothCompareBaseSaved,
   scenarios: { name: string; overrides: RothCompareOverrides }[],
   startYear: number,
-  opts: { volatilityPct: number; pathCount: number; seed: number },
+  opts: {
+    volatilityPct: number;
+    pathCount: number;
+    seed: number;
+    // The plan record's stored tax-return actuals, threaded to
+    // buildCompareScenario exactly as runRothCompare threads
+    // them (contract v140, re-audit SHOULD S-2).
+    taxReturnActuals?: RothTaxReturnStored | null;
+  },
 ): RothMcStatsResult {
   const noBirthYear: RothMcStatsResult = {
     ok: false,
@@ -1880,7 +1893,13 @@ export function runRothMonteCarloStats(
   }
   const built: RothCompareScenarioBuilt[] = [];
   for (const s of scenarios) {
-    const b = buildCompareScenario(base, s.name, s.overrides, startYear);
+    const b = buildCompareScenario(
+      base,
+      s.name,
+      s.overrides,
+      startYear,
+      opts.taxReturnActuals,
+    );
     if (!b) return noBirthYear;
     built.push(b);
   }
@@ -2200,13 +2219,64 @@ export type RothSavedLike = {
   taxableTiers?: TaxableTier[] | null;
   // Taxable yields (added with the TAXABLE YIELDS build).
   // Optional: a saved record written before this build has
-  // neither key, which reads as blank = no yield modeled, so
-  // an untouched record prices bit-identically to before.
-  // When set, each priced year's dividend / interest yield %
-  // of the starting taxable balance is mandatory income for
-  // the year (see taxEngine's RothPlanInputs note).
+  // neither key, which reads as blank = no yield entered. When
+  // set, each priced year's dividend / interest yield % of the
+  // starting taxable balance is mandatory income for the year
+  // (see taxEngine's RothPlanInputs note). A BLANK field no
+  // longer prices as $0 when the household's stored tax-return
+  // actuals imply a yield for it: the fallback transients
+  // below stand in for the blank field (contract v136, audit
+  // MUST M-1 — see planInputsFromSaved).
   taxableDividendYieldPct?: number | null;
   taxableInterestYieldPct?: number | null;
+  // Blank-yield fallback yields (contract v136, audit MUST
+  // M-1) — TRANSIENT engine inputs, never saved user fields:
+  // the implied yields derived from the plan record's stored
+  // tax-return actuals over the plan's resolved taxable pool
+  // (impliedYieldPctsFromTaxReturn in taxReturnCore.ts),
+  // threaded by the layer that holds both the record and the
+  // resolved pool — the actions layer's resolveArgsBalances
+  // on the server, the plan-input constructions in the
+  // client — exactly the way the snapshot balances and the
+  // cash sleeve are threaded. planInputsFromSaved uses each
+  // one ONLY when the matching yield field above is blank
+  // (absent / null): an entered yield, including an explicit
+  // 0%, always prices as entered. Absent / null transient =
+  // no estimate exists for that line (no stored actual, or no
+  // pool to imply from), and a blank field then prices $0
+  // exactly as before this build. The actuals themselves
+  // never ride this shape: only the derived percentages do
+  // (contract v139, re-audit MUST M-1: the return amounts
+  // never enter pricing as amounts; pricing reads only the
+  // two derived percentages — the tax-return-pricing-identity
+  // fixture pins that action path, resolveArgsBalances'
+  // threading, not the bare conversion).
+  yieldFallbackDividendPct?: number | null;
+  yieldFallbackInterestPct?: number | null;
+  // Qualified-dividend share (contract v138, audit SHOULD
+  // S-1) — a TRANSIENT engine input in the same family as
+  // the yield fallbacks above, never a saved user field: the
+  // % of the plan's dividend yield income that is QUALIFIED,
+  // derived from the plan record's stored tax-return actuals
+  // (line 3a ÷ line 3b —
+  // qualifiedDividendSharePctFromTaxReturn in
+  // taxReturnCore.ts) and threaded by the same layers that
+  // thread the yield fallbacks (the actions layer's
+  // resolveArgsBalances on the server, the plan-input
+  // constructions in the client). planInputsFromSaved passes
+  // it to the engine as taxableDividendQualifiedPct, which
+  // splits each year's dividend income between the gains and
+  // ordinary stacks. Absent / null transient = no stored
+  // return implies a share, and the engine prices 100%
+  // qualified exactly as before this build. Unlike the yield
+  // fallbacks this share applies whether or not a yield was
+  // entered: it describes the CHARACTER of the dividend
+  // income, not its size. The actuals themselves never ride
+  // this shape — only the derived percentage does — so the
+  // tax-return-pricing-identity fixture pins the action path
+  // on this transient too: amounts never enter as amounts,
+  // only the derived share reaches pricing (contract v139).
+  qualifiedDividendSharePct?: number | null;
   // Spend-from-cash % (added with the SPEND-FROM-CASH build).
   // Optional: a saved record written before this build has no
   // such key, which reads as blank = off, so an untouched
@@ -2329,7 +2399,7 @@ export type RothSavedLike = {
   capitalLossCarryInStCents?: number | null;
   capitalLossCarryInLtCents?: number | null;
   // Washington-attributable portions of the entering
-  // carryforward (contract v101, round-14 fix F4), integer
+  // carryforward (build v101, round-14 fix F4), integer
   // cents like the totals they are portions of. Optional:
   // a saved record written before this build has neither
   // key, which reads as blank = $0 = no Washington
@@ -2620,7 +2690,7 @@ export type ExecutionYearResult = {
 // priced with, and the re-solve prices the year the sim
 // priced. No banked loss → the base keeps its gross ltcg
 // and carries no allowance, bit-identical to before.
-// Contract v101: the Washington base here is the same
+// Build v101: the Washington base here is the same
 // figure the march priced — the gross gains minus the
 // Washington-attributable absorbed part the shared
 // transform reports — never the bare gross gains.
@@ -2920,7 +2990,10 @@ export type PlaygroundYearInputs = {
   stockBasis: number;
   // Qualified dividends, exactly as printed on the Form 1040
   // (line 3a): a SUBSET of ordinaryDividends (line 3b) above,
-  // never an amount on top of it.
+  // never an amount on top of it. When an entered pair breaks
+  // that rule (qualified > total), pricePlaygroundYear clamps
+  // the qualified part to the total before pricing (audit
+  // S-8/S-11) — the excess prices on neither stack.
   qualifiedDividends: number;
   // Combined pre-tax balance at the prior Dec 31, or null when
   // not entered — null prices no RMD and caps nothing. When
@@ -3034,7 +3107,7 @@ export type PlaygroundYearInputs = {
   capitalLossCarryInLt?: number;
   capitalLossCarryInStWa?: number;
   capitalLossCarryInLtWa?: number;
-  // Gain harvest (contract v113, round-17 fix F3; December
+  // Gain harvest (build v113, round-17 fix F3; December
   // console only — absent / null on every Playground caller,
   // and the year then prices bit-identically to before): the
   // taxable pool available to sell and its basis, the two
@@ -3055,7 +3128,51 @@ export type PlaygroundYearInputs = {
   // unpriced-harvest qualification on the settlement.
   harvestPoolAmount?: number | null;
   harvestPoolBasisPct?: number | null;
-  // Annual spending (contract v126, "enough for the year"):
+  // ACA reconciliation facts (build v193, re-audit round 3
+  // SHOULD-4; December console only — absent on every
+  // Playground caller, and the year then prices bit-
+  // identically to before): the facts of the year's FILING
+  // SETTLEMENT — the advance premium credit actually taken
+  // during the year (aptcTaken), the premium of the plan
+  // actually enrolled in (acaEnrollmentPremiumAnnual, when
+  // entered), and the coverage-month reduction
+  // (acaCoverageReduction, dollars). When aptcTaken is
+  // present, pricePlaygroundYear prices the settlement
+  // itself inside the shared pricer — the final allowable
+  // credit (the priced credit capped at the enrollment
+  // premium when one is supplied, less the coverage
+  // reduction, $0 over the cliff), the credit still due
+  // and the excess-APTC repayment against aptcTaken, with
+  // the reconciliation running on the effective final
+  // credit (the priced credit; $0 when nobody in the
+  // household can be on the marketplace, a known-zero
+  // credit; unpriced only when someone is marketplace-
+  // eligible but no benchmark was entered) — and
+  // netTaxBill IS that settlement, so cashLeftAfterTax is
+  // the year's cash left after its filing settlement: the
+  // same figure the December console reports for the same
+  // year and facts (the console adds only its taxable
+  // cash at its assembly). Absent aptcTaken no
+  // reconciliation is priced: the credit is treated as
+  // fully advanced against the year's premiums — the plan
+  // model's treatment, in which the household pays the
+  // NET premium and the credit never settles in cash — and
+  // netTaxBill is the total tax less the refundable
+  // education credit exactly as before (the F7 rule: the
+  // spending the cash left is compared against already
+  // holds the net premium, so netting the credit there
+  // would double-count it). When the facts are present but
+  // the settlement cannot price — the credit genuinely
+  // unpriced, or a pre-2026 year whose APTC taken exceeds
+  // the effective final credit (the capped-repayment
+  // rules are not modeled) — netTaxBill falls back to
+  // that same un-reconciled bill; the December layer,
+  // which owns the facts, shows no cash left in those
+  // cases instead of either figure.
+  aptcTaken?: number | null;
+  acaEnrollmentPremiumAnnual?: number | null;
+  acaCoverageReduction?: number | null;
+  // Annual spending (build v126, "enough for the year"):
   // the year's annual spending in dollars, for the
   // cash-left-vs-spending comparison ONLY — it never enters
   // the tax pricing (no income, no MAGI, no credit, no tax
@@ -3087,7 +3204,7 @@ export type PlaygroundYearInputs = {
   // table (engine-audit round-2 fix) — while under
   // "lookback" a specific coverage year prices its own
   // table — including the 2027 table (Rev. Proc. 2026-26)
-  // for coverage year 2027 exactly. Contract v95 (F1)
+  // for coverage year 2027 exactly. Build v95 (F1)
   // keeps the two years separate inside acaCreditFor: the
   // relabelled coverage year governs only the guideline
   // row, and the table keys on the real coverage year
@@ -3106,9 +3223,10 @@ export type PlaygroundYearResult = {
   ordinaryDividends: number;
   // The NON-qualified part of that total — max(0, total −
   // qualified) — the part that rides the ordinary stack.
-  // (When qualified alone was entered with no total, this
-  // is $0 and the qualified amount still prices once, on
-  // the gains stack.)
+  // (On an impossible pair — qualified entered above the
+  // total — the qualified part is clamped to the total
+  // first, so this is $0 and the total prices once, all of
+  // it on the gains stack; the excess prices nowhere.)
   nonQualifiedDividends: number;
   otherOrdinary: number;
   // Ordinary-stack total: interest + non-qualified
@@ -3138,15 +3256,32 @@ export type PlaygroundYearResult = {
   taxExemptInterest: number;
   conversion: number;
   stockGain: number; // sold − basis (negative = the sale is a loss)
+  // The qualified dividends AS PRICED — the entered figure
+  // clamped to the ordinary-dividends total (audit S-8/S-11),
+  // so on an impossible pair this reads the total, never the
+  // entered excess.
   qualifiedDividends: number;
+  // The literal clamp inputs AS ENTERED (re-audit SHOULD
+  // S-7): the two dividend dials exactly as supplied to the
+  // pricer, before the S-8/S-11 clamp — so a consumer can
+  // see what was entered beside what was priced, and how
+  // much the clamp trimmed (qualifiedDividendsExcess, $0 on
+  // a possible pair; qualifiedDividendsWasClamped names
+  // whether it trimmed anything). Pure echoes of this
+  // function's own inputs and its already-computed clamped
+  // figure — the clamp itself is unchanged.
+  ordinaryDividendsEntered: number;
+  qualifiedDividendsEntered: number;
+  qualifiedDividendsWasClamped: boolean;
+  qualifiedDividendsExcess: number;
   // The net capital gain or loss from CAPITAL transactions
   // only (the stock gain; negative = a net capital loss).
   // Qualified dividends are NOT capital gains for netting
   // (round-7 R7-1): a net capital loss never reduces them.
   ltcgNet: number;
   // What the preferential stack priced: the priced capital
-  // gain, max(0, ltcgNet), PLUS the qualified dividends,
-  // whole.
+  // gain, max(0, ltcgNet), PLUS the qualified dividends as
+  // clamped to the ordinary total.
   ltcgPriced: number;
   capitalLoss: number; // max(0, −ltcgNet) — the net capital loss for the year
   // The IRC §1211(b) capital-loss allowance priced this
@@ -3171,7 +3306,7 @@ export type PlaygroundYearResult = {
   lossCarryOutStWa: number;
   lossCarryOutLtWa: number;
   // The long-term gain this pricing's harvest realized into
-  // the 0% capital-gains band (contract v113): the largest
+  // the 0% capital-gains band (build v113): the largest
   // gain, capped by the entered pool's unrealized gain,
   // whose addition to the year's gains stack leaves every
   // harvested dollar inside the 0% band (the plan march's
@@ -3264,7 +3399,7 @@ export type PlaygroundYearResult = {
   waStandardDeduction: number;
   waTaxableGains: number;
   totalTax: number;
-  // Cash-in / cash-left readouts (contract v114): cashIn is
+  // Cash-in / cash-left readouts (build v114): cashIn is
   // every dollar of cash the year's entered income brings
   // in — interest, the TOTAL ordinary dividends (Form 1040
   // line 3b, its qualified part included, counted once),
@@ -3273,7 +3408,7 @@ export type PlaygroundYearResult = {
   // the year's RMD cash, the pre-tax money out, and the gross
   // proceeds of any stock sale (its return-of-basis part
   // included — it is cash in hand, not income). The RMD cash
-  // is counted ONCE (contract v127, round-19 finding 2):
+  // is counted ONCE (build v127, round-19 finding 2):
   // the part already received sits inside other ordinary
   // income — the input contract states it is already
   // counted in the entered income — and the priced net RMD
@@ -3281,16 +3416,28 @@ export type PlaygroundYearResult = {
   // gross RMD with no term added for the received part a
   // second time. A harvested gain is NOT in it: a harvest's
   // proceeds are reinvested by construction, never cash in hand. netTaxBill
-  // (contract v116) is the year's NET tax bill — totalTax
-  // less the refundable education credit. The ACA premium
-  // credit is NOT subtracted: the annual spending the cash
-  // left is compared against already holds the NET premium
-  // (gross benchmark less the credit), so subtracting the
-  // credit here would double-count it and overstate the
-  // cash left by the credit. (The plan score identity's own
-  // netting still credits both beside the tax — that is the
-  // march's lifetime score, not this single-year cash
-  // readout.) cashLeftAfterTax
+  // (build v116) is the year's NET tax bill. When the
+  // caller supplies the year's reconciliation facts
+  // (aptcTaken — build v193, re-audit round 3 SHOULD-4) it
+  // is the year's FILING SETTLEMENT: totalTax less the
+  // credit still due, plus any excess advance credit to
+  // repay, less the refundable education credit — the
+  // identical figure the December console settles the
+  // same year on, so the two surfaces' cash left cannot
+  // disagree. When no facts are supplied it is totalTax
+  // less the refundable education credit alone: the ACA
+  // premium credit is NOT subtracted then, because the
+  // annual spending the cash left is compared against
+  // already holds the NET premium (gross benchmark less
+  // the credit), so subtracting the credit there would
+  // double-count it and overstate the cash left by the
+  // credit. (The plan score identity's own netting still
+  // credits both beside the tax — that is the march's
+  // lifetime score, not this single-year cash readout.)
+  // When the facts are supplied but the settlement cannot
+  // price (credit genuinely unpriced, or a pre-2026
+  // repayment unmodeled), the bill falls back to the
+  // un-reconciled form. cashLeftAfterTax
   // is cashIn minus netTaxBill — BEFORE any spending: what
   // the year leaves in hand once its tax is settled. Pure
   // readouts of the same pricing; no priced figure moves.
@@ -3298,7 +3445,7 @@ export type PlaygroundYearResult = {
   cashIn: number;
   cashLeftAfterTax: number;
   // Annual spending for the "enough for the year" comparison
-  // (contract v126): the annualSpending input echoed in
+  // (build v126): the annualSpending input echoed in
   // dollars — null when no spending was given — and the
   // comparison itself: cashLeftAfterTax minus that spending.
   // Positive = enough for the year, negative = short of a
@@ -3429,10 +3576,10 @@ export type PlaygroundIrmaaGainsFlag = {
 };
 
 export type PlaygroundGainsFlags = {
-  // The preferential income as typed: sale gain + qualified
-  // dividends (an arithmetic total of what was typed, NOT a
+  // The preferential income as priced: sale gain + qualified
+  // dividends as clamped to the ordinary total (NOT a
   // netting — a sale loss in it never reduces the dividends
-  // the engine priced; negative = the typed total is a loss).
+  // the engine priced; negative = the priced total is a loss).
   gainsStack: number;
   // True when anything was typed into the gains stack at all
   // (a non-zero sale gain or any qualified dividends).
@@ -3458,11 +3605,26 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // once by splitting the total — the non-qualified part
   // (total − qualified, floored at $0) rides the ordinary
   // stack, the qualified part rides the gains stack below.
-  // (Qualified entered with no total still prices once:
-  // the non-qualified part is $0 and the qualified amount
-  // prices on the gains stack alone.)
+  // THE CLAMP (audit S-8 + S-11, settled — the shared fix):
+  // on a real 1099-DIV the qualified figure cannot exceed
+  // the total, so the qualified part is clamped to the
+  // total before any pricing reads it. Before this clamp
+  // only the non-qualified part was floored, and an entered
+  // excess (qualified > total) priced whole on the gains
+  // stack — phantom dividends entering AGI, MAGI, and the
+  // ACA / NIIT bases. Now the entered total is the ceiling:
+  // the pair prices at most the total, counted once, and
+  // every figure below (the priceYear pass, ltcgPriced, the
+  // gains flags, this result's qualifiedDividends) reads
+  // the clamped figure, never the entered excess.
+  const qualifiedDividends = r2(
+    Math.min(
+      Math.max(0, inp.qualifiedDividends),
+      Math.max(0, inp.ordinaryDividends),
+    ),
+  );
   const nonQualifiedDividends = r2(
-    Math.max(0, inp.ordinaryDividends - inp.qualifiedDividends),
+    Math.max(0, inp.ordinaryDividends - qualifiedDividends),
   );
   const otherOrdinaryTotal = r2(inp.interest + nonQualifiedDividends + inp.otherOrdinary);
   const stockGain = r2(inp.stockSold - inp.stockBasis);
@@ -3478,7 +3640,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // ordinary income this year. (Before this fix the loss was
   // netted against the qualified dividends first, erasing
   // them from AGI and inventing ACA credit.)
-  // Entering capital-loss carryforward (contract v111,
+  // Entering capital-loss carryforward (build v111,
   // round-17 fix F1+F2): when any carry-in is entered, the
   // year's own net long-term result runs through the SAME
   // shared applyLossLedger the plan march's ledgerFields
@@ -3659,7 +3821,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // the excise prices on ltcg exactly as before.
     ltcg: ltcgNet,
     ...(waGainsBase != null ? { waGainsBase } : {}),
-    qualifiedDividends: inp.qualifiedDividends,
+    qualifiedDividends,
     capitalLossAllowance,
     inflationPct: 0,
     stateRatePct: inp.stateRatePct,
@@ -3676,7 +3838,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // year — absent = no students = no credits.
     educationStudents: inp.educationStudents ?? null,
   };
-  // Gain harvest (contract v113, round-17 fix F3): when the
+  // Gain harvest (build v113, round-17 fix F3): when the
   // caller supplies the pool / basis facts, size the year's
   // harvest EXACTLY as the plan march sizes its own
   // (simulateRothPlan's harvestOn block): the available
@@ -3754,17 +3916,18 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       }
     }
   }
-  const ltcgPriced = r2(Math.max(0, ltcgNet) + inp.qualifiedDividends);
+  const ltcgPriced = r2(Math.max(0, ltcgNet) + qualifiedDividends);
   const capitalLoss = Math.max(0, -ltcgNet);
   // The total preferential income priced (the possibly
-  // netted capital result + qualified dividends) — the
-  // gains flags' stack figure and phrase, as before.
-  const prefTyped = r2(ltcgNet + inp.qualifiedDividends);
+  // netted capital result + the clamped qualified
+  // dividends) — the gains flags' stack figure and phrase,
+  // as before.
+  const prefTyped = r2(ltcgNet + qualifiedDividends);
 
   const priced = priceYear(base);
   const pricedZero = priceYear({ ...base, conversion: 0 });
 
-  // Loss-ledger year-end reconciliation (contract v111):
+  // Loss-ledger year-end reconciliation (build v111):
   // the carry-out is fixed ONCE, against the priced year's
   // final taxable income before the allowance — the plan
   // march's ledFinal pattern — so only the part of the
@@ -3835,7 +3998,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // convention. That relabel governs ONLY the guideline row
   // (and with it the cliff): the applicable-percentage table
   // keys on the REAL coverage year, passed to acaCreditFor
-  // as tableYear (contract v95, F1) — the convention doc
+  // as tableYear (build v95, F1) — the convention doc
   // above states the rule, and the relabel must never move
   // the table. A relabelled 2026 therefore prices on the
   // 2026 table, a real 2027 on the 2027 table (projected
@@ -3895,7 +4058,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // IRMAA — the tier this year's MAGI sets, charged per
   // person on Medicare in premiumYear (taxYear + 2), under
   // the PREMIUM year's law row — the plan engine's rule,
-  // mirrored exactly (contract v97, engine-calendar F3+F4).
+  // mirrored exactly (build v97, engine-calendar F3+F4).
   // Participants count by AGE in the premium year: the
   // primary from 65, the spouse from 65 too — the plan's
   // spouse threshold is her ACA end age, which defaults to
@@ -3952,7 +4115,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     qualifiedDividends: 0,
     capitalLossAllowance: 0,
   });
-  const hasGainsTyped = stockGain !== 0 || inp.qualifiedDividends !== 0;
+  const hasGainsTyped = stockGain !== 0 || qualifiedDividends !== 0;
   const withoutAcaHouseholdMagi = r2(
     pricedWithoutGains.acaMagi + dependentMagiForAca,
   );
@@ -4128,26 +4291,54 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     };
   }
 
-  // Cash left after tax (contract v114, net bill exposed
-  // contract v116): the year's cash in (see the field's
-  // note on PlaygroundYearResult) less its net tax bill —
-  // the total tax, less the refundable education credit.
-  // The ACA premium credit is NOT subtracted here: the
-  // annual spending the cash left is compared against
-  // already holds the NET premium (gross benchmark less
-  // the credit), so subtracting the credit again would
-  // double-count it and overstate the cash left by the
-  // credit. The credit is still priced and shown in the
-  // year's ACA section — it just does not enter the cash
-  // left, because the premium it pays is already netted
-  // out of the spending.
+  // Cash left after tax (build v114, net bill exposed
+  // build v116): the year's cash in (see the field's
+  // note on PlaygroundYearResult) less its net tax bill.
+  // The bill has two forms (build v193, re-audit round 3
+  // SHOULD-4). UN-RECONCILED (the default — no
+  // reconciliation facts supplied): the total tax, less
+  // the refundable education credit. The ACA premium
+  // credit is NOT subtracted here: the annual spending
+  // the cash left is compared against already holds the
+  // NET premium (gross benchmark less the credit), so
+  // subtracting the credit again would double-count it
+  // and overstate the cash left by the credit. The credit
+  // is still priced and shown in the year's ACA section —
+  // it just does not enter the cash left, because the
+  // premium it pays is already netted out of the spending.
+  // SETTLEMENT (the caller supplied the year's
+  // reconciliation facts — aptcTaken present, as the
+  // December console's assembly always supplies): the
+  // bill is the year's filing settlement, derived from
+  // this same pricing exactly as the December layer
+  // derives it — the final allowable credit (the priced
+  // credit capped at the enrollment premium when one was
+  // supplied, less the coverage reduction, $0 over the
+  // cliff), the reconciliation on the EFFECTIVE final
+  // credit (the priced credit; $0 when nobody can be on
+  // the marketplace — a known-zero credit; unpriced only
+  // when someone is marketplace-eligible but no benchmark
+  // was entered), the credit still due and the excess
+  // advance credit to repay (repaid in full for 2026 and
+  // later — P.L. 119-21 §71305; before 2026 the capped
+  // repayment is not modeled, so the settlement does not
+  // price when APTC taken exceeds the effective final
+  // credit) — total tax − credit still due + excess
+  // repayment − the refundable education credit. In that
+  // form this cash left IS the December console's cash
+  // left for the same year (the console adds only its
+  // taxable cash, at its assembly), so the two surfaces
+  // cannot price the same year to two different figures.
+  // When the facts are supplied but the settlement
+  // cannot price, the bill falls back to the un-reconciled
+  // form; the December layer shows no cash left then.
   const cashIn = r2(
     inp.interest +
       inp.ordinaryDividends +
       inp.otherOrdinary +
       inp.taxExemptInterest +
       ssBenefits +
-      // Contract v127 (round-19 finding 2): NO
+      // Build v127 (round-19 finding 2): NO
       // rmdAlreadyReceived term here — the received part is
       // already inside otherOrdinary (the input contract),
       // and rmd above is the net part still to come, so the
@@ -4158,11 +4349,61 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       inp.conversion +
       inp.stockSold,
   );
-  const netTaxBill = r2(
-    r2(priced.federalTax + priced.stateTax) - priced.educationRefundable,
-  );
+  const totalTaxBill = r2(priced.federalTax + priced.stateTax);
+  let netTaxBill = r2(totalTaxBill - priced.educationRefundable);
+  if (inp.aptcTaken != null) {
+    // The filing settlement, on this pricing's own
+    // figures — the same derivation the December layer
+    // runs on the same readouts (build v193): whenever
+    // it prices, it replaces the un-reconciled bill.
+    const settlementCliff =
+      inp.taxYear >= 2026 ? aca.cliff : null;
+    const settlementOverCliff =
+      settlementCliff != null && aca.overCliff;
+    const cappedCredit =
+      aca.credit == null
+        ? null
+        : inp.acaEnrollmentPremiumAnnual == null
+          ? aca.credit
+          : Math.min(aca.credit, inp.acaEnrollmentPremiumAnnual);
+    const finalCredit = settlementOverCliff
+      ? 0
+      : cappedCredit == null
+        ? null
+        : r2(
+            Math.max(
+              0,
+              cappedCredit - (inp.acaCoverageReduction ?? 0),
+            ),
+          );
+    const acaInPlay =
+      !inp.onMedicarePrimary ||
+      (inp.filingStatus === "mfj" && !inp.onMedicareSpouse);
+    const effectiveFinalCredit: number | null =
+      finalCredit != null ? finalCredit : acaInPlay ? null : 0;
+    const creditStillDue: number | null =
+      effectiveFinalCredit != null
+        ? r2(Math.max(0, effectiveFinalCredit - inp.aptcTaken))
+        : null;
+    const excessAptcRepayment: number | null =
+      effectiveFinalCredit == null
+        ? null
+        : inp.taxYear >= 2026
+          ? r2(Math.max(0, inp.aptcTaken - effectiveFinalCredit))
+          : inp.aptcTaken <= effectiveFinalCredit
+            ? 0
+            : null;
+    if (excessAptcRepayment != null) {
+      netTaxBill = r2(
+        totalTaxBill -
+          (creditStillDue ?? 0) +
+          excessAptcRepayment -
+          priced.educationRefundable,
+      );
+    }
+  }
   const cashLeftAfterTax = r2(cashIn - netTaxBill);
-  // "Enough for the year" (contract v126): cash left after
+  // "Enough for the year" (build v126): cash left after
   // tax minus the annual spending — a pure readout, the
   // spending never entering the tax above. Null when no
   // spending was given.
@@ -4191,7 +4432,14 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     taxExemptInterest: inp.taxExemptInterest,
     conversion: inp.conversion,
     stockGain,
-    qualifiedDividends: inp.qualifiedDividends,
+    qualifiedDividends,
+    ordinaryDividendsEntered: inp.ordinaryDividends,
+    qualifiedDividendsEntered: inp.qualifiedDividends,
+    qualifiedDividendsWasClamped:
+      r2(Math.max(0, inp.qualifiedDividends)) > qualifiedDividends,
+    qualifiedDividendsExcess: r2(
+      Math.max(0, Math.max(0, inp.qualifiedDividends) - qualifiedDividends),
+    ),
     ltcgNet,
     ltcgPriced,
     capitalLoss,
@@ -5356,6 +5604,20 @@ export type RothFundingRow = {
   interestYieldCents: number;
   dividendYieldCents: number;
   pretaxDrawCents: number;
+  // The S-10 split of the year's priced pre-tax draw
+  // (re-audit SHOULD S-8 surfacing; from the engine's
+  // RothYearDetail, integer cents): the pre-tax draw for
+  // spending alone, the pre-tax debits that paid the tax
+  // bill alone, and their sum (the detail's
+  // extraPreTaxDraw). Display only — none of the three is
+  // a funding source and none enters the cash identity;
+  // pretaxDrawCents above remains the applied pre-tax
+  // funding source (it also counts conversion withholding
+  // applied to the bill — see the pretaxDrawSplitSemantics
+  // convention describeApi publishes).
+  pretaxSpendingDrawCents: number;
+  pretaxTaxDebitCents: number;
+  extraPreTaxDrawCents: number;
   taxableSoldForSpendingCents: number;
   taxableSoldForTaxCents: number;
   // Spend-from-cash: the part of the year's spending need the
@@ -5501,6 +5763,9 @@ export function buildRothFunding(
       interestYieldCents: cents(f.interestYield),
       dividendYieldCents: cents(f.dividendYield),
       pretaxDrawCents: cents(f.pretaxDraw),
+      pretaxSpendingDrawCents: cents(y.detail.pretaxSpendingDraw),
+      pretaxTaxDebitCents: cents(y.detail.pretaxTaxDebit),
+      extraPreTaxDrawCents: cents(y.detail.extraPreTaxDraw),
       taxableSoldForSpendingCents: cents(f.taxableSoldForSpending),
       taxableSoldForTaxCents: cents(f.taxableSoldForTax),
       cashSpendCents: cents(f.cashSpend),
@@ -5592,7 +5857,7 @@ export function planInputsFromSaved(
   const dollars = (cents: number | null) => (cents == null ? 0 : cents / 100);
   const retirementAge = saved.retirementAge ?? 57;
   const birthYearPrimary = saved.birthYearPrimary;
-  return {
+  const planInputs: RothPlanInputs = {
     startYear,
     birthYearPrimary,
     birthYearSpouse: saved.birthYearSpouse,
@@ -5620,14 +5885,33 @@ export function planInputsFromSaved(
     // Basis tiers passthrough: absent / null / empty = the
     // single pool at the basis % above, bit-identical.
     taxableTiers: saved.taxableTiers ?? null,
-    // Taxable yields passthrough: absent / null = blank = no
-    // yield modeled, bit-identical to before. Every pricing
-    // path (optimizer candidates, Monte Carlo check, gift and
-    // work-years compares) builds its engine inputs from this
-    // one construction or spreads it, so the yields reach
-    // every path exactly as entered.
-    taxableDividendYieldPct: saved.taxableDividendYieldPct ?? null,
-    taxableInterestYieldPct: saved.taxableInterestYieldPct ?? null,
+    // Taxable yields passthrough, with the blank-yield
+    // fallback (contract v136, audit MUST M-1): an entered
+    // yield prices exactly as entered — an explicit 0% is a
+    // real answer and prices $0 — while a blank (absent /
+    // null) field takes the threaded fallback transient when
+    // one was derived from the household's stored tax-return
+    // actuals, so a blank field prices the implied estimate
+    // instead of $0. With no fallback threaded (no stored
+    // actual for the line), a blank field stays null and the
+    // engine prices $0, bit-identical to before. Every
+    // pricing path (optimizer candidates, Monte Carlo check,
+    // gift and work-years compares) builds its engine inputs
+    // from this one construction or spreads it, so the
+    // resolved yields reach every path exactly once.
+    taxableDividendYieldPct:
+      saved.taxableDividendYieldPct ?? saved.yieldFallbackDividendPct ?? null,
+    taxableInterestYieldPct:
+      saved.taxableInterestYieldPct ?? saved.yieldFallbackInterestPct ?? null,
+    // Qualified-dividend share passthrough (contract v138,
+    // audit SHOULD S-1): the transient threaded from the
+    // stored return's actuals, passed to the engine as-is —
+    // absent / null = no share implied, and the engine prices
+    // 100% of the dividend yield as qualified, bit-identical
+    // to before. Every pricing path builds its engine inputs
+    // from this one construction or spreads it, so the split
+    // reaches every path exactly once.
+    taxableDividendQualifiedPct: saved.qualifiedDividendSharePct ?? null,
     // Spend-from-cash passthrough: absent / null % = blank =
     // off, bit-identical to before; the sleeve size rides the
     // transient cents field (absent / null = $0 — no snapshot
@@ -5724,7 +6008,7 @@ export function planInputsFromSaved(
     // exactly as entered.
     capitalLossCarryInSt: dollars(saved.capitalLossCarryInStCents ?? null),
     capitalLossCarryInLt: dollars(saved.capitalLossCarryInLtCents ?? null),
-    // Washington-attribution passthrough (contract v101):
+    // Washington-attribution passthrough (build v101):
     // absent / null cents = blank = $0 attributable on that
     // character, so the Washington base stays at the gross
     // gains and the plan prices bit-identically to before.
@@ -5769,6 +6053,25 @@ export function planInputsFromSaved(
     collegeFallFromYear: saved.collegeFallFromYear ?? null,
     collegeFallThroughYear: saved.collegeFallThroughYear ?? null,
   };
+  // ACA premium reconciliation passthrough (build v135):
+  // the net premium the saved annualSpending embeds, derived
+  // from the built inputs by the engine's one derivation
+  // (acaEmbeddedNetPremiumFor — the first ACA-active year's
+  // net premium at its cliff). It is NOT a saved field: it is
+  // a property of the spending figure and the plan's own
+  // marketplace configuration, derived identically on every
+  // pricing path that builds from this construction (optimizer
+  // candidates, compare scenarios, funding, plan-year detail,
+  // Monte Carlo, gift and work-years compares), so no path can
+  // drop or alter it and no candidate re-derives a different
+  // reference. Null (no ACA-active year with a benchmark) =
+  // the field stays unset and the march funds annualSpending
+  // verbatim, bit-identical to before.
+  const embeddedNetPremium = acaEmbeddedNetPremiumFor(planInputs);
+  if (embeddedNetPremium != null) {
+    planInputs.acaEmbeddedNetPremium = embeddedNetPremium;
+  }
+  return planInputs;
 }
 
 /* ---------------- Engine-side scenario compare ----------------
@@ -5936,11 +6239,20 @@ export function compareStrategyDescription(
 // Merge one scenario patch over the base saved shape and build
 // everything needed to price it. Returns null when the merged
 // shape has no primary birth year (nothing can be priced).
+//
+// The optional taxReturnActuals parameter carries the plan
+// record's stored tax-return actuals (the Form 1040 lines the
+// blank-yield fallback derives from — see taxReturnCore.ts).
+// The actions layer passes them on every compare build; pure
+// callers that omit them keep the pre-v140 behaviour exactly
+// (the scenario inherits whatever fallback transients the base
+// shape carries).
 export function buildCompareScenario(
   base: RothCompareBaseSaved,
   name: string,
   overrides: RothCompareOverrides,
   startYear: number,
+  taxReturnActuals?: RothTaxReturnStored | null,
 ): RothCompareScenarioBuilt | null {
   /* CANONICALIZE THE BASE (Prompt 14 Finding 1 fix): resolve the
      base's ACA household schedule ONCE and write the resolved
@@ -6009,6 +6321,67 @@ export function buildCompareScenario(
       ) * 100,
     );
   }
+  /* COMPARE FALLBACK RE-DERIVATION (contract v140, re-audit
+     SHOULD S-2): the blank-yield fallback threaded onto the
+     base was derived over the BASE plan's resolved taxable
+     pool (resolveArgsBalances in actions.ts). A scenario whose
+     overrides change the taxable balance prices from a
+     DIFFERENT pool, so inheriting the base's percentages would
+     price its yield income off the base's pool — a half-pool
+     scenario priced exactly half the household's filed yield
+     income, a double-pool scenario twice it. When the caller
+     supplies the stored actuals, each scenario's fallback is
+     re-derived here from the MERGED shape's own resolved pool
+     through the ONE shared derivation
+     (impliedYieldPctsFromTaxReturn), exactly as
+     resolveArgsBalances derives the base's: only for a side
+     whose merged yield field is still blank (an entered yield,
+     the scenario's own included, always wins), and only when
+     the merged pool is a positive figure (a $0 or unresolved
+     pool derives no estimate — the inherited transient, if
+     any, then prices on a $0 pool and yields $0 either way).
+     A scenario that leaves the pool unchanged re-derives
+     exactly the base's percentages — same actuals, same pool,
+     same rounding — so its pricing is bit-identical to the
+     inheritance it replaces. The qualified-dividend share is
+     NOT re-derived: it is a ratio of the two dividend lines
+     and never depended on any pool. PASSABLE TRANSIENTS
+     (re-audit SHOULD S-7): a fallback a scenario's own
+     overrides supply (present in the overrides, an explicit
+     null included) is never overwritten here. An inherited
+     fallback is re-derived ONLY when it cannot describe this
+     scenario: when the merged shape carries none yet, or
+     when the scenario's pool differs from the base's pool
+     (the S-2 case — the inherited percentages were derived
+     over the base's pool). With the pool unchanged, an
+     inherited fallback stands exactly as threaded or
+     supplied on the base. */
+  if (taxReturnActuals != null) {
+    const poolCents = merged.taxableCents ?? null;
+    const basePoolCents = base.taxableCents ?? null;
+    if (poolCents != null && poolCents > 0) {
+      const implied = impliedYieldPctsFromTaxReturn(
+        taxReturnActuals,
+        poolCents / 100,
+      );
+      if (
+        (merged.taxableDividendYieldPct ?? null) == null &&
+        overrides.yieldFallbackDividendPct === undefined &&
+        ((merged.yieldFallbackDividendPct ?? null) == null ||
+          poolCents !== basePoolCents)
+      ) {
+        merged.yieldFallbackDividendPct = implied.dividendYieldPct;
+      }
+      if (
+        (merged.taxableInterestYieldPct ?? null) == null &&
+        overrides.yieldFallbackInterestPct === undefined &&
+        ((merged.yieldFallbackInterestPct ?? null) == null ||
+          poolCents !== basePoolCents)
+      ) {
+        merged.yieldFallbackInterestPct = implied.interestYieldPct;
+      }
+    }
+  }
   const inputs = planInputsFromSaved(merged, startYear);
   if (!inputs) return null;
   const strategy = compareStrategyFromSaved(merged);
@@ -6030,11 +6403,23 @@ export function buildCompareScenario(
    the year's pre-tax money out by choice — its conversion
    plus its pre-tax draw for spending (an RMD alone is not
    in it). It is NOT the funding run's pretaxDrawCents
-   (contract v127, round-19 finding 11): that field is the
+   (build v127, round-19 finding 11): that field is the
    extra spending draw plus pre-tax amounts applied to the
    tax bill, and excludes the conversion — the shared name
    used to say they were the same quantity, and they are
-   not. */
+   not. The spending-draw component is the year's
+   detail.pretaxSpendingDraw (audit S-10): the earlier
+   computation read detail.extraPreTaxDraw, whose total
+   also carries the tax-bill debits, and so overstated
+   this field by exactly those debits in every year they
+   occurred. The split itself is surfaced beside this
+   field (re-audit SHOULD S-8): each year readout also
+   carries pretaxSpendingDrawCents, pretaxTaxDebitCents,
+   and extraPreTaxDrawCents — the two components of the
+   year's total priced pre-tax draw and that total, read
+   straight off the same detail (see the
+   pretaxDrawSplitSemantics convention describeApi
+   publishes). */
 export type RothCompareScenarioYear = {
   year: number;
   agePrimary: number;
@@ -6059,6 +6444,17 @@ export type RothCompareScenarioYear = {
   irmaaCents: number;
   conversionCents: number;
   pretaxOutByChoiceCents: number;
+  // The S-10 split of the year's total priced pre-tax draw
+  // (re-audit SHOULD S-8 surfacing; see the
+  // pretaxDrawSplitSemantics convention): the pre-tax draw
+  // for spending alone, the pre-tax debits that paid the
+  // tax bill alone, and their sum — the year's
+  // detail.extraPreTaxDraw, the amount the priced AGI
+  // carries. pretaxOutByChoiceCents above is the
+  // conversion plus the FIRST component only.
+  pretaxSpendingDrawCents: number;
+  pretaxTaxDebitCents: number;
+  extraPreTaxDrawCents: number;
 };
 
 export type RothCompareScenarioResult = {
@@ -6068,13 +6464,13 @@ export type RothCompareScenarioResult = {
   netCostCents: number;
   totalTaxCents: number;
   // Lifetime federal / state split of totalTaxCents
-  // (contract v51): federalTaxCents + stateTaxCents =
+  // (build v51): federalTaxCents + stateTaxCents =
   // totalTaxCents, so a composition display can name the
   // federal part exactly instead of re-deriving it.
   federalTaxCents: number;
   stateTaxCents: number;
   // Per-year readouts of the scenario's priced march
-  // (contract v51; see RothCompareScenarioYear).
+  // (build v51; see RothCompareScenarioYear).
   years: RothCompareScenarioYear[];
   penaltyCents: number;
   irmaaCents: number;
@@ -6134,6 +6530,13 @@ export function runRothCompare(
   scenarios: { name: string; overrides: RothCompareOverrides }[],
   startYear: number,
   baselineName?: string | null,
+  // The plan record's stored tax-return actuals, when the
+  // caller holds them (the actions layer does): each scenario's
+  // blank-yield fallback is re-derived from that scenario's own
+  // resolved pool (contract v140, re-audit SHOULD S-2 — see
+  // buildCompareScenario). Omitted / null = the pre-v140
+  // inheritance of the base's threaded transients.
+  taxReturnActuals?: RothTaxReturnStored | null,
 ): RothCompareResult {
   if (scenarios.length === 0) {
     return {
@@ -6145,7 +6548,7 @@ export function runRothCompare(
   }
   const built: RothCompareScenarioBuilt[] = [];
   for (const s of scenarios) {
-    const b = buildCompareScenario(base, s.name, s.overrides, startYear);
+    const b = buildCompareScenario(base, s.name, s.overrides, startYear, taxReturnActuals);
     if (!b) {
       return {
         ok: false,
@@ -6190,7 +6593,22 @@ export function runRothCompare(
         educationRefundableCents: toCents(y.educationRefundable),
         irmaaCents: toCents(y.irmaaPaid),
         conversionCents: toCents(y.conversion),
-        pretaxOutByChoiceCents: toCents(y.conversion + y.detail.extraPreTaxDraw),
+        // Audit S-10: the spending draw ALONE
+        // (detail.pretaxSpendingDraw), never
+        // detail.extraPreTaxDraw — that total also carries
+        // the pre-tax debits that paid the tax bill
+        // (detail.pretaxTaxDebit), which are not money out
+        // by choice and would collapse this field into
+        // runRothFunding's pretaxDrawCents.
+        pretaxOutByChoiceCents: toCents(y.conversion + y.detail.pretaxSpendingDraw),
+        // The S-10 split, surfaced (re-audit SHOULD S-8):
+        // the year's detail components and their total,
+        // read off the same detail the by-choice field
+        // reads its spending component from — no new
+        // derivation, no pricing reads them.
+        pretaxSpendingDrawCents: toCents(y.detail.pretaxSpendingDraw),
+        pretaxTaxDebitCents: toCents(y.detail.pretaxTaxDebit),
+        extraPreTaxDrawCents: toCents(y.detail.extraPreTaxDraw),
       })),
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),

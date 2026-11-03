@@ -188,7 +188,7 @@ export type PriceYearInput = {
   // year's gross realized long-term gains MINUS the
   // Washington-attributable part of the federal loss
   // carryforward the year's gains actually absorbed
-  // (contract v101, round-14 fix F4): RCW 82.87.040(3) bars
+  // (build v101, round-14 fix F4): RCW 82.87.040(3) bars
   // carrying a NEGATIVE Washington amount forward, but it
   // also provides that a federal loss carryforward directly
   // attributable to losses from sales or exchanges allocated
@@ -346,7 +346,7 @@ export type PriceYearResult = {
   // Washington excise breakdown (T3): the year's WA-allocated
   // long-term gains entering the excise base (max(0, ltcg) —
   // or max(0, waGainsBase) when the caller supplies the
-  // ledger-adjusted base (T4; contract v101: the gross gains
+  // ledger-adjusted base (T4; build v101: the gross gains
   // minus the Washington-attributable carryforward the gains
   // absorbed); a net loss year enters $0 — a negative
   // Washington amount carries nothing forward, RCW
@@ -455,7 +455,7 @@ export function deflationFactor(
 ): number {
   const years = Math.max(0, calendarYear - lawYear);
   const factor = 1 / Math.pow(1 + inflationPct / 100, years);
-  // Defense in depth (contract v66, boundary audit F2): the
+  // Defense in depth (build v66, boundary audit F2): the
   // writers refuse inflationPct ≤ −100 in the shared schema,
   // but a non-finite factor must never reach a priced amount
   // from ANY caller — at −100% the divisor is 0 and the
@@ -582,7 +582,7 @@ export function irmaaAnnualPerPerson(tier: number, law: YearLaw): number {
    and it is NOT among the amounts RCW 82.87.150 adjusts
    annually, so — like the statute-fixed federal thresholds
    — it DEFLATES in today's-dollars projections by the
-   priced year's deflation factor (contract v61, F1): the
+   priced year's deflation factor (build v61, F1): the
    caller passes that factor in and only the threshold is
    scaled by it. The standard deduction and the charitable
    threshold / cap ARE among RCW 82.87.150's indexed amounts
@@ -592,7 +592,7 @@ export function irmaaAnnualPerPerson(tier: number, law: YearLaw): number {
    (RCW 82.87.040(3)): the base here is floored at $0 before
    any deduction. That no-carryforward rule is about the
    negative Washington amount itself: the federal ledger's
-   Washington-attributable carryforward (contract v101) is
+   Washington-attributable carryforward (build v101) is
    netted by the CALLER into the base it passes here (see
    the waGainsBase input), never inside this pricer. */
 
@@ -682,7 +682,7 @@ export function waCapitalGainsTax(args: {
      4. What survives — including every unused allowance
         dollar — carries out, character intact.
 
-   Washington attribution (contract v101, round-14 fix F4):
+   Washington attribution (build v101, round-14 fix F4):
    the ledger also tracks, inside each character, the part
    of the carryforward that is directly attributable to
    losses from sales or exchanges allocated to Washington
@@ -758,7 +758,7 @@ export type LossLedgerYearResult = {
   // carried out) — the absorption a gains year performs.
   absorbedByGains: number;
   // The Washington-attributable part of the carry-in the
-  // year's own gains absorbed (contract v101): the ONLY
+  // year's own gains absorbed (build v101): the ONLY
   // part of the federal netting that reduces the year's
   // Washington excise base (see the attribution rules in
   // the ledger header above). Utilization-independent, like
@@ -770,7 +770,7 @@ export type LossLedgerYearResult = {
   // What carries into the next year, character preserved.
   carryOut: LossCarryforward;
   // The Washington-attributable part of what carries into
-  // the next year, character preserved (contract v101):
+  // the next year, character preserved (build v101):
   // the entering attribution minus its pro-rata share of
   // the year's gains-absorption and of the allowance
   // actually used. All $0 whenever no Washington-attributable
@@ -817,7 +817,7 @@ export function applyLossLedger(
   // taxable income.
   taxableIncomeBeforeAllowance: number,
   // The Washington-attributable part of the carry-in, by
-  // character (contract v101; see the attribution rules in
+  // character (build v101; see the attribution rules in
   // the ledger header above). Optional: absent = none of
   // the carry-in is Washington-attributable, the result's
   // Washington fields are $0, and every pre-v101 caller
@@ -873,7 +873,7 @@ export function applyLossLedger(
   const absorbedByGains = r2(
     Math.max(0, stIn + ltIn - carryOut.st - carryOut.lt - allowanceUsed),
   );
-  // Washington attribution (contract v101): each character's
+  // Washington attribution (build v101): each character's
   // gains-absorption is the part of that character's pool the
   // year's gains consumed before the allowance ran (the
   // long-term pool less its remainder, the short-term pool
@@ -1541,7 +1541,7 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
   // The §170(p) caps are statute-fixed ($1,000 / $2,000, not
   // indexed), so — exactly like the §151(d)(5)(C) senior
   // deduction above — the cap deflates into today's dollars
-  // by `defl` at its use site (contract v61, F4; 1.0 in the
+  // by `defl` at its use site (build v61, F4; 1.0 in the
   // base law year and earlier, so 2025–2026 pricing is
   // unchanged).
   const section170pCandidate = deductionTrioApplies
@@ -1726,7 +1726,7 @@ export function priceYear(input: PriceYearInput): PriceYearResult {
           charitableDonations: input.itemizedCharitable,
           law,
           // The year's deflation factor, for the statute-fixed
-          // surtax threshold only (contract v61, F1) — the
+          // surtax threshold only (build v61, F1) — the
           // DOR-indexed standard deduction and charitable
           // amounts inside the pricer stay nominal.
           deflationFactor: defl,
@@ -1813,7 +1813,7 @@ export function acaCreditFor(args: {
   // the 2027 table likewise prices for coverage year 2027
   // exactly.
   projected?: boolean;
-  // Contract v95 (F1): the coverage year whose
+  // Build v95 (F1): the coverage year whose
   // applicable-percentage table prices the credit. Absent,
   // it is coverageYear — the one parameter served both the
   // guideline row and the table, and every existing caller
@@ -2562,8 +2562,10 @@ export type RothPlanInputs = {
   // dividend and interest yields, each a % of the year's
   // STARTING taxable balance (the balance the year opens with,
   // after any gift outflow). Each priced year the dividend
-  // yield × the balance is qualified-dividend income on the
-  // gains stack and the interest yield × the balance is
+  // yield × the balance is dividend income, SPLIT between the
+  // stacks by taxableDividendQualifiedPct below (the qualified
+  // share on the gains stack, the rest on the ordinary stack),
+  // and the interest yield × the balance is
   // interest income on the ordinary stack (see priceYear);
   // both are mandatory income for the year — they sit in the
   // fill base, so conversions, capped draws, and the gain
@@ -2577,10 +2579,33 @@ export type RothPlanInputs = {
   // single-pool drift ledger outright), clamped by the
   // ledger's standing 0 ≤ basis ≤ balance invariant when the
   // yields outrun the return (see the yields-exceed-return
-  // fixture). Absent / null / 0 = no yield modeled, and the
-  // plan prices bit-identically to before this build.
+  // fixture). Absent / null / 0 ON THE ENGINE INPUTS = no
+  // yield modeled. A blank yield FIELD on the saved plan no
+  // longer arrives here as null when the household's stored
+  // tax-return actuals imply a yield for it: planInputsFromSaved
+  // resolves a blank field to the implied estimate before the
+  // inputs are built (contract v136, audit MUST M-1), so a
+  // null reaching this engine means no estimate exists for
+  // that line (no stored actual) — never merely "not entered".
   taxableDividendYieldPct?: number | null;
   taxableInterestYieldPct?: number | null;
+  // QUALIFIED SHARE OF THE DIVIDEND YIELD (optional; contract
+  // v138, audit SHOULD S-1): the % of each year's dividend
+  // yield income priced as QUALIFIED dividends (gains stack);
+  // the remainder prices as non-qualified dividends
+  // (priceYear's ordinaryDividends, ordinary stack). Before
+  // this build the march priced 100% of the yield as
+  // qualified, understating federal tax for any household
+  // whose distributions are only partly qualified. Absent /
+  // null = 100% qualified (the prior behaviour, bit-identical),
+  // which is also what a plan with no stored tax-return
+  // actuals resolves to: planInputsFromSaved threads the
+  // share the household's stored return implies (line 3a ÷
+  // line 3b — qualifiedDividendSharePctFromTaxReturn in
+  // taxReturnCore.ts) as this field's value. There is no
+  // user-facing input for it in this build; the value is
+  // clamped to 0–100 where the march reads it.
+  taxableDividendQualifiedPct?: number | null;
   // SPEND-FROM-CASH (optional): the % of each year's spending
   // need that is paid from the taxable pool's CASH portion
   // first — before the year's draw order runs — plus the
@@ -2733,6 +2758,38 @@ export type RothPlanInputs = {
   // existing solo years); below 65 her pricing stops early
   // and her premium count starts early, symmetrically.
   acaSpouseEndAge?: number | null;
+  // ACA PREMIUM RECONCILIATION (fresh-round finding 1, contract
+  // v135): the annual NET ACA premium already inside
+  // annualSpending — the premium the household's spending
+  // figure was built with, net of the premium credit that
+  // figure implicitly assumes. annualSpending is thereby
+  // SEPARATED into non-healthcare spending (annualSpending −
+  // this amount) plus this embedded premium. In each
+  // ACA-active year with a benchmark, the march funds the
+  // year's ACTUAL net premium instead of the embedded one:
+  // the year's effective spending need is its (flex-adjusted)
+  // base need − embedded + (that year's benchmark − that
+  // year's priced credit), reconciled INSIDE the settlement —
+  // the credit is a settlement feedback, iterated to a fixed
+  // point alongside the gains / pre-tax feedback, because the
+  // credit depends on the year's MAGI and the MAGI depends on
+  // the draws the spending need drives (see settleYear). A
+  // year whose priced credit falls (an over-cliff year: credit
+  // $0) therefore funds MORE spending — the full benchmark
+  // premium — and a year whose credit rises funds less,
+  // instead of every year funding the embedded premium
+  // regardless of the credit the march itself prices. Years
+  // with nobody on the marketplace, no benchmark entered, or
+  // no spending need price exactly as before. Optional so
+  // every pre-existing constructor keeps its meaning: absent /
+  // null = no embedded premium is separated out, the march
+  // funds annualSpending verbatim in every year, bit-identical
+  // to before. The saved-plan path derives the amount from the
+  // plan's own first ACA year (see acaEmbeddedNetPremiumFor);
+  // it is a property of the spending figure, never of a
+  // strategy, so every candidate prices against the same
+  // embedded premium.
+  acaEmbeddedNetPremium?: number | null;
   inflationPct: number;
   stateRatePct: number;
   // State of residence (T3 build). Optional so every
@@ -2758,7 +2815,7 @@ export type RothPlanInputs = {
   capitalLossCarryInSt?: number;
   capitalLossCarryInLt?: number;
   // Washington-attributable portions of the entering
-  // carryforward (contract v101, round-14 fix F4): of each
+  // carryforward (build v101, round-14 fix F4): of each
   // character's banked loss above, the part directly
   // attributable to losses from sales or exchanges allocated
   // to Washington under RCW 82.87.100. Each is a PORTION of
@@ -3030,16 +3087,34 @@ export type RothYearDetail = {
   isSurvivorYear: boolean; // priced as the survivor alone (year > death year)
   otherOrdinary: number;
   extraPreTaxDraw: number;
+  // The two components of extraPreTaxDraw (display only, like
+  // everything in this detail; extraPreTaxDraw is their sum —
+  // the amount the priced AGI actually carries):
+  // · pretaxSpendingDraw — the pre-tax draw for SPENDING alone
+  //   (the settlement's extraDraw): money out of pre-tax BY
+  //   CHOICE for the year's spending. runRothCompare's
+  //   pretaxOutByChoiceCents is the conversion plus THIS
+  //   component only (build v127; audit S-10).
+  // · pretaxTaxDebit — the pre-tax debits that paid the tax
+  //   bill alone (the settlement feedback: the pre-tax legs
+  //   of the debit chain that pays the tax bill — the
+  //   overflow and reprice-delta debits). It is NOT money
+  //   out by choice; it belongs to runRothFunding's
+  //   pretaxDrawCents, which adds it to the spending draw.
+  pretaxSpendingDraw: number;
+  pretaxTaxDebit: number;
   ltcg: number;
   // Taxable yield income priced this year (TAXABLE YIELDS):
-  // the dividend yield × the year's starting taxable balance,
-  // priced on the gains stack, and the interest yield × the
+  // the dividend yield × the year's starting taxable balance
+  // (the TOTAL distribution — priced split between the stacks
+  // by the plan's qualified share, contract v138: the
+  // qualified part inside gainsInTaxableIncome and its
+  // 0 / 15 / 20 split, the non-qualified part inside
+  // ordinaryTaxableIncome), and the interest yield × the
   // same balance, priced on the ordinary stack. Display lines
   // like everything in this detail — the priced totals above
   // already include them (in agi / magi / acaMagi and in the
-  // tax stacks: the dividends inside gainsInTaxableIncome and
-  // its 0 / 15 / 20 split, the interest inside
-  // ordinaryTaxableIncome).
+  // tax stacks).
   dividendIncome: number;
   interestIncome: number;
   // Spend-from-cash (display only, like everything in this
@@ -3059,6 +3134,22 @@ export type RothYearDetail = {
   // that same effective need.
   spendingBase: number;
   flexCut: number;
+  // ACA premium reconciliation (display only, like everything
+  // in this detail): the net premium annualSpending embeds
+  // (the plan's acaEmbeddedNetPremium, $0 when the plan does
+  // not separate one out), the year's ACTUAL net premium at
+  // the settlement's priced credit (benchmark − the credit
+  // the settlement priced; $0 in a year the reconciliation
+  // does not engage), and the signed adjustment the year's
+  // funded spending carried versus its base need
+  // (acaPremiumNet − acaPremiumEmbedded: positive = the year
+  // funded MORE than annualSpending because its credit came
+  // in under the embedded assumption — the over-cliff case —
+  // negative = it funded less). funding.spending is the
+  // year's effective need including this adjustment.
+  acaPremiumEmbedded: number;
+  acaPremiumNet: number;
+  acaPremiumAdjustment: number;
   // Gain harvesting (display only, like everything in this
   // detail): the gain the year's harvest realized into the 0%
   // space after settlement ($0 unless the strategy harvests),
@@ -3157,7 +3248,7 @@ export type RothYearDetail = {
   lossCarryInLt: number;
   lossAbsorbed: number;
   // The Washington-attributable part of lossAbsorbed
-  // (contract v101, display only like the rest of this
+  // (build v101, display only like the rest of this
   // ledger block): the amount this year's Washington
   // excise base was reduced by — the gross gains on the
   // year's waGains line exceed this line's base reduction
@@ -3250,7 +3341,11 @@ export type RothYearDetail = {
    debit splits — never re-derived outside the engine). All
    figures are DOLLARS, like every figure on RothYear.
    NEEDS: spending (the year's spending need — annualSpending
-   from the retirement-age year on, $0 before it), federalTax
+   from the retirement-age year on, $0 before it; when the
+   plan separates an embedded ACA premium out of
+   annualSpending, the year's ACTUAL net premium at its
+   priced credit in place of the embedded one — see
+   acaPremiumAdjustment on the year's detail), federalTax
    (the year's final federal tax PLUS any pre-59½ withholding
    penalty — the penalty is paid to the IRS as part of the
    federal withholding and has no separate need column),
@@ -3642,6 +3737,80 @@ export function deriveSpendFromCashSleeveStartDollars(
   );
 }
 
+/* The embedded net premium a plan's annualSpending carries
+   (see the acaEmbeddedNetPremium field note): the net premium
+   of the plan's FIRST ACA-active year with a benchmark,
+   priced at that year's cliff (400% FPL) — the contribution
+   the household is expected to make toward the benchmark
+   plan at the top of the credit range (benchmark − the
+   credit priced at MAGI exactly at the cliff). The reference
+   is a property of the plan (its first marketplace year's
+   household configuration and benchmark), never of a
+   strategy: every candidate for the plan reconciles against
+   this same amount. Returns null when the march has no
+   ACA-active year with a benchmark (nobody is ever on the
+   marketplace in scope, or no benchmark is entered) — the
+   reconciliation then never engages and the plan prices
+   bit-identically to before. The ACA scope / household /
+   benchmark selection below mirrors the year loop's own
+   expressions term for term, so the reference year is the
+   first year the loop itself would price a credit for. */
+export function acaEmbeddedNetPremiumFor(
+  inputs: RothPlanInputs,
+): number | null {
+  const spouseAcaEndAge = inputs.acaSpouseEndAge ?? 65;
+  const survOn =
+    inputs.survivorEnabled === true && inputs.survivorDeathYear != null;
+  const survWho = inputs.survivorWho ?? "primary";
+  const survDeathYear = survOn ? (inputs.survivorDeathYear as number) : null;
+  const retirementYear = inputs.birthYearPrimary + inputs.retirementAge;
+  for (
+    let year = inputs.startYear;
+    year - inputs.birthYearPrimary <= inputs.endAgePrimary;
+    year++
+  ) {
+    const age = year - inputs.birthYearPrimary;
+    const spouseAge =
+      inputs.birthYearSpouse != null ? year - inputs.birthYearSpouse : null;
+    const isSurvivorYear =
+      survOn && survDeathYear != null && year > survDeathYear;
+    const inAcaScope = year >= retirementYear;
+    const primaryOnAca =
+      inAcaScope && age < 65 && !(isSurvivorYear && survWho === "primary");
+    const spouseOnAca =
+      inAcaScope &&
+      spouseAge != null &&
+      spouseAge < spouseAcaEndAge &&
+      !(isSurvivorYear && survWho === "spouse");
+    const acaActive = primaryOnAca || spouseOnAca;
+    if (!acaActive) continue;
+    const householdSize = isSurvivorYear
+      ? 1
+      : acaHouseholdSizeForYear(
+          inputs.acaHouseholdSize,
+          inputs.acaHouseholdSchedule,
+          year,
+        );
+    const benchmark =
+      primaryOnAca && spouseOnAca
+        ? householdSize >= 3 && inputs.acaBenchmarkFamily != null
+          ? inputs.acaBenchmarkFamily
+          : inputs.acaBenchmarkCouple
+        : inputs.acaBenchmarkSingle;
+    if (benchmark == null) continue;
+    const cliff = 4 * fplFor(householdSize, year - 1);
+    const credit = acaCreditFor({
+      magi: cliff,
+      householdSize,
+      coverageYear: year,
+      benchmarkAnnual: benchmark,
+      projected: true,
+    }).credit;
+    return r2(Math.max(0, benchmark - credit));
+  }
+  return null;
+}
+
 export function simulateRothPlan(
   inputs: RothPlanInputs,
   strategy: RothStrategy,
@@ -3730,6 +3899,16 @@ export function simulateRothPlan(
   // zero with no shortfall marker — the series path already
   // floored, so the two paths disagreed on the same event.
   // The floor is a no-op for every return above −100.
+  // ACA PREMIUM RECONCILIATION (build v135): the net
+  // premium annualSpending embeds, separated out once for the
+  // whole march (see the input field's note). Null = the plan
+  // separates no premium out and every year funds
+  // annualSpending verbatim, bit-identical to before.
+  const premiumEmbeddedDollars =
+    inputs.acaEmbeddedNetPremium != null &&
+    Number.isFinite(inputs.acaEmbeddedNetPremium)
+      ? Math.max(0, inputs.acaEmbeddedNetPremium)
+      : null;
   const growth = Math.max(0, 1 + inputs.expectedReturnPct / 100);
   const gainPct = Math.min(100, Math.max(0, 100 - inputs.taxableBasisPct)) / 100;
   // BASIS-DRIFT (entered basis % only): the taxable account
@@ -3858,7 +4037,7 @@ export function simulateRothPlan(
   // before this build.
   let lossCarrySt = Math.max(0, inputs.capitalLossCarryInSt ?? 0);
   let lossCarryLt = Math.max(0, inputs.capitalLossCarryInLt ?? 0);
-  // Washington-attributable sub-state (contract v101): the
+  // Washington-attributable sub-state (build v101): the
   // part of each character's banked loss attributable to
   // Washington-allocated sales, entering from the plan's
   // capitalLossCarryInStWa / capitalLossCarryInLtWa (each
@@ -3953,7 +4132,7 @@ export function simulateRothPlan(
     // netting, the §1211(b) allowance rides alongside it, and
     // the Washington excise base is the gross gains minus
     // only the Washington-attributable carryforward the
-    // gains absorbed (contract v101 — the ONE shared place
+    // gains absorbed (build v101 — the ONE shared place
     // the invariant in applyLossLedger's header is priced:
     // base = gross − Washington-attributable absorbed; with
     // no Washington attribution entered the absorbed part is
@@ -4154,6 +4333,25 @@ export function simulateRothPlan(
     const acaCliffDollars = acaActive
       ? 4 * fplFor(householdSize, year - 1)
       : null;
+    // ACA PREMIUM RECONCILIATION (build v135): this year
+    // reconciles when the plan separates an embedded premium
+    // AND the year prices a credit (ACA active with a
+    // benchmark). The settlement's initial assumed credit is
+    // the credit that would leave this year's net premium
+    // exactly at the embedded amount (benchmark − embedded,
+    // clamped to [0, benchmark]) — with that assumption the
+    // first settlement round funds the base need verbatim, and
+    // the year-level iteration (see settleYear) then moves the
+    // funded need to the credit the settlement actually
+    // prices.
+    const premiumReconcile =
+      premiumEmbeddedDollars != null && acaActive && benchmark != null;
+    const premiumInitialCredit = premiumReconcile
+      ? Math.min(
+          Math.max(0, (benchmark as number) - (premiumEmbeddedDollars as number)),
+          benchmark as number,
+        )
+      : 0;
 
     // 2. Conversion — the strategy's fill decision for the year.
     // In year 1 the amount already converted this calendar year
@@ -4415,7 +4613,12 @@ export function simulateRothPlan(
     // the settlement adds it to the basis ledger (see
     // settleYear), and the balance's growth stays the full
     // expected return — the yields are a component of that
-    // return, never growth on top of it.
+    // return, never growth on top of it. The `?? 0` below is
+    // reached only when no yield was entered AND no implied
+    // estimate was resolved at input assembly (contract v136,
+    // audit MUST M-1): planInputsFromSaved has already stood
+    // the stored actuals' implied yield in for a blank field,
+    // so a null here means no estimate exists for that line.
     const divYieldPct = Math.max(0, inputs.taxableDividendYieldPct ?? 0);
     const intYieldPct = Math.max(0, inputs.taxableInterestYieldPct ?? 0);
     const dividendIncome =
@@ -4423,6 +4626,27 @@ export function simulateRothPlan(
     const interestIncome =
       intYieldPct > 0 ? r2((taxable * intYieldPct) / 100) : 0;
     const yieldTotal = dividendIncome + interestIncome;
+    // QUALIFIED SPLIT (contract v138, audit SHOULD S-1): the
+    // year's dividend income is split by the plan's qualified
+    // share — the share (threaded from the household's stored
+    // return actuals at input assembly; absent / null = 100%)
+    // prices on the gains stack as qualified dividends, and
+    // the remainder prices on the ordinary stack as
+    // non-qualified dividends, so the total is counted once,
+    // exactly as the single-year pricer splits its entered
+    // pair. The split is fixed for the year beside the yields
+    // themselves, so the fill base, every settlement pricing,
+    // and the harvest predicate all price the same character.
+    const dividendQualifiedPct = Math.min(
+      100,
+      Math.max(0, inputs.taxableDividendQualifiedPct ?? 100),
+    );
+    const qualifiedDividendIncome = r2(
+      (dividendIncome * dividendQualifiedPct) / 100,
+    );
+    const nonQualifiedDividendIncome = r2(
+      dividendIncome - qualifiedDividendIncome,
+    );
     // Gift what-if counterfactual sale gain (baseline gift
     // comparison runs only): this year's injected long-term
     // gain, added to every pricing of the year alongside the
@@ -4493,7 +4717,8 @@ export function simulateRothPlan(
       // as every later pricing nets its own trial total.
       ...ledgerFields(injectedLtcg),
       interestIncome,
-      qualifiedDividends: dividendIncome,
+      qualifiedDividends: qualifiedDividendIncome,
+      ordinaryDividends: nonQualifiedDividendIncome,
       inflationPct: inputs.inflationPct,
       stateRatePct: inputs.stateRatePct,
       residenceState: inputs.residenceState ?? null,
@@ -4598,7 +4823,8 @@ export function simulateRothPlan(
         // The year's fixed yield income rides every pricing
         // (see the yield computation above the fill base).
         interestIncome,
-        qualifiedDividends: dividendIncome,
+        qualifiedDividends: qualifiedDividendIncome,
+        ordinaryDividends: nonQualifiedDividendIncome,
         inflationPct: inputs.inflationPct,
         stateRatePct: inputs.stateRatePct,
         residenceState: inputs.residenceState ?? null,
@@ -4662,6 +4888,14 @@ export function simulateRothPlan(
       pretaxDrawCapArg: number | undefined,
       fbGainsIn: number,
       fbPretaxIn: number,
+      // ACA premium reconciliation (build v135): the
+      // premium credit this round ASSUMES when it sizes the
+      // year's spending need (the year-level settleYear driver
+      // iterates it to a fixed point against the credit the
+      // round's own final pricing creates, exactly as it
+      // iterates the gains / pre-tax feedback inside
+      // settleYearOnce). Read only when premiumReconcile.
+      fbCreditIn: number,
     ) => {
       const conv = already + additionalArg;
       // BASIS-DRIFT pricing rate for this settlement's draws:
@@ -4677,7 +4911,30 @@ export function simulateRothPlan(
       let federalTax = priced.federalTax;
       let stateTax = priced.stateTax;
 
-      const spendNeed = spendNeedYear;
+      // ACA PREMIUM RECONCILIATION (build v135): the
+      // year's effective spending need — the (flex-adjusted)
+      // base need with the embedded premium swapped for the
+      // year's ACTUAL net premium at the assumed credit
+      // (benchmark − fbCreditIn). With the initial assumption
+      // (premiumInitialCredit) this is the base need verbatim;
+      // as settleYear iterates the assumption to the credit
+      // the year actually prices, an over-cliff year (credit
+      // $0) funds the full benchmark premium on top of the
+      // non-healthcare part, and a high-credit year funds
+      // correspondingly less. Floored at $0: a premium swap
+      // can never make a year's need negative. Off (no
+      // embedded premium separated, or no credit priced this
+      // year) the need is the base need verbatim.
+      const spendNeed = premiumReconcile
+        ? Math.max(
+            0,
+            r2(
+              spendNeedYear -
+                (premiumEmbeddedDollars as number) +
+                Math.max(0, (benchmark as number) - fbCreditIn),
+            ),
+          )
+        : spendNeedYear;
       /* Cash in counts tax-exempt interest: it is cash the
          household receives (municipal-bond interest), just
          not taxable — so it funds spending exactly like the
@@ -5167,11 +5424,34 @@ export function simulateRothPlan(
         }
       }
 
+      // ACA premium reconciliation (build v135): the
+      // credit THIS round's final pricing creates — priced
+      // from the round's final ACA MAGI through the same
+      // §36B step the year assembly reports (projected mode,
+      // this year's benchmark and household). The year-level
+      // driver compares it against the round's assumed credit
+      // (fbCreditIn) and re-settles until they agree. $0 in a
+      // year the reconciliation does not engage.
+      const createdFbCredit =
+        premiumReconcile && benchmark != null
+          ? acaCreditFor({
+              magi: priced.acaMagi,
+              householdSize,
+              coverageYear: year,
+              benchmarkAnnual: benchmark,
+              projected: true,
+            }).credit
+          : 0;
       return {
         priced,
         federalTax,
         stateTax,
         penalty,
+        // ACA premium reconciliation (build v135): the
+        // credit this round's spending need assumed and the
+        // credit its final pricing created (see above).
+        feedbackCredit: fbCreditIn,
+        createdFbCredit: r2(createdFbCredit),
         // Total priced gains: the priced channels' gains plus
         // the feedback gains this round's pricing included —
         // every gain the year's priced figures recognize.
@@ -5263,7 +5543,15 @@ export function simulateRothPlan(
     // Observability only: the kept round is chosen exactly as
     // before, so no priced figure moves.
     const SETTLEMENT_MAX_ROUNDS = 100;
-    const settleYear = (additionalArg: number, pretaxDrawCapArg?: number) => {
+    const settleYearOnce = (
+      additionalArg: number,
+      pretaxDrawCapArg: number | undefined,
+      // ACA premium reconciliation (build v135): the
+      // premium credit this settlement assumes throughout (see
+      // settleRound's fbCreditIn). Constant across the rounds
+      // below — the year-level settleYear driver iterates it.
+      fbCreditIn: number,
+    ) => {
       let fbGains = 0;
       let fbPretax = 0;
       let best: ReturnType<typeof settleRound> | null = null;
@@ -5276,7 +5564,13 @@ export function simulateRothPlan(
         const key = `${r2(fbGains)}|${r2(fbPretax)}`;
         if (seenAssumed.has(key)) break;
         seenAssumed.add(key);
-        const s = settleRound(additionalArg, pretaxDrawCapArg, fbGains, fbPretax);
+        const s = settleRound(
+          additionalArg,
+          pretaxDrawCapArg,
+          fbGains,
+          fbPretax,
+          fbCreditIn,
+        );
         const mismatchGains = Math.abs(s.createdFbGains - fbGains);
         const mismatchPretax = Math.abs(s.createdFbPretax - fbPretax);
         const mismatch = mismatchGains + mismatchPretax;
@@ -5300,7 +5594,8 @@ export function simulateRothPlan(
       }
       // The loop always runs at least one round, so `best` is
       // always set; the fallback only satisfies the type.
-      const kept = best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0);
+      const kept =
+        best ?? settleRound(additionalArg, pretaxDrawCapArg, 0, 0, fbCreditIn);
       return {
         ...kept,
         settlementConverged:
@@ -5315,6 +5610,63 @@ export function simulateRothPlan(
                 pretax: Math.round(Math.abs(kept.createdFbPretax) * 100),
               },
       };
+    };
+
+    // ACA PREMIUM RECONCILIATION driver (build v135): the
+    // settlement every caller below uses. With the
+    // reconciliation off this is settleYearOnce exactly (the
+    // assumed credit is never read). With it on, the driver's
+    // assumed credit starts at premiumInitialCredit — the
+    // credit that leaves the year's net premium at the
+    // embedded amount, so the first settlement funds the base
+    // need verbatim — and re-settles with each settlement's
+    // own created credit as the next assumption until the
+    // assumed credit IS the priced credit (the fixed point
+    // where the funded spending, the draws, the MAGI, and the
+    // credit all describe the same year). Bounded at 8
+    // settlements and cycle-safe (a repeated assumption stops
+    // the iteration — the credit is a step function at the
+    // cliff, so two states can in principle alternate); when
+    // no settlement is an exact credit fixed point, the one
+    // whose created credit came closest to its assumed credit
+    // is kept (ties keep the earlier, less-adjusted
+    // settlement) and the year reports settlementConverged
+    // false, exactly as a non-converged debit-feedback
+    // settlement does. Every re-settlement the year performs
+    // (the ceiling convergence, the bisections) calls this
+    // driver, so each candidate it keeps is premium-consistent
+    // in the same way.
+    const settleYear = (additionalArg: number, pretaxDrawCapArg?: number) => {
+      if (!premiumReconcile) {
+        return settleYearOnce(additionalArg, pretaxDrawCapArg, 0);
+      }
+      let assumed = premiumInitialCredit;
+      let best: ReturnType<typeof settleYearOnce> | null = null;
+      let bestCreditDiff = Infinity;
+      const seenCredits = new Set<number>();
+      for (let pass = 0; pass < 8; pass++) {
+        if (seenCredits.has(assumed)) break;
+        seenCredits.add(assumed);
+        const s = settleYearOnce(additionalArg, pretaxDrawCapArg, assumed);
+        const diff = Math.abs(s.createdFbCredit - assumed);
+        if (s.createdFbCredit === r2(assumed)) {
+          // Exact credit fixed point: the settlement funded
+          // the premium its own pricing implies.
+          return s;
+        }
+        if (diff < bestCreditDiff) {
+          bestCreditDiff = diff;
+          best = s;
+        }
+        assumed = s.createdFbCredit;
+      }
+      // No exact fixed point (a cliff-edge alternation): keep
+      // the closest settlement and report it unconverged. The
+      // loop always runs at least one pass, so `best` is set;
+      // the fallback only satisfies the type.
+      const kept =
+        best ?? settleYearOnce(additionalArg, pretaxDrawCapArg, premiumInitialCredit);
+      return { ...kept, settlementConverged: false };
     };
 
     // Whether a FINAL priced year respects every switched-on
@@ -5665,40 +6017,113 @@ export function simulateRothPlan(
         }
       }
     }
-    // SPEND-FROM-CASH × CLIFF COMPOSITION: in a cliff-capped
-    // year the cash-paid share shrinks the pre-tax spending
-    // draw below the cliff room, so the conversion is the only
-    // filler left — but the convergence loop above only ever
-    // SHRINKS the conversion (its re-solve prices the breaching
-    // settlement's gains, which overstate the gains at the
-    // final, smaller conversion), so a cash year could settle
-    // materially UNDER the cliff and strand conversion room
-    // the strategy means to use. With cash spending active,
-    // grow the conversion back: a settlement's ACA MAGI is
-    // non-decreasing in the conversion, so the conversions
-    // whose settlements respect every switched-on ceiling form
-    // a prefix and a binary search over integer cents finds
-    // the largest of them — landing the capped year on the
-    // cliff to the cent, credit intact, exactly the way the
-    // draw-cap search above lands a draw-filled year. Gated on
-    // spend-from-cash being active: with the field blank this
-    // block never executes and every existing year settles
-    // bit-identically to before.
+    // CLIFF-CAP GROW-BACK (re-audit round 3, MUST-1;
+    // ungated by SHOULD-1): in a cliff-capped year the
+    // conversion is the filler the strategy means to land
+    // on the cliff — but the convergence loop and the R7-4
+    // clamp above only ever SHRINK the conversion (their
+    // re-solve prices the breaching settlement's gains as if
+    // fixed, which overstates the gains at the final,
+    // smaller conversion), so a year could settle materially
+    // UNDER the cliff and strand conversion room. Three
+    // settlement shapes strand it: a spend-from-cash year,
+    // whose cash-paid share shrinks the pre-tax spending
+    // draw below the cliff room (the shape this block
+    // originally served); a premium-reconciliation year
+    // (MUST-1), where the breaching settlement's credit
+    // collapses to $0, its funded need jumps by the full
+    // benchmark premium, and the taxable sales funding that
+    // need realize gains large enough that the re-solve
+    // returns ~$0 and the loop stops there, even though a
+    // smaller conversion, settled on its own, keeps the
+    // credit and lands on the cliff; and — the SHOULD-1
+    // residual — a plain cliff-capped year with neither
+    // shape, whose fill does not collapse but still stops
+    // short: its re-solve prices the breaching settlement's
+    // gains feedback as if fixed at every step down, so the
+    // shrink converges to a landing under the cliff (on the
+    // sample household's reconciliation-off shape, 2030
+    // settled $11,180 under its cliff) even though the
+    // conversion room and pre-tax balance to land on the
+    // cliff remain. The grow-back is therefore NOT gated on
+    // the settlement shape: in ANY cliff-capped year whose
+    // settled conversion respects every switched-on ceiling
+    // with ACA MAGI still below the year's effective cliff
+    // target, grow the conversion back (the R7-5 IRMAA
+    // grow-back above is the same shape, gated on its own
+    // cap): a settlement's ACA MAGI is non-decreasing in the
+    // conversion, so the conversions whose settlements
+    // respect every switched-on ceiling form a prefix and a
+    // binary search over integer cents finds the largest of
+    // them — landing the capped year on the cliff to the
+    // cent, credit intact, exactly the way the draw-cap
+    // search above lands a draw-filled year.
     if (
-      spendCashPct > 0 &&
       yearCeilings?.acaCliffCap === true &&
       acaCliffDollars != null &&
       inWindow &&
       !bunchZero &&
       !eraZeroFill &&
       !forceZeroConversion &&
+      respectsCeilings(settled.priced) &&
       settled.priced.acaMagi < (acaTargetDollars as number) - 0.005
     ) {
       const maxAdditional = Math.max(
         0,
         Math.min(pretaxAfterRmd, preserveRoom),
       );
-      if (additional < maxAdditional) {
+      // Cheap bound check (the R7-5 shape): when another
+      // switched-on ceiling is already met to the cent, no
+      // conversion growth can respect it, so the search would
+      // only confirm the current settlement — skip it (this
+      // keeps the optimizer's many cliff-capped candidate
+      // years, most of them bracket-bound, at their old cost).
+      const atOtherCap = ((): boolean => {
+        const lawC = lawForYear(year);
+        let taxableCap = Infinity;
+        if (yearCeilings.bracketTopPct != null) {
+          const idx = lawC.rates.indexOf(yearCeilings.bracketTopPct);
+          if (idx >= 0) {
+            taxableCap = Math.min(
+              taxableCap,
+              lawC.brackets[effFilingStatus][idx] ?? Infinity,
+            );
+          }
+        }
+        if (yearCeilings.ltcgZeroCap) {
+          taxableCap = Math.min(taxableCap, lawC.ltcgZeroTop[effFilingStatus]);
+        }
+        if (
+          Number.isFinite(taxableCap) &&
+          settled.priced.taxableIncome >= taxableCap - 0.005
+        ) {
+          return true;
+        }
+        let magiCap = Infinity;
+        if (yearCeilings.irmaaTierCap != null) {
+          magiCap = Math.min(
+            magiCap,
+            irmaaTierUpTo(
+              yearCeilings.irmaaTierCap,
+              effFilingStatus,
+              lawC,
+              year,
+              inputs.inflationPct,
+            ),
+          );
+        }
+        if (yearCeilings.magiCap != null) {
+          magiCap = Math.min(magiCap, yearCeilings.magiCap);
+        }
+        if (
+          Number.isFinite(magiCap) &&
+          settled.priced.magi >= magiCap - 0.005
+        ) {
+          return true;
+        }
+        return false;
+      })();
+      if (additional < maxAdditional && !atOtherCap) {
         let lo = 0;
         let hi = Math.round((maxAdditional - additional) * 100);
         let bestAdd = additional;
@@ -6068,7 +6493,7 @@ export function simulateRothPlan(
       lossCarrySt = ledFinal.carryOut.st;
       lossCarryLt = ledFinal.carryOut.lt;
       // The Washington sub-state advances with the same
-      // reconciliation (contract v101): next year's base
+      // reconciliation (build v101): next year's base
       // subtracts only what remains of the attribution.
       lossCarryWaSt = ledFinal.waCarryOut.st;
       lossCarryWaLt = ledFinal.waCarryOut.lt;
@@ -6076,9 +6501,15 @@ export function simulateRothPlan(
 
     // ACA credit kept for the year (priced on final ACA MAGI —
     // §36B household income, which adds back the non-taxable
-    // portion of Social Security; the premium itself is not part
-    // of the spending input, so the credit is tracked, not added
-    // to balances).
+    // portion of Social Security). The credit is tracked, not
+    // added to balances: the household never receives it as
+    // cash — it pays the NET premium, and when the plan
+    // separates an embedded premium out of annualSpending the
+    // settlement has already funded that net premium at the
+    // settlement's own priced credit (see the premium
+    // reconciliation in settleRound / settleYear); this final
+    // figure, priced after any gain harvest, is the year's
+    // reported credit and the one the plan score credits.
     let acaCreditKept = 0;
     let acaPriced = false;
     let acaResult: AcaCreditResult | null = null;
@@ -6563,8 +6994,15 @@ export function simulateRothPlan(
       // draw plus the pre-tax debits that paid the tax bill
       // (settlement feedback) — the amount the priced AGI
       // actually carries, so the detail's income pieces sum
-      // to AGI.
+      // to AGI. The two components ride beside it (audit
+      // S-10): pretaxSpendingDraw is the spending draw alone
+      // (what runRothCompare's pretaxOutByChoiceCents counts,
+      // beside the conversion) and pretaxTaxDebit is the
+      // tax-bill debit alone (what runRothFunding's
+      // pretaxDrawCents adds to the spending draw).
       extraPreTaxDraw: r2(extraDraw + feedbackPretax),
+      pretaxSpendingDraw: r2(extraDraw),
+      pretaxTaxDebit: r2(feedbackPretax),
       // Total gains priced this year: the draws' realized gains
       // plus any injected counterfactual sale gain plus the
       // harvested gain. With the two yield lines below, the
@@ -6576,6 +7014,29 @@ export function simulateRothPlan(
       cashSleeveEnd: r2(spendCashPct > 0 ? sleeveDollars : 0),
       spendingBase: r2(spendNeedBase),
       flexCut: r2(spendNeedBase - spendNeedYear),
+      // ACA premium reconciliation (see the RothYearDetail
+      // note): the embedded premium the plan separates out,
+      // the year's actual net premium at the KEPT settlement's
+      // assumed credit (at the fixed point, the credit the
+      // year priced), and their signed difference — the
+      // adjustment the year's funded spending carried.
+      acaPremiumEmbedded: premiumReconcile
+        ? r2(premiumEmbeddedDollars as number)
+        : 0,
+      acaPremiumNet: premiumReconcile
+        ? r2(
+            Math.max(
+              0,
+              (benchmark as number) - settled.feedbackCredit,
+            ),
+          )
+        : 0,
+      acaPremiumAdjustment: premiumReconcile
+        ? r2(
+            Math.max(0, (benchmark as number) - settled.feedbackCredit) -
+              (premiumEmbeddedDollars as number),
+          )
+        : 0,
       gainsHarvested: r2(gainsHarvested),
       taxableBasisDollars: r2(taxableBasisDollars),
       drawGains: r2(realizedGains),

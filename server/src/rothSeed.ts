@@ -73,8 +73,11 @@ export type RothSeedInputs = {
   hsaCents: null;
   taxableBasisPct: null;
   taxableTiers: null;
-  // Taxable yields seed blank (null = no yield modeled), like
-  // every optional pricing input the seed does not presume.
+  // Taxable yields seed blank (null = no yield entered — and
+  // the seed's tax-return block is blank too, so no implied
+  // estimate exists and a seeded plan prices $0 of yield),
+  // like every optional pricing input the seed does not
+  // presume.
   taxableDividendYieldPct: null;
   taxableInterestYieldPct: null;
   // Spend-from-cash seeds blank (null = off), like the yields.
@@ -136,7 +139,7 @@ export type RothSeedInputs = {
   capitalLossCarryInStCents: null;
   capitalLossCarryInLtCents: null;
   // Washington-attributable portions of the carryforward
-  // (contract v101): null in the seed = blank = no
+  // (build v101): null in the seed = blank = no
   // Washington attribution presumed.
   capitalLossCarryInStWaCents: null;
   capitalLossCarryInLtWaCents: null;

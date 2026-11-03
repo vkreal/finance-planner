@@ -1,4 +1,4 @@
-// First-run seed guard (contract v60, F7) — the ONE emptiness
+// First-run seed guard (build v60, F7) — the ONE emptiness
 // predicate every seed path consults.
 //
 // Before v60 the two seed actions each checked a different,

@@ -28,12 +28,14 @@ import { z } from "@hatch/space-sdk";
    tab or device landed first), so an older in-flight save can
    never silently clobber newer field values. The refused
    writer re-merges against the current blob the refusal
-   carries and retries at the fresh revision. A write with no
-   baseRevision keeps the legacy unchecked behaviour against
-   an EXISTING row; a first write (no stored row) is always
-   insert-only, so two racing first writes cannot both land —
-   the loser is refused with the winner's blob. Either way, an
-   accepted write stores revision + 1. */
+   carries and retries at the fresh revision. baseRevision
+   is REQUIRED on every write (audit N-2): a write with no
+   baseRevision is refused with the current blob and its
+   revision, exactly like a stale base — there is no
+   unchecked write path. A first write (no stored row) is
+   always insert-only at base 0, so two racing first writes
+   cannot both land — the loser is refused with the winner's
+   blob. Either way, an accepted write stores revision + 1. */
 export const ROTH_UI_STATE_KEY = "roth_ui_state_v1";
 export const ROTH_SECTION_IDS = ["household", "money", "income", "aca", "advanced"] as const;
 export type RothSectionId = (typeof ROTH_SECTION_IDS)[number];
@@ -192,6 +194,35 @@ export const playgroundProjTemplateState = z.object({
 export type PlaygroundProjTemplateState = z.infer<
   typeof playgroundProjTemplateState
 >;
+/* Income-dial provenance (build v150): where one of the
+   Playground's three income dials (interest, ordinary
+   dividends, qualified dividends) got its current figure —
+   "return": the stored tax return's figure (year = the
+   return's calendar year, or null when the record never
+   named one); "plan": the saved plan's priced figure for
+   that year (the yield-based estimate); "typed": the user's
+   own value (typed in the dial, or loaded by a paste). The
+   client uses it to word each dial's source hint and to
+   re-derive a return- or plan-sourced dial when the Tax
+   year changes; a typed figure is never re-derived. The
+   recorded kind is the ONLY provenance (re-audit
+   NICE-TO-HAVE N-1): it is never inferred from a dial's
+   value. It is display/bookkeeping only — it never enters
+   pricing. */
+export const pgIncomeSourceState = z
+  .union([
+    z.object({
+      kind: z.literal("return"),
+      year: z.number().int().min(1900).max(2200).nullable(),
+    }),
+    z.object({
+      kind: z.literal("plan"),
+      year: z.number().int().min(1900).max(2200),
+    }),
+    z.object({ kind: z.literal("typed") }),
+  ])
+  .nullable();
+export type PgIncomeSourceState = z.infer<typeof pgIncomeSourceState>;
 export const playgroundFormState = z.object({
   year: z.string().max(12),
   filing: z.enum(["mfj", "single", "hoh"]),
@@ -232,6 +263,21 @@ export const playgroundFormState = z.object({
       value: z.number(),
     })
     .nullable(),
+  // Income-dial provenance (build v150, see
+  // pgIncomeSourceState above): one source record per income
+  // dial. A blob written before this field existed parses all
+  // three null (no recorded source). Provenance is EXPLICIT
+  // ONLY (re-audit NICE-TO-HAVE N-1): the stored kind is the
+  // dial's source, never a value the client infers — a dial
+  // with no recorded source is not return-sourced however
+  // its value compares to the stored return figure, and a
+  // recorded "typed" stays "typed" even when its value
+  // coincidentally equals that figure.
+  incomeSources: z.object({
+    interest: pgIncomeSourceState,
+    ordinaryDividends: pgIncomeSourceState,
+    qualifiedDividends: pgIncomeSourceState,
+  }),
   stateRate: z.string().max(12),
   // State of residence (T3 build): which rules layer prices
   // the Playground year's state tax. A blob written before
@@ -314,7 +360,7 @@ export const playgroundFormState = z.object({
     conversion: z.boolean(),
     stock: z.boolean(),
     aca: z.boolean(),
-    // Contract v145: the Playground's Spending dial section.
+    // Build v145: the Playground's Spending dial section.
     spending: z.boolean(),
   }),
   // The two super-group folds ("Single-year dials" /
@@ -357,6 +403,11 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     acaBenchmark: "",
     acaBuffer: "5000",
     benchmarkSource: null,
+    incomeSources: {
+      interest: null,
+      ordinaryDividends: null,
+      qualifiedDividends: null,
+    },
     stateRate: "0",
     residenceState: "other",
     itemizedMortgageInterest: "",
@@ -403,6 +454,32 @@ function parsePgBenchmarkSource(
     Number.isFinite(b.value)
   ) {
     return { kind: b.kind as (typeof kinds)[number], value: b.value };
+  }
+  return null;
+}
+/* Lenient read of one income dial's provenance record
+   (build v150): a well-formed record survives; anything
+   else reads as null (no recorded source), exactly like a
+   blob written before the field existed. A "return" record
+   keeps a null year (the record never named the return's
+   year); a "plan" record without a usable year is not a
+   record at all. */
+function parsePgIncomeSource(v: unknown): PgIncomeSourceState {
+  if (v == null || typeof v !== "object" || Array.isArray(v)) return null;
+  const s = v as Record<string, unknown>;
+  const yearOf = (x: unknown): number | null =>
+    typeof x === "number" && Number.isInteger(x) && x >= 1900 && x <= 2200
+      ? x
+      : null;
+  if (s.kind === "typed") return { kind: "typed" };
+  if (s.kind === "plan") {
+    const y = yearOf(s.year);
+    return y != null ? { kind: "plan", year: y } : null;
+  }
+  if (s.kind === "return") {
+    if (s.year == null) return { kind: "return", year: null };
+    const y = yearOf(s.year);
+    return y != null ? { kind: "return", year: y } : null;
   }
   return null;
 }
@@ -797,6 +874,19 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         acaBenchmark: str(g.acaBenchmark, ""),
         acaBuffer: str(g.acaBuffer, "5000"),
         benchmarkSource: parsePgBenchmarkSource(g.benchmarkSource),
+        incomeSources: ((): PlaygroundFormState["incomeSources"] => {
+          const raw =
+            g.incomeSources != null &&
+            typeof g.incomeSources === "object" &&
+            !Array.isArray(g.incomeSources)
+              ? (g.incomeSources as Record<string, unknown>)
+              : {};
+          return {
+            interest: parsePgIncomeSource(raw.interest),
+            ordinaryDividends: parsePgIncomeSource(raw.ordinaryDividends),
+            qualifiedDividends: parsePgIncomeSource(raw.qualifiedDividends),
+          };
+        })(),
         stateRate: str(g.stateRate, "0"),
         residenceState: g.residenceState === "WA" ? "WA" : "other",
         itemizedMortgageInterest: str(g.itemizedMortgageInterest, ""),
@@ -924,11 +1014,15 @@ export const setRothUiStateResponse = z.union([
 export type SetRothUiStateResponse = z.infer<typeof setRothUiStateResponse>;
 
 /* The CAS decision for one write, given the stored revision
-   and the writer's base revision. A writer that supplies no
-   base keeps the legacy unchecked path and is always allowed.
-   A supplied base must match the stored revision exactly;
-   anything else means a newer write landed first and this
-   write must not clobber it. */
+   and the writer's base revision. baseRevision is REQUIRED
+   (audit N-2, mirroring saveRothInputs' strict decision
+   decideRothBlobWriteChecked): a missing base is refused,
+   exactly like a stale base — there is no unchecked write
+   path into this blob. A supplied base must match the stored
+   revision exactly; anything else means a newer write landed
+   first and this write must not clobber it. First-ever
+   creation still works: base 0 against an absent row (which
+   reads as revision 0) is allowed and stores revision 1. */
 export type RothUiCasDecision =
   | { allowed: true; nextRevision: number }
   | { allowed: false; storedRevision: number };
@@ -937,10 +1031,27 @@ export function decideRothUiWrite(
   storedRevision: number,
   baseRevision: number | undefined,
 ): RothUiCasDecision {
-  if (baseRevision !== undefined && baseRevision !== storedRevision) {
+  if (baseRevision === undefined) {
+    return { allowed: false, storedRevision };
+  }
+  if (baseRevision !== storedRevision) {
     return { allowed: false, storedRevision };
   }
   return { allowed: true, nextRevision: storedRevision + 1 };
+}
+
+/* The strict CAS decision — setRothUiState's decision, named
+   for parity with saveRothInputs' decideRothBlobWriteChecked.
+   It is exactly decideRothUiWrite above, which is itself
+   strict (this blob has no other writer that needs a lenient
+   form): baseRevision is required on every call, and a
+   missing or stale base is refused with the stored revision
+   so the caller can fetch the current blob and retry. */
+export function decideRothUiWriteChecked(
+  storedRevision: number,
+  baseRevision: number | undefined,
+): RothUiCasDecision {
+  return decideRothUiWrite(storedRevision, baseRevision);
 }
 
 /* Write-time normalization for labBaselineName: the request
@@ -996,7 +1107,7 @@ export function applyRothUiWrite(
    the first. The setRothUiState handler therefore commits a
    CAS write against an existing row with a single UPDATE
    whose WHERE clause requires the row to still hold the exact
-   raw value the writer read (contract v90: the blob is stored
+   raw value the writer read (build v90: the blob is stored
    encrypted, so no revision can be read out of it in SQL —
    the guard is ciphertext byte equality, the Roth plan
    record's commitSettingsValueGuarded pattern, sound here

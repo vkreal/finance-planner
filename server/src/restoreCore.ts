@@ -17,7 +17,7 @@
 //      value invariants are enforced (security round-2, finding
 //      4: nonnegative amounts wherever a writer requires them,
 //      typed settings parsed as their writers parse them), and
-//      — since contract v60 (packaged-parity F4) — every
+//      — since build v60 (packaged-parity F4) — every
 //      backed-up field's own writer rule: string lengths,
 //      ranges, and 0/1 flag representations via the shared
 //      fieldValidators fragments the writers themselves use,
@@ -100,7 +100,7 @@ export const ENCRYPTED_AT_REST_SETTING_KEYS: readonly string[] = [
   NW_IMPORT_SETTINGS_KEY,
   // The sticky entry defaults whose values are stored encrypted
   // (the paid-by label texts; their sibling paid-type key stores
-  // a plaintext enum and is NOT listed). Added at contract v60:
+  // a plaintext enum and is NOT listed). Added at build v60:
   // the packaged-parity F5 acceptance (install A → fresh
   // install B) caught these two riding a restore as the SOURCE
   // install's ciphertext, after which every dashboard load in
@@ -108,7 +108,7 @@ export const ENCRYPTED_AT_REST_SETTING_KEYS: readonly string[] = [
   // class as the round-2 finding-3 key above.
   "entry_default_monthly_paid_from_v1",
   "entry_default_yearly_paid_name_v1",
-  // The two financial JSON form-state blobs (contract v90,
+  // The two financial JSON form-state blobs (build v90,
   // stored-data findings F2/F3): the December projection
   // console's saved inputs and the Roth/Playground UI-state
   // blob. Both writers encrypt them at rest with encryptStr;
@@ -138,7 +138,7 @@ export const backupYearlyExpense = z.object({
   name: billNameField,
   frequency: z.string(),
   expectedCents: z.number().int(),
-  // Contract v60 (F4): the writers' due-month rule (1–12 or null)
+  // Build v60 (F4): the writers' due-month rule (1–12 or null)
   // is the shared dueMonthField — before v60 this was a bare int
   // and a payload dueMonth of 13 restored a value no writer
   // would ever store.
@@ -183,7 +183,7 @@ export const backupMonthlySummary = z.object({
 });
 export const backupMonthlyBill = z.object({
   id: z.number().int(),
-  // Contract v60 (F4): the writers' name rule (1–120 chars) is
+  // Build v60 (F4): the writers' name rule (1–120 chars) is
   // the shared billNameField — before v60 this was a bare string
   // and an empty name restored a bill no writer would create.
   name: billNameField,
@@ -377,7 +377,7 @@ export function isBackupMonth(s: string): boolean {
    compatibility rule the settlement settled on.
    `verifyBucketCiphertext` is the caller's verdict on a Net Worth
    account bucket value that carries the reserved enc:v1: prefix
-   (contract v94, stored-data finding F6): true when the value
+   (build v94, stored-data finding F6): true when the value
    genuinely decrypts under the current key in the bucket field's
    own context — the context the export path decrypts it under —
    false otherwise. The handler computes it with a real decrypt
@@ -462,7 +462,7 @@ export function preflightRestoreBackup(
         `Backup rejected: Net Worth account ${a.id} ("${a.name}") has an unrecognised propertyKind "${a.propertyKind}" (expected one of: ${NW_PROPERTY_KINDS.join(", ")}).`,
       );
     }
-    // The legacy bucket column (contract v94, finding F6): the
+    // The legacy bucket column (build v94, finding F6): the
     // restore stores it verbatim and the export path decrypts
     // it whenever it carries the reserved prefix, so a prefixed
     // bucket that cannot be decrypted would land here and break
@@ -681,7 +681,7 @@ export function preflightRestoreBackup(
     }
   }
 
-  // Writer invariants, contract v60 (F4 sweep): the field-level
+  // Writer invariants, build v60 (F4 sweep): the field-level
   // rules the payload schema cannot express. Per-field lengths,
   // ranges, and flag representations are enforced by the schema
   // itself through the shared fieldValidators fragments (the same

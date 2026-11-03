@@ -1,4 +1,4 @@
-/* ---------------- Compare-and-swap core (contract v65) ----------------
+/* ---------------- Compare-and-swap core (build v65) ----------------
    The pure decisions behind the CAS sweep (write-idempotency audit
    group B, findings F11–F19, F22, F26): every full-record editor
    loads before it edits, so the loaded values travel with the save
@@ -25,7 +25,7 @@
    (F11/F12): a supplied base must equal the stored revision
    exactly; a missing base is the legacy unchecked path (named in
    DATA-PLAN), exactly the lenient shape decideRothBlobWrite gives
-   the blob records. Contract v93 adds the restore epoch to that
+   the blob records. Build v93 adds the restore epoch to that
    decision (F5): a supplied epoch that differs from the stored
    epoch is refused first, whatever the revision numbers say. */
 
@@ -78,7 +78,7 @@ export function casFieldMismatch(
    storedRevision + 1. A missing base is allowed (the legacy
    unchecked path, named in DATA-PLAN) and still bumps.
 
-   Contract v93 (stored-data finding F5) adds the restore epoch:
+   Build v93 (stored-data finding F5) adds the restore epoch:
    `storedEpoch` is the restore generation the dataset is on and
    `baseEpoch` the generation the editor observed when it loaded.
    The epoch check runs FIRST and is independent of the revision:
@@ -97,7 +97,7 @@ export type CasRevisionDecision =
       epochConflict: boolean;
     };
 
-/* The settings key carrying the restore epoch (contract v93):
+/* The settings key carrying the restore epoch (build v93):
    a plain integer string — a generation counter, structural
    metadata like the snapshot revision column, not a financial
    value, so it is stored unencrypted like the revision. Absent
@@ -135,7 +135,7 @@ export function decideCasRevision(
 }
 
 /* The restore-epoch decision for mutations that carry no revision
-   counter (contract v121, round-18 F3/F4): the same epoch rule
+   counter (build v121, round-18 F3/F4): the same epoch rule
    decideCasRevision applies to the snapshot editors, factored out
    so the value-CAS spending editors, the deletes, and the settings
    writers can share it. `storedEpoch` is the restore generation
@@ -170,7 +170,7 @@ export function casConflictReason(what: string): string {
   return `A newer copy was saved elsewhere — this ${what} changed in another tab or on another device since you opened it, so your edit wasn't saved over it. The latest saved version is shown now; make your change again from there.`;
 }
 
-/* The restore-epoch conflict reason (contract v93, F5): the
+/* The restore-epoch conflict reason (build v93, F5): the
    dataset was replaced by a backup restore after the editor
    loaded, so the edit must not save over the restored version.
    It names the restore cause, so the refusal is distinguishable

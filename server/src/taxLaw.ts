@@ -13,12 +13,21 @@
 // of the app): the tables are keyed by calendar year and the
 // engine prices each plan year under ITS OWN calendar year's
 // table (T1 build). A year with no published row of its own
-// prices under the NEWEST published row, carried forward — so
-// in today's dollars the carried-forward table's inflation-
-// indexed figures (brackets, standard deduction, LTCG
-// thresholds, IRMAA tiers except the frozen top tier) stay
-// constant in real terms, exactly as the Retirement engines
-// treat returns, until a newer row is added. A scheduled law
+// prices under the nearest published row in its own direction:
+// a year LATER than the newest row prices under that newest
+// row, carried forward — so in today's dollars the carried-
+// forward table's inflation-indexed figures (brackets,
+// standard deduction, LTCG thresholds, IRMAA tiers except the
+// frozen top tier) stay constant in real terms, exactly as
+// the Retirement engines treat returns, until a newer row is
+// added — and a year EARLIER than the oldest row prices under
+// that OLDEST row (the earliest law the table holds), never
+// under a later year's law: a past year is taxed with the
+// earliest available brackets, standard deduction, and
+// thresholds, and the row actually used is named wherever a
+// price is surfaced (e.g. runPlaygroundYear's lawYearUsed), so
+// the substitution is on the record, never silent (re-audit
+// round 3 SHOULD-10). A scheduled law
 // change is expressed as dated table data (a new row, or a
 // dated window like the OBBBA senior deduction's 2025–2028
 // span), never as engine code. NON-indexed figures stated in
@@ -169,7 +178,7 @@ export type YearLaw = {
   // threshold (RCW 82.87.150's adjustment list does not reach
   // it), so it is a fixed $1,000,000 in every row — and, as a
   // statute-fixed amount, the pricer deflates it in
-  // today's-dollars projections (contract v61, F1); the
+  // today's-dollars projections (build v61, F1); the
   // DOR-indexed standard deduction and charitable amounts
   // beside it price at their row values, undeflated.
   waAdditionalRatePct: number;
@@ -520,9 +529,17 @@ export const TAX_LAW_2026: YearLaw = {
 };
 
 export const TAX_LAW_YEARS: YearLaw[] = [TAX_LAW_2025, TAX_LAW_2026];
+// The oldest published row in the table, derived from the table
+// itself so it can never drift from it: the row lawForYear
+// resolves a year EARLIER than the table to (re-audit round 3
+// SHOULD-10 — a pre-table year prices under the earliest law
+// the table holds, never under a later year's law). Adding an
+// earlier year's row to TAX_LAW_YEARS moves this pointer
+// automatically.
+export const EARLIEST_LAW: YearLaw = TAX_LAW_YEARS[0]!;
 // The newest published row in the table, derived from the table
 // itself so it can never drift from it: the same row lawForYear
-// falls back to for years with no published row, and the row
+// falls back to for years past the table, and the row
 // apiProvenance reports as the current law year. Adding a new
 // year's row to TAX_LAW_YEARS moves this pointer automatically.
 export const CURRENT_LAW: YearLaw = TAX_LAW_YEARS[TAX_LAW_YEARS.length - 1]!;
@@ -531,13 +548,18 @@ export function lawForYear(year: number): YearLaw {
   // Called once per priced year in every simulation; the table
   // is static, so resolve by direct comparison instead of a
   // find() scan (identical result: the year's own row when one
-  // is published; any other year — later than the newest row,
-  // or earlier than the oldest — resolves to the newest row,
-  // which is the carry-forward rule for years past the table).
+  // is published; a year later than the newest row resolves to
+  // the newest row — the carry-forward rule for years past the
+  // table — and a year earlier than the oldest row resolves to
+  // the OLDEST row, the earliest law the table holds, never to
+  // a later year's law: before the SHOULD-10 fix every rowless
+  // year resolved to CURRENT_LAW, so a 2023 or 2024 year was
+  // silently taxed with 2026 brackets, standard deduction, and
+  // thresholds).
   for (const law of TAX_LAW_YEARS) {
     if (law.year === year) return law;
   }
-  return CURRENT_LAW;
+  return year < EARLIEST_LAW.year ? EARLIEST_LAW : CURRENT_LAW;
 }
 
 /* -------- SALT dated schedule (Build B) — IRC §164(b)(7),

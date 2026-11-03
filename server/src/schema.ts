@@ -83,7 +83,7 @@ export const yearlyExpenseVersions = sqliteTable(
   },
   (t) => [
     // One version per (expense, effective month) — enforced by the
-    // database (contract v64, A1; migration 0025), so the version
+    // database (build v64, A1; migration 0025), so the version
     // writers' upserts on this pair can never create a duplicate
     // history entry even when two writes overlap.
     uniqueIndex("yearly_expense_versions_expense_effective_unique").on(
@@ -185,7 +185,7 @@ export const monthlyBillVersions = sqliteTable(
   },
   (t) => [
     // One version per (bill, effective month) — enforced by the
-    // database (contract v64, A1; migration 0025), so
+    // database (build v64, A1; migration 0025), so
     // setMonthlyBillAmount's upsert on this pair can never create
     // a duplicate history entry even when two writes overlap.
     uniqueIndex("monthly_bill_versions_bill_effective_unique").on(
@@ -289,7 +289,7 @@ export const nwSnapshots = sqliteTable("nw_snapshots", {
   // the user records one. Unique: one snapshot per date.
   date: text("date").notNull().unique(),
   note: text("note"),
-  // Whole-snapshot revision counter (contract v65, CAS sweep F11/F12):
+  // Whole-snapshot revision counter (build v65, CAS sweep F11/F12):
   // bumped by BOTH updateNwSnapshot (whole-snapshot replacement) and
   // updateNwBalance (single-balance correction), so either editor's
   // stale save — identified by the baseRevision it loaded — is refused
@@ -336,7 +336,7 @@ export const nwBalances = sqliteTable(
   },
   (t) => [
     // One balance row per (snapshot, account) — enforced by the
-    // database (contract v64, A1; migration 0025), so
+    // database (build v64, A1; migration 0025), so
     // updateNwBalance's atomic upsert on this pair can never
     // double-count an account in a snapshot even when two writes
     // overlap (the snapshot total sums balance rows, so a

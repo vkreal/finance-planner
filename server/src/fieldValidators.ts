@@ -3,7 +3,7 @@
 // input schemas (server/src/actions.ts) and the backup payload
 // schema + restore preflight (server/src/restoreCore.ts), so a
 // value no writer would accept can never drift into a restore
-// through a second, looser copy of the rule (contract v60, F4 —
+// through a second, looser copy of the rule (build v60, F4 —
 // the packaged-parity audit found dueMonth and the monthly-bill
 // name enforced by the writers but not by restore preflight).
 //

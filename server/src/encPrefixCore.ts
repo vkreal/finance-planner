@@ -13,7 +13,7 @@
 //      to decrypt it, throws, and the whole data load breaks.
 //   2. A prefixed value may be stored as-is ONLY when it verifies
 //      as genuine ciphertext under the app's key FOR THE FIELD
-//      being written (contract v91: the verifier is a decrypt
+//      being written (build v91: the verifier is a decrypt
 //      attempt bound to that field's AES-GCM associated data, so
 //      a ciphertext transplanted from another field does not
 //      verify here). Anything else carrying the prefix is REFUSED

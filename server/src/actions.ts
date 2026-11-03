@@ -1,7 +1,7 @@
 // Actions for the Finance Planner.
 //
 // Math (accrual / cash basis — one basis for every entry mode,
-// contract v59):
+// build v59):
 //   incurred(month)   = sum of "spending" transactions dated that month
 //                       (checking bills + card charges; refunds are negative
 //                       spending rows, so they net out automatically).
@@ -154,6 +154,7 @@ CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
 DRAW_ORDER_KEYS,
 ACA_HOUSEHOLD_SCHEDULE_SEMANTICS,
+ACA_PREMIUM_RECONCILIATION_SEMANTICS,
 ACA_SEMANTICS,
 AMT_SEMANTICS,
 EDUCATION_CREDIT_SEMANTICS,
@@ -167,6 +168,7 @@ LOSS_CARRYFORWARD_SEMANTICS,
 RMD_AGE_SEMANTICS,
 RMD_BENEFICIARY_SEMANTICS,
 PLAYGROUND_YEAR_SEMANTICS,
+PRETAX_DRAW_SPLIT_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_COMPARE_EXAMPLE,
 SAVE_FLATTENING_SENTENCE,
@@ -191,6 +193,7 @@ rothFilingStatus,
 updateMonthlyBillIn,
 withResolvedOverrideBalances,
 withSleeveEcho,
+withThreadedEcho,
 yearlyFrequency,
 yearlyFrequencyWithDefault,
 type McScoreIn,
@@ -268,7 +271,11 @@ type RothGiftStored,
 } from "./giftModel";
 import {
 BLANK_ROTH_TAX_RETURN,
+impliedYieldPctsFromTaxReturn,
 parseRothTaxReturn,
+qualifiedDividendSharePctFromTaxReturn,
+rejectedNegativeTaxReturnActuals,
+type RejectedNegativeTaxReturnActual,
 type RothTaxReturnStored,
 } from "./taxReturnCore";
 import {
@@ -394,7 +401,7 @@ const dateString = z
    idempotent. This is app-level encryption only: the server still
    decrypts to compute and display, exactly as before.
 
-   Contract v91 (stored-data finding F1): every ciphertext is bound
+   Build v91 (stored-data finding F1): every ciphertext is bound
    to its field through AES-GCM associated data (see aadFor /
    settingContext below). A valid ciphertext copied verbatim into a
    different field no longer decrypts there — the GCM tag covers
@@ -456,7 +463,7 @@ async function encryptStr(key: CryptoKey, plain: string, context: string): Promi
   // value that merely starts with those characters is not
   // ciphertext — storing it verbatim would poison the row and
   // break the next data load — so it is refused here, before any
-  // write, with the reserved message. Contract v91: the verify is
+  // write, with the reserved message. Build v91: the verify is
   // STRICT (bound form only). A legacy no-AAD ciphertext for this
   // field verifies only under the legacy branch, so it is
   // decrypted and falls through to fresh encryption below,
@@ -514,7 +521,7 @@ async function encryptNullable(
   if (value == null) return null;
   return encryptStr(key, value, context);
 }
-// Field-binding contexts (contract v91, stored-data finding F1).
+// Field-binding contexts (build v91, stored-data finding F1).
 // The AES-GCM associated data for a field is the UTF-8 encoding of
 // "fp-aad-v1:" + its context string: "table.column" for row values
 // (the database's own table and column names, via the literals at
@@ -659,7 +666,7 @@ async function ensureKeyCheck(
         "Encryption key check failed — the stored key does not match this data. Refusing to read or write encrypted data.",
       );
     }
-    // Load-time migration (contract v91): a legacy no-AAD
+    // Load-time migration (build v91): a legacy no-AAD
     // key-check value is re-encrypted with the field binding,
     // compare-and-write so a concurrent write wins.
     if (
@@ -861,10 +868,10 @@ const cashOutItemUpdateInput = z
   .object({
     ...cashOutItemFields,
     id: z.number().int().positive(),
-    // Contract v65 (CAS sweep, F14): the item as the editor loaded
+    // Build v65 (CAS sweep, F14): the item as the editor loaded
     // it — see updateCashOutItem. Optional: omitting it keeps the
     // legacy unchecked write (named in DATA-PLAN).
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the editor observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load,
@@ -916,7 +923,7 @@ const monthlyBillInput = z.object({
   keepLightsOn: z.boolean().default(false),
 });
 
-// One month row of the Dashboard's per-month series (contract v123,
+// One month row of the Dashboard's per-month series (build v123,
 // round-18 F1): shared by `history` (12 months ending at the viewed
 // month) and `trailingMonths` (the trailing window's own months,
 // ending at the current month) so the two can never drift apart in
@@ -931,7 +938,7 @@ const dashboardHistoryRowOut = z.object({
   hasOneOff: z.boolean(),
   // True when this month is after the current calendar month — its
   // figures were entered ahead and are estimates, the same flag the
-  // entered-ahead rows carry (contract v59, finding F4). Always
+  // entered-ahead rows carry (build v59, finding F4). Always
   // false on a trailing-window row: the window never passes the
   // current month.
   estimate: z.boolean(),
@@ -1004,10 +1011,10 @@ async function loadAll(ctx: Ctx) {
   const settingRows = await db.select().from(schema.settings);
 
   // Decrypt every row; any legacy plaintext field, or any legacy
-  // no-AAD ciphertext field (contract v91), is encrypted with
+  // no-AAD ciphertext field (build v91), is encrypted with
   // the field binding and written back in place (migration,
   // idempotent via the prefix and the binding check).
-  // Contract v64 (A4): every migration write in this loader is
+  // Build v64 (A4): every migration write in this loader is
   // COMPARE-AND-WRITE — its WHERE clause also requires every field
   // it rewrites to still hold the exact raw value read above, so a
   // legitimate update that landed between the read and this write
@@ -1195,7 +1202,7 @@ async function loadAll(ctx: Ctx) {
       settingsMap.set(r.key, plainVal);
       if (r.value !== "" && (await needsRebind(key, r.value, settingContext("opening_reserve_cents")))) {
         const enc = await encryptStr(key, plainVal, settingContext("opening_reserve_cents"));
-        // Compare-and-write (contract v64, A4): only while the
+        // Compare-and-write (build v64, A4): only while the
         // stored value is still the one read here.
         await db.update(schema.settings).set({ value: enc }).where(and(
           eq(schema.settings.key, r.key),
@@ -1423,7 +1430,7 @@ const NW_INCLUDE_PROPERTY_KEY = "nw_include_property";
 const NW_TARGET_KEY = "nw_target_cents";
 
 // Decrypt Net Worth rows; legacy plaintext, and legacy no-AAD
-// ciphertext (contract v91), migrates in place (once).
+// ciphertext (build v91), migrates in place (once).
 async function loadNetWorthDecrypted(ctx: Ctx, db: any, key: CryptoKey) {
   await ensureKeyCheck(ctx, db, key);
   const rawAccounts = await db
@@ -1619,7 +1626,7 @@ async function nwBalanceRowValues(
 } | null> {
   const plain = nwBalanceRowPlain(entry, noSplit);
   if (!plain) return null;
-  // Each split column binds its own field identity (contract v91),
+  // Each split column binds its own field identity (build v91),
   // so the helper takes the destination context per call — one
   // shared ciphertext across split columns would decrypt in none
   // of them.
@@ -1654,7 +1661,7 @@ const nwMutationOut = z.object({
   ok: z.boolean(),
   reason: z.string(),
   id: z.number().nullable(),
-  // Contract v65 (CAS sweep): present (true) when the write was
+  // Build v65 (CAS sweep): present (true) when the write was
   // refused because the caller's loaded base no longer matches the
   // stored record — a newer copy was saved elsewhere. `revision`
   // carries the snapshot's stored revision after the attempt on
@@ -1673,7 +1680,7 @@ const nwMutationOut = z.object({
 const okReasonResponse = z.object({
   ok: z.boolean(),
   reason: z.string(),
-  // Contract v65 (CAS sweep): present (true) when the write was
+  // Build v65 (CAS sweep): present (true) when the write was
   // refused because the caller's loaded base no longer matches the
   // stored record — a newer copy was saved elsewhere and the stored
   // newer value is intact.
@@ -1681,7 +1688,7 @@ const okReasonResponse = z.object({
 });
 type OkReason = z.infer<typeof okReasonResponse>;
 
-/* The settings/summary writers' result (contract v65): success is
+/* The settings/summary writers' result (build v65): success is
    { ok: true }; a CAS refusal is { ok: false, conflict: true,
    reason } with the December-style newer-copy message. */
 const casOkResponse = z.object({
@@ -1970,7 +1977,7 @@ const retirementInputFields = {
   retirementAge: z.number().int().min(0).max(120).nullable(),
   endAge: z.number().int().min(0).max(130).nullable(),
   stocksPct: z.number().min(0).max(100).nullable(),
-  // Unsigned money (contract v66, boundary audit F11): extra
+  // Unsigned money (build v66, boundary audit F11): extra
   // income is an income field — a negative was previously
   // accepted here and then silently floored to $0 when priced,
   // so the saved value was not the priced value. int≥0 at the
@@ -2005,7 +2012,7 @@ const retirementInputFields = {
   phaseStartAge: z.number().int().min(0).max(130).nullable(),
   phaseDeclinePct: z.number().min(0).max(100).nullable(),
 };
-/* Cross-field save refusal (contract v66, boundary audit F6):
+/* Cross-field save refusal (build v66, boundary audit F6):
    when both ages are entered, the retirement age must be
    before the plan's end age. A plan with no retired years
    gives the Max Spending solver no year of spending to test —
@@ -2057,7 +2064,7 @@ async function readRetirementBlobState(
   scenarios: RetirementScenario[];
   revision: number;
   storedRaw: string | undefined;
-  // Result-honesty (contract v67, F06): the record's presence /
+  // Result-honesty (build v67, F06): the record's presence /
   // readability, in the rothRevisionCore idiom — a PRESENT but
   // unreadable record reports { present: true, valid: false }
   // instead of masquerading as an absent one ({ present: false,
@@ -2211,7 +2218,7 @@ function retirementInputsFromRecord(
 }
 
 /* The blob-2 state read (API follow-on F23 + result-honesty
-   contract v67, F07): the parsed baseline (null when there is no
+   build v67, F07): the parsed baseline (null when there is no
    usable one), the record's write revision (the same lenient
    read — absent, non-integer, or negative counts as 0), the
    stored raw value exactly as read (undefined when no row
@@ -2435,7 +2442,7 @@ async function mutateRetirementScenarios(
 ): Promise<RetirementScenarioWriteResult> {
   let state = await readRetirementBlobState(db, key);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    // Result-honesty (contract v67, F06): never compose a
+    // Result-honesty (build v67, F06): never compose a
     // successor over a PRESENT but unreadable record — that
     // would replace the damaged bytes with an empty document.
     if (state.revisionState.present && !state.revisionState.valid) {
@@ -2675,12 +2682,17 @@ const rothInputFields = {
   // annual dividend and interest yields, each a % of the
   // year's starting taxable balance, priced as mandatory
   // income for the year (dividends on the capital-gains stack,
-  // interest on the ordinary stack — see taxEngine). Null on
-  // records written before this build = blank = no yield
-  // modeled, so an untouched record prices bit-identically.
-  // Required keys like every field here: null accepted,
-  // omission rejected. Adding these two fields grows the
-  // saved-inputs schema by two leaf fields.
+  // interest on the ordinary stack — see taxEngine). Null =
+  // blank = no yield ENTERED: at pricing time a blank field
+  // is stood in for by the implied yield from the record's
+  // stored tax-return actuals when one exists (contract v136,
+  // audit MUST M-1 — see resolveArgsBalances and
+  // planInputsFromSaved), and prices $0 only when no estimate
+  // exists for that line; an entered 0% is a real answer and
+  // prices $0 with no fallback. Required keys like every
+  // field here: null accepted, omission rejected. Adding
+  // these two fields grows the saved-inputs schema by two
+  // leaf fields.
   taxableDividendYieldPct: z.number().min(0).max(100).nullable(),
   taxableInterestYieldPct: z.number().min(0).max(100).nullable(),
   // Spend-from-cash (SPEND-FROM-CASH build): the % of each
@@ -2707,7 +2719,7 @@ const rothInputFields = {
   // here: null accepted, omission rejected.
   flexCutPct: z.number().min(0).max(100).nullable(),
   flexFloorPct: z.number().min(0).max(100).nullable(),
-  // Unsigned money (contract v66, boundary audit F1): annual
+  // Unsigned money (build v66, boundary audit F1): annual
   // spending is a need the march funds, never a signed flow —
   // a negative value made the surplus sweep CREDIT the taxable
   // balance with money from nowhere. int≥0 here, in the shared
@@ -2736,7 +2748,7 @@ const rothInputFields = {
   ssSpouseStartAge: z.number().int().min(0).max(120).nullable(),
   ssSpouseNoBenefit: z.boolean().nullable(),
   otherOrdinaryCents: z.number().int().nullable(),
-  // Unsigned money (contract v66, boundary audit F4):
+  // Unsigned money (build v66, boundary audit F4):
   // tax-exempt interest is interest received, never a signed
   // gain/loss — a negative value flowed straight into MAGI and
   // the ACA MAGI and understated both dollar for dollar.
@@ -2820,7 +2832,7 @@ const rothInputFields = {
   // loudly here (writers and compute actions alike) — it is
   // never silently clamped.
   acaSpouseEndAge: z.number().int().min(55).max(80).nullable(),
-  // Inflation (contract v66, boundary audit F2): must be
+  // Inflation (build v66, boundary audit F2): must be
   // finite and strictly greater than −100 — at exactly −100
   // the deflation factor divides by (1 + pct/100) = 0 and
   // statute-fixed amounts price at Infinity. The exclusive
@@ -2851,7 +2863,7 @@ const rothInputFields = {
   capitalLossCarryInStCents: z.number().int().min(0).nullable(),
   capitalLossCarryInLtCents: z.number().int().min(0).nullable(),
   // Washington-attributable portions of the two
-  // carryforwards above (contract v101, round-14 fix F4):
+  // carryforwards above (build v101, round-14 fix F4):
   // of each character's banked loss, the part directly
   // attributable to losses from sales or exchanges
   // allocated to Washington (RCW 82.87.100) — the only part
@@ -2972,7 +2984,7 @@ const rothComputeFields = {
   // null ($0 banked, the ledger never engages).
   capitalLossCarryInStCents: rothInputFields.capitalLossCarryInStCents.optional(),
   capitalLossCarryInLtCents: rothInputFields.capitalLossCarryInLtCents.optional(),
-  // Compute path only (contract v101): a pricing payload
+  // Compute path only (build v101): a pricing payload
   // may omit the Washington-attributable portions — absent
   // prices exactly as null ($0 attributable; the Washington
   // base stays at the gross gains).
@@ -2995,6 +3007,25 @@ const rothComputeFields = {
   // prices on the Uniform Lifetime Table).
   primarySoleBeneficiaryOfSpouse:
     rothInputFields.primarySoleBeneficiaryOfSpouse.optional(),
+  // Compute path only (re-audit SHOULD S-7): the threaded
+  // pricing transients, now PASSABLE — the blank-yield
+  // fallback percentages (contract v136, audit MUST M-1) and
+  // the qualified-dividend share (contract v138, audit S-1)
+  // that resolveArgsBalances otherwise derives from the
+  // stored record's tax-return actuals. Optional and nullable
+  // like the other compute-only fields above: absent / null =
+  // the record-derived threading exactly as before; a supplied
+  // value is used exactly as supplied and is never overwritten
+  // by the derivation (a supplied fallback fills only a
+  // still-blank yield field, and an entered yield still wins
+  // over any fallback). TRANSIENT: never persisted, never part
+  // of rothInputFields or any writer — the writers keep the
+  // strict saved shape, and the values surface back on every
+  // compute response's effectiveInputs echo (withThreadedEcho
+  // in apiContractCore.ts).
+  yieldFallbackDividendPct: z.number().min(0).max(10000).nullable().optional(),
+  yieldFallbackInterestPct: z.number().min(0).max(10000).nullable().optional(),
+  qualifiedDividendSharePct: z.number().min(0).max(100).nullable().optional(),
   // Compute path only: the strict ceilings variant (unknown keys
   // rejected). rothInputFields itself — and therefore the writers
   // and the saved shape — keeps the lenient shared object.
@@ -3017,6 +3048,20 @@ function optionalFields<T extends Record<string, z.ZodType>>(fields: T): {
 const rothOverridesStrict = z.strictObject({
   ...optionalFields(rothInputFields),
   ceilings: rothCeilingsStrict.nullable().optional(),
+  // Scenario-override transients (re-audit SHOULD S-7): the
+  // same passable threaded fields the compute base payload
+  // accepts (see rothComputeFields) — a scenario may supply
+  // or override the blank-yield fallbacks and the qualified
+  // share for its own pricing. Optional patch keys like every
+  // override here: an absent key inherits the base's threaded
+  // value (subject to buildCompareScenario's per-scenario
+  // re-derivation, which never overwrites a carried fallback),
+  // an explicit null clears it, and a supplied number prices
+  // exactly as supplied. Never persisted as part of a saved
+  // scenario — the saved scenario shape is rothInputFields.
+  yieldFallbackDividendPct: z.number().min(0).max(10000).nullable().optional(),
+  yieldFallbackInterestPct: z.number().min(0).max(10000).nullable().optional(),
+  qualifiedDividendSharePct: z.number().min(0).max(100).nullable().optional(),
 });
 /* Execution-year ("This year") fields — PLAN-RECORD ONLY.
    They live in the same saved inputs record, under their own
@@ -3111,16 +3156,33 @@ const rothGiftResponse = z.object({ ...rothGiftFields });
    taxReturn* keys, accepted ONLY by saveRothInputs and
    returned ONLY by getRothPlanner (its own taxReturn block).
    They are deliberately NOT part of rothInputFields: they
-   never enter scenarios, never reach planInputsFromSaved, and
-   never affect planner / optimizer / compare / funding /
-   work-years pricing — those keep modelling interest and
-   dividends from the yield fields. Their ONE consumer is the
-   Playground's "Start from my numbers" prefill (see
-   taxReturnCore.ts and the taxReturnSemantics convention
-   describeApi publishes). All nullable integer cents; null on
+   never enter scenarios and never reach planInputsFromSaved
+   AS AMOUNTS — pricing keeps modelling interest and
+   dividends from the yield fields, as filled by the two
+   derived percentages resolveArgsBalances threads from the
+   stored record (contract v139, re-audit MUST M-1: the
+   return amounts never enter pricing as amounts; pricing
+   reads only the two derived percentages — so an action can
+   price differently with these fields set than blank,
+   through those percentages alone; the tax suite's
+   tax-return-pricing-identity fixture pins that action
+   path). Their
+   consumers are the Playground's "Start from my numbers"
+   prefill and — contract v136, audit MUST M-1 — the
+   blank-yield fallback: where plan inputs are assembled for
+   pricing, a BLANK yield field is filled with the implied
+   yield derived from these actuals over the plan's resolved
+   taxable pool (impliedYieldPctsFromTaxReturn in
+   taxReturnCore.ts, threaded by resolveArgsBalances), so
+   planner / optimizer / compare / funding / work-years
+   pricing models a blank yield as the household's implied
+   estimate instead of $0. Only the derived percentages ever
+   reach pricing, never the amounts (see taxReturnCore.ts
+   and the taxReturnSemantics convention describeApi
+   publishes). All nullable integer cents; null on
    records written before this build = blank = that line not
    entered, so an untouched record is exactly as before.
-   The fourth field (contract v147) is the calendar year of
+   The fourth field (build v147) is the calendar year of
    the return the three amounts are from — a nullable integer
    year, null on records written before it existed (= year not
    recorded). Adding these four fields grows the saveRothInputs
@@ -3131,7 +3193,44 @@ const rothTaxReturnFields = {
   taxReturnOrdinaryDividendsCents: z.number().int().nullable(),
   taxReturnYear: z.number().int().min(2000).max(2100).nullable(),
 };
-const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
+const rothTaxReturnResponse = z.object({
+  ...rothTaxReturnFields,
+  // Derived threaded percentages (re-audit SHOULD S-7): the
+  // percentages the stored actuals imply, surfaced beside the
+  // amounts they derive from — the implied yields over the
+  // saved record's resolved taxable pool (the pool
+  // resolveArgsBalances derives over for a compute run: the
+  // explicit taxableCents when entered, otherwise the latest
+  // snapshot's Taxable + Cash pool less any exclusion) and
+  // the qualified share (line 3a ÷ line 3b). Each is null
+  // exactly when its derivation yields no estimate (the line
+  // unentered, or no positive pool for a yield). Computed by
+  // the ONE derivations in taxReturnCore.ts at read time;
+  // never stored, and the amounts above are unchanged.
+  derivedImpliedDividendYieldPct: z.number().nullable(),
+  derivedImpliedInterestYieldPct: z.number().nullable(),
+  derivedQualifiedDividendSharePct: z.number().nullable(),
+  // Rejected negative actuals (contract v146, re-audit
+  // round 3 NICE-1): the amount lines whose STORED value
+  // was negative and which the parse therefore read as
+  // not entered — a Form 1040 income line cannot be
+  // negative, so a negative actual is a mistyped or
+  // sign-flipped figure, never an income figure. Each
+  // entry names the line and carries its stored
+  // (negative) cents, so the rejection is surfaced to
+  // the user instead of silently dropped; the amounts
+  // above are the parsed values (a rejected line reads
+  // null there), and the prefill resolves a rejected
+  // line exactly as an unentered one. Empty when no
+  // line was rejected. Computed by the ONE reporter in
+  // taxReturnCore.ts at read time; never stored.
+  rejectedNegativeActuals: z.array(
+    z.object({
+      line: z.enum(["interest", "qualifiedDividends", "ordinaryDividends"]),
+      cents: z.number(),
+    }),
+  ),
+});
 // The stored tax-return shape, its ONE parse, and the prefill
 // mapping live in server/src/taxReturnCore.ts
 // (parseRothTaxReturn / BLANK_ROTH_TAX_RETURN /
@@ -3151,9 +3250,18 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
    - ENGINE_VERSION: version stamp of the pricing engine (the
      taxEngine / rothOptimizer / workYears / giftModel stack as
      priced through these actions). Scheme: "engine-<n>", an
-     integer counter starting at 1; bump when engine pricing
-     behaviour changes. It is a stamp, not a calculation input —
-     no engine file reads it.
+     integer counter. History (re-audit NICE-TO-HAVE N-10):
+     "engine-1" was the original stamp and was NOT bumped as
+     pricing behaviour changed — it still read "engine-1" at
+     API contract 143, so it no longer distinguished engine
+     versions at all. "engine-2" is the stamp for the current
+     engine as priced at build v184 (API contract 143): a
+     single catch-up step consolidating every pricing-
+     behaviour change since "engine-1", not a count of those
+     changes. Going forward, bump the counter by one on the
+     next pricing-behaviour change (and on each one after
+     that). It is a stamp, not a calculation input — no
+     engine file reads it.
    - Law versions are NOT constants here: lawYear and
      lawYearsAvailable are derived at call time from taxLaw.ts
      (CURRENT_LAW / TAX_LAW_YEARS), so they can never drift from
@@ -3162,8 +3270,8 @@ const rothTaxReturnResponse = z.object({ ...rothTaxReturnFields });
 // expected contract version from this same constant instead of
 // hard-coding a number that silently stales on the next bump
 // (round-7 fix H-1).
-export const API_CONTRACT_VERSION = 133;
-const ENGINE_VERSION = "engine-1";
+export const API_CONTRACT_VERSION = 146;
+const ENGINE_VERSION = "engine-2";
 
 const provenanceOut = z.object({
   apiContractVersion: z.number().int(),
@@ -3233,7 +3341,20 @@ async function computeEffectiveInputs<T extends {
       : Math.round(deriveSpendFromCashSleeveStartDollars(engineInputs) * 100);
   return {
     resolved,
-    effectiveInputs: parsed == null ? null : withSleeveEcho(parsed, sleeveCents),
+    // Threaded-pricing echo (re-audit SHOULD S-7): beside the
+    // sleeve, the echo carries the threaded transients the run
+    // priced with — read off the RESOLVED payload (the values
+    // resolveArgsBalances threaded, or the caller supplied) and
+    // the engine inputs built from it (the effective yields) —
+    // never recomputed (withThreadedEcho in apiContractCore.ts).
+    effectiveInputs:
+      parsed == null
+        ? null
+        : withThreadedEcho(
+            withSleeveEcho(parsed, sleeveCents),
+            resolved as unknown as RothSavedLike,
+            engineInputs,
+          ),
   };
 }
 
@@ -3250,6 +3371,20 @@ const rothSavedInputs = z.object({ ...rothInputFields });
 const rothEffectiveInputsOut = z.object({
   ...rothInputFields,
   spendFromCashSleeveCents: z.number().int().nullable(),
+  // Threaded-pricing echo (re-audit SHOULD S-7): the M-1
+  // blank-yield fallback transients and the qualified share
+  // threaded for the run, plus the effective yields the
+  // engine inputs resolved to — see withThreadedEcho in
+  // apiContractCore.ts. All percentage points, null exactly
+  // when no value was threaded / resolved for that side
+  // (effectiveQualifiedDividendPct null = the engine priced
+  // its 100%-qualified default).
+  yieldFallbackDividendPct: z.number().nullable(),
+  yieldFallbackInterestPct: z.number().nullable(),
+  qualifiedDividendSharePct: z.number().nullable(),
+  effectiveDividendYieldPct: z.number().nullable(),
+  effectiveInterestYieldPct: z.number().nullable(),
+  effectiveQualifiedDividendPct: z.number().nullable(),
 });
 type RothEffectiveInputs = z.infer<typeof rothEffectiveInputsOut>;
 const rothScenario = z.object({ name: z.string(), ...rothInputFields });
@@ -3263,7 +3398,7 @@ const rothScenarioWriteResponse = z.object({
   reason: z.string(),
   scenarios: z.array(rothScenario),
   revision: z.number().int().nonnegative(),
-  // Contract v65 (CAS sweep, F22): present (true) when an
+  // Build v65 (CAS sweep, F22): present (true) when an
   // updateRothScenario write was refused at the SCENARIO level —
   // the named scenario's stored payload no longer matches the
   // editor's loaded base payload, even though the record blob
@@ -3350,7 +3485,9 @@ function parseRothInputs(raw: unknown): RothInputs | null {
     })(),
     // Taxable yields, read leniently like every field here:
     // absent on a pre-build record reads as null = blank = no
-    // yield modeled, bit-identical pricing.
+    // yield ENTERED (the value is preserved exactly as stored;
+    // the blank-yield fallback is applied later, at pricing
+    // time — see resolveArgsBalances — never on read).
     taxableDividendYieldPct: num(r.taxableDividendYieldPct),
     taxableInterestYieldPct: num(r.taxableInterestYieldPct),
     // Spend-from-cash, read leniently like the yield fields:
@@ -3458,7 +3595,7 @@ function parseRothInputs(raw: unknown): RothInputs | null {
       r.capitalLossCarryInLtCents >= 0
         ? Math.round(r.capitalLossCarryInLtCents)
         : null,
-    // Washington-attributable portions (contract v101),
+    // Washington-attributable portions (build v101),
     // read leniently like the totals above: absent on a
     // pre-build record reads as null = blank = $0
     // attributable; a stored negative is not a loss portion
@@ -3599,6 +3736,13 @@ async function readRothBlob(
   mcVolatilityPct: number | null;
   gift: RothGiftStored;
   taxReturn: RothTaxReturnStored;
+  // The tax-return lines the parse rejected as negative
+  // (contract v146, re-audit round 3 NICE-1), reported from
+  // the same raw shape the parse read: empty for an absent
+  // or unreadable record and whenever no stored amount was
+  // negative. Surfaced on getRothPlanner's taxReturn block;
+  // never priced from and never written back.
+  taxReturnRejectedNegatives: RejectedNegativeTaxReturnActual[];
   // The record's write revision (lenient read — see
   // rothRevisionCore.ts): 0 for a blob written before revisions
   // existed, and for an absent or unreadable row.
@@ -3620,14 +3764,14 @@ async function readRothBlob(
   const rows = await db.select().from(schema.settings);
   const raw = rows.find((r: { key: string }) => r.key === ROTH_INPUTS_KEY)?.value;
   if (!raw)
-    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: undefined };
+    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, taxReturnRejectedNegatives: [], revision: 0, revisionState: { revision: 0, present: false, valid: true }, storedRaw: undefined };
   try {
     const plain = isEncrypted(raw) ? await decryptStr(key, raw, settingContext(ROTH_INPUTS_KEY)) : raw;
     const parsed = JSON.parse(plain) as unknown;
     if (parsed == null || typeof parsed !== "object")
-      // Result-honesty (contract v67, F08): a PRESENT record whose
+      // Result-honesty (build v67, F08): a PRESENT record whose
       // document is not an object is present-but-invalid, not absent.
-      return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: true, valid: false }, storedRaw: raw };
+      return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, taxReturnRejectedNegatives: [], revision: 0, revisionState: { revision: 0, present: true, valid: false }, storedRaw: raw };
     const blob = parsed as Record<string, unknown>;
     // Execution inputs are consumed HERE, at load: a shape whose
     // year stamp is not the current calendar year comes back
@@ -3657,10 +3801,17 @@ async function readRothBlob(
       // pricing path other than the gift comparison itself.
       gift: parseRothGift(blob.inputs),
       // The tax-return actuals block rides along in the same
-      // record; parseRothInputs never sees it, so it can never
-      // reach a pricing path — its only consumer is the
-      // Playground's "Start from my numbers" prefill.
+      // record; parseRothInputs never sees it, so the amounts
+      // can never reach a pricing path — their consumers are
+      // the Playground's "Start from my numbers" prefill and
+      // the blank-yield fallback's implied-yield derivation
+      // (contract v136: percentages only, never the amounts).
       taxReturn: parseRothTaxReturn(blob.inputs),
+      // The lines that parse rejected as negative, reported
+      // from the same raw shape (contract v146, NICE-1) so
+      // the rejection reaches the user on getRothPlanner
+      // instead of vanishing into the parse's null.
+      taxReturnRejectedNegatives: rejectedNegativeTaxReturnActuals(blob.inputs),
       // The record's write revision: a sibling of `inputs` at
       // the blob's top level, read leniently (absent, non-integer,
       // or negative counts as 0) — parseRothInputs never sees it.
@@ -3669,12 +3820,12 @@ async function readRothBlob(
       storedRaw: raw,
     };
   } catch {
-    // Result-honesty (contract v67, F08): an unreadable PRESENT
+    // Result-honesty (build v67, F08): an unreadable PRESENT
     // record reports { present: true, valid: false } with the
     // stored bytes retained — decideRothBlobWriteChecked then
     // refuses every save against it, so the damaged record can
     // never be silently replaced by a fresh-looking one.
-    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, revision: 0, revisionState: { revision: 0, present: true, valid: false }, storedRaw: raw };
+    return { inputs: null, scenarios: [], execution: blankExecution, mcVolatilityPct: null, gift: blankGift, taxReturn: blankTaxReturn, taxReturnRejectedNegatives: [], revision: 0, revisionState: { revision: 0, present: true, valid: false }, storedRaw: raw };
   }
 }
 
@@ -3703,7 +3854,7 @@ async function insertRothBlobValueIfAbsent(db: any, enc: string): Promise<boolea
 }
 
 /* The generalized insert-only first write for a settings-keyed
-   blob (contract v64, A2): INSERT … ON CONFLICT DO NOTHING
+   blob (build v64, A2): INSERT … ON CONFLICT DO NOTHING
    against the given settings key, branched on the returned row
    count — true means this invocation established the row; false
    means a row appeared between the caller's read and this
@@ -3778,7 +3929,7 @@ async function readRothBlobRaw(
   scenarios: RothScenario[];
   revision: number;
   storedRaw: string | undefined;
-  // Result-honesty (contract v67, F08): false when a row EXISTS
+  // Result-honesty (build v67, F08): false when a row EXISTS
   // but its document cannot be split (unparseable / not an
   // object) — the scenario writers must refuse rather than
   // compose a successor over the damaged bytes.
@@ -3840,7 +3991,7 @@ async function mutateRothScenarios(
 ): Promise<RothScenarioWriteResult> {
   let blob = await readRothBlobRaw(db, key);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    // Result-honesty (contract v67, F08): a PRESENT but
+    // Result-honesty (build v67, F08): a PRESENT but
     // unreadable record is never composed over.
     if (!blob.valid) {
       return {
@@ -3948,7 +4099,7 @@ async function readRothBlobRawState(
   scenariosRaw: unknown;
   revision: number;
   storedRaw: string | undefined;
-  // Result-honesty (contract v67, F08): false when a row EXISTS
+  // Result-honesty (build v67, F08): false when a row EXISTS
   // but cannot be split — the reset writer refuses against it
   // instead of reseeding over the damaged bytes.
   valid: boolean;
@@ -3993,7 +4144,7 @@ const optScoreOut = z.object({
   windowStopAge: z.number(),
   guardrail: z.boolean(),
   bunching: z.boolean(),
-  // Gain harvesting (contract v56): the strategy's
+  // Gain harvesting (build v56): the strategy's
   // gainsHarvest state — true for a harvest twin (its name
   // also carries the harvesting phrase), false otherwise,
   // including Do Nothing.
@@ -4222,25 +4373,120 @@ async function resolveArgsBalances<T extends {
   taxableExcludeCents?: number | null;
   hsaCents: number | null;
   spendFromCashSleeveCents?: number | null;
+  taxableDividendYieldPct?: number | null;
+  taxableInterestYieldPct?: number | null;
+  yieldFallbackDividendPct?: number | null;
+  yieldFallbackInterestPct?: number | null;
+  qualifiedDividendSharePct?: number | null;
 }>(ctx: Ctx, args: T): Promise<T> {
+  let resolved: T;
   if (
     args.pretaxCents != null &&
     args.rothCents != null &&
     args.taxableCents != null &&
     args.hsaCents != null
   ) {
-    return args;
+    resolved = { ...args };
+  } else {
+    const snap = await latestSnapshotSubtotals(ctx);
+    resolved = resolvePlanBalances(args, snap);
+    if (args.spendFromCashSleeveCents == null && args.taxableCents == null) {
+      const excludeCents = Math.max(0, args.taxableExcludeCents ?? 0);
+      resolved.spendFromCashSleeveCents =
+        snap?.cashCents == null
+          ? null
+          : Math.max(0, snap.cashCents - excludeCents);
+    }
   }
-  const snap = await latestSnapshotSubtotals(ctx);
-  const resolved = resolvePlanBalances(args, snap);
-  if (args.spendFromCashSleeveCents == null && args.taxableCents == null) {
-    const excludeCents = Math.max(0, args.taxableExcludeCents ?? 0);
-    resolved.spendFromCashSleeveCents =
-      snap?.cashCents == null
-        ? null
-        : Math.max(0, snap.cashCents - excludeCents);
+  // BLANK-YIELD FALLBACK (contract v136, audit MUST M-1): a
+  // blank yield field on the payload means "no yield entered",
+  // not "no yield income" — when the stored plan record's
+  // tax-return actuals imply a yield for a blank field, thread
+  // that implied yield onto the resolved payload as the
+  // fallback transient (see RothSavedLike in rothOptimizer.ts),
+  // derived over the RESOLVED taxable pool — the same base the
+  // yield fields price on. planInputsFromSaved then stands it
+  // in for the blank field; an entered yield (an explicit 0%
+  // included) is never overridden, and a payload whose yields
+  // are both entered never triggers the record read at all.
+  // An unreadable or actuals-free record derives nulls, and
+  // the blank field prices $0 exactly as before. The actuals
+  // themselves are never placed on the payload — only the two
+  // derived percentages — so no compute path ever prices from
+  // the 1040 fields.
+  //
+  // QUALIFIED-DIVIDEND SHARE (contract v138, audit SHOULD
+  // S-1): the same record read also threads the qualified
+  // share the stored actuals imply (line 3a ÷ line 3b) onto
+  // the payload as the qualifiedDividendSharePct transient,
+  // so the plan engine splits its dividend yield income
+  // between the gains and ordinary stacks instead of pricing
+  // it all as qualified. Unlike the yield fallbacks the share
+  // describes the dividend income's CHARACTER, so it is
+  // threaded whenever the payload does not already carry one
+  // — entered yields included — and it needs no pool to
+  // derive from. A payload already carrying a share, with
+  // both yields entered, never triggers the record read. An
+  // actuals-free record derives null, and the engine prices
+  // 100% qualified exactly as before.
+  // PASSABLE TRANSIENTS (re-audit SHOULD S-7): a caller may
+  // supply any of the three threaded values on the compute
+  // payload (see rothComputeFields); a supplied value is used
+  // exactly as supplied and never overwritten below — each
+  // side below derives ONLY when both its yield field and its
+  // fallback transient are still blank (the share only when
+  // no share was supplied). With nothing supplied this is the
+  // pre-S-7 derivation, bit-identical.
+  const needsDividendFallback =
+    (resolved.taxableDividendYieldPct ?? null) == null &&
+    (resolved.yieldFallbackDividendPct ?? null) == null;
+  const needsInterestFallback =
+    (resolved.taxableInterestYieldPct ?? null) == null &&
+    (resolved.yieldFallbackInterestPct ?? null) == null;
+  const needsYieldFallback = needsDividendFallback || needsInterestFallback;
+  const needsQualifiedShare =
+    (resolved.qualifiedDividendSharePct ?? null) == null;
+  if (needsYieldFallback || needsQualifiedShare) {
+    const db = ctx.db<typeof schema>();
+    const key = await getCryptoKey(ctx);
+    const blob = await readRothBlob(db, key);
+    if (needsQualifiedShare) {
+      resolved.qualifiedDividendSharePct =
+        qualifiedDividendSharePctFromTaxReturn(blob.taxReturn);
+    }
+    const poolCents = resolved.taxableCents ?? null;
+    if (needsYieldFallback && poolCents != null && poolCents > 0) {
+      const implied = impliedYieldPctsFromTaxReturn(
+        blob.taxReturn,
+        poolCents / 100,
+      );
+      if (needsDividendFallback) {
+        resolved.yieldFallbackDividendPct = implied.dividendYieldPct;
+      }
+      if (needsInterestFallback) {
+        resolved.yieldFallbackInterestPct = implied.interestYieldPct;
+      }
+    }
   }
   return resolved;
+}
+
+// The plan record's stored tax-return actuals (the Form 1040
+// lines the derived percentages come from), read the same way
+// resolveArgsBalances reads them. The compare actions
+// (runRothCompare / runRothMonteCarloStats) hand these to the
+// scenario builder so each scenario's blank-yield fallback is
+// re-derived from that scenario's own resolved pool instead of
+// inheriting the base plan's percentages (contract v140,
+// re-audit SHOULD S-2 — see buildCompareScenario in
+// rothOptimizer.ts). Read-only; an unreadable record reads as
+// the blank return (every line null), which derives null
+// fallbacks exactly as an actuals-free record does.
+async function readStoredTaxReturn(ctx: Ctx): Promise<RothTaxReturnStored> {
+  const db = ctx.db<typeof schema>();
+  const key = await getCryptoKey(ctx);
+  const blob = await readRothBlob(db, key);
+  return blob.taxReturn;
 }
 
 // The strategy the planner runs for a payload: its saved
@@ -4317,6 +4563,15 @@ const playgroundYearOut = z.object({
   conversion: z.number(),
   stockGain: z.number(),
   qualifiedDividends: z.number(),
+  // Literal clamp inputs as entered (re-audit SHOULD S-7):
+  // the dividend pair exactly as supplied, beside the
+  // clamped qualifiedDividends above — plus whether the
+  // S-8/S-11 clamp trimmed the entered qualified figure
+  // and by how much ($0 when the pair was possible).
+  ordinaryDividendsEntered: z.number(),
+  qualifiedDividendsEntered: z.number(),
+  qualifiedDividendsWasClamped: z.boolean(),
+  qualifiedDividendsExcess: z.number(),
   ltcgNet: z.number(),
   ltcgPriced: z.number(),
   capitalLoss: z.number(),
@@ -4384,22 +4639,29 @@ const playgroundYearOut = z.object({
   waStandardDeduction: z.number(),
   waTaxableGains: z.number(),
   totalTax: z.number(),
-  // Cash-in / cash-left readouts (contract v114): cashIn is
+  // Cash-in / cash-left readouts (build v114): cashIn is
   // every dollar of cash the year's entered income brings
   // in (interest, total ordinary dividends, other ordinary
   // income, tax-exempt interest, full Social Security
   // benefits, the year's RMD cash including any part
   // already received, the pre-tax money out, and gross
-  // stock-sale proceeds); netTaxBill (contract v116) is the
-  // year's net tax bill — totalTax less the ACA premium
-  // credit kept when priced and less the refundable
-  // education credit; cashLeftAfterTax is cashIn minus the
+  // stock-sale proceeds); netTaxBill (build v116) is the
+  // year's net tax bill — when the request supplies the
+  // year's reconciliation facts (aptcTaken, build v193)
+  // it is the year's filing settlement (totalTax less the
+  // credit still due, plus any excess advance credit to
+  // repay, less the refundable education credit — the
+  // figure runDecemberProjection settles the same year
+  // on); otherwise totalTax less the refundable education
+  // credit, the ACA premium credit treated as fully
+  // advanced against the year's premiums and never
+  // netted in; cashLeftAfterTax is cashIn minus the
   // year's net tax bill — before any spending.
   netTaxBill: z.number(),
   cashIn: z.number(),
   cashLeftAfterTax: z.number(),
   // Annual spending and the "enough for the year" comparison
-  // (contract v126): the annualSpending input echoed in
+  // (build v126): the annualSpending input echoed in
   // dollars, and cashLeftAfterTax minus that spending —
   // positive = enough for the year, negative = short. Null
   // exactly when no spending was given.
@@ -4494,7 +4756,7 @@ const decemberCaseOut = z.object({
   repaymentExposure: z.number(),
   federalTaxAtHeadline: z.number(),
   totalTaxAtHeadline: z.number(),
-  // Education credits (contract v103): the priced year's
+  // Education credits (build v103): the priced year's
   // §25A figures at the headline draw, the entered-expenses
   // flag, and the excludes-education-credits qualification
   // the settlement carries when no expenses are entered.
@@ -4512,7 +4774,7 @@ const decemberCaseOut = z.object({
   lossCarryOutLtAtHeadline: z.number(),
   lossCarryOutStWaAtHeadline: z.number(),
   lossCarryOutLtWaAtHeadline: z.number(),
-  // Gain harvest (contract v113): the long-term gain the
+  // Gain harvest (build v113): the long-term gain the
   // year's harvest realized into the 0% band at the
   // headline draw and at a $0 draw (already inside the
   // case's MAGI / credit / taxes), and the qualification
@@ -4534,13 +4796,13 @@ const decemberCaseOut = z.object({
   // settlement (netSettleAtHeadline); null exactly when
   // the settlement is null.
   cashLeftAtHeadline: z.number().nullable(),
-  // Cash in at the headline draw (contract v116): the
+  // Cash in at the headline draw (build v116): the
   // priced year's cashIn on the same pricing — the
   // cash-in figure the cash-left tooltip names as priced;
   // null exactly when the settlement is null.
   cashInAtHeadline: z.number().nullable(),
   // Annual spending and the "enough for the year" comparison
-  // at the headline draw (contract v126): the annual
+  // at the headline draw (build v126): the annual
   // spending in dollars (the Tax Plan record's annual
   // spending, passed by the caller — never console state,
   // never saved), and cashLeftAtHeadline minus that
@@ -4573,7 +4835,7 @@ const getDecemberProjectionResponse = z.object({
   state: decemberState,
   hasStored: z.boolean(),
   revision: z.number(),
-  // Result-honesty flag (contract v67, F09): true when a blob
+  // Result-honesty flag (build v67, F09): true when a blob
   // IS stored (hasStored) but cannot be parsed as a state
   // document — state then carries the factory defaults the
   // lenient parse falls back to, and this flag is the only
@@ -4589,7 +4851,7 @@ const saveDecemberProjectionResponse = z.union([
     revision: z.number(),
     state: decemberState,
     hasStored: z.boolean(),
-    // Result-honesty flag (contract v67, F09): true when this
+    // Result-honesty flag (build v67, F09): true when this
     // refusal is because the stored record cannot be parsed —
     // an unparseable stored record is a conflict, never a
     // revision-0 base the save may build on.
@@ -4719,6 +4981,17 @@ const planYearRowOut = z.object({
   penalty: z.number(),
   acaCreditKept: z.number(),
   acaPriced: z.boolean(),
+  // ACA premium reconciliation (build v135): the net
+  // premium annualSpending embeds for the plan, the year's
+  // actual net premium at the settlement's priced credit,
+  // and the signed adjustment the year's funded spending
+  // carried versus its base need (dollars). All $0 in a
+  // year the reconciliation does not engage (no embedded
+  // premium separated, nobody on the marketplace, or no
+  // benchmark entered).
+  acaPremiumEmbedded: z.number(),
+  acaPremiumNet: z.number(),
+  acaPremiumAdjustment: z.number(),
   irmaaPaid: z.number(),
   irmaaTierSet: z.number(),
   magi: z.number(),
@@ -4742,12 +5015,27 @@ const planYearRowOut = z.object({
   // would claim cents the values do not hold.
   endingTaxableBasis: z.number(),
   drawGains: z.number(),
+  // PRE-TAX DRAW SPLIT surfacing (audit S-10, surfaced
+  // under re-audit SHOULD S-8): the year's total priced
+  // pre-tax draw beyond its RMD and conversion
+  // (extraPreTaxDraw) and its two components — the
+  // pre-tax draw for spending alone (pretaxSpendingDraw,
+  // money out by choice) and the pre-tax debits that paid
+  // the tax bill alone (pretaxTaxDebit, not money out by
+  // choice) — dollars, like every money figure in this
+  // row. extraPreTaxDraw is their sum and is the amount
+  // the year's priced AGI carries; see the
+  // pretaxDrawSplitSemantics convention.
+  extraPreTaxDraw: z.number(),
+  pretaxSpendingDraw: z.number(),
+  pretaxTaxDebit: z.number(),
   // TAXABLE YIELDS surfacing: the year's priced dividend and
   // interest income (dollars) — the yield % of the year's
   // starting taxable balance, already inside the row's magi /
   // acaMagi / tax figures (dividends on the gains stack,
-  // interest on the ordinary stack). $0 when no yield is
-  // modeled.
+  // interest on the ordinary stack). The priced yield is the
+  // entered yield, or the implied estimate when the field was
+  // left blank (contract v136); $0 only when neither exists.
   dividendIncome: z.number(),
   interestIncome: z.number(),
   // SPEND-FROM-CASH surfacing: the year's cash-paid spending
@@ -4846,10 +5134,16 @@ function toPlanYearRow(y: {
     amtOwed: number;
     taxableBasisDollars: number;
     drawGains: number;
+    extraPreTaxDraw: number;
+    pretaxSpendingDraw: number;
+    pretaxTaxDebit: number;
     dividendIncome: number;
     interestIncome: number;
     cashSpend: number;
     cashSleeveEnd: number;
+    acaPremiumEmbedded: number;
+    acaPremiumNet: number;
+    acaPremiumAdjustment: number;
   };
   settlementConverged: boolean;
   settlementMismatchCents: { gains: number; pretax: number };
@@ -4895,6 +5189,9 @@ function toPlanYearRow(y: {
     penalty: y.penalty,
     acaCreditKept: y.acaCreditKept,
     acaPriced: y.acaPriced,
+    acaPremiumEmbedded: y.detail.acaPremiumEmbedded,
+    acaPremiumNet: y.detail.acaPremiumNet,
+    acaPremiumAdjustment: y.detail.acaPremiumAdjustment,
     irmaaPaid: y.irmaaPaid,
     irmaaTierSet: y.irmaaTierSet,
     magi: y.magi,
@@ -4908,6 +5205,9 @@ function toPlanYearRow(y: {
     endingHsa: y.hsaEnd,
     endingTaxableBasis: y.detail.taxableBasisDollars,
     drawGains: y.detail.drawGains,
+    extraPreTaxDraw: y.detail.extraPreTaxDraw,
+    pretaxSpendingDraw: y.detail.pretaxSpendingDraw,
+    pretaxTaxDebit: y.detail.pretaxTaxDebit,
     dividendIncome: y.detail.dividendIncome,
     interestIncome: y.detail.interestIncome,
     cashSpend: y.detail.cashSpend,
@@ -4944,6 +5244,18 @@ const fundingRowOut = z.object({
   interestYieldCents: z.number(),
   dividendYieldCents: z.number(),
   pretaxDrawCents: z.number(),
+  // The S-10 split of the year's priced pre-tax draw
+  // (re-audit SHOULD S-8): the spending draw alone, the
+  // tax-bill debits alone, and their sum — the year's
+  // detail extraPreTaxDraw in cents, read off the same
+  // priced detail the compare readouts read. Display
+  // only: none of the three is a funding source and none
+  // enters the cash identity (pretaxDrawCents above is
+  // the applied pre-tax source; see the
+  // pretaxDrawSplitSemantics convention).
+  pretaxSpendingDrawCents: z.number(),
+  pretaxTaxDebitCents: z.number(),
+  extraPreTaxDrawCents: z.number(),
   taxableSoldForSpendingCents: z.number(),
   taxableSoldForTaxCents: z.number(),
   cashSpendCents: z.number(),
@@ -5508,7 +5820,7 @@ async function upsertPlainSetting(db: any, settingKey: string, value: string): P
 // `settingKey` is the BARE settings key (e.g. DECEMBER_STATE_KEY) —
 // this function applies settingContext itself, so callers must NOT
 // wrap it: a double-prefixed context decrypts nothing the writers
-// wrote (contract v91 fix-up: every call site once did).
+// wrote (build v91 fix-up: every call site once did).
 async function decryptSettingValue(
   key: CryptoKey,
   raw: string | undefined,
@@ -5520,7 +5832,7 @@ async function decryptSettingValue(
     : raw;
 }
 
-/* Dual-read for an encrypted JSON settings blob (contract v90,
+/* Dual-read for an encrypted JSON settings blob (build v90,
    stored-data findings F2/F3: the December projection blob and
    the Roth/Playground UI-state blob). `settingKey` is the BARE
    settings key — settingContext is applied here, never by the
@@ -5846,105 +6158,105 @@ type AccuracySelfCheckResponse = z.infer<typeof accuracySelfCheckResponse>;
    entry here, so a future action added without a purpose is
    visible in the contract itself rather than drifting silently. */
 const ACTION_PURPOSES: Record<string, string> = {
-  getDashboard: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles. restoreEpoch (contract v121) is the dataset's current restore generation — the epoch base the spending editors and deletes pass back as baseEpoch, so a view that predates a backup restore is refused.",
+  getDashboard: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles. restoreEpoch (build v121) is the dataset's current restore generation — the epoch base the spending editors and deletes pass back as baseEpoch, so a view that predates a backup restore is refused.",
   getYearView: "One calendar year's spending: monthly true cost and cash out, totals, and the year's bills.",
   getExplorer: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range.",
   addTransaction: "Record one spending transaction (checking or card).",
-  updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given. BATCH IDEMPOTENCY KEY (contract v64, F02): the optional batchKey makes one batch retry-safe against a lost response — a completed keyed batch is recorded durably (a settings row holding the batch's rows hash and count, committed in the SAME batch as the rows), and a repeat call with the same key and the same rows returns the original { imported } count inserting ZERO additional rows; the same key with DIFFERENT rows is refused with a clear error and inserts nothing; a genuinely new import under a new key inserts identical rows normally (the key guards retries, not content). Requests without a key behave exactly as before. The import panel generates one key per 500-row batch and reuses it when re-offering that batch after a failure. Epoch-checked (contract v130, round-19 finding 7): when the caller supplies `baseEpoch` (getImportData's restoreEpoch as observed at preview), the import is refused with an error when a backup restore has advanced the stored epoch since the preview, inserting zero rows. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
-  getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins. restoreEpoch (contract v121) is the dataset's current restore generation — the epoch base the import panel's confirmed cash-out save passes back as baseEpoch.",
-  saveImportSettings: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an import-settings blob (importParseCore); anything else is refused and nothing is stored. Epoch-checked (contract v130, round-19 finding 8): when the caller supplies `baseEpoch` (the settings read's restoreEpoch as observed when the panel loaded its setup), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
-  getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Also carries restoreEpoch (contract v130, round-19 finding 8): the restore generation the dataset is on, which the panel's setup save passes back as baseEpoch. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (contract v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
-  saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored. Epoch-checked (contract v130, round-19 finding 8): when the caller supplies `baseEpoch` (the settings read's restoreEpoch as observed when the panel loaded its setup), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (build v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  importTransactions: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows). One call is ATOMIC: the whole batch is preflighted (including the reserved enc:v1: prefix check on every row's text fields and on its bank transaction id) and then inserted as a single batch — any failure inserts ZERO rows from that call and throws with its reason, and success returns { imported } equal to the full row count. A row may carry the bank's own transaction id (fitId, from an OFX/QFX file's FITID), which is stored encrypted with the row so later previews can recognise that exact transaction. Duplicate protection lives in the import preview, not in this action: the panel compares parsed rows against the already-recorded transactions for the same account and months (fuzzy matching on date, amount, description, kind, and account, plus EXACT matching on the bank transaction id when both sides carry one — see getImportData) and excludes rows that look or are already recorded unless the user explicitly includes them, so re-importing the same file does not double-record it. This action itself inserts exactly the rows it is given. BATCH IDEMPOTENCY KEY (build v64, F02): the optional batchKey makes one batch retry-safe against a lost response — a completed keyed batch is recorded durably (a settings row holding the batch's rows hash and count, committed in the SAME batch as the rows), and a repeat call with the same key and the same rows returns the original { imported } count inserting ZERO additional rows; the same key with DIFFERENT rows is refused with a clear error and inserts nothing; a genuinely new import under a new key inserts identical rows normally (the key guards retries, not content). Requests without a key behave exactly as before. The import panel generates one key per 500-row batch and reuses it when re-offering that batch after a failure. Epoch-checked (build v130, round-19 finding 7): when the caller supplies `baseEpoch` (getImportData's restoreEpoch as observed at preview), the import is refused with an error when a backup restore has advanced the stored epoch since the preview, inserting zero rows. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  getImportData: "Read support for the statement import panel: the remembered import setup (last-used settings plus column-mapping profiles keyed by header layout and remembered OFX account mappings, as one JSON string owned by importParseCore; null when nothing is saved yet) and the already-recorded transactions in the given months (date, amount, description, kind, account, and the bank transaction id recorded with the row or null — plaintext read data) so the preview can flag rows that look already recorded and rows that are exact duplicates by bank id. It also returns, per given month, the recorded cash-out state (the entered month total, or null, and the recorded cash-out items with ids) so the IM-4 cash-out proposal can show what is already recorded for a month and a confirmed save can replace that month's items through the existing item writes. Matching happens in the panel, where plaintext exists; stored data is encrypted at rest and is never content-matched server-side. An empty months list returns just the setup. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (build v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins. restoreEpoch (build v121) is the dataset's current restore generation — the epoch base the import panel's confirmed cash-out save passes back as baseEpoch.",
+  saveImportSettings: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an import-settings blob (importParseCore); anything else is refused and nothing is stored. Epoch-checked (build v130, round-19 finding 8): when the caller supplies `baseEpoch` (the settings read's restoreEpoch as observed when the panel loaded its setup), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  getNwImportSettings: "Read support for the Net Worth balance-import panel: its remembered setup (column-mapping profiles keyed by header layout, plus confirmed file-label to account/bucket mappings) as one JSON string owned by nwImportCore; null when nothing is saved yet. Also carries restoreEpoch (build v130, round-19 finding 8): the restore generation the dataset is on, which the panel's setup save passes back as baseEpoch. Read-only apart from migrating a legacy plaintext setup value to encrypted in place — a compare-and-write (build v64) that applies only while the stored value still equals the value read, so a concurrent setup save wins.",
+  saveNwImportSettings: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs. The value must parse as an NW import-settings blob (nwImportCore); anything else is refused and nothing is stored. Epoch-checked (build v130, round-19 finding 8): when the caller supplies `baseEpoch` (the settings read's restoreEpoch as observed when the panel loaded its setup), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
   addYearlyExpense: "Add a yearly or periodic (smoothed) expense bill. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted.",
-  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the parent fields as loaded, plus the version stored for the save's effective month — null when none existed), the write is refused with { ok: false, conflict: true, reason } when any of those no longer matches storage, checked before any write so the parent and every version stay intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist. The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (contract v64). Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteYearlyExpense: "Delete a yearly/periodic expense and its versions. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteYearlyExpenseVersion: "Remove one version from a yearly/periodic expense's history. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setYearlyDueMonth: "Set the due month of a yearly expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  updateYearlyExpense: "Edit a yearly/periodic expense's details. An absent frequency defaults to \"yearly\"; an unknown frequency value is rejected, never defaulted. Returns { ok: false, reason } when the id does not exist (checked before any version rows are touched). The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (build v64). Compare-and-swap (build v65): when the caller supplies `base` (the parent fields as loaded, plus the version stored for the save's effective month — null when none existed), the write is refused with { ok: false, conflict: true, reason } when any of those no longer matches storage, checked before any write so the parent and every version stay intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setYearlyExpenseVersion: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward. Returns { ok: false, reason } when the expense does not exist. The version write is an atomic upsert on the (expense, effective month) pair, which the database enforces as unique (build v64). Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteYearlyExpense: "Delete a yearly/periodic expense and its versions. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteYearlyExpenseVersion: "Remove one version from a yearly/periodic expense's history. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setYearlyDueMonth: "Set the due month of a yearly expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addMonthlyOneOff: "Record a one-off expense against a month.",
-  updateMonthlyOneOff: "Edit a recorded one-off expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteMonthlyOneOff: "Delete a recorded one-off expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  updateMonthlyOneOff: "Edit a recorded one-off expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlyOneOff: "Delete a recorded one-off expense. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addCashOutItem: "Add an itemized cash-out line to a month.",
-  updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the item as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteCashOutItem: "Delete an itemized cash-out line from a month. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  updateSettings: "Update spending settings (opening reserve and reserve start month). Compare-and-swap (contract v65): when the caller supplies `base` (both stored keys as loaded), the write is refused with { ok: false, conflict: true, reason } when either stored key no longer matches its base, and both stored values stay intact. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions). Compare-and-swap (contract v65): when the caller supplies `base` (the stored month total as loaded, null when none was stored), the write is refused with { ok: false, conflict: true, reason } when the stored total differs from the base. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteMonthlySummary: "Remove a month's entered cash-out total. Returns { ok: false, reason } when no total is recorded for that month. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  updateCashOutItem: "Edit an itemized cash-out line. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (build v65): when the caller supplies `base` (the item as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteCashOutItem: "Delete an itemized cash-out line from a month. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  updateSettings: "Update spending settings (opening reserve and reserve start month). Compare-and-swap (build v65): when the caller supplies `base` (both stored keys as loaded), the write is refused with { ok: false, conflict: true, reason } when either stored key no longer matches its base, and both stored values stay intact. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  upsertMonthlySummary: "Enter or update a month's direct cash-out total (supersedes that month's transactions). Compare-and-swap (build v65): when the caller supplies `base` (the stored month total as loaded, null when none was stored), the write is refused with { ok: false, conflict: true, reason } when the stored total differs from the base. Omitting `base` keeps the legacy unchecked write. Success returns { ok: true }. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlySummary: "Remove a month's entered cash-out total. Returns { ok: false, reason } when no total is recorded for that month. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addMonthlyBill: "Add a monthly bill.",
-  updateMonthlyBill: "Edit a monthly bill's details. Only the fields actually sent are written: notes, category, and keepLightsOn are optional with no defaults, so an absent field preserves the stored value, while an explicitly sent notes: null clears the notes. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the bill's five form fields as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save would replace no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setMonthlyBillCategory: "Set a monthly bill's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setYearlyCategory: "Set a yearly/periodic expense's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setMonthlyBillKeepLightsOn: "Toggle a monthly bill's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setMonthlyBillsCollapsedAll: "Persist the Monthly bills section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
-  setYearlyBillsCollapsedAll: "Persist the Yearly & periodic expenses section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
-  setByCategoryCollapsedAll: "Persist the By category section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
-  setYearInSpendingCollapsedAll: "Persist the Year in spending section's collapsed/expanded state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  updateMonthlyBill: "Edit a monthly bill's details. Only the fields actually sent are written: notes, category, and keepLightsOn are optional with no defaults, so an absent field preserves the stored value, while an explicitly sent notes: null clears the notes. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (build v65): when the caller supplies `base` (the bill's five form fields as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save would replace no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setMonthlyBillCategory: "Set a monthly bill's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setYearlyCategory: "Set a yearly/periodic expense's category (relabels past months' grouping). Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setMonthlyBillKeepLightsOn: "Toggle a monthly bill's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setMonthlyBillsCollapsedAll: "Persist the Monthly bills section's collapsed/expanded state. Epoch-checked (build v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setYearlyBillsCollapsedAll: "Persist the Yearly & periodic expenses section's collapsed/expanded state. Epoch-checked (build v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setByCategoryCollapsedAll: "Persist the By category section's collapsed/expanded state. Epoch-checked (build v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setYearInSpendingCollapsedAll: "Persist the Year in spending section's collapsed/expanded state. Epoch-checked (build v130, round-19 finding 10): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
   getExplainerState: "Read the explainer panel's expanded state.",
   setExplainerExpanded: "Persist the explainer panel's expanded state.",
   getUiFoldState: "Read the generic fold state: the open/closed map for the Spending and Net Worth collapsible pieces not owned by a more specific store (per-month cash-out item lists, the import panels, the reserve settings fold, the Trend anchor note). Only folds left open are carried; an absent id is that fold's default (closed).",
   setUiFoldState: "Persist one generic fold's open/closed state (see getUiFoldState). Display-only; setting a fold closed removes its entry, since every fold in this store defaults to closed.",
-  setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist. The version write is an atomic upsert on the (bill, effective month) pair, which the database enforces as unique (contract v64). Compare-and-swap (contract v65): when the caller supplies `base` (the amount stored for that effective month as loaded — null when no version existed for it), the write is refused with { ok: false, conflict: true, reason } when the stored amount for that month differs from the base. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteMonthlyBillVersion: "Remove one version from a monthly bill's history. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  seedExamples: "Seed the example spending dataset. Refused unless the WHOLE dataset is empty — every dataset table, settings included (the one global first-run emptiness check, seedGuardCore): a tracker holding any real record receives no sample rows. The seed commits as ONE atomic batch (contract v64): a failure mid-seed leaves the dataset empty and a plain retry can succeed.",
-  seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (contract v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
+  setYearlyKeepLightsOn: "Toggle a yearly/periodic expense's Keep-the-lights-on flag. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setMonthlyBillAmount: "Set a monthly bill's amount from a chosen month onward. Returns { ok: false, reason } when the bill does not exist. The version write is an atomic upsert on the (bill, effective month) pair, which the database enforces as unique (build v64). Compare-and-swap (build v65): when the caller supplies `base` (the amount stored for that effective month as loaded — null when no version existed for it), the write is refused with { ok: false, conflict: true, reason } when the stored amount for that month differs from the base. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlyBill: "Delete a monthly bill and its versions. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteMonthlyBillVersion: "Remove one version from a monthly bill's history. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  seedExamples: "Seed the example spending dataset. Refused unless the WHOLE dataset is empty — every dataset table, settings included (the one global first-run emptiness check, seedGuardCore): a tracker holding any real record receives no sample rows. The seed commits as ONE atomic batch (build v64): a failure mid-seed leaves the dataset empty and a plain retry can succeed.",
+  seedFirstRun: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (build v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed. Returns seeded: false (with the tables that blocked it) when the dataset holds any record, so the caller marks the store seeded only when the seed actually ran.",
   clearAllData: "Erase ALL tracker data: all spending data, all Net Worth data, and all saved planner data and settings — including the Retirement calculator record and baseline, the Roth plan record, and the Roth UI state. Requires confirm to carry the exact phrase \"delete everything\"; any other confirmation deletes nothing.",
-  seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table. The seed commits as ONE atomic batch (contract v64), like seedExamples.",
-  getNetWorth: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress. restoreEpoch (contract v93) is the dataset's current restore generation — the epoch base the snapshot editors pass back alongside baseRevision, so an editor whose view predates a backup restore is refused.",
-  setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setNwTarget: "Set the Net Worth target amount. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results. Also carries savedUnreadable / baselineUnreadable markers (contract v67): true when the saved inputs record / baseline record exists but cannot be read — in that state saved / baseline read as null exactly as an absent record would, and the markers are the distinction. restoreEpoch (contract v121) is the dataset's current restore generation — the epoch base the spending-unit toggle passes back as baseEpoch.",
+  seedNetWorth: "Seed the Net Worth accounts and snapshots from the built-in sample data. Refused (seeded: false) unless the WHOLE dataset is empty — the same global first-run emptiness check seedExamples uses, so sample history never lands beside real records in any table. The seed commits as ONE atomic batch (build v64), like seedExamples.",
+  getNetWorth: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — build v65), totals, bucket split subtotals, and target progress. restoreEpoch (build v93) is the dataset's current restore generation — the epoch base the snapshot editors pass back alongside baseRevision, so an editor whose view predates a backup restore is refused.",
+  setNwIncludeProperty: "Set whether property (house/mortgage) counts in Net Worth totals. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setNwTarget: "Set the Net Worth target amount. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  getRetirementCalc: "Retirement calculator: saved inputs, defaults from Net Worth and trailing spending, and priced results. Also carries savedUnreadable / baselineUnreadable markers (build v67): true when the saved inputs record / baseline record exists but cannot be read — in that state saved / baseline read as null exactly as an absent record would, and the markers are the distinction. restoreEpoch (build v121) is the dataset's current restore generation — the epoch base the spending-unit toggle passes back as baseEpoch.",
   setRetirementAssumptionsCollapsed: "Persist the Retirement assumptions section's collapsed state.",
-  setRetirementSpendingUnit: "Persist the Retirement annual-spending entry unit (per year / per month). Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getRetirementCalc's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  saveRetirementCalc: "Save the Retirement calculator inputs. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current lite record (saved inputs, scenarios, baseline, and both revisions) instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. FIRST WRITE (contract v64): when no record exists yet and a baseRevision is supplied, the write is insert-if-absent — if a first save from elsewhere landed between the read and the write, this write is refused with the same conflict shape instead of overwriting it, so two overlapping first saves at base 0 produce exactly one success and one conflict.",
-  saveRetirementBaseline: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan'). Revision-checked (CAS) on BOTH records: a write whose baseRevision or baseBaselineRevision no longer matches the stored revision is refused before anything is written, with the current lite record and both revisions; a baseline commit that loses a commit-time race is retried once against the fresh baseline, and a second loss returns a stage \"baseline\" conflict (the working inputs were saved; the baseline did not move). Writes with no bases keep the legacy unchecked behaviour, and every accepted write bumps both revisions and returns them. FIRST WRITE (contract v64): when a record does not exist yet and its base is supplied, that record's write is insert-if-absent — a landed concurrent first save refuses this write (an inputs-stage conflict when the working record landed, a stage \"baseline\" conflict when only the baseline landed) instead of being overwritten.",
-  getRetirementBaselineResults: "Price the saved Retirement baselines against the current defaults. Carries baselineUnreadable (contract v67): true when a baseline record exists but cannot be read, distinct from no baseline.",
+  setRetirementSpendingUnit: "Persist the Retirement annual-spending entry unit (per year / per month). Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getRetirementCalc's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  saveRetirementCalc: "Save the Retirement calculator inputs. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current lite record (saved inputs, scenarios, baseline, and both revisions) instead of overwriting it; a write with no baseRevision keeps the legacy unchecked behaviour, and every accepted write bumps the revision and returns it. FIRST WRITE (build v64): when no record exists yet and a baseRevision is supplied, the write is insert-if-absent — if a first save from elsewhere landed between the read and the write, this write is refused with the same conflict shape instead of overwriting it, so two overlapping first saves at base 0 produce exactly one success and one conflict.",
+  saveRetirementBaseline: "Make the given Retirement inputs both the working inputs and the comparison baseline ('Make this my plan'). Revision-checked (CAS) on BOTH records: a write whose baseRevision or baseBaselineRevision no longer matches the stored revision is refused before anything is written, with the current lite record and both revisions; a baseline commit that loses a commit-time race is retried once against the fresh baseline, and a second loss returns a stage \"baseline\" conflict (the working inputs were saved; the baseline did not move). Writes with no bases keep the legacy unchecked behaviour, and every accepted write bumps both revisions and returns them. FIRST WRITE (build v64): when a record does not exist yet and its base is supplied, that record's write is insert-if-absent — a landed concurrent first save refuses this write (an inputs-stage conflict when the working record landed, a stage \"baseline\" conflict when only the baseline landed) instead of being overwritten.",
+  getRetirementBaselineResults: "Price the saved Retirement baselines against the current defaults. Carries baselineUnreadable (build v67): true when a baseline record exists but cannot be read, distinct from no baseline.",
   saveRetirementScenario: "Save a Retirement scenario.",
   deleteRetirementScenario: "Delete a saved Retirement scenario.",
   renameRetirementScenario: "Rename a saved Retirement scenario.",
-  getRothPlanner: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, tax-return actuals block, and the latest Net Worth snapshot subtotals. Carries recordUnreadable (contract v67): true when the saved plan record exists but cannot be read — saved then reads as null exactly as an absent record would.",
+  getRothPlanner: "Roth Conversion planner: saved plan inputs, saved scenarios, execution-year block, tax-return actuals block, and the latest Net Worth snapshot subtotals. Carries recordUnreadable (build v67): true when the saved plan record exists but cannot be read — saved then reads as null exactly as an absent record would. The taxReturn block also carries the derived threaded percentages (re-audit SHOULD S-7): derivedImpliedDividendYieldPct / derivedImpliedInterestYieldPct (the implied yields the stored actuals describe over the saved record's resolved taxable pool) and derivedQualifiedDividendSharePct (line 3a ÷ line 3b), each null when its derivation yields no estimate — see the taxReturnSemantics convention describeApi publishes. The taxReturn block also carries rejectedNegativeActuals (contract v146, re-audit round 3 NICE-1): the stored amount lines the parse rejected as negative (a Form 1040 income line cannot be negative), each with its stored cents — those lines read null in the amounts above and resolve in the prefill exactly as unentered lines; the report is empty when nothing was rejected.",
   resetRothPlanner: "Reset the Roth plan record (plan inputs plus the execution-year, gift, MC-volatility, and tax-return blocks) to the seeded fresh-user defaults; saved scenarios pass through untouched. The reset commits against the record it read, retrying against the freshest record a bounded number of times if another save lands first; if it keeps losing that race it is refused with the current record — the same conflict shape saveRothInputs returns — instead of overwriting the newer save.",
   getRothUiState: "Read the Roth view's UI state (open sections, year table, workspace mode) plus the Playground form's remembered dial state, with the blob's current write revision.",
-  setRothUiState: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state. Revision-checked (CAS): a write whose baseRevision no longer matches the stored revision is refused with the current blob and its revision instead of overwriting it.",
+  setRothUiState: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state. Writers are strict: baseRevision is required on every call. Revision-checked (CAS): a write whose baseRevision is missing, or no longer matches the stored revision, is refused with the current blob and its revision instead of overwriting it — there is no unchecked write path — and every accepted write bumps the revision and returns it.",
   saveRothInputs: "Save the Roth plan record (inputs plus execution-year, MC-volatility, gift, and tax-return blocks). Writers are strict: a complete record is required, and baseRevision is required on every call. Revision-checked (CAS): a write whose baseRevision is missing, or no longer matches the stored revision, is refused with the current record and its revision instead of overwriting it — there is no unchecked write path — and every accepted write bumps the revision and returns it. " + SAVE_FLATTENING_SENTENCE + " " + CONVERTED_ALREADY_DISTINCTION_SENTENCE,
   saveRothScenario: "Save the given plan inputs as a new named Roth scenario (complete record required).",
-  updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept). Scenario-level compare-and-swap (contract v65): when the caller supplies `baseScenario` (the named scenario's complete payload as loaded), the write is refused with { ok: false, conflict: true, reason } when the named scenario's stored payload no longer matches that base — inside the record blob's own raw-value CAS, which by itself proves only that the blob is fresh, not that this scenario is. A concurrent write to a different scenario or to the working inputs does not refuse this save. Omitting `baseScenario` keeps the legacy blob-CAS-only behaviour.",
+  updateRothScenario: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept). Scenario-level compare-and-swap (build v65): when the caller supplies `baseScenario` (the named scenario's complete payload as loaded), the write is refused with { ok: false, conflict: true, reason } when the named scenario's stored payload no longer matches that base — inside the record blob's own raw-value CAS, which by itself proves only that the blob is fresh, not that this scenario is. A concurrent write to a different scenario or to the working inputs does not refuse this save. Omitting `baseScenario` keeps the legacy blob-CAS-only behaviour.",
   deleteRothScenario: "Delete a saved Roth scenario by name.",
   renameRothScenario: "Rename a saved Roth scenario.",
-  runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). The searched candidate space includes gain-harvesting variants of every conversion candidate when the plan holds a taxable balance with basis below 100% (and is unchanged otherwise): each conversion candidate also gets a gainsHarvest twin, Do Nothing never does, and there is no separate ltcgZeroCap ceiling candidate family. Every scored candidate in the response (winner, runnersUp, doNothing, orderWinner, orderRunnersUp, orderDoNothing, claim-age table best entries, and the sensitivity entries) exposes its gainsHarvest state as a boolean, and a harvest twin's name carries the harvesting phrase (gain harvesting into the 0% bracket). Claiming-age floor conflicts are reported via claimAgeFloorMet and an explicit note rather than asserted away: claimAgeFloorMet is null when no claimAgeFloor is set, true when the crowned winner claims at or above the floor (or has no primary claiming age to violate it, or is the floor-exempt Do Nothing benchmark), and false when the winner claims below the floor — including a locked claim and the no-eligible-candidate fallback — in which case claimSearchNote states the conflict plainly, naming the floor and the winner's actual claiming age (and the locked reason when the claim is locked), and does not assert the winner meets the floor; the note never references below-floor markings in the per-age table when the claim age table is empty. PRICED LEVERS (contract v69): the response also carries savedPlan — the entered plan priced as its own fixed strategy (its saved ceilings, window, draw order, and entered claiming ages) in the same score shape — improvements, the top three DISTINCT searched candidates (Do Nothing excluded) whose net cost beats savedPlan's, each extended with gainVsSavedPlan (savedPlan.netCost − candidate.netCost, dollars, from the search's own figures), and winnerIsDoNothing. Compute-only; saves nothing.",
-  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). PER-YEAR TAX READOUTS (contract v51): each scenario also carries federalTaxCents and stateTaxCents (the lifetime federal / state split of totalTaxCents — the two sum to totalTaxCents) and a years array, one readout per priced march year in cents, read straight off the same priced rows the lifetime totals sum: year, agePrimary, ageSpouse, federalTaxCents, stateTaxCents, totalIncomeCents (the year's adjusted gross income (AGI)), taxableIncomeCents, acaCreditCents (the year's ACA premium credit kept), educationRefundableCents (the year's refundable American Opportunity Credit portion — money the household receives even past a $0 tax bill, netted into the net bill beside the ACA credit), irmaaCents (IRMAA surcharges PAID that year — Medicare premiums, not tax), conversionCents, and pretaxOutByChoiceCents (the year's pre-tax money out by choice: its conversion plus its pre-tax draw for spending; an RMD alone is not in it — distinct from runRothFunding's pretaxDrawCents, which is the extra spending draw plus pre-tax amounts applied to the tax bill and excludes the conversion itself; contract v127, round-19 finding 11). Display-only readouts — no score, ranking, or delta is derived from them, and no pricing changed. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). " + CEILINGS_REPLACEMENT_SENTENCE,
+  runRothOptimizer: "Price the joint claiming-age × conversion-strategy search and return the winning strategy, Do Nothing, runner-ups, and sensitivity strips. The winner is the candidate with the lowest lifetime net cost; ties on cost are broken by ending wealth (the higher ending after-tax wealth wins). The searched candidate space includes gain-harvesting variants of every conversion candidate when the plan holds a taxable balance with basis below 100% (and is unchanged otherwise): each conversion candidate also gets a gainsHarvest twin, Do Nothing never does, and there is no separate ltcgZeroCap ceiling candidate family. Every scored candidate in the response (winner, runnersUp, doNothing, orderWinner, orderRunnersUp, orderDoNothing, claim-age table best entries, and the sensitivity entries) exposes its gainsHarvest state as a boolean, and a harvest twin's name carries the harvesting phrase (gain harvesting into the 0% bracket). Claiming-age floor conflicts are reported via claimAgeFloorMet and an explicit note rather than asserted away: claimAgeFloorMet is null when no claimAgeFloor is set, true when the crowned winner claims at or above the floor (or has no primary claiming age to violate it, or is the floor-exempt Do Nothing benchmark), and false when the winner claims below the floor — including a locked claim and the no-eligible-candidate fallback — in which case claimSearchNote states the conflict plainly, naming the floor and the winner's actual claiming age (and the locked reason when the claim is locked), and does not assert the winner meets the floor; the note never references below-floor markings in the per-age table when the claim age table is empty. PRICED LEVERS (build v69): the response also carries savedPlan — the entered plan priced as its own fixed strategy (its saved ceilings, window, draw order, and entered claiming ages) in the same score shape — improvements, the top three DISTINCT searched candidates (Do Nothing excluded) whose net cost beats savedPlan's, each extended with gainVsSavedPlan (savedPlan.netCost − candidate.netCost, dollars, from the search's own figures), and winnerIsDoNothing. Compute-only; saves nothing.",
+  runRothCompare: "Price an ordered list of named scenario patches against one base plan and return per-scenario results in cents with deltas versus the baseline scenario. Each scenario also carries unpaidTaxCents: the lifetime part of its assessed tax its balances could not pay (0 whenever the scenario always covers its bill — see the unpaidTaxSemantics convention describeApi publishes). PER-YEAR TAX READOUTS (build v51): each scenario also carries federalTaxCents and stateTaxCents (the lifetime federal / state split of totalTaxCents — the two sum to totalTaxCents) and a years array, one readout per priced march year in cents, read straight off the same priced rows the lifetime totals sum: year, agePrimary, ageSpouse, federalTaxCents, stateTaxCents, totalIncomeCents (the year's adjusted gross income (AGI)), taxableIncomeCents, acaCreditCents (the year's ACA premium credit kept), educationRefundableCents (the year's refundable American Opportunity Credit portion — money the household receives even past a $0 tax bill, netted into the net bill beside the ACA credit), irmaaCents (IRMAA surcharges PAID that year — Medicare premiums, not tax), conversionCents, and pretaxOutByChoiceCents (the year's pre-tax money out by choice: its conversion plus its pre-tax draw for spending; an RMD alone is not in it — distinct from runRothFunding's pretaxDrawCents, which is the extra spending draw plus pre-tax amounts applied to the tax bill and excludes the conversion itself; build v127, round-19 finding 11). PRE-TAX DRAW SPLIT (audit S-10, surfaced under re-audit SHOULD S-8): each year readout also carries the split of the year's total priced pre-tax draw — pretaxSpendingDrawCents (the pre-tax draw for spending alone), pretaxTaxDebitCents (the pre-tax debits that paid the tax bill alone — NOT money out by choice, and excluded from pretaxOutByChoiceCents), and extraPreTaxDrawCents (their sum, the total the year's priced AGI carries) — read off the same priced detail the by-choice field reads its spending component from, so a consumer can see the two components separately instead of re-deriving them (see the pretaxDrawSplitSemantics convention describeApi publishes). Display-only readouts — no score, ranking, or delta is derived from them, and no pricing changed. Compute-only; saves nothing. Balance keys follow the two balanceSemantics rules describeApi publishes: in the base plan payload a null balance is a blank that follows the Net Worth snapshot (and an omitted key fails validation), while in a scenario's overrides an omitted balance key inherits the base's resolved value and an explicit null prices that balance at $0 for the scenario — and the scenario's effectiveInputs echo shows that resolved $0, not the null that was sent. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). THREADED FIELDS (re-audit SHOULD S-7): each scenario's effectiveInputs echo also carries the threaded pricing values that scenario priced with — yieldFallbackDividendPct / yieldFallbackInterestPct (the blank-yield fallback transients threaded for it, re-derived from its own pool per contract v140 or supplied by the caller) and qualifiedDividendSharePct, plus effectiveDividendYieldPct / effectiveInterestYieldPct / effectiveQualifiedDividendPct (the engine inputs' resolved yields) — and the base payload and scenario overrides alike accept the three transients as passable optional fields: a supplied value is used exactly as supplied and never overwritten by the record derivation (see the taxReturnSemantics convention). " + CEILINGS_REPLACEMENT_SENTENCE,
   runRothMonteCarloCheck: "Re-price the optimizer's winner and Do Nothing across varied return paths and report win rate and advantage percentiles. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the plan's expected return plus volatilityPct × a standard-normal shock; at volatilityPct 0 every path equals the deterministic run.",
   runRothMonteCarloStats: "Price up to four named scenario patches against one base plan across 250 varied return paths (the market-uncertainty check's fixed stream: one shared shock stream per path, each scenario's series centered on its own expected return) and report per scenario, in cents: pathsWithShortfall and neverShortfallRatePct (the share of paths with no unfunded-spending year), total-shortfall p50/p90, and ending after-tax wealth / ending pre-tax / lifetime net cost p10/p50/p90. Each scenario also carries fullyFundedRatePct (the share of paths with neither an unfunded-spending year nor an unpaid-tax year), pathsWithUnpaidTax, and the total unpaid tax p50/p90 in cents; neverShortfallRatePct and pathsWithShortfall remain the SPENDING-shortfall-only measures — a path can fund every dollar of spending yet leave assessed tax unpaid, and only fullyFundedRatePct counts that as a failure. Every scenario's horizon is validated like the base plan's (its end age must be after the current age); a scenario that fails makes the whole call fail with a reason naming that scenario. Each path draws a fixed 160-year shock vector (MC_STREAM_STRIDE_YEARS) regardless of which scenarios are batched, so a scenario's statistics are identical whether it is priced alone or alongside longer- or shorter-horizon companions. Compute-only; saves nothing. Results come from 250 paths from the fixed stream (seed 12345): identical payloads return identical results on every call. Each path's yearly return is the scenario's own expected return plus volatilityPct × a standard-normal shock, so at volatilityPct 0 every path equals that scenario's deterministic run. Each year's return is applied with the year's growth factor floored at zero (returns floored at −100%), which at volatility near the 100% maximum raises the applied distribution's effective mean and lowers its effective volatility (a requested 0% mean / 100% volatility applies as approximately +8.33% / 86.67%), while at ordinary volatilities the effect is negligible. Scenario overrides may set flexCutPct / flexFloorPct (flexible spending — see conventions). The response also carries effectiveInputs, the base plan's resolved inputs the run priced from. " + CEILINGS_REPLACEMENT_SENTENCE,
   runWorkYearsCompare: "Price quitting work at up to three ages: roll the work years forward, then price each with the joint optimizer. Compute-only; saves nothing. In each work year the plan's taxable interest and dividend yields are priced as mandatory income on the year's opening Taxable balance, and Social Security benefits whose start age has been reached are deposited and taxed during the work years — the pre-full-retirement-age earnings test is NOT modeled, so benefits are deposited in full. A work-year deficit funded from Taxable realizes capital gains on the sale, priced into that year's tax, and the taxable account's cost basis rolls forward in dollars into the plan priced at the quit age. An entering capital-loss carryforward prices in the work years through the same loss ledger the plan march uses: each work year's sale gains net against it, its §1211(b) allowance prices against the year's taxable income (reconciled once at year end), and the plan priced at the quit age enters with the consumed carryforward. The optional medicareAgePrimary request field (the primary's Medicare enrollment age; request-only, never saved) stops all HSA contributions — the employee's and the employer's — in work years at or after that age; the employer HSA figure is read as the employer's contribution only in years the primary is HSA-eligible.",
   runRothGiftCompare: "Price the plan as saved versus with a one-off gift of appreciated stock to a child, including the child's sale tax and the gift-tax exclusion check. The gifted parcel's own basis leaves the parents' basis ledger with the shares; the counterfactual sale is capped at the shares the baseline still holds in the sale year; the exclusion's donor count follows the gift year's filing status (one donor after a spouse's death year). Compute-only; saves nothing.",
-  runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the newest published law row; the response's lawYearUsed names the row actually priced. The optional residenceState prices the state tax under a state's rules layer instead of the flat stateRatePct when present ('WA' = Washington's capital-gains excise, RCW 82.87 — see the stateSemantics convention); absent prices the flat rate exactly as before. Dividends follow the playgroundYearSemantics convention describeApi publishes: the Ordinary dividends input is the total and the Qualified input is its subset, and the pricer derives the non-qualified part from the pair.",
-  runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state); ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
-  runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the twelve source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, taxExemptCents tax-exempt interest received as cash, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income — the yield on the year's opening Taxable balance is reinvested in the engine's mechanics (it adds to the taxable basis and stays in the balance), so it is NOT cash funding for the year's needs and its funding rows are $0 (interestYieldCents, dividendYieldCents): the yield is still priced as income and shown in the year's detail and income stack, just not as funding — the draws below report the full amounts actually debited, not amounts net of the yield), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits — distinct from runRothCompare's pretaxOutByChoiceCents, which is the conversion plus the pre-tax spending draw and excludes tax-bill debits (contract v127, round-19 finding 11); taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — the full settled amounts, not net of any yield (the reinvested yield is not a funding source, so it offsets nothing); rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the twelve sources plus spendShortfallCents plus unpaidTaxCents foot to totalNeedCents in every year. unpaidTaxCents is the year's unpaid tax: the part of the assessed tax bill (federal, state, penalty, IRMAA) still owed after every balance the debit chain could draw from was exhausted — reported, never treated as paid (see the unpaidTaxSemantics convention describeApi publishes); neither it nor the shortfall is ever reconciled into a source field. A year whose balances cannot cover its needs foots exactly, by the sum of its unfunded spending and its unpaid tax. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state) and ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). Compute-only; saves nothing.",
+  runPlaygroundYear: "Price ONE standalone tax year with the Playground's dial set through the shared single-year engine. Compute-only; reads and writes nothing. The request rejects negative amounts with a validation error instead of clamping them (otherOrdinary excepted — it keeps its sign by design), rejects a stateRatePct outside 0–100, and rejects a taxYear outside 2000–2100. A taxYear with no published law row prices under the nearest published law row in its own direction — the newest published row for a year past the table, the OLDEST published row for a year earlier than the table (never a later year's law); the response's lawYearUsed names the row actually priced. The optional residenceState prices the state tax under a state's rules layer instead of the flat stateRatePct when present ('WA' = Washington's capital-gains excise, RCW 82.87 — see the stateSemantics convention); absent prices the flat rate exactly as before. Dividends follow the playgroundYearSemantics convention describeApi publishes: the Ordinary dividends input is the total and the Qualified input is its subset, and the pricer derives the non-qualified part from the pair. The result also surfaces the literal clamp inputs as entered (re-audit SHOULD S-7): ordinaryDividendsEntered / qualifiedDividendsEntered echo the supplied pair, qualifiedDividendsWasClamped says whether the S-8/S-11 clamp trimmed the qualified figure, and qualifiedDividendsExcess is the trimmed amount ($0 when the pair was possible). ACA RECONCILIATION FACTS (build v193, re-audit round 3 SHOULD-4): the request may also carry the year's filing-settlement facts — aptcTaken (the advance premium credit actually taken, dollars), acaEnrollmentPremiumAnnual (the premium of the plan actually enrolled in, capping the final allowable credit), and acaCoverageReduction (coverage-month reduction dollars). All three are OPTIONAL: absent aptcTaken, the year prices exactly as before — netTaxBill is totalTax less the refundable education credit and the premium credit is treated as fully advanced against the year's premiums (the spending the cash left is compared against holds the net premium, so the credit is never netted in). When aptcTaken is supplied, the shared pricer prices the year's filing settlement as its netTaxBill — totalTax less the credit still due, plus any excess advance credit to repay, less the refundable education credit, on the final allowable credit (the priced credit capped at acaEnrollmentPremiumAnnual when supplied, less acaCoverageReduction, $0 over the cliff), with the reconciliation running on the effective final credit (the priced credit; $0 when nobody in the household can be on the marketplace; unpriced only when someone is marketplace-eligible but no benchmark was entered — and when the settlement cannot price, including a pre-2026 year whose APTC taken exceeds the effective final credit, netTaxBill falls back to the un-reconciled bill) — so cashLeftAfterTax is then the cash left after that settlement, the same figure runDecemberProjection reports for the same year and facts (its cashLeftAtHeadline, less any taxable cash the console adds at its assembly).",
+  runPlanYearDetail: "Price one year of a plan (by calendar year or age) with the plan's fill settings, plus the same year with its conversion forced to $0. Compute-only; saves nothing. Under basis drift, spending draws and tax paid from Taxable realize gains pro-rata. The year settlement iterates to a fixed point: the income its own tax-channel debits create — realized gains on the Taxable sales that pay tax (the initial sale, the reprice-delta sale, and the unpaid-tax debits' Taxable leg, at the year's gain rate or per-tier under basis tiers) and the full amount of any pre-tax debit that pays tax — is priced as income of the same year, and the settlement repeats until the tax due, the debits taken, and the priced income agree to the cent (bounded; a year that cannot converge returns its best iterated state). Gifts still reduce basis dollars pro-rata without separately realizing gains; college costs flow through ordinary spending draws and are in the gain-realizing set. Each row also carries unpaidTax (dollars): the year's priced tax the balances could not pay, $0 when the year pays in full (see the unpaidTaxSemantics convention describeApi publishes); settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state); ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). PRE-TAX DRAW SPLIT (audit S-10, surfaced under re-audit SHOULD S-8): each row also carries the split of the year's priced pre-tax draw, in dollars like every money figure in the row — extraPreTaxDraw (the year's total priced pre-tax draw beyond its RMD and conversion, the amount the priced AGI carries) and its two components, pretaxSpendingDraw (the draw for spending alone, money out by choice) and pretaxTaxDebit (the pre-tax debits that paid the tax bill alone, not money out by choice), which sum to the total (see the pretaxDrawSplitSemantics convention describeApi publishes). Flexible spending (flexCutPct) applies on this deterministic path exactly as a compare run prices it: with a non-negative expectedReturnPct it never triggers and the detail is identical to flex-off; with a negative expectedReturnPct the cut years show as priced. There is no per-year flex counterfactual in v1 — the detail cannot show what a year would look like had the prior year been a down year.",
+  runRothFunding: "Price the plan exactly as given (its own ceilings strategy, as the Plan tab runs it) and return one funding row per priced year, all money in integer cents. Needs per year: spendingCents (the year's spending need — annual spending from the retirement-age year on, $0 before it) (the year's spending need is the effective need — post-flex-cut when the plan sets flexCutPct), federalTaxCents (final federal tax plus any pre-59½ withholding penalty, which is paid as part of the federal withholding), stateTaxCents, irmaaCents (Medicare premiums paid that year); totalNeedCents is their sum. Sources are APPLIED amounts under one waterfall, so the twelve source fields sum to totalNeedCents for every year the plan can fund: cash income first (ssCents Social Security received, rmdCents the year's RMD, taxExemptCents tax-exempt interest received as cash, otherIncomeCents other ordinary income — in that order; income beyond the year's needs is saved into Taxable by the engine and is not a source), then taxable yield income — the yield on the year's opening Taxable balance is reinvested in the engine's mechanics (it adds to the taxable basis and stays in the balance), so it is NOT cash funding for the year's needs and its funding rows are $0 (interestYieldCents, dividendYieldCents): the yield is still priced as income and shown in the year's detail and income stack, just not as funding — the draws below report the full amounts actually debited, not amounts net of the yield), then account draws (cashSpendCents: the spend-from-cash share of the year's spending need — see the spendFromCashPct input field: blank = off; when set, X% of each year's spending need is paid from the cash tier of the taxable pool first, with no income, no gains, and no MAGI from that share; the sleeve is the snapshot cash portion of the taxable pool (threaded server-side as spendFromCashSleeveCents when the taxable balance follows the snapshot; with basis tiers it is the 100%-basis tier's balance) and it ends when it empties — tax sales still follow the existing highest-basis-first order and can also drain the sleeve, so the cash share can end early; $0 in every year when the field is blank; pretaxDrawCents: the extra pre-tax spending draw plus every pre-tax amount applied to the tax bill — conversion withholding including its penalty gross-up and pre-tax debits — distinct from runRothCompare's pretaxOutByChoiceCents, which is the conversion plus the pre-tax spending draw and excludes tax-bill debits (build v127, round-19 finding 11); PRE-TAX DRAW SPLIT (audit S-10, surfaced under re-audit SHOULD S-8): each row also carries the split of the year's priced pre-tax draw — pretaxSpendingDrawCents (the pre-tax draw for spending alone), pretaxTaxDebitCents (the pre-tax debits that paid the tax bill alone), and extraPreTaxDrawCents (their sum — the year's detail total, the amount the priced AGI carries) — display only, none of them a funding source or part of the cash identity; because pretaxDrawCents also counts conversion withholding applied to the bill (money already inside conversionCents), it agrees with extraPreTaxDrawCents in a converged year with no conversion withholding and no harvest tax payment from pre-tax and can differ otherwise (see the pretaxDrawSplitSemantics convention describeApi publishes); taxableSoldForSpendingCents / taxableSoldForTaxCents: Taxable sold for the spending settlement and for the tax bill, following the engine's settlement — the tax channel per payTaxFrom, with protectMinTaxableCents capping only that channel's own tax-bill sale (see the protectMinSemantics convention describeApi publishes: the unpaid-tax debits and settlement/harvest reprice deltas that also land in taxableSoldForTaxCents are NOT capped by it, and neither are spending sales) — the full settled amounts, not net of any yield (the reinvested yield is not a funding source, so it offsets nothing); rothDrawCents: the Roth spending draw plus Roth debits applied to the tax bill; salarySurplusCents: always 0 — plan pricing has no salary flow). spendShortfallCents is the year's unfunded spending — the spending need left after cash income, the tax channels' prior claim on balances, the cash sleeve, and the draw-order draws, measured on the final settlement; spending only, so a tax bill the balances could not pay is not in it; $0 in every year the plan can fund; it is not a source — the twelve sources plus spendShortfallCents plus unpaidTaxCents foot to totalNeedCents in every year. unpaidTaxCents is the year's unpaid tax: the part of the assessed tax bill (federal, state, penalty, IRMAA) still owed after every balance the debit chain could draw from was exhausted — reported, never treated as paid (see the unpaidTaxSemantics convention describeApi publishes); neither it nor the shortfall is ever reconciled into a source field. A year whose balances cannot cover its needs foots exactly, by the sum of its unfunded spending and its unpaid tax. conversionCents (the year's total priced conversion) is a transfer between buckets, not a source; harvestSoldCents is the gain realized by selling and immediately rebuying into the 0% space (sold and reinvested — neither a source nor a need). Also per year: magiCents, acaMagiCents, acaCliffCents (null when ACA pricing is not in scope), acaCreditCents, acaPriced, taxableIncomeCents, bracketPct, drawGainsCents (realized gains from the year's draws and tax sales), ssTaxableCents, settlementConverged (whether the year's kept settlement was an exact fixed point of the settlement iteration — the feedback pair it assumed equals the pair its debits created) and settlementMismatchCents ({gains, pretax} — the kept round's residual mismatch per component in integer cents, both 0 when converged; a non-converged year was priced from the iteration's best iterated state) and ceilingBreached (true when a switched-on ceiling is still breached by the year's final priced figures at conversion $0 — the draws alone breach; see the ceilingBreachedSemantics convention describeApi publishes). THREADED FIELDS (re-audit SHOULD S-7): the response's effectiveInputs echo also carries the threaded pricing values the run priced with — yieldFallbackDividendPct / yieldFallbackInterestPct (the blank-yield fallback transients threaded from the stored record's tax-return actuals, or supplied by the caller) and qualifiedDividendSharePct, plus effectiveDividendYieldPct / effectiveInterestYieldPct / effectiveQualifiedDividendPct (the engine inputs' resolved yields; null on the qualified field = the engine's 100%-qualified default) — and the request accepts the three transients as passable optional fields, used exactly as supplied when given (see the taxReturnSemantics convention). Compute-only; saves nothing.",
   getYearSummary: "Year summary for one year: spending figures and Net Worth movement on the same math as their own views. The Keep-the-lights-on floor is priced for the requested year: at the current month for the current year, otherwise at the last month included in that year's totals (or that year's December when it has none).",
-  setNwAccountsCollapsed: "Persist the Net Worth Accounts section's collapsed state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
-  setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
-  setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot. Epoch-checked (contract v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setNwAccountsCollapsed: "Persist the Net Worth Accounts section's collapsed state. Epoch-checked (build v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setNwHistoryCollapsed: "Persist the Net Worth History section's collapsed state. Epoch-checked (build v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
+  setNwGrowthSince: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot. Epoch-checked (build v130, round-19 finding 10): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load. Omitting `baseEpoch` keeps the pre-v130 behaviour.",
   addNwSnapshot: "Add a Net Worth snapshot with per-account balances (splits define the balance).",
-  updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the replacement is refused with { ok: false, conflict: true, revision, reason } when the stored revision has moved — by either snapshot writer — and the stored snapshot stays intact; an accepted write bumps the revision and returns it. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the replacement is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match; an editor that loaded after the restore succeeds normally. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
-  updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (contract v64), so overlapping writes can never create two balance rows for one account in one snapshot. Revision-checked (CAS, contract v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the write is refused with { ok: false, conflict: true, revision, reason } when the snapshot's revision has moved, and an accepted write bumps that same revision — so a whole-snapshot editor holding the older revision conflicts instead of restoring the old balance. Epoch-checked (contract v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
-  deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist. Epoch-checked (contract v121, round-18 F4): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the delete is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load — the restore path re-inserts snapshots with their explicit ids, so a stale delete by id would otherwise remove the restored snapshot. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  updateNwSnapshot: "Replace a Net Worth snapshot's date, note, and balances. Revision-checked (CAS, build v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the replacement is refused with { ok: false, conflict: true, revision, reason } when the stored revision has moved — by either snapshot writer — and the stored snapshot stays intact; an accepted write bumps the revision and returns it. Epoch-checked (build v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the replacement is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match; an editor that loaded after the restore succeeds normally. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
+  updateNwBalance: "Correct one account's balance in one snapshot (null removes it). The write is ONE atomic upsert on the (snapshot, account) pair, which the database enforces as unique (build v64), so overlapping writes can never create two balance rows for one account in one snapshot. Revision-checked (CAS, build v65): when the caller supplies `baseRevision` (the snapshot revision loaded from getNetWorth), the write is refused with { ok: false, conflict: true, revision, reason } when the snapshot's revision has moved, and an accepted write bumps that same revision — so a whole-snapshot editor holding the older revision conflicts instead of restoring the old balance. Epoch-checked (build v93): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with the restore-naming conflict reason when a backup restore has advanced the stored epoch since the load, even when the revision numbers match. Omitting `baseRevision`/`baseEpoch` keeps the legacy unchecked write.",
+  deleteNwSnapshot: "Delete a Net Worth snapshot and its balances. Returns ok: false when the snapshot does not exist. Epoch-checked (build v121, round-18 F4): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the delete is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load — the restore path re-inserts snapshots with their explicit ids, so a stale delete by id would otherwise remove the restored snapshot. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   addNwAccount: "Add a Net Worth account (ordinary, property, or custodial). An absent propertyKind defaults to \"none\"; an unknown propertyKind value is rejected, never defaulted.",
-  renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist. Compare-and-swap (contract v65): when the caller supplies `base` (the account's name, propertyKind, and custodial flag as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save writes no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
-  deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances. Epoch-checked (contract v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  renameNwAccount: "Rename a Net Worth account and optionally update its property/custodial flags. Returns ok: false when the account does not exist. Compare-and-swap (build v65): when the caller supplies `base` (the account's name, propertyKind, and custodial flag as loaded), the write is refused with { ok: false, conflict: true, reason } when any field this save writes no longer matches its base in storage. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  setNwAccountArchived: "Archive or restore a Net Worth account. Returns ok: false when the account does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
+  deleteNwAccount: "Permanently delete an archived, non-property Net Worth account and its balances. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getNetWorth's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   exportbackup: "Export the complete dataset as one decrypted backup payload. The payload carries an authenticityMac — a keyed MAC over its contents — which restorebackup verifies before restoring.",
-  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative; every backed-up field's own writer rule holds (string lengths for names, descriptions, categories, paid-by labels and notes; the yearly dueMonth within 1–12 or null; every stored flag a 0/1 value; row ids and foreign keys positive; no tax-bucket split on a property or custodial account's balance — the field rules are the shared fieldValidators fragments the writers themselves use); and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes. Named exclusions: settings values other than those three scalar typed settings ride as opaque blobs (their writers validate structured objects at save time and their readers parse leniently), and server-assigned values (sortOrder, createdAt timestamps) are carried without range checks; transaction amounts and Net Worth balances stay signed because their writers accept negatives. The Net Worth account bucket field is a legacy column no current writer writes, and it is validated, not excluded: a bucket value carrying the enc:v1: prefix is refused at preflight unless it genuinely decrypts under this app's encryption key in the bucket field's own context (the context the export path decrypts it under) — an undecryptable prefixed bucket would otherwise be stored verbatim and break every later export — while a plaintext bucket always restores. Every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes. Restore epoch (contract v93): every restore advances the stored restore epoch by one in the same atomic batch — a carried epoch value in the payload is ignored, so old backups still advance it — and any snapshot editor holding a pre-restore epoch is refused afterwards.",
+  restorebackup: "Replace the entire dataset with a backup payload from exportbackup, preserving ids. Authenticity rule: a payload carrying an authenticityMac is verified before anything is written — if the MAC does not verify, the restore is REFUSED with an authenticity error and nothing changes. A payload with NO MAC (written before MAC signing) still restores, but the result labels it UNAUTHENTICATED (authenticated: false) — nothing proves its contents are unmodified. The MAC key ships with the app (the same key in the live app and the packaged build, so backups verify on either side), so the MAC is tamper/corruption detection, not proof of who made the file; the payload's encryption key check remains a compatibility check only. Validation rule: preflight also enforces the ordinary writers' invariants before anything is written — every amount a writer requires nonnegative must be nonnegative; every backed-up field's own writer rule holds (string lengths for names, descriptions, categories, paid-by labels and notes; the yearly dueMonth within 1–12 or null; every stored flag a 0/1 value; row ids and foreign keys positive; no tax-bucket split on a property or custodial account's balance — the field rules are the shared fieldValidators fragments the writers themselves use); and typed settings must parse as their writers parse them (opening_reserve_cents a valid integer, nw_target_cents a positive integer, reserve_start_month a month or blank) — and a payload violating one is REFUSED with the reason and nothing changes. Named exclusions: settings values other than those three scalar typed settings ride as opaque blobs (their writers validate structured objects at save time and their readers parse leniently), and server-assigned values (sortOrder, createdAt timestamps) are carried without range checks; transaction amounts and Net Worth balances stay signed because their writers accept negatives. The Net Worth account bucket field is a legacy column no current writer writes, and it is validated, not excluded: a bucket value carrying the enc:v1: prefix is refused at preflight unless it genuinely decrypts under this app's encryption key in the bucket field's own context (the context the export path decrypts it under) — an undecryptable prefixed bucket would otherwise be stored verbatim and break every later export — while a plaintext bucket always restores. Every encrypted-at-rest setting, both import-settings blobs included, is stored encrypted immediately on restore — see the restoreValidationSemantics convention describeApi publishes. Before restoring a payload from a file you were handed, say which case it is and confirm with the user; restore only payloads from a trusted source — see the backupAuthenticitySemantics convention describeApi publishes. Restore epoch (build v93): every restore advances the stored restore epoch by one in the same atomic batch — a carried epoch value in the payload is ignored, so old backups still advance it — and any snapshot editor holding a pre-restore epoch is refused afterwards.",
   listBackups: "List the encrypted backup files the Backups panel shows: this space's own backups folder unioned with the legacy shared folder. Each entry's source says which folder it resolved to — \"own\" (deletable from the app) or \"legacy\" (exists only in the legacy folder, which is read-only: listed and restorable, never deletable from here).",
   deleteBackup: "Delete one backup-*.mstbak file from this space's own backups folder. A backup that exists only in the legacy shared folder is refused — that folder is read-only.",
   deleteAllBackups: "Delete every backup file in this space's own backups folder. Legacy-folder backups are never deleted.",
   createBackupNow: "Create an encrypted backup file now from the current dataset (same payload as exportbackup).",
   runAccuracySelfCheck: "Maintenance: run one accuracy fixture suite (tax, extended, retirement, teeth checks, data integrity, the replay reproducibility diagnostic, or the December console fixtures) per call.",
-  getDecemberProjection: "Read the December projection console's saved inputs. Returns {state, hasStored, revision, storedUnreadable}: storedUnreadable (contract v67) is true when a blob is stored but cannot be parsed as a state document — state then carries the lenient-parse defaults, and the flag is the distinction from a fresh console. The other fields: state is the console's complete input set (one settings blob, parsed leniently field by field — see saveDecemberProjection for the state fields' meanings, including the per-owner pre-tax balances, rmdAlreadyReceived, acaEnrollmentPremiumAnnual, the stray character splits, and — contract v103 — educationStudents: the December tax year's per-student qualified education expenses in dollars, each with the household's own aotcEligible mark, in the same shape the Playground prices (null = no education input yet — a blob written before the field existed reads it null and prices $0 of education credits exactly as before; at load, a null console value resolves from the saved Tax Plan record's entered students for the December tax year as a display-and-pricing overlay that a save does not persist unless the user edits the education controls in the console, and any entered console list always governs)); hasStored says whether a blob was ever saved (a first open can preseed from the saved Tax Plan record — the preseed carries the record's educationStudents for the December tax year when the console has no education input yet); revision is the blob's write revision — pass it back as baseRevision when saving, and a blob written before revisions existed reads as revision 0. The state also carries — contract v111 — the entering capital-loss carryforward: carryInCapitalLossSt / carryInCapitalLossLt and their Washington-attributable portions carryInCapitalLossStWa / carryInCapitalLossLtWa (dollars, each nullable: null = no input yet, $0 = explicitly none; a blob written before the fields existed reads them null, and at load a null field resolves from the saved Tax Plan record's entering carryforward only when the console's tax year is the plan's first year — the record's execution year — as a display-and-pricing overlay a save does not persist unless the user edits the carry-in controls in the console, and any entered console value, $0 included, always governs). The state also carries — contract v113 — the gain harvest: harvestOn (the plan's gain-harvest toggle for the year; false on every blob written before the field existed) and the two taxable-pool facts it sizes from, harvestPoolAmount (the combined taxable pool available to sell, dollars) and harvestPoolBasisPct (its blended basis %, basis dollars ÷ pool), each nullable (null = no input yet; a blob written before the fields existed reads them null, and at load a null fact resolves from the saved Tax Plan record's taxable facts — its taxable balance and its basis % or tier blend — as a display-and-pricing overlay a save does not persist unless the user edits the harvest pool controls in the console, and any entered console value, a $0 pool included, always governs; the toggle itself never resolves). Read-only.",
-  saveDecemberProjection: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision. Contract v67: a save whose stored record cannot be parsed is refused as a conflict carrying storedUnreadable: true — an unparseable stored record is never treated as a revision-0 base, and its bytes are left intact; the conflict shape also carries storedUnreadable on its other refusals (false there). REQUEST: {state, baseRevision} — baseRevision is REQUIRED and must equal the revision the caller's copy was read at (from getDecemberProjection; 0 when nothing is stored). RESPONSES: success is {ok:true, revision} with the NEW revision (the next save must pass it); a stale base is NOT an error throw — it returns the machine-readable conflict object {ok:false, conflict:true, revision, state, hasStored} carrying the currently stored revision and state, and writes nothing, so the caller reloads state instead of overwriting it. STATE FIELDS (all dollars, all lenient on read — a missing field reads at its inert default): pretaxBalancePrimary / pretaxBalanceSpouse are the two owners' SEPARATE prior-Dec-31 pre-tax balances (null = not entered for that owner); each owner's RMD is computed on their own age from their own balance, and each owner's table is selected by THAT owner's own beneficiary fact — the two facts are separate and neither is read for the other owner: spouseSoleBeneficiary states the spouse is the sole beneficiary of the PRIMARY's pre-tax accounts and selects ONLY the primary's table, while primarySoleBeneficiaryOfSpouse states the primary is the sole beneficiary of the SPOUSE's pre-tax accounts and selects ONLY the spouse's table — that field is TRI-STATE (boolean or null): true / false are explicit answers, and null = UNANSWERED (a blob written before that field existed parses a missing key as null, never as false); at load an unanswered console value is resolved from the saved Tax Plan record's value for the same fact when the record answers (an explicit console value is never overwritten, and the resolution writes nothing — the blob changes only when the user saves in the console), and only an explicit true selects the Joint table, so null and false both price the spouse's RMD on the Uniform table. FORMAT MARKER (contract v52): every save writes decemberStateFormat 3 beside the state fields; a blob WITHOUT the marker is pre-marker format — a stored false for primarySoleBeneficiaryOfSpouse in it is a STORED ANSWER and stands (the record overlay never overrides it), but it parses with legacyBeneficiaryAnswerUnconfirmed set, the console asks the user to confirm it, and the flag clears only when the user changes that control; a with-marker false is likewise a genuine answer; a stored true in a pre-marker blob stays true, and a missing key or explicit null still reads as UNANSWERED (null). RESOLUTION IS AN OVERLAY (v52): the record-resolved value is displayed and priced, but a save persists the console's OWN value for this field — still null while unanswered — unless the user changed that control in the console; the first-open preseed likewise stores the field unanswered. An owner's table is the Joint and Last Survivor table when that owner's fact is true and their spouse is more than 10 years younger, otherwise the Uniform Lifetime table. A balance entered as 0 is a REAL balance, distinct from null: it prices that owner's RMD as $0 and caps the draw at what the entered balances hold (a $0 total caps the draw at $0), while null caps nothing. pretaxBalance is the legacy combined total — writers set it to the split's sum when a split is explicit. A stored blob carrying only pretaxBalance (its split keys hold no amount for either owner) has balance ownership UNANSWERED (v52): the parsed state carries pretaxSplitExplicit=false with null split fields and the combined amount preserved — at load, when the Tax Plan record supplies BOTH owner amounts with a positive sum, resolution allocates the SAVED combined total across the owners by the record split's proportions (each share rounded to cents, the residual to the larger rounded share, tie to the primary) and never changes the total; when the record supplies EXACTLY ONE owner amount, that owner receives min(known, saved total) and the other owner receives the remainder (saved total minus that), both as numbers, so the total is still preserved exactly; a totals mismatch over $0.01 between the record split's sum and the saved total surfaces a console note naming both totals, and the partial-cap case (exactly one amount known and that amount above the saved total by more than $0.01) likewise surfaces a note naming the record figure and the saved total; the combined-to-primary assignment survives only as the last-resort fallback when the record has no usable split (neither amount known, or a both-known record sum of $0), an explicit blob split always governs over the record, and a save persists the stored provenance until the user edits either balance field in the console. rmdAlreadyReceived is the part of this year's RMD already paid AND already included in ytdOtherOrdinary — it is netted from the computed RMD (floored at $0) so a paid RMD is never counted twice. acaEnrollmentPremiumAnnual is the annual premium of the plan actually enrolled in (null = blank = NO cap, the benchmark-based credit stands); when entered, each case's final credit is capped at min(benchmark-based credit, this premium) BEFORE any coverage-month reduction. Stray character splits: strayROC is return of capital that is income OVER BASIS (a capital gain — rides the gains stack) while strayROCOrdinary is return of capital RECLASSIFIED AS AN ORDINARY DIVIDEND (rides ordinary dividends), and strayROCQualifiedAmount (contract v112) is the qualified-dividends PORTION of that reclassified amount (a portion, clamped to the strayROCOrdinary total, that additionally rides the qualified-dividends total — the whole reclassified amount stays in ordinary dividends, qualified being a subset — so its qualified part prices at the preferential rates instead of as ordinary income); strayK1CapGainAmount (contract v112) is the long-term-capital-gain PORTION of the signed strayK1 total (Schedule K-1 box 9a): a portion of a positive K-1 total, clamped to it, that rides the long-term-gains stack and is removed from ordinary income so nothing is double-counted, while the rest of the K-1 amount stays ordinary and a deductible K-1 loss (a negative total) has no gain portion; strayJanPaid is the total of fund distributions paid in January but deemed received Dec 31 (§852(b)(7)), strayJanPaidQualifiedAmount is the qualified-dividends PORTION of that total (a portion, clamped to the total), and strayJanPaidCapGainAmount (contract v104) is the capital-gain-distribution PORTION of that total: a portion, clamped to the total, that rides the long-term-gains stack as a capital gain dividend (§852(b)(3)) instead of ordinary dividends and is removed from the dividends total so nothing is double-counted, with the qualified split then applying to the ordinary remainder only; a blob written before any of these portion fields existed parses a missing key as $0, which prices the whole total at its pre-split character exactly as before, and must not break loading, saving, or restoring. LEGACY CHARACTER PROVENANCE (contract v52): format-3 blobs carry the flags (legacyRocSplitUnconfirmed / legacyJanPaidSplitUnconfirmed) as stored — authoritative; pre-format-3 blobs derive them (a strayROC amount whose strayROCOrdinary key is absent or still at its default, or a strayJanPaid amount whose strayJanPaidQualifiedAmount key is absent or still $0). The flags change no pricing, and each flag clears ONLY when the user edits the matching control (the ROC ordinary split, the January-paid qualified amount) — an unrelated save no longer clears them. strayDependent's amount counts toward the ACA household MAGI ONLY — never the parents' AGI, taxable income, or tax. strayK1 is the one SIGNED stray: a negative amount is a deductible K-1 loss and reduces ordinary income; every other stray amount is non-negative. EDUCATION STUDENTS (contract v103): educationStudents is the December tax year's per-student qualified education expenses (dollars, the Playground shape: each {expenses, aotcEligible}, the mark being the household's own declaration — entered, never inferred from 529 balances, the college-years span, or any other saved field); null = no education input yet (a blob written before the field existed parses a missing key as null, prices $0 of education credits bit-identically to before, and must not break loading, saving, or restoring), and an entered list — even empty — is the console's own answer and is never overwritten by a preseed or load resolution. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view. (Pricing is runDecemberProjection's: its settlement reconciliation treats a no-marketplace year — nobody marketplace-eligible on the console's Medicare facts — as a $0 credit while creditAtHeadline itself stays null, and a null net carries a netSettleNote reason; see runDecemberProjection.) CAPITAL-LOSS CARRYFORWARD (contract v111): carryInCapitalLossSt / carryInCapitalLossLt are the banked short-term and long-term capital losses entering the December year (dollars, stated as positive amounts), and carryInCapitalLossStWa / carryInCapitalLossLtWa are the Washington-attributable portion of each (a portion of that character's total). Each is nullable — null = no input yet, $0 = explicitly none — and a blob written before the fields existed parses a missing key as null and prices bit-identically to before; an entered list of values is the console's own answer and is never overwritten by a preseed or load resolution, while a field the user has not edited in the console saves its stored value, never a load-resolved one. GAIN HARVEST (contract v113): harvestOn is the gain-harvest toggle for the December year (a plain boolean answer, default off — a blob written before the field existed parses it off and prices bit-identically to before), and harvestPoolAmount / harvestPoolBasisPct are the taxable-pool facts the harvest sizes from — the combined taxable pool available to sell (Taxable plus Cash, the pool the plan march draws on) and its blended basis % (basis dollars ÷ pool; the march's tier walking moves only its basis step-up bookkeeping, never the size, so one blended % carries the sizing). Each fact is nullable — null = no input yet, an entered $0 pool or 100% basis is a real fact that prices a $0 harvest — and a blob written before the fields existed parses a missing key as null; an entered fact is the console's own answer and is never overwritten by a preseed or load resolution, while a fact the user has not edited in the console saves its stored value, never a load-resolved one. TAXABLE CASH FOR THE YEAR (contract v125): taxableFunded is cash taken from taxable at 100% basis for the year (dollars, nullable — null = no input yet, $0 = explicitly none; a blob written before the field existed parses a missing key as null and prices bit-identically to before). It adds $0 to MAGI, so it never changes the solved pre-tax draw, MAGI, credit, tax, or settlement — it raises cash-in and cash-left dollar for dollar (see runDecemberProjection). A plain console answer: it saves as displayed, with no record resolution and no edited flag.",
-  runDecemberProjection: "Price the December year-end projection from the given console inputs (same state shape as saveDecemberProjection) through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver. Compute-only; reads and writes nothing. RESPONSE FIELDS: priced=false with reason set means the year cannot be priced (no primary age entered) and every other field is inert. cliff is the year's 400%-of-FPL line in dollars, or null when NO cliff applies — nobody on the marketplace, or a pre-2026 tax year (the enhanced-credit years have no cliff; headlineText then reads 'No ACA cliff this year — the draw is not cliff-constrained.'). targetMagi is cliff − bufferDollars (null when cliff is null). headlineDraw is the maximum safe December pre-tax draw for the LIKELY case landing MAGI at targetMagi: null means 'not cliff-constrained' (cliff is null — no draw limit from the cliff), while 0 means a cliff EXISTS but no draw is safe — the room under cliff − buffer is already used up, income already posted is over the cliff at a $0 draw (zeroDrawOverCliff=true, and headlineText says no draw can fix that year), or the entered pre-tax balance is $0 so there is nothing to draw (headlineText then says exactly that, whenever the empty balance is the sole binding reason and income room otherwise exists). headlineText is the plain-language headline and always disambiguates the null/0 cases and names the binding reason for a $0 draw. PER CASE (low / likely / high range cases, all priced AT the headline draw): nonDrawAcaMagi is the case's ACA household MAGI before any draw; maxDraw is that case's OWN maximum safe draw (null when cliff is null); magiAtHeadline is the case's MAGI at the headline draw; distanceAtHeadline is cliff − magiAtHeadline (negative = over the cliff; null when cliff is null); overCliffAtHeadline / overCliffEvenAtZero say whether the case is over at the headline draw / even at $0. creditAtHeadline is the case's final allowable credit — the benchmark-based credit capped at acaEnrollmentPremiumAnnual when entered, less any coverage-month reduction, $0 when over the cliff — or null when no benchmark premium was entered (credit not priced). The ACA reconciliation runs on the case's EFFECTIVE final credit (contract v54): the priced credit when there is one; $0 when the priced credit is null because nobody in the household can be on the marketplace on the console's Medicare facts (a known-zero credit — the allowable credit is $0 by construction); null only when the priced credit is null AND someone is marketplace-eligible but no benchmark premium was entered (genuinely unpriced). creditAtHeadline itself is unchanged — it remains the engine's priced credit, null in both null cases. creditStillDue is max(0, effective final credit − aptcTaken) whenever the effective credit is known, in ALL years; it is null only when the credit is genuinely unpriced. excessAptcRepayment: for 2026 and later it is max(0, aptcTaken − effective final credit) — after 2025 there are no repayment caps (P.L. 119-21 §71305), so any APTC taken above the final credit is repaid in full in EVERY case, under the cliff as well as over it (over the cliff the final credit is $0 and the whole APTC taken is repaid); before 2026 it is $0 when aptcTaken is at or below the effective final credit and null when aptcTaken exceeds it (repayment genuinely unmodeled — pre-2026 caps are not modeled); it is null in every year when the credit is genuinely unpriced. repaymentExposure is excessAptcRepayment as an always-a-number field ($0 when unpriced). federalTaxAtHeadline / totalTaxAtHeadline are the case's taxes at the headline draw. EDUCATION CREDITS (contract v103): each case also carries the priced year's §25A figures at the headline draw, read off the shared single-year engine (the state's entered educationStudents price through priceYear's educationCreditsFor exactly as a Playground year — no December credit math exists): educationAotcAtHeadline / educationLlcAtHeadline are the tentative credits after the §25A(d) phase-out under the winning allocation (educationChoiceAtHeadline: aotc / llc / none), educationNonrefundableAtHeadline is the portion already applied inside federalTaxAtHeadline, and educationRefundableAtHeadline is the refundable AOTC portion — reported separately, never netted into federalTaxAtHeadline or totalTaxAtHeadline, and credited in the settlement beside the ACA premium credit (see netSettleAtHeadline below). hasEducationExpenses says whether any entered student carries qualified expenses; excludesEducationCredits is its negation — when true, no education credit is priced and the settlement carries that qualification (the console renders it beside every settlement figure, and the projection's warnings name it), so a settlement is never presented as final while the credit is unpriced. PROJECTED TAX BILL (contract v50): each case also carries the priced year's bill readouts at the headline draw — totalIncomeAtHeadline (the year's adjusted gross income (AGI) — the figure the bill labels 'Adjusted gross income (AGI)'; the December assembly nets its above-the-line reducers into income itself, so AGI is the figure this readout carries), taxableIncomeAtHeadline (the year's taxable income), stateTaxAtHeadline (the state component inside totalTaxAtHeadline — $0 at a 0% flat rate, the Washington capital-gains excise when residenceState prices it), and netSettleAtHeadline (nullable): when non-null it is totalTaxAtHeadline − creditStillDue + excessAptcRepayment − educationRefundableAtHeadline (contract v103: the refundable education credit is credited beside the ACA premium credit, exactly as the plan's score identity credits it — the nonrefundable education portion is already inside the tax), equivalently totalTaxAtHeadline − effective final credit + aptcTaken − educationRefundableAtHeadline whenever the effective credit is known and the repayment is modeled — so a no-marketplace (known-zero) year produces a number (the total tax, plus any repayment) even though creditAtHeadline stays null; the net is null only when the repayment is unmodeled (pre-2026 APTC above the effective final credit) or the credit is genuinely unpriced, and each case also carries netSettleNote (string | null): null whenever the net is a number, otherwise the reason no single settlement figure is shown, naming which of the two null cases applies (the unpriced-credit reason wins whenever the credit itself is unpriced, in any year). A negative netSettleAtHeadline is an estimated refund at filing (the console labels it 'Estimated refund at filing'; a non-negative net is labeled 'Estimated amount to settle at filing'). The net is an estimate BEFORE withholding and estimated payments, which the console does not track. All four are readouts of the same priced year — no pricing changed. warnings lists input problems priced as entered (e.g. a range whose low/likely/high are out of order) and, when the state's legacy character-provenance flags are set (legacyRocSplitUnconfirmed / legacyJanPaidSplitUnconfirmed), a warning naming the unconfirmed tax character — the flags change no priced figure. CAPITAL-LOSS CARRYFORWARD (contract v111): when the state's carryInCapitalLossSt / carryInCapitalLossLt (with their Washington-attributable portions carryInCapitalLossStWa / carryInCapitalLossLtWa) carry entered amounts, decemberCaseInputs passes them to pricePlaygroundYear, which nets them against the year's gains through the same shared applyLossLedger the plan march uses — the federal gain base is the netted result, the §1211(b) allowance is the ledger's, and Washington's excise base is the year's gross gains minus only the Washington-attributable part the gains actually absorbed, so the federal and Washington bases can differ; each case also carries the reconciled carry-out at the headline draw (lossCarryOutStAtHeadline / lossCarryOutLtAtHeadline and their Washington-attributable portions lossCarryOutStWaAtHeadline / lossCarryOutLtWaAtHeadline), fixed against that case's priced taxable income before the allowance — all $0 in every case when no carry-in was entered, and every figure then prices bit-identically to before this build. STRAY CHARACTER SPLITS (contract v112): the state's strayK1CapGainAmount — the Schedule K-1 box 9a long-term-capital-gain portion of the signed strayK1 total, clamped to a positive total — rides the year's long-term gains instead of ordinary income, and strayROCQualifiedAmount — the qualified portion of the strayROCOrdinary reclassified return-of-capital dividend, clamped to that total — rides the qualified-dividends total while the whole amount stays in ordinary dividends; both portions at $0 (or absent from a pre-v112 blob) price bit-identically to before this build. GAIN HARVEST (contract v113): when the state's harvestOn is true and its harvestPoolAmount / harvestPoolBasisPct facts are present, decemberCaseInputs passes them to pricePlaygroundYear, which sizes the year's gain harvest inside every pricing — the zero-draw pricings, the headline pricing, and every trial pricing inside the cliff solver — by the plan march's own rule (simulateRothPlan's harvestOn block): the harvest is the largest gain, capped by the remaining pool's unrealized gain (the pool less this year's taxable sales and 100%-basis taxable cash, less its basis dollars), whose addition to the year's gross gains leaves the gains priced at 15% / 20% unchanged, so every harvested dollar lands inside the 0% capital-gains band; it rides the long-term-gains stack through the same loss-ledger transform as the typed gain (an entering carryforward absorbs it first), so MAGI, the credit, NIIT, and Washington all price it as the plan prices it, and the solved December draw is sized WITH the harvest included — the draw shrinks by the harvested gain when the cliff target binds. Each case carries the harvested gain at the headline draw and at a $0 draw (harvestedGainAtHeadline / harvestedGainAtZeroDraw; $0 when the toggle is off or no gain fits the band). When the toggle is on but a pool / basis fact is missing (no console entry and no Tax Plan record fact), no harvest is priced: every case carries gainHarvestUnpriced=true and the projection's warnings name it, so the settlement is presented as excluding gain harvesting, never as a silent $0 harvest. Toggle off (or facts absent from a pre-v113 state) prices bit-identically to before this build. CASH LEFT AFTER TAX (contract v114): each case also carries cashLeftAtHeadline (nullable) — the priced year's cash in (the engine's cashIn readout on the same pricing: interest, total ordinary dividends, other ordinary income, tax-exempt interest, full Social Security benefits, the year's RMD cash including any part already received, the headline draw, and gross stock-sale proceeds) minus the case's net tax bill, the settlement itself (netSettleAtHeadline), so it is null exactly when the settlement is null and netSettleNote names why; it reads as the year's cash left after tax, before spending. (Contract v116: each case also carries cashInAtHeadline (nullable) — the priced year's cash in on the same pricing, null exactly when the settlement is null — so the console's cash-left tooltip can name the cash in as priced.) (Contract v125: each case's cash in and cash left also include the state's taxableFunded — cash taken from taxable at 100% basis, $0 MAGI — added dollar for dollar at the assembly, never inside the priced year; the pre-tax draw, MAGI, credit, tax, and settlement are unchanged by it, and both figures stay null exactly when the settlement is null.) (Contract v126: each case also carries cashLeftVsSpendingAtHeadline — cashLeftAtHeadline minus the caller's annual spending (annualSpendingCents, never console state, never saved) — and annualSpendingAtHeadline echoing that spending in dollars; both null exactly when no spending was given or no settlement is shown.)",
+  getDecemberProjection: "Read the December projection console's saved inputs. Returns {state, hasStored, revision, storedUnreadable}: storedUnreadable (build v67) is true when a blob is stored but cannot be parsed as a state document — state then carries the lenient-parse defaults, and the flag is the distinction from a fresh console. The other fields: state is the console's complete input set (one settings blob, parsed leniently field by field — see saveDecemberProjection for the state fields' meanings, including the per-owner pre-tax balances, rmdAlreadyReceived, acaEnrollmentPremiumAnnual, the stray character splits, and — build v103 — educationStudents: the December tax year's per-student qualified education expenses in dollars, each with the household's own aotcEligible mark, in the same shape the Playground prices (null = no education input yet — a blob written before the field existed reads it null and prices $0 of education credits exactly as before; at load, a null console value resolves from the saved Tax Plan record's entered students for the December tax year as a display-and-pricing overlay that a save does not persist unless the user edits the education controls in the console, and any entered console list always governs)); hasStored says whether a blob was ever saved (a first open can preseed from the saved Tax Plan record — the preseed carries the record's educationStudents for the December tax year when the console has no education input yet); revision is the blob's write revision — pass it back as baseRevision when saving, and a blob written before revisions existed reads as revision 0. The state also carries — build v111 — the entering capital-loss carryforward: carryInCapitalLossSt / carryInCapitalLossLt and their Washington-attributable portions carryInCapitalLossStWa / carryInCapitalLossLtWa (dollars, each nullable: null = no input yet, $0 = explicitly none; a blob written before the fields existed reads them null, and at load a null field resolves from the saved Tax Plan record's entering carryforward only when the console's tax year is the plan's first year — the record's execution year — as a display-and-pricing overlay a save does not persist unless the user edits the carry-in controls in the console, and any entered console value, $0 included, always governs). The state also carries — build v113 — the gain harvest: harvestOn (the plan's gain-harvest toggle for the year; false on every blob written before the field existed) and the two taxable-pool facts it sizes from, harvestPoolAmount (the combined taxable pool available to sell, dollars) and harvestPoolBasisPct (its blended basis %, basis dollars ÷ pool), each nullable (null = no input yet; a blob written before the fields existed reads them null, and at load a null fact resolves from the saved Tax Plan record's taxable facts — its taxable balance and its basis % or tier blend — as a display-and-pricing overlay a save does not persist unless the user edits the harvest pool controls in the console, and any entered console value, a $0 pool included, always governs; the toggle itself never resolves). Read-only.",
+  saveDecemberProjection: "Save the December projection console's inputs as one settings blob, as a compare-and-swap on the blob's write revision. Build v67: a save whose stored record cannot be parsed is refused as a conflict carrying storedUnreadable: true — an unparseable stored record is never treated as a revision-0 base, and its bytes are left intact; the conflict shape also carries storedUnreadable on its other refusals (false there). REQUEST: {state, baseRevision} — baseRevision is REQUIRED and must equal the revision the caller's copy was read at (from getDecemberProjection; 0 when nothing is stored). RESPONSES: success is {ok:true, revision} with the NEW revision (the next save must pass it); a stale base is NOT an error throw — it returns the machine-readable conflict object {ok:false, conflict:true, revision, state, hasStored} carrying the currently stored revision and state, and writes nothing, so the caller reloads state instead of overwriting it. STATE FIELDS (all dollars, all lenient on read — a missing field reads at its inert default): pretaxBalancePrimary / pretaxBalanceSpouse are the two owners' SEPARATE prior-Dec-31 pre-tax balances (null = not entered for that owner); each owner's RMD is computed on their own age from their own balance, and each owner's table is selected by THAT owner's own beneficiary fact — the two facts are separate and neither is read for the other owner: spouseSoleBeneficiary states the spouse is the sole beneficiary of the PRIMARY's pre-tax accounts and selects ONLY the primary's table, while primarySoleBeneficiaryOfSpouse states the primary is the sole beneficiary of the SPOUSE's pre-tax accounts and selects ONLY the spouse's table — that field is TRI-STATE (boolean or null): true / false are explicit answers, and null = UNANSWERED (a blob written before that field existed parses a missing key as null, never as false); at load an unanswered console value is resolved from the saved Tax Plan record's value for the same fact when the record answers (an explicit console value is never overwritten, and the resolution writes nothing — the blob changes only when the user saves in the console), and only an explicit true selects the Joint table, so null and false both price the spouse's RMD on the Uniform table. FORMAT MARKER (build v52): every save writes decemberStateFormat 3 beside the state fields; a blob WITHOUT the marker is pre-marker format — a stored false for primarySoleBeneficiaryOfSpouse in it is a STORED ANSWER and stands (the record overlay never overrides it), but it parses with legacyBeneficiaryAnswerUnconfirmed set, the console asks the user to confirm it, and the flag clears only when the user changes that control; a with-marker false is likewise a genuine answer; a stored true in a pre-marker blob stays true, and a missing key or explicit null still reads as UNANSWERED (null). RESOLUTION IS AN OVERLAY (v52): the record-resolved value is displayed and priced, but a save persists the console's OWN value for this field — still null while unanswered — unless the user changed that control in the console; the first-open preseed likewise stores the field unanswered. An owner's table is the Joint and Last Survivor table when that owner's fact is true and their spouse is more than 10 years younger, otherwise the Uniform Lifetime table. A balance entered as 0 is a REAL balance, distinct from null: it prices that owner's RMD as $0 and caps the draw at what the entered balances hold (a $0 total caps the draw at $0), while null caps nothing. pretaxBalance is the legacy combined total — writers set it to the split's sum when a split is explicit. A stored blob carrying only pretaxBalance (its split keys hold no amount for either owner) has balance ownership UNANSWERED (v52): the parsed state carries pretaxSplitExplicit=false with null split fields and the combined amount preserved — at load, when the Tax Plan record supplies BOTH owner amounts with a positive sum, resolution allocates the SAVED combined total across the owners by the record split's proportions (each share rounded to cents, the residual to the larger rounded share, tie to the primary) and never changes the total; when the record supplies EXACTLY ONE owner amount, that owner receives min(known, saved total) and the other owner receives the remainder (saved total minus that), both as numbers, so the total is still preserved exactly; a totals mismatch over $0.01 between the record split's sum and the saved total surfaces a console note naming both totals, and the partial-cap case (exactly one amount known and that amount above the saved total by more than $0.01) likewise surfaces a note naming the record figure and the saved total; the combined-to-primary assignment survives only as the last-resort fallback when the record has no usable split (neither amount known, or a both-known record sum of $0), an explicit blob split always governs over the record, and a save persists the stored provenance until the user edits either balance field in the console. rmdAlreadyReceived is the part of this year's RMD already paid AND already included in ytdOtherOrdinary — it is netted from the computed RMD (floored at $0) so a paid RMD is never counted twice. acaEnrollmentPremiumAnnual is the annual premium of the plan actually enrolled in (null = blank = NO cap, the benchmark-based credit stands); when entered, each case's final credit is capped at min(benchmark-based credit, this premium) BEFORE any coverage-month reduction. Stray character splits: strayROC is return of capital that is income OVER BASIS (a capital gain — rides the gains stack) while strayROCOrdinary is return of capital RECLASSIFIED AS AN ORDINARY DIVIDEND (rides ordinary dividends), and strayROCQualifiedAmount (build v112) is the qualified-dividends PORTION of that reclassified amount (a portion, clamped to the strayROCOrdinary total, that additionally rides the qualified-dividends total — the whole reclassified amount stays in ordinary dividends, qualified being a subset — so its qualified part prices at the preferential rates instead of as ordinary income); strayK1CapGainAmount (build v112) is the long-term-capital-gain PORTION of the signed strayK1 total (Schedule K-1 box 9a): a portion of a positive K-1 total, clamped to it, that rides the long-term-gains stack and is removed from ordinary income so nothing is double-counted, while the rest of the K-1 amount stays ordinary and a deductible K-1 loss (a negative total) has no gain portion; strayJanPaid is the total of fund distributions paid in January but deemed received Dec 31 (§852(b)(7)), strayJanPaidQualifiedAmount is the qualified-dividends PORTION of that total (a portion, clamped to the total), and strayJanPaidCapGainAmount (build v104) is the capital-gain-distribution PORTION of that total: a portion, clamped to the total, that rides the long-term-gains stack as a capital gain dividend (§852(b)(3)) instead of ordinary dividends and is removed from the dividends total so nothing is double-counted, with the qualified split then applying to the ordinary remainder only; a blob written before any of these portion fields existed parses a missing key as $0, which prices the whole total at its pre-split character exactly as before, and must not break loading, saving, or restoring. LEGACY CHARACTER PROVENANCE (build v52): format-3 blobs carry the flags (legacyRocSplitUnconfirmed / legacyJanPaidSplitUnconfirmed) as stored — authoritative; pre-format-3 blobs derive them (a strayROC amount whose strayROCOrdinary key is absent or still at its default, or a strayJanPaid amount whose strayJanPaidQualifiedAmount key is absent or still $0). The flags change no pricing, and each flag clears ONLY when the user edits the matching control (the ROC ordinary split, the January-paid qualified amount) — an unrelated save no longer clears them. strayDependent's amount counts toward the ACA household MAGI ONLY — never the parents' AGI, taxable income, or tax. strayK1 is the one SIGNED stray: a negative amount is a deductible K-1 loss and reduces ordinary income; every other stray amount is non-negative. EDUCATION STUDENTS (build v103): educationStudents is the December tax year's per-student qualified education expenses (dollars, the Playground shape: each {expenses, aotcEligible}, the mark being the household's own declaration — entered, never inferred from 529 balances, the college-years span, or any other saved field); null = no education input yet (a blob written before the field existed parses a missing key as null, prices $0 of education credits bit-identically to before, and must not break loading, saving, or restoring), and an entered list — even empty — is the console's own answer and is never overwritten by a preseed or load resolution. The blob rides the backup export / restore settings array like the other form-state blobs. Saving inputs prices nothing and touches no other view. (Pricing is runDecemberProjection's: its settlement reconciliation treats a no-marketplace year — nobody marketplace-eligible on the console's Medicare facts — as a $0 credit while creditAtHeadline itself stays null, and a null net carries a netSettleNote reason; see runDecemberProjection.) CAPITAL-LOSS CARRYFORWARD (build v111): carryInCapitalLossSt / carryInCapitalLossLt are the banked short-term and long-term capital losses entering the December year (dollars, stated as positive amounts), and carryInCapitalLossStWa / carryInCapitalLossLtWa are the Washington-attributable portion of each (a portion of that character's total). Each is nullable — null = no input yet, $0 = explicitly none — and a blob written before the fields existed parses a missing key as null and prices bit-identically to before; an entered list of values is the console's own answer and is never overwritten by a preseed or load resolution, while a field the user has not edited in the console saves its stored value, never a load-resolved one. GAIN HARVEST (build v113): harvestOn is the gain-harvest toggle for the December year (a plain boolean answer, default off — a blob written before the field existed parses it off and prices bit-identically to before), and harvestPoolAmount / harvestPoolBasisPct are the taxable-pool facts the harvest sizes from — the combined taxable pool available to sell (Taxable plus Cash, the pool the plan march draws on) and its blended basis % (basis dollars ÷ pool; the march's tier walking moves only its basis step-up bookkeeping, never the size, so one blended % carries the sizing). Each fact is nullable — null = no input yet, an entered $0 pool or 100% basis is a real fact that prices a $0 harvest — and a blob written before the fields existed parses a missing key as null; an entered fact is the console's own answer and is never overwritten by a preseed or load resolution, while a fact the user has not edited in the console saves its stored value, never a load-resolved one. TAXABLE CASH FOR THE YEAR (build v125): taxableFunded is cash taken from taxable at 100% basis for the year (dollars, nullable — null = no input yet, $0 = explicitly none; a blob written before the field existed parses a missing key as null and prices bit-identically to before). It adds $0 to MAGI, so it never changes the solved pre-tax draw, MAGI, credit, tax, or settlement — it raises cash-in and cash-left dollar for dollar (see runDecemberProjection). A plain console answer: it saves as displayed, with no record resolution and no edited flag.",
+  runDecemberProjection: "Price the December year-end projection from the given console inputs (same state shape as saveDecemberProjection) through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver. Compute-only; reads and writes nothing. RESPONSE FIELDS: priced=false with reason set means the year cannot be priced (no primary age entered) and every other field is inert. cliff is the year's 400%-of-FPL line in dollars, or null when NO cliff applies — nobody on the marketplace, or a pre-2026 tax year (the enhanced-credit years have no cliff; headlineText then reads 'No ACA cliff this year — the draw is not cliff-constrained.'). targetMagi is cliff − bufferDollars (null when cliff is null). headlineDraw is the maximum safe December pre-tax draw for the LIKELY case landing MAGI at targetMagi: null means 'not cliff-constrained' (cliff is null — no draw limit from the cliff), while 0 means a cliff EXISTS but no draw is safe — the room under cliff − buffer is already used up, income already posted is over the cliff at a $0 draw (zeroDrawOverCliff=true, and headlineText says no draw can fix that year — build v194, re-audit round 3 SHOULD-5: the $0-draw MAGI includes any priced gain harvest, since the harvest is sized inside every pricing, so when the harvest alone tips MAGI over the cliff — the likely case re-priced at a $0 draw with the harvest off sits under it, the counterfactual re-priced rather than derived by subtracting the gross harvested gain because an entering loss carryforward absorbs harvested gains first — headlineText names the gain harvest as what breaches the cliff, not income already posted, and likewise names the harvest when it alone uses up the room under cliff − buffer; posted income over the line on its own keeps the income wording), or the entered pre-tax balance is $0 so there is nothing to draw (headlineText then says exactly that, whenever the empty balance is the sole binding reason and income room otherwise exists), or the buffer alone is at or above the cliff so the target MAGI (cliff − buffer) is zero or below and $0 of income already leaves MAGI ($0) at or above that target — equal to it when the target is $0 (buffer exactly equal to the cliff) and above it when the target is below $0 (buffer above the cliff) (audit N-3, wording corrected by audit N-7: headlineText then says the buffer alone makes the target unreachable, and warnings carries a warning naming the buffer and the cliff — the $0 draw is kept, as it is arithmetically correct). headlineText is the plain-language headline and always disambiguates the null/0 cases and names the binding reason for a $0 draw. PER CASE (low / likely / high range cases, all priced AT the headline draw): nonDrawAcaMagi is the case's ACA household MAGI before any draw; maxDraw is that case's OWN maximum safe draw (null when cliff is null); magiAtHeadline is the case's MAGI at the headline draw; distanceAtHeadline is cliff − magiAtHeadline (negative = over the cliff; null when cliff is null); overCliffAtHeadline / overCliffEvenAtZero say whether the case is over at the headline draw / even at $0. creditAtHeadline is the case's final allowable credit — the benchmark-based credit capped at acaEnrollmentPremiumAnnual when entered, less any coverage-month reduction, $0 when over the cliff — or null when no benchmark premium was entered (credit not priced). The ACA reconciliation runs on the case's EFFECTIVE final credit (build v54): the priced credit when there is one; $0 when the priced credit is null because nobody in the household can be on the marketplace on the console's Medicare facts (a known-zero credit — the allowable credit is $0 by construction); null only when the priced credit is null AND someone is marketplace-eligible but no benchmark premium was entered (genuinely unpriced). creditAtHeadline itself is unchanged — it remains the engine's priced credit, null in both null cases. creditStillDue is max(0, effective final credit − aptcTaken) whenever the effective credit is known, in ALL years; it is null only when the credit is genuinely unpriced. excessAptcRepayment: for 2026 and later it is max(0, aptcTaken − effective final credit) — after 2025 there are no repayment caps (P.L. 119-21 §71305), so any APTC taken above the final credit is repaid in full in EVERY case, under the cliff as well as over it (over the cliff the final credit is $0 and the whole APTC taken is repaid); before 2026 it is $0 when aptcTaken is at or below the effective final credit and null when aptcTaken exceeds it (repayment genuinely unmodeled — pre-2026 caps are not modeled); it is null in every year when the credit is genuinely unpriced. repaymentExposure is excessAptcRepayment as an always-a-number field ($0 when unpriced). federalTaxAtHeadline / totalTaxAtHeadline are the case's taxes at the headline draw. EDUCATION CREDITS (build v103): each case also carries the priced year's §25A figures at the headline draw, read off the shared single-year engine (the state's entered educationStudents price through priceYear's educationCreditsFor exactly as a Playground year — no December credit math exists): educationAotcAtHeadline / educationLlcAtHeadline are the tentative credits after the §25A(d) phase-out under the winning allocation (educationChoiceAtHeadline: aotc / llc / none), educationNonrefundableAtHeadline is the portion already applied inside federalTaxAtHeadline, and educationRefundableAtHeadline is the refundable AOTC portion — reported separately, never netted into federalTaxAtHeadline or totalTaxAtHeadline, and credited in the settlement beside the ACA premium credit (see netSettleAtHeadline below). hasEducationExpenses says whether any entered student carries qualified expenses; excludesEducationCredits is its negation — when true, no education credit is priced and the settlement carries that qualification (the console renders it beside every settlement figure, and the projection's warnings name it), so a settlement is never presented as final while the credit is unpriced. PROJECTED TAX BILL (build v50): each case also carries the priced year's bill readouts at the headline draw — totalIncomeAtHeadline (the year's adjusted gross income (AGI) — the figure the bill labels 'Adjusted gross income (AGI)'; the December assembly nets its above-the-line reducers into income itself, so AGI is the figure this readout carries), taxableIncomeAtHeadline (the year's taxable income), stateTaxAtHeadline (the state component inside totalTaxAtHeadline — $0 at a 0% flat rate, the Washington capital-gains excise when residenceState prices it), and netSettleAtHeadline (nullable): when non-null it is totalTaxAtHeadline − creditStillDue + excessAptcRepayment − educationRefundableAtHeadline (build v103: the refundable education credit is credited beside the ACA premium credit, exactly as the plan's score identity credits it — the nonrefundable education portion is already inside the tax), equivalently totalTaxAtHeadline − effective final credit + aptcTaken − educationRefundableAtHeadline whenever the effective credit is known and the repayment is modeled — so a no-marketplace (known-zero) year produces a number (the total tax, plus any repayment) even though creditAtHeadline stays null; the net is null only when the repayment is unmodeled (pre-2026 APTC above the effective final credit) or the credit is genuinely unpriced, and each case also carries netSettleNote (string | null): null whenever the net is a number, otherwise the reason no single settlement figure is shown, naming which of the two null cases applies (the unpriced-credit reason wins whenever the credit itself is unpriced, in any year). A negative netSettleAtHeadline is an estimated refund at filing (the console labels it 'Estimated refund at filing'; a non-negative net is labeled 'Estimated amount to settle at filing'). The net is an estimate BEFORE withholding and estimated payments, which the console does not track. All four are readouts of the same priced year — no pricing changed. warnings lists input problems priced as entered (e.g. a range whose low/likely/high are out of order), a warning naming an impossible dividend pair (qualified dividends entered above their ordinary total — year-to-date, or still-to-come in any case; contract v137, audit S-8: decemberCaseInputs clamps each pair's qualified part to that pair's total and the shared pricer clamps the summed pair, so the excess is counted on neither stack and the year's dividends price at most their entered totals), a warning when bufferDollars is at or above the cliff (target MAGI zero or below — the buffer alone makes the target unreachable), and, when the state's legacy character-provenance flags are set (legacyRocSplitUnconfirmed / legacyJanPaidSplitUnconfirmed), a warning naming the unconfirmed tax character — the flags change no priced figure. CAPITAL-LOSS CARRYFORWARD (build v111): when the state's carryInCapitalLossSt / carryInCapitalLossLt (with their Washington-attributable portions carryInCapitalLossStWa / carryInCapitalLossLtWa) carry entered amounts, decemberCaseInputs passes them to pricePlaygroundYear, which nets them against the year's gains through the same shared applyLossLedger the plan march uses — the federal gain base is the netted result, the §1211(b) allowance is the ledger's, and Washington's excise base is the year's gross gains minus only the Washington-attributable part the gains actually absorbed, so the federal and Washington bases can differ; each case also carries the reconciled carry-out at the headline draw (lossCarryOutStAtHeadline / lossCarryOutLtAtHeadline and their Washington-attributable portions lossCarryOutStWaAtHeadline / lossCarryOutLtWaAtHeadline), fixed against that case's priced taxable income before the allowance — all $0 in every case when no carry-in was entered, and every figure then prices bit-identically to before this build. STRAY CHARACTER SPLITS (build v112): the state's strayK1CapGainAmount — the Schedule K-1 box 9a long-term-capital-gain portion of the signed strayK1 total, clamped to a positive total — rides the year's long-term gains instead of ordinary income, and strayROCQualifiedAmount — the qualified portion of the strayROCOrdinary reclassified return-of-capital dividend, clamped to that total — rides the qualified-dividends total while the whole amount stays in ordinary dividends; both portions at $0 (or absent from a pre-v112 blob) price bit-identically to before this build. GAIN HARVEST (build v113): when the state's harvestOn is true and its harvestPoolAmount / harvestPoolBasisPct facts are present, decemberCaseInputs passes them to pricePlaygroundYear, which sizes the year's gain harvest inside every pricing — the zero-draw pricings, the headline pricing, and every trial pricing inside the cliff solver — by the plan march's own rule (simulateRothPlan's harvestOn block): the harvest is the largest gain, capped by the remaining pool's unrealized gain (the pool less this year's taxable sales and 100%-basis taxable cash, less its basis dollars), whose addition to the year's gross gains leaves the gains priced at 15% / 20% unchanged, so every harvested dollar lands inside the 0% capital-gains band; it rides the long-term-gains stack through the same loss-ledger transform as the typed gain (an entering carryforward absorbs it first), so MAGI, the credit, NIIT, and Washington all price it as the plan prices it, and the solved December draw is sized WITH the harvest included — the draw shrinks by the harvested gain when the cliff target binds. Each case carries the harvested gain at the headline draw and at a $0 draw (harvestedGainAtHeadline / harvestedGainAtZeroDraw; $0 when the toggle is off or no gain fits the band). When the toggle is on but a pool / basis fact is missing (no console entry and no Tax Plan record fact), no harvest is priced: every case carries gainHarvestUnpriced=true and the projection's warnings name it, so the settlement is presented as excluding gain harvesting, never as a silent $0 harvest. Toggle off (or facts absent from a pre-v113 state) prices bit-identically to before this build. CASH LEFT AFTER TAX (build v114): each case also carries cashLeftAtHeadline (nullable) — the priced year's cash in (the engine's cashIn readout on the same pricing: interest, total ordinary dividends, other ordinary income, tax-exempt interest, full Social Security benefits, the year's RMD cash including any part already received, the headline draw, and gross stock-sale proceeds) minus the case's net tax bill, the settlement itself (netSettleAtHeadline), so it is null exactly when the settlement is null and netSettleNote names why; it reads as the year's cash left after tax, before spending. (Build v116: each case also carries cashInAtHeadline (nullable) — the priced year's cash in on the same pricing, null exactly when the settlement is null — so the console's cash-left tooltip can name the cash in as priced.) (Build v125: each case's cash in and cash left also include the state's taxableFunded — cash taken from taxable at 100% basis, $0 MAGI — added dollar for dollar at the assembly, never inside the priced year; the pre-tax draw, MAGI, credit, tax, and settlement are unchanged by it, and both figures stay null exactly when the settlement is null.) (Build v126: each case also carries cashLeftVsSpendingAtHeadline — cashLeftAtHeadline minus the caller's annual spending (annualSpendingCents, never console state, never saved) — and annualSpendingAtHeadline echoing that spending in dollars; both null exactly when no spending was given or no settlement is shown.) (Build v193, re-audit round 3 SHOULD-4: decemberCaseInputs now also passes the console's reconciliation facts — aptcTaken, acaEnrollmentPremiumAnnual, and the coverage-month reduction — to the shared single-year engine, which prices this same settlement as its own netTaxBill, so each case's cashLeftAtHeadline is derived from the priced year's own cashLeftAfterTax readout plus the build v125 taxable cash: the engine's cash left and the console's cash left for the same year are one figure by construction and can no longer disagree. The settlement itself — its derivation and every figure it feeds — is unchanged.)",
   describeApi: "Return the machine-readable API contract for every published action, generated live from the actions' own zod schemas, with version stamps and conventions.",
 };
 
@@ -5960,6 +6272,7 @@ const describeApiResponse = z.object({
   flexSemantics: z.string(),
   protectMinSemantics: z.string(),
   unpaidTaxSemantics: z.string(),
+  pretaxDrawSplitSemantics: z.string(),
   irmaaTierCapSemantics: z.string(),
   irmaaLookbackSemantics: z.string(),
   ceilingBreachedSemantics: z.string(),
@@ -5970,6 +6283,7 @@ const describeApiResponse = z.object({
   rmdAgeSemantics: z.string(),
   rmdBeneficiarySemantics: z.string(),
   acaSemantics: z.string(),
+  acaPremiumReconciliationSemantics: z.string(),
   acaHouseholdScheduleSemantics: z.string(),
   stateSemantics: z.string(),
   lossCarryforwardSemantics: z.string(),
@@ -6073,7 +6387,7 @@ const rothPlannerResponse = z.object({
   // refused instead of silently overwriting a newer one. 0 for
   // a record written before revisions existed.
   revision: z.number().int().nonnegative(),
-  // Result-honesty marker (contract v67, F08): true when the
+  // Result-honesty marker (build v67, F08): true when the
   // saved plan record EXISTS but cannot be read. saved then
   // reads as null exactly as an absent record would — this
   // marker is how the view tells "your saved record can't be
@@ -6134,6 +6448,22 @@ async function loadRothPlannerResponse(ctx: Ctx): Promise<RothPlannerResponse> {
     };
   }
   const blob = await readRothBlob(db, key);
+  // Derived threaded percentages for the taxReturn block
+  // (re-audit SHOULD S-7): the implied yields over the saved
+  // record's resolved taxable pool — the same resolution a
+  // compute run derives over (resolvePlanBalances over the
+  // snapshot subtotals above) — and the qualified share, each
+  // by the ONE derivation in taxReturnCore.ts. No saved
+  // record (or no positive resolved pool) yields null
+  // implied yields; the share needs no pool.
+  const taxReturnPoolCents =
+    blob.inputs == null
+      ? null
+      : resolvePlanBalances(blob.inputs, snapshot).taxableCents;
+  const taxReturnImplied =
+    taxReturnPoolCents != null && taxReturnPoolCents > 0
+      ? impliedYieldPctsFromTaxReturn(blob.taxReturn, taxReturnPoolCents / 100)
+      : { dividendYieldPct: null, interestYieldPct: null };
   return {
     snapshot,
     saved: blob.inputs,
@@ -6141,13 +6471,25 @@ async function loadRothPlannerResponse(ctx: Ctx): Promise<RothPlannerResponse> {
     execution: blob.execution,
     mcCheck: { mcVolatilityPct: blob.mcVolatilityPct },
     gift: blob.gift,
-    taxReturn: blob.taxReturn,
+    taxReturn: {
+      ...blob.taxReturn,
+      derivedImpliedDividendYieldPct: taxReturnImplied.dividendYieldPct,
+      derivedImpliedInterestYieldPct: taxReturnImplied.interestYieldPct,
+      derivedQualifiedDividendSharePct:
+        qualifiedDividendSharePctFromTaxReturn(blob.taxReturn),
+      // Rejected negative actuals (contract v146, NICE-1):
+      // the lines the parse set aside as negative, with
+      // their stored values — reported beside the parsed
+      // amounts (where a rejected line reads null) so the
+      // user sees the rejection instead of a silent blank.
+      rejectedNegativeActuals: blob.taxReturnRejectedNegatives,
+    },
     revision: blob.revision,
     recordUnreadable: blob.revisionState.present && !blob.revisionState.valid,
   };
 }
 
-/* First-run seed presence (contract v60, F7): whether each
+/* First-run seed presence (build v60, F7): whether each
    dataset table holds at least one record, for seedGuardCore's
    single emptiness predicate. The settings count excludes the
    encryption key-check row — infrastructure ensureKeyCheck
@@ -6180,7 +6522,7 @@ async function loadDatasetPresence(
 }
 
 /* The next explicit id for a seed insert: one past the table's
-   current maximum (contract v64, A3). The seed builders assign
+   current maximum (build v64, A3). The seed builders assign
    ids themselves because the statements commit as ONE db.batch,
    which cannot hand back inserted ids — and version / payment /
    balance rows must reference their parents' ids. The first-run
@@ -6196,7 +6538,7 @@ async function nextSeedId(db: any, table: any): Promise<number> {
 }
 
 /* Build the sample-spending seed's insert statements WITHOUT
-   executing any of them (contract v64, A3 — audit F23/F24): the
+   executing any of them (build v64, A3 — audit F23/F24): the
    caller commits them as ONE db.batch, so a failure anywhere in
    the seed lands NONE of it and a plain retry can succeed. All
    three seed actions share this builder (and its Net Worth
@@ -6346,7 +6688,7 @@ async function seedExamplesStatements(
       db.insert(schema.yearlyExpenseVersions).values({
         id: nextExpenseVersionId++,
         expenseId,
-        // Contract v91: the version row gets its OWN encryption of
+        // Build v91: the version row gets its OWN encryption of
         // the same figure, bound to the version column — reusing
         // the parent row's ciphertext would decrypt in neither
         // column's context.
@@ -6492,7 +6834,7 @@ async function seedExamplesStatements(
 
 
 /* Build the sample Net Worth seed's insert statements WITHOUT
-   executing any of them (contract v64, A3): see
+   executing any of them (build v64, A3): see
    seedExamplesStatements — the caller commits them as ONE
    db.batch (alone, or together with the spending seed's
    statements in seedFirstRun's single all-or-nothing commit). */
@@ -6596,7 +6938,7 @@ async function seedNetWorthStatements(
 }
 
 
-/* ---------------- Import batch idempotency (contract v64, F02) ----------------
+/* ---------------- Import batch idempotency (build v64, F02) ----------------
    importTransactions accepts an OPTIONAL client-supplied batch
    key. The completed batch is recorded as ONE settings row —
    key "import_batch_v1:<batchKey>", value a small JSON record
@@ -6690,7 +7032,7 @@ function parseImportBatchClaim(
 const IMPORT_BATCH_COLLISION_MESSAGE =
   "This import batch key was already used for a different set of rows, so nothing was imported. Start a fresh preview to import these rows as a new batch.";
 
-/* ---- Restore epoch (contract v93, stored-data finding F5) ----
+/* ---- Restore epoch (build v93, stored-data finding F5) ----
    The single stored restore generation: getNetWorth publishes it
    alongside the snapshots, the two snapshot CAS writers compare
    the editor's observed epoch against it, and restorebackup
@@ -6705,7 +7047,7 @@ async function readStoredRestoreEpoch(db: any): Promise<number> {
   return parseRestoreEpoch(row?.value);
 }
 
-/* Contract v121 (round-18 F3/F4): the restore-epoch refusal for
+/* Build v121 (round-18 F3/F4): the restore-epoch refusal for
    mutations that carry no revision counter — the spending editors,
    the deletes, and the settings writers. Returns the
    restore-naming conflict reason when the caller supplied a
@@ -6766,6 +7108,7 @@ export const Actions = {
         flexSemantics: FLEX_SEMANTICS,
         protectMinSemantics: PROTECT_MIN_SEMANTICS,
         unpaidTaxSemantics: UNPAID_TAX_SEMANTICS,
+        pretaxDrawSplitSemantics: PRETAX_DRAW_SPLIT_SEMANTICS,
         irmaaTierCapSemantics: IRMAA_TIER_CAP_SEMANTICS,
         irmaaLookbackSemantics: IRMAA_LOOKBACK_SEMANTICS,
         ceilingBreachedSemantics: CEILING_BREACHED_SEMANTICS,
@@ -6776,6 +7119,8 @@ export const Actions = {
         rmdAgeSemantics: RMD_AGE_SEMANTICS,
         rmdBeneficiarySemantics: RMD_BENEFICIARY_SEMANTICS,
         acaSemantics: ACA_SEMANTICS,
+        acaPremiumReconciliationSemantics:
+          ACA_PREMIUM_RECONCILIATION_SEMANTICS,
         acaHouseholdScheduleSemantics: ACA_HOUSEHOLD_SCHEDULE_SEMANTICS,
         stateSemantics: STATE_SEMANTICS,
         lossCarryforwardSemantics: LOSS_CARRYFORWARD_SEMANTICS,
@@ -6819,7 +7164,7 @@ export const Actions = {
       transactionCountThisMonth: z.number(),
       yearlyLumpsCheckingCents: z.number(),
       // Total of yearly/periodic expense money that LEFT CHECKING in
-      // the viewed month (contract v59): a bill paid from checking
+      // the viewed month (build v59): a bill paid from checking
       // counts in its own month; a bill charged to a card counts in
       // the month a card payment settles it (FIFO attribution in the
       // spending core), whether or not the month is an entered-total
@@ -6907,7 +7252,7 @@ export const Actions = {
       }),
       remainingOutflowCents: z.number(),
       trailingMonthsCovered: z.number(),
-      // The trailing window's own months (contract v123, round-18
+      // The trailing window's own months (build v123, round-18
       // F1): the exact months the trailing averages cover, in
       // chronological order, each row shaped like a history row.
       // The Month-mode chart plots these directly — the 12-entry
@@ -6921,7 +7266,7 @@ export const Actions = {
       divergenceCents: z.number(),
       divergencePct: z.number(),
       reserveCents: z.number(),
-      // The earliest data month (contract v128, round-19 F9): the
+      // The earliest data month (build v128, round-19 F9): the
       // shared earliest definition (transactions, summaries, items,
       // one-offs, bill-effective months) — published so Slice & dice
       // can default its From month to it instead of the reserve-start
@@ -6953,7 +7298,7 @@ export const Actions = {
       ),
       oneOffs: z.array(oneOffOut),
       // Distinct descriptions across ALL one-offs, most recent first
-      // (contract v143): the one-off Description dropdown's option
+      // (build v143): the one-off Description dropdown's option
       // list. The dashboard's `oneOffs` holds only the viewed
       // month's rows, so the dropdown needs this derived list —
       // every month's descriptions, most recent first, exact
@@ -7002,7 +7347,7 @@ export const Actions = {
       // stored data passes every check — the UI renders nothing
       // for an empty list.
       integrityWarnings: z.array(z.string()),
-      // Restore epoch (contract v121, round-18 F3): the restore
+      // Restore epoch (build v121, round-18 F3): the restore
       // generation the dataset is on, stored in settings under
       // "nw_restore_epoch_v1" and advanced by every restorebackup
       // (the same value getNetWorth publishes). The spending
@@ -7082,7 +7427,7 @@ export const Actions = {
       // One-offs by month, needed by the trailing-window rows below
       // as well as the history rows (moved up from the history
       // section when the window gained its own published months,
-      // contract v123, round-18 F1).
+      // build v123, round-18 F1).
       const oneOffsByMonth = new Map<string, number>();
       for (const o of oneOffs) {
         oneOffsByMonth.set(o.month, (oneOffsByMonth.get(o.month) ?? 0) + o.amountCents);
@@ -7091,7 +7436,7 @@ export const Actions = {
       // Trailing window: up to 12 months ending at the earlier of
       // the selected month and the current calendar month, and only
       // months from the first month that has data — and
-      // NEVER past the current calendar month (contract v59,
+      // NEVER past the current calendar month (build v59,
       // finding F4): when a future month is selected, the averages
       // still cover only months up to the current month, so figures
       // entered ahead can never blend into the "actual" averages.
@@ -7108,7 +7453,7 @@ export const Actions = {
       let trailingSum = 0;
       let smoothedSum = 0;
       let cashOutSum = 0;
-      // The window's own months (contract v123, round-18 F1): the
+      // The window's own months (build v123, round-18 F1): the
       // chart plots exactly these — the months the averages above
       // cover — published here because the 12-entry history ends
       // at the VIEWED month while this window ends at the current
@@ -7180,7 +7525,7 @@ export const Actions = {
           note: o.note ?? null,
         }));
       // Distinct one-off descriptions across all months, most recent
-      // first (contract v143): `oneOffs` is ordered month-ascending
+      // first (build v143): `oneOffs` is ordered month-ascending
       // then id-ascending, so walking it backwards yields the most
       // recent month first and the most recently added first within
       // a month. Exact strings only — similar-looking descriptions
@@ -7217,7 +7562,7 @@ export const Actions = {
           oneOffTotalCents: ooTotal,
           hasOneOff: ooTotal !== 0,
           // Entered-ahead months keep their estimate flag in the
-          // history rows too (contract v59, finding F4).
+          // history rows too (build v59, finding F4).
           estimate: m > currentMonthStr,
         });
       }
@@ -7592,7 +7937,7 @@ export const Actions = {
           inWindow: z.boolean(),
           hasData: z.boolean(),
           // True when this month is after the current calendar month — its
-          // figures were entered ahead and are estimates (contract v124,
+          // figures were entered ahead and are estimates (build v124,
           // round-18 F6 — the same flag the Dashboard history rows carry).
           estimate: z.boolean(),
           trueCostCents: z.number(),
@@ -7890,7 +8235,7 @@ export const Actions = {
       // the bill pivot's own column total — NOT the Quick view's
       // cash-out-based Everything else (Cash out − Total monthly −
       // Yearly paid out, kept as-is in monthRows / Month grouping).
-      // The two are different quantities and, since contract v59
+      // The two are different quantities and, since build v59
       // (finding F5), carry different labels: the plug keeps
       // "Everything else"; this residual is "Other spending". Since
       // the v59 cash-basis unification the two agree whenever a
@@ -7964,7 +8309,7 @@ export const Actions = {
   updateTransaction: defineAction({
     description: "Edit one recorded transaction.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F13): `base` is the transaction as
+    // Build v65 (CAS sweep, F13): `base` is the transaction as
     // the editor loaded it. When supplied, the write is a GUARDED
     // update: it applies only where the stored row still equals
     // the base fields (compared decrypted, then re-checked against
@@ -7973,7 +8318,7 @@ export const Actions = {
     // mismatch returns the conflict shape and the stored newer
     // value stays intact. A call omitting `base` keeps the legacy
     // unchecked behaviour (named in DATA-PLAN).
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the editor observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load —
@@ -8003,7 +8348,7 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const { base, ...fields } = args;
       let guardRaw: typeof schema.transactions.$inferSelect | undefined;
-      // Contract v121 (F3): the epoch check is independent of the
+      // Build v121 (F3): the epoch check is independent of the
       // value base — it runs whenever a baseEpoch is supplied,
       // before the value check, so a restore since the load
       // refuses the write even when the stored row still equals
@@ -8113,7 +8458,7 @@ export const Actions = {
 
   deleteTransaction: defineAction({
     description: "Delete one recorded transaction.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load —
@@ -8196,7 +8541,7 @@ export const Actions = {
           ),
         }),
       ),
-      // Restore epoch (contract v121, round-18 F3): the restore
+      // Restore epoch (build v121, round-18 F3): the restore
       // generation the dataset is on (the same value getNetWorth
       // and getDashboard publish). The import panel's confirmed
       // cash-out save passes it back as baseEpoch, so a panel that
@@ -8216,7 +8561,7 @@ export const Actions = {
         settingsJson = await decryptSettingValue(key, row.value, IMPORT_SETTINGS_KEY);
         // Migrate a legacy plaintext value to encrypted in place
         // (the loadAll opening-reserve pattern). Compare-and-write
-        // (contract v64, A4): the update applies only while the
+        // (build v64, A4): the update applies only while the
         // stored value still equals the value read here, so a
         // concurrent saveImportSettings write wins over this
         // migration rewrite.
@@ -8290,7 +8635,7 @@ export const Actions = {
   saveImportSettings: defineAction({
     description: "Save the CSV import panel's remembered setup (last-used settings plus column-mapping profiles) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v130 (round-19 finding 8): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 8): `baseEpoch` is the restore
     // epoch the panel observed when it loaded its setup (the
     // settings read's restoreEpoch). When supplied, the write is
     // refused when a backup restore advanced the stored epoch since
@@ -8309,7 +8654,7 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      // Contract v130 (finding 8): the epoch check runs before
+      // Build v130 (finding 8): the epoch check runs before
       // the value is parsed or written, so a stale save is refused
       // even when the blob itself is well-formed.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "import setup");
@@ -8360,7 +8705,7 @@ export const Actions = {
     request: z.object({}),
     response: z.object({
       settingsJson: z.string().nullable(),
-      // Restore epoch (contract v130, round-19 finding 8): the
+      // Restore epoch (build v130, round-19 finding 8): the
       // restore generation the dataset is on (the same value
       // getNetWorth and getDashboard publish). The panel's setup
       // save passes it back as baseEpoch, so a panel that loaded
@@ -8378,7 +8723,7 @@ export const Actions = {
       let settingsJson: string | null = null;
       if (row && row.value !== "") {
         settingsJson = await decryptSettingValue(key, row.value, NW_IMPORT_SETTINGS_KEY);
-        // Compare-and-write (contract v64, A4): see getImportData.
+        // Compare-and-write (build v64, A4): see getImportData.
         if (settingsJson != null && (await needsRebind(key, row.value, settingContext(NW_IMPORT_SETTINGS_KEY)))) {
           await db
             .update(schema.settings)
@@ -8400,7 +8745,7 @@ export const Actions = {
   saveNwImportSettings: defineAction({
     description: "Save the Net Worth balance-import panel's remembered setup (column-mapping profiles plus confirmed label mappings) as one settings value, stored encrypted at rest and carried in backup/restore like the app's other saved blobs.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v130 (round-19 finding 8): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 8): `baseEpoch` is the restore
     // epoch the panel observed when it loaded its setup (the
     // settings read's restoreEpoch). When supplied, the write is
     // refused when a backup restore advanced the stored epoch since
@@ -8419,7 +8764,7 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      // Contract v130 (finding 8): the epoch check runs before
+      // Build v130 (finding 8): the epoch check runs before
       // the value is parsed or written, so a stale save is refused
       // even when the blob itself is well-formed.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "Net Worth import setup");
@@ -8462,7 +8807,7 @@ export const Actions = {
   importTransactions: defineAction({
     description: "Import a batch of transactions at once (the statement import path — CSV and OFX/QFX files alike; both are parsed client-side into these rows).",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v130 (round-19 finding 7): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 7): `baseEpoch` is the restore
     // epoch the import preview observed when it read the recorded
     // data (getImportData's restoreEpoch). When supplied, the import
     // is refused when a backup restore advanced the stored epoch
@@ -8472,7 +8817,7 @@ export const Actions = {
     // behaviour.
     request: z.object({
       rows: z.array(txnInput).min(1).max(1000),
-      // Optional batch idempotency key (contract v64, F02) — see
+      // Optional batch idempotency key (build v64, F02) — see
       // the import-batch note above the Actions map. Absent =
       // the pre-v64 behaviour exactly.
       batchKey: importBatchKeyField,
@@ -8483,7 +8828,7 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      // Contract v130 (finding 7): the epoch check runs before
+      // Build v130 (finding 7): the epoch check runs before
       // any planning or write, so a restore since the preview
       // refuses the whole batch with zero rows inserted — the
       // same restore message the other guarded mutations return.
@@ -8498,7 +8843,7 @@ export const Actions = {
       // (one decrypt attempt per distinct prefixed value) so the
       // pure plan sees a synchronous verifier.
       const verified = new Set<string>();
-      // Contract v91: a value verifies as genuine ciphertext when
+      // Build v91: a value verifies as genuine ciphertext when
       // it decrypts under ANY of the three transaction text-field
       // bindings — the preflight cannot know which field the
       // value was bound to, and a ciphertext bound to one of
@@ -8538,7 +8883,7 @@ export const Actions = {
           throw new Error(RESERVED_ENC_PREFIX_MESSAGE);
         }
       }
-      // Batch-key idempotency (contract v64, F02): with a key,
+      // Batch-key idempotency (build v64, F02): with a key,
       // look for the recorded claim BEFORE building any write. A
       // claim whose rows hash matches is a completed batch being
       // retried after its success response was lost — return the
@@ -8671,7 +9016,7 @@ export const Actions = {
       const eff = args.effectiveFrom ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
       await db.insert(schema.yearlyExpenseVersions).values({
         expenseId: row.id,
-        // Contract v91: the version row gets its OWN encryption of
+        // Build v91: the version row gets its OWN encryption of
         // the same figure, bound to the version column — reusing
         // the parent row's ciphertext would decrypt in neither
         // column's context.
@@ -8695,7 +9040,7 @@ export const Actions = {
   updateYearlyExpense: defineAction({
     description: "Edit a yearly/periodic expense's details.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F17): `base` is the expense as the
+    // Build v65 (CAS sweep, F17): `base` is the expense as the
     // editor loaded it — the parent fields AND the version stored
     // for the save's effective month (null = no version existed
     // for that month). When supplied, the write is refused when
@@ -8704,7 +9049,7 @@ export const Actions = {
     // before ANY write, so a refusal leaves the parent and every
     // version intact. Omitting `base` keeps the legacy unchecked
     // behaviour (named in DATA-PLAN).
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the editor observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load,
@@ -8756,7 +9101,7 @@ export const Actions = {
       if (!existingExpense) {
         return { ok: false, reason: "That yearly expense was not found." };
       }
-      // Contract v121 (F3): the epoch check runs before the value
+      // Build v121 (F3): the epoch check runs before the value
       // check — a restore since the load refuses the write even
       // when the stored fields still equal the base.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "yearly expense");
@@ -8814,7 +9159,7 @@ export const Actions = {
       }
       // The version upsert below is the ONLY use of this value: it
       // is bound to the version column, not the parent column
-      // (contract v91 — the two columns must never share bytes).
+      // (build v91 — the two columns must never share bytes).
       const encExpectedArg = await encryptNum(key, args.expectedCents, "yearly_expense_versions.expected_cents");
       // Metadata (name, due month, paid-by, keep-the-lights-on flag)
       // updates in place. Amount and
@@ -8835,7 +9180,7 @@ export const Actions = {
         })
         .where(eq(schema.yearlyExpenses.id, args.id));
       // Atomic upsert on the (expenseId, effectiveFrom) pair
-      // (contract v64, A1): see setMonthlyBillAmount. This one
+      // (build v64, A1): see setMonthlyBillAmount. This one
       // statement covers both cases the old read-then-write
       // branched on — a legacy expense with no versions yet (the
       // upsert inserts its first version at eff) and an existing
@@ -8887,7 +9232,7 @@ export const Actions = {
   setYearlyExpenseVersion: defineAction({
     description: "Set a new amount/frequency version for a yearly/periodic expense from a chosen month onward.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -8919,7 +9264,7 @@ export const Actions = {
       }
       const encExpectedArg = await encryptNum(key, args.expectedCents, "yearly_expense_versions.expected_cents");
       // Atomic upsert on the (expenseId, effectiveFrom) pair
-      // (contract v64, A1): see setMonthlyBillAmount.
+      // (build v64, A1): see setMonthlyBillAmount.
       await db
         .insert(schema.yearlyExpenseVersions)
         .values({
@@ -8955,7 +9300,7 @@ export const Actions = {
 
   deleteYearlyExpense: defineAction({
     description: "Delete a yearly/periodic expense and its versions.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load —
@@ -9005,7 +9350,7 @@ export const Actions = {
   deleteYearlyExpenseVersion: defineAction({
     description: "Remove one version from a yearly/periodic expense's history.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9014,7 +9359,7 @@ export const Actions = {
       versionId: z.number().int().positive(),
       baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    // The conflict flag carries an epoch refusal (contract v121),
+    // The conflict flag carries an epoch refusal (build v121),
     // like the spending family's okReasonResponse.
     response: z.object({
       ok: z.boolean(),
@@ -9082,7 +9427,7 @@ export const Actions = {
   // amounts, frequencies, or versions.
   setYearlyDueMonth: defineAction({
     description: "Set the due month of a yearly expense.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9146,7 +9491,7 @@ export const Actions = {
   updateMonthlyOneOff: defineAction({
     description: "Edit a recorded one-off expense.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the editor observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9191,7 +9536,7 @@ export const Actions = {
 
   deleteMonthlyOneOff: defineAction({
     description: "Delete a recorded one-off expense.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9254,7 +9599,7 @@ export const Actions = {
   updateCashOutItem: defineAction({
     description: "Edit an itemized cash-out line.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F14): `base` is the item as the
+    // Build v65 (CAS sweep, F14): `base` is the item as the
     // editor loaded it. When supplied, the write is a GUARDED
     // update in the same shape as updateTransaction (F13): it
     // applies only where the stored row still equals the base
@@ -9269,7 +9614,7 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const { base, ...fields } = args;
       let guardRaw: typeof schema.monthlyCashOutItems.$inferSelect | undefined;
-      // Contract v121 (F3): the epoch check is independent of the
+      // Build v121 (F3): the epoch check is independent of the
       // value base — it runs whenever a baseEpoch is supplied,
       // before the value check, so a restore since the load
       // refuses the write even when the stored item still equals
@@ -9366,7 +9711,7 @@ export const Actions = {
 
   deleteCashOutItem: defineAction({
     description: "Delete an itemized cash-out line from a month.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9404,14 +9749,14 @@ export const Actions = {
   updateSettings: defineAction({
     description: "Update spending settings (opening reserve and reserve start month).",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F26): `base` is the settings pair
+    // Build v65 (CAS sweep, F26): `base` is the settings pair
     // as the settings form loaded it. When supplied, the write is
     // refused when EITHER stored key (opening reserve, reserve
     // start month) no longer matches its loaded base — both keys
     // are checked before either is written, so a refusal leaves
     // both stored values intact. Omitting `base` keeps the legacy
     // unchecked behaviour (named in DATA-PLAN).
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the form observed when it opened (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load,
@@ -9434,7 +9779,7 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      // Contract v121 (F3): the epoch check runs before the value
+      // Build v121 (F3): the epoch check runs before the value
       // check — a restore since the load refuses the write even
       // when both stored keys still equal the base.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "reserve settings");
@@ -9494,14 +9839,14 @@ export const Actions = {
   upsertMonthlySummary: defineAction({
     description: "Enter or update a month's direct cash-out total (supersedes that month's transactions).",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F15): `base` is the month total as
+    // Build v65 (CAS sweep, F15): `base` is the month total as
     // the editor loaded it (null = no total was stored for the
     // month). When supplied, the write is refused when the stored
     // month total differs from the base — the month primary key
     // prevented duplication but not stale replacement. Omitting
     // `base` keeps the legacy unchecked behaviour (named in
     // DATA-PLAN).
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the editor observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load —
@@ -9526,7 +9871,7 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      // Contract v121 (F3): the epoch check runs before the value
+      // Build v121 (F3): the epoch check runs before the value
       // check — a restore since the load refuses the write even
       // when the stored total still equals the base.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "month's cash-out total");
@@ -9570,7 +9915,7 @@ export const Actions = {
 
   deleteMonthlySummary: defineAction({
     description: "Remove a month's entered cash-out total.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load —
@@ -9638,7 +9983,7 @@ export const Actions = {
       if (!row) throw new Error("insert failed");
       await db.insert(schema.monthlyBillVersions).values({
         billId: row.id,
-        // Contract v91: the version row gets its OWN encryption of
+        // Build v91: the version row gets its OWN encryption of
         // the same figure, bound to the version column — reusing
         // the parent row's ciphertext would decrypt in neither
         // column's context.
@@ -9677,14 +10022,14 @@ export const Actions = {
       if (!existingBill) {
         return { ok: false, reason: "That monthly bill was not found." };
       }
-      // Contract v121 (F3): the epoch check runs before the value
+      // Build v121 (F3): the epoch check runs before the value
       // check — a restore since the load refuses the write even
       // when the stored fields still equal the base.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill");
       if (epochReason) {
         return { ok: false, conflict: true, reason: epochReason };
       }
-      // CAS guard (contract v65, F18): when the caller supplied
+      // CAS guard (build v65, F18): when the caller supplied
       // the loaded base, refuse if any field this save would
       // replace no longer matches its base in storage — checked
       // before any write, so the stored newer bill stays intact.
@@ -9757,7 +10102,7 @@ export const Actions = {
   setMonthlyBillCategory: defineAction({
     description: "Set a monthly bill's category (relabels past months' grouping).",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9801,7 +10146,7 @@ export const Actions = {
   setYearlyCategory: defineAction({
     description: "Set a yearly/periodic expense's category (relabels past months' grouping).",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9844,7 +10189,7 @@ export const Actions = {
   // no amount, version, or total is touched.
   setMonthlyBillKeepLightsOn: defineAction({
     description: "Toggle a monthly bill's Keep-the-lights-on flag.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9887,7 +10232,7 @@ export const Actions = {
   // No amount, version, or total is touched.
   setMonthlyBillsCollapsedAll: defineAction({
     description: "Persist the Monthly bills section's collapsed/expanded state.",
-    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 10): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9925,7 +10270,7 @@ export const Actions = {
   // No amount, version, or total is touched.
   setYearlyBillsCollapsedAll: defineAction({
     description: "Persist the Yearly & periodic expenses section's collapsed/expanded state.",
-    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 10): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -9963,7 +10308,7 @@ export const Actions = {
   // No amount, version, or total is touched.
   setByCategoryCollapsedAll: defineAction({
     description: "Persist the By category section's collapsed/expanded state.",
-    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 10): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -10002,7 +10347,7 @@ export const Actions = {
   // total is touched.
   setYearInSpendingCollapsedAll: defineAction({
     description: "Persist the Year in spending section's collapsed/expanded state.",
-    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 10): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -10175,7 +10520,7 @@ export const Actions = {
   // no amount, frequency, version, or total is touched.
   setYearlyKeepLightsOn: defineAction({
     description: "Toggle a yearly/periodic expense's Keep-the-lights-on flag.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -10220,14 +10565,14 @@ export const Actions = {
   setMonthlyBillAmount: defineAction({
     description: "Set a monthly bill's amount from a chosen month onward.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F16): `base` is the amount stored
+    // Build v65 (CAS sweep, F16): `base` is the amount stored
     // for (bill, effectiveFrom) as the editor loaded it (null = no
     // version existed for that month). When supplied, the write is
     // refused when the stored amount for that effective month
     // differs from the base, on top of v64's atomic upsert.
     // Omitting `base` keeps the legacy unchecked behaviour (named
     // in DATA-PLAN).
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the editor observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load,
@@ -10259,7 +10604,7 @@ export const Actions = {
       if (!existingBill) {
         return { ok: false, reason: "That monthly bill was not found." };
       }
-      // Contract v121 (F3): the epoch check runs before the value
+      // Build v121 (F3): the epoch check runs before the value
       // check — a restore since the load refuses the write even
       // when the stored amount still equals the base.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "monthly bill amount");
@@ -10289,7 +10634,7 @@ export const Actions = {
       }
       const encAmountArg = await encryptNum(key, args.amountCents, "monthly_bill_versions.amount_cents");
       // Atomic upsert on the (billId, effectiveFrom) pair
-      // (contract v64, A1): the composite unique index (schema +
+      // (build v64, A1): the composite unique index (schema +
       // migration 0025) makes the pair a real conflict target, so
       // two overlapping writes for the same month can never insert
       // duplicate version rows — the second updates the pair's
@@ -10328,7 +10673,7 @@ export const Actions = {
 
   deleteMonthlyBill: defineAction({
     description: "Delete a monthly bill and its versions.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -10371,7 +10716,7 @@ export const Actions = {
   deleteMonthlyBillVersion: defineAction({
     description: "Remove one version from a monthly bill's history.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getDashboard's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -10380,7 +10725,7 @@ export const Actions = {
       versionId: z.number().int().positive(),
       baseEpoch: z.number().int().nonnegative().optional(),
     }),
-    // The conflict flag carries an epoch refusal (contract v121),
+    // The conflict flag carries an epoch refusal (build v121),
     // like the spending family's okReasonResponse.
     response: z.object({
       ok: z.boolean(),
@@ -10446,7 +10791,7 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      // Global first-run emptiness (contract v60, F7): the ONE
+      // Global first-run emptiness (build v60, F7): the ONE
       // predicate in seedGuardCore, over every dataset table —
       // before v60 this guard looked at four spending tables
       // only, so sample rows could land beside real records held
@@ -10459,7 +10804,7 @@ export const Actions = {
           reason: `Example data only loads into a completely empty tracker — this tracker already has data (${nonEmptyDatasetTables(presence).join(", ")}). Nothing was seeded.`,
         };
       }
-      // Atomic seed (contract v64, A3): the builder only BUILDS
+      // Atomic seed (build v64, A3): the builder only BUILDS
       // the insert statements; they commit as ONE db.batch, so a
       // failure mid-seed lands nothing and a retry can succeed.
       const built = await seedExamplesStatements(db, key);
@@ -10538,7 +10883,7 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const key = await getCryptoKey(ctx);
       await ensureKeyCheck(ctx, db, key);
-      // Global first-run emptiness (contract v60, F7): the same
+      // Global first-run emptiness (build v60, F7): the same
       // seedGuardCore predicate seedExamples uses — before v60
       // this guard looked only at Net Worth accounts, so the
       // sample history could be seeded beside real spending data.
@@ -10550,7 +10895,7 @@ export const Actions = {
           reason: `Dataset is not empty (${nonEmptyDatasetTables(presence).join(", ")}) — nothing seeded.`,
         };
       }
-      // Atomic seed (contract v64, A3): see seedExamples.
+      // Atomic seed (build v64, A3): see seedExamples.
       const built = await seedNetWorthStatements(db, key);
       if (!built.seeded) {
         return { ok: false, seeded: false, reason: built.reason };
@@ -10564,7 +10909,7 @@ export const Actions = {
     },
   }),
 
-  // First-run seed (contract v60, F7): ONE global emptiness
+  // First-run seed (build v60, F7): ONE global emptiness
   // check over every dataset table (seedGuardCore), then BOTH
   // sample datasets as a single all-or-nothing operation — the
   // packaged build's boot path calls this instead of the two
@@ -10573,7 +10918,7 @@ export const Actions = {
   // passes the check receives both datasets or (on failure) is
   // reported unseeded so the caller does not mark it seeded.
   seedFirstRun: defineAction({
-    description: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (contract v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed.",
+    description: "First-run seed: run the one global emptiness check over every dataset table, then seed BOTH sample datasets (spending and Net Worth) as a single all-or-nothing operation — both datasets' inserts commit as ONE atomic batch (build v64), so a failure anywhere leaves an EMPTY dataset and a plain retry can succeed.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({ ok: z.boolean(), seeded: z.boolean(), reason: z.string() }),
@@ -10590,7 +10935,7 @@ export const Actions = {
         };
       }
       // All-or-nothing, as this action's contract has always
-      // claimed (contract v64, A3 — audit F23/F24): BOTH builders
+      // claimed (build v64, A3 — audit F23/F24): BOTH builders
       // only BUILD their statements, and the two sets commit as
       // ONE db.batch. A failure anywhere — including the second
       // dataset's statements — lands NOTHING from either, leaving
@@ -10618,7 +10963,7 @@ export const Actions = {
   }),
 
   getNetWorth: defineAction({
-    description: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — contract v65), totals, bucket split subtotals, and target progress.",
+    description: "Net Worth view: accounts, snapshots (each carrying its whole-snapshot revision, the CAS base for the snapshot and single-balance editors — build v65), totals, bucket split subtotals, and target progress.",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({}),
     response: z.object({
@@ -10630,7 +10975,7 @@ export const Actions = {
       // "nw_target_cents". Null when no target has been set (the
       // default) — the view then shows only a subtle set affordance.
       targetCents: z.number().nullable(),
-      // Restore epoch (contract v93, F5): the restore generation
+      // Restore epoch (build v93, F5): the restore generation
       // the dataset is on, stored in settings under
       // "nw_restore_epoch_v1" and advanced by every restorebackup.
       // The snapshot editors pass it back as baseEpoch — the CAS
@@ -10668,7 +11013,7 @@ export const Actions = {
           id: z.number(),
           date: z.string(),
           note: z.string().nullable(),
-          // Whole-snapshot revision (contract v65, F11/F12): the
+          // Whole-snapshot revision (build v65, F11/F12): the
           // CAS base the snapshot and single-balance editors pass
           // back as baseRevision when saving.
           revision: z.number(),
@@ -10809,7 +11154,7 @@ export const Actions = {
   // snapshot, or balance row. Default (no stored value) is off.
   setNwIncludeProperty: defineAction({
     description: "Set whether property (house/mortgage) counts in Net Worth totals.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -10845,7 +11190,7 @@ export const Actions = {
   // clears it (the row is deleted, returning to the empty default).
   setNwTarget: defineAction({
     description: "Set the Net Worth target amount.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -10958,7 +11303,7 @@ export const Actions = {
       // written before revisions existed, and for an absent row.
       revision: z.number().int().nonnegative(),
       baselineRevision: z.number().int().nonnegative(),
-      // Result-honesty markers (contract v67, F06/F07): true when
+      // Result-honesty markers (build v67, F06/F07): true when
       // the saved inputs record / the baseline record EXISTS but
       // cannot be read. In that state saved / baseline read as
       // null exactly as an absent record would — these markers
@@ -10982,7 +11327,7 @@ export const Actions = {
       // the stored spending value is annual cents everywhere
       // and no engine reads this.
       spendingUnit: z.enum(["month", "year"]),
-      // Restore epoch (contract v121, round-18 F3): the restore
+      // Restore epoch (build v121, round-18 F3): the restore
       // generation the dataset is on (the same value getNetWorth
       // and getDashboard publish). The spending-unit toggle passes
       // it back as baseEpoch, so a view that predates a restore
@@ -11038,7 +11383,7 @@ export const Actions = {
         inputs: RetirementInputs;
       } | null = baselineState.baseline;
       let baselineRevision = baselineState.revision;
-      // Result-honesty (contract v67, F07): a baseline that exists
+      // Result-honesty (build v67, F07): a baseline that exists
       // but cannot be read is NOT "no baseline" — the capture below
       // must not run against it (its insert-if-absent would no-op
       // anyway, but the marker is what the view renders from).
@@ -11125,7 +11470,7 @@ export const Actions = {
   // the unit writes only this preference.
   setRetirementSpendingUnit: defineAction({
     description: "Persist the Retirement annual-spending entry unit (per year / per month).",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getRetirementCalc's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -11177,7 +11522,7 @@ export const Actions = {
       await ensureKeyCheck(ctx, db, key);
       const { baseRevision, ...fields } = args;
       const state = await readRetirementBlobState(db, key);
-      // Result-honesty (contract v67, F06): a PRESENT but
+      // Result-honesty (build v67, F06): a PRESENT but
       // unreadable record is never overwritten — refuse with the
       // lite record, exactly like a CAS conflict, and leave the
       // stored bytes intact.
@@ -11228,7 +11573,7 @@ export const Actions = {
         return { ok: true as const, revision: nextRevision };
       }
       if (state.storedRaw === undefined) {
-        // First write WITH a CAS base (contract v64, A2 — audit
+        // First write WITH a CAS base (build v64, A2 — audit
         // F20): insert-if-absent, mirroring saveRothInputs'
         // insert-only first write. Two overlapping first saves
         // both read "no record" and both pass the decision above
@@ -11314,7 +11659,7 @@ export const Actions = {
       const blobState = await readRetirementBlobState(db, key);
       const baselineState = await readRetirementBaselineState(db, key);
       const baselineStored = baselineState.revision;
-      // Result-honesty (contract v67, F06/F07): if EITHER record
+      // Result-honesty (build v67, F06/F07): if EITHER record
       // exists but cannot be read, refuse with NEITHER blob
       // written — an unreadable record is never overwritten.
       if (
@@ -11377,7 +11722,7 @@ export const Actions = {
         await upsertRetirementBlobValue(db, enc1);
         inputsCommitted = true;
       } else if (blobState.storedRaw === undefined) {
-        // First write WITH a CAS base (contract v64, A2 — audit
+        // First write WITH a CAS base (build v64, A2 — audit
         // F20): insert-if-absent, exactly as saveRetirementCalc.
         // A landed concurrent first save makes this a no-op, and
         // the refusal below returns the inputs-conflict shape
@@ -11441,7 +11786,7 @@ export const Actions = {
         return successShape(nextBaselineRevision);
       }
       if (baselineState?.storedRaw === undefined) {
-        // First baseline write WITH a CAS base (contract v64,
+        // First baseline write WITH a CAS base (build v64,
         // A2 — audit F20): insert-if-absent, exactly as blob 1's
         // first write above. A landed concurrent first baseline
         // makes this a no-op; blob 1 IS committed and is NOT
@@ -11585,7 +11930,7 @@ export const Actions = {
     }),
     response: z.object({
       baselineKind: z.enum(["saved", "session"]).nullable(),
-      // Result-honesty marker (contract v67, F07): true when a
+      // Result-honesty marker (build v67, F07): true when a
       // baseline record EXISTS but cannot be read — distinct
       // from "no baseline" (baselineKind null, marker false).
       baselineUnreadable: z.boolean(),
@@ -11626,7 +11971,7 @@ export const Actions = {
       });
       if (!built) return { ...empty, baselineKind: baselineRec.kind };
       const { inputs, stocks, expected, vol } = built;
-      // Inclusive horizon (F6, contract v99): one return per
+      // Inclusive horizon (F6, build v99): one return per
       // priced year, the end-age year included.
       const years = Math.max(0, inputs.endAge - inputs.currentAge + 1);
       const projPath = simulateRetirement(
@@ -11787,7 +12132,7 @@ export const Actions = {
       const key = await getCryptoKey(ctx);
       const stored = await seedRothStoredInputs(ctx, db, key);
       let state = await readRothBlobRawState(db, key);
-      // Result-honesty (contract v67, F08): a reset never
+      // Result-honesty (build v67, F08): a reset never
       // reseeds over a PRESENT but unreadable record.
       if (state.storedRaw !== undefined && !state.valid) {
         const record = await loadRothPlannerResponse(ctx);
@@ -11848,7 +12193,7 @@ export const Actions = {
       const key = await getCryptoKey(ctx);
       const rows = await db.select().from(schema.settings);
       const raw = rows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value;
-      // Contract v90: the blob is stored encrypted; a legacy
+      // Build v90: the blob is stored encrypted; a legacy
       // plaintext record dual-reads as before. An undecryptable
       // ciphertext record parses as no stored blob (the lenient
       // reader's default), exactly as a corrupt plaintext blob
@@ -11865,13 +12210,14 @@ export const Actions = {
   // independently. Display and form state only — no plan input,
   // scenario, or amount is touched.
   // Revision/CAS: a writer passes baseRevision — the revision
-  // its copy of the blob was read at. If the stored revision
-  // has moved on (a concurrent save from another tab or device
-  // landed first), the write is refused with the current blob
-  // and its revision, and storage is left untouched; the
-  // writer re-merges against the current blob and retries at
-  // the fresh revision. A write with no baseRevision keeps the
-  // legacy unchecked behaviour against an EXISTING row. Either
+  // its copy of the blob was read at. baseRevision is REQUIRED
+  // on every call (audit N-2, mirroring saveRothInputs): if it
+  // is missing, or the stored revision has moved on (a
+  // concurrent save from another tab or device landed first),
+  // the write is refused with the current blob and its
+  // revision, and storage is left untouched; the writer
+  // re-merges against the current blob and retries at the
+  // fresh revision. There is no unchecked write path. Either
   // way, an accepted write bumps the revision by one and
   // returns it.
   // The CAS commit is atomic, not just checked: against an
@@ -11893,6 +12239,16 @@ export const Actions = {
   setRothUiState: defineAction({
     description: "Persist one piece of the Roth view's UI state, or the Playground form's remembered dial state.",
     privileged: [privileged.ensureEncryptionKey],
+    // baseRevision (audit N-2) is the CAS base: the revision
+    // the writer's copy of the blob was read at. It is REQUIRED
+    // on every call, mirroring saveRothInputs: the strict
+    // decision in applyRothUiWrite (decideRothUiWrite) refuses
+    // a missing or stale base with the conflict response, and
+    // there is no unchecked commit branch below. The field
+    // stays optional in this transport schema only so an
+    // omitted base reaches that decision and returns the
+    // structured conflict instead of a bare validation error;
+    // contractually (see describeApi) it is not optional.
     request: z.object({
       section: z.enum(ROTH_SECTION_IDS).optional(),
       open: z.boolean().optional(),
@@ -11918,7 +12274,7 @@ export const Actions = {
       const key = await getCryptoKey(ctx);
       const rows = await db.select().from(schema.settings);
       const storedRaw = rows.find((r) => r.key === ROTH_UI_STATE_KEY)?.value;
-      // Contract v90: decrypt the stored blob before the pure
+      // Build v90: decrypt the stored blob before the pure
       // write path sees it (dual-read: legacy plaintext parses
       // as before), and encrypt the composed blob before it
       // reaches settings. applyRothUiWrite itself stays a
@@ -11985,18 +12341,18 @@ export const Actions = {
         };
       }
       // The composed blob is encrypted before any commit path
-      // below stores it (contract v90). Every path predicates
+      // below stores it (build v90). Every path predicates
       // on, or inserts against, the stored RAW value — never on
       // JSON inside it, which SQL can no longer see.
       const enc = await encryptStr(key, result.raw, settingContext(ROTH_UI_STATE_KEY));
       if (storedRaw === undefined) {
         // First write establishing the row: INSERT-ONLY (state
         // audit fix 1), mirroring the plan record's first-write
-        // pattern (insertRothBlobValueIfAbsent). A CAS base > 0
-        // against an absent row never reaches here —
-        // applyRothUiWrite already refused it above, carrying
-        // the lenient-parsed default state at revision 0, and
-        // nothing was written. If the insert conflicts, a
+        // pattern (insertRothBlobValueIfAbsent). A missing base
+        // or a CAS base > 0 against an absent row never reaches
+        // here — applyRothUiWrite already refused it above,
+        // carrying the lenient-parsed default state at
+        // revision 0, and nothing was written. If the insert conflicts, a
         // concurrent first write landed between this
         // invocation's read and its commit: this invocation
         // wrote nothing, so re-read the current blob and return
@@ -12018,19 +12374,6 @@ export const Actions = {
           revision: current.revision,
           state: current,
         };
-      }
-      if (args.baseRevision === undefined) {
-        // Legacy unchecked write (no baseRevision) against an
-        // existing row: unconditional upsert, as before.
-        await db
-          .insert(schema.settings)
-          .values({ key: ROTH_UI_STATE_KEY, value: enc })
-          .onConflictDoUpdate({
-            target: schema.settings.key,
-            set: { value: enc },
-          });
-        ctx.invalidateQueries();
-        return { ok: true as const, revision: result.revision };
       }
       // CAS write against an existing row: commit with ONE
       // guarded UPDATE whose predicate is the stored RAW value
@@ -12346,7 +12689,7 @@ export const Actions = {
   updateRothScenario: defineAction({
     description: "Replace the saved Roth scenario with the given name by the given complete record (the name itself is kept).",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F22): `baseScenario` is the named
+    // Build v65 (CAS sweep, F22): `baseScenario` is the named
     // scenario's complete payload as the editor loaded it. When
     // supplied, the transform refuses — at the SCENARIO level,
     // inside the blob's own raw-value CAS — when the named
@@ -12452,7 +12795,7 @@ export const Actions = {
       doNothing: optScoreOut.nullable(),
       winner: optScoreOut.nullable(),
       runnersUp: z.array(optScoreOut),
-      // Priced levers (contract v69): the entered plan priced as
+      // Priced levers (build v69): the entered plan priced as
       // its own fixed strategy (its saved ceilings / window /
       // draw order / claiming ages), and the top distinct
       // candidates the search priced that beat it — each with
@@ -12481,7 +12824,7 @@ export const Actions = {
           windowLabel: z.string(),
           drawOrderLabel: z.string(),
           // The varied run winner's gain-harvesting state
-          // (contract v56).
+          // (build v56).
           gainsHarvest: z.boolean(),
           netCost: z.number(),
           // Lifetime Social Security collected under the varied
@@ -12513,7 +12856,7 @@ export const Actions = {
       // when none is set.
       claimAgeFloor: z.number().nullable(),
       // Whether the crowned winner meets the claim floor
-      // (contract v56): null when no floor is set; true when
+      // (build v56): null when no floor is set; true when
       // the winner claims at or above the floor (or has no
       // primary claiming age, or is the floor-exempt Do
       // Nothing benchmark); false when the winner claims
@@ -12535,7 +12878,7 @@ export const Actions = {
       ),
     }),
     async handler(ctx, args) {
-      // Plan-year capture (contract v60, F6): the Roth compute
+      // Plan-year capture (build v60, F6): the Roth compute
       // actions (runRothOptimizer, runRothCompare,
       // runRothMonteCarloCheck / Stats, runWorkYearsCompare) and
       // the December console's default year read the year in UTC,
@@ -12599,7 +12942,7 @@ export const Actions = {
       const res = runJointOptimizer(inputs);
       const dnCost = res.doNothing.cost.netCost;
       const winnerKey = res.winner.spec.key;
-      // Priced levers (contract v69): price the entered plan
+      // Priced levers (build v69): price the entered plan
       // itself as one fixed strategy — the same construction
       // the planner prices it with (strategyFromSavedArgs over
       // the resolved payload) at the entered claiming ages —
@@ -12786,10 +13129,10 @@ export const Actions = {
           netCostCents: z.number(),
           totalTaxCents: z.number(),
           // Lifetime federal / state split of totalTaxCents
-          // (contract v51): the two sum to totalTaxCents.
+          // (build v51): the two sum to totalTaxCents.
           federalTaxCents: z.number(),
           stateTaxCents: z.number(),
-          // Per-year tax readouts (contract v51): one row
+          // Per-year tax readouts (build v51): one row
           // per priced march year, read off the same priced
           // rows the lifetime totals sum. Display only.
           years: z.array(
@@ -12811,6 +13154,16 @@ export const Actions = {
               irmaaCents: z.number(),
               conversionCents: z.number(),
               pretaxOutByChoiceCents: z.number(),
+              // The S-10 split of the year's priced
+              // pre-tax draw (re-audit SHOULD S-8): the
+              // spending draw alone, the tax-bill debits
+              // alone, and their sum (extraPreTaxDraw).
+              // pretaxOutByChoiceCents is the conversion
+              // plus the spending component only — see
+              // the pretaxDrawSplitSemantics convention.
+              pretaxSpendingDrawCents: z.number(),
+              pretaxTaxDebitCents: z.number(),
+              extraPreTaxDrawCents: z.number(),
             }),
           ),
           penaltyCents: z.number(),
@@ -12854,6 +13207,7 @@ export const Actions = {
         args.scenarios.map((s) => ({ name: s.name, overrides: s.overrides })),
         capturedYear,
         args.baselineName ?? null,
+        await readStoredTaxReturn(ctx),
       );
       const fallbackInputs = parseRothInputs(resolved);
       return {
@@ -12899,14 +13253,24 @@ export const Actions = {
           // priced that balance at $0, so the echo shows the
           // resolved 0 — the value that priced — not the null
           // that was sent.
-          effectiveInputs: withSleeveEcho(
-            withResolvedOverrideBalances(
-              parseRothInputs(s.saved) ?? fallbackInputs ?? (resolved as z.infer<typeof rothSavedInputs>),
-              s.saved,
+          effectiveInputs: withThreadedEcho(
+            withSleeveEcho(
+              withResolvedOverrideBalances(
+                parseRothInputs(s.saved) ?? fallbackInputs ?? (resolved as z.infer<typeof rothSavedInputs>),
+                s.saved,
+              ),
+              scenarioInputs == null
+                ? null
+                : Math.round(deriveSpendFromCashSleeveStartDollars(scenarioInputs) * 100),
             ),
-            scenarioInputs == null
-              ? null
-              : Math.round(deriveSpendFromCashSleeveStartDollars(scenarioInputs) * 100),
+            // Threaded-pricing echo (re-audit SHOULD S-7): this
+            // scenario's own threaded transients off its merged
+            // shape (buildCompareScenario's per-scenario
+            // re-derivation, or an override's supplied values)
+            // and its effective yields off the engine inputs
+            // built from that same shape — never recomputed.
+            s.saved,
+            scenarioInputs,
           ),
           };
         }),
@@ -13107,6 +13471,7 @@ export const Actions = {
           volatilityPct: args.volatilityPct,
           pathCount: ROTH_MC_CHECK_PATHS,
           seed: ROTH_MC_CHECK_SEED,
+          taxReturnActuals: await readStoredTaxReturn(ctx),
         },
       );
       return {
@@ -13129,7 +13494,7 @@ export const Actions = {
   // the shared priceYear path, employee payroll tax priced
   // entirely from each year's own law row — wage base, rates,
   // and Additional Medicare threshold as dated table data;
-  // contract v58: work-year yields and already-started Social
+  // build v58: work-year yields and already-started Social
   // Security benefits priced as work-year income, deficit-
   // funding Taxable sales realizing gains off a basis ledger
   // that rolls forward in dollars into the rolled plan, the
@@ -13151,7 +13516,7 @@ export const Actions = {
     request: z.strictObject({
       ...rothComputeFields,
       quitAges: z.array(z.number().int()).min(1).max(3),
-      // The primary's Medicare enrollment age (contract v58,
+      // The primary's Medicare enrollment age (build v58,
       // F6): request-only — never persisted, never part of the
       // saved record. In work years at or after this age the
       // household is HSA-ineligible and no HSA contribution
@@ -13482,8 +13847,12 @@ export const Actions = {
     response: z.object({
       provenance: provenanceOut,
       // The law row the year actually priced under: a taxYear
-      // with no published row prices under the newest published
-      // row (the lawForYear fallback), and this names that row.
+      // with no published row prices under the nearest published
+      // row in its own direction (the lawForYear fallback — the
+      // newest row for a later year, the OLDEST row for a year
+      // earlier than the table, never a later year's law), and
+      // this names that row, so the substitution is on the
+      // record rather than silent.
       lawYearUsed: z.number().int(),
       result: playgroundYearOut,
       pastePayload: playgroundPasteOut,
@@ -13523,7 +13892,7 @@ export const Actions = {
       const key = await getCryptoKey(ctx);
       const rows = await db.select().from(schema.settings);
       const raw = rows.find((r) => r.key === DECEMBER_STATE_KEY)?.value;
-      // Contract v90: the blob is stored encrypted; a legacy
+      // Build v90: the blob is stored encrypted; a legacy
       // plaintext record dual-reads as before. An undecryptable
       // ciphertext record is flagged unreadable (never silently
       // treated as a fresh console).
@@ -13560,7 +13929,7 @@ export const Actions = {
       const current = rows.find((r) => r.key === DECEMBER_STATE_KEY);
       const stored = await readStoredBlob(key, current?.value, DECEMBER_STATE_KEY);
       const storedRevision = parseDecemberRevision(stored.plain);
-      // Result-honesty (contract v67, F09): a save whose base was
+      // Result-honesty (build v67, F09): a save whose base was
       // read from an UNPARSEABLE stored record is refused as a
       // conflict — the damaged bytes are left intact, never
       // treated as a revision-0 record the save may build on.
@@ -13586,7 +13955,7 @@ export const Actions = {
           storedUnreadable: false,
         };
       }
-      // Contract v90: the serialized blob is encrypted before
+      // Build v90: the serialized blob is encrypted before
       // it reaches settings; the guarded commit below still
       // predicates on the stored RAW value (ciphertext byte
       // equality, the Roth records' pattern), so the CAS is
@@ -13661,7 +14030,7 @@ export const Actions = {
     description: "Price the December year-end projection from the given console inputs (same state shape as saveDecemberProjection) through the shared single-year engine (pricePlaygroundYear) and its ACA-cliff solver.",
     request: z.object({
       state: decemberState,
-      // Annual spending (contract v126, "enough for the year"):
+      // Annual spending (build v126, "enough for the year"):
       // OPTIONAL, never console state and never saved — the
       // caller's resolved annual spending in CENTS (the Tax
       // Plan record's annualSpendingCents, falling back to
@@ -13956,7 +14325,7 @@ export const Actions = {
       for (const s of summaries) yearSet.add(Number(s.month.slice(0, 4)));
       for (const it of cashOutItems) yearSet.add(Number(it.month.slice(0, 4)));
       for (const o of oneOffs) yearSet.add(Number(o.month.slice(0, 4)));
-      // Contract v124 (round-18 F7): bill-version effective years —
+      // Build v124 (round-18 F7): bill-version effective years —
       // a year whose only data is a bill in effect (a bill-only year)
       // still belongs in the list and the trend, since the trend
       // prices it from monthHasData + eff. Monthly and smoothed
@@ -14251,7 +14620,7 @@ export const Actions = {
   // default); the client stores an explicit value on first toggle.
   setNwAccountsCollapsed: defineAction({
     description: "Persist the Net Worth Accounts section's collapsed state.",
-    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 10): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -14287,7 +14656,7 @@ export const Actions = {
   // Absent = collapsed (the default).
   setNwHistoryCollapsed: defineAction({
     description: "Persist the Net Worth History section's collapsed state.",
-    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 10): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -14325,7 +14694,7 @@ export const Actions = {
   // baseline to the first snapshot. Display only.
   setNwGrowthSince: defineAction({
     description: "Persist the Net Worth Growth chart's “Change since” baseline snapshot date; null returns the baseline to the first snapshot.",
-    // Contract v130 (round-19 finding 10): `baseEpoch` is the restore
+    // Build v130 (round-19 finding 10): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -14472,14 +14841,14 @@ export const Actions = {
   updateNwSnapshot: defineAction({
     description: "Replace a Net Worth snapshot's date, note, and balances.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F11): `baseRevision` is the
+    // Build v65 (CAS sweep, F11): `baseRevision` is the
     // snapshot revision the editor loaded (from getNetWorth). When
     // supplied, the whole-snapshot replacement is refused when the
     // stored revision has moved — whether the move came from
     // another updateNwSnapshot or from an updateNwBalance, both of
     // which bump the same counter. Omitting it keeps the legacy
     // unchecked behaviour (named in DATA-PLAN).
-    // Contract v93 (F5): `baseEpoch` is the restore epoch the
+    // Build v93 (F5): `baseEpoch` is the restore epoch the
     // editor observed when it loaded (getNetWorth's restoreEpoch).
     // When supplied, the replacement is refused when the stored
     // epoch has moved — a backup restore advanced it — even when
@@ -14625,7 +14994,7 @@ export const Actions = {
   updateNwBalance: defineAction({
     description: "Correct one account's balance in one snapshot (null removes it).",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F12, folded into F11's counter):
+    // Build v65 (CAS sweep, F12, folded into F11's counter):
     // `baseRevision` is the SNAPSHOT revision the editor loaded.
     // When supplied, the write is refused when the snapshot's
     // revision has moved since (by either snapshot writer), and an
@@ -14633,7 +15002,7 @@ export const Actions = {
     // editor holding the pre-correction revision conflicts instead
     // of silently restoring the old balance. Omitting it keeps the
     // legacy unchecked behaviour (named in DATA-PLAN).
-    // Contract v93 (F5): `baseEpoch` is the restore epoch the
+    // Build v93 (F5): `baseEpoch` is the restore epoch the
     // editor observed when it loaded (getNetWorth's restoreEpoch),
     // checked exactly as in updateNwSnapshot — a restore since the
     // load refuses the write even when the revision numbers match.
@@ -14726,7 +15095,7 @@ export const Actions = {
         };
       }
       // Atomic upsert on the (snapshotId, accountId) pair
-      // (contract v64, A1 — audit F09): the composite unique
+      // (build v64, A1 — audit F09): the composite unique
       // index (schema + migration 0025) makes the pair a real
       // conflict target, so this ONE statement inserts or updates
       // the pair's single row. The old read-then-insert path let
@@ -14752,7 +15121,7 @@ export const Actions = {
 
   deleteNwSnapshot: defineAction({
     description: "Delete a Net Worth snapshot and its balances.",
-    // Contract v121 (round-18 F4): `baseEpoch` is the restore
+    // Build v121 (round-18 F4): `baseEpoch` is the restore
     // epoch the editor observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -14836,7 +15205,7 @@ export const Actions = {
   renameNwAccount: defineAction({
     description: "Rename a Net Worth account and optionally update its property/custodial flags.",
     privileged: [privileged.ensureEncryptionKey],
-    // Contract v65 (CAS sweep, F19): `base` is the account's
+    // Build v65 (CAS sweep, F19): `base` is the account's
     // (name, propertyKind, custodial) as the editor loaded them.
     // When supplied, the write is refused when any field this save
     // writes no longer matches its base in storage — the name
@@ -14854,7 +15223,7 @@ export const Actions = {
       // custodial forces its propertyKind to "none" (a custodial
       // account is never a property account).
       custodial: z.boolean().optional(),
-      // Contract v121 (round-18 F3): `baseEpoch` is the restore
+      // Build v121 (round-18 F3): `baseEpoch` is the restore
       // epoch the editor observed when it loaded (getNetWorth's
       // restoreEpoch). When supplied, the write is refused when a
       // backup restore advanced the stored epoch since the load,
@@ -14887,7 +15256,7 @@ export const Actions = {
       if (!targetAccount) {
         return { ok: false, reason: "That account was not found.", id: null };
       }
-      // Contract v121 (F3): the epoch check runs before the value
+      // Build v121 (F3): the epoch check runs before the value
       // check — a restore since the load refuses the write even
       // when the stored fields still equal the base.
       const epochReason = await restoreEpochConflict(db, args.baseEpoch, "account");
@@ -14942,7 +15311,7 @@ export const Actions = {
 
   setNwAccountArchived: defineAction({
     description: "Archive or restore a Net Worth account.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the write is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -14994,7 +15363,7 @@ export const Actions = {
   // from the remaining balances, so they recompute on their own.
   deleteNwAccount: defineAction({
     description: "Permanently delete an archived, non-property Net Worth account and its balances.",
-    // Contract v121 (round-18 F3): `baseEpoch` is the restore
+    // Build v121 (round-18 F3): `baseEpoch` is the restore
     // epoch the view observed when it loaded (getNetWorth's
     // restoreEpoch). When supplied, the delete is refused when a
     // backup restore advanced the stored epoch since the load.
@@ -15114,7 +15483,7 @@ export const Actions = {
       // (no MAC — a pre-MAC backup; restores, labelled
       // UNAUTHENTICATED in the result below).
       const payloadAuthenticity = classifyBackupAuthenticity(args);
-      // The legacy bucket verdict (contract v94, finding F6):
+      // The legacy bucket verdict (build v94, finding F6):
       // buildBackupPayload decrypts a stored bucket under the
       // "nw_accounts.bucket" context whenever it carries the
       // reserved prefix, while the restore below stores the
@@ -15160,7 +15529,7 @@ export const Actions = {
          when the payload carries them decrypted; a payload from an
          older export that still carries one as ciphertext under
          the same key is decrypted and re-encrypted with the
-         destination key's field binding (contract v91), never
+         destination key's field binding (build v91), never
          stored verbatim. Net Worth balances are
          normalised by restoreCore's rule: a non-empty split IS the
          balance, so balanceCents is recomputed from the parts
@@ -15199,7 +15568,7 @@ export const Actions = {
         if (isEncryptedAtRestSettingKey(s.key)) {
           if (isEncrypted(s.value)) {
             // Reserved-prefix verification (cluster E) and
-            // field binding (contract v91): a value for one of
+            // field binding (build v91): a value for one of
             // these encrypted-at-rest keys that CARRIES the prefix
             // is stored only when it genuinely decrypts under the
             // current key IN THIS KEY'S CONTEXT — and it is then
@@ -15240,7 +15609,7 @@ export const Actions = {
         }
         settingsRows.push({ key: s.key, value: stored });
       }
-      // Contract v93 (F5): the restore epoch. A restore is a new
+      // Build v93 (F5): the restore epoch. A restore is a new
       // write generation for every snapshot, so the epoch advances
       // on EVERY restore — one past whatever the dataset was on
       // before it (read above, alongside the Roth stamp). A

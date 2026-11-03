@@ -34,7 +34,7 @@ function medianOf(values: number[]): number {
   return s.length % 2 === 1 ? (s[mid] ?? 0) : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
 }
 
-// Horizon convention (engine-calendar fix F6, contract v99):
+// Horizon convention (engine-calendar fix F6, build v99):
 // a plan's priced years are the years from the current age
 // THROUGH the end age, inclusive — the end-age year is priced
 // and its return is applied, so the ending balance is the
@@ -89,7 +89,7 @@ export const GUARDRAILS_CUT_DEFAULT = 120;
 export const GUARDRAILS_RAISE_DEFAULT = 80;
 export const GUARDRAILS_ADJUSTMENT_DEFAULT = 10;
 
-// Guardrails rail tolerance (Prompt 13 fix, contract v40): the
+// Guardrails rail tolerance (Prompt 13 fix, build v40): the
 // documented rule is STRICT — a cut fires only when the current
 // withdrawal rate is strictly above the cut rail, a raise only
 // when it is strictly below the raise rail, and a rate exactly
@@ -168,7 +168,7 @@ export const STOCKS_PCT_DEFAULT = 95;
 // Factory default for Expected return — what a fresh start seeds
 // and what Reset to defaults restores. The blended return (6.75%
 // at the 95% stocks mix) proved too optimistic, so the default is
-// a flat 5% (contract v132). Volatility still defaults to the
+// a flat 5% (build v132). Volatility still defaults to the
 // blend. A saved expected return is always used exactly as saved;
 // this value only ever fills a blank / never-set field.
 export const EXPECTED_RETURN_DEFAULT = 5;
@@ -773,7 +773,7 @@ export function runMonteCarlo(
    plan whose later years are covered by the income can succeed
    there — so the scan INCLUDES the ceiling step and lets
    runNeverRunsOut decide it, like every other step (Prompt 13
-   fix, contract v40).
+   fix, build v40).
    Note the ceiling must use the income amount itself, not the
    income active in the first retired year: an income that starts
    later and exceeds the spending revives a zeroed balance once it
@@ -894,14 +894,14 @@ function solveGuardrailsScan(
     return succ >= needed;
   };
   // (The no-retired-years case never reaches this scan:
-  // solveMaxSpending refuses it at entry — contract v66, F6.)
+  // solveMaxSpending refuses it at entry — build v66, F6.)
   // Proven ceiling (see the solver note above): no spending
   // strictly above the best balance at retirement plus the extra
   // income can succeed, but the spending exactly AT that ceiling
   // can — its first-year net withdrawal exactly equals the best
   // run's retirement balance, and an exactly funded withdrawal
   // is not short — so the scan bound is INCLUSIVE of the ceiling
-  // step (Prompt 13 fix, contract v40; the bound previously
+  // step (Prompt 13 fix, build v40; the bound previously
   // subtracted one cent and never tested that step).
   // Feasibility of the endpoint, like every scanned step, is
   // decided by runNeverRunsOut. The income term is the eventual
@@ -968,7 +968,7 @@ export function solveMaxSpending(
   targetPct: number,
   mcSeed: number = MONTE_CARLO_TAB_SEED_DEFAULT,
 ): SolverResult | null {
-  // No retired years (contract v66, boundary audit F6): when
+  // No retired years (build v66, boundary audit F6): when
   // the retirement age is at or past the plan's end age, no
   // modeled year ever withdraws the solved spending, so every
   // candidate "succeeds" and the search returns its cap as if
@@ -1127,7 +1127,7 @@ export function buildSimInputs(
   if (start < 0 || spend < 0) return null;
   if (endAge <= curAge) return null;
   const stocks = Math.min(100, Math.max(0, raw.stocksPct ?? STOCKS_PCT_DEFAULT));
-  // No floor (contract v66, boundary audit F11): the writer
+  // No floor (build v66, boundary audit F11): the writer
   // refuses a negative extraIncomeCents (int≥0), so the value
   // priced here is the value saved — the old Math.max(0, …)
   // silently substituted $0 for a saved negative.

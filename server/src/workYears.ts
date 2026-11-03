@@ -62,7 +62,7 @@
 //     test is NOT modeled — no machinery for it exists
 //     anywhere in the engine — so benefits deposit in full.
 //     The plan's entered tax-exempt interest prices in the
-//     salary year too (contract v102, round-14 fix F1): the
+//     salary year too (build v102, round-14 fix F1): the
 //     shared priceYear counts it in provisional income for
 //     §86 and in MAGI, exactly as the plan march and the
 //     Playground price it. CASH PARITY: the march prices
@@ -71,7 +71,7 @@
 //     never the tax-exempt interest — so the work year does
 //     the same and banks nothing for them in the surplus.
 //   · Capital-loss carryforwards price in salary years too
-//     (contract v100, round-14 fix F2): the roll threads the
+//     (build v100, round-14 fix F2): the roll threads the
 //     loss ledger through the work years exactly as it
 //     threads the taxable basis ledger — entering state from
 //     the plan's capitalLossCarryInSt/Lt, each priced year
@@ -92,14 +92,14 @@
 //     after the last work year), never the entering balance
 //     a second time. Washington's excise base is the gross
 //     gains minus only the Washington-attributable
-//     carryforward the year's gains absorbed (contract v101,
+//     carryforward the year's gains absorbed (build v101,
 //     round-14 fix F4 — the same invariant the march's
 //     ledgerFields prices, through the same shared
 //     transform; see applyLossLedger). A plan
 //     with no entering banked loss prices bit-identically:
 //     the transform is the identity when the carry-in is $0.
 //   · Required minimum distributions price in salary years
-//     too (contract v98, engine-calendar fix F5): each owner's
+//     too (build v98, engine-calendar fix F5): each owner's
 //     RMD is computed by the plan engine's own shared helper
 //     on that owner's prior-Dec-31 pre-tax balance — the
 //     balance the year opens with, before this year's growth
@@ -134,7 +134,7 @@
 //     into the compare's totalTax and all-in score exactly as
 //     the contract's score-identities text states, never
 //     merged invisibly into the federal or state figures.
-//   · ZERO work years (contract v58, F5): a quit age at or
+//   · ZERO work years (build v58, F5): a quit age at or
 //     below the roll's first year prices no work years, and
 //     the rolled inputs are the plan with its retirement age
 //     and window-start age set to the QUIT age (balances and
@@ -179,7 +179,7 @@ export type WorkYearJob = {
   employer401k: number;
   // What the employer puts into the HSA per year, dollars.
   employerHsa: number;
-  // The primary's Medicare enrollment age (contract v58, F6):
+  // The primary's Medicare enrollment age (build v58, F6):
   // request-only, never persisted. In any work year at or
   // after this age the household is HSA-ineligible — no
   // employee or employer HSA contribution is made. Absent /
@@ -240,7 +240,7 @@ export function contributionStack(
   // a standalone price, where this year's own Box-3 wages are
   // the disclosed proxy (see the ContributionStack note).
   priorYearWages?: number | null,
-  // The primary's Medicare enrollment age (contract v58, F6):
+  // The primary's Medicare enrollment age (build v58, F6):
   // when set and this year's age is at or after it, the
   // household is HSA-ineligible for the year — the employee
   // HSA contribution is $0, the employer's HSA lands $0, and
@@ -253,7 +253,7 @@ export function contributionStack(
   // The priced year's deflation factor (deflationFactor of
   // the calendar year against the law row's year at the
   // plan's inflation rate), applied ONLY to the statute-fixed
-  // HSA age-55 catch-up (contract v61, F3). The indexed base
+  // HSA age-55 catch-up (build v61, F3). The indexed base
   // limits stay as read from the row. Omitted = 1 (a year
   // pricing under its own law row, and every direct fixture
   // call, deflates zero steps).
@@ -287,11 +287,11 @@ export function contributionStack(
   // The base limits are inflation-indexed and stay as read
   // from the row; the age-55 catch-up is statute-fixed at
   // $1,000 (§223(b)(3), not indexed), so it deflates into
-  // today's dollars by the year's factor (contract v61, F3).
+  // today's dollars by the year's factor (build v61, F3).
   const hsaLimit =
     (filingStatus === "mfj" ? law.hsaLimitFamily : law.hsaLimitSelf) / 100 +
     (age >= 55 ? (law.hsaCatchUp55 / 100) * (defl ?? 1) : 0);
-  // HSA eligibility (contract v58, F6): Medicare enrollment
+  // HSA eligibility (build v58, F6): Medicare enrollment
   // ends HSA eligibility, so a year at or after the primary's
   // Medicare enrollment age makes NO HSA contribution of
   // either source. (Eligibility turns on enrollment, not on
@@ -397,7 +397,7 @@ export type PayrollTaxBreakdown = {
 // data and stay as read; the Additional Medicare threshold
 // is statute-fixed (§3101(b)(2), not indexed), so it deflates
 // into today's dollars by the caller's deflation factor
-// (contract v61, F2; omitted = 1, a year pricing under its
+// (build v61, F2; omitted = 1, a year pricing under its
 // own law row deflates zero steps).
 export function payrollTaxBreakdown(
   ficaWages: number,
@@ -435,7 +435,7 @@ export function ficaTax(
   return payrollTaxBreakdown(ficaWages, filingStatus, law, defl).total;
 }
 
-/* ---------------- The taxable basis ledger (contract v58, F2) ----------------
+/* ---------------- The taxable basis ledger (build v58, F2) ----------------
    Basis DOLLARS carried alongside the Taxable balance through
    the roll, mirroring the retirement march's ledger semantics
    (taxEngine.ts: tier init, "highest-basis-ratio first" sale
@@ -706,7 +706,7 @@ export type WorkYearLine = {
   taxableWages: number;
   // The year's priced MAGI (the shared priceYear result's
   // magi: AGI plus tax-exempt interest — the plan's entered
-  // annual amount in a work year, contract v102). Build E: the roll records it in the rolled
+  // annual amount in a work year, build v102). Build E: the roll records it in the rolled
   // plan's IRMAA lookback seed, so the retirement march's
   // first premium years grade these work-year returns
   // instead of pricing no lookback at all.
@@ -727,15 +727,16 @@ export type WorkYearLine = {
   payrollSocialSecurity: number;
   payrollMedicare: number;
   payrollAdditionalMedicare: number;
-  // The year's taxable interest income (contract v58, F3):
+  // The year's taxable interest income (build v58, F3):
   // the plan's interest yield % × the Taxable balance the
   // year opens with, priced as ordinary income through the
   // shared priceYear (the march's yield split).
   interestIncome: number;
   // The year's taxable dividend income (F3): the plan's
-  // dividend yield % × the opening balance, priced as
-  // qualified dividends (the march's split: the whole
-  // dividend yield rides as qualifiedDividends).
+  // dividend yield % × the opening balance (the TOTAL
+  // distribution — priced split between the stacks by the
+  // plan's qualified share, exactly as the march splits it,
+  // contract v138).
   dividendIncome: number;
   // Social Security benefits collected this year (F4): the
   // household benefits whose start age has been reached,
@@ -744,7 +745,7 @@ export type WorkYearLine = {
   // benefit has started.
   ssBenefits: number;
   // Required minimum distributions priced this year
-  // (contract v98, F5): each owner's own RMD, computed by
+  // (build v98, F5): each owner's own RMD, computed by
   // the shared rmdForYear helper on that owner's
   // prior-Dec-31 pre-tax balance (the balance the year
   // opens with — this year's contributions never count
@@ -772,15 +773,15 @@ export type WorkYearLine = {
   // year's settlement draws from Taxable; a standalone price
   // (no balance context) realizes no sale and reports $0.
   // This is the GROSS realized gain, before any capital-loss
-  // carryforward netting (contract v100) — the figure the
+  // carryforward netting (build v100) — the figure the
   // loss ledger nets, and the figure the Washington excise
   // prices on BEFORE the Washington-attributable absorbed
-  // part is subtracted (contract v101: the priced excise
+  // part is subtracted (build v101: the priced excise
   // base is this figure minus capitalLossWaAbsorbedByGains
   // below).
   ltcg: number;
   // Capital-loss carryforward ledger for this year
-  // (contract v100, round-14 fix F2 — the SHARED
+  // (build v100, round-14 fix F2 — the SHARED
   // applyLossLedger transform, the plan march's own rules):
   // the banked loss entering the year, by character (in the
   // roll, the previous work year's carry-out; standalone,
@@ -809,7 +810,7 @@ export type WorkYearLine = {
   capitalLossCarryOutSt: number;
   capitalLossCarryOutLt: number;
   // Washington-attributable sub-ledger for this year
-  // (contract v101, round-14 fix F4 — the same shared
+  // (build v101, round-14 fix F4 — the same shared
   // transform's attribution): the Washington-attributable
   // part of the carry-in, by character; the part of it the
   // year's gains absorbed — the ONLY part of the federal
@@ -858,7 +859,7 @@ export type WorkYearLine = {
   shortfall: number;
 };
 
-// The roll's per-year taxable context (contract v58, F1/F3):
+// The roll's per-year taxable context (build v58, F1/F3):
 // the Taxable balance the year opens with (the balance
 // carried into the year, before this year's growth — the
 // base the year's yields price on), the balance after this
@@ -874,7 +875,7 @@ export type WorkYearTaxableContext = {
   ledger: TaxableLedger;
 };
 
-// The roll's per-year pre-tax context (contract v98, F5):
+// The roll's per-year pre-tax context (build v98, F5):
 // each owner's pre-tax balance the year opens with — the
 // prior Dec-31 balance that owner's RMD prices on. The roll
 // threads the balances it carries into the year (the prior
@@ -892,14 +893,14 @@ export type WorkYearPretaxContext = {
   priorSpouse: number;
 };
 
-// The roll's per-year capital-loss context (contract v100,
+// The roll's per-year capital-loss context (build v100,
 // round-14 fix F2): the banked loss entering this year, by
 // character — the previous work year's reconciled carry-out.
 // The roll threads it exactly as it threads the taxable
 // basis ledger and the pending education refund. Absent (a
 // standalone price) the year prices from the plan's own
 // capitalLossCarryInSt/Lt as its entering state. The
-// Washington-attributable sub-state (contract v101) rides
+// Washington-attributable sub-state (build v101) rides
 // the same context the same way: waSt / waLt are the
 // previous work year's reconciled Washington carry-out,
 // absent = the plan's own capitalLossCarryInStWa /
@@ -962,7 +963,7 @@ export function priceOneWorkYear(
   );
   const ageSpouse =
     plan.birthYearSpouse != null ? calendarYear - plan.birthYearSpouse : null;
-  // REQUIRED MINIMUM DISTRIBUTIONS (contract v98, F5):
+  // REQUIRED MINIMUM DISTRIBUTIONS (build v98, F5):
   // priced exactly as the plan march prices them — per
   // owner, through the SHARED rmdForYear helper (its RMD-age
   // mapping and divisor tables are the only ones; nothing is
@@ -1010,13 +1011,17 @@ export function priceOneWorkYear(
         })
       : { rmd: 0, divisor: null, table: null };
   const rmdTotal = r2(rmdPrimaryRes.rmd + rmdSpouseRes.rmd);
-  // TAXABLE YIELDS (contract v58, F3): priced exactly as the
+  // TAXABLE YIELDS (build v58, F3): priced exactly as the
   // retirement march prices them — interest and dividend
   // income on the balance the year OPENS with (in the roll,
   // the prior year-end balance; standalone, plan.taxableStart
   // is the year's opening balance by construction). Fixed for
   // the year: computed once here and held constant across the
-  // F1 repricing iterations below.
+  // F1 repricing iterations below. The plan inputs arrive
+  // already resolved (contract v136, audit MUST M-1): a yield
+  // left blank on the saved plan was stood in for by the
+  // implied estimate at input assembly, so the `?? 0` here —
+  // like the march's — means no estimate exists for that line.
   const openingBalance = taxableCtx?.openingBalance ?? plan.taxableStart;
   const interestIncome = r2(
     (Math.max(0, openingBalance) * Math.max(0, plan.taxableInterestYieldPct ?? 0)) / 100,
@@ -1024,7 +1029,23 @@ export function priceOneWorkYear(
   const dividendIncome = r2(
     (Math.max(0, openingBalance) * Math.max(0, plan.taxableDividendYieldPct ?? 0)) / 100,
   );
-  // SOCIAL SECURITY ALREADY STARTED (contract v58, F4): the
+  // QUALIFIED SPLIT (contract v138, audit SHOULD S-1): the
+  // year's dividend income splits by the plan's qualified
+  // share exactly as the march splits it — the share prices
+  // as qualified dividends on the gains stack, the remainder
+  // as non-qualified dividends on the ordinary stack; an
+  // absent share prices 100% qualified, as before.
+  const dividendQualifiedPct = Math.min(
+    100,
+    Math.max(0, plan.taxableDividendQualifiedPct ?? 100),
+  );
+  const qualifiedDividendIncome = r2(
+    (dividendIncome * dividendQualifiedPct) / 100,
+  );
+  const nonQualifiedDividendIncome = r2(
+    dividendIncome - qualifiedDividendIncome,
+  );
+  // SOCIAL SECURITY ALREADY STARTED (build v58, F4): the
   // year's household benefits from the plan's own fields,
   // mirroring the march's collection test — each benefit
   // counts once its own start age is reached (the primary's
@@ -1050,7 +1071,7 @@ export function priceOneWorkYear(
         : plan.ssSpouseAnnual
       : 0;
   const ssBenefits = r2(ssPrimaryThisYear + ssSpouseThisYear);
-  // CAPITAL-LOSS CARRYFORWARD LEDGER (contract v100,
+  // CAPITAL-LOSS CARRYFORWARD LEDGER (build v100,
   // round-14 fix F2): the banked loss entering this year —
   // threaded by the roll from the previous work year's
   // carry-out, or, for a standalone price, the plan's own
@@ -1065,7 +1086,7 @@ export function priceOneWorkYear(
   // allowance rides alongside it, and the Washington excise
   // base is the gross gains minus only the
   // Washington-attributable carryforward the gains absorbed
-  // (contract v101, round-14 fix F4 — the same invariant the
+  // (build v101, round-14 fix F4 — the same invariant the
   // march prices, through the same transform, so a salary
   // year and a retirement year can never disagree about the
   // base; with no Washington attribution entered the base is
@@ -1089,7 +1110,7 @@ export function priceOneWorkYear(
     lossCtx?.lt ?? plan.capitalLossCarryInLt ?? 0,
   );
   // The Washington-attributable sub-state entering the year
-  // (contract v101): threaded by the roll alongside the
+  // (build v101): threaded by the roll alongside the
   // character totals, each clamped to its character's
   // carry-in — a portion of the pool, never more than it.
   const lossCarryInWaSt = Math.min(
@@ -1139,7 +1160,7 @@ export function priceOneWorkYear(
     conversion: 0,
     extraPreTaxDraw: 0,
     ssBenefits,
-    // Tax-exempt interest (contract v102, round-14 fix
+    // Tax-exempt interest (build v102, round-14 fix
     // F1): the plan's entered annual amount, passed exactly
     // as the plan march passes it at its own priceYear sites
     // and the Playground passes its input — the shared
@@ -1156,12 +1177,12 @@ export function priceOneWorkYear(
     // below. A plan with $0 entered prices bit-identically
     // to before this fix.
     taxExemptInterest: plan.taxExemptInterestAnnual,
-    // The NETTED capital result (contract v100): the gross
+    // The NETTED capital result (build v100): the gross
     // sale gain netted against the entering carryforward by
     // ledgerFields above, with the claimed §1211(b)
     // allowance riding alongside it and the Washington
     // excise base at the gross gains minus the
-    // Washington-attributable absorbed part (contract v101).
+    // Washington-attributable absorbed part (build v101).
     // With no carry-in
     // these are exactly the pre-v100 fields (ltcg = the
     // gross gain, no allowance, no base override).
@@ -1169,7 +1190,8 @@ export function priceOneWorkYear(
     capitalLossAllowance: lf.capitalLossAllowance,
     waGainsBase: lf.waGainsBase,
     interestIncome,
-    qualifiedDividends: dividendIncome,
+    qualifiedDividends: qualifiedDividendIncome,
+    ordinaryDividends: nonQualifiedDividendIncome,
     inflationPct: plan.inflationPct,
     stateRatePct: plan.stateRatePct,
     // A work year realizes capital gains only on a
@@ -1191,7 +1213,7 @@ export function priceOneWorkYear(
     // exactly as in any priced year — the nonrefundable
     // portion is inside priced.federalTax, so the surplus
     // below already reflects it. The refundable portion is
-    // NOT added to the surplus below (contract v96): like
+    // NOT added to the surplus below (build v96): like
     // the retirement march (Build D), the roll carries it
     // undeposited and deposits it in Taxable at the start
     // of the next simulated year — the year's return is
@@ -1224,7 +1246,7 @@ export function priceOneWorkYear(
         // The year's Social Security benefits (F4): household
         // cash, banked into Taxable like any surplus. The
         // refundable §25A credit (p.educationRefundable) is
-        // deliberately NOT added here (contract v96): it is
+        // deliberately NOT added here (build v96): it is
         // next spring's cash, carried by the roll and
         // deposited at the start of the next simulated year.
         ssBenefits +
@@ -1237,7 +1259,7 @@ export function priceOneWorkYear(
         // settlement exactly as the march's cash does.
         rmdTotal,
     );
-  // DEFICIT-FUNDING SALE SETTLEMENT (contract v58, F1): price
+  // DEFICIT-FUNDING SALE SETTLEMENT (build v58, F1): price
   // the year first with no sale (ltcg $0). When the roll
   // supplies the taxable context and that price runs a
   // deficit, the deficit is funded by selling Taxable, and
@@ -1286,7 +1308,7 @@ export function priceOneWorkYear(
       if (drawn <= 0) break;
     }
   }
-  // LOSS LEDGER, YEAR END (contract v100): the year's FINAL
+  // LOSS LEDGER, YEAR END (build v100): the year's FINAL
   // ledger outcome — the shared transform applied to the
   // year's settled gross gains (`ltcg` above is that gross
   // figure) against the year's carry-in, reconciled ONCE
@@ -1337,7 +1359,7 @@ export function priceOneWorkYear(
     rmdTablePrimary: rmdPrimaryRes.table,
     rmdTableSpouse: rmdSpouseRes.table,
     ltcg: r2(ltcg),
-    // The year's loss-ledger outcome (contract v100): with
+    // The year's loss-ledger outcome (build v100): with
     // no carry-in, the net result is the gross gain itself
     // and every ledger figure is $0.
     capitalLossCarryInSt: r2(lossCarryInSt),
@@ -1357,7 +1379,7 @@ export function priceOneWorkYear(
     capitalLossCarryOutWaLt: ledFinal ? ledFinal.waCarryOut.lt : 0,
     surplus,
     // The year's refundable §25A credit, carried by the roll
-    // (contract v96) — never part of the surplus above.
+    // (build v96) — never part of the surplus above.
     educationRefundable: priced.educationRefundable,
     // No balance context in a standalone price — the roll
     // computes the year's real shortfall (see WorkYearLine).
@@ -1392,7 +1414,7 @@ export type WorkYearTotals = {
   // each year's surplus as absorbed by the balance (a deficit
   // year reduces it only down to a $0 balance — see shortfall),
   // plus every refundable §25A deposit the roll landed
-  // (contract v96: start-of-year deposits and the
+  // (build v96: start-of-year deposits and the
   // horizon-end deposit). Equals the plain sum of the yearly
   // surpluses plus the landed refunds whenever no year ran
   // a shortfall.
@@ -1413,7 +1435,7 @@ export type WorkYearRoll = {
   totals: WorkYearTotals;
   // Balances at the quit age, after the last work year's
   // growth + year-end contributions, plus any horizon-end
-  // education refund deposit (contract v96).
+  // education refund deposit (build v96).
   balances: {
     pretax: number; // primary + spouse combined
     pretaxPrimary: number;
@@ -1421,7 +1443,7 @@ export type WorkYearRoll = {
     roth: number;
     taxable: number;
     // The Taxable balance's basis dollars at the quit age
-    // (contract v58, F2) — the dollars the rolled plan's
+    // (build v58, F2) — the dollars the rolled plan's
     // basis fields are rebuilt from. Exposed for fixture
     // pinning; the action response shape does not carry it.
     taxableBasis: number;
@@ -1443,7 +1465,7 @@ export function rollWorkYears(
   job: WorkYearJob,
   quitAge: number,
 ): WorkYearRoll {
-  // NEVER PRICE A PAST YEAR (contract v58, F5b): the roll's
+  // NEVER PRICE A PAST YEAR (build v58, F5b): the roll's
   // first year is the later of the plan's window-start age
   // and the plan's CURRENT age — the ageNow derivation used
   // across actions.ts (startYear − birth year). A window
@@ -1487,7 +1509,7 @@ export function rollWorkYears(
         banked: 0,
       },
       balances: startBalances,
-      // ZERO-YEAR HANDOFF (contract v58, F5a): the row prices
+      // ZERO-YEAR HANDOFF (build v58, F5a): the row prices
       // retiring AT the quit age, so the rolled inputs carry
       // the quit age as both the retirement age and the
       // window-start age — not the plan's saved retirement
@@ -1546,7 +1568,7 @@ export function rollWorkYears(
   // The taxable basis ledger (F2), carried in dollars beside
   // the balance through every rolled year.
   const ledger = initTaxableLedger(plan);
-  // PENDING EDUCATION REFUND (contract v96): the refundable
+  // PENDING EDUCATION REFUND (build v96): the refundable
   // §25A credit the previous work year priced, carried here
   // undeposited — the plan march's pendingEduRefund shape.
   // It lands in the taxable pool at the start of the next
@@ -1560,7 +1582,7 @@ export function rollWorkYears(
   // Taxable.
   let pendingEduRefund = 0;
   let eduRefundsDeposited = 0;
-  // CAPITAL-LOSS LEDGER STATE (contract v100, round-14 fix
+  // CAPITAL-LOSS LEDGER STATE (build v100, round-14 fix
   // F2): the banked loss carried alongside the balances,
   // entering from the plan's capitalLossCarryInSt/Lt and
   // replaced each year by that year's reconciled carry-out
@@ -1572,7 +1594,7 @@ export function rollWorkYears(
   // entering balance a second time.
   let lossCarrySt = Math.max(0, plan.capitalLossCarryInSt ?? 0);
   let lossCarryLt = Math.max(0, plan.capitalLossCarryInLt ?? 0);
-  // The Washington-attributable sub-state (contract v101)
+  // The Washington-attributable sub-state (build v101)
   // threads alongside the character totals the same way:
   // entering from the plan's stated portions (each clamped
   // to its character's total) and replaced each year by
@@ -1589,7 +1611,7 @@ export function rollWorkYears(
   );
   for (let i = 0; i < count; i++) {
     const age = effectiveStart + i;
-    // EDUCATION REFUND DEPOSIT (contract v96, Build D
+    // EDUCATION REFUND DEPOSIT (build v96, Build D
     // timing): last year's refundable credit lands in the
     // taxable pool at the START of this year — the prior
     // year's return is filed this spring — before this
@@ -1614,7 +1636,10 @@ export function rollWorkYears(
     // basis up into the grown balance's unrealized gain. The
     // yield total is computed here on the opening balance
     // with the same formula priceOneWorkYear prices it with,
-    // so the ledger and the priced year agree.
+    // so the ledger and the priced year agree. The yields it
+    // reads are the resolved plan inputs (contract v136: a
+    // blank saved yield already carries its implied estimate,
+    // or stays blank when no estimate exists).
     const openingTaxable = taxable;
     const yieldTotal =
       r2(
@@ -1659,7 +1684,7 @@ export function rollWorkYears(
     );
     priorYearWages = pricedLine.ficaWages;
     // This year's reconciled carry-out becomes the next
-    // work year's carry-in (contract v100) — the ledger
+    // work year's carry-in (build v100) — the ledger
     // advances exactly once per priced year, here, after
     // the year's pricing has converged and reconciled.
     lossCarrySt = pricedLine.capitalLossCarryOutSt;
@@ -1667,7 +1692,7 @@ export function rollWorkYears(
     lossCarryWaSt = pricedLine.capitalLossCarryOutWaSt;
     lossCarryWaLt = pricedLine.capitalLossCarryOutWaLt;
     // This year's refundable credit becomes next year's
-    // deposit (contract v96): carried undeposited until
+    // deposit (build v96): carried undeposited until
     // the start of the next simulated year. It is assigned
     // here, after the year's pricing has converged, so the
     // deficit settlement above never funds itself from
@@ -1744,7 +1769,7 @@ export function rollWorkYears(
     totals.surplusBanked += line.surplus + line.shortfall;
     totals.shortfall += line.shortfall;
   }
-  // HORIZON-END EDUCATION REFUND (contract v96): a
+  // HORIZON-END EDUCATION REFUND (build v96): a
   // refundable credit earned in the roll's LAST work year
   // has no following work year inside the roll, so — like
   // the plan march's final-year exception — it is added
@@ -1796,7 +1821,7 @@ export function rollWorkYears(
     taxableBasis: r2(ledger.basis),
     hsa: r2(hsa),
   };
-  // BASIS REBUILD (contract v58, F2): the rolled plan's basis
+  // BASIS REBUILD (build v58, F2): the rolled plan's basis
   // fields are re-expressed from the ledger dollars the roll
   // actually carried, so the march's own ledger initializes
   // from the true basis — not from the entered percentage
@@ -1805,7 +1830,7 @@ export function rollWorkYears(
   const basisFields = rebuildRolledBasisFields(plan, ledger, balances.taxable);
   const rolledInputs: RothPlanInputs = {
     ...plan,
-    // CONSUMED CARRYFORWARD HANDOFF (contract v100): the
+    // CONSUMED CARRYFORWARD HANDOFF (build v100): the
     // retirement march initializes its loss ledger from
     // these fields, so they must carry the year-end
     // carry-out after the LAST work year — the balance the
@@ -1816,7 +1841,7 @@ export function rollWorkYears(
     capitalLossCarryInSt: r2(lossCarrySt),
     capitalLossCarryInLt: r2(lossCarryLt),
     // The Washington attribution hands over consumed too
-    // (contract v101): the march initializes its Washington
+    // (build v101): the march initializes its Washington
     // sub-state from these fields, so they carry the
     // reconciled Washington carry-out after the last work
     // year, not the entering portions the spread above
@@ -1905,7 +1930,7 @@ export function runWorkYearsCompare(
   // Identical effective plans price the optimizer once and
   // share the result. Rolled rows key on their quit age and
   // balances; ZERO-year rows key on the quit age itself
-  // (contract v58, F5a): a zero-year row's rolled inputs carry
+  // (build v58, F5a): a zero-year row's rolled inputs carry
   // its own quit age as the retirement age, so two zero-year
   // rows at different quit ages are different plans and must
   // not share one optimizer run.

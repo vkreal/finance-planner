@@ -179,7 +179,7 @@ export function annualCentsForValues(expectedCents: number, frequency: string): 
 }
 
 /* Cumulative rounding for a smoothed bill's monthly set-aside
-   (contract v59, finding F3): the accrual for calendar month n of
+   (build v59, finding F3): the accrual for calendar month n of
    a year is round(annual × n/12) − round(annual × (n−1)/12), so a
    bill active all twelve months with a stable annual amount
    accrues its annual amount EXACTLY over the year — the old flat
@@ -411,7 +411,7 @@ export function createSpendingCore<
     byMonth.set(m, e);
   }
 
-  /* ---- Card-settlement attribution (contract v59, finding F2) ----
+  /* ---- Card-settlement attribution (build v59, finding F2) ----
      The yearly-payment correction follows the money: it fires in
      the month the money leaves checking, not the month a charge
      was recorded. A smoothed bill paid from checking is settled in
@@ -511,7 +511,7 @@ export function createSpendingCore<
   // Effective numbers for a month. THE cash-out resolution, used by
   // every figure on every surface: items sum (month has ≥1 item)
   // > entered cash-out total > transactions. ONE basis for every
-  // entry mode (contract v59, finding F1): True cost (smoothed) is
+  // entry mode (build v59, finding F1): True cost (smoothed) is
   // always the month's cash out − the yearly lumps whose money left
   // checking that month (settledLumpsForMonth — checking-paid
   // lumps in their own month, card-paid lumps in their settlement
@@ -602,7 +602,7 @@ export function createSpendingCore<
 
   const monthAgg = (m: string): MonthAgg => byMonth.get(m) ?? emptyAgg();
 
-  // The earliest month with any data (contract v122, round-18 F2):
+  // The earliest month with any data (build v122, round-18 F2):
   // the first month the Year view / Explorer treat as a data month
   // (monthHasData below) — transactions, entered totals, cash-out
   // items, one-offs, AND any bill version in effect (a monthly

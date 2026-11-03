@@ -34,7 +34,7 @@ import {
 
    Persistence: the console's inputs are one JSON blob in
    settings under DECEMBER_STATE_KEY, encrypted at rest with
-   the app's field encryption (contract v90, stored-data
+   the app's field encryption (build v90, stored-data
    finding F2) — the handlers encrypt the serialized blob on
    save and decrypt on read, dual-reading a legacy plaintext
    record stored before encryption. The blob rides the
@@ -70,7 +70,7 @@ export const decemberRange = z.object({
   high: z.number().finite(),
 });
 export type DecemberRange = z.infer<typeof decemberRange>;
-/* The UNSIGNED variant (contract v66, boundary audit F5): the
+/* The UNSIGNED variant (build v66, boundary audit F5): the
    remaining interest / dividend / capital-distribution lines
    are income still to come, never signed flows — a negative
    in any of them lowered the projected AGI (and a negative
@@ -108,7 +108,7 @@ export const decemberState = z.object({
   // realized loss), like the engine's own stock gain.
   ytdCapitalGain: z.number().finite(),
   // Cost basis of the sales behind the year's gains
-  // (contract v127, round-19 finding 4): the basis
+  // (build v127, round-19 finding 4): the basis
   // returned on the sales whose gains feed the total above
   // (year-to-date sales, planned sales, January-paid and
   // K-1 gains that came from sales). A sale's proceeds are
@@ -147,7 +147,7 @@ export const decemberState = z.object({
   carryInCapitalLossLt: z.number().finite().min(0).nullable(),
   carryInCapitalLossStWa: z.number().finite().min(0).nullable(),
   carryInCapitalLossLtWa: z.number().finite().min(0).nullable(),
-  // Gain harvest (contract v113, round-17 fix F3): whether
+  // Gain harvest (build v113, round-17 fix F3): whether
   // the plan's gain-harvest strategy is on for this year,
   // and the taxable-pool facts the harvest sizes itself
   // from — the pool available to sell (the COMBINED taxable
@@ -171,7 +171,7 @@ export const decemberState = z.object({
   harvestOn: z.boolean(),
   harvestPoolAmount: z.number().finite().min(0).nullable(),
   harvestPoolBasisPct: z.number().finite().min(0).max(100).nullable(),
-  // Taxable cash for the year (contract v125): cash taken
+  // Taxable cash for the year (build v125): cash taken
   // from taxable at 100% basis for the year — the
   // operating model's "tax from taxable (100%-basis cash
   // first)". It adds $0 to MAGI (a 100%-basis sale realizes
@@ -275,7 +275,7 @@ export const decemberState = z.object({
   itemizedSaltPaid: z.number().finite().min(0),
   itemizedCharitable: z.number().finite().min(0),
   itemizedOther: z.number().finite().min(0),
-  // Education credits (contract v103, round-14 fix F3):
+  // Education credits (build v103, round-14 fix F3):
   // the December tax year's per-student qualified
   // education expenses, in the SAME shape the Playground
   // prices — each entry is one student's qualified
@@ -307,7 +307,7 @@ export const decemberState = z.object({
   strayCapDist: decemberStray,
   strayK1: decemberStray,
   // The long-term-capital-gain PORTION of the K-1 stray's
-  // total (contract v112, round-17 fix F4): Schedule K-1
+  // total (build v112, round-17 fix F4): Schedule K-1
   // box 9a reports the part of a partnership / S-corp /
   // trust allocation that is a net long-term capital gain,
   // and that part keeps its long-term character on the
@@ -340,7 +340,7 @@ export const decemberState = z.object({
   // the assembly clamps it to the stray's total).
   strayJanPaidQualifiedAmount: z.number().finite().min(0),
   // The capital-gain-distribution PORTION of the
-  // January-paid stray's total (contract v104, round-14
+  // January-paid stray's total (build v104, round-14
   // fix F5): a distribution the fund designates as a
   // capital gain dividend is treated as a long-term
   // capital gain (§852(b)(3)), not as an ordinary
@@ -369,7 +369,7 @@ export const decemberState = z.object({
   strayROC: decemberStray,
   strayROCOrdinary: decemberStray,
   // The qualified-dividends PORTION of the reclassified
-  // return-of-capital amount (contract v112, round-17
+  // return-of-capital amount (build v112, round-17
   // fix F5): a dividend reclassified out of return of
   // capital can itself be a qualified dividend (Form
   // 1099-DIV box 1b, a subset of the box 1a ordinary
@@ -498,7 +498,7 @@ export function defaultDecemberState(currentYear: number): DecemberState {
    style: any field of the wrong type or out of range falls back
    to its default, so a partial or malformed blob can never
    break the console — it just opens closer to blank. */
-/* Result-honesty (contract v67, F09): whether a PRESENT stored
+/* Result-honesty (build v67, F09): whether a PRESENT stored
    December blob cannot be parsed as a state document at all —
    malformed JSON, or JSON that is not a plain object. The lenient
    field-by-field parse above silently defaults in exactly these
@@ -705,7 +705,7 @@ export function parseDecemberState(
   if (hvBasis.seen && (hvBasis.value == null || hvBasis.value <= 100)) {
     out.harvestPoolBasisPct = hvBasis.value;
   }
-  // Taxable cash for the year (contract v125): nullable
+  // Taxable cash for the year (build v125): nullable
   // like the harvest facts — a missing key (every blob
   // written before this field existed) and an explicit null
   // both read as NO INPUT YET, an entered amount (including
@@ -889,7 +889,7 @@ export type DecemberRecordFacts = {
   // capitalLossCarryIn* Cents converted. That balance is
   // the loss entering the plan's FIRST year, so it answers
   // the December console for that year AND every later one
-  // (contract v127, round-19 finding 3): the plan march
+  // (build v127, round-19 finding 3): the plan march
   // applies the carry-in at its first year unconditionally
   // (planInputsFromSaved passes it through with no
   // reference to executionYear), so a record saved in a
@@ -924,7 +924,7 @@ export type DecemberRecordFacts = {
   harvestPoolBasisPct?: number | null;
 };
 
-/* The snapshot-followed primary (contract v127, round-19
+/* The snapshot-followed primary (build v127, round-19
    finding 1): when the Tax Plan record's primary pre-tax
    balance follows the Net Worth snapshot (a null
    pretaxCents) and the spouse's amount is explicit, the
@@ -1040,7 +1040,7 @@ function resolveYearDependentOverlays(
     };
   }
   // Entering capital-loss carryforward (v111, gate
-  // widened contract v127, round-19 finding 3): the Tax
+  // widened build v127, round-19 finding 3): the Tax
   // Plan record's carry-in is the balance entering the
   // plan's FIRST year, so it resolves into the console
   // when the console's tax year is that year OR ANY LATER
@@ -1717,7 +1717,7 @@ export function decemberCaseInputs(
   // sales, not the starting pool: passing the starting pool
   // harvests gains the year's sales already realized. The
   // sales that sell it down are the priced sale above plus
-  // the 100%-basis taxable cash (contract v125) — the
+  // the 100%-basis taxable cash (build v125) — the
   // pre-tax draw never touches the taxable pool, and the
   // tax bill settles at filing, not from taxable during
   // the year. The remaining unrealized gain is exact
@@ -1753,6 +1753,32 @@ export function decemberCaseInputs(
       basisPct: poolLeft > 0 ? (basisLeft / poolLeft) * 100 : 0,
     };
   })();
+  // The dividend pairs' qualified parts (audit S-8, settled):
+  // qualified dividends are a SUBSET of their ordinary total,
+  // so each pair's qualified part is clamped to that pair's
+  // own total — the year-to-date pair and this case's
+  // still-to-come pair separately — never an amount on top
+  // of it. This is the same clamp the function's other
+  // portion fields already apply (janPaidQualified and
+  // rocQualified above are clamped to their own totals), and
+  // the shared pricer (pricePlaygroundYear) clamps the summed
+  // pair again, so an entered excess prices on neither stack
+  // and the year's dividends are counted once, at most their
+  // entered totals. Before this clamp an excess priced whole
+  // as qualified income — understating the headline draw and
+  // the federal tax, and in the still-to-come pair's case
+  // silently breaching the ACA cliff the draw was solved
+  // against. computeDecemberProjection warns on any pair
+  // this clamp trims, so the impossible pair is flagged
+  // instead of silently priced.
+  const ytdQualified = Math.min(
+    Math.max(0, state.ytdOrdinaryDividends),
+    Math.max(0, state.ytdQualifiedDividends),
+  );
+  const remQualified = Math.min(
+    Math.max(0, state.remOrdinaryDividends[kind]),
+    Math.max(0, state.remQualifiedDividends[kind]),
+  );
   return {
     taxYear: state.taxYear,
     filingStatus: state.filingStatus as FilingStatus,
@@ -1774,7 +1800,7 @@ export function decemberCaseInputs(
     ssPrimary: state.ytdSsPrimary,
     ssSpouse: joint ? state.ytdSsSpouse : 0,
     conversion: Math.max(0, draw),
-    // Sale proceeds (contract v127, round-19 finding 4):
+    // Sale proceeds (build v127, round-19 finding 4):
     // the console collects gains only, so the shared
     // engine's cash-in counted only the gain as cash in
     // hand and silently dropped the basis returned on
@@ -1794,8 +1820,8 @@ export function decemberCaseInputs(
     stockSold: saleProceeds,
     stockBasis: saleBasisDollars,
     qualifiedDividends: r2(
-      state.ytdQualifiedDividends +
-        state.remQualifiedDividends[kind] +
+      ytdQualified +
+        remQualified +
         janPaidQualified +
         rocQualified,
     ),
@@ -1862,6 +1888,23 @@ export function decemberCaseInputs(
     // instead of letting the $0 read as a priced answer.
     harvestPoolAmount: harvestRemaining.pool,
     harvestPoolBasisPct: harvestRemaining.basisPct,
+    // ACA reconciliation facts (build v193, re-audit
+    // round 3 SHOULD-4): the console's settlement facts
+    // ride the pricer's own reconciliation dials, so the
+    // shared pricer prices the filing settlement inside
+    // every pricing of the year — its netTaxBill is the
+    // settlement and its cashLeftAfterTax is the
+    // settlement-based cash left — instead of the console
+    // pricing a second, divergent bill at its assembly.
+    // The settlement the console reports is still derived
+    // at the assembly below (unchanged); the two
+    // derivations are the same arithmetic on the same
+    // priced readouts, and the fixtures pin them equal on
+    // every case shape, so the console's cash left and
+    // the engine's can no longer disagree for a year.
+    aptcTaken: state.aptcTaken,
+    acaEnrollmentPremiumAnnual: state.acaEnrollmentPremiumAnnual,
+    acaCoverageReduction: strayAmount(state.strayCoverage),
   };
 }
 
@@ -1984,7 +2027,7 @@ export type DecemberCaseResult = {
   // is never presented as final while the credit is
   // unpriced.
   excludesEducationCredits: boolean;
-  // Projected-tax-bill readouts (contract v50): the same
+  // Projected-tax-bill readouts (build v50): the same
   // priced year at the headline draw, read straight off the
   // engine result — no new pricing. totalIncomeAtHeadline
   // is the year's adjusted gross income (AGI) (the amount
@@ -2030,23 +2073,30 @@ export type DecemberCaseResult = {
   // v114): the priced year's cash in (pricePlaygroundYear's
   // cashIn — every dollar of cash the case's entered income
   // brings in, the draw included) plus the taxable cash
-  // for the year (contract v125 — 100%-basis cash, $0
+  // for the year (build v125 — 100%-basis cash, $0
   // MAGI, added at the assembly, never inside the priced
   // year) minus this case's net tax bill, the settlement
   // itself (netSettleAtHeadline), so the figure is null
   // exactly when no settlement is shown and netSettleNote
   // names why. Before any spending: what the year leaves
-  // in hand once its tax is settled.
+  // in hand once its tax is settled. Build v193 (re-audit
+  // round 3 SHOULD-4): the figure is DERIVED as the
+  // priced year's own cashLeftAfterTax plus the taxable
+  // cash — the shared pricer prices this settlement as
+  // its net tax bill when the console's reconciliation
+  // facts ride its dials (decemberCaseInputs), so the
+  // engine's cash left for the year and the console's
+  // are the same figure, not two derivations of it.
   cashLeftAtHeadline: number | null;
-  // Cash in at the headline draw (contract v116): the
+  // Cash in at the headline draw (build v116): the
   // priced year's cash in (pricePlaygroundYear's cashIn on
   // the same pricing) plus the taxable cash for the year
-  // (contract v125) — the cash-in figure the cash-left
+  // (build v125) — the cash-in figure the cash-left
   // tooltip names as priced. Null exactly when the
   // settlement is null, like cashLeftAtHeadline.
   cashInAtHeadline: number | null;
   // Annual spending and the "enough for the year" comparison
-  // at the headline draw (contract v126): the annual
+  // at the headline draw (build v126): the annual
   // spending in dollars — the caller's resolved annual
   // spending (the Tax Plan record's, falling back to the
   // Retirement calculator's default) — echoed, and
@@ -2088,7 +2138,7 @@ const UNPRICED: DecemberProjectionResult = {
    result, no state read or written. */
 export function computeDecemberProjection(
   state: DecemberState,
-  // Annual spending in CENTS (contract v126): the caller's
+  // Annual spending in CENTS (build v126): the caller's
   // resolved annual spending — the Tax Plan record's
   // annualSpendingCents, falling back to the Retirement
   // calculator's default. Optional, never console state and
@@ -2116,6 +2166,93 @@ export function computeDecemberProjection(
     if (!(r.low <= r.likely && r.likely <= r.high)) {
       warnings.push(
         `${label}: the low / likely / high amounts are out of order — the cases below price them exactly as entered.`,
+      );
+    }
+  }
+  // Dividend-pair clamp (audit S-8, settled): qualified
+  // dividends are part of their ordinary total, so a
+  // qualified figure above its total is a pair that cannot
+  // occur — decemberCaseInputs clamps each pair's qualified
+  // part to that pair's total (and the shared pricer clamps
+  // the summed pair), so the excess is not counted. The
+  // console names it here, matching the Playground's note
+  // on its own dials, instead of letting the excess drop
+  // out silently.
+  if (state.ytdQualifiedDividends > state.ytdOrdinaryDividends) {
+    warnings.push(
+      `Qualified dividends already in (${fmt(state.ytdQualifiedDividends)}) can't exceed the total ordinary dividends already in (${fmt(state.ytdOrdinaryDividends)}) — the qualified figure is part of that total, so the excess isn't counted: the qualified part prices as ${fmt(state.ytdOrdinaryDividends)} and the non-qualified part as $0.`,
+    );
+  }
+  // Audit N-5: one warning per impossible still-to-come
+  // case, naming WHICH case it is (low / likely / high),
+  // the two fields, and their entered values — the earlier
+  // single warning said only that some case was impossible,
+  // leaving the user to hunt for which one.
+  for (const k of DECEMBER_CASE_KINDS) {
+    const qualified = state.remQualifiedDividends[k];
+    const total = state.remOrdinaryDividends[k];
+    if (qualified > total) {
+      warnings.push(
+        `Qualified dividends still to come in the ${k} case (${fmt(qualified)}) can't exceed the total ordinary dividends still to come in the ${k} case (${fmt(total)}) — the qualified figure is part of that total, so the excess isn't counted: the ${k} case's qualified part prices as ${fmt(total)} and its non-qualified part as $0.`,
+      );
+    }
+  }
+  // Stray-portion clamps (re-audit NICE-TO-HAVE N-6): the
+  // four stray character portions in decemberCaseInputs —
+  // the January-paid capital-gain portion and qualified
+  // portion, the K-1 box 9a gain portion, and the
+  // reclassified return-of-capital qualified portion — are
+  // each a portion of their stray's total (the January-paid
+  // qualified portion of that total's ORDINARY REMAINDER,
+  // the total less its clamped capital-gain portion), and
+  // the assembly clamps each one to that limit, exactly as
+  // the S-8 dividend pairs are clamped. Unlike the pairs,
+  // these trims were silent: no warning named them. Each
+  // trim now warns here, in the S-8 warning's spirit —
+  // naming the portion, its entered figure, the limit it
+  // was trimmed to fit, the amount trimmed, and the figure
+  // it prices as — computed with the assembly's own clamp
+  // arithmetic, in its own order, so a warning fires
+  // exactly when (and by exactly how much) a trim occurs
+  // and nowhere else. Pricing and the clamps are unchanged.
+  {
+    const janPaid = strayAmount(state.strayJanPaid);
+    const janCapEntered = Math.max(0, state.strayJanPaidCapGainAmount);
+    const janCapClamped =
+      janPaid > 0 ? Math.min(janPaid, janCapEntered) : 0;
+    if (janCapEntered > janCapClamped) {
+      warnings.push(
+        `January-paid distributions: the capital-gain portion (${fmt(janCapEntered)}) can't exceed the January-paid total (${fmt(janPaid)}) — the portion is part of that total, so ${fmt(r2(janCapEntered - janCapClamped))} is trimmed and isn't counted: the capital-gain portion prices as ${fmt(janCapClamped)}.`,
+      );
+    }
+    const janOrdinaryRemainder = r2(janPaid - janCapClamped);
+    const janQualEntered = Math.max(0, state.strayJanPaidQualifiedAmount);
+    const janQualClamped =
+      janOrdinaryRemainder > 0
+        ? Math.min(janOrdinaryRemainder, janQualEntered)
+        : 0;
+    if (janQualEntered > janQualClamped) {
+      warnings.push(
+        `January-paid distributions: the qualified-dividends portion (${fmt(janQualEntered)}) can't exceed the January-paid ordinary remainder (${fmt(janOrdinaryRemainder)}) — the total (${fmt(janPaid)}) less its capital-gain portion (${fmt(janCapClamped)}), and the qualified figure is part of that remainder, so ${fmt(r2(janQualEntered - janQualClamped))} is trimmed and isn't counted: the qualified portion prices as ${fmt(janQualClamped)}.`,
+      );
+    }
+    const k1Total = straySignedAmount(state.strayK1);
+    const k1Entered = Math.max(0, state.strayK1CapGainAmount);
+    const k1Clamped = k1Total > 0 ? Math.min(k1Total, k1Entered) : 0;
+    if (k1Entered > k1Clamped) {
+      warnings.push(
+        k1Total > 0
+          ? `K-1 income: the long-term capital gain portion (box 9a) (${fmt(k1Entered)}) can't exceed the K-1 total (${fmt(k1Total)}) — the portion is part of that total, so ${fmt(r2(k1Entered - k1Clamped))} is trimmed and isn't counted: the capital-gain portion prices as ${fmt(k1Clamped)} and the rest of the K-1 amount prices as ordinary income.`
+          : `K-1 income: the long-term capital gain portion (box 9a) (${fmt(k1Entered)}) can't apply when the K-1 total (${fmt(k1Total)}) is not positive — a K-1 amount that is not a gain has no gain portion, so the whole ${fmt(r2(k1Entered - k1Clamped))} is trimmed and isn't counted: the capital-gain portion prices as $0 and the K-1 amount prices as ordinary income.`,
+      );
+    }
+    const rocOrdinary = strayAmount(state.strayROCOrdinary);
+    const rocEntered = Math.max(0, state.strayROCQualifiedAmount);
+    const rocClamped =
+      rocOrdinary > 0 ? Math.min(rocOrdinary, rocEntered) : 0;
+    if (rocEntered > rocClamped) {
+      warnings.push(
+        `Return of capital: the qualified-dividends portion of the reclassified amount (${fmt(rocEntered)}) can't exceed the reclassified ordinary-dividend total (${fmt(rocOrdinary)}) — the qualified figure is part of that total, so ${fmt(r2(rocEntered - rocClamped))} is trimmed and isn't counted: the qualified portion prices as ${fmt(rocClamped)}.`,
       );
     }
   }
@@ -2153,6 +2290,24 @@ export function computeDecemberProjection(
   // is on the marketplace.
   const cliff = state.taxYear >= 2026 ? likelyZero.aca.cliff : null;
   const targetMagi = cliff == null ? null : r2(cliff - state.bufferDollars);
+  // Audit N-3 (settled), wording corrected by audit N-7: a
+  // buffer at or above the cliff makes the target zero or
+  // negative. With $0 of income, MAGI is $0, which EQUALS
+  // that target when the buffer is exactly the cliff (target
+  // $0) and is above it only when the buffer is above the
+  // cliff (target below $0) — $0 of income does not exceed
+  // the target in the exact-equality case. Either way no
+  // positive draw fits at or under the target, so the $0
+  // draw that follows is caused by the buffer alone, not by
+  // the year's income. Name that here so the headline below
+  // and the warnings list do not attribute the $0 draw to
+  // income that leaves no room.
+  const bufferExceedsCliff = cliff != null && state.bufferDollars >= cliff;
+  if (bufferExceedsCliff) {
+    warnings.push(
+      `Your buffer (${fmt(state.bufferDollars)}) is as large as the cliff (${fmt(cliff)}) itself, so the target MAGI (cliff − buffer = ${fmt(targetMagi ?? 0)}) is zero or below — with $0 of income, MAGI is $0, which equals that target when it is $0 and is above it when it is below $0, so no room is left for a draw. The buffer alone makes the target unreachable, so the $0 draw is because the buffer is at or above the cliff, not because of your income. Lower the buffer below the cliff to leave room for a draw.`,
+    );
+  }
 
   // The headline: the likely case's maximum safe draw at
   // cliff − buffer, solved against the engine.
@@ -2211,7 +2366,7 @@ export function computeDecemberProjection(
   const gainHarvestUnpriced =
     state.harvestOn &&
     (state.harvestPoolAmount == null || state.harvestPoolBasisPct == null);
-  // Taxable cash for the year (contract v125): cash taken
+  // Taxable cash for the year (build v125): cash taken
   // from taxable at 100% basis — $0 MAGI, so it never
   // enters the priced year above (the solver, the cases'
   // MAGI, credit, and taxes are all priced without it) and
@@ -2220,7 +2375,7 @@ export function computeDecemberProjection(
   // unchanged: the solver sizes the pre-tax draw by MAGI
   // room, and this amount uses none.
   const taxableFunded = Math.max(0, state.taxableFunded ?? 0);
-  // "Enough for the year" (contract v126): the annual
+  // "Enough for the year" (build v126): the annual
   // spending in dollars, or null when none was given. A
   // comparison-only figure — it never enters the draw, MAGI,
   // credit, tax, or settlement below.
@@ -2255,7 +2410,7 @@ export function computeDecemberProjection(
       : cappedCredit == null
         ? null
         : r2(Math.max(0, cappedCredit - coverageReduction));
-    // ACA reconciliation (round-7 fix B, contract v54):
+    // ACA reconciliation (round-7 fix B, build v54):
     // creditStillDue prices in ALL years whenever the
     // credit is known. The repayment: for 2026 and later
     // there are no repayment caps (P.L. 119-21 §71305) —
@@ -2295,7 +2450,7 @@ export function computeDecemberProjection(
           : state.aptcTaken <= effectiveFinalCredit
             ? 0
             : null;
-    // The projected tax bill's net (contract v50, round-7
+    // The projected tax bill's net (build v50, round-7
     // fix B; v103 for the education term): the filing
     // settlement for this case at the headline draw — see
     // the field's note on DecemberCaseResult. The refundable
@@ -2323,14 +2478,32 @@ export function computeDecemberProjection(
         : effectiveFinalCredit == null
           ? "No benchmark premium is entered, so the ACA credit can't be priced and no single settlement figure is shown."
           : "For years before 2026 the advance-credit repayment isn't modeled, so no single settlement figure is shown.";
-    // Cash left after tax (contract v114/v125) — computed
+    // Cash left after tax (build v114/v125) — computed
     // once here and reused by the "enough for the year"
     // comparison below, so the two figures can never drift
-    // apart.
+    // apart. Build v193 (re-audit round 3 SHOULD-4): the
+    // figure is read off the priced year itself —
+    // atHeadline.cashLeftAfterTax, plus the taxable cash
+    // the assembly adds (build v125) — because the shared
+    // pricer now prices THIS settlement as its net tax
+    // bill whenever the console's reconciliation facts
+    // ride its dials (decemberCaseInputs), so the
+    // engine's cash left and the console's are one figure
+    // by construction. The settlement above is unchanged
+    // (the same derivation, still computed here for the
+    // case's own settlement fields); it equals the
+    // pricer's net tax bill on every case whose settlement
+    // prices, and the fixtures pin that equality — so
+    // this readout is value-identical to the previous
+    // cashIn + taxableFunded − settlement derivation on
+    // every case, while a future drift in either
+    // derivation fails the suite instead of showing the
+    // user two cash-left figures for one year. Null
+    // exactly when no settlement is shown, as before.
     const cashLeftAtHeadline: number | null =
       netSettleAtHeadline == null
         ? null
-        : r2(atHeadline.cashIn + taxableFunded - netSettleAtHeadline);
+        : r2(atHeadline.cashLeftAfterTax + taxableFunded);
     return {
       kind,
       nonDrawAcaMagi: zero.acaMagi,
@@ -2373,11 +2546,12 @@ export function computeDecemberProjection(
         netSettleAtHeadline == null
           ? null
           : r2(atHeadline.cashIn + taxableFunded),
-      // "Enough for the year" (contract v126): the annual
+      // "Enough for the year" (build v126): the annual
       // spending echoed, and cash left minus that spending.
       // Null exactly when no spending was given or no
       // settlement is shown.
-      annualSpendingAtHeadline: annualSpending,
+      annualSpendingAtHeadline:
+        netSettleAtHeadline == null ? null : annualSpending,
       cashLeftVsSpendingAtHeadline:
         cashLeftAtHeadline == null || annualSpending == null
           ? null
@@ -2388,6 +2562,64 @@ export function computeDecemberProjection(
   const likelyCase = cases[1]!;
   const zeroDrawOverCliff = likelyCase.overCliffEvenAtZero;
 
+  // Build v194 (re-audit round 3 SHOULD-5): the $0-draw
+  // MAGI the headline below reasons from INCLUDES any
+  // priced gain harvest — the harvest is sized inside
+  // every pricing, the zero-draw pricings included — so
+  // when the harvest is what puts MAGI over the cliff (or
+  // uses up the room under cliff − buffer), blaming
+  // "income already posted" misattributes the cause:
+  // posted income without the harvest can sit under the
+  // cliff with room to spare. The counterfactual is
+  // priced, not derived: the likely case is re-priced at
+  // a $0 draw with the harvest toggle off (the same dials
+  // decemberCaseInputs builds, the harvest dials absent),
+  // because the harvest's MAGI lift is NOT its gross
+  // harvested gain — an entering loss carryforward absorbs
+  // harvested gains first, so only a re-pricing nets that
+  // out (the absorbed-harvest fixture below pins a $10,000
+  // gross harvest that moves MAGI not at all).
+  // harvestBreachMagi is that harvest-free MAGI, set only
+  // when the harvest alone tips the likely case over the
+  // cliff (over with it, not over without it);
+  // harvestNoRoomMagi is it when the harvest alone uses
+  // up the room under the target (the harvest-free solve
+  // finds a positive draw the priced solve cannot). Both
+  // stay null whenever the harvest is off, unpriced,
+  // harvests $0 at a $0 draw, or is not the tipping cause
+  // — posted income over the cliff (or over the target)
+  // on its own keeps the original income wording, exactly
+  // as before. No priced figure moves: the re-pricings
+  // feed only these two headline wordings.
+  const harvestPricedAtZero =
+    state.harvestOn &&
+    !gainHarvestUnpriced &&
+    likelyCase.harvestedGainAtZeroDraw > 0 &&
+    cliff != null;
+  const likelyZeroNoHarvest = harvestPricedAtZero
+    ? pricePlaygroundYear(
+        decemberCaseInputs({ ...state, harvestOn: false }, "likely", 0),
+      )
+    : null;
+  const harvestBreachMagi: number | null =
+    likelyZeroNoHarvest != null &&
+    zeroDrawOverCliff &&
+    !likelyZeroNoHarvest.aca.overCliff
+      ? likelyZeroNoHarvest.acaMagi
+      : null;
+  const harvestNoRoomMagi: number | null = ((): number | null => {
+    if (likelyZeroNoHarvest == null || zeroDrawOverCliff) return null;
+    if (headlineDraw == null || headlineDraw > 0) return null;
+    if (bufferExceedsCliff || zeroBalanceBinds) return null;
+    const drawWithoutHarvest = solvePlaygroundAcaCliffFill(
+      decemberCaseInputs({ ...state, harvestOn: false }, "likely", 0),
+      state.bufferDollars,
+    );
+    return drawWithoutHarvest != null && drawWithoutHarvest > 0
+      ? likelyZeroNoHarvest.acaMagi
+      : null;
+  })();
+
   let headlineText: string;
   if (cliff == null) {
     headlineText = !likelyZero.aca.applies
@@ -2395,15 +2627,38 @@ export function computeDecemberProjection(
       : state.taxYear < 2026
         ? "No ACA cliff this year — the draw is not cliff-constrained."
         : "No ACA cliff to aim at — enter the ACA household size for the year to size the December draw.";
+  } else if (zeroDrawOverCliff && harvestBreachMagi != null) {
+    headlineText = `No December draw is safe this year: the gain harvest puts MAGI at ${fmt(likelyCase.nonDrawAcaMagi)}, over the ${fmt(cliff)} cliff before any draw — without the harvest, MAGI would be ${fmt(harvestBreachMagi)}, under the cliff, so the harvest itself is what breaches the cliff, not income already posted, and no draw can fix that year while the harvest stands. The credit is lost in the likely case and the advance credit taken (${fmt(state.aptcTaken)}) is repaid.`;
   } else if (zeroDrawOverCliff) {
     headlineText = `No December draw is safe this year: income already posted puts MAGI at ${fmt(likelyCase.nonDrawAcaMagi)}, over the ${fmt(cliff)} cliff before any draw — no draw can fix that year. The credit is lost in the likely case and the advance credit taken (${fmt(state.aptcTaken)}) is repaid.`;
+  } else if (bufferExceedsCliff) {
+    headlineText = `Take no December draw: your ${fmt(state.bufferDollars)} buffer is as large as the ${fmt(cliff)} cliff, so the target MAGI (cliff − buffer = ${fmt(targetMagi ?? 0)}) is zero or below — with $0 of income, MAGI is $0, which equals that target when it is $0 and is above it when it is below $0, so no room is left for a draw. The $0 draw is because the buffer alone makes the target unreachable, not because of your income.`;
   } else if (zeroBalanceBinds) {
     headlineText =
       "Take no December draw: the pre-tax balance is $0, so there is nothing to draw.";
+  } else if (
+    headlineDraw != null &&
+    headlineDraw <= 0 &&
+    harvestNoRoomMagi != null
+  ) {
+    headlineText = `Take no December draw: the gain harvest leaves no room under the cliff minus your ${fmt(state.bufferDollars)} buffer — without the harvest, MAGI at a $0 draw would be ${fmt(harvestNoRoomMagi)}, under the ${fmt(targetMagi ?? 0)} target, but with the harvest it is ${fmt(likelyCase.nonDrawAcaMagi)}, so the harvest uses up the room, not income already posted.`;
   } else if (headlineDraw != null && headlineDraw <= 0) {
     headlineText = `Take no December draw: income already posted leaves no room under the cliff minus your ${fmt(state.bufferDollars)} buffer.`;
   } else {
-    headlineText = `Maximum safe December draw: ${fmt(headlineDraw ?? 0)} — it lands MAGI at ${fmt(likelyCase.magiAtHeadline)}, ${fmt(Math.abs(likelyCase.distanceAtHeadline ?? 0))} under the ${fmt(cliff)} cliff in the likely case, keeping the credit.`;
+    // Audit N-4: the "keeping the credit" wording fires only
+    // when a positive credit is actually priced. A priced
+    // credit of $0 (e.g. an entered $0 benchmark, a $0
+    // enrollment-premium cap, or a coverage-month reduction
+    // that consumes the whole credit) is under the cliff but
+    // keeps nothing — the headline says the priced credit is
+    // $0, parallel to the unpriced case's "credit not priced"
+    // (the S-9 wording the console uses per case).
+    headlineText =
+      likelyCase.creditAtHeadline == null
+        ? `Maximum safe December draw: ${fmt(headlineDraw ?? 0)} — it lands MAGI at ${fmt(likelyCase.magiAtHeadline)}, ${fmt(Math.abs(likelyCase.distanceAtHeadline ?? 0))} under the ${fmt(cliff)} cliff in the likely case — credit not priced.`
+        : likelyCase.creditAtHeadline === 0
+          ? `Maximum safe December draw: ${fmt(headlineDraw ?? 0)} — it lands MAGI at ${fmt(likelyCase.magiAtHeadline)}, ${fmt(Math.abs(likelyCase.distanceAtHeadline ?? 0))} under the ${fmt(cliff)} cliff in the likely case — the priced credit is $0.`
+          : `Maximum safe December draw: ${fmt(headlineDraw ?? 0)} — it lands MAGI at ${fmt(likelyCase.magiAtHeadline)}, ${fmt(Math.abs(likelyCase.distanceAtHeadline ?? 0))} under the ${fmt(cliff)} cliff in the likely case, keeping the credit.`;
   }
 
   if (state.aptcTaken <= 0 && cliff != null) {
@@ -2519,6 +2774,40 @@ export function runDecemberFixtures(): {
     near(fail, "credit still due at headline", likely.creditStillDue, 71.84);
   });
 
+  run("dec-headline-zero-priced-credit", (fail) => {
+    // Audit N-4: same landing as dec-headline-cliff-minus-buffer
+    // (MAGI $79,600 at the headline draw, under the $84,600
+    // cliff), but with a $0 enrollment premium entered the
+    // priced final credit is $0 — the headline must not claim
+    // the credit is being kept when there is none priced; it
+    // says the priced credit is $0. The priced figures are
+    // unchanged: final credit $0, and the whole $12,000 of
+    // APTC taken is repaid (no repayment caps after 2025).
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    s.acaEnrollmentPremiumAnnual = 0;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    near(fail, "headline", r.headlineDraw, 29600);
+    const likely = r.cases[1]!;
+    if (likely.overCliffAtHeadline) fail("likely case should be under the cliff");
+    exact(fail, "final credit at headline", likely.creditAtHeadline, 0);
+    near(fail, "excess repayment at headline", likely.excessAptcRepayment, 12000);
+    if (r.headlineText.includes("keeping the credit")) {
+      fail(`headline must not claim a kept credit at a $0 priced credit, got: ${r.headlineText}`);
+    }
+    if (!r.headlineText.includes("the priced credit is $0")) {
+      fail(`headline should say the priced credit is $0, got: ${r.headlineText}`);
+    }
+    // The positive-credit landing keeps the original wording.
+    const kept = base();
+    kept.ytdOtherOrdinary = 50000;
+    const rk = computeDecemberProjection(kept);
+    if (!rk.headlineText.includes("keeping the credit")) {
+      fail(`positive-credit headline should keep the kept wording, got: ${rk.headlineText}`);
+    }
+  });
+
   run("dec-repayment-under-cliff-excess-aptc", (fail) => {
     // Settled review (P.L. 119-21 §71305): after 2025 there
     // are no repayment caps, so an under-cliff year whose APTC
@@ -2560,6 +2849,132 @@ export function runDecemberFixtures(): {
     const likely = r.cases[1]!;
     if (!likely.overCliffEvenAtZero) fail("likely overCliffEvenAtZero should be true");
     exact(fail, "repayment", likely.repaymentExposure, 12000);
+  });
+
+  run("dec-harvest-cliff-blame-should5", (fail) => {
+    // Re-audit round 3 SHOULD-5: a harvest that breaches
+    // the cliff was blamed on "income already posted" —
+    // the $0-draw MAGI includes the priced harvest (it is
+    // sized inside every pricing), so the old headline
+    // named posted income even when posted income alone
+    // sat under the cliff and the harvested gain alone
+    // tipped the year over. The headline now prices the
+    // harvest-free counterfactual and names the harvest
+    // when it alone tips the year. Breach case: posted
+    // ordinary income $79,000 (under the $84,600 cliff),
+    // a $40,000 pool at 75% basis — the full $10,000
+    // unrealized gain harvests inside the 0% room
+    // ($98,900 − $46,800 ordinary taxable = $52,100),
+    // lifting MAGI to $89,000, over the cliff. Without
+    // the harvest MAGI is $79,000, under the cliff, and
+    // the settlement is untouched (credit $0 over the
+    // cliff, the whole $12,000 APTC repaid).
+    const breach = base();
+    breach.ytdOtherOrdinary = 79000;
+    breach.harvestOn = true;
+    breach.harvestPoolAmount = 40000;
+    breach.harvestPoolBasisPct = 75;
+    const rb = computeDecemberProjection(breach);
+    if (!rb.priced) return fail("breach case not priced");
+    if (rb.headlineDraw !== 0) {
+      fail(`breach headline should be 0, got ${rb.headlineDraw}`);
+    }
+    if (!rb.zeroDrawOverCliff) fail("breach zeroDrawOverCliff should be true");
+    const lb = rb.cases[1]!;
+    exact(fail, "breach non-draw MAGI", lb.nonDrawAcaMagi, 89000);
+    exact(fail, "breach harvested gain at $0 draw", lb.harvestedGainAtZeroDraw, 10000);
+    exact(fail, "breach credit", lb.creditAtHeadline, 0);
+    exact(fail, "breach repayment", lb.repaymentExposure, 12000);
+    if (!rb.headlineText.includes("the gain harvest puts MAGI at $89,000")) {
+      fail(`breach headline should name the harvest and its MAGI, got: ${rb.headlineText}`);
+    }
+    if (!rb.headlineText.includes("without the harvest, MAGI would be $79,000")) {
+      fail(`breach headline should name the harvest-free MAGI, got: ${rb.headlineText}`);
+    }
+    if (
+      !rb.headlineText.includes(
+        "the harvest itself is what breaches the cliff, not income already posted",
+      )
+    ) {
+      fail(`breach headline should attribute the breach to the harvest, got: ${rb.headlineText}`);
+    }
+    if (rb.headlineText.includes("income already posted puts MAGI")) {
+      fail("breach headline must not blame income already posted");
+    }
+    // Genuine-income control: posted income $100,000 is
+    // over the cliff on its own; the same $10,000 harvest
+    // rides on top (MAGI $110,000), but the harvest-free
+    // MAGI ($100,000) is still over the cliff, so the
+    // headline keeps the income wording — the harvest is
+    // not the tipping cause.
+    const genuine = base();
+    genuine.ytdOtherOrdinary = 100000;
+    genuine.harvestOn = true;
+    genuine.harvestPoolAmount = 40000;
+    genuine.harvestPoolBasisPct = 75;
+    const rg = computeDecemberProjection(genuine);
+    exact(fail, "genuine non-draw MAGI", rg.cases[1]!.nonDrawAcaMagi, 110000);
+    if (!rg.headlineText.includes("income already posted puts MAGI at $110,000")) {
+      fail(`genuine headline should keep the income wording, got: ${rg.headlineText}`);
+    }
+    // Absorbed-harvest control: posted $88,000 with a
+    // $20,000 long-term carry-in — the carryforward
+    // absorbs the whole $10,000 harvest, so MAGI is
+    // $85,000 (posted less the $3,000 allowance) WITH or
+    // WITHOUT the harvest: over the cliff either way, and
+    // the headline keeps the income wording. This case is
+    // why the counterfactual is re-priced, never derived
+    // by subtracting the gross gain — $85,000 − $10,000 =
+    // $75,000 would sit under the cliff and wrongly blame
+    // the harvest.
+    const absorbed = base();
+    absorbed.ytdOtherOrdinary = 88000;
+    absorbed.carryInCapitalLossLt = 20000;
+    absorbed.harvestOn = true;
+    absorbed.harvestPoolAmount = 40000;
+    absorbed.harvestPoolBasisPct = 75;
+    const ra = computeDecemberProjection(absorbed);
+    const la = ra.cases[1]!;
+    exact(fail, "absorbed harvested gain at $0 draw", la.harvestedGainAtZeroDraw, 10000);
+    exact(fail, "absorbed non-draw MAGI", la.nonDrawAcaMagi, 85000);
+    if (!ra.headlineText.includes("income already posted puts MAGI at $85,000")) {
+      fail(`absorbed headline should keep the income wording, got: ${ra.headlineText}`);
+    }
+    // No-room case: the harvest does not breach the
+    // cliff but uses up the room under cliff − buffer.
+    // Posted $78,000, a $16,000 pool at 75% basis
+    // harvests $4,000: MAGI $82,000 — under the $84,600
+    // cliff, over the $79,600 target — so the draw is
+    // $0; without the harvest the same year draws $1,600.
+    // The headline names the harvest, not posted income.
+    const noRoom = base();
+    noRoom.ytdOtherOrdinary = 78000;
+    noRoom.harvestOn = true;
+    noRoom.harvestPoolAmount = 16000;
+    noRoom.harvestPoolBasisPct = 75;
+    const rn = computeDecemberProjection(noRoom);
+    if (rn.zeroDrawOverCliff) {
+      fail("no-room case should not be over the cliff at $0");
+    }
+    if (rn.headlineDraw !== 0) {
+      fail(`no-room headline should be 0, got ${rn.headlineDraw}`);
+    }
+    exact(fail, "no-room non-draw MAGI", rn.cases[1]!.nonDrawAcaMagi, 82000);
+    if (!rn.headlineText.includes("the gain harvest leaves no room")) {
+      fail(`no-room headline should name the harvest, got: ${rn.headlineText}`);
+    }
+    if (
+      !rn.headlineText.includes(
+        "without the harvest, MAGI at a $0 draw would be $78,000",
+      )
+    ) {
+      fail(`no-room headline should name the harvest-free MAGI, got: ${rn.headlineText}`);
+    }
+    if (rn.headlineText.includes("income already posted leaves no room")) {
+      fail("no-room headline must not blame income already posted");
+    }
+    const rnOff = computeDecemberProjection({ ...noRoom, harvestOn: false });
+    near(fail, "no-room harvest-free draw", rnOff.headlineDraw, 1600);
   });
 
   run("dec-ranges-move-the-draw", (fail) => {
@@ -2673,6 +3088,78 @@ export function runDecemberFixtures(): {
       (ra.headlineDraw ?? -1) - (rb.headlineDraw ?? -1),
       5000,
     );
+  });
+
+  run("dec-buffer-at-or-above-cliff-warns-n3", (fail) => {
+    // Audit N-3 (settled): a buffer at or above the cliff
+    // makes the target zero or negative, so the $0 draw is
+    // caused by the buffer alone. Worked example from the
+    // finding, scaled to this fixture's cliff ($84,600):
+    // buffer $200,000 → target −$115,400, headline $0, with
+    // a warning and a headline that name the buffer — not
+    // income — as the reason. The $0 draw itself is
+    // arithmetically correct and is kept.
+    const s = base();
+    s.ytdOtherOrdinary = 0;
+    s.bufferDollars = 200000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("not priced");
+    exact(fail, "cliff", r.cliff, 84600);
+    exact(fail, "target with $200k buffer", r.targetMagi, -115400);
+    exact(fail, "headline draw stays $0", r.headlineDraw, 0);
+    if (
+      !r.warnings.some((w) =>
+        w.includes("buffer alone makes the target unreachable"),
+      )
+    ) {
+      fail(
+        `projection should warn that the buffer alone makes the target unreachable, got: ${JSON.stringify(r.warnings)}`,
+      );
+    }
+    if (
+      !r.warnings.some(
+        (w) => w.includes("$200,000") && w.includes("$84,600"),
+      )
+    ) {
+      fail("warning should name the buffer and the cliff");
+    }
+    if (!r.headlineText.includes("buffer alone makes the target unreachable")) {
+      fail(
+        `headline should name the buffer as the reason for $0, got: ${r.headlineText}`,
+      );
+    }
+    if (r.headlineText.includes("income already posted leaves no room")) {
+      fail("headline should not attribute the $0 draw to income when the buffer alone binds");
+    }
+    // Boundary: buffer exactly equal to the cliff also warns (target $0).
+    const atCliff = base();
+    atCliff.ytdOtherOrdinary = 0;
+    atCliff.bufferDollars = 84600;
+    const rAt = computeDecemberProjection(atCliff);
+    exact(fail, "target at buffer == cliff", rAt.targetMagi, 0);
+    exact(fail, "headline at buffer == cliff", rAt.headlineDraw, 0);
+    if (
+      !rAt.warnings.some((w) =>
+        w.includes("buffer alone makes the target unreachable"),
+      )
+    ) {
+      fail("buffer == cliff should also warn");
+    }
+    // Normal buffer: no such warning, and the ordinary
+    // headline pricing is unchanged.
+    const normal = base();
+    normal.ytdOtherOrdinary = 50000;
+    normal.bufferDollars = 5000;
+    const rn = computeDecemberProjection(normal);
+    exact(fail, "normal target", rn.targetMagi, 79600);
+    near(fail, "normal headline", rn.headlineDraw, 29600);
+    if (
+      rn.warnings.some((w) =>
+        w.includes("buffer alone makes the target unreachable"),
+      )
+    ) {
+      fail("normal $5,000 buffer should not carry the buffer-exceeds-cliff warning");
+    }
   });
 
   run("dec-default-state-is-inert", (fail) => {
@@ -4312,7 +4799,7 @@ export function runDecemberFixtures(): {
   });
 
   run("dec-tax-bill-headline-case", (fail) => {
-    // Projected tax bill (contract v50): the round-3/4
+    // Projected tax bill (build v50): the round-3/4
     // standing reproduction — primary 60, spouse 75 (on
     // Medicare), balances $10,000 / $246,000, posted
     // ordinary income $75,000, household of 2, benchmark
@@ -4457,7 +4944,7 @@ export function runDecemberFixtures(): {
       fail(`(iii) net settle should be null, got ${excess.netSettleAtHeadline}`);
     }
     // The null net carries the pre-2026 reason note
-    // verbatim (contract v54): the credit WAS priced, so
+    // verbatim (build v54): the credit WAS priced, so
     // the unmodeled-repayment reason is the one that names
     // the case.
     if (
@@ -4469,7 +4956,7 @@ export function runDecemberFixtures(): {
   });
 
   run("dec-tax-bill-known-zero-credit", (fail) => {
-    // Contract v54: the reconciliation distinguishes a
+    // Build v54: the reconciliation distinguishes a
     // KNOWN-ZERO credit (nobody can be on the marketplace,
     // so the allowable credit is $0 by construction) from
     // a genuinely UNPRICED credit (a marketplace-eligible
@@ -4565,7 +5052,7 @@ export function runDecemberFixtures(): {
     }
   });
 
-  /* ---- Contract v103 fixtures: education credits (round-14 F3) ----
+  /* ---- Build v103 fixtures: education credits (round-14 F3) ----
      The settlement's acceptance examples, re-derived in the
      settled audit from the law row (taxLaw.ts: aotc 100% of
      the first $2,000 + 25% of the next $2,000 per eligible
@@ -4854,7 +5341,7 @@ export function runDecemberFixtures(): {
     }
   });
 
-  /* ---- Contract v104 fixtures: January-paid capital-gain
+  /* ---- Build v104 fixtures: January-paid capital-gain
      distributions (round-14 F5) ----
      Legal premise: §852(b)(7) deems a distribution declared
      in October–December and paid in January received on
@@ -5073,6 +5560,111 @@ export function runDecemberFixtures(): {
     exact(fail, "partial-capital ordinary remainder", overQualInputs.ordinaryDividends, 5000);
     exact(fail, "qualified clamps to the ordinary remainder", overQualInputs.qualifiedDividends, 5000);
     exact(fail, "partial-capital gain dial", overQualInputs.stockSold, 15000);
+  });
+
+  run("dec-dividend-pair-clamp-s8", (fail) => {
+    // Audit S-8 worked examples, after the clamp (contract
+    // v137; hand-derived): qualified dividends are a subset
+    // of their ordinary total, so each December pair clamps
+    // its qualified part to its own total.
+    // Example 1a's pair: year-to-date qualified $20,000
+    // entered against a $16,000 ordinary total. Before the
+    // clamp the engine priced $20,000 qualified + $0
+    // non-qualified — the $4,000 excess counted as qualified
+    // income, understating the headline draw by $4,000.
+    // Now the pair prices at most the total: qualified
+    // $16,000, non-qualified $0, AGI $16,000 (dividends are
+    // the only income in this state).
+    const s = base();
+    s.ytdOrdinaryDividends = 16000;
+    s.ytdQualifiedDividends = 20000;
+    const inputs = decemberCaseInputs(s, "likely", 0);
+    exact(fail, "1a: ordinary total stands", inputs.ordinaryDividends, 16000);
+    exact(fail, "1a: qualified clamps to the total", inputs.qualifiedDividends, 16000);
+    const pg = pricePlaygroundYear(inputs);
+    exact(fail, "1a: priced qualified", pg.qualifiedDividends, 16000);
+    exact(fail, "1a: priced non-qualified", pg.nonQualifiedDividends, 0);
+    exact(fail, "1a: AGI is the total counted once", pg.agi, 16000);
+    // The projection names the impossible pair instead of
+    // pricing it silently.
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("1a: not priced");
+    if (!r.warnings.some((w) => w.includes("Qualified dividends already in"))) {
+      fail("1a: projection should warn on the year-to-date pair");
+    }
+    // Example 1c's still-to-come pair: remaining ordinary
+    // $0 with remaining qualified $30,000 (year-to-date
+    // $40,000 / $5,000 is a possible pair and stands). The
+    // remaining qualified clamps to its own pair's total —
+    // $0 — so the year's qualified is the year-to-date
+    // $5,000 and the year's dividends price at their
+    // $40,000 total, counted once, instead of the excess
+    // riding the gains stack.
+    const s2 = base();
+    s2.ytdOrdinaryDividends = 40000;
+    s2.ytdQualifiedDividends = 5000;
+    s2.remQualifiedDividends = { low: 30000, likely: 30000, high: 30000 };
+    const inputs2 = decemberCaseInputs(s2, "likely", 0);
+    exact(fail, "1c: ordinary total stands", inputs2.ordinaryDividends, 40000);
+    exact(fail, "1c: qualified is the YTD part only", inputs2.qualifiedDividends, 5000);
+    const pg2 = pricePlaygroundYear(inputs2);
+    exact(fail, "1c: priced non-qualified", pg2.nonQualifiedDividends, 35000);
+    exact(fail, "1c: AGI is the total counted once", pg2.agi, 40000);
+    const r2p = computeDecemberProjection(s2);
+    if (!r2p.warnings.some((w) => w.includes("Qualified dividends still to come"))) {
+      fail("1c: projection should warn on the still-to-come pair");
+    }
+    // Audit N-5: each still-to-come warning names WHICH
+    // case is impossible, with that case's two figures —
+    // in s2 all three cases carry the impossible pair
+    // (qualified $30,000 against a $0 total), so all three
+    // cases are named, one warning each.
+    for (const k of DECEMBER_CASE_KINDS) {
+      if (
+        !r2p.warnings.some(
+          (w) =>
+            w.includes(`Qualified dividends still to come in the ${k} case ($30,000)`) &&
+            w.includes(`total ordinary dividends still to come in the ${k} case ($0)`),
+        )
+      ) {
+        fail(`1c: projection should name the ${k} case's impossible still-to-come pair`);
+      }
+    }
+    // A pair impossible in only ONE case names only that
+    // case: here the likely case alone (qualified $8,000
+    // against its $5,000 total); the low ($4,000 / $5,000)
+    // and high ($15,000 / $20,000) pairs are possible.
+    const s4 = base();
+    s4.ytdOrdinaryDividends = 40000;
+    s4.ytdQualifiedDividends = 5000;
+    s4.remOrdinaryDividends = { low: 5000, likely: 5000, high: 20000 };
+    s4.remQualifiedDividends = { low: 4000, likely: 8000, high: 15000 };
+    const r4 = computeDecemberProjection(s4);
+    const stillWarnings = r4.warnings.filter((w) =>
+      w.includes("Qualified dividends still to come in the"),
+    );
+    if (stillWarnings.length !== 1) {
+      fail(`1c: exactly one still-to-come case should be named, got ${stillWarnings.length}`);
+    }
+    if (
+      !stillWarnings.some(
+        (w) =>
+          w.includes("in the likely case ($8,000)") &&
+          w.includes("in the likely case ($5,000)"),
+      )
+    ) {
+      fail("1c: the named case should be the likely case with its two figures");
+    }
+    // A possible pair is untouched by the clamp: qualified
+    // below the total prices exactly as entered.
+    const s3 = base();
+    s3.ytdOrdinaryDividends = 16000;
+    s3.ytdQualifiedDividends = 12000;
+    const inputs3 = decemberCaseInputs(s3, "likely", 0);
+    exact(fail, "possible pair: qualified stands", inputs3.qualifiedDividends, 12000);
+    const pg3 = pricePlaygroundYear(inputs3);
+    exact(fail, "possible pair: non-qualified remainder", pg3.nonQualifiedDividends, 4000);
+    exact(fail, "possible pair: AGI counted once", pg3.agi, 16000);
   });
 
   run("dec-carryforward-f1-acceptance", (fail) => {
@@ -5550,7 +6142,7 @@ export function runDecemberFixtures(): {
     }
   });
 
-  /* ---- Contract v112 fixtures: character splits on the
+  /* ---- Build v112 fixtures: character splits on the
      two strays (round-17 F4 + F5) ----
      F4: Schedule K-1 box 9a net long-term capital gain
      retains long-term character on the partner's return —
@@ -5850,7 +6442,158 @@ export function runDecemberFixtures(): {
     exact(fail, "K-1 loss puts nothing on the gain dials", lossInputs.stockSold, 0);
   });
 
-  /* ---- Contract v113 fixtures: the gain harvest
+  run("dec-stray-portion-clamp-warnings-n6", (fail) => {
+    // Re-audit NICE-TO-HAVE N-6: each stray-portion trim
+    // above now WARNS, naming the portion, its entered
+    // figure, the limit it was trimmed to fit, the amount
+    // trimmed, and the figure it prices as — the S-8
+    // dividend-pair warning's spirit. Pricing is the
+    // pre-fix clamped pricing throughout (the clamp checks
+    // in dec-stray-character-clamps and
+    // dec-jan-paid-capgain-combined-no-double-count stand).
+    const trimWarnings = (s: DecemberState) =>
+      computeDecemberProjection(s).warnings.filter((w) =>
+        w.includes("is trimmed"),
+      );
+    // K-1 portion over its total: entered $25,000 against
+    // a $10,000 total — $15,000 trimmed, prices as $10,000.
+    const overK1 = base();
+    overK1.strayK1 = { status: "amount", amount: 10000 };
+    overK1.strayK1CapGainAmount = 25000;
+    const k1Warnings = trimWarnings(overK1);
+    if (k1Warnings.length !== 1) {
+      fail(`K-1 trim: exactly one trim warning expected, got ${k1Warnings.length}`);
+    }
+    if (
+      !k1Warnings.some(
+        (w) =>
+          w.includes("K-1 income: the long-term capital gain portion (box 9a) ($25,000)") &&
+          w.includes("K-1 total ($10,000)") &&
+          w.includes("$15,000 is trimmed") &&
+          w.includes("prices as $10,000"),
+      )
+    ) {
+      fail(`K-1 trim: warning should name the portion, its figures, and the trim, got: ${JSON.stringify(k1Warnings)}`);
+    }
+    // ROC qualified portion over its total: entered
+    // $25,000 against a $10,000 reclassified total.
+    const overRoc = base();
+    overRoc.strayROCOrdinary = { status: "amount", amount: 10000 };
+    overRoc.strayROCQualifiedAmount = 25000;
+    const rocWarnings = trimWarnings(overRoc);
+    if (rocWarnings.length !== 1) {
+      fail(`ROC trim: exactly one trim warning expected, got ${rocWarnings.length}`);
+    }
+    if (
+      !rocWarnings.some(
+        (w) =>
+          w.includes("qualified-dividends portion of the reclassified amount ($25,000)") &&
+          w.includes("reclassified ordinary-dividend total ($10,000)") &&
+          w.includes("$15,000 is trimmed") &&
+          w.includes("prices as $10,000"),
+      )
+    ) {
+      fail(`ROC trim: warning should name the portion, its figures, and the trim, got: ${JSON.stringify(rocWarnings)}`);
+    }
+    // January-paid capital-gain portion over its total
+    // (the overCap shape): entered $25,000 against a
+    // $20,000 total trims $5,000; the clamped portion then
+    // leaves a $0 ordinary remainder, so the $20,000
+    // qualified portion entered beside it trims whole —
+    // two warnings, each with its own limit and trim.
+    const overCap = base();
+    overCap.strayJanPaid = { status: "amount", amount: 20000 };
+    overCap.strayJanPaidCapGainAmount = 25000;
+    overCap.strayJanPaidQualifiedAmount = 20000;
+    const capWarnings = trimWarnings(overCap);
+    if (capWarnings.length !== 2) {
+      fail(`January-paid over-cap: exactly two trim warnings expected, got ${capWarnings.length}`);
+    }
+    if (
+      !capWarnings.some(
+        (w) =>
+          w.includes("the capital-gain portion ($25,000)") &&
+          w.includes("January-paid total ($20,000)") &&
+          w.includes("$5,000 is trimmed") &&
+          w.includes("prices as $20,000"),
+      )
+    ) {
+      fail(`January-paid over-cap: capital-gain warning should name its figures and trim, got: ${JSON.stringify(capWarnings)}`);
+    }
+    if (
+      !capWarnings.some(
+        (w) =>
+          w.includes("the qualified-dividends portion ($20,000)") &&
+          w.includes("ordinary remainder ($0)") &&
+          w.includes("$20,000 is trimmed") &&
+          w.includes("prices as $0"),
+      )
+    ) {
+      fail(`January-paid over-cap: qualified warning should name the $0 remainder and its whole trim, got: ${JSON.stringify(capWarnings)}`);
+    }
+    // January-paid qualified portion over the ordinary
+    // REMAINDER only (the overQual shape): total $20,000
+    // less a valid $15,000 capital-gain portion leaves a
+    // $5,000 remainder; the $20,000 qualified entry trims
+    // $15,000 to it, and the valid capital-gain portion
+    // warns nowhere.
+    const overQual = base();
+    overQual.strayJanPaid = { status: "amount", amount: 20000 };
+    overQual.strayJanPaidCapGainAmount = 15000;
+    overQual.strayJanPaidQualifiedAmount = 20000;
+    const qualWarnings = trimWarnings(overQual);
+    if (qualWarnings.length !== 1) {
+      fail(`January-paid over-qualified: exactly one trim warning expected, got ${qualWarnings.length}`);
+    }
+    if (
+      !qualWarnings.some(
+        (w) =>
+          w.includes("the qualified-dividends portion ($20,000)") &&
+          w.includes("ordinary remainder ($5,000)") &&
+          w.includes("$15,000 is trimmed") &&
+          w.includes("prices as $5,000"),
+      )
+    ) {
+      fail(`January-paid over-qualified: warning should name the remainder, its figures, and the trim, got: ${JSON.stringify(qualWarnings)}`);
+    }
+    // A K-1 LOSS has no gain portion: the $5,000 portion
+    // entered beside a −$10,000 total trims whole.
+    const loss = base();
+    loss.strayK1 = { status: "amount", amount: -10000 };
+    loss.strayK1CapGainAmount = 5000;
+    const lossWarnings = trimWarnings(loss);
+    if (lossWarnings.length !== 1) {
+      fail(`K-1 loss: exactly one trim warning expected, got ${lossWarnings.length}`);
+    }
+    if (
+      !lossWarnings.some(
+        (w) =>
+          w.includes("the long-term capital gain portion (box 9a) ($5,000)") &&
+          w.includes("is not positive") &&
+          w.includes("the whole $5,000 is trimmed") &&
+          w.includes("prices as $0"),
+      )
+    ) {
+      fail(`K-1 loss: warning should name the inert portion and its whole trim, got: ${JSON.stringify(lossWarnings)}`);
+    }
+    // No trim, no warning: every portion at or below its
+    // limit — including portions exactly AT their limit —
+    // prices as entered and warns nowhere.
+    const clean = base();
+    clean.strayK1 = { status: "amount", amount: 10000 };
+    clean.strayK1CapGainAmount = 10000;
+    clean.strayROCOrdinary = { status: "amount", amount: 10000 };
+    clean.strayROCQualifiedAmount = 4000;
+    clean.strayJanPaid = { status: "amount", amount: 20000 };
+    clean.strayJanPaidCapGainAmount = 5000;
+    clean.strayJanPaidQualifiedAmount = 15000;
+    const cleanWarnings = trimWarnings(clean);
+    if (cleanWarnings.length !== 0) {
+      fail(`no-trim control: no trim warning expected, got: ${JSON.stringify(cleanWarnings)}`);
+    }
+  });
+
+  /* ---- Build v113 fixtures: the gain harvest
      (round-17 F3) ----
      The plan march harvests after settlement when its
      gainsHarvest toggle is on (taxEngine's harvestOn gate);
@@ -6276,7 +7019,7 @@ export function runDecemberFixtures(): {
   });
 
   run("dec-taxable-funded-acceptance", (fail) => {
-    // Contract v125: cash taken from taxable at 100% basis
+    // Build v125: cash taken from taxable at 100% basis
     // is $0 MAGI, so it uses no MAGI room and the cliff
     // solver's answer — the maximum safe pre-tax draw — is
     // invariant to it. The draw is sized by MAGI room; the
@@ -6347,18 +7090,24 @@ export function runDecemberFixtures(): {
     s.ytdOtherOrdinary = 50000;
     s.acaBenchmarkAnnual = null;
     s.taxableFunded = 10000;
-    const r = computeDecemberProjection(s);
+    const r = computeDecemberProjection(s, 18000000);
     if (!r.priced) return fail("not priced");
     near(fail, "headline draw unchanged", r.headlineDraw, 29600);
     for (const c of r.cases) {
       if (c.netSettleAtHeadline !== null) fail("settlement should be null without a benchmark");
       if (c.cashInAtHeadline !== null) fail("cash in should be null without a settlement");
       if (c.cashLeftAtHeadline !== null) fail("cash left should be null without a settlement");
+      // N-5: the spending echo follows the same null
+      // contract (build v126) — with spending given but
+      // no settlement shown, annualSpendingAtHeadline is
+      // null too, exactly like cashLeftVsSpendingAtHeadline.
+      if (c.annualSpendingAtHeadline !== null) fail("spending echo should be null without a settlement");
+      if (c.cashLeftVsSpendingAtHeadline !== null) fail("comparison should be null without a settlement");
     }
   });
 
   run("dec-cash-left-vs-spending-surplus", (fail) => {
-    // "Enough for the year" (contract v126), surplus: the
+    // "Enough for the year" (build v126), surplus: the
     // baseline likely case leaves $74,479.84 cash left after
     // tax (pinned by the headline fixture); against $60,000
     // of annual spending the year is enough by $14,479.84.
@@ -6382,7 +7131,7 @@ export function runDecemberFixtures(): {
   });
 
   run("dec-cash-left-vs-spending-shortfall", (fail) => {
-    // "Enough for the year" (contract v126), shortfall: the
+    // "Enough for the year" (build v126), shortfall: the
     // same baseline against $80,000 of annual spending is
     // short by $5,520.16 (74,479.84 − 80,000), a negative
     // comparison. Nothing else moves.
@@ -6416,6 +7165,165 @@ export function runDecemberFixtures(): {
     exact(fail, "likely cash left unchanged", r.cases[1]!.cashLeftAtHeadline, 74479.84);
   });
 
+  run("dec-cash-left-agrees-with-engine", (fail) => {
+    // Build v193 (re-audit round 3 SHOULD-4): the console's
+    // cash left and the shared single-year engine's cash
+    // left for the same year are ONE figure. The console's
+    // reconciliation facts ride decemberCaseInputs to the
+    // pricer's own dials, so the pricer's netTaxBill on a
+    // December pricing IS the case's settlement and its
+    // cashLeftAfterTax is the console's cash left (less
+    // the taxable cash the assembly adds). Before this
+    // build the pricer never netted the reconciliation:
+    // on the headline shape below its bill was the $5,192
+    // total tax and its cash left $74,408, while the
+    // console netted $71.84 of credit still due and
+    // reported $74,479.84 — two cash-left figures for one
+    // year, differing by exactly the credit still due.
+    // The shapes: the headline fixture's state (APTC
+    // $12,000 under the $12,071.84 final credit), APTC $0
+    // (the whole credit still due), APTC $15,000 (an
+    // excess repayment of $2,928.16), a $0 enrollment
+    // premium (the priced credit $0, the whole $12,000 of
+    // APTC repaid), a $2,000 coverage-month reduction
+    // (final credit $10,071.84, excess $1,928.16), an
+    // over-the-cliff year (final credit $0, the whole
+    // APTC repaid), and the headline shape with $10,000
+    // of taxable cash. On every shape and every case: the
+    // engine's cash in is the console's cash in less the
+    // taxable cash, the engine's net tax bill IS the
+    // console's settlement to the cent, and the engine's
+    // cash left plus the taxable cash IS the console's
+    // cash left to the cent.
+    const shapes: { label: string; make: () => DecemberState }[] = [
+      {
+        label: "headline",
+        make: () => {
+          const s = base();
+          s.ytdOtherOrdinary = 50000;
+          return s;
+        },
+      },
+      {
+        label: "aptc-zero",
+        make: () => {
+          const s = base();
+          s.ytdOtherOrdinary = 50000;
+          s.aptcTaken = 0;
+          return s;
+        },
+      },
+      {
+        label: "aptc-excess",
+        make: () => {
+          const s = base();
+          s.ytdOtherOrdinary = 50000;
+          s.aptcTaken = 15000;
+          return s;
+        },
+      },
+      {
+        label: "enrollment-zero",
+        make: () => {
+          const s = base();
+          s.ytdOtherOrdinary = 50000;
+          s.acaEnrollmentPremiumAnnual = 0;
+          return s;
+        },
+      },
+      {
+        label: "coverage-reduction",
+        make: () => {
+          const s = base();
+          s.ytdOtherOrdinary = 40000;
+          s.strayCoverage = { status: "amount", amount: 2000 };
+          return s;
+        },
+      },
+      {
+        label: "over-cliff",
+        make: () => {
+          const s = base();
+          s.ytdOtherOrdinary = 100000;
+          return s;
+        },
+      },
+      {
+        label: "taxable-funded",
+        make: () => {
+          const s = base();
+          s.ytdOtherOrdinary = 50000;
+          s.taxableFunded = 10000;
+          return s;
+        },
+      },
+    ];
+    for (const { label, make } of shapes) {
+      const s = make();
+      const r = computeDecemberProjection(s);
+      if (!r.priced) return fail(`${label}: not priced`);
+      const draw = r.headlineDraw ?? 0;
+      const funded = Math.max(0, s.taxableFunded ?? 0);
+      for (const c of r.cases) {
+        const settle = c.netSettleAtHeadline;
+        const cashInH = c.cashInAtHeadline;
+        const cashLeftH = c.cashLeftAtHeadline;
+        if (settle == null || cashInH == null || cashLeftH == null) {
+          return fail(`${label}/${c.kind}: settlement should price`);
+        }
+        const pg = pricePlaygroundYear(decemberCaseInputs(s, c.kind, draw));
+        exact(fail, `${label}/${c.kind} engine cash in`, pg.cashIn + funded, cashInH);
+        exact(fail, `${label}/${c.kind} engine bill = settlement`, pg.netTaxBill, settle);
+        exact(fail, `${label}/${c.kind} engine cash left`, pg.cashLeftAfterTax + funded, cashLeftH);
+      }
+    }
+    // The headline shape's lines, pinned outright: cash in
+    // $79,600, settlement $5,120.16 (= $5,192 total tax −
+    // $71.84 credit still due), cash left $74,479.84 — on
+    // BOTH surfaces.
+    const s = base();
+    s.ytdOtherOrdinary = 50000;
+    const r = computeDecemberProjection(s);
+    if (!r.priced) return fail("headline shape not priced");
+    const pg = pricePlaygroundYear(
+      decemberCaseInputs(s, "likely", r.headlineDraw ?? 0),
+    );
+    exact(fail, "engine cash in (headline shape)", pg.cashIn, 79600);
+    exact(fail, "engine net tax bill (headline shape)", pg.netTaxBill, 5120.16);
+    exact(fail, "engine cash left (headline shape)", pg.cashLeftAfterTax, 74479.84);
+    exact(fail, "console cash left (headline shape)", r.cases[1]!.cashLeftAtHeadline, 74479.84);
+    // The sole-mover control: the same pricing WITHOUT the
+    // reconciliation dials prices the pre-v193 bill — the
+    // $5,192 total tax, the credit treated as fully
+    // advanced — and a cash left of $74,408, lower by
+    // exactly the $71.84 of credit still due. The dials
+    // are what move the engine; nothing else does.
+    const bare = decemberCaseInputs(s, "likely", r.headlineDraw ?? 0);
+    delete bare.aptcTaken;
+    delete bare.acaEnrollmentPremiumAnnual;
+    delete bare.acaCoverageReduction;
+    const pgBare = pricePlaygroundYear(bare);
+    exact(fail, "no-dial net tax bill", pgBare.netTaxBill, 5192);
+    exact(fail, "no-dial cash left", pgBare.cashLeftAfterTax, 74408);
+    // The null contract: with no benchmark entered the
+    // settlement does not price, the console shows no cash
+    // left, and the engine's bill falls back to the
+    // un-reconciled form (the $5,192 total tax) rather
+    // than inventing a settlement.
+    const nb = base();
+    nb.ytdOtherOrdinary = 50000;
+    nb.acaBenchmarkAnnual = null;
+    const rn = computeDecemberProjection(nb);
+    if (!rn.priced) return fail("no-benchmark shape not priced");
+    const cn = rn.cases[1]!;
+    if (cn.netSettleAtHeadline !== null) fail("no-benchmark settlement should be null");
+    if (cn.cashLeftAtHeadline !== null) fail("no-benchmark cash left should be null");
+    const pgN = pricePlaygroundYear(
+      decemberCaseInputs(nb, "likely", rn.headlineDraw ?? 0),
+    );
+    exact(fail, "no-benchmark engine fallback bill", pgN.netTaxBill, 5192);
+  });
+
   run("dec-taxable-funded-save-round-trip", (fail) => {
     // Persistence: the field survives a serialize/parse
     // round trip; a blob written before it existed parses
@@ -6442,7 +7350,7 @@ export function runDecemberFixtures(): {
     exact(fail, "save passes it through", saved.taxableFunded, 10000);
   });
 
-  /* ---- Contract v127 fixtures: round-19 December figures
+  /* ---- Build v127 fixtures: round-19 December figures
      (findings 1–4) ---- */
 
   run("dec-finding1-snapshot-follow-primary", (fail) => {
