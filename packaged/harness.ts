@@ -30,7 +30,7 @@
 //      identical state (the localStorage chunk round trip).
 //   F. CAS spot check: a stale-revision saveRothInputs is refused
 //      and leaves the stored record untouched.
-//   I. Persist lockout (contract v63, F5): a non-stale persist
+//   I. Persist lockout (build v63, F5): a non-stale persist
 //      failure locks the session — further dispatches refused
 //      with a reload-required error — and a fresh load reads the
 //      prior committed generation intact; the stale-tab 409 does
@@ -42,17 +42,17 @@
 //      reach; the path that shipped broken 2026-10-26 when the
 //      handler passed the wrong handle to the guarded commit),
 //      and a stale save refused with the stored state intact.
-//   J. Atomic seeding + honest boot flag (contract v64, A3): a
+//   J. Atomic seeding + honest boot flag (build v64, A3): a
 //      boot over a nonempty dataset does not mark meta.seeded on
 //      ok alone; a seed whose persist fails leaves no partial
 //      rows and a plain retry seeds cleanly; overlapping
 //      seedFirstRun dispatches land exactly one roster.
-//   K. Import batch idempotency keys (contract v64, F02): same
+//   K. Import batch idempotency keys (build v64, F02): same
 //      key + same rows is a no-op returning the original count;
 //      a new key inserts identical rows again; the same key with
 //      different rows is refused; unkeyed imports are unchanged;
 //      the recorded key survives a reload.
-//   M. CAS sweep (contract v65, group B of the write-path audit):
+//   M. CAS sweep (build v65, group B of the write-path audit):
 //      every full-record editor family — transaction, cash-out
 //      item, month summary, monthly bill + amount version, yearly
 //      expense, reserve settings, NW snapshot + balance + account
@@ -61,7 +61,7 @@
 //      plus the F21 remainder: after a saveRetirementBaseline
 //      refusal, the fresh revisions the refusal carries complete
 //      the baseline write on retry.
-//   N. Result-honesty (contract v67, F04/F06/F07/F08/F09): a
+//   N. Result-honesty (build v67, F04/F06/F07/F08/F09): a
 //      PRESENT but unreadable record (planted by restoring a
 //      MAC-stripped export whose settings value for the record's
 //      key is replaced with unparseable text) surfaces its
@@ -69,14 +69,14 @@
 //      it, and the stored bytes survive untouched — while an
 //      absent record and a normal record behave exactly as
 //      before.
-//   O. Encrypted form-state blobs (contract v90, stored-data
+//   O. Encrypted form-state blobs (build v90, stored-data
 //      findings F2/F3): the December and Roth/Playground blobs
 //      store as ciphertext through the real writers, dual-read
 //      legacy plaintext rows planted in settings, restore from
 //      plaintext backups to encrypted stored values, restore a
 //      ciphertext backup correctly, and keep the Roth UI-state
 //      CAS guard working on ciphertext.
-//   P. Field-bound ciphertext (contract v91, stored-data
+//   P. Field-bound ciphertext (build v91, stored-data
 //      finding F1): a ciphertext transplanted into another field
 //      is refused on load (never a silently wrong figure); every
 //      field family round-trips through its real write/read
@@ -86,7 +86,7 @@
 //      ciphertext or refuses a transplanted one with the prior
 //      state untouched — all through the real actions on
 //      throwaway stores with real encryption.
-//   Q. Wipe purges retained generations (contract v92,
+//   Q. Wipe purges retained generations (build v92,
 //      stored-data finding F4): a successful clearAllData
 //      through the real packaged dispatch leaves no prior
 //      generation readable (including the retained fallback),
@@ -94,7 +94,7 @@
 //      untouched (generations-only scope), a refused wipe
 //      keeps the fallback, and an ordinary persist still
 //      retains exactly its gen - 1 fallback.
-//   R. Restore epoch (contract v93, stored-data finding F5): a
+//   R. Restore epoch (build v93, stored-data finding F5): a
 //      restore advances the epoch and every pre-restore snapshot
 //      editor is refused afterwards — through the real actions on
 //      a throwaway store with real encryption — while a fresh
@@ -265,7 +265,7 @@ check("C13 describeApi example present", !!example);
 const priced = await rt.call<any>("runRothCompare", example.request);
 const base = priced.scenarios?.[0];
 // Figures pinned from the LIVE app's describeApi example response
-// (contract v10, captured 2026-10-19 before any packaged code ran).
+// (build v10, captured 2026-10-19 before any packaged code ran).
 eq("C14 example endingAfterTaxWealthCents", base?.endingAfterTaxWealthCents, 3913424968);
 eq("C15 example netCostCents", base?.netCostCents, 194504904);
 eq("C16 example endingPretaxCents", base?.endingPretaxCents, 330981245);
@@ -504,7 +504,7 @@ eq(
   [2, 43211],
 );
 
-// ---------- H. Packaged store protocol (contract v60, F1–F3, F5, F7) ----------
+// ---------- H. Packaged store protocol (build v60, F1–F3, F5, F7) ----------
 // The generation store's acceptance cases, each on its own
 // throwaway store: quota mid-persist, a truncated chunk,
 // an interrupted migration, two tabs over one store, the
@@ -596,8 +596,8 @@ eq(
   const SQL = await initSqlJs({ locateFile: () => wasmPath });
   const rewound = new SQL.Database(bytes);
   // Rewind the last THREE migrations' effects: 0024's day column,
-  // 0025's three composite unique indexes (contract v64), and
-  // 0026's snapshot revision column (contract v65) — the image
+  // 0025's three composite unique indexes (build v64), and
+  // 0026's snapshot revision column (build v65) — the image
   // claims MIGRATIONS.length - 3, so boot must re-run all three,
   // exactly as it re-ran the last two before v65 added 0026.
   rewound.exec("ALTER TABLE monthly_cash_out_items DROP COLUMN day");
@@ -735,7 +735,7 @@ eq(
   );
 }
 
-// ---------- I. Packaged persist lockout (contract v63, F5) ----------
+// ---------- I. Packaged persist lockout (build v63, F5) ----------
 // A NON-STALE persist failure (here: quota, thrown after the
 // handler mutated the in-memory image) locks the session: every
 // further dispatch is refused with a reload-required error, so
@@ -816,7 +816,7 @@ eq(
   );
 }
 
-// ---------- J. Atomic seeding + honest boot flag (contract v64, A3) ----------
+// ---------- J. Atomic seeding + honest boot flag (build v64, A3) ----------
 // (F23) The boot caller marks meta.seeded ONLY on seeded: true —
 // a boot over a NONEMPTY dataset (seedFirstRun refuses with
 // ok: true, seeded: false) leaves the flag unset, where the
@@ -927,7 +927,7 @@ eq(
   );
 }
 
-// ---------- K. Import batch idempotency keys (contract v64, F02) ----------
+// ---------- K. Import batch idempotency keys (build v64, F02) ----------
 // Same key + same rows twice → the second call is a no-op
 // returning the original count; key A then key B with the same
 // rows → both insert; same key with different rows → refused
@@ -1160,7 +1160,7 @@ eq(
   );
 }
 
-// ---------- M. CAS sweep (contract v65) ----------
+// ---------- M. CAS sweep (build v65) ----------
 // Every family follows the same script on a fresh store: load a
 // record, move it with a newer (base-less, legacy-tolerated)
 // write, then prove (a) a stale-base save is refused with
@@ -1487,7 +1487,7 @@ eq(
   );
 }
 
-// ---------- N. Result-honesty: unreadable present records (contract v67) ----------
+// ---------- N. Result-honesty: unreadable present records (build v67) ----------
 // Corruption is planted honestly: export the store, strip the
 // MAC (the pre-MAC restore shape section D already exercises),
 // replace ONE settings value with unparseable text, and restore.
@@ -1660,7 +1660,7 @@ eq(
     [backDec.hasStored, backDec.storedUnreadable], [true, false]);
 }
 
-// ---------- O. Encrypted form-state blobs (contract v90, F2/F3) ----------
+// ---------- O. Encrypted form-state blobs (build v90, F2/F3) ----------
 // Real writers on a throwaway store, with the raw stored
 // settings value read through the runtime's local DB — the
 // only view that can see whether the value at rest is
@@ -1872,7 +1872,7 @@ eq(
   );
 }
 
-// ---------- P. Field-bound ciphertext (contract v91, F1) ----------
+// ---------- P. Field-bound ciphertext (build v91, F1) ----------
 // Real actions on throwaway stores with real encryption. Direct
 // database writes below plant or transplant stored bytes exactly
 // as a database writer would; every read then goes through the
@@ -2182,7 +2182,7 @@ eq(
   eq("P-D8 restored December state reads back", decBackD.state.ytdInterest, 4242);
 }
 
-// ---------- Q. Wipe purges retained generations (contract v92, F4) ----------
+// ---------- Q. Wipe purges retained generations (build v92, F4) ----------
 // A successful wipe must leave NO pre-wipe image readable: the
 // retained gen - 1 fallback is itself the pre-wipe image, and
 // any older generation lingering in the store goes with it.
@@ -2299,7 +2299,7 @@ eq(
   );
 }
 
-// ---------- R. Restore epoch (contract v93, F5) ----------
+// ---------- R. Restore epoch (build v93, F5) ----------
 // The reviewer's interleaving through the real actions: an
 // editor reads a snapshot, a valid backup restore replaces it
 // (revision restarts at 0, exactly the pre-v93 hole), and the
@@ -2458,7 +2458,7 @@ eq(
   eq("R-C7 fresh editor after the second restore succeeds", [freshAfterSecond.ok, freshAfterSecond.revision], [true, 1]);
 }
 
-// ---------- S. Legacy bucket field at restore preflight (contract v94, F6) ----------
+// ---------- S. Legacy bucket field at restore preflight (build v94, F6) ----------
 // The reviewer's reproduction through the real actions: a restore
 // carrying an undecryptable enc:v1:-prefixed bucket must be
 // refused at preflight with the prior data intact, while valid

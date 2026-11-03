@@ -11,7 +11,7 @@
 // inlined at build time by the "packaged-migrations" virtual module)
 // the live server runs.
 //
-// Persistence protocol (contract v60, F1–F3 — this replaces the
+// Persistence protocol (build v60, F1–F3 — this replaces the
 // pre-v60 in-place chunk writes, which could leave a hybrid image
 // behind on a quota failure and silently re-initialized an empty
 // database over damaged data):
@@ -28,7 +28,7 @@
 //     leaves it active and surfaces an error. The previous
 //     generation's chunks are retained after the switch (cleanup
 //     removes only generations older than the previous one) —
-//     EXCEPT after a successful clearAllData (contract v92,
+//     EXCEPT after a successful clearAllData (build v92,
 //     stored-data finding F4): that persist purges every prior
 //     generation including the retained one, because the
 //     retained copy is the pre-wipe image. The purge is
@@ -467,7 +467,7 @@ export async function initLocalDb(
       knownGen = gen;
       // Retain the previous generation (gen - 1) as the fallback
       // copy; remove anything older — EXCEPT after a successful
-      // wipe (contract v92, stored-data finding F4), where the
+      // wipe (build v92, stored-data finding F4), where the
       // retained fallback IS the pre-wipe image: the purge then
       // removes every prior generation, including gen - 1, so
       // no pre-wipe image remains readable. The just-committed

@@ -192,7 +192,7 @@ try {
   });
   check(
     "8. Playground year matches live-pinned figures",
-    // Contract v60 (F9): corrected to the harness's figures —
+    // Build v60 (F9): corrected to the harness's figures —
     // MAGI $121,500 and federal tax $8,360. The pre-v60 pins
     // (128,500 / 9,200) double-counted the $7,000 of qualified
     // dividends (already inside the $9,000 of ordinary

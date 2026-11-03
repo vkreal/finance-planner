@@ -25,7 +25,7 @@ behind their existing interfaces:
 | Privileged ops (`ctx.executePrivileged`) | `server/src/privileged.ts` (node fs) | `packaged/src/localPrivileged.ts`: the at-rest encryption key and the backup vault live in localStorage; backup filename/rotation/delete rules reuse `server/src/backupCore.ts` verbatim |
 | `@hatch/space-sdk` | root `package.json` file: install | `packaged/src/spaceSdkShim.ts` re-exports the vendored copy in `packaged/vendor/space-sdk/` (SDK 0.13.0 — refresh it if the SDK revs) |
 
-**Store protocol (contract v60).** The database image is stored as
+**Store protocol (build v60).** The database image is stored as
 immutable, generation-stamped chunk sets under a single
 active-generation pointer (`fpkg:v1:active`). A persist writes the
 new generation's chunks, reads them back and verifies their SHA-256
@@ -72,7 +72,7 @@ the seed actually ran or the dataset was already non-empty.
   localStorage — so a vault backup opens only on its own install (or
   with its exported private key); it is a local backup list, not a
   move path. The **portable backup** (the panel appended below the
-  app, contract v60) is the move path: it downloads the dataset as a
+  app, build v60) is the move path: it downloads the dataset as a
   `.mstbak` file encrypted under a passphrase the user chooses
   (PBKDF2-SHA256 + AES-256-GCM, `packaged/src/portableBackup.ts`),
   and any install can import it — file + passphrase → decrypt → the

@@ -58,7 +58,7 @@ export interface PackagedRuntime {
       restorebackup over the payload. Throws on a wrong
       passphrase or a refused restore. */
   importPortableBackup(contents: string, passphrase: string): Promise<{ ok: boolean; reason: string; authenticated: boolean }>;
-  /** Session lockout (contract v63, F5): true once a NON-STALE
+  /** Session lockout (build v63, F5): true once a NON-STALE
       persist failure has locked this session (see dispatch).
       While locked, every dispatch is refused with the
       reload-required error in sessionLockReason. */
@@ -92,7 +92,7 @@ export async function createRuntime(opts: {
   >;
   const actions = Actions as unknown as Record<string, ActionDef>;
 
-  // Session lockout state (contract v63, F5). Set when a persist
+  // Session lockout state (build v63, F5). Set when a persist
   // fails for a NON-STALE reason (quota, image verification —
   // anything thrown after the handler mutated the in-memory
   // image): the in-memory database then holds writes the durable
@@ -122,7 +122,7 @@ export async function createRuntime(opts: {
         body: JSON.stringify({ error: `Unknown action: ${action}` }),
       };
     }
-    // Stale-tab gate (contract v60, F1): a tab whose store
+    // Stale-tab gate (build v60, F1): a tab whose store
     // generation has moved past the one it loaded must not run
     // ANY action — a read would answer from a stale image, and
     // the persist that follows any dispatch would overwrite the
@@ -209,7 +209,7 @@ export async function createRuntime(opts: {
     // in-memory database; persist the image whether the action
     // succeeded or failed partway, matching the live database's
     // durability for the statements that ran. A persist failure is
-    // NEVER swallowed (contract v60, F1/F2): a stale tab's persist
+    // NEVER swallowed (build v60, F1/F2): a stale tab's persist
     // is refused with 409 (its in-memory work is discarded by the
     // reload this forces — the durable store still holds the other
     // tab's commits), and a store failure (e.g. quota) turns a
@@ -217,7 +217,7 @@ export async function createRuntime(opts: {
     // write that is not durable would be a silent data loss. The
     // generation protocol leaves the previous generation active
     // in both cases.
-    // WIPE PURGE (contract v92, stored-data finding F4): a
+    // WIPE PURGE (build v92, stored-data finding F4): a
     // successful clearAllData persists the empty image through
     // this same call, with the purge flag — the persist removes
     // every prior generation, including the retained fallback,
@@ -230,7 +230,7 @@ export async function createRuntime(opts: {
     // re-retain a pre-wipe image; see the Q harness section for
     // the refused-wipe and ordinary-persist legs.
     // A NON-STALE persist failure additionally LOCKS the session
-    // (contract v63, F5): the in-memory image now diverges from
+    // (build v63, F5): the in-memory image now diverges from
     // the durable store by this action's writes, so letting the
     // session continue would let a later successful persist
     // silently commit them. Every further dispatch is refused
@@ -272,7 +272,7 @@ export async function createRuntime(opts: {
     return (JSON.parse(res.body) as { data: T }).data;
   }
 
-  // Portable encrypted backup workflow (contract v60, F5): the
+  // Portable encrypted backup workflow (build v60, F5): the
   // payload path is the app's own — exportbackup produces the
   // payload, restorebackup validates and restores it — and
   // portableBackup.ts supplies the passphrase-keyed envelope
@@ -331,11 +331,11 @@ export async function createRuntime(opts: {
   // First boot on a fresh store: seed the sample data through the
   // app's own first-run seed action — ONE global emptiness check
   // over every dataset table, then both sample datasets as one
-  // atomic batch (contract v60, F7; contract v64, A3; before v60
+  // atomic batch (build v60, F7; build v64, A3; before v60
   // the two seed actions were called in sequence, their
   // incomplete per-action guards never inspected).
   // The seeded flag follows the action's SEEDED verdict, never
-  // ok alone (contract v64, A3 — audit F23): it is set ONLY when
+  // ok alone (build v64, A3 — audit F23): it is set ONLY when
   // the seed actually ran (seeded: true). A refused seed
   // (ok: true, seeded: false — the dataset already holds records,
   // so this store is not a seed candidate) and a FAILED seed

@@ -20,7 +20,7 @@
 // no backend, and the probe verifies zero network action calls).
 //
 // If the stored database cannot be loaded (corrupt or incomplete —
-// the generation store's recovery state, contract v60 F2), boot
+// the generation store's recovery state, build v60 F2), boot
 // stops BEFORE the client loads and shows the recovery message:
 // the stored keys are preserved untouched for recovery, never
 // silently replaced with an empty database.
@@ -142,7 +142,7 @@ if (runtime) {
   installPortableBackupPanel(rt);
 }
 
-/** The packaged-only portable backup workflow (contract v60, F5):
+/** The packaged-only portable backup workflow (build v60, F5):
     a small panel appended after the app. Export downloads a
     .mstbak file holding the current dataset encrypted under a
     passphrase the user chooses; import takes such a file from
