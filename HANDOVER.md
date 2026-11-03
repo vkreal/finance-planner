@@ -95,6 +95,12 @@ decision:
   user is final feel authority. Provenance taps on NEW displayed figures
   wherever possible. Push each queued build once built and verified clean,
   no per-push word; if verification fails, do not push — report instead.
+- Fixture data: new fixtures and tests take their household from the
+  shared fictional sample household (server/src/sampleHousehold.ts) —
+  never from a real household the app serves. Existing suites keep their
+  inline fictional figures; the module is the reference for new work
+  only, and a build that introduces a real figure into the repo fails
+  its own verification scrub.
 - Audit program: prompt, settle, build — until two consecutive audit
   rounds return zero SHOULD/MUST findings. Findings count only if
   demonstrated (file plus line plus worked example). External reviews are
@@ -159,7 +165,7 @@ the repo, in the household's assistant memory or notes — recording:
 ## Repo map
 
 - README — product overview (what the app does, its views, the live demo).
-- DATA-PLAN — the figure-free version changelog (contract versions; what
+- DATA-PLAN — the figure-free version changelog (build versions; what
   changed, never the figures).
 - AGENTS — build rules, commit hygiene (the pre-commit scrub is its own
   gated step, never chained), the push route, and accumulated lessons
