@@ -7826,7 +7826,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-stack-56-59",
     kind: "tax",
-    note: "Work-year stack at 56–59 (hand-derived from the 2026 law row): MFJ, salary $400,000, employer $0/$0. Deferral = min($24,500 elective limit, salary) pre-tax; catch-up $8,000 (50+) is ROTH because salary $400,000 > the $150,000 Roth catch-up wage threshold; mega backdoor = $72,000 §415(c) − $24,500 − $8,000 − $0 = $39,500 Roth; HSA = family $8,750 + 55+ catch-up $1,000 = $9,750, all the employee's own through payroll. Total sheltered $81,750. Taxable wages = $400,000 − $24,500 − $9,750 = $390,750; federal tax via priceYear (taxable income $358,550: $2,480 + $9,120 + $24,332 + 24% × $147,150 = $35,316) = $71,248. FICA wages = $400,000 − $9,750 = $415,250 → 6.2% × $184,500 wage base $11,439 + 1.45% × $415,250 $6,021.13 + 0.9% × ($415,250 − $250,000) $1,487.25 = $18,947.38. Surplus = $400,000 − $71,248 − $18,947.38 − $150,000 spending − $81,750 own contributions = $95,622.54. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $8,000 catch-up is excluded from §415(c) annual additions, so it no longer nets against the mega-backdoor room in the derivation above — mega = $72,000 − $24,500 = $47,500, total sheltered $89,750, and surplus falls by the extra $8,000 sheltered, to $95,054.62.)",
+    note: "Work-year stack at 56–59 (hand-derived from the 2026 law row): MFJ, salary $400,000, employer $0/$0. Deferral = min($24,500 elective limit, salary) pre-tax; catch-up $8,000 (50+) is ROTH because salary $400,000 > the $150,000 Roth catch-up wage threshold; mega backdoor = $72,000 §415(c) − $24,500 − $8,000 − $0 = $39,500 Roth; HSA = family $8,750 + 55+ catch-up $1,000 = $9,750, all the employee's own through payroll. Total sheltered $81,750. Taxable wages = $400,000 − $24,500 − $9,750 = $365,750; federal tax via priceYear (taxable income $333,550: $2,480 + $9,120 + $24,332 + 24% × $122,150 = $29,316) = $65,248. FICA wages = $400,000 − $9,750 = $390,250 → 6.2% × $184,500 wage base $11,439 + 1.45% × $390,250 $5,658.63 + 0.9% × ($390,250 − $250,000) $1,262.25 = $18,359.88. Surplus = $400,000 − $65,248 − $18,359.88 − $150,000 spending − $81,750 own contributions = $84,642.12. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $8,000 catch-up is excluded from §415(c) annual additions, so it no longer nets against the mega-backdoor room in the derivation above — mega = $72,000 − $24,500 = $47,500, total sheltered $89,750, and surplus falls by the extra $8,000 sheltered, to $76,642.12.)",
     expected: {
       deferral: 24500,
       catchUp: 8000,
@@ -7835,11 +7835,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       ownHsa: 9750,
       hsaBucket: 9750,
       sheltered: 89750,
-      taxableWages: 390750,
-      federal: 71248,
-      ficaWages: 415250,
-      fica: 18947.38,
-      surplus: 95054.62,
+      taxableWages: 365750,
+      federal: 65248,
+      ficaWages: 390250,
+      fica: 18359.88,
+      surplus: 76642.12,
     },
     actual: () => {
       const plan = basePlan({
@@ -7875,16 +7875,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-super-catchup-60-61",
     kind: "tax",
-    note: "Super catch-up at 60–61 (SECURE 2.0 §414(v)): the 60–63 catch-up limit is $11,250 (Roth at this salary, as in the 56–59 case), so the mega backdoor shrinks to $72,000 − $24,500 − $11,250 = $36,250 and the total sheltered stays $81,750. Taxable wages / federal / FICA / surplus are unchanged from the 56–59 case (the catch-up is Roth either way, so it never touched taxable wages). Pinned at both 60 and 61 (calendar 2030/2031 price under the latest law row, 2030). (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $11,250 super catch-up is excluded from §415(c) annual additions, so the shrinkage described above no longer happens — the mega backdoor stays $47,500 at 60 and 61, total sheltered rises to $93,000, and surplus falls by the extra $11,250 sheltered, to $91,804.62.) (RE-PINNED by build v61, F2/F3 — the statute-fixed work-years amounts now deflate: both years price off the 2026 row at the plan's 2.5% inflation, so the §223(b)(3) HSA catch-up deflates (2030: $1,000 × 0.9059506448 = $905.95 → HSA limit $9,655.95, own HSA $94.05 less than the flat $9,750; 2031: × 0.8838542878 = $883.85 → limit $9,633.85, $116.15 less) and the §3101(b)(2) threshold deflates ($226,487.66 in 2030, $220,963.57 in 2031). Sheltered falls by exactly each year's HSA shortfall ($92,905.95 / $92,883.85; the §414(v) catch-up and the mega are unmoved). Surplus 2030: +$94.05 (own contributions fall) − $213.82 FICA (Additional Medicare $1,699.71 vs $1,487.25 on the deflated threshold, Medicare +$1.36 on the higher FICA wages) − $22.57 federal (24% × the $94.05 of extra taxable wages) = −$142.34 → $91,662.28. Surplus 2031: +$116.15 − $264.05 FICA − $27.88 federal = −$175.78 → $91,628.84. The two years no longer pin equal: each carried year deflates one step further.)",
+    note: "Super catch-up at 60–61 (SECURE 2.0 §414(v)): the 60–63 catch-up limit is $11,250 (Roth at this salary, as in the 56–59 case), so the mega backdoor shrinks to $72,000 − $24,500 − $11,250 = $36,250 and the total sheltered stays $81,750. Taxable wages / federal / FICA / surplus are unchanged from the 56–59 case (the catch-up is Roth either way, so it never touched taxable wages). Pinned at both 60 and 61 (calendar 2030/2031 price under the latest law row, 2030). (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $11,250 super catch-up is excluded from §415(c) annual additions, so the shrinkage described above no longer happens — the mega backdoor stays $47,500 at 60 and 61, total sheltered rises to $93,000, and surplus falls by the extra $11,250 sheltered, to $73,392.12.) (RE-PINNED by build v61, F2/F3 — the statute-fixed work-years amounts now deflate: both years price off the 2026 row at the plan's 2.5% inflation, so the §223(b)(3) HSA catch-up deflates (2030: $1,000 × 0.9059506448 = $905.95 → HSA limit $9,655.95, own HSA $94.05 less than the flat $9,750; 2031: × 0.8838542878 = $883.85 → limit $9,633.85, $116.15 less) and the §3101(b)(2) threshold deflates ($226,487.66 in 2030, $220,963.57 in 2031). Sheltered falls by exactly each year's HSA shortfall ($92,905.95 / $92,883.85; the §414(v) catch-up and the mega are unmoved). Surplus 2030: +$94.05 (own contributions fall) − $213.82 FICA (Additional Medicare $1,474.71 vs $1,262.25 on the deflated threshold, Medicare +$1.36 on the higher FICA wages) − $22.57 federal (24% × the $94.05 of extra taxable wages) = −$142.34 → $73,249.78. Surplus 2031: +$116.15 − $264.05 FICA − $27.88 federal = −$175.78 → $73,216.34. The two years no longer pin equal: each carried year deflates one step further.)",
     expected: {
       catchUp60: 11250,
       mega60: 47500,
       sheltered60: 92905.95,
-      surplus60: 91662.28,
+      surplus60: 73249.78,
       catchUp61: 11250,
       mega61: 47500,
       sheltered61: 92883.85,
-      surplus61: 91628.84,
+      surplus61: 73216.34,
     },
     actual: () => {
       const plan = basePlan({
@@ -7915,17 +7915,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-employer-displacement",
     kind: "tax",
-    note: "Employer displacement (the user's example figures): employer 401(k) $16,250 (match $12,250 + catch-up match $4,000) and employer HSA $1,500 at salary $400,000. The caps were already full, so employer money REPLACES the employee's: mega backdoor = $72,000 − $24,500 − $8,000 − $16,250 = $23,250 at 56–59 and $72,000 − $24,500 − $11,250 − $16,250 = $20,000 at 60–61; own HSA = $9,750 − $1,500 = $8,250, HSA bucket still $9,750. Taxable wages rise to $400,000 − $24,500 − $8,250 = $392,250 → federal $71,248 + 24% × $1,500 = $71,608. FICA wages $416,750 → $11,439 + $6,042.88 + $1,500.75 = $18,982.63. Surplus = $400,000 − $71,608 − $18,982.63 − $150,000 − $64,000 own contributions = $112,977.29; total inflow (all contributions $81,750 + surplus) = $202,159.37. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): with the catch-up excluded from §415(c) annual additions, the mega backdoor is $72,000 − $24,500 − $16,250 employer = $31,250 at BOTH 56–59 and 60–61 (not $23,250 / $20,000); own contributions rise $8,000, so surplus falls to $112,409.37 while total inflow is unchanged at $202,159.37.)",
+    note: "Employer displacement (the example figures): employer 401(k) $16,250 (match $12,250 + catch-up match $4,000) and employer HSA $1,500 at salary $400,000. The caps were already full, so employer money REPLACES the employee's: mega backdoor = $72,000 − $24,500 − $8,000 − $16,250 = $23,250 at 56–59 and $72,000 − $24,500 − $11,250 − $16,250 = $20,000 at 60–61; own HSA = $9,750 − $1,500 = $8,250, HSA bucket still $9,750. Taxable wages rise to $400,000 − $24,500 − $8,250 = $367,250 → federal $65,248 + 24% × $1,500 = $65,608. FICA wages $391,750 → $11,439 + $5,680.38 + $1,275.75 = $18,395.13. Surplus = $400,000 − $65,608 − $18,395.13 − $150,000 − $64,000 own contributions = $101,996.87; total inflow (all contributions $81,750 + surplus) = $183,746.87. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): with the catch-up excluded from §415(c) annual additions, the mega backdoor is $72,000 − $24,500 − $16,250 employer = $31,250 at BOTH 56–59 and 60–61 (not $23,250 / $20,000); own contributions rise $8,000, so surplus falls to $93,996.87 while total inflow is unchanged at $183,746.87.)",
     expected: {
       mega56: 31250,
       mega60: 31250,
       ownHsa: 8250,
       hsaBucket: 9750,
-      taxableWages: 392250,
-      federal: 71608,
-      fica: 18982.63,
-      surplus: 112409.37,
-      totalInflow: 202159.37,
+      taxableWages: 367250,
+      federal: 65608,
+      fica: 18395.13,
+      surplus: 93996.87,
+      totalInflow: 183746.87,
     },
     actual: () => {
       const plan = basePlan({
@@ -8233,16 +8233,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-payroll-fold-in-identity",
     kind: "tax",
-    note: "T2 — the fold-in identity on the saved record's $400,000 example-salary shape (the golden work-to-60 shape, employer $0, four work years): payroll tax is its own component of the roll totals and of the compare row, and it folds into the plan's total tax and all-in score. (RE-PINNED by build v61, F2/F3 — the four work years are calendar 2031–2034, priced off the 2026 row at the plan's 2.5% inflation, and the two statute-fixed work-years amounts now deflate: per-year payroll is $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 — own HSA $9,633.85 → $9,570.75 as the §223(b)(3) catch-up deflates, Additional Medicare $1,749.62 → $1,892.18 as the §3101(b)(2) threshold deflates from $220,963.57 to $205,186.64 — so over four years payrollTax = $77,135.04 with parts Social Security $45,756.00 (capped, unmoved), Medicare $24,093.08, Additional Medicare $7,285.95; the rounded parts sum to $77,135.03, one cent under the round-once total — the breakdown's documented seam, pinned as partsDiff −0.01 (pre-v61 the parts summed exactly). The federal total rises $142.05 to $285,134.05 (the four years' Σ $591.83 of HSA-catch-up shortfall is extra taxable wages at the 24% margin). The winner net does NOT move ($386,045.08): the deltas land in the work years and in ending balances, not in the winner's tax, so all-in rises by exactly ΔworkTax = $142.05 + $1,345.52 = $1,487.57, to $748,314.17. Pre-v61 pins: payroll $75,789.52 at $18,947.38/yr, federal $284,992, all-in $746,826.60.) The identities asserted: workTax = federal + state + payroll (diff $0); totalTax = winnerTax + workTax (diff $0); allInTax = totalTax + penalty + irmaa − acaCredit + terminal (diff $0) — the contract's score identity with payroll inside totalTax. The zero-salary control row prices payrollTax $0 and totalTax exactly the winner's tax (diff $0).",
+    note: "T2 — the fold-in identity on the $400,000 example-salary shape (the golden work-to-60 shape, employer $0, four work years): payroll tax is its own component of the roll totals and of the compare row, and it folds into the plan's total tax and all-in score. (RE-PINNED by build v61, F2/F3 — the four work years are calendar 2031–2034, priced off the 2026 row at the plan's 2.5% inflation, and the two statute-fixed work-years amounts now deflate: per-year payroll is $18,623.93 / $18,672.94 / $18,720.76 / $18,767.41 — own HSA $9,633.85 → $9,570.75 as the §223(b)(3) catch-up deflates, Additional Medicare $1,524.62 → $1,667.18 as the §3101(b)(2) threshold deflates from $220,963.57 to $205,186.64 — so over four years payrollTax = $74,785.04 with parts Social Security $45,756.00 (capped, unmoved), Medicare $22,643.08, Additional Medicare $6,385.95; the rounded parts sum to $74,785.03, one cent under the round-once total — the breakdown's documented seam, pinned as partsDiff −0.01 (pre-v61 the parts summed exactly). The federal total rises $142.05 to $261,134.05 (the four years' Σ $591.83 of HSA-catch-up shortfall is extra taxable wages at the 24% margin). The winner net does NOT move ($386,045.08): the deltas land in the work years and in ending balances, not in the winner's tax, so all-in rises by exactly ΔworkTax = $142.05 + $1,345.52 = $1,487.57, to $721,964.17. Pre-v61 pins: payroll $73,439.52 at $18,359.88/yr, federal $260,992, all-in $720,476.60.) The identities asserted: workTax = federal + state + payroll (diff $0); totalTax = winnerTax + workTax (diff $0); allInTax = totalTax + penalty + irmaa − acaCredit + terminal (diff $0) — the contract's score identity with payroll inside totalTax. The zero-salary control row prices payrollTax $0 and totalTax exactly the winner's tax (diff $0).",
     expected: {
-      payrollTotal: 77135.04,
+      payrollTotal: 74785.04,
       payrollSsTotal: 45756,
-      payrollMedicareTotal: 24093.08,
-      payrollAdditionalTotal: 7285.95,
+      payrollMedicareTotal: 22643.08,
+      payrollAdditionalTotal: 6385.95,
       partsDiff: -0.01,
-      federalTotal: 285134.05,
+      federalTotal: 261134.05,
       net: 386045.08,
-      allIn: 748314.17,
+      allIn: 721964.17,
       workTaxDiff: 0,
       totalTaxDiff: 0,
       scoreIdentityDiff: 0,
@@ -8378,17 +8378,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-60-no-employer",
     kind: "tax",
-    note: "GOLDEN, work to 60 with employer $0 (4 work years, ages 56–59): balances at 60 — pre-tax $2,357,877.13, Roth $906,719.82, HSA $180,061.52 (the analysis's figures, reproduced exactly by grow-then-year-end-contributions); Taxable $3,589,252.71 — the analysis printed $3,589,252.73, a 2¢ seam from its carrying the unrounded half-cent FICA ($18,947.375) into the surplus while printing $18,947.38; the engine rounds each year's FICA to the cent like every other year figure in the app, and this case pins the engine's consistent construction. Winner net $386,045.08, after-tax ending $34,086,735.45 (analysis: $35,009,641.22 — the same 2¢ seam grown for 35 years), all-in = $386,045.08 + federal $284,992 + FICA $75,789.52 = $746,826.60 (analysis: ≈$804,200 from FICA $75,789.50 unrounded, at the analysis's $443,418.49 net). (Net and all-in re-pinned 2026-10-14 from $443,418.49 / $804,200.01 for the newest-row FPL fallback, hand-reconciled: same winner “Fill to the top of the 32% bracket” at claim 65 with identical tax, IRMAA, terminal, conversions, and ending wealth — only kept ACA credits moved, +$172.18 in 2035 and +$179.36/yr in 2036–2046 = +$2,145.14.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $47,500 rather than $39,500 — the $8,000 catch-up no longer nets against the §415(c) room — so $8,000/yr more lands in Roth and $8,000/yr less banks to Taxable: Roth at 60 is $929,726.92 and Taxable at 60 is $3,415,748.78 (a $34,867.32 shift, the $8,000/yr grown at 5.75%); winner, net, and after-tax ending are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — per-year payroll $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 (FICA total $77,135.04, +$1,345.52) and federal +$142.05 (the Σ $591.83 HSA-catch-up shortfall in taxable wages at the 24% margin), so all-in rises by exactly ΔworkTax $1,487.57 to $748,314.17. The per-year surplus shortfalls (−$175.78 / −$208.41 / −$240.25 / −$271.30) grown at 5.75% leave Taxable at 60 lower by $966.31 ($3,414,782.47) and the HSA lower by the grown catch-up shortfalls, $638.45 ($179,423.07); pre-tax, Roth, the winner, and its net ($386,045.08) are unmoved — the winner's bracket-fill tax is balance-insensitive at this scale, so the whole delta lands in ending balances: after-tax ending −$12,008.91 ($34,074,726.54), the at-60 deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    note: "GOLDEN, work to 60 with employer $0 (4 work years, ages 56–59): balances at 60 — pre-tax $2,357,877.13, Roth $929,726.92, HSA $179,423.07; Taxable $3,334,533.15. The engine rounds each year's FICA to the cent like every other year figure in the app (the flat-year FICA $18,359.88 carries the Medicare half-cent, 1.45% × $390,250 = $5,658.625 → $5,658.63), and this case pins the engine's consistent construction. Winner net $386,045.08, after-tax ending $33,822,269.88, all-in = $386,045.08 + federal $261,134.05 + FICA $74,785.04 = $721,964.17. (Net and all-in re-pinned 2026-10-14 for the newest-row FPL fallback, hand-reconciled: same winner “Fill to the top of the 32% bracket” at claim 65 with identical tax, IRMAA, terminal, conversions, and ending wealth — only kept ACA credits moved, a credit-only change.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $47,500 rather than $39,500 — the $8,000 catch-up no longer nets against the §415(c) room — so $8,000/yr more lands in Roth and $8,000/yr less banks to Taxable: Roth at 60 is $929,726.92 and Taxable at 60 is $3,334,533.15 (the $8,000/yr grown at 5.75% over the four years is a $34,867.32 shift); winner, net, and after-tax ending are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — per-year payroll $18,623.93 / $18,672.94 / $18,720.76 / $18,767.41 (FICA total $74,785.04, +$1,345.52) and federal +$142.05 (the Σ $591.83 HSA-catch-up shortfall in taxable wages at the 24% margin), so all-in rises by exactly ΔworkTax $1,487.57 to $721,964.17. The per-year surplus shortfalls (−$175.78 / −$208.41 / −$240.25 / −$271.30) grown at 5.75% leave Taxable at 60 lower by $966.31 ($3,334,533.15) and the HSA lower by the grown catch-up shortfalls, $638.45 ($179,423.07); pre-tax, Roth, the winner, and its net ($386,045.08) are unmoved — the winner's bracket-fill tax is balance-insensitive at this scale, so the whole delta lands in ending balances: after-tax ending $33,822,269.88, the at-60 deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       pretaxAt60: 2357877.13,
       rothAt60: 929726.92,
-      taxableAt60: 3414782.47,
+      taxableAt60: 3334533.15,
       hsaAt60: 179423.07,
-      federalTotal: 285134.05,
-      ficaTotal: 77135.04,
+      federalTotal: 261134.05,
+      ficaTotal: 74785.04,
       net: 386045.08,
-      afterTax: 34422800.14,
-      allIn: 748314.17,
+      afterTax: 33822269.88,
+      allIn: 721964.17,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8412,13 +8412,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-62-no-employer",
     kind: "tax",
-    note: "GOLDEN, work to 62 with employer $0 (6 work years): winner “Fill to the top of the 24% bracket”, claim 69, net $544,573.72, after-tax ending $38,629,259.08 (analysis: $39,663,955.44 — the same half-cent FICA rounding seam as the work-to-60 case, grown), all-in $1,085,746.00 (analysis: ≈$1,158,215, stated rounded to the dollar, at the analysis's $617,042.28 net). (Net and all-in re-pinned 2026-10-14 from $617,042.28 / $1,158,214.56 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3: the six work years are calendar 2031–2036, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — ΔworkTax over the six years is $2,538.38 (payroll +$2,296.00 on the deflating §3101(b)(2) threshold; federal +$242.38 = 24% × the Σ $1,009.91 HSA-catch-up shortfall), so all-in rises by exactly that to $1,088,284.38; winner, claim age, and net are unmoved, and after-tax ending falls $19,233.32 to $38,610,025.76, the at-62 balance deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    note: "GOLDEN, work to 62 with employer $0 (6 work years): winner “Fill to the top of the 24% bracket”, claim 69, net $544,573.72, after-tax ending $37,948,230.07, all-in $1,048,759.38 ($544,573.72 + federal $391,730.38 + FICA $112,455.28). (Net and all-in re-pinned 2026-10-14 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — a kept-ACA-credits-only change, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3: the six work years are calendar 2031–2036, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — ΔworkTax over the six years is $2,538.38 (payroll +$2,296.00 on the deflating §3101(b)(2) threshold; federal +$242.38 = 24% × the Σ $1,009.91 HSA-catch-up shortfall), so all-in rises by exactly that to $1,048,759.38; winner, claim age, and net are unmoved, and after-tax ending is $37,948,230.07, the at-62 balance deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 69,
       net: 544573.72,
-      afterTax: 38802264.64,
-      allIn: 1088284.38,
+      afterTax: 37948230.07,
+      allIn: 1048759.38,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8440,17 +8440,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-60-employer",
     kind: "tax",
-    note: "GOLDEN, work to 60 WITH the example employer figures ($16,250 401(k) / $1,500 HSA): balances at 60 — pre-tax $2,428,701.38, Roth $835,895.57, Taxable $3,664,891.92, HSA $180,061.52 (the analysis's figures, all exact). Winner “Fill to the top of the 24% bracket”, claim 66, net $410,260.22, after-tax ending $35,489,154.78 (exact); all-in $772,622.74 (analysis: $829,544.09 at its $467,181.59 net — the 2¢ half-cent FICA seam: $18,982.625/yr carried unrounded there, rounded to the cent here). (Net and all-in re-pinned 2026-10-14 from $467,181.59 / $829,544.11 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,793.99 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $31,250 rather than $23,250 — the catch-up no longer nets against the §415(c) room — so Roth at 60 is $858,902.67 and Taxable at 60 is $3,491,387.98. The after-tax ending value of $34,516,787.14 (up $0.07) is an engine-produced downstream re-price of the shifted age-60 balances, not hand-derived; the winner, claim age, and net are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3, the same work-years deflation as the employer-$0 golden: the employer-HSA shape carries the identical per-year deltas (the HSA bucket fills to the deflated limit in both shapes), so Taxable at 60 falls $966.31 to $3,490,421.67, the HSA falls $638.45 to $179,423.07, all-in rises by exactly ΔworkTax $1,487.57 to $774,110.31, and after-tax ending falls $12,008.91 to $34,504,778.23; pre-tax, Roth, winner, claim age, and net are unmoved.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    note: "GOLDEN, work to 60 WITH the example employer figures ($16,250 401(k) / $1,500 HSA): balances at 60 — pre-tax $2,428,701.38, Roth $858,902.67, Taxable $3,410,172.35, HSA $179,423.07. Winner “Fill to the top of the 24% bracket”, claim 66, net $410,260.22, after-tax ending $34,252,321.58; all-in $747,760.31 ($410,260.22 + federal $262,574.05 + FICA $74,926.04). The engine rounds each year's FICA to the cent (the flat-year FICA $18,395.13 carries the Medicare half-cent, 1.45% × $391,750 = $5,680.375 → $5,680.38). (Net and all-in re-pinned 2026-10-14 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — a kept-ACA-credits-only change, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $31,250 rather than $23,250 — the catch-up no longer nets against the §415(c) room — so Roth at 60 is $858,902.67 and Taxable at 60 is $3,410,172.35. The after-tax ending value of $34,252,321.58 is an engine-produced downstream re-price of the shifted age-60 balances, not hand-derived; the winner, claim age, and net are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3, the same work-years deflation as the employer-$0 golden: the employer-HSA shape carries the identical per-year deltas (the HSA bucket fills to the deflated limit in both shapes), so Taxable at 60 falls $966.31 to $3,410,172.35, the HSA falls $638.45 to $179,423.07, all-in rises by exactly ΔworkTax $1,487.57 to $747,760.31, and after-tax ending is $34,252,321.58; pre-tax, Roth, winner, claim age, and net are unmoved.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       pretaxAt60: 2428701.38,
       rothAt60: 858902.67,
-      taxableAt60: 3490421.67,
+      taxableAt60: 3410172.35,
       hsaAt60: 179423.07,
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 66,
       net: 410260.22,
-      afterTax: 34852851.84,
-      allIn: 774110.31,
+      afterTax: 34252321.58,
+      allIn: 747760.31,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8474,13 +8474,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-62-employer",
     kind: "tax",
-    note: "GOLDEN, work to 62 WITH employer figures: winner “Fill to the top of the 24% bracket”, claim 70, net $582,483.94, after-tax ending $39,241,837.23 (exact); all-in $1,126,027.72 (analysis: $1,199,809.30 at its $656,265.55 net — the 3¢ half-cent FICA seam over 6 years). (Net and all-in re-pinned 2026-10-14 from $656,265.55 / $1,199,809.33 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3, the same six-year work-years deflation as the employer-$0 quit-62 golden: ΔworkTax $2,538.38, so all-in rises to $1,128,566.10 and after-tax ending falls the identical $19,233.32 to $39,222,603.91; winner, claim age, and net are unmoved.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    note: "GOLDEN, work to 62 WITH employer figures: winner “Fill to the top of the 24% bracket”, claim 70, net $582,483.94, after-tax ending $38,563,588.21; all-in $1,089,041.10 ($582,483.94 + federal $393,890.38 + FICA $112,666.78). (Net and all-in re-pinned 2026-10-14 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — a kept-ACA-credits-only change, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3, the same six-year work-years deflation as the employer-$0 quit-62 golden: ΔworkTax $2,538.38, so all-in rises to $1,089,041.10 and after-tax ending is $38,563,588.21; winner, claim age, and net are unmoved.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 70,
       net: 582483.94,
-      afterTax: 39417622.78,
-      allIn: 1128566.1,
+      afterTax: 38563588.21,
+      allIn: 1089041.1,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -8704,21 +8704,21 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-state-tax-line-roll",
     kind: "tax",
-    note: "Salary-year STATE tax at a 5% rate on the golden employer shape (salary $400,000, employer 401(k) $16,250, employer HSA $1,500; the golden plan with stateRatePct 5). Age-56 line: the stack is unchanged from the employer-displacement case, so taxable wages = $400,000 − $24,500 − $8,250 = $392,250 and federal = $71,608; taxable income = $392,250 − $32,200 MFJ standard deduction = $360,050, so state tax = 5% × $360,050 = $18,002.50; FICA = $18,982.63 (as in the displacement case); surplus = $400,000 − $71,608 − $18,002.50 − $18,982.63 − $150,000 spending − $64,000 own contributions = $94,974.79. Quit-60 roll (four identical years, ages 56–59): state total = 4 × $18,002.50 = $72,010.00, federal total $286,432, FICA total $75,930.52, surplus banked = 4 × $94,974.79 = $379,899.16, banked = $327,000 contributions (unchanged) + $379,899.16 = $736,627.48 (the 0% golden banked $778,909.16 − $72,010). Balances at 60: Pre-tax / Roth / HSA are unchanged from the 0% golden employer case ($2,428,701.38 / $835,895.57 / $180,061.52 — contributions do not depend on the state rate); Taxable is re-derived from the reduced surplus stream grown at 5.75%: each year's surplus is $18,002.50 lower and the four reductions compound by (1.0575³ + 1.0575² + 1.0575 + 1) = 4.35841511, a $78,462.37 reduction, so Taxable = $3,664,891.92 − $78,462.37 = $3,586,429.55. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the stack is the corrected displacement stack — mega $31,250, own contributions $72,000 — so the age-56 surplus is $94,406.87 and the four-year surplus total is $377,627.48; banked is unchanged at $736,627.48 (contributions $359,000 + surplus $377,627.48). Balances at 60 follow the corrected golden employer case (Roth $858,902.67), and Taxable = $3,630,024.60 − $78,462.37 = $3,412,925.61 — the state-tax reduction itself is unchanged.) (RE-PINNED by build v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate. Age-56 (2031) line: the deflated HSA limit leaves own HSA $8,133.85, so taxable wages rise by the $116.15 catch-up shortfall to $392,366.15, federal +$27.88 (24% margin) to $71,635.88, state +$5.81 (5% × $116.15) to $18,008.31, FICA +$264.05 (Additional Medicare on the deflated $220,963.57 threshold, plus Medicare on the higher wages) to $19,246.68, and surplus = +$116.15 − $27.88 − $5.81 − $264.05 = −$181.59, to $94,225.28. Roll totals: federal +$142.05, FICA +$1,345.52 (the golden channels), state +$29.60 (5% × the Σ $591.83 shortfall, per-year rounding); surplus total −$925.34 (the per-year shortfalls net of the added taxes); total contributions fall by the Σ $591.83 shortfall (the HSA bucket receives the deflated limit), so banked falls $925.34 + $591.83 = $1,517.17 to $735,110.31; Taxable at 60 falls $998.24 (the grown surplus shortfalls) to $3,411,927.37 and the HSA falls $638.45 to $179,423.07; pre-tax and Roth are unmoved.)",
+    note: "Salary-year STATE tax at a 5% rate on the golden employer shape (salary $400,000, employer 401(k) $16,250, employer HSA $1,500; the golden plan with stateRatePct 5). Age-56 line: the stack is unchanged from the employer-displacement case, so taxable wages = $400,000 − $24,500 − $8,250 = $367,250 and federal = $65,608; taxable income = $367,250 − $32,200 MFJ standard deduction = $335,050, so state tax = 5% × $335,050 = $16,752.50; FICA = $18,395.13 (as in the displacement case); surplus = $400,000 − $65,608 − $16,752.50 − $18,395.13 − $150,000 spending − $64,000 own contributions = $85,244.37. Quit-60 roll (four identical years, ages 56–59): state total = 4 × $16,752.50 = $67,010.00, federal total $262,432, FICA total $73,580.52, surplus banked = 4 × $85,244.37 = $340,977.48, banked = $327,000 contributions (unchanged) + $340,977.48 = $667,977.48 (the 0% golden banked $734,987.48 − $67,010.00). Balances at 60: Pre-tax / HSA are unchanged from the 0% golden employer case ($2,428,701.38 / $180,061.52 — contributions do not depend on the state rate); Taxable is re-derived from the reduced surplus stream grown at 5.75%: each year's surplus is $16,752.50 lower and the four reductions compound by (1.0575³ + 1.0575² + 1.0575 + 1) = 4.35841511, a $73,014.35 reduction, so Taxable = $3,446,005.98 − $73,014.35 = $3,372,991.63. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the stack is the corrected displacement stack — mega $31,250, own contributions $72,000 — so the age-56 surplus is $77,244.37 and the four-year surplus total is $308,977.48; banked is unchanged at $667,977.48 (contributions $359,000 + surplus $308,977.48). Balances at 60 follow the corrected golden employer case (Roth $858,902.67), and Taxable = $3,411,138.66 − $73,014.35 = $3,338,124.31 — the state-tax reduction itself is unchanged.) (RE-PINNED by build v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate. Age-56 (2031) line: the deflated HSA limit leaves own HSA $8,133.85, so taxable wages rise by the $116.15 catch-up shortfall to $367,366.15, federal +$27.88 (24% margin) to $65,635.88, state +$5.81 (5% × $116.15) to $16,758.31, FICA +$264.05 (Additional Medicare on the deflated $220,963.57 threshold, plus Medicare on the higher wages) to $18,659.18, and surplus = +$116.15 − $27.88 − $5.81 − $264.05 = −$181.59, to $77,062.78. Roll totals: federal +$142.05, FICA +$1,345.52 (the golden channels), state +$29.60 (5% × the Σ $591.83 shortfall, per-year rounding); surplus total −$925.34 (the per-year shortfalls net of the added taxes); total contributions fall by the Σ $591.83 shortfall (the HSA bucket receives the deflated limit), so banked falls $925.34 + $591.83 = $1,517.17 to $666,460.31; Taxable at 60 falls $998.24 (the grown surplus shortfalls) to $3,337,126.07 and the HSA falls $638.45 to $179,423.07; pre-tax and Roth are unmoved.)",
     expected: {
-      taxableWages: 392366.15,
-      federal: 71635.88,
-      state: 18008.31,
-      fica: 19246.68,
-      surplus: 94225.28,
-      stateTotal: 72039.6,
-      federalTotal: 286574.05,
-      ficaTotal: 77276.04,
-      surplusTotal: 376702.14,
-      banked: 735110.31,
+      taxableWages: 367366.15,
+      federal: 65635.88,
+      state: 16758.31,
+      fica: 18659.18,
+      surplus: 77062.78,
+      stateTotal: 67039.6,
+      federalTotal: 262574.05,
+      ficaTotal: 74926.04,
+      surplusTotal: 308052.14,
+      banked: 666460.31,
       pretaxAt60: 2428701.38,
       rothAt60: 858902.67,
-      taxableAt60: 3411927.37,
+      taxableAt60: 3337126.07,
       hsaAt60: 179423.07,
     },
     actual: () => {
@@ -8749,14 +8749,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-state-tax-quit-60",
     kind: "tax",
-    note: "Salary-year state tax, full quit-60 compare at a 5% state rate on the golden employer shape. Work tax = federal $286,432 + state $72,010 + FICA $75,930.52 = $434,372.52. The winner is “Fill to the top of the 35% bracket”, claim 66, and the optimizer net is NOT the 0% golden net: the same 5% rate also prices state tax in the conversion years, so the net rises to $532,596.79 — $148,425.16 above the current 0% golden net of $468,432.05 (the difference of the two current engine pins; the build-time decomposition verified that a 0% run on these same rolled balances reproduced the then-golden net to the cent, i.e. the increase is conversion-year state pricing, but that reproduction was verified under the pre-E2 table and is not re-asserted here). All-in tax = $532,596.79 + $434,372.52 = $966,969.31; after-tax ending wealth $33,149,625.38. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the winner was “Fill to a $500,000 MAGI cap” at claim 64 with net $608,840.55, all-in $1,043,213.07 and after-tax ending $34,068,453 — pricing the plans' late-life RMD years on the true Table II cells flipped this close winner and repriced the row; earlier re-pin history: 2026-10-14 for the newest-row FPL fallback, and under Fix 2 (§415(c) catch-up exclusion) for the corrected rolled balances.) (RE-PINNED by build v61, F2/F3, on the state-tax-line-roll derivation: work tax rises by exactly the four years' added work tax — federal +$142.05, FICA +$1,345.52, state +$29.60 = +$1,517.17 — to $435,889.69, and all-in rises by the same $1,517.17 to $968,486.48; winner, claim age, and net are unmoved, and after-tax ending falls $12,247.86 to $33,137,377.52, the rolled-balance deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    note: "Salary-year state tax, full quit-60 compare at a 5% state rate on the golden employer shape. Work tax = federal $262,432 + state $67,010 + FICA $73,580.52 = $403,022.52. The winner is “Fill to the top of the 35% bracket”, claim 66, and the optimizer net is NOT the 0% golden net: the same 5% rate also prices state tax in the conversion years, so the net rises to $532,596.79 — $122,336.57 above the current 0% golden net of $410,260.22 (the difference of the two current engine pins; the build-time decomposition verified that a 0% run on these same rolled balances reproduced the then-golden net to the cent, i.e. the increase is conversion-year state pricing, but that reproduction was verified under the pre-E2 table and is not re-asserted here). All-in tax = $532,596.79 + $403,022.52 = $935,619.31. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the winner was “Fill to a $500,000 MAGI cap” at claim 64 with a higher net and all-in — pricing the plans' late-life RMD years on the true Table II cells flipped this close winner and repriced the row; earlier re-pin history: 2026-10-14 for the newest-row FPL fallback, and under Fix 2 (§415(c) catch-up exclusion) for the corrected rolled balances.) (RE-PINNED by build v61, F2/F3, on the state-tax-line-roll derivation: work tax rises by exactly the four years' added work tax — federal +$142.05, FICA +$1,345.52, state +$29.60 = +$1,517.17 — to $404,539.69, and all-in rises by the same $1,517.17 to $937,136.48; winner, claim age, and net are unmoved, and after-tax ending is $32,925,690.07, the rolled-balance deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       winnerName: "Fill to the top of the 35% bracket",
       claimAge: 66,
       net: 532596.79,
-      workTax: 435889.69,
-      allIn: 968486.48,
-      afterTax: 33485451.13,
+      workTax: 404539.69,
+      allIn: 937136.48,
+      afterTax: 32925690.07,
     },
     actual: () => {
       const base = goldenWorkPlan();
