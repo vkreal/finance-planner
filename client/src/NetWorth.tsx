@@ -688,14 +688,14 @@ function SnapshotEditor({
       }[];
     }) =>
       isEdit && snapshot
-        ? // Contract v65 (F11): the revision this editor loaded is
+        ? // Build v65 (F11): the revision this editor loaded is
           // the CAS base — a stale whole-snapshot save is refused
           // with the conflict reason, shown below via setError.
           api.updateNwSnapshot({
             id: snapshot.id,
             ...input,
             baseRevision: snapshot.revision,
-            // Contract v93 (F5): the restore epoch this editor
+            // Build v93 (F5): the restore epoch this editor
             // observed — a restore since the load refuses the save
             // even when the revision numbers match.
             baseEpoch: observedEpoch,
@@ -713,7 +713,7 @@ function SnapshotEditor({
   });
 
   const del = useMutation({
-    // Contract v121 (F4): the delete carries the epoch this
+    // Build v121 (F4): the delete carries the epoch this
     // editor observed when it opened — a restore since then
     // refuses it instead of deleting the restored snapshot.
     mutationFn: (id: number) => api.deleteNwSnapshot({ id, baseEpoch: observedEpoch }),
@@ -1099,10 +1099,10 @@ function BalanceEditor({
       api.updateNwBalance({
         snapshotId: snapshot.id,
         accountId: account.id,
-        // Contract v65 (F12): the snapshot revision this editor
+        // Build v65 (F12): the snapshot revision this editor
         // loaded is the CAS base — a refusal shows via setError.
         baseRevision: snapshot.revision,
-        // Contract v93 (F5): the restore epoch this editor
+        // Build v93 (F5): the restore epoch this editor
         // observed, checked like the revision.
         baseEpoch: observedEpoch,
         ...input,
@@ -1408,7 +1408,7 @@ function NwImportPanel({
   }, [settingsQuery.data]);
 
   const saveSetup = useMutation({
-    // Contract v130 (round-19 finding 8): carries the epoch the
+    // Build v130 (round-19 finding 8): carries the epoch the
     // panel observed when it loaded its setup (the settings read's
     // restoreEpoch), so a restore since the panel loaded refuses
     // the save instead of overwriting the restored setup.
@@ -2912,7 +2912,7 @@ export function NetWorthView() {
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState("");
   const [targetError, setTargetError] = useState("");
-  // Provenance-tap flash timer (contract v119). This MUST live up
+  // Provenance-tap flash timer (build v119). This MUST live up
   // here with the other hooks: the loading/error early returns
   // below run before the jump-and-highlight block, so a useRef
   // declared down there would change the hook count between the
@@ -3005,7 +3005,7 @@ export function NetWorthView() {
       id: number;
       name: string;
       type: NwAccountType;
-      // Contract v65 (F19): the account's fields as loaded when
+      // Build v65 (F19): the account's fields as loaded when
       // the rename row opened — the save's CAS base; a refusal
       // surfaces through setRenameError below.
       base: {
@@ -3020,7 +3020,7 @@ export function NetWorthView() {
         propertyKind: input.type === "custodial" ? "none" : input.type,
         custodial: input.type === "custodial",
         base: input.base,
-        // Contract v121 (F3): the epoch of the data on screen.
+        // Build v121 (F3): the epoch of the data on screen.
         baseEpoch: data?.restoreEpoch ?? 0,
       }),
     onSuccess: (r) => {
@@ -3035,7 +3035,7 @@ export function NetWorthView() {
     onError: (e) => setRenameError(String(e)),
   });
   const setIncludeProperty = useMutation({
-    // Contract v121 (F3): carries the epoch of the data on screen.
+    // Build v121 (F3): carries the epoch of the data on screen.
     mutationFn: (include: boolean) => api.setNwIncludeProperty({ include, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       if (!r.ok) {
@@ -3047,7 +3047,7 @@ export function NetWorthView() {
     },
   });
   const setNwTarget = useMutation({
-    // Contract v121 (F3): carries the epoch of the data on screen.
+    // Build v121 (F3): carries the epoch of the data on screen.
     mutationFn: (targetCents: number | null) => api.setNwTarget({ targetCents, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       if (!r.ok) {
@@ -3064,14 +3064,14 @@ export function NetWorthView() {
   });
   // Accounts / History collapse flags: optimistic — each section
   // flips immediately from local state and the choice persists in
-  // the background (contract v132). Before the first read lands
+  // the background (build v132). Before the first read lands
   // each shows collapsed, the stored default. On a refused write
   // (a restore since the load) the override is dropped so the
   // section shows the stored value again.
   const [accountsOverride, setAccountsOverride] = useState<boolean | null>(null);
   const [historyOverride, setHistoryOverride] = useState<boolean | null>(null);
   const setAccountsCollapsed = useMutation({
-    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // Build v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
     mutationFn: (collapsed: boolean) => api.setNwAccountsCollapsed({ collapsed, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -3085,7 +3085,7 @@ export function NetWorthView() {
     },
   });
   const setHistoryCollapsed = useMutation({
-    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // Build v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
     mutationFn: (collapsed: boolean) => api.setNwHistoryCollapsed({ collapsed, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -3099,7 +3099,7 @@ export function NetWorthView() {
     },
   });
   const setNwGrowthSince = useMutation({
-    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // Build v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
     mutationFn: (date: string | null) => api.setNwGrowthSince({ date, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -3112,7 +3112,7 @@ export function NetWorthView() {
     },
   });
   const setArchived = useMutation({
-    // Contract v121 (F3): carries the epoch of the data on screen.
+    // Build v121 (F3): carries the epoch of the data on screen.
     mutationFn: (input: { id: number; archived: boolean }) =>
       api.setNwAccountArchived({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -3125,7 +3125,7 @@ export function NetWorthView() {
     },
   });
   const deleteAccount = useMutation({
-    // Contract v121 (F3): carries the epoch of the data on screen.
+    // Build v121 (F3): carries the epoch of the data on screen.
     mutationFn: (id: number) => api.deleteNwAccount({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       if (!r.ok) {
@@ -3210,7 +3210,7 @@ export function NetWorthView() {
   const accountsCollapsed = accountsOverride ?? storedAccountsCollapsed;
   const historyCollapsed = historyOverride ?? storedHistoryCollapsed;
 
-  // Optimistic flips (contract v132): the section re-renders from
+  // Optimistic flips (build v132): the section re-renders from
   // local state at once; the mutation persists the choice in the
   // background and its refetch then agrees with what is already
   // shown. A rapid second click reads the already-flipped local
@@ -3247,7 +3247,7 @@ export function NetWorthView() {
     setEditorOpen(true);
   }
 
-  /* Jump-and-highlight (contract v119): the provenance-tap
+  /* Jump-and-highlight (build v119): the provenance-tap
      mechanism modelled on December's jumpToDecField — open the
      editor that holds the field first (snapshot editor, single-
      balance editor, or the target editor), scroll on a later
@@ -3445,7 +3445,7 @@ export function NetWorthView() {
   const latestTotal = latest?.totalCents ?? 0;
   // The headline total, the bucket total, the bucket amounts,
   // and the "% reached" are computed figures, so they render as
-  // plain text, not taps (contract v136): a computed figure has
+  // plain text, not taps (build v136): a computed figure has
   // no single source field to jump to. The per-account balance
   // taps below still jump to their real fields, via
   // firstBalanceFieldId / firstSplitFieldId.
@@ -3508,7 +3508,7 @@ export function NetWorthView() {
      count). Bar shares are of the positive segments' own sum,
      so they always add to 100%. The section HEADLINE and the
      "% of target" figure, however, use the SIGNED sum of every
-     bucket (contract v63, F1): a negative bucket (a split part
+     bucket (build v63, F1): a negative bucket (a split part
      can be negative) is real money owed against the others, so
      it must reduce the headline even though it cannot draw as
      a bar segment — negative buckets render as their own lines

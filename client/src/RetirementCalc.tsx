@@ -60,10 +60,33 @@ type Scenario = CalcData["scenarios"][number];
 // lite current record its conflict branch carries.
 type RetSaveResult = Awaited<ReturnType<typeof api.saveRetirementCalc>>;
 type RetLiteRecord = Extract<RetSaveResult, { ok: false }>["record"];
-// The Tax Plan record's writer (contract v140): the five plan
+// The Tax Plan record's writer (build v140): the five plan
 // fields live in that record, so an edit here writes through to
 // it via saveRothInputs with the record's own CAS revision.
 type RothSavePayload = Parameters<typeof api.saveRothInputs>[0];
+// A queued Tax Plan write-through edit (build v153, audit
+// M-4): ONLY the local deltas — for each of the five plan
+// fields, the target value this view means to write, or null
+// when the field carries no local edit (whatever the record
+// holds at fire time stands for it). The whole-record payload
+// is rebuilt from this at fire time; a payload snapshotted at
+// queue time is exactly what let a stale write-through ride
+// out under a fresh CAS base and silently revert another
+// tab's save. Current age travels as the birth year the
+// record stores (the server derives age from it).
+type RothPlanDelta = {
+  annualSpendingCents: number | null;
+  birthYearPrimary: number | null;
+  retirementAge: number | null;
+  endAge: number | null;
+  expectedReturnPct: number | null;
+};
+// The Tax Plan record as getRothPlanner returns it — the
+// shape a whole-record save payload is built from. The
+// unmount flush's guard-holding path (build v162) builds
+// from a record fetched fresh at flush time, not from the
+// possibly stale fetched record the view last rendered.
+type RothPlannerRecord = Awaited<ReturnType<typeof api.getRothPlanner>>;
 // The five plan fields' focus keys — the inputs that write
 // through to the Tax Plan record. The settled-value gate holds a
 // Tax Plan save while any of these is focused.
@@ -367,7 +390,7 @@ function formatMonthlyDisplay(annualStr: string): string {
     maximumFractionDigits: 2,
   })}`;
 }
-// Monthly raw form (contract v140): the monthly figure as a plain
+// Monthly raw form (build v140): the monthly figure as a plain
 // number string (no $ or commas) for the focused per-month input,
 // so an edit starts from what was displayed. The monthly cents
 // are rounded to the cent, matching formatMonthlyDisplay above.
@@ -397,6 +420,35 @@ const btnPrimary =
 
 type Tab = "projection" | "historical" | "montecarlo" | "maxspending";
 
+/* Build v177 (re-audit NICE-TO-HAVE N-3): the bound on a
+   save fire path's hold polls — a fire path waiting for an
+   in-flight save to settle (or, in the write-through, for
+   the fetched record to catch up to the base) re-checks
+   every 300 ms at most this many times (100 × 300 ms =
+   30 s) before it gives up explicitly instead of polling
+   forever. The same bound and give-up are applied in every
+   writer that carries the hold (App.tsx, Playground.tsx,
+   RothConversion.tsx). */
+const SAVE_HOLD_MAX_POLLS = 100;
+
+/* Build v196 (re-audit round 3 SHOULD-7): how long a flush
+   deferred behind an in-flight save (the S-3 slots — this
+   view carries two, the autosave's and the Tax Plan
+   write-through's) waits for that save to settle before
+   the deferred send fires anyway — the same 30 s scale as
+   the hold bound above (100 × 300 ms), far beyond any
+   save this app makes. A save that has not settled in
+   30 s is hung (its promise neither resolves nor rejects,
+   so its settle handlers — the slot's only consumer —
+   never run), and without this bound the deferred edit
+   sits in its slot forever: never sent, never reported.
+   On expiry the slot's send fires through the retrying
+   flush path exactly as it would have on a settle (see
+   the slots' comments below). The same bound is applied
+   in every writer that carries a deferred slot
+   (RothConversion.tsx, Playground.tsx). */
+const DEFERRED_FLUSH_GIVE_UP_MS = 30000;
+
 export function RetirementCalc() {
   const queryClient = useQueryClient();
   const q = useQuery({
@@ -404,7 +456,7 @@ export function RetirementCalc() {
     queryFn: () => api.getRetirementCalc({}),
   });
   const data: CalcData | undefined = q.data;
-  // The Tax Plan record (contract v133): the single source of
+  // The Tax Plan record (build v133): the single source of
   // truth for the five shared plan fields — spending,
   // retirement age, current age (from the birth year it
   // stores), end age, and expected return. Same query key as
@@ -414,7 +466,7 @@ export function RetirementCalc() {
     queryKey: ["rothplanner"],
     queryFn: () => api.getRothPlanner({}),
   });
-  // The five plan-sourced values (contract v133): the Tax Plan
+  // The five plan-sourced values (build v133): the Tax Plan
   // record's figures where it has them, else the same
   // fallbacks a fresh first open uses — trailing True cost
   // for spending, the birth-year current age the server
@@ -453,11 +505,11 @@ export function RetirementCalc() {
     "retirement.inputsFolded",
   );
   const inputsOpen = !inputsFolded;
-  // (Contract v140 — one source, multiple edit locations: the
+  // (Build v140 — one source, multiple edit locations: the
   // provenance taps to the Tax Plan are gone. Every value this
   // view shows is either an editable input in place or plain
   // text, except the header summary's values, which are taps
-  // back to the fields below (contract v146); nothing jumps to
+  // back to the fields below (build v146); nothing jumps to
   // the Tax Plan any more.)
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
@@ -477,7 +529,7 @@ export function RetirementCalc() {
   // silent. Driven by the effect after the engine memos.
   const [resultsFlash, setResultsFlash] = useState(false);
   const flashTimer = useRef<number | null>(null);
-  /* Jump-and-highlight (contract v146): the header-summary taps —
+  /* Jump-and-highlight (build v146): the header-summary taps —
      mirror the Playground's jumpToPgField. The inputs panel is
      folded shut, the target fields are not rendered, so unfold it
      first, then scroll on a later frame and flash an outline +
@@ -556,7 +608,7 @@ export function RetirementCalc() {
   // Roth view's starting balances).
   const [portfolioFollowing, setPortfolioFollowing] = useState(true);
   const [spending, setSpending] = useState("");
-  // Per-month draft (contract v140): while the Annual spending
+  // Per-month draft (build v140): while the Annual spending
   // field is focused in per-month mode, the input shows the
   // monthly figure as the user types it — the stored state is
   // annual dollars, so the typed monthly string lives here
@@ -583,7 +635,7 @@ export function RetirementCalc() {
   const [spendingUnit, setSpendingUnit] = useState<"year" | "month">("month");
   // Assumptions group collapse flag: optimistic — the section flips
   // immediately from local state and the choice persists in the
-  // background (contract v132). Before the first read lands the
+  // background (build v132). Before the first read lands the
   // group shows collapsed, the stored default. The server action
   // never refuses (no epoch guard), so no revert is needed.
   const [assumptionsOverride, setAssumptionsOverride] = useState<boolean | null>(null);
@@ -622,6 +674,28 @@ export function RetirementCalc() {
   const inputsRevisionRef = useRef(0);
   const baselineRevisionRef = useRef(0);
 
+  // The Tax Plan record values the five plan fields were last
+  // synced to (build v153, audit M-4), in the record's own
+  // terms (current age as the birth year it stores; expected
+  // return at the precision the field displays, so a field
+  // holding exactly what a sync put there parses back equal).
+  // Set by every path that puts record values into the fields
+  // — hydrate, the sourced effect's per-field sync, a landed
+  // write-through — and read by the sourced effect (a field
+  // whose parsed value still equals its synced value is
+  // untouched and may follow the record; one that differs
+  // carries a local edit and is never re-synced over) and by
+  // the write-through queue (a field becomes a queued delta
+  // only by differing from its synced value, so a field the
+  // user never touched can never turn into a stale delta
+  // just because another tab moved the record under it).
+  const planSyncedRef = useRef<RothPlanDelta | null>(null);
+  // Set by the write-through's conflict path: the next sourced
+  // sync replaces all five fields with the stored values
+  // wholesale (the deliberate drop the conflict message
+  // describes), bypassing the per-field guard above.
+  const planForceSyncRef = useRef(false);
+
   /* Hydrate the whole form from a saved inputs record — the ONE
      path shared by the init effect (first load) and the CAS
      conflict path (a refused save re-shows the latest saved
@@ -629,7 +703,7 @@ export function RetirementCalc() {
      field then falls back to the load defaults in `d`, exactly
      as a fresh first open does. The five plan fields — spending,
      current age, retirement age, end age, expected return —
-     come from the Tax Plan record (contract v133) and are NOT
+     come from the Tax Plan record (build v133) and are NOT
      read from this view's saved copies: those copies are
      vestigial (kept in the record, ignored on load). */
   const hydrateFromSaved = (saved: CalcData["saved"], d: CalcData) => {
@@ -677,6 +751,18 @@ export function RetirementCalc() {
     const vol = s?.volatilityPct ?? blendedVol(stocks);
     setExpectedPct(String(Math.round(exp * 100) / 100));
     setVolPct(String(Math.round(vol * 100) / 100));
+    // The five plan fields now hold exactly the record's
+    // values (build v153): record them as the values the
+    // fields were last synced to, so the sourced effect and
+    // the write-through queue can tell an untouched field
+    // from a local edit.
+    planSyncedRef.current = {
+      annualSpendingCents: sourced.spendingCents,
+      birthYearPrimary: new Date().getFullYear() - sourced.currentAge,
+      retirementAge: sourced.retirementAge,
+      endAge: sourced.endAge,
+      expectedReturnPct: Math.round(exp * 100) / 100,
+    };
     setStrategy(s?.strategy ?? "constant");
     setPercentOfPortfolio(String(s?.percentOfPortfolio ?? 5));
     setGuardrailsCutPct(String(s?.guardrailsCutPct ?? GUARDRAILS_CUT_DEFAULT));
@@ -701,22 +787,83 @@ export function RetirementCalc() {
   }, [data, init]);
 
   // Keep the five plan-sourced fields on the Tax Plan record
-  // (contract v133): whenever the record lands or changes —
+  // (build v133): whenever the record lands or changes —
   // first load, a Tax Plan save, a refetch — the five states
   // follow it. The autosave below then persists the same
   // values into this view's record, so the record stays in
   // sync; the next refetch returns the same values, so there
   // is no loop (setting a state to its current value is a
   // no-op in React).
+  //
+  // Build v153 (audit M-4): the follow is PER FIELD and
+  // guarded. A field is re-synced only when it is clean —
+  // its parsed value still equals the value it was last
+  // synced to (planSyncedRef) — and it is not the field
+  // currently focused. A refetch landing mid-edit therefore
+  // never clobbers in-progress typing: the field being
+  // edited keeps the user's text, and a field carrying an
+  // unsaved local edit keeps it too, while every untouched
+  // field still follows the record, so another tab's edit
+  // shows up here. Running on focusField too means a field
+  // that was focused-but-unedited catches up with the
+  // record once focus leaves it. The one exception is a
+  // write-through conflict: the mutation sets the force
+  // flag, the stored values replace the form wholesale,
+  // and the conflict message says exactly that.
   useEffect(() => {
     if (!init) return;
-    setSpending(String(sourced.spendingCents / 100));
-    setCurrentAge(String(sourced.currentAge));
-    setRetirementAge(String(sourced.retirementAge));
-    setEndAge(String(sourced.endAge));
-    setExpectedPct(String(Math.round(sourced.expectedReturnPct * 100) / 100));
+    const force = planForceSyncRef.current;
+    planForceSyncRef.current = false;
+    const synced = planSyncedRef.current;
+    const values = planFieldValuesRef.current();
+    const recordValues: RothPlanDelta = {
+      annualSpendingCents: sourced.spendingCents,
+      birthYearPrimary: new Date().getFullYear() - sourced.currentAge,
+      retirementAge: sourced.retirementAge,
+      endAge: sourced.endAge,
+      expectedReturnPct: Math.round(sourced.expectedReturnPct * 100) / 100,
+    };
+    const merged: RothPlanDelta = { ...(synced ?? recordValues) };
+    const clean = (parsed: number | null, was: number | null | undefined) =>
+      force || was === undefined || parsed === was;
+    if (
+      focusField !== "spending" &&
+      clean(values.annualSpendingCents, synced?.annualSpendingCents)
+    ) {
+      setSpending(String(sourced.spendingCents / 100));
+      merged.annualSpendingCents = recordValues.annualSpendingCents;
+    }
+    if (
+      focusField !== "currentAge" &&
+      clean(values.birthYearPrimary, synced?.birthYearPrimary)
+    ) {
+      setCurrentAge(String(sourced.currentAge));
+      merged.birthYearPrimary = recordValues.birthYearPrimary;
+    }
+    if (
+      focusField !== "retirementAge" &&
+      clean(values.retirementAge, synced?.retirementAge)
+    ) {
+      setRetirementAge(String(sourced.retirementAge));
+      merged.retirementAge = recordValues.retirementAge;
+    }
+    if (
+      focusField !== "endAge" &&
+      clean(values.endAge, synced?.endAge)
+    ) {
+      setEndAge(String(sourced.endAge));
+      merged.endAge = recordValues.endAge;
+    }
+    if (
+      focusField !== "expectedPct" &&
+      clean(values.expectedReturnPct, synced?.expectedReturnPct)
+    ) {
+      setExpectedPct(String(Math.round(sourced.expectedReturnPct * 100) / 100));
+      merged.expectedReturnPct = recordValues.expectedReturnPct;
+    }
+    planSyncedRef.current = merged;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourced, init]);
+  }, [sourced, init, focusField]);
 
   // Keep both tracked revisions in step with every refetch (the
   // server invalidates this query after writes, ours included —
@@ -734,7 +881,7 @@ export function RetirementCalc() {
 
   // When the mix changes, follow the blended default for
   // volatility unless the user has typed their own value.
-  // Expected return does NOT follow the blend (contract v133):
+  // Expected return does NOT follow the blend (build v133):
   // it comes from the Tax Plan record, so a mix change leaves
   // it where the plan has it.
   useEffect(() => {
@@ -756,11 +903,122 @@ export function RetirementCalc() {
      through saveInFlightRef (the Roth view's pattern): a
      debounced save that comes due while one is in flight waits
      and re-fires, so the base it sends is the one the in-flight
-     save returned, never a duplicate of the in-flight base. */
+     save returned, never a duplicate of the in-flight base.
+     Build v163 (re-audit M-NEW-3): a FAILED save now
+     surfaces a message, stays queued, and retries on the save
+     timer — the M-5 pattern (build v151) applied to this
+     fourth writer; see the mutation and the fire path below. */
   const saveTimer = useRef<number | null>(null);
   const pendingSave = useRef<Parameters<typeof api.saveRetirementCalc>[0] | null>(null);
   const pendingSaveOkRef = useRef<((res: RetSaveResult) => void) | null>(null);
   const saveInFlightRef = useRef(false);
+  // Build v177 (re-audit NICE-TO-HAVE N-3): consecutive
+  // hold polls by firePendingSave while it waits for the
+  // in-flight save to settle, bounded by
+  // SAVE_HOLD_MAX_POLLS — see the hold branch there.
+  const saveHoldPollsRef = useRef(0);
+  // Build v163 (re-audit M-NEW-3): the payload currently in
+  // flight, so the unmount flush can tell "queued behind the
+  // in-flight save" (a newer save — flush it) from "the
+  // in-flight save itself" (already being written — the queue
+  // now stays populated until a save succeeds). Mirrors the
+  // Tax Plan write-through's rothSaveInFlightDeltaRef (v151).
+  const saveInFlightPayloadRef = useRef<Parameters<typeof api.saveRetirementCalc>[0] | null>(null);
+  // Build v168 (re-audit SHOULD S-3): a flush deferred
+  // behind the in-flight save — the Tax Plan autosave's slot
+  // of the same name (RothConversion.tsx). The unmount
+  // cleanup, finding a save queued behind one still in
+  // flight, stores its send here instead of firing it
+  // concurrently under the same not-yet-advanced CAS base:
+  // the server accepts exactly one of two same-base saves and
+  // refuses the other, and a refused flush is lost silently
+  // (its conflict path runs on an unmounted view). The
+  // in-flight call's per-call handlers below consume the slot
+  // as that save settles — fire on a landed save (the
+  // mutation reads the NEW base) or on an error (base
+  // unchanged; the queued save supersedes the failed one),
+  // drop on a conflict (applyConflictRecord's deliberate drop
+  // covers the deferred save too — it is the same stale
+  // form's snapshot).
+  const deferredFlushRef = useRef<(() => void) | null>(null);
+  // Build v196 (re-audit round 3 SHOULD-7): the deferred
+  // slot's GIVE-UP timer — the RothConversion slot's shape,
+  // applied to both of this view's deferred slots. Before
+  // v196 the slot's only consumer was the in-flight save's
+  // own per-call handlers: if that save hung forever (its
+  // request neither resolved nor rejected, so no handler
+  // ever ran), the deferred save sat in the slot for the
+  // rest of the page's life — never sent and never
+  // reported, the exact stranding the N-3 hold bound
+  // (build v177) closed for the mounted fire path. The
+  // unmount cleanup now ARMS this timer as it stores the
+  // deferred send (armDeferredFlushGiveUp below): if the
+  // in-flight save has not settled within
+  // DEFERRED_FLUSH_GIVE_UP_MS, the timer consumes the
+  // slot itself and fires the deferred send anyway,
+  // through the retrying flush send (sendCalcFlush, beside
+  // buildInputsPayload below — reached through
+  // sendCalcFlushRef, since the cleanup is defined before
+  // it) exactly as a settle would have fired it, so the
+  // edit is sent, a failure of that send re-arms the
+  // flush's own 3 s retry, and a CAS conflict from sending
+  // while the wedged save is still in flight resolves
+  // through the mutation's normal conflict path instead
+  // of stranding the edit. A settle that lands first
+  // consumes the slot through takeDeferredFlush, which
+  // clears this timer, so a normally-settling save fires
+  // the deferred send exactly as before and the timer
+  // never fires at all. The timer lives in its own ref,
+  // cleared by nothing after unmount, so it outlives the
+  // view like the flush retry timers.
+  const deferredFlushGiveUpTimerRef = useRef<number | null>(null);
+  const clearDeferredFlushGiveUp = () => {
+    if (deferredFlushGiveUpTimerRef.current != null) {
+      window.clearTimeout(deferredFlushGiveUpTimerRef.current);
+      deferredFlushGiveUpTimerRef.current = null;
+    }
+  };
+  // Consume the deferred slot (and disarm its give-up
+  // timer): the ONE way the slot is read, so a settle and
+  // the give-up can never both fire the same send.
+  const takeDeferredFlush = (): (() => void) | null => {
+    clearDeferredFlushGiveUp();
+    const deferred = deferredFlushRef.current;
+    deferredFlushRef.current = null;
+    return deferred;
+  };
+  const armDeferredFlushGiveUp = () => {
+    clearDeferredFlushGiveUp();
+    deferredFlushGiveUpTimerRef.current = window.setTimeout(() => {
+      deferredFlushGiveUpTimerRef.current = null;
+      const deferred = deferredFlushRef.current;
+      deferredFlushRef.current = null;
+      if (deferred) deferred();
+    }, DEFERRED_FLUSH_GIVE_UP_MS);
+  };
+  // The deferred send itself, held in a ref so the unmount
+  // cleanup (defined before it) can store a send that
+  // reaches it: sendCalcFlush, defined beside
+  // buildInputsPayload below, builds the payload (a form
+  // snapshot rebuilt at the fire, a command payload exactly
+  // as constructed) and sends it through the ONE retrying
+  // flush send for this writer (build v196 — before v196
+  // the deferred send was a bare mutate call with only an
+  // onSuccess, so a deferred flush whose own request failed
+  // was dropped silently even when it fired on a settle).
+  const sendCalcFlushRef = useRef<
+    (
+      queued: Parameters<typeof api.saveRetirementCalc>[0],
+      queuedOnOk: ((res: RetSaveResult) => void) | null,
+      queuedIsForm: boolean,
+    ) => void
+  >(() => {});
+  // True while the queued save is the autosave's own form
+  // snapshot (rebuilt fresh at every fire, retries included);
+  // false for a submitSave command payload (Reset to defaults,
+  // Load a scenario), which is sent — and retried — exactly as
+  // constructed.
+  const pendingSaveIsFormRef = useRef(false);
 
   /* The shared CAS conflict path — autosave, Reset to
      defaults, and Load a scenario / Back to my plan all ride
@@ -803,6 +1061,15 @@ export function RetirementCalc() {
     onSuccess: (res) => {
       if (res.ok) {
         inputsRevisionRef.current = res.revision;
+        // Build v163 (re-audit M-NEW-3), completion: a save
+        // landed, so a "Could not save" note from an earlier
+        // failed attempt is stale now — clear exactly that
+        // note (the Tax Plan write-through does the same with
+        // this shared line). Any other plan message — a
+        // conflict note, a reset note — is left untouched.
+        setPlanMsg((m) =>
+          m === "Could not save — your entries stay on this screen." ? "" : m,
+        );
         return;
       }
       // Conflict: a newer save landed first (another tab or
@@ -814,6 +1081,16 @@ export function RetirementCalc() {
         "These retirement inputs were changed in another tab or on another device, so the edits that were just saving here were not kept. The latest saved version is shown now.",
       );
     },
+    onError: () => {
+      // Build v163 (re-audit M-NEW-3): a failed save says so
+      // instead of vanishing silently — the M-5 defect on this
+      // fourth writer (the December console's onError sets the
+      // same line). The edit stays queued (the fire path below
+      // clears it only on success) and its per-call onError
+      // re-arms a retry, so the edit lands once the server is
+      // reachable again.
+      setPlanMsg("Could not save — your entries stay on this screen.");
+    },
   });
   const saveMutateRef = useRef(save.mutate);
   saveMutateRef.current = save.mutate;
@@ -822,21 +1099,116 @@ export function RetirementCalc() {
     if (saveInFlightRef.current) {
       // A save is already in flight: wait for it to settle (its
       // returned revision becomes the base) and re-fire.
+      // Build v177 (re-audit NICE-TO-HAVE N-3): this hold
+      // is BOUNDED. Before v177 it re-armed the 300 ms
+      // re-check without limit: a save whose call never
+      // settles (a hung request — the mutation's promise
+      // neither resolves nor rejects, so onSettled never
+      // runs and the in-flight flag never clears) held the
+      // queued save behind it forever, polling for the life
+      // of the view. After SAVE_HOLD_MAX_POLLS consecutive
+      // polls (100 × 300 ms = 30 s, far beyond any save this
+      // app makes) the hold gives up explicitly: polling
+      // stops, the save STAYS queued (a later edit, the blur
+      // flush, or the unmount flush fires it, and if the
+      // wedged save ever does settle its own per-call
+      // handlers still consume the deferred slot exactly as
+      // before), and the failure is surfaced with the same
+      // line a failed save uses. Nothing is sent
+      // concurrently — the S-3 deferral is untouched while
+      // the in-flight save settles normally.
+      saveHoldPollsRef.current += 1;
+      if (saveHoldPollsRef.current > SAVE_HOLD_MAX_POLLS) {
+        saveHoldPollsRef.current = 0;
+        if (saveTimer.current != null) {
+          window.clearTimeout(saveTimer.current);
+          saveTimer.current = null;
+        }
+        setPlanMsg("Could not save — your entries stay on this screen.");
+        return;
+      }
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(firePendingSave, 300);
       return;
     }
-    const payload = pendingSave.current;
-    pendingSave.current = null;
+    // Build v163 (re-audit M-NEW-3): an autosave payload is
+    // rebuilt fresh at fire time from the current form — the
+    // same discipline the M-3/M-4 fixes gave the write-through
+    // — so a retry re-armed after a failure sends the form as
+    // it now stands, never a snapshot taken before the failure.
+    // A submitSave command payload (Reset to defaults, Load a
+    // scenario) is NOT rebuilt: it is a deliberate command, not
+    // a record snapshot, and is sent exactly as constructed.
+    let payload = pendingSave.current;
+    if (pendingSaveIsFormRef.current) {
+      payload = buildInputsPayloadRef.current();
+      pendingSave.current = payload;
+    }
     const onOk = pendingSaveOkRef.current;
-    pendingSaveOkRef.current = null;
+    // The save stays queued until it SUCCEEDS — it is not
+    // dropped at the call, so a failed save (offline, gateway
+    // 500) cannot vanish silently. The per-call handlers below
+    // own the queue: success drops the save, error re-arms a
+    // retry of it.
+    saveHoldPollsRef.current = 0;
     saveInFlightRef.current = true;
+    saveInFlightPayloadRef.current = payload;
     saveMutateRef.current(payload, {
       onSuccess: (res) => {
+        // The save landed (or a conflict re-read the record
+        // and re-showed the stored values — applyConflictRecord
+        // already dropped the queue): clear the queue only if
+        // it still holds this save, never a newer one queued
+        // behind it.
+        if (pendingSave.current === payload) {
+          pendingSave.current = null;
+          pendingSaveOkRef.current = null;
+          pendingSaveIsFormRef.current = false;
+        }
         onOk?.(res);
+        // Build v168 (re-audit SHOULD S-3): consume a
+        // flush the unmount cleanup deferred behind this
+        // save — fire it on a landed save (the mutation-level
+        // handler has adopted the new revision, so the
+        // deferred send reads the new base and lands in
+        // order), drop it on a conflict (applyConflictRecord
+        // has replaced the form with the stored record; the
+        // deferred save is that same stale form's snapshot
+        // and must not ride out under the adopted base).
+        // Build v196: consumed through takeDeferredFlush,
+        // which also disarms the slot's give-up timer — a
+        // save that settles normally leaves no timer behind.
+        const deferred = takeDeferredFlush();
+        if (res.ok && deferred) deferred();
+      },
+      onError: () => {
+        // Keep the save queued and re-arm a retry on the
+        // shared timer, so it lands once the server is
+        // reachable again — rebuilt fresh at that fire if it
+        // is the autosave's form snapshot, exactly as for a
+        // first attempt. If a newer save was queued behind
+        // this one, that save's own scheduling drives it and
+        // no retry is armed for the superseded payload. The
+        // mutation-level onError sets the visible message.
+        if (pendingSave.current === payload) {
+          if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+          saveTimer.current = window.setTimeout(firePendingSave, 3000);
+        }
+        // Build v168 (re-audit SHOULD S-3): this save
+        // never landed, so the base is unchanged and a flush
+        // deferred behind it at unmount fires now — the
+        // queued save supersedes the failed one outright (no
+        // retry of this payload was armed above: the queue no
+        // longer holds it, the cleanup moved it to the
+        // deferred slot).
+        // Build v196: consumed through takeDeferredFlush,
+        // which also disarms the slot's give-up timer.
+        const deferred = takeDeferredFlush();
+        if (deferred) deferred();
       },
       onSettled: () => {
         saveInFlightRef.current = false;
+        saveInFlightPayloadRef.current = null;
       },
     });
   };
@@ -846,46 +1218,172 @@ export function RetirementCalc() {
   // and Load a scenario / Back to my plan ride it too; their
   // cache syncs travel as the onOk callback, guarded on ok so a
   // conflict never overwrites the conflict path's merge).
+  // Build v163: a failed command save inherits the same
+  // surface-and-retry as the autosave — it stays queued and is
+  // re-sent exactly as constructed until it lands.
   const submitSave = (
     payload: Parameters<typeof api.saveRetirementCalc>[0],
     onOk?: (res: RetSaveResult) => void,
   ) => {
     pendingSave.current = payload;
     pendingSaveOkRef.current = onOk ?? null;
+    pendingSaveIsFormRef.current = false;
     firePendingSaveRef.current();
   };
   // Flush a pending debounced save when leaving the screen, so an
   // edit made in the last fraction of a second is not lost. It
   // fires through the same serialized path; if a save is still
-  // in flight at unmount it fires directly with the last-known
-  // base — a refusal then only re-bases the next mount's load,
-  // never silently overwrites.
+  // in flight at unmount, the queued save is DEFERRED behind it
+  // (build v168, re-audit SHOULD S-3) — before v168 it fired
+  // directly with the last-known base, concurrently with the
+  // in-flight save: both carried the same base, the server
+  // accepted exactly one and refused the other, and when the
+  // refused one was this flush the newest edit was lost
+  // silently (the refusal's re-show runs on an unmounted view).
+  // The deferred send fires from the in-flight call's own
+  // settle handlers, under the base that save leaves behind.
   useEffect(() => {
     return () => {
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
-      if (pendingSave.current) {
+      // Build v163 (re-audit M-NEW-3): the queue now stays
+      // populated until a save succeeds (v151's rule for the
+      // write-through below), so the pending save may BE the
+      // save currently in flight — that one is already being
+      // written, and only a save queued behind it is flushed.
+      if (
+        pendingSave.current &&
+        pendingSave.current !== saveInFlightPayloadRef.current
+      ) {
         if (saveInFlightRef.current) {
-          saveMutateRef.current(pendingSave.current);
+          // Build v168: defer, don't fire concurrently.
+          // Capture the queued save with its onOk and its
+          // form/command kind: a form snapshot is rebuilt at
+          // the deferred fire (the v163 discipline — the form
+          // is frozen by the unmount, so the rebuild reads
+          // the same final values the snapshot holds); a
+          // command payload is sent exactly as constructed,
+          // its onOk riding along as in the fire path.
+          const queued = pendingSave.current;
+          const queuedOnOk = pendingSaveOkRef.current;
+          const queuedIsForm = pendingSaveIsFormRef.current;
+          // Build v196 (re-audit round 3 SHOULD-7): the
+          // deferred send now goes through the ONE retrying
+          // flush send for this writer (sendCalcFlush,
+          // reached through sendCalcFlushRef — its payload
+          // build is the one this closure used to run, and
+          // its onSuccess carries queuedOnOk exactly as the
+          // bare call's did, so a deferred save that lands
+          // behaves exactly as before; one that FAILS now
+          // re-arms a 3 s retry of itself instead of being
+          // dropped silently). Storing the send also ARMS
+          // its give-up timer: if the in-flight save never
+          // settles, the timer fires this same send after
+          // DEFERRED_FLUSH_GIVE_UP_MS instead of leaving it
+          // stranded in the slot forever (see the timer's
+          // comment beside deferredFlushRef).
+          deferredFlushRef.current = () =>
+            sendCalcFlushRef.current(queued, queuedOnOk, queuedIsForm);
+          armDeferredFlushGiveUp();
         } else {
           firePendingSaveRef.current();
         }
         pendingSave.current = null;
+        pendingSaveOkRef.current = null;
+        pendingSaveIsFormRef.current = false;
       }
-      // The Tax Plan write-through's pending save, flushed the
-      // same way — but only when settled (no plan field focused),
-      // so a half-typed value is never persisted on the way out.
+      // The Tax Plan write-through's pending edit, flushed
+      // the same way — focused or not (build v159, audit
+      // SHOULD S-7): leaving the view IS the settle, the Tax
+      // Plan's own v149 rule. Before v159 this flush was
+      // gated on no plan field being focused, so an edit
+      // whose field still held focus when the view went away
+      // (a tab close or a navigation that unmounts without a
+      // blur firing first) was silently dropped and the
+      // record kept the old value — the normal exits were
+      // covered by the blur flush, a tab close was not.
+      // Flushing the QUEUED delta is safe for a half-typed
+      // field: the queue only ever holds parsed values that
+      // differ from the last-synced ones (a blank or
+      // unparseable field carries no delta), so there is no
+      // half-typed value in it to persist. The flush sends
+      // directly, not through the fire path: the fire path's
+      // settled-value gate would hold it for the very focus
+      // this flush must ignore, and its re-check timers
+      // cannot run once the view is gone.
       if (rothSaveTimer.current != null) window.clearTimeout(rothSaveTimer.current);
+      // Build v151: the pending edit may BE the save
+      // currently in flight (the queue now clears on success,
+      // not at the call) — that one is already being written,
+      // so only flush an edit queued behind it. Contract
+      // v153: the queue holds only the local delta, so the
+      // flush builds its payload from the freshest record
+      // here, exactly like the fire path.
+      //
+      // Build v162 (re-audit M-NEW-2): "exactly like the
+      // fire path" must include the fire path's payload/base
+      // coherence guard (build v153) — a flush may NEVER
+      // send a payload built from a record older than the
+      // base it sends under. That guard lives in the ONE
+      // flush send (sendRothFlush, beside
+      // buildRothSavePayload below): guard not holding, it
+      // builds from the fetched record and sends at once;
+      // guard holding, it fetches the record fresh, rebuilds
+      // from THAT record, adopts its revision as the base,
+      // and only then sends — and if no fresh-enough record
+      // can be had, the edit is dropped rather than sent
+      // stale.
+      //
+      // Build v168 (re-audit SHOULD S-3): a queued-behind
+      // edit is NOT fired while the write-through's own save
+      // is still in flight — before v168 it fired here
+      // concurrently, both saves reading the same
+      // not-yet-advanced CAS base; the server accepted
+      // exactly one, and a refused flush was lost silently
+      // (its conflict handling runs on this unmounted view).
+      // It is deferred instead: the in-flight call's per-call
+      // handlers fire sendRothFlush the moment that save
+      // settles (on a landed save the v162 guard routes the
+      // deferred send through the fresh-fetch path, so its
+      // payload is rebuilt from the record that save just
+      // landed; on an error the base is unchanged and the
+      // send proceeds exactly as an immediate flush would).
+      // With nothing in flight the flush sends at once,
+      // exactly as before.
+      //
+      // Build v188 (re-audit round 3 MUST-4): BOTH forms of
+      // the flush — the immediate send and the deferred send
+      // stored in deferredRothFlushRef — now reach the
+      // server through the ONE retrying payload send inside
+      // sendRothFlush (sendRothFlushPayload), not a bare
+      // mutate call. The queue is still cleared just below
+      // before the send, exactly as before, but the edit no
+      // longer depends on the queue for its survival: once
+      // sendRothFlush builds the payload, the retrying send
+      // carries it in its closure and re-arms a 3 s retry of
+      // it on error, so a flush that fails at the moment of
+      // navigation is retried until it lands instead of
+      // being lost silently (see that send's comment).
       if (
         pendingRothSave.current &&
-        (focusFieldRef.current == null ||
-          !PLAN_FIELD_KEYS.includes(focusFieldRef.current))
+        pendingRothSave.current !== rothSaveInFlightDeltaRef.current
       ) {
-        if (rothSaveInFlightRef.current) {
-          rothSaveMutateRef.current(pendingRothSave.current);
-        } else {
-          firePendingRothSaveRef.current();
-        }
+        const pendingFlush = pendingRothSave.current;
         pendingRothSave.current = null;
+        if (rothSaveInFlightRef.current) {
+          deferredRothFlushRef.current = () =>
+            sendRothFlushRef.current(pendingFlush);
+          // Build v196 (re-audit round 3 SHOULD-7): storing
+          // the deferred send also ARMS its give-up timer —
+          // if the in-flight save never settles, the timer
+          // fires the deferred send through the same
+          // retrying flush send after
+          // DEFERRED_FLUSH_GIVE_UP_MS instead of leaving it
+          // stranded in the slot forever (see the timer's
+          // comment beside deferredRothFlushRef).
+          armDeferredRothFlushGiveUp();
+        } else {
+          sendRothFlushRef.current(pendingFlush);
+        }
       }
     };
   }, []);
@@ -926,7 +1424,7 @@ export function RetirementCalc() {
       retirementAge: clampAge(retirementAge, 120),
       endAge: clampAge(endAge, 130),
       stocksPct: stocksN != null ? Math.min(100, Math.max(0, stocksN)) : null,
-      // No silent floor (contract v66, boundary audit F11):
+      // No silent floor (build v66, boundary audit F11):
       // the typed value is the saved value — a negative is
       // refused by the writer (an income field is int≥0), never
       // quietly saved and priced as $0.
@@ -969,16 +1467,92 @@ export function RetirementCalc() {
   const buildInputsPayloadRef = useRef(buildInputsPayload);
   buildInputsPayloadRef.current = buildInputsPayload;
 
+  // Build v196 (re-audit round 3 SHOULD-7): the ONE
+  // retrying flush send for this view's own record — the
+  // send the S-3 deferred slot (and only it: the immediate
+  // unmount flush rides firePendingSave, whose own per-call
+  // handlers already retry) fires its save through, whether
+  // it is fired by the in-flight save's settle or by the
+  // slot's give-up timer. Before v196 the deferred send was
+  // a bare mutate call carrying only an onSuccess, so a
+  // deferred flush whose own request failed (a network
+  // error at the moment of navigation) was dropped
+  // outright — the mutation-level onError set the "Could
+  // not save" line on an unmounted view, where nobody could
+  // see it, and nothing ever retried. This send is the
+  // deferred flush's firePendingSave, mirroring the Tax
+  // Plan's sendFlushWithRetry (build v187): its per-call
+  // onError re-arms a 3 s retry of the SAME payload, chained
+  // per failure exactly as firePendingSave's onError
+  // re-arms its own retry, so the flush lands once the
+  // server is reachable again. The retry timer lives in
+  // its own ref, which no cleanup clears, so the retries
+  // outlive the view. Each attempt goes through this same
+  // send (the retry calls back through the ref, so it
+  // always reaches the current closure), and the mutation
+  // reads its CAS base live from inputsRevisionRef at each
+  // call — a retry of a deferred flush fired on a settle
+  // therefore rides the base the in-flight save adopted
+  // when it landed, exactly as its first send did; a flush
+  // fired by the give-up timer reads the base as it stands
+  // then, and if the wedged save lands in between, the
+  // server's CAS refuses the stale one and the conflict
+  // path applies, rather than the edit stranding. A
+  // conflict is NOT retried: it resolves through onSuccess
+  // with res.ok false, where the mutation-level handler
+  // has already applied the conflict path's deliberate
+  // drop — the same rule the other flush sends follow.
+  // The queued onOk rides every attempt, so a landed flush
+  // runs its cache sync exactly as the bare call's
+  // onSuccess did.
+  const calcFlushRetryTimerRef = useRef<number | null>(null);
+  const sendCalcFlushPayload = (
+    flushPayload: Parameters<typeof api.saveRetirementCalc>[0],
+    queuedOnOk: ((res: RetSaveResult) => void) | null,
+  ) => {
+    saveMutateRef.current(flushPayload, {
+      onSuccess: (res) => {
+        queuedOnOk?.(res);
+      },
+      onError: () => {
+        if (calcFlushRetryTimerRef.current != null) {
+          window.clearTimeout(calcFlushRetryTimerRef.current);
+        }
+        calcFlushRetryTimerRef.current = window.setTimeout(() => {
+          sendCalcFlushPayloadRef.current(flushPayload, queuedOnOk);
+        }, 3000);
+      },
+    });
+  };
+  const sendCalcFlushPayloadRef = useRef(sendCalcFlushPayload);
+  sendCalcFlushPayloadRef.current = sendCalcFlushPayload;
+  const sendCalcFlush = (
+    queued: Parameters<typeof api.saveRetirementCalc>[0],
+    queuedOnOk: ((res: RetSaveResult) => void) | null,
+    queuedIsForm: boolean,
+  ) => {
+    // A form snapshot is rebuilt at the fire (the v163
+    // discipline — the form is frozen by the unmount, so
+    // the rebuild reads the same final values the snapshot
+    // holds); a command payload is sent exactly as
+    // constructed. Retries re-send the built payload, as
+    // the other flush sends do.
+    const p = queuedIsForm ? buildInputsPayloadRef.current() : queued;
+    sendCalcFlushPayload(p, queuedOnOk);
+  };
+  sendCalcFlushRef.current = sendCalcFlush;
+
   useEffect(() => {
     if (!init) return;
     pendingSave.current = buildInputsPayloadRef.current();
     pendingSaveOkRef.current = null;
+    pendingSaveIsFormRef.current = true;
     if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
       firePendingSaveRef.current();
     }, 700);
     // The five plan fields write through to the Tax Plan record
-    // (contract v140) — queued here on the same debounce, and
+    // (build v140) — queued here on the same debounce, and
     // the write-through's own settled gate holds it while a
     // plan field is focused.
     queueRothSaveRef.current();
@@ -988,7 +1562,7 @@ export function RetirementCalc() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [init, portfolio, portfolioFollowing, spending, currentAge, retirementAge, endAge, stocksPct, extraIncome, extraStartAge, expectedPct, volPct, strategy, percentOfPortfolio, guardrailsCutPct, guardrailsRaisePct, guardrailsAdjustmentPct, phaseStartAge, phaseDeclinePct]);
 
-  /* ---------------- Tax Plan write-through (contract v140) ----------------
+  /* ---------------- Tax Plan write-through (build v140) ----------------
      One source, multiple edit locations: the five plan fields
      (spending, current age, retirement age, end age, expected
      return) live in the Tax Plan record, so an edit here writes
@@ -1002,31 +1576,167 @@ export function RetirementCalc() {
      of overwriting it with null, so a half-typed edit can never
      blank a stored value. The save is debounced like the
      Retirement autosave and carries the same settled-value
-     gate (contract v131): it never fires while a plan field is
+     gate (build v131): it never fires while a plan field is
      focused, and the blur flush below sends it once focus
      leaves a plan field. Saves are serialized through
      rothSaveInFlightRef, and a conflict re-reads the record
      (the sourced effect then re-shows the stored values) and
      says so plainly. When there is no saved Tax Plan record
      yet, there is nothing to write through to and the edit
-     stays in this view's record only. */
+     stays in this view's record only.
+
+     Build v153 (audit M-4): the queue holds ONLY the
+     local deltas (pendingRothSave, a RothPlanDelta) and the
+     payload is rebuilt at fire time from the freshest
+     fetched record, applying only those deltas — the same
+     fix the Playground write-through got for M-3. Before
+     this, the payload was built once at queue time from the
+     record as it was then, but the mutation read its CAS
+     base live at send time: another tab's save landing in
+     between advanced the base while the queued payload
+     still held the old field values, the server CAS
+     accepted the fresh base, and the other tab's edit was
+     silently reverted. Now payload and base always describe
+     the same record: every field the user did not edit here
+     comes from the freshest record at the moment of the
+     send. A genuine race that still lands between the
+     rebuild and the server's CAS check resolves exactly as
+     before — conflict, record re-read, stored values
+     re-shown, plain message. */
   const rothRevisionRef = useRef(0);
+  // The revision of the freshest FETCHED record — the one a
+  // rebuilt payload is spread from. rothRevisionRef can run
+  // one save ahead of it (a save result adopts its returned
+  // revision immediately; the refetch it triggers lands a
+  // moment later), and the fire path holds while the two
+  // disagree, so a payload is only ever sent under a base
+  // that describes the same record it was built from.
+  const rothFetchedRevisionRef = useRef(0);
   const rothSaveTimer = useRef<number | null>(null);
-  const pendingRothSave = useRef<RothSavePayload | null>(null);
+  const pendingRothSave = useRef<RothPlanDelta | null>(null);
   const rothSaveInFlightRef = useRef(false);
+  // Build v177 (re-audit NICE-TO-HAVE N-3): consecutive
+  // hold polls by firePendingRothSave across BOTH its hold
+  // branches (waiting for the in-flight save to settle, and
+  // the coherence hold below), bounded by
+  // SAVE_HOLD_MAX_POLLS — see the hold branches there.
+  const rothHoldPollsRef = useRef(0);
+  // Build v151 (audit M-5): the edit currently in
+  // flight, so the unmount flush can tell "queued behind the
+  // in-flight save" (a newer edit — flush it) from "the
+  // in-flight save itself" (already being written).
+  const rothSaveInFlightDeltaRef = useRef<RothPlanDelta | null>(null);
+  // Build v168 (re-audit SHOULD S-3): the write-through's
+  // flush deferred behind its in-flight save, and the flush
+  // send itself, held in refs so the unmount cleanup (defined
+  // above this section) can reach them. The cleanup, finding
+  // an edit queued behind a save still in flight, stores its
+  // send in deferredRothFlushRef instead of firing it
+  // concurrently under the same not-yet-advanced CAS base —
+  // the server accepts exactly one of two same-base saves,
+  // and a refused flush is lost silently on an unmounted
+  // view. The in-flight call's per-call handlers below
+  // consume the slot as that save settles: fire on a landed
+  // save or on an error, drop on a conflict (the conflict
+  // path's deliberate drop of the stale form's queued edits).
+  // sendRothFlushRef carries the ONE flush send (the v162
+  // guard-holding fresh-fetch path included), defined below
+  // beside buildRothSavePayload, so the immediate flush and
+  // the deferred flush are the same code, guard included.
+  // Build v188 (re-audit round 3 MUST-4): that send's two
+  // payload sends are no longer bare mutate calls — both go
+  // through the ONE retrying payload send
+  // (sendRothFlushPayload, beside sendRothFlush), so a
+  // flush whose own request fails re-arms a retry of itself
+  // instead of being dropped (see that send's comment).
+  const deferredRothFlushRef = useRef<(() => void) | null>(null);
+  const sendRothFlushRef = useRef<(delta: RothPlanDelta) => void>(() => {});
+  // Build v196 (re-audit round 3 SHOULD-7): the deferred
+  // slot's GIVE-UP timer — the RothConversion slot's shape.
+  // Before v196 the slot's only consumer was the in-flight
+  // write-through save's own per-call handlers: if that
+  // save hung forever (its request neither resolved nor
+  // rejected, so no handler ever ran), the deferred edit
+  // sat in the slot for the rest of the page's life —
+  // never sent and never reported, the exact stranding the
+  // N-3 hold bound (build v177) closed for the mounted
+  // fire path. The unmount cleanup now ARMS this timer as
+  // it stores the deferred send (armDeferredRothFlushGiveUp
+  // below): if the in-flight save has not settled within
+  // DEFERRED_FLUSH_GIVE_UP_MS, the timer consumes the slot
+  // itself and fires the deferred send anyway, through the
+  // same retrying flush send (sendRothFlush) a settle
+  // would have fired — so the edit is sent, its failure
+  // re-arms the flush's own 3 s retry (build v188), and a
+  // CAS conflict from sending while the wedged save is
+  // still in flight resolves through the mutation's
+  // normal conflict path instead of stranding the edit.
+  // A settle that lands first consumes the slot through
+  // takeDeferredRothFlush, which clears this timer, so a
+  // normally-settling save fires the deferred send exactly
+  // as before and the timer never fires at all. The timer
+  // lives in its own ref, cleared by nothing after
+  // unmount, so it outlives the view like the flush retry
+  // timer.
+  const deferredRothFlushGiveUpTimerRef = useRef<number | null>(null);
+  const clearDeferredRothFlushGiveUp = () => {
+    if (deferredRothFlushGiveUpTimerRef.current != null) {
+      window.clearTimeout(deferredRothFlushGiveUpTimerRef.current);
+      deferredRothFlushGiveUpTimerRef.current = null;
+    }
+  };
+  // Consume the deferred slot (and disarm its give-up
+  // timer): the ONE way the slot is read, so a settle and
+  // the give-up can never both fire the same send.
+  const takeDeferredRothFlush = (): (() => void) | null => {
+    clearDeferredRothFlushGiveUp();
+    const deferred = deferredRothFlushRef.current;
+    deferredRothFlushRef.current = null;
+    return deferred;
+  };
+  const armDeferredRothFlushGiveUp = () => {
+    clearDeferredRothFlushGiveUp();
+    deferredRothFlushGiveUpTimerRef.current = window.setTimeout(() => {
+      deferredRothFlushGiveUpTimerRef.current = null;
+      const deferred = deferredRothFlushRef.current;
+      deferredRothFlushRef.current = null;
+      if (deferred) deferred();
+    }, DEFERRED_FLUSH_GIVE_UP_MS);
+  };
   const focusFieldRef = useRef<string | null>(null);
   useEffect(() => {
     focusFieldRef.current = focusField;
   }, [focusField]);
   useEffect(() => {
-    if (rothQ.data) rothRevisionRef.current = rothQ.data.revision;
+    if (rothQ.data) {
+      rothRevisionRef.current = rothQ.data.revision;
+      rothFetchedRevisionRef.current = rothQ.data.revision;
+    }
   }, [rothQ.data]);
   const rothSave = useMutation({
     mutationFn: (input: RothSavePayload) =>
       api.saveRothInputs({ ...input, baseRevision: rothRevisionRef.current }),
+    onError: () => {
+      // Build v151 (audit M-5): a failed write-through
+      // says so instead of vanishing silently. The edit
+      // stays queued (the fire path below clears it only on
+      // success) and its per-call onError re-arms a retry, so
+      // the edit lands once the server is reachable again.
+      setPlanMsg("Could not save — your entries stay on this screen.");
+    },
     onSuccess: (res) => {
       if (res.ok) {
         rothRevisionRef.current = res.revision;
+        // Build v151 (audit M-5), completion: a save landed,
+        // so a "Could not save" note from an earlier failed
+        // attempt is stale now — clear exactly that note (the
+        // Playground write-through does the same with its own
+        // message line). Any other plan message — a conflict
+        // note, a reset note — is left untouched: this line is
+        // shared with the Retirement record's own save flows.
+        setPlanMsg((m) =>
+          m === "Could not save — your entries stay on this screen." ? "" : m,
+        );
         // The Tax Plan view reads the same query key, so it
         // picks the new values up on its next render.
         queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
@@ -1034,7 +1744,12 @@ export function RetirementCalc() {
       }
       // Conflict: a newer Tax Plan save landed first. Re-read
       // the record — the sourced effect re-shows the stored
-      // values — and say plainly what happened.
+      // values — and say plainly what happened. Contract
+      // v153: the re-show is a force sync, since the guarded
+      // sourced effect would otherwise keep the dropped
+      // edits on screen (they differ from the last-synced
+      // values by design).
+      planForceSyncRef.current = true;
       rothRevisionRef.current = res.revision;
       queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
       setPlanMsg(
@@ -1045,27 +1760,191 @@ export function RetirementCalc() {
   const rothSaveMutateRef = useRef(rothSave.mutate);
   rothSaveMutateRef.current = rothSave.mutate;
   const firePendingRothSave = () => {
-    if (!pendingRothSave.current) return;
+    const pending = pendingRothSave.current;
+    if (!pending) return;
     if (
       focusFieldRef.current != null &&
       PLAN_FIELD_KEYS.includes(focusFieldRef.current)
     ) {
       // Settled-value gate: a plan field is still being edited,
-      // so the pending payload may hold a half-typed value. Hold
-      // it — the blur flush below sends it once focus leaves.
+      // so the pending edit may still change. Hold it — the
+      // blur flush below sends it once focus leaves.
       return;
     }
     if (rothSaveInFlightRef.current) {
+      // Build v177 (re-audit NICE-TO-HAVE N-3): this hold
+      // is BOUNDED — the counter and give-up are shared with
+      // the coherence hold below (one wait, one bound).
+      // Before v177 it re-armed the 300 ms
+      // re-check without limit: a save whose call never
+      // settles (a hung request — the mutation's promise
+      // neither resolves nor rejects, so onSettled never
+      // runs and the in-flight flag never clears) held the
+      // queued edit behind it forever, polling for the life
+      // of the view.
+      rothHoldPollsRef.current += 1;
+      if (rothHoldPollsRef.current > SAVE_HOLD_MAX_POLLS) {
+        rothHoldPollsRef.current = 0;
+        if (rothSaveTimer.current != null) {
+          window.clearTimeout(rothSaveTimer.current);
+          rothSaveTimer.current = null;
+        }
+        setPlanMsg("Could not save — your entries stay on this screen.");
+        return;
+      }
       if (rothSaveTimer.current != null) window.clearTimeout(rothSaveTimer.current);
       rothSaveTimer.current = window.setTimeout(firePendingRothSave, 300);
       return;
     }
-    const payload = pendingRothSave.current;
-    pendingRothSave.current = null;
+    // Payload/base coherence (build v153): the mutation
+    // sends rothRevisionRef as its CAS base, and that ref
+    // adopts a save's returned revision the moment the save
+    // lands — one refetch ahead of the fetched record the
+    // payload is rebuilt from. While the two disagree, the
+    // record here is older than the base, and a payload
+    // built from it would carry pre-save values for fields
+    // outside the delta under the newer base — the same
+    // silent revert, one window narrower. Hold and re-check
+    // shortly; the invalidation refetch the save triggered
+    // lands and the two describe the same record again.
+    // Build v177 (re-audit NICE-TO-HAVE N-3): this
+    // coherence hold is BOUNDED by the same counter and
+    // give-up as the in-flight hold above (they are one
+    // wait: the refetch it waits for is the in-flight
+    // save's own invalidation). Before v177 it too re-armed
+    // without limit, so a refetch that never landed (a
+    // failed invalidation the query layer gave up on) held
+    // the queued edit forever. On give-up the edit STAYS
+    // queued — a later edit or the blur flush fires it once
+    // the record catches up, and the guard itself is
+    // untouched: nothing is ever sent under a base that
+    // does not describe the record it was built from.
+    if (rothFetchedRevisionRef.current !== rothRevisionRef.current) {
+      rothHoldPollsRef.current += 1;
+      if (rothHoldPollsRef.current > SAVE_HOLD_MAX_POLLS) {
+        rothHoldPollsRef.current = 0;
+        if (rothSaveTimer.current != null) {
+          window.clearTimeout(rothSaveTimer.current);
+          rothSaveTimer.current = null;
+        }
+        setPlanMsg("Could not save — your entries stay on this screen.");
+        return;
+      }
+      if (rothSaveTimer.current != null) window.clearTimeout(rothSaveTimer.current);
+      rothSaveTimer.current = window.setTimeout(firePendingRothSave, 300);
+      return;
+    }
+    // Build v153 (audit M-4): rebuild the payload NOW,
+    // from the freshest record, applying only the queued
+    // deltas. The record may have advanced past the revision
+    // the edit was queued against (another tab's save,
+    // picked up by the refetch while a field here was
+    // focused) — rebuilding here carries that save's values
+    // for every field this view did not edit, and the
+    // mutation reads its CAS base from the same refetch, so
+    // payload and base always describe the same record. A
+    // payload snapshotted at queue time must never be sent
+    // under a base read later: the server CAS would accept
+    // it and silently revert the other tab's edits.
+    const payload = buildRothSavePayloadRef.current(pending);
+    if (!payload) {
+      // Nothing to send: no saved record to write through
+      // to, or the fresh record already holds every delta
+      // value (another tab saved the same edits first — the
+      // edits' goal is met, and every other field is theirs
+      // to keep). The owed save is complete either way.
+      pendingRothSave.current = null;
+      rothHoldPollsRef.current = 0;
+      return;
+    }
+    // Build v151 (audit M-5): the edit stays queued
+    // until the save SUCCEEDS — it is not dropped at the
+    // call, so a failed save (offline, gateway 500) cannot
+    // vanish silently. The per-call handlers below own the
+    // queue: success drops the edit, error re-arms a retry
+    // of it — and every retry rebuilds its payload fresh at
+    // its own fire, so a retry can never resurrect stale
+    // field values either.
+    rothHoldPollsRef.current = 0;
     rothSaveInFlightRef.current = true;
+    rothSaveInFlightDeltaRef.current = pending;
     rothSaveMutateRef.current(payload, {
+      onSuccess: (res) => {
+        if (res.ok) {
+          // The record now holds the payload's five plan
+          // values: they become the values the fields are
+          // synced to, so the refetch this save triggers
+          // re-syncs the form from them instead of reading
+          // the saved values back as local edits.
+          planSyncedRef.current = {
+            annualSpendingCents: payload.annualSpendingCents,
+            birthYearPrimary: payload.birthYearPrimary,
+            retirementAge: payload.retirementAge,
+            endAge: payload.endAge,
+            expectedReturnPct:
+              Math.round(
+                (payload.expectedReturnPct ?? EXPECTED_RETURN_DEFAULT) * 100,
+              ) / 100,
+          };
+        }
+        // The save landed (or a conflict re-read the record
+        // and re-showed the stored values — the deliberate
+        // drop): clear the queue only if it still holds this
+        // edit, never a newer one queued behind it.
+        if (pendingRothSave.current === pending) {
+          pendingRothSave.current = null;
+        }
+        // Build v168 (re-audit SHOULD S-3): consume a
+        // flush the unmount cleanup deferred behind this
+        // save — fire it on a landed save (the mutation-level
+        // handler has adopted the new revision; the deferred
+        // send runs the v162 guard, which now routes it
+        // through the fresh-fetch path, so its payload is
+        // rebuilt from the record this save just landed),
+        // drop it on a conflict (the conflict path re-read
+        // the record and re-showed the stored values; the
+        // deferred edit is the same stale form's and must not
+        // ride out under the adopted base).
+        // Build v196: consumed through takeDeferredRothFlush,
+        // which also disarms the slot's give-up timer — a
+        // save that settles normally leaves no timer behind.
+        const deferred = takeDeferredRothFlush();
+        if (res.ok && deferred) deferred();
+      },
+      onError: () => {
+        // Keep the edit queued and re-arm a retry on the
+        // shared timer, so the save lands once the server is
+        // reachable again — rebuilt fresh at that fire, like
+        // every send. If a plan field is focused again by
+        // then, the settled-value gate holds the retry and
+        // the blur flush sends it, exactly as for a first
+        // attempt. The mutation-level onError sets the
+        // visible message.
+        if (pendingRothSave.current === pending) {
+          if (rothSaveTimer.current != null) {
+            window.clearTimeout(rothSaveTimer.current);
+          }
+          rothSaveTimer.current = window.setTimeout(firePendingRothSave, 3000);
+        }
+        // Build v168 (re-audit SHOULD S-3): this save
+        // never landed, so the base is unchanged and a flush
+        // deferred behind it at unmount fires now — its
+        // payload rebuilds from the same fetched record this
+        // save's payload was built from, applying only the
+        // deferred delta (which may cover fields this save
+        // also carried; re-sending them is the same values,
+        // and fields it did not carry are the deferred
+        // edit's own). No retry of this save was armed above:
+        // the queue no longer holds it, the cleanup moved it
+        // to the deferred slot.
+        // Build v196: consumed through takeDeferredRothFlush,
+        // which also disarms the slot's give-up timer.
+        const deferred = takeDeferredRothFlush();
+        if (deferred) deferred();
+      },
       onSettled: () => {
         rothSaveInFlightRef.current = false;
+        rothSaveInFlightDeltaRef.current = null;
       },
     });
   };
@@ -1100,17 +1979,76 @@ export function RetirementCalc() {
   };
   const planFieldValuesRef = useRef(planFieldValues);
   planFieldValuesRef.current = planFieldValues;
-  const buildRothSavePayload = (): RothSavePayload | null => {
-    const rp = rothQ.data;
-    if (!rp || !rp.saved) return null;
+  // The local edit this view owes the Tax Plan record
+  // (build v153, audit M-4): for each of the five plan
+  // fields, the field's parsed target value when it differs
+  // from the value the field was last synced to, else null
+  // (no local edit — whatever the record holds at fire time
+  // stands). A blank or unparseable field parses to null and
+  // so carries no delta: it can never blank a stored value,
+  // exactly as before. Comparing against the last-synced
+  // values, not the current record, is what keeps a field
+  // the user never touched from becoming a "delta" just
+  // because another tab moved the record under it. Returns
+  // null when no field carries a local edit.
+  const computePlanDelta = (): RothPlanDelta | null => {
+    const synced = planSyncedRef.current;
+    if (!synced) return null;
     const values = planFieldValuesRef.current();
+    const deltaFor = (
+      parsed: number | null,
+      was: number | null,
+    ): number | null =>
+      parsed != null && parsed !== was ? parsed : null;
+    const delta: RothPlanDelta = {
+      annualSpendingCents: deltaFor(
+        values.annualSpendingCents,
+        synced.annualSpendingCents,
+      ),
+      birthYearPrimary: deltaFor(
+        values.birthYearPrimary,
+        synced.birthYearPrimary,
+      ),
+      retirementAge: deltaFor(values.retirementAge, synced.retirementAge),
+      endAge: deltaFor(values.endAge, synced.endAge),
+      expectedReturnPct: deltaFor(
+        values.expectedReturnPct,
+        synced.expectedReturnPct,
+      ),
+    };
+    return delta.annualSpendingCents == null &&
+      delta.birthYearPrimary == null &&
+      delta.retirementAge == null &&
+      delta.endAge == null &&
+      delta.expectedReturnPct == null
+      ? null
+      : delta;
+  };
+  // Build the whole-record save payload for a queued delta
+  // from the CURRENT fetched record (build v153, audit
+  // M-4): the record itself, flattened (its inputs,
+  // execution, market-check, gift, and tax-return blocks,
+  // minus the execution block's read-only
+  // rolledOver/clearedYear), with only the delta's fields
+  // replaced by their target values — every other field,
+  // the five plan fields included, is the freshest record's.
+  // Returns null when there is no saved record to write
+  // through to, or when the fresh record already holds the
+  // delta's values on every field (nothing left to save —
+  // e.g. another tab saved the same edits first).
+  const buildRothSavePayload = (
+    delta: RothPlanDelta,
+    record?: RothPlannerRecord,
+  ): RothSavePayload | null => {
+    const rp = record ?? rothQ.data;
+    if (!rp || !rp.saved) return null;
     const saved = rp.saved;
     const next = {
-      annualSpendingCents: values.annualSpendingCents ?? saved.annualSpendingCents,
-      birthYearPrimary: values.birthYearPrimary ?? saved.birthYearPrimary,
-      retirementAge: values.retirementAge ?? saved.retirementAge,
-      endAge: values.endAge ?? saved.endAge,
-      expectedReturnPct: values.expectedReturnPct ?? saved.expectedReturnPct,
+      annualSpendingCents: delta.annualSpendingCents ?? saved.annualSpendingCents,
+      birthYearPrimary: delta.birthYearPrimary ?? saved.birthYearPrimary,
+      retirementAge: delta.retirementAge ?? saved.retirementAge,
+      endAge: delta.endAge ?? saved.endAge,
+      expectedReturnPct: delta.expectedReturnPct ?? saved.expectedReturnPct,
     };
     if (
       next.annualSpendingCents === saved.annualSpendingCents &&
@@ -1133,10 +2071,146 @@ export function RetirementCalc() {
   };
   const buildRothSavePayloadRef = useRef(buildRothSavePayload);
   buildRothSavePayloadRef.current = buildRothSavePayload;
+  // The ONE unmount-flush send for a queued write-through
+  // delta (build v168: factored out of the cleanup so the
+  // immediate flush and the S-3 deferred flush run identical
+  // code). The M-4 coherence guard (build v162) rides
+  // along unchanged:
+  //   - Guard not holding (fetched revision == base): build
+  //     from the fetched record and send at once.
+  //   - Guard holding: fetch the record fresh, rebuild the
+  //     payload from THAT record, adopt its revision as the
+  //     base, and only then send. If the fresh fetch fails,
+  //     or still returns a record older than the base, the
+  //     pending edit is dropped rather than sent stale.
+  // A deferred flush (fired when the save it queued behind
+  // settles) reaches this with the guard holding after a
+  // landed save — the fresh-fetch path is then the normal
+  // route, and the payload it builds already contains the
+  // just-landed save's values for every field outside the
+  // delta.
+  //
+  // Build v188 (re-audit round 3 MUST-4): the ONE payload
+  // send inside the flush, carrying the same retry
+  // firePendingRothSave's sends carry. Before v188 both of
+  // sendRothFlush's sends were bare
+  // rothSaveMutateRef.current(flushPayload) calls with NO
+  // per-call handlers — so a flush whose request failed (a
+  // network error at the moment of navigation) was dropped
+  // outright: the mutation-level onError above set the
+  // "Could not save" note on an unmounted view, where
+  // nobody could see it, the cleanup had already cleared
+  // the delta from the queue, and nothing ever retried, so
+  // the edit silently never landed — returning to the view
+  // showed the old stored value with no explanation. This
+  // send is the flush's firePendingRothSave: its per-call
+  // onError re-arms a 3 s retry of the SAME payload,
+  // chained per failure exactly as firePendingRothSave's
+  // onError re-arms its own retry, so the flush lands once
+  // the server is reachable again. The retry timer lives
+  // in its own ref, not the shared roth save timer: the
+  // cleanup clears that timer as it runs, and nothing runs
+  // after unmount to clear this one, so the retries
+  // outlive the view. Each attempt goes through this same
+  // send (the retry calls back through the ref, so it
+  // always reaches the current closure), and the mutation
+  // reads its CAS base live from rothRevisionRef at each
+  // call — which still describes the record the payload
+  // was built from: on the guard-not-holding path the
+  // fetched and base revisions were equal at the build,
+  // and on the fresh-fetch path sendRothFlush adopts the
+  // fresh record's revision as the base before sending,
+  // so a retry rides exactly the base its first send did.
+  // A conflict is NOT retried: it resolves through
+  // onSuccess with res.ok false, where the mutation-level
+  // handler has already applied the conflict path's
+  // deliberate drop, and re-sending the stale-built
+  // payload would fight the newer record the refusal just
+  // re-read — the same rule firePendingRothSave's per-call
+  // handlers follow. The pre-send drop paths in
+  // sendRothFlush (no fresh-enough record on the
+  // fresh-fetch path, or a payload the fresh record
+  // already satisfies) are unchanged: those are the v162
+  // guard's deliberate outcomes, reached before any send
+  // exists to retry.
+  const rothFlushRetryTimerRef = useRef<number | null>(null);
+  const sendRothFlushPayload = (flushPayload: RothSavePayload) => {
+    rothSaveMutateRef.current(flushPayload, {
+      onError: () => {
+        if (rothFlushRetryTimerRef.current != null) {
+          window.clearTimeout(rothFlushRetryTimerRef.current);
+        }
+        rothFlushRetryTimerRef.current = window.setTimeout(() => {
+          sendRothFlushPayloadRef.current(flushPayload);
+        }, 3000);
+      },
+    });
+  };
+  const sendRothFlushPayloadRef = useRef(sendRothFlushPayload);
+  sendRothFlushPayloadRef.current = sendRothFlushPayload;
+  const sendRothFlush = (pendingFlush: RothPlanDelta) => {
+    if (rothFetchedRevisionRef.current === rothRevisionRef.current) {
+      const flushPayload = buildRothSavePayloadRef.current(pendingFlush);
+      if (flushPayload) {
+        sendRothFlushPayload(flushPayload);
+      }
+    } else {
+      const baseAtFlush = rothRevisionRef.current;
+      void (async () => {
+        let fresh: RothPlannerRecord;
+        try {
+          fresh = await queryClient.fetchQuery({
+            queryKey: ["rothplanner"],
+            queryFn: () => api.getRothPlanner({}),
+          });
+        } catch {
+          // No fresh record, no flush — never send the
+          // stale-built payload under the fresh base.
+          return;
+        }
+        if (!fresh.saved || fresh.revision < baseAtFlush) {
+          // The record on offer is still older than the
+          // base the stale payload would have ridden
+          // under — dropping the edit is the only safe
+          // outcome left.
+          return;
+        }
+        const flushPayload = buildRothSavePayloadRef.current(
+          pendingFlush,
+          fresh,
+        );
+        if (!flushPayload) {
+          // The fresh record already holds every delta
+          // value — the edit's goal is met, and every
+          // other field is the fresh record's to keep.
+          return;
+        }
+        // Adopt the fresh record's revision as the base
+        // BEFORE the send: the mutation reads its CAS
+        // base live from this ref at the call, so payload
+        // and base now describe the same record.
+        rothRevisionRef.current = fresh.revision;
+        rothFetchedRevisionRef.current = fresh.revision;
+        sendRothFlushPayload(flushPayload);
+      })();
+    }
+  };
+  sendRothFlushRef.current = sendRothFlush;
   const queueRothSave = () => {
-    const payload = buildRothSavePayloadRef.current();
-    if (!payload) return;
-    pendingRothSave.current = payload;
+    const rp = rothQ.data;
+    if (!rp || !rp.saved) return;
+    const delta = computePlanDelta();
+    if (!delta) {
+      // No local edit is owed — the fields match what they
+      // were last synced to (the edit was reverted, or the
+      // record caught up with it). Clear anything queued:
+      // leaving an earlier edit in place here is what let a
+      // stale payload stay queued and ride out later under
+      // a fresh base (build v153, audit M-4).
+      pendingRothSave.current = null;
+      return;
+    }
+    pendingRothSave.current = delta;
     firePendingRothSaveRef.current();
   };
   const queueRothSaveRef = useRef(queueRothSave);
@@ -1162,7 +2236,7 @@ export function RetirementCalc() {
   // the percent input, the professional guardrails knobs 120 /
   // 80 / 10, and the phased knobs 75 / 1). The five plan fields
   // — spending, current age, retirement age, end age, expected
-  // return — are NOT reset (contract v133): they come from the
+  // return — are NOT reset (build v133): they come from the
   // Tax Plan record, so the reset leaves them where the plan
   // has them and saves those values through unchanged. The
   // reset values are saved immediately through the same save
@@ -1173,7 +2247,7 @@ export function RetirementCalc() {
   const handleResetToDefaults = () => {
     if (!data) return;
     const defaultStocks = STOCKS_PCT_DEFAULT;
-    // The plan-sourced expected return (contract v133): the
+    // The plan-sourced expected return (build v133): the
     // reset keeps it where the Tax Plan has it. prevBlend
     // records it alongside the blend volatility for the reset
     // mix (95% stocks), so the blend-following effect compares
@@ -1208,7 +2282,7 @@ export function RetirementCalc() {
       // Net Worth-following figure (latest total minus the 529
       // bucket) and keeps following future snapshots.
       portfolioCents: null,
-      // The five plan fields (contract v133): carried through
+      // The five plan fields (build v133): carried through
       // at the Tax Plan record's values, not reset.
       spendingCents: sourced.spendingCents,
       currentAge: sourced.currentAge,
@@ -1270,7 +2344,7 @@ export function RetirementCalc() {
     // Net Worth-following figure (the latest net worth total
     // minus the 529 bucket). The five plan fields (spending,
     // ages, expected return) are sourced from the Tax Plan
-    // record (contract v133) and are never blank in practice;
+    // record (build v133) and are never blank in practice;
     // the fallbacks below are the same values the sourcing
     // itself falls back to, so they agree. (The Percent
     // strategy never reads the annual spending input — its
@@ -1298,7 +2372,7 @@ export function RetirementCalc() {
     const retAge = clampAgeLive(ret, 120);
     const endAgeC = clampAgeLive(end, 130);
     if (endAgeC <= curAge) return null;
-    // No silent floor (contract v66, boundary audit F11): the
+    // No silent floor (build v66, boundary audit F11): the
     // live engines price the typed value as-is, exactly what a
     // save would store — the old clamp priced $0 for a typed
     // negative without saying so (the writer now refuses a
@@ -1347,7 +2421,7 @@ export function RetirementCalc() {
   // the numbers on screen would silently not be the saved plan.
   const expected = (parseNum(expectedPct) ?? blendedExpected(stocks)) / 100;
   const vol = Math.max(0, (parseNum(volPct) ?? blendedVol(stocks)) / 100);
-  // Inclusive horizon (F6, contract v99): the priced years run
+  // Inclusive horizon (F6, build v99): the priced years run
   // from the current age through the end age, so the count is
   // the age span plus one — the same count the engines run.
   const planYears = inputs ? inputs.endAge - inputs.currentAge + 1 : 0;
@@ -1795,7 +2869,7 @@ export function RetirementCalc() {
     },
   });
 
-  // Optimistic flip for the Assumptions group (contract v132):
+  // Optimistic flip for the Assumptions group (build v132):
   // the section re-renders from local state at once; the mutation
   // persists the choice in the background and its refetch then
   // agrees with what is already shown.
@@ -1812,7 +2886,7 @@ export function RetirementCalc() {
   // only the preference: the stored annual spending value is
   // never part of this write.
   const setSpendingUnitPref = useMutation({
-    // Contract v121 (F3): the flip carries the epoch of the data
+    // Build v121 (F3): the flip carries the epoch of the data
     // on screen.
     mutationFn: (
       input: Parameters<typeof api.setRetirementSpendingUnit>[0],
@@ -1844,7 +2918,7 @@ export function RetirementCalc() {
   // back through exactly the same path. The five plan fields
   // — spending, current age, retirement age, end age,
   // expected return — are NOT loaded from the scenario
-  // (contract v133): they come from the Tax Plan record, and
+  // (build v133): they come from the Tax Plan record, and
   // the save carries the Tax Plan's values for them, so a
   // scenario can vary only the Retirement-owned inputs — and
   // "Back to my plan" restores the baseline's Retirement-owned
@@ -1896,7 +2970,7 @@ export function RetirementCalc() {
     pendingSaveOkRef.current = null;
     const payload: Parameters<typeof api.saveRetirementCalc>[0] = {
       portfolioCents: sc.portfolioCents,
-      // The five plan fields (contract v133): the Tax Plan
+      // The five plan fields (build v133): the Tax Plan
       // record's values, not the scenario's.
       spendingCents: sourced.spendingCents,
       currentAge: sourced.currentAge,
@@ -2127,17 +3201,19 @@ export function RetirementCalc() {
   );
 
   /* Annual spending provenance note (rendered directly under the
-     field through the same More/Less Explainer pattern as the
-     Starting portfolio note): the value comes from the Tax Plan
-     record (contract v133) — this view uses it as-is and never
-     edits it. While it equals the trailing True cost figure,
-     the short line says so; when it differs, the short line
-     names the trailing figure for reference. The trailing
-     figure and its window (start/end months, months averaged)
-     come only from the server response — the client never
-     recomputes True cost. The More detail names both figures
-     whenever they differ, so a Tax Plan spending set apart
-     from the trailing figure shows the gap plainly. */
+     field through the Explainer pattern): the value comes from
+     the Tax Plan record (build v133) — this view uses it
+     as-is and never edits it. The visible line is one fixed
+     sentence; everything else lives in the ⓘ tooltip: the
+     trailing True cost figure (named in both the equals and
+     differs detail below), the income-tax note, and — under
+     the guardrails strategy — the guardrails base-spending
+     note. The trailing figure and its window (start/end
+     months, months averaged) come only from the server
+     response — the client never recomputes True cost. The
+     detail names both figures whenever they differ, so a Tax
+     Plan spending set apart from the trailing figure shows
+     the gap plainly. */
   const trailingSpendingCents = data.defaultSpendingAnnualCents;
   // The tracked average's monthly presentation for per-month
   // display mode: the annual figure ÷ 12, rounded to cents for
@@ -2162,24 +3238,10 @@ export function RetirementCalc() {
     data.defaultSpendingMonths === 1
       ? "last 1 month"
       : `last ${data.defaultSpendingMonths} months`;
-  const spendingShortLine = spendingEqualsTrailing ? (
-    <>
-      From the Tax Plan — it matches your {spendingMonthsPhrase} of spending (True cost). Edit
-      the value here — it updates the Tax Plan too.{" "}
-      {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Tax Plan view models that tax year by year."}
-    </>
-  ) : (
-    <>
-      From the Tax Plan. Your {spendingMonthsPhrase} of spending averages{" "}
-      {spendingUnit === "month"
-        ? `${fmt(trailingMonthlyCents)}/mo`
-        : fmt(trailingSpendingCents)}
-      {" a year for reference. "}
-      Edit the value here — it updates the Tax Plan too.{" "}
-      {"Income tax isn't in this figure; in retirement your portfolio pays tax on top of spending. The Tax Plan view models that tax year by year."}
-    </>
+  const spendingShortLine = (
+    <>From the Tax Plan. Edit here — it updates the Tax Plan too.</>
   );
-  const spendingMore = spendingEqualsTrailing ? (
+  const spendingTrailingDetail = spendingEqualsTrailing ? (
     <>
       <p>
         This value comes from the Tax Plan — it is the plan&rsquo;s
@@ -2221,6 +3283,27 @@ export function RetirementCalc() {
       </p>
     </>
   );
+  /* The ⓘ tooltip's full content: the trailing-average detail
+     above, plus the income-tax note and — under the guardrails
+     strategy — the guardrails base-spending note. These used to
+     sit visibly under the field; they now live only here. */
+  const spendingMore = (
+    <>
+      {spendingTrailingDetail}
+      <p>
+        Income tax isn&rsquo;t in this figure; in retirement your
+        portfolio pays tax on top of spending. The Tax Plan view
+        models that tax year by year.
+      </p>
+      {strategy === "guardrails" && (
+        <p>
+          Base spending for the guardrails strategy — it adjusts by
+          the adjustment size below when the withdrawal rate drifts
+          too far from its starting rate.
+        </p>
+      )}
+    </>
+  );
 
   /* Which effective inputs differ from the fresh-open defaults
      (the same values Reset to defaults restores: live portfolio,
@@ -2228,7 +3311,7 @@ export function RetirementCalc() {
      (none) with a start age of 67, Constant strategy at 5%).
      The five plan fields — spending, current age, retirement
      age, end age, expected return — are NOT compared here
-     (contract v133): they come from the Tax Plan record, so
+     (build v133): they come from the Tax Plan record, so
      they ARE the plan values and never count as a diff.
      Compared on the EFFECTIVE values the engines actually use
      — clamped ages, blank return / volatility read as the
@@ -2594,13 +3677,13 @@ export function RetirementCalc() {
      means: Guardrails spends the entered amount as its base, and
      Percent of portfolio has no fixed dollar amount, so its
      entered figure is the percent itself. */
-  /* Plan summary (contract v119; editable in place v140,
+  /* Plan summary (build v119; editable in place v140,
      reverted to taps v146): the same figures the "Calculated
      with" tiles carry, as one sentence — each input figure is a
      dotted-underlined tap that jumps to its field below (scroll
      + flash, via jumpToRcField), unfolding the inputs panel
      first if it is folded shut. The fields below stay editable
-     in place (contract v140, one source with multiple edit
+     in place (build v140, one source with multiple edit
      locations); the sentence itself edits nothing. The outcome
      clause is a solver result and stays plain text. The
      extra-income taps only exist while the extra-income inputs
@@ -2783,7 +3866,7 @@ export function RetirementCalc() {
         className="mt-1 max-w-2xl"
         summary={
           <>
-            Everything runs in <strong className="text-[var(--text)]">today&rsquo;s (real) dollars</strong> — a plan succeeds if the money never runs out before the end age.
+            Everything runs in <strong className="text-[var(--text)]">today&rsquo;s (real) dollars</strong> — a plan succeeds if every year&rsquo;s spending is fully funded through the end age, even a landing at exactly $0.
           </>
         }
       >
@@ -2793,7 +3876,7 @@ export function RetirementCalc() {
           today&rsquo;s dollars. Each year, once retired, the plan withdraws
           spending minus extra income (any income above spending is added to
           the portfolio), then that year&rsquo;s real return applies.
-          A plan succeeds if the money never runs out — every year&rsquo;s spending is fully funded through the end age. A run that sits at $0 and is later refilled by income still counts as not succeeding, because the money did run out.
+          A plan succeeds if every year&rsquo;s spending is fully funded through the end age — the money never comes up short in any year. A run that lands at exactly $0 still counts as succeeding when that year&rsquo;s spending was fully funded by the money on hand: the portfolio is empty, but no year&rsquo;s spending went unfunded. A run counts as not succeeding when a year&rsquo;s spending exceeds the money on hand to fund it — even if the portfolio then sits at $0 and later income refills it, that year&rsquo;s spending was not fully funded, so the money did run out in the sense that matters here.
         </p>
       </Explainer>
 
@@ -3063,11 +4146,6 @@ export function RetirementCalc() {
                 >
                   {spendingMore}
                 </Explainer>
-                {strategy === "guardrails" && (
-                  <p className="mt-1 text-xs text-[var(--dim)]">
-                    Base spending for the guardrails strategy — it adjusts by the adjustment size below when the withdrawal rate drifts too far from its starting rate.
-                  </p>
-                )}
                 {strategy === "phased" && (
                   <p className="mt-1 text-xs text-[var(--dim)]">
                     Starting spending for the phased strategy — full until the step-down age below, then lower each year.
@@ -3490,7 +4568,7 @@ export function RetirementCalc() {
 
       {inputs && tab === "projection" && projection && (
         <section aria-label="Projection results" className={`mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${flashCls}`}>
-          {/* Stat strip (contract v70): the same figures the
+          {/* Stat strip (build v70): the same figures the
               bordered tiles used to carry — ending balance,
               assumed return, lasts-to, and the percent strategy's
               final-year spending — in ONE compact wrapping row,

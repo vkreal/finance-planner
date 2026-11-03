@@ -49,7 +49,7 @@ export function parseNum(s: string): number | null {
 export function fmtMoneyInput(dollars: number): string {
   return dollars.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
-// Monthly raw form (contract v140, shared v141): the monthly
+// Monthly raw form (build v140, shared v141): the monthly
 // figure as a plain number string (no $ or commas) for the
 // focused per-month input, so an edit starts from what was
 // displayed. The monthly cents are rounded to the cent. A typed
@@ -124,11 +124,11 @@ export {
    readable at phone width wherever the table is scrolled to;
    the bubble's look and the tap/hover/Escape behavior are
    unchanged, and it follows the button on scroll and resize.
-   `liftPx` (contract v82, used by one caller) adds extra clear
+   `liftPx` (build v82, used by one caller) adds extra clear
    space between an above-placed bubble and its button, so the
    bubble can clear a neighbouring row above the button — the
    default 0 keeps every existing caller's geometry exactly.
-   `onOpenChange` (contract v120) reports whenever the bubble
+   `onOpenChange` (build v120) reports whenever the bubble
    opens or closes, so a chart label can lift its span above its
    siblings while its tooltip is open. */
 export function InfoNote({
@@ -147,7 +147,7 @@ export function InfoNote({
   viewportClamp?: boolean;
   /** Extra px of gap above the button for an above-placed bubble. */
   liftPx?: number;
-  /** Called whenever the bubble opens or closes (contract v120). */
+  /** Called whenever the bubble opens or closes (build v120). */
   onOpenChange?: (open: boolean) => void;
 }) {
   const [pinned, setPinned] = useState(false);
@@ -162,7 +162,7 @@ export function InfoNote({
   const tipId = `roth-info-tip-${rawId.replace(/[^a-zA-Z0-9]/g, "")}`;
   const show = pinned || hovered;
 
-  // Contract v120: report open/closed to the parent, so a chart
+  // Build v120: report open/closed to the parent, so a chart
   // label can lift its span above its siblings while its tooltip
   // is open. The callback rides on a ref: parents pass an inline
   // arrow, and reading it through the ref keeps this effect from

@@ -35,6 +35,27 @@ import {
   type DecemberStray,
 } from "@space/server/decemberCore";
 
+/* Exact-cents dollar statement (build v192, re-audit
+   round 3 SHOULD-3), used ONLY inside the projected tax
+   bill: the priced figures the bill lists carry cents
+   that the whole-dollar fmtDollars drops, so whole-dollar
+   rows could not foot to the settlement — the stated
+   federal tax row dropped the priced tax's sub-dollar
+   cents, and the listed rows missed the settlement by
+   exactly those cents. Stating every figure in the bill
+   to the cent makes the listed rows sum to the settlement
+   shown, line by line. Same shape as the Playground's
+   fmtDollarsExact; every other surface keeps the
+   whole-dollar fmtDollars. */
+function fmtDollarsExact(dollars: number): string {
+  const neg = dollars < 0;
+  const s = `$${Math.abs(dollars).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  return neg ? `−${s}` : s;
+}
+
 /* The December projection console — a year-end projection for
    a household managing MAGI against the ACA cliff. The form's
    inputs persist as one server blob (getDecemberProjection /
@@ -76,11 +97,11 @@ type DecForm = {
   ytdTaxExemptInterest: string;
   ytdCapitalGain: string;
   // Cost basis of the sales behind the year's gains
-  // (contract v127, round-19 finding 4): nullable money
+  // (build v127, round-19 finding 4): nullable money
   // like the carry-in fields — null (blank) and $0 are
   // distinct facts (no input yet vs explicitly no basis).
   saleBasis: string;
-  // Capital losses carried into this year (contract v111):
+  // Capital losses carried into this year (build v111):
   // nullable money like the balances — null (blank) and $0
   // are distinct facts (no input yet vs explicitly none),
   // so these four convert through the nullable-money pair.
@@ -88,7 +109,7 @@ type DecForm = {
   carryInCapitalLossLt: string;
   carryInCapitalLossStWa: string;
   carryInCapitalLossLtWa: string;
-  // Gain harvest (contract v113): the toggle is a plain
+  // Gain harvest (build v113): the toggle is a plain
   // boolean; the pool amount is nullable money like the
   // carry-in fields (blank vs $0 are distinct facts), and
   // the basis % is a plain string where blank = no input
@@ -97,7 +118,7 @@ type DecForm = {
   harvestOn: boolean;
   harvestPoolAmount: string;
   harvestPoolBasisPct: string;
-  // Taxable cash for the year (contract v125): nullable
+  // Taxable cash for the year (build v125): nullable
   // money like the harvest pool amount (blank vs $0 are
   // distinct facts) — cash taken from taxable at 100%
   // basis, on top of the pre-tax draw, never part of it.
@@ -128,7 +149,7 @@ type DecForm = {
   itemizedSaltPaid: string;
   itemizedCharitable: string;
   itemizedOther: string;
-  // Education students (contract v103): the December tax
+  // Education students (build v103): the December tax
   // year's per-student qualified expenses as typed strings
   // plus the household's AOTC-eligible mark per student —
   // the same rows the Tax Plan record and the Playground
@@ -137,7 +158,7 @@ type DecForm = {
   strayCapDist: StrayForm;
   strayK1: StrayForm;
   // Long-term-capital-gain portion of the K-1 total
-  // (contract v112): a plain money string like the
+  // (build v112): a plain money string like the
   // January-paid portions beside it.
   strayK1CapGainAmount: string;
   strayTaxExempt: StrayForm;
@@ -148,7 +169,7 @@ type DecForm = {
   strayJanPaid: StrayForm;
   strayJanPaidQualifiedAmount: string;
   // Capital-gain-distribution portion of the January-paid
-  // total (contract v104): a plain money string like the
+  // total (build v104): a plain money string like the
   // qualified portion beside it.
   strayJanPaidCapGainAmount: string;
   strayDivInt: StrayForm;
@@ -156,7 +177,7 @@ type DecForm = {
   strayROC: StrayForm;
   strayROCOrdinary: StrayForm;
   // Qualified-dividends portion of the reclassified
-  // return-of-capital amount (contract v112): a plain
+  // return-of-capital amount (build v112): a plain
   // money string like the January-paid portions.
   strayROCQualifiedAmount: string;
   strayAgiReducers: StrayForm;
@@ -207,7 +228,7 @@ function recordFactsOf(
     // record's execution year, the year that carry-in
     // enters. Load resolution applies the carry-in when
     // the December year is that year OR ANY LATER one
-    // (contract v127, round-19 finding 3): the plan march
+    // (build v127, round-19 finding 3): the plan march
     // applies it at its first year unconditionally, so a
     // record saved in a prior year still carries its loss
     // into the current year's December pricing. It does
@@ -400,7 +421,7 @@ function stateFromForm(f: DecForm): DecemberState {
     likely: parseMoney(r.likely),
     high: parseMoney(r.high),
   });
-  // The unsigned remaining-income ranges (contract v66,
+  // The unsigned remaining-income ranges (build v66,
   // boundary audit F5): the same clamp0 the unsigned YTD
   // fields below already get — interest, dividends, and
   // capital distributions still to come are never negative.
@@ -553,6 +574,14 @@ const CASE_LABELS: Record<DecemberCaseKind, string> = {
   high: "High",
 };
 
+/* Build v207 (re-audit round 4 SHOULD R4-S7): how long the
+   December console's deferred unmount flush (see
+   deferredDecFlushRef below) waits for the in-flight save it
+   queued behind to settle before firing anyway — the same
+   bound, and the same name, as the other views'
+   DEFERRED_FLUSH_GIVE_UP_MS (build v196). */
+const DEFERRED_FLUSH_GIVE_UP_MS = 30000;
+
 export function December() {
   const decQ = useQuery({
     queryKey: ["decemberprojection"],
@@ -562,7 +591,7 @@ export function December() {
     queryKey: ["rothplanner"],
     queryFn: () => api.getRothPlanner({}),
   });
-  // Retirement calculator (contract v126): only for the
+  // Retirement calculator (build v126): only for the
   // "enough for the year" comparison's spending fallback —
   // the Tax Plan record's annual spending, falling back to
   // this default. Read-only; it never blocks the console
@@ -597,9 +626,22 @@ export function December() {
       // dirty flag before replacing it, or the autosave
       // effect would immediately cycle "Saving…" over the
       // conflict note below and re-save the stored state
-      // (contract v63, December save-note fix — the note
+      // (build v63, December save-note fix — the note
       // must survive until the user's next real edit).
       dirtyRef.current = false;
+      // Build v207 (re-audit round 4 SHOULD R4-S7): the
+      // conflict is the deliberate drop for the save-path
+      // machinery below too — the queued payload and any
+      // flush deferred behind this save are this same stale
+      // form's snapshots, so both are dropped here and
+      // neither is ever retried or flushed over the stored
+      // state just reloaded.
+      pendingDecSaveRef.current = null;
+      deferredDecFlushRef.current = null;
+      if (deferredDecFlushGiveUpTimerRef.current != null) {
+        window.clearTimeout(deferredDecFlushGiveUpTimerRef.current);
+        deferredDecFlushGiveUpTimerRef.current = null;
+      }
       revisionRef.current = res.revision;
       storedProvenanceRef.current = decemberStoredProvenanceOf(res.state);
       setBeneficiaryEdited(false);
@@ -632,6 +674,70 @@ export function December() {
   const [form, setForm] = useState<DecForm | null>(null);
   const hydratedRef = useRef(false);
   const dirtyRef = useRef(false);
+  /* Build v207 (re-audit round 4 SHOULD R4-S7): the save-path
+     machinery the other views' writers carry (MUST-3/4/5,
+     SHOULD-6), which this console lacked entirely — before
+     v207 its autosave was a bare debounce whose cleanup only
+     cleared the timer, so an edit made within the 700 ms
+     debounce and followed by "← Tax Plan" (which unmounts
+     this console) was never sent, and a failed save never
+     retried. The autosave effect below now stores every
+     payload it builds in pendingDecSaveRef, so the payload
+     survives its debounce timer; sends run through
+     sendDecSave, whose per-call handlers own the queue
+     (success drops the payload, error re-arms a 3 s retry of
+     it on the shared decSaveTimerRef — the same timer the
+     debounce arms, so a newer edit's effect run supersedes a
+     pending retry exactly as a newer payload supersedes a
+     queued one in the other writers); and the unmount flush
+     effect at the end of the save path sends whatever is
+     still queued as the console goes away. */
+  const pendingDecSaveRef = useRef<DecemberState | null>(null);
+  // The shared save timer: the autosave debounce and the
+  // failed-save retry both arm it (see above).
+  const decSaveTimerRef = useRef<number | null>(null);
+  // The payload currently in flight, so the unmount flush
+  // can tell "queued behind the in-flight save" (a newer
+  // edit — flush it) from "the in-flight save itself"
+  // (already being written — the queue stays populated until
+  // a save succeeds, so the pending payload may BE it).
+  const decSaveInFlightRef = useRef(false);
+  const decSaveInFlightPayloadRef = useRef<DecemberState | null>(null);
+  // A flush deferred behind the in-flight save (the S-3
+  // pattern): the unmount cleanup, finding a payload queued
+  // behind a save still in flight, stores its send here
+  // instead of firing it concurrently under the same
+  // not-yet-advanced CAS base — the server accepts exactly
+  // one of two same-base saves and refuses the other, and a
+  // refused flush is lost silently (its conflict path runs
+  // on an unmounted view). The in-flight call's per-call
+  // handlers consume the slot as that save settles — fire on
+  // a landed save (the mutation reads the NEW base) or on
+  // an error (base unchanged; the queued save supersedes
+  // the failed one), drop on a conflict (the mutation-level
+  // conflict path above has already dropped it there).
+  const deferredDecFlushRef = useRef<(() => void) | null>(null);
+  // The deferred slot's give-up timer (build v196's shape):
+  // armed as the cleanup stores the deferred send; if the
+  // in-flight save never settles (a hung request — neither
+  // handler ever runs), the timer consumes the slot itself
+  // and fires the deferred send anyway through the retrying
+  // flush send, so the edit is sent, a failure of that send
+  // re-arms the flush's own 3 s retry, and a CAS conflict
+  // from sending while the wedged save is still in flight
+  // resolves through the mutation's normal conflict path
+  // instead of stranding the edit. A settle that lands
+  // first consumes the slot through takeDeferredDecFlush,
+  // which clears this timer. The timer lives in its own
+  // ref, cleared by nothing after unmount, so it outlives
+  // the view like the flush retry timer.
+  const deferredDecFlushGiveUpTimerRef = useRef<number | null>(null);
+  // The unmount flush's own retry timer (MUST-3's shape): a
+  // flush whose request fails re-arms a 3 s retry of the
+  // same payload on THIS timer — never the shared save
+  // timer, which the unmount cleanup clears as it runs — so
+  // the retries outlive the view until the flush lands.
+  const decFlushRetryTimerRef = useRef<number | null>(null);
   // Round-5 provenance: the STORED blob's own beneficiary
   // fact and balance split (before load resolution), and
   // whether the user has edited those controls in this
@@ -808,7 +914,7 @@ export function December() {
         // field — the record's own fields, never summed —
         // so each owner's RMD prices on their own clock.
         // A null record primary follows the snapshot MINUS
-        // an explicit spouse amount (contract v127,
+        // an explicit spouse amount (build v127,
         // round-19 finding 1): the full snapshot is the
         // household's total, not the primary's alone.
         const primaryPretaxCents =
@@ -971,56 +1077,266 @@ export function December() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [decQ.data, rothQ.data, rothQ.isPending]);
 
+  const saveMutateRef = useRef(saveMut.mutate);
+  saveMutateRef.current = saveMut.mutate;
+  const clearDeferredDecFlushGiveUp = () => {
+    if (deferredDecFlushGiveUpTimerRef.current != null) {
+      window.clearTimeout(deferredDecFlushGiveUpTimerRef.current);
+      deferredDecFlushGiveUpTimerRef.current = null;
+    }
+  };
+  // Consume the deferred slot (and disarm its give-up
+  // timer): the ONE way the slot is read, so a settle and
+  // the give-up can never both fire the same send.
+  const takeDeferredDecFlush = (): (() => void) | null => {
+    clearDeferredDecFlushGiveUp();
+    const deferred = deferredDecFlushRef.current;
+    deferredDecFlushRef.current = null;
+    return deferred;
+  };
+  const armDeferredDecFlushGiveUp = () => {
+    clearDeferredDecFlushGiveUp();
+    deferredDecFlushGiveUpTimerRef.current = window.setTimeout(() => {
+      deferredDecFlushGiveUpTimerRef.current = null;
+      const deferred = deferredDecFlushRef.current;
+      deferredDecFlushRef.current = null;
+      if (deferred) deferred();
+    }, DEFERRED_FLUSH_GIVE_UP_MS);
+  };
+  /* Build v207 (re-audit round 4 SHOULD R4-S7): the ONE
+     retrying send for the unmount flush, carrying the same
+     retry the autosave send below carries (MUST-3's shape).
+     Its per-call onError re-arms a 3 s retry of the SAME
+     payload, chained per failure, on decFlushRetryTimerRef —
+     a timer no cleanup clears — so a flush that fails at the
+     moment of navigation is retried until it lands. Each
+     attempt goes through this same send (the retry calls
+     back through the ref, so it always reaches the current
+     closure), and the mutation reads its CAS base live from
+     revisionRef at each call, so a retry of a deferred flush
+     rides the base the in-flight save adopted when it
+     landed, exactly as its first send did. A conflict is NOT
+     retried: it resolves through onSuccess with res.ok
+     false, where the mutation-level handler has already
+     applied the conflict path's deliberate drop, and
+     re-sending the stale form would fight the newer record
+     the refusal just re-showed. */
+  const sendDecFlushWithRetry = (payload: DecemberState) => {
+    decSaveInFlightRef.current = true;
+    decSaveInFlightPayloadRef.current = payload;
+    saveMutateRef.current(payload, {
+      onError: () => {
+        if (decFlushRetryTimerRef.current != null) {
+          window.clearTimeout(decFlushRetryTimerRef.current);
+        }
+        decFlushRetryTimerRef.current = window.setTimeout(() => {
+          sendDecFlushWithRetryRef.current(payload);
+        }, 3000);
+      },
+      onSettled: () => {
+        // Identity-guarded: a retry of this same payload may
+        // already be in flight (it re-marks the slot), and an
+        // older overlapping send settling must not clear the
+        // marker a newer send set.
+        if (decSaveInFlightPayloadRef.current === payload) {
+          decSaveInFlightRef.current = false;
+          decSaveInFlightPayloadRef.current = null;
+        }
+      },
+    });
+  };
+  const sendDecFlushWithRetryRef = useRef(sendDecFlushWithRetry);
+  sendDecFlushWithRetryRef.current = sendDecFlushWithRetry;
+  /* Build v207: the autosave's send. The payload stays
+     queued in pendingDecSaveRef until the save SUCCEEDS —
+     it is not dropped at the call, so a failed save (offline,
+     gateway 500) cannot vanish silently. The per-call
+     handlers own the queue: success drops the payload,
+     error re-arms a retry of it on the shared save timer. */
+  const sendDecSave = (payload: DecemberState) => {
+    decSaveInFlightRef.current = true;
+    decSaveInFlightPayloadRef.current = payload;
+    saveMutateRef.current(payload, {
+      // Guarded on res.ok (build v63, December save-note
+      // fix): a CAS conflict RESOLVES as data (ok: false), so
+      // this per-call success callback fires for conflicts
+      // too — and in @tanstack/query-core it runs AFTER the
+      // mutation-level onSuccess above (Mutation.execute
+      // awaits the options callback before dispatching the
+      // success that notifies the mutate callbacks), so an
+      // unguarded "Saved" here overwrote the conflict note
+      // the mutation-level handler had just set, in the same
+      // completion. Only a real save may say "Saved".
+      onSuccess: (res) => {
+        // The save landed: drop the queued payload — but
+        // only if it is still this one. A newer edit queued
+        // while this save was in flight is a different
+        // payload and stays queued for its own fire. (A
+        // conflict also resolves here, after the
+        // mutation-level handler has already dropped the
+        // queue and replaced the form, so this is a no-op
+        // then — exactly the deliberate drop the conflict
+        // path intends.)
+        if (pendingDecSaveRef.current === payload) {
+          pendingDecSaveRef.current = null;
+        }
+        if (res.ok) setSaveNote("Saved");
+        // Consume a flush the unmount cleanup deferred
+        // behind this save: fire it on a landed save (the
+        // mutation-level handler has adopted the new
+        // revision, so the deferred send reads the new base
+        // and lands in order), drop it on a conflict (the
+        // mutation-level handler has replaced the form with
+        // the stored record; the deferred payload is that
+        // same stale form's newest snapshot and must not
+        // ride out under the adopted base).
+        const deferred = takeDeferredDecFlush();
+        if (res.ok && deferred) deferred();
+      },
+      onError: () => {
+        setSaveNote("Could not save — your entries stay on this screen.");
+        // Keep the payload queued and re-arm a retry on the
+        // shared save timer, so it lands once the server is
+        // reachable again. If a newer payload was queued
+        // behind this one, that payload's own scheduling
+        // drives it and no retry is armed for the superseded
+        // payload — the identity check fails, exactly as in
+        // the other writers.
+        if (pendingDecSaveRef.current === payload) {
+          if (decSaveTimerRef.current != null) {
+            window.clearTimeout(decSaveTimerRef.current);
+          }
+          decSaveTimerRef.current = window.setTimeout(() => {
+            sendDecSaveRef.current(payload);
+          }, 3000);
+        }
+        // This save never landed, so the base is unchanged
+        // and a flush deferred behind it at unmount fires
+        // now — the queued payload supersedes the failed one
+        // outright (no retry of this payload was armed above:
+        // the queue no longer holds it; the cleanup moved it
+        // to the deferred slot).
+        const deferred = takeDeferredDecFlush();
+        if (deferred) deferred();
+      },
+      onSettled: () => {
+        // Identity-guarded, as in the flush send: an older
+        // overlapping send settling must not clear the
+        // in-flight marker a newer send set.
+        if (decSaveInFlightPayloadRef.current === payload) {
+          decSaveInFlightRef.current = false;
+          decSaveInFlightPayloadRef.current = null;
+        }
+      },
+    });
+  };
+  const sendDecSaveRef = useRef(sendDecSave);
+  sendDecSaveRef.current = sendDecSave;
+
   /* Debounced autosave of every edit, so the December session
      can be left and reopened at any point. The saved state is
      derived through decemberStateForSave (round-5): fields
      the user has not edited in this console — the beneficiary
      fact, the balance split — save their STORED values, never
      a load-resolved (inherited) value, so an inherited answer
-     keeps no precedence over a later record change. */
+     keeps no precedence over a later record change.
+     Build v207 (re-audit round 4 SHOULD R4-S7): the payload
+     the effect builds is stored in pendingDecSaveRef BEFORE
+     the debounce is armed, and the debounce fires through
+     sendDecSave — before v207 the effect fired a bare mutate
+     from a timer its own cleanup cleared, so leaving the
+     console inside the debounce lost the edit outright and a
+     failed save never retried. The cleanup still clears the
+     shared save timer (a newer edit's run supersedes the
+     pending debounce — and a pending retry of a superseded
+     payload — exactly as in the other writers), but the
+     payload itself now survives in the ref for the unmount
+     flush below. */
   useEffect(() => {
     if (!form || !dirtyRef.current) return;
     setSaveNote("Saving…");
-    const t = setTimeout(() => {
-      saveMut.mutate(
-        decemberStateForSave(
-          stateFromForm(form),
-          storedProvenanceRef.current,
-          {
-            beneficiary: beneficiaryEdited,
-            balances: balancesEdited,
-            rocCharacter: rocCharacterEdited,
-            janPaidCharacter: janPaidCharacterEdited,
-            education: educationEdited,
-            carryInSt: carryInStEdited,
-            carryInLt: carryInLtEdited,
-            carryInStWa: carryInStWaEdited,
-            carryInLtWa: carryInLtWaEdited,
-            harvestPoolAmount: harvestPoolAmountEdited,
-            harvestPoolBasisPct: harvestPoolBasisPctEdited,
-          },
-        ),
-        {
-          // Guarded on res.ok (contract v63, December save-note
-          // fix): a CAS conflict RESOLVES as data (ok: false), so
-          // this per-call success callback fires for conflicts
-          // too — and in @tanstack/query-core it runs AFTER the
-          // mutation-level onSuccess above (Mutation.execute
-          // awaits the options callback before dispatching the
-          // success that notifies the mutate callbacks), so an
-          // unguarded "Saved" here overwrote the conflict note
-          // the mutation-level handler had just set, in the same
-          // completion. Only a real save may say "Saved".
-          onSuccess: (res) => {
-            if (res.ok) setSaveNote("Saved");
-          },
-          onError: () => setSaveNote("Could not save — your entries stay on this screen."),
-        },
-      );
+    const payload = decemberStateForSave(
+      stateFromForm(form),
+      storedProvenanceRef.current,
+      {
+        beneficiary: beneficiaryEdited,
+        balances: balancesEdited,
+        rocCharacter: rocCharacterEdited,
+        janPaidCharacter: janPaidCharacterEdited,
+        education: educationEdited,
+        carryInSt: carryInStEdited,
+        carryInLt: carryInLtEdited,
+        carryInStWa: carryInStWaEdited,
+        carryInLtWa: carryInLtWaEdited,
+        harvestPoolAmount: harvestPoolAmountEdited,
+        harvestPoolBasisPct: harvestPoolBasisPctEdited,
+      },
+    );
+    pendingDecSaveRef.current = payload;
+    decSaveTimerRef.current = window.setTimeout(() => {
+      sendDecSaveRef.current(payload);
     }, 700);
-    return () => clearTimeout(t);
+    return () => {
+      if (decSaveTimerRef.current != null) {
+        window.clearTimeout(decSaveTimerRef.current);
+        decSaveTimerRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form]);
+
+  /* Build v207 (re-audit round 4 SHOULD R4-S7): flush the
+     queued save when the console unmounts — pressing
+     "← Tax Plan" unmounts it (it renders inside the Tax Plan
+     view only while open), so an edit made in the last
+     fraction of a second is not lost. Before v207 there was
+     no unmount flush anywhere in this file: the autosave
+     cleanup cleared the debounce timer and the edit died
+     with the component, and reopening rehydrated the old
+     stored value. The flush fires through sendDecFlushWithRetry
+     (the ONE retrying flush send above); if a save is still
+     in flight at unmount, a payload queued behind it is
+     DEFERRED behind it (the S-3 pattern) instead of fired
+     concurrently under the same not-yet-advanced CAS base —
+     the in-flight call's per-call handlers fire the deferred
+     send the moment that save settles, and the slot's
+     give-up timer fires it if that save never settles. The
+     queue is nulled either way, exactly as in the other
+     writers: the payload no longer depends on the queue for
+     its survival, because the flush send (or the deferred
+     slot) carries it in its closure. */
+  useEffect(() => {
+    return () => {
+      if (decSaveTimerRef.current != null) {
+        window.clearTimeout(decSaveTimerRef.current);
+        decSaveTimerRef.current = null;
+      }
+      // The pending payload may BE the save currently in
+      // flight (the queue clears on success, not at the
+      // call) — that one is already being written, and its
+      // own per-call onError re-arms its retry on the shared
+      // timer if it fails, so only flush a payload queued
+      // behind it.
+      if (
+        pendingDecSaveRef.current &&
+        pendingDecSaveRef.current !== decSaveInFlightPayloadRef.current
+      ) {
+        const queued = pendingDecSaveRef.current;
+        if (decSaveInFlightRef.current) {
+          // Defer, don't fire concurrently. Storing the send
+          // also ARMS its give-up timer (see
+          // deferredDecFlushGiveUpTimerRef).
+          deferredDecFlushRef.current = () =>
+            sendDecFlushWithRetryRef.current(queued);
+          armDeferredDecFlushGiveUp();
+        } else {
+          sendDecFlushWithRetryRef.current(queued);
+        }
+        pendingDecSaveRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const edit = (fn: (f: DecForm) => DecForm) => {
     dirtyRef.current = true;
@@ -1032,7 +1348,7 @@ export function December() {
 
   const state = useMemo(() => (form ? stateFromForm(form) : null), [form]);
   /* Annual spending for the "enough for the year" comparison
-     (contract v126): the Tax Plan record's annual spending,
+     (build v126): the Tax Plan record's annual spending,
      falling back to the Retirement calculator's default —
      the same resolution the Playground uses. Null when
      neither answers, or when the resolved figure is $0 (no
@@ -1051,7 +1367,7 @@ export function December() {
     [state, decAnnualSpendingCents],
   );
 
-  /* Jump-and-highlight (contract v69): the provenance-tap
+  /* Jump-and-highlight (build v69): the provenance-tap
      mechanism modelled on Spending's scrollToSection — scroll
      on a later frame, then flash an outline on the field for
      ~1.6s (applied to the element directly and restored
@@ -1091,17 +1407,39 @@ export function December() {
   }
 
   const joint = form.filingStatus === "mfj";
-  /* Projected tax bill (contract v50): the likely case's
+  /* Projected tax bill (build v50): the likely case's
      bill at the headline draw, from the core result's
      readouts — the view does no settlement arithmetic of
      its own. The state rows show only when a state tax is
      in play (a rate entered, or a priced state amount —
      the Washington excise at a 0% flat rate); at a plain
-     0% state the federal line stands alone. */
+     0% state the federal line stands alone. Every figure
+     in the bill is stated to the cent (fmtDollarsExact,
+     build v192) so the listed rows foot to the settlement
+     shown exactly. */
   const likelyCase = result.cases.find((c) => c.kind === "likely") ?? null;
   const billShowState =
     likelyCase != null &&
     (state.stateRatePct > 0 || likelyCase.stateTaxAtHeadline > 0);
+  /* The bill's ACA credit row states the credit STILL DUE
+     (build v204, re-audit round 4 R4-S1), not the final
+     allowable credit: the settlement nets only the part of
+     the final credit that was not already advanced —
+     settlement = total tax − credit still due + excess
+     advance credit to repay − refundable education credit
+     (decemberCore) — so stating the full final credit made
+     the listed rows miss the settlement by exactly
+     final credit − credit still due whenever APTC taken
+     was above $0, up to flipping the bill's sign. creditStillDue is a number whenever the
+     final credit is priced (it is null only when the credit
+     itself is unpriced, in which case this row is not shown
+     either); the fallback to the final credit is defensive
+     only. With no advance credit taken the two are equal,
+     so the row — and the December reference case — reads
+     exactly as before. The final allowable credit itself
+     stays stated on the case cards below ("Final credit"). */
+  const billCreditStillDue =
+    likelyCase?.creditStillDue ?? likelyCase?.creditAtHeadline ?? null;
   const billRow = (
     label: ReactNode,
     value: ReactNode,
@@ -1113,7 +1451,7 @@ export function December() {
       }`}
     >
       <span className={opts?.bold ? "font-semibold" : undefined}>{label}</span>
-      {/* Highlight (contract v117): the v87 accent treatment —
+      {/* Highlight (build v117): the v87 accent treatment —
           the figure itself renders bold in the accent colour,
           matching the tax figure elsewhere. The label keeps
           whatever the bold option gives it. */}
@@ -1309,7 +1647,7 @@ export function December() {
                   </button>
                   {billIncomeOpen && (
                     <>
-                      {billRow("Adjusted gross income (AGI)", fmtDollars(likelyCase.totalIncomeAtHeadline))}
+                      {billRow("Adjusted gross income (AGI)", fmtDollarsExact(likelyCase.totalIncomeAtHeadline))}
                       {billRow(
                         "MAGI",
                         <button
@@ -1318,10 +1656,10 @@ export function December() {
                           className={decTapCls}
                           onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                         >
-                          {fmtDollars(likelyCase.magiAtHeadline)}
+                          {fmtDollarsExact(likelyCase.magiAtHeadline)}
                         </button>,
                       )}
-                      {billRow("Taxable income", fmtDollars(likelyCase.taxableIncomeAtHeadline))}
+                      {billRow("Taxable income", fmtDollarsExact(likelyCase.taxableIncomeAtHeadline))}
                     </>
                   )}
                   {billRow(
@@ -1332,7 +1670,7 @@ export function December() {
                       className={decTapCls}
                       onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                     >
-                      {fmtDollars(likelyCase.federalTaxAtHeadline)}
+                      {fmtDollarsExact(likelyCase.federalTaxAtHeadline)}
                     </button>,
                   )}
                   {billShowState &&
@@ -1344,7 +1682,7 @@ export function December() {
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                       >
-                        {fmtDollars(likelyCase.stateTaxAtHeadline)}
+                        {fmtDollarsExact(likelyCase.stateTaxAtHeadline)}
                       </button>,
                     )}
                   {billShowState &&
@@ -1356,28 +1694,31 @@ export function December() {
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                       >
-                        {fmtDollars(likelyCase.totalTaxAtHeadline)}
+                        {fmtDollarsExact(likelyCase.totalTaxAtHeadline)}
                       </button>,
                     )}
                   {likelyCase.creditAtHeadline != null &&
+                    billCreditStillDue != null &&
                     billRow(
-                      "ACA premium credit",
+                      state.aptcTaken > 0
+                        ? "ACA premium credit still due"
+                        : "ACA premium credit",
                       <button
                         type="button"
                         aria-label="Go to the Benchmark premium (annual) field"
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-ACA-benchmark")}
                       >
-                        {likelyCase.creditAtHeadline > 0
-                          ? `−${fmtDollars(likelyCase.creditAtHeadline)}`
-                          : fmtDollars(likelyCase.creditAtHeadline)}
+                        {billCreditStillDue > 0
+                          ? `−${fmtDollarsExact(billCreditStillDue)}`
+                          : fmtDollarsExact(billCreditStillDue)}
                       </button>,
                       { highlight: true },
                     )}
                   {likelyCase.educationRefundableAtHeadline > 0 &&
                     billRow(
                       "Refundable education credit (AOTC)",
-                      `−${fmtDollars(likelyCase.educationRefundableAtHeadline)}`,
+                      `−${fmtDollarsExact(likelyCase.educationRefundableAtHeadline)}`,
                     )}
                   {likelyCase.harvestedGainAtHeadline > 0 &&
                     billRow(
@@ -1388,7 +1729,7 @@ export function December() {
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-harvest-pool")}
                       >
-                        {fmtDollars(likelyCase.harvestedGainAtHeadline)}
+                        {fmtDollarsExact(likelyCase.harvestedGainAtHeadline)}
                       </button>,
                     )}
                   {state.taxableFunded != null && state.taxableFunded > 0 &&
@@ -1400,7 +1741,7 @@ export function December() {
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-taxable-cash")}
                       >
-                        {fmtDollars(state.taxableFunded)}
+                        {fmtDollarsExact(state.taxableFunded)}
                       </button>,
                     )}
                   {likelyCase.excessAptcRepayment != null &&
@@ -1413,7 +1754,7 @@ export function December() {
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-APTC-taken")}
                       >
-                        {fmtDollars(likelyCase.excessAptcRepayment)}
+                        {fmtDollarsExact(likelyCase.excessAptcRepayment)}
                       </button>,
                     )}
                   {likelyCase.netSettleAtHeadline == null ? (
@@ -1432,13 +1773,13 @@ export function December() {
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                       >
-                        {fmtDollars(likelyCase.netSettleAtHeadline)}
+                        {fmtDollarsExact(likelyCase.netSettleAtHeadline)}
                       </button>,
                       { bold: true, divide: true },
                     )
                   )}
-                  {/* Cash left after tax (contract v114, fixed
-                      text + ⓘ contract v116): the priced
+                  {/* Cash left after tax (build v114, fixed
+                      text + ⓘ build v116): the priced
                       year's cash in minus the settlement above
                       — the engine/core-computed readout
                       (cashLeftAtHeadline), shown only when a
@@ -1450,8 +1791,17 @@ export function December() {
                       (cashInAtHeadline) and the net tax bill
                       (netSettleAtHeadline) as priced, and
                       carries the filing sentence only when the
-                      net bill is a refund. Same wording as the
-                      Playground face. */}
+                      net bill is a refund. Same shape as the
+                      Playground face, but the credit sentence
+                      differs on purpose (re-audit round 3
+                      SHOULD-2, build v191): this face's net tax
+                      bill IS the filing settlement, which
+                      includes the ACA reconciliation, so the
+                      tooltip says the credit is priced in —
+                      the Playground's net tax bill excludes the
+                      credit (its spending holds the net
+                      premium), so its face says the opposite,
+                      accurately for its own figure. */}
                   {likelyCase.cashLeftAtHeadline != null &&
                     likelyCase.netSettleAtHeadline != null &&
                     likelyCase.cashInAtHeadline != null && (
@@ -1460,7 +1810,7 @@ export function December() {
                           <>
                             Cash left after tax
                             <InfoNote
-                              text={`Cash in ${fmtDollars(likelyCase.cashInAtHeadline)} minus the net tax bill ${fmtDollars(likelyCase.netSettleAtHeadline)} — the total tax less the ACA credit kept and any refundable education credit. It's what's left to spend next year, before any spending.${likelyCase.netSettleAtHeadline < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                              text={`Cash in ${fmtDollarsExact(likelyCase.cashInAtHeadline)} minus the net tax bill ${fmtDollarsExact(likelyCase.netSettleAtHeadline)} — the total tax less any refundable education credit, with the ACA premium credit priced in: the net tax bill includes the ACA reconciliation (the credit still due comes off the bill; any advance credit taken beyond the final credit is added back to repay). It's what's left to spend next year, before any spending.${likelyCase.netSettleAtHeadline < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
                               ariaLabel="About the cash left after tax"
                             />
                           </>,
@@ -1470,7 +1820,7 @@ export function December() {
                             className={decTapCls}
                             onClick={() => jumpToDecField("roth-December-YTD-other-ordinary")}
                           >
-                            {fmtDollars(likelyCase.cashLeftAtHeadline)}
+                            {fmtDollarsExact(likelyCase.cashLeftAtHeadline)}
                           </button>,
                           { bold: true, highlight: true },
                         )}
@@ -1505,14 +1855,14 @@ export function December() {
                                 <>
                                   Left after a year&rsquo;s spending
                                   <InfoNote
-                                    text={`Cash left after tax ${fmtDollars(likelyCase.cashLeftAtHeadline)} minus annual spending ${fmtDollars(likelyCase.annualSpendingAtHeadline)} — the annual spending from the Tax Plan.${likelyCase.netSettleAtHeadline != null && likelyCase.netSettleAtHeadline < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                                    text={`Cash left after tax ${fmtDollarsExact(likelyCase.cashLeftAtHeadline)} minus annual spending ${fmtDollarsExact(likelyCase.annualSpendingAtHeadline)} — the annual spending from the Tax Plan.${likelyCase.netSettleAtHeadline != null && likelyCase.netSettleAtHeadline < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
                                     ariaLabel="About the amount left after a year's spending"
                                   />
                                 </>,
                                 <span
                                   className={`font-bold ${likelyCase.cashLeftVsSpendingAtHeadline < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
                                 >
-                                  {fmtDollars(likelyCase.cashLeftVsSpendingAtHeadline)}
+                                  {fmtDollarsExact(likelyCase.cashLeftVsSpendingAtHeadline)}
                                 </span>,
                                 { bold: true },
                               )}
@@ -1531,7 +1881,7 @@ export function December() {
                 {likelyCase.educationNonrefundableAtHeadline > 0 && (
                   <p className="mt-2 text-xs text-[var(--dim)]">
                     Education credits of{" "}
-                    {fmtDollars(likelyCase.educationNonrefundableAtHeadline)} are
+                    {fmtDollarsExact(likelyCase.educationNonrefundableAtHeadline)} are
                     already applied against the federal tax above
                     {likelyCase.educationChoiceAtHeadline === "aotc"
                       ? " (American Opportunity Credit)"
@@ -1593,7 +1943,7 @@ export function December() {
                           ? "Credit lost — the final credit is $0"
                           : c.creditAtHeadline != null
                             ? `Final credit: ${fmtDollars(c.creditAtHeadline)}`
-                            : "Credit kept"}
+                            : "Credit not priced"}
                     </p>
                     {result.cliff != null && state.aptcTaken > 0 && (
                       <p className="tnum mt-1 text-sm">
@@ -1905,7 +2255,7 @@ export function December() {
           decQ.data.state.pretaxBalanceSpouse != null &&
           !balancesEdited &&
           (() => {
-            // Contract v127 (round-19 finding 1): the
+            // Build v127 (round-19 finding 1): the
             // explicit-split case the two notes above do
             // not cover — this console prices its OWN
             // per-owner split, not the record's, so when
@@ -2045,7 +2395,7 @@ export function December() {
           )}
           {moneyField("Qualified dividends", form.ytdQualifiedDividends, (v) =>
             set("ytdQualifiedDividends", v),
-          { idLabel: "December YTD qualified dividends" },
+          { idLabel: "December YTD qualified dividends", hint: "Part of the total above — entered above that total, only the total prices." },
           )}
           {moneyField("Tax-exempt interest", form.ytdTaxExemptInterest, (v) =>
             set("ytdTaxExemptInterest", v),
@@ -2072,9 +2422,32 @@ export function December() {
             { idLabel: "December YTD SS spouse" },
             )}
         </div>
+        {/* Dividend-pair note (audit S-8, contract v137) —
+            display ONLY, matching the Playground's note on
+            its dials: the qualified figure is part of the
+            ordinary total, so a qualified figure above the
+            total is a pair that cannot occur. The engine
+            clamps the qualified part to the total — it prices
+            as the total, the excess isn't counted, and the
+            non-qualified part prices as $0 — and this note
+            makes that visible here instead of letting the
+            excess drop out silently. It reads the two fields
+            exactly as the priced state clamps them
+            (negatives to $0) and never alters pricing; the
+            projection above also warns on the pair. */}
+        {Math.max(0, parseMoney(form.ytdQualifiedDividends)) >
+          Math.max(0, parseMoney(form.ytdOrdinaryDividends)) && (
+          <p className="tnum mt-3 max-w-3xl text-sm text-[var(--warn)]" role="note">
+            Qualified dividends ({fmtDollars(Math.max(0, parseMoney(form.ytdQualifiedDividends)))}) can&rsquo;t
+            exceed the total ordinary dividends ({fmtDollars(Math.max(0, parseMoney(form.ytdOrdinaryDividends)))}) —
+            the qualified figure is part of that total, so it prices as{" "}
+            {fmtDollars(Math.max(0, parseMoney(form.ytdOrdinaryDividends)))}, the
+            excess isn&rsquo;t counted, and the non-qualified part prices as $0.
+          </p>
+        )}
       </section>
 
-      {/* Capital losses carried into this year (contract v111) */}
+      {/* Capital losses carried into this year (build v111) */}
       <section className={sectionCls} aria-label="Capital losses carried into this year">
         <h3 className="text-base font-semibold">Capital losses carried into this year</h3>
         <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -2114,7 +2487,7 @@ export function December() {
         </div>
       </section>
 
-      {/* Gain harvest (contract v113) */}
+      {/* Gain harvest (build v113) */}
       <section className={sectionCls} aria-label="Gain harvest">
         <h3 className="text-base font-semibold">Gain harvest</h3>
         <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -2167,18 +2540,34 @@ export function December() {
               gain harvesting until both are entered.
             </p>
           )}
+        {/* Harvest note (build v203, re-audit round 3 NICE-3): the
+            trailing clause is DERIVED from the two figures the note
+            itself states. The harvest at the headline draw can be
+            SMALLER than at a $0 draw (the draw's ordinary income
+            shrinks the 0% band's room), but it can also be EQUAL —
+            when the pool's unrealized gain caps the harvest at both
+            draws, or the headline draw is $0 — and the old clause
+            claimed the draw takes room in every case, contradicting
+            the note's own figures whenever they were equal. The
+            clause now says what the figures show in each case. */}
         {likelyCase != null && likelyCase.harvestedGainAtZeroDraw > 0 && (
           <p className="tnum mt-3 max-w-3xl text-sm text-[var(--dim)]">
             Before any December draw, the harvest realizes{" "}
             {fmtDollars(likelyCase.harvestedGainAtZeroDraw)} in the likely case;
             at the headline draw it realizes{" "}
-            {fmtDollars(likelyCase.harvestedGainAtHeadline)} — the draw takes
-            room the harvest would otherwise use.
+            {fmtDollars(likelyCase.harvestedGainAtHeadline)} —{" "}
+            {likelyCase.harvestedGainAtHeadline <
+            likelyCase.harvestedGainAtZeroDraw
+              ? "the draw takes room the harvest would otherwise use."
+              : likelyCase.harvestedGainAtHeadline >
+                  likelyCase.harvestedGainAtZeroDraw
+                ? "more than before any draw, so the headline draw leaves the harvest more room than a $0 draw does."
+                : "the same amount as before any draw, so the headline draw takes no room from the harvest."}
           </p>
         )}
       </section>
 
-      {/* Taxable cash for the year (contract v125) */}
+      {/* Taxable cash for the year (build v125) */}
       <section className={sectionCls} aria-label="Taxable cash for the year">
         <h3 className="text-base font-semibold">Taxable cash for the year</h3>
         <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
@@ -2221,6 +2610,34 @@ export function December() {
         {rangeRow("Ordinary dividends still to come (total)", "remOrdinaryDividends")}
         {rangeRow("Qualified dividends still to come", "remQualifiedDividends")}
         {rangeRow("Other income still to come", "remOtherOrdinary")}
+        {/* Dividend-pair note (audit S-8, contract v137;
+            case naming audit N-5) — display ONLY, the
+            still-to-come twin of the year-to-date note
+            above: each case's qualified figure is part of
+            that case's ordinary total, and the engine
+            clamps it to that total per case, so an excess
+            prices nowhere. One note per impossible case,
+            naming WHICH case it is (low / likely / high)
+            with that case's two figures — the earlier
+            single note said only that some case was
+            impossible; never alters pricing. */}
+        {(() => {
+          const impossible = (["low", "likely", "high"] as const).flatMap((k) => {
+            const total = Math.max(0, parseMoney(form.remOrdinaryDividends[k]));
+            const qualified = Math.max(0, parseMoney(form.remQualifiedDividends[k]));
+            return qualified > total ? [{ k, total, qualified }] : [];
+          });
+          return impossible.map(({ k, total, qualified }) => (
+            <p key={k} className="tnum mt-3 max-w-3xl text-sm text-[var(--warn)]" role="note">
+              {k === "low" ? "Low" : k === "likely" ? "Likely" : "High"} case:
+              qualified dividends still to come ({fmtDollars(qualified)}) can&rsquo;t
+              exceed that case&rsquo;s total ordinary dividends still to come (
+              {fmtDollars(total)}) — the qualified figure is part of that total, so
+              it prices as {fmtDollars(total)}, the excess isn&rsquo;t counted, and
+              that case&rsquo;s non-qualified part prices as $0.
+            </p>
+          ));
+        })()}
       </section>
 
       {/* ACA block */}
@@ -2256,7 +2673,7 @@ export function December() {
         </p>
       </section>
 
-      {/* Education credits (contract v103) */}
+      {/* Education credits (build v103) */}
       <section className={sectionCls} aria-label="Education credits">
         <h3 className="text-base font-semibold">Education credits</h3>
         <div className="mt-1 max-w-3xl space-y-1 text-sm text-[var(--dim)]">
@@ -2422,7 +2839,7 @@ export function December() {
               { idLabel: "December stray January-paid qualified portion", hint: "The part of the total above that is qualified dividends — it keeps its qualified character. Leave at $0 if none of it is qualified." },
               )}
               {moneyField("Of which capital-gain distributions", form.strayJanPaidCapGainAmount, (v) => {
-                // Contract v104: this field is a plain
+                // Build v104: this field is a plain
                 // character split of the same total — it
                 // does NOT touch the qualified-amount
                 // provenance flag above, which only the
@@ -2441,6 +2858,60 @@ export function December() {
                 not an ordinary dividend — enter that part above so it is
                 taxed as a gain.
               </p>
+              {/* Stray-portion clamp notes (re-audit N-6) —
+                  display ONLY, mirroring the projection's
+                  warnings: each portion above is part of its
+                  total (the qualified portion part of the
+                  ordinary remainder — the total less its
+                  clamped capital-gain portion), and the
+                  engine clamps it to that limit, so a trimmed
+                  excess prices nowhere. Each note names the
+                  portion, its entered figure, its limit, the
+                  amount trimmed, and the figure it prices
+                  as, computed with the assembly's own clamp
+                  arithmetic; the projection above also warns
+                  on each trim. */}
+              {(() => {
+                const total =
+                  form.strayJanPaid.status === "amount"
+                    ? Math.max(0, parseMoney(form.strayJanPaid.amount))
+                    : 0;
+                const capEntered = Math.max(
+                  0,
+                  parseMoney(form.strayJanPaidCapGainAmount),
+                );
+                const capClamped = total > 0 ? Math.min(total, capEntered) : 0;
+                const remainder = total - capClamped;
+                const qualEntered = Math.max(
+                  0,
+                  parseMoney(form.strayJanPaidQualifiedAmount),
+                );
+                const qualClamped =
+                  remainder > 0 ? Math.min(remainder, qualEntered) : 0;
+                return (
+                  <>
+                    {capEntered > capClamped && (
+                      <p className="tnum mt-2 text-sm text-[var(--warn)]" role="note">
+                        Capital-gain portion ({fmtDollars(capEntered)}) can&rsquo;t
+                        exceed the January-paid total ({fmtDollars(total)}) — the
+                        portion is part of that total, so{" "}
+                        {fmtDollars(capEntered - capClamped)} is trimmed and
+                        isn&rsquo;t counted: it prices as {fmtDollars(capClamped)}.
+                      </p>
+                    )}
+                    {qualEntered > qualClamped && (
+                      <p className="tnum mt-2 text-sm text-[var(--warn)]" role="note">
+                        Qualified-dividends portion ({fmtDollars(qualEntered)}) can&rsquo;t
+                        exceed the January-paid ordinary remainder (
+                        {fmtDollars(remainder)}) — the total less its capital-gain
+                        portion — so {fmtDollars(qualEntered - qualClamped)} is
+                        trimmed and isn&rsquo;t counted: it prices as{" "}
+                        {fmtDollars(qualClamped)}.
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           ),
         })}
@@ -2482,6 +2953,35 @@ export function December() {
                 income — enter that part above so it keeps its qualified
                 character.
               </p>
+              {/* Stray-portion clamp note (re-audit N-6) —
+                  display ONLY, mirroring the projection's
+                  warning: the qualified portion above is part
+                  of the reclassified total, and the engine
+                  clamps it to that total, so a trimmed excess
+                  prices nowhere. The note names the portion,
+                  its entered figure, its total, the amount
+                  trimmed, and the figure it prices as; the
+                  projection above also warns on the trim. */}
+              {(() => {
+                const total =
+                  form.strayROCOrdinary.status === "amount"
+                    ? Math.max(0, parseMoney(form.strayROCOrdinary.amount))
+                    : 0;
+                const entered = Math.max(
+                  0,
+                  parseMoney(form.strayROCQualifiedAmount),
+                );
+                const clamped = total > 0 ? Math.min(total, entered) : 0;
+                return entered > clamped ? (
+                  <p className="tnum mt-2 text-sm text-[var(--warn)]" role="note">
+                    Qualified-dividends portion ({fmtDollars(entered)}) can&rsquo;t
+                    exceed the reclassified ordinary-dividend total (
+                    {fmtDollars(total)}) — the qualified figure is part of that
+                    total, so {fmtDollars(entered - clamped)} is trimmed and
+                    isn&rsquo;t counted: it prices as {fmtDollars(clamped)}.
+                  </p>
+                ) : null;
+              })()}
             </div>
           ),
         })}
@@ -2511,6 +3011,45 @@ export function December() {
                 capital-gains rates; the rest is taxed as ordinary income.
                 Enter the box 9a part above so it is taxed as a gain.
               </p>
+              {/* Stray-portion clamp note (re-audit N-6) —
+                  display ONLY, mirroring the projection's
+                  warning: the box 9a portion above is part of
+                  a POSITIVE K-1 total, and the engine clamps
+                  it to that total (a K-1 loss has no gain
+                  portion at all), so a trimmed excess prices
+                  nowhere. The note names the portion, its
+                  entered figure, its limit, the amount
+                  trimmed, and the figure it prices as; the
+                  projection above also warns on the trim. */}
+              {(() => {
+                const total =
+                  form.strayK1.status === "amount"
+                    ? parseMoney(form.strayK1.amount)
+                    : 0;
+                const entered = Math.max(
+                  0,
+                  parseMoney(form.strayK1CapGainAmount),
+                );
+                const clamped = total > 0 ? Math.min(total, entered) : 0;
+                if (entered <= clamped) return null;
+                return total > 0 ? (
+                  <p className="tnum mt-2 text-sm text-[var(--warn)]" role="note">
+                    Long-term capital gain portion (box 9a) ({fmtDollars(entered)})
+                    can&rsquo;t exceed the K-1 total ({fmtDollars(total)}) — the
+                    portion is part of that total, so{" "}
+                    {fmtDollars(entered - clamped)} is trimmed and isn&rsquo;t
+                    counted: it prices as {fmtDollars(clamped)}.
+                  </p>
+                ) : (
+                  <p className="tnum mt-2 text-sm text-[var(--warn)]" role="note">
+                    Long-term capital gain portion (box 9a) ({fmtDollars(entered)})
+                    can&rsquo;t apply when the K-1 total ({fmtDollars(total)}) is
+                    not positive — a K-1 amount that is not a gain has no gain
+                    portion, so the whole {fmtDollars(entered - clamped)} is
+                    trimmed and isn&rsquo;t counted: it prices as $0.
+                  </p>
+                );
+              })()}
             </div>
           ),
         })}

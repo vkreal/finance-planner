@@ -21,13 +21,14 @@ BarChart,
 CartesianGrid,
 Cell,
 LabelList,
-Legend,
+ReferenceLine,
 ResponsiveContainer,
 Tooltip,
 XAxis,
 YAxis,
 } from "recharts";
 import { api, type ApiRequest, type ApiResponse } from "./api";
+import { monthlyRaw, monthlyToAnnual } from "./rothShared";
 import {
 csvFormulaSafeText,
 csvImportFileError,
@@ -82,6 +83,11 @@ type Bill = Dash["monthlyBills"][number];
 type OneOff = Dash["oneOffs"][number];
 type CashOutItem = Dash["cashOutItems"][number];
 type TxnInput = ApiRequest<typeof api, "importTransactions">["rows"][number];
+/* The Tax Plan record's writer (saveRothInputs) — the Spending
+   view's spending-target field writes through to the record
+   through it, the same writer the Tax Plan, Retirement, and
+   Playground views use (one source, multiple edit locations). */
+type RothSavePayload = Parameters<typeof api.saveRothInputs>[0];
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -140,12 +146,49 @@ function fmtSigned(cents: number): string {
   return cents > 0 ? `+${fmt(cents)}` : fmt(cents);
 }
 
+/* Wording for a True cost minus Target difference (cents):
+   positive is over the target, negative is under it, zero is
+   exactly on it. Shared by the spending charts' tooltips and
+   their vs-target summary lines so the two always agree. */
+function vsTargetWord(diffCents: number): string {
+  if (diffCents > 0) return "over target";
+  if (diffCents < 0) return "under target";
+  return "on target";
+}
+
+/* Short range label for a span of YYYY-MM month keys, e.g.
+   "Aug–Nov 2026" within one year, "Nov 2025–Feb 2026" across
+   years. Used by the spending charts' vs-target summary lines
+   to name exactly the recorded months they total. */
+function monthRangeLabel(firstMonth: string, lastMonth: string): string {
+  const startShort =
+    MONTH_SHORT[Number(firstMonth.slice(5, 7)) - 1] ?? firstMonth;
+  const endShort =
+    MONTH_SHORT[Number(lastMonth.slice(5, 7)) - 1] ?? lastMonth;
+  if (firstMonth === lastMonth) return `${startShort} ${firstMonth.slice(0, 4)}`;
+  if (firstMonth.slice(0, 4) === lastMonth.slice(0, 4)) {
+    return `${startShort}–${endShort} ${lastMonth.slice(0, 4)}`;
+  }
+  return `${startShort} ${firstMonth.slice(0, 4)}–${endShort} ${lastMonth.slice(0, 4)}`;
+}
+
 function parseDollars(s: string): number | null {
   const cleaned = s.replace(/[$,\s]/g, "");
   if (cleaned === "") return null;
   const n = Number(cleaned);
   if (!Number.isFinite(n)) return null;
   return Math.round(n * 100);
+}
+
+/* Display form for a cents amount inside a text input: grouped
+   thousands, cents shown only when the amount has them, no $
+   (the field carries a $ adornment). parseDollars strips the
+   grouping commas, so this string round-trips exactly — the
+   same convention as rothShared's fmtMoneyInput. */
+function fmtInputMoney(cents: number): string {
+  return (cents / 100).toLocaleString("en-US", {
+    maximumFractionDigits: 2,
+  });
 }
 
 type Frequency = "yearly" | "bimonthly" | "quarterly" | "semiannual";
@@ -527,11 +570,11 @@ function CategoryField({
   value,
   options,
   onChange,
-  // Contract v139: the cash-out Name field reuses this picker with
+  // Build v139: the cash-out Name field reuses this picker with
   // its own wording — the custom-choice label, the custom-input
   // placeholder and aria-label, and the empty-value placeholder
   // option. Defaults keep the bill-category wording unchanged.
-  // Contract v143: the one-off Description field reuses it the same
+  // Build v143: the one-off Description field reuses it the same
   // way, with its own parallel wording.
   customLabel = "Type your own…",
   customPlaceholder = "Type a custom category",
@@ -1137,7 +1180,7 @@ type SpendingChartDatum = {
    and the line are the same numbers and can never disagree (the
    line's figures are the means of exactly these months' bars),
    and a pair appears automatically when a new month is recorded.
-   (Before contract v123 the caller sliced the last
+   (Before build v123 the caller sliced the last
    trailingMonthsCovered entries off the 12-entry history, which
    ends at the viewed month while the window ends at the current
    month — so with the viewed month after the current month the
@@ -1160,9 +1203,33 @@ function SpendingTrueCostChart({
   months,
   aheadMonths,
   averageLine,
+  targetMonthlyCents,
+  averageMonthlyCents,
 }: {
   months: SpendingMonthRow[];
   aheadMonths: SpendingAheadRow[];
+  // The spending target per month, in cents: the Tax Plan
+  // record's annual spending ÷ 12 (the caller's live figure —
+  // the local target field's value while it parses, else the
+  // record's). Drawn as a dashed horizontal line across the
+  // chart so each month's bars read above or below it at a
+  // glance; the chart legend names it with its value (no
+  // inline label). Null when no target resolves — no line
+  // is drawn.
+  targetMonthlyCents: number | null;
+  // The True cost average per month, in cents: the dashboard's
+  // own avgSmoothedCents — the mean of exactly the recorded
+  // `months` above, the same figure the averages line prints.
+  // Drawn as a thin dotted horizontal line in a muted neutral
+  // colour (not the True cost teal, not the Cash out amber),
+  // distinct from the target's dashed line, so the average
+  // month reads against the target at a glance. Neither line
+  // carries an inline label — the chart legend below the bars
+  // names both lines with their values. Null whenever the
+  // averages line is hidden (fewer than 2 months covered) —
+  // no line is drawn. The Cash out average stays in the
+  // averages line's text only; it gets no line.
+  averageMonthlyCents: number | null;
   // The Quick view averages line ("Average month · … — True cost
   // … · Cash out …"), composed by the caller from the dashboard's
   // own averages over exactly the recorded `months` above; null
@@ -1202,6 +1269,32 @@ function SpendingTrueCostChart({
     }),
   ];
   const hasEstimate = chartData.some((d) => d.estimate);
+  /* Vs-target summary over the recorded months only: the
+     `months` above — the same trailing months the chart plots
+     and the header average uses. Entered-ahead (est.) pairs in
+     chartData are never counted: an estimate may be revised, so
+     the total and the per-month average are sums of
+     (True cost − Target) over the recorded months alone,
+     computed here from the data — never a stored or hardcoded
+     figure — so they move when the months or the data change. */
+  const recordedMonths = months.filter((m) => !m.estimate);
+  const targetTotalDiffCents =
+    targetMonthlyCents != null
+      ? recordedMonths.reduce(
+          (sum, m) => sum + (m.smoothedCents - (targetMonthlyCents ?? 0)),
+          0,
+        )
+      : null;
+  const targetAvgDiffCents =
+    targetTotalDiffCents != null && recordedMonths.length > 0
+      ? Math.round(targetTotalDiffCents / recordedMonths.length)
+      : null;
+  const targetRangeLabel = (() => {
+    const first = recordedMonths[0];
+    const last = recordedMonths[recordedMonths.length - 1];
+    if (first == null || last == null) return "";
+    return monthRangeLabel(first.month, last.month);
+  })();
 
   return (
     <section
@@ -1216,6 +1309,18 @@ function SpendingTrueCostChart({
       {averageLine != null && (
         <p className="tnum mt-1.5 text-sm text-[var(--dim)]">{averageLine}</p>
       )}
+      {targetMonthlyCents != null && (
+        <p className="tnum mt-1.5 text-sm text-[var(--dim)]">
+          Spending target {fmt(targetMonthlyCents)}/mo — the dashed line;
+          a month above it spent over the target.
+        </p>
+      )}
+      {averageMonthlyCents != null && (
+        <p className="tnum mt-1.5 text-sm text-[var(--dim)]">
+          True cost average {fmt(averageMonthlyCents)}/mo — the dotted
+          line, over the same months as the Average month line above.
+        </p>
+      )}
       {chartData.length === 0 ? (
         <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
           No months recorded yet — once a month is recorded, its True cost
@@ -1225,12 +1330,104 @@ function SpendingTrueCostChart({
         <>
           {/* Screen-reader / text fallback carrying the exact figures. */}
           <ul className="sr-only">
-            {chartData.map((d) => (
-              <li key={d.monthStr}>
-                {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
-              </li>
-            ))}
+            {targetMonthlyCents != null && (
+              <li>{`Spending target: ${fmt(targetMonthlyCents)} per month`}</li>
+            )}
+            {averageMonthlyCents != null && (
+              <li>{`True cost average: ${fmt(averageMonthlyCents)} per month`}</li>
+            )}
+            {chartData.map((d) => {
+              const diffCents =
+                targetMonthlyCents != null
+                  ? d.trueCostCents - targetMonthlyCents
+                  : null;
+              return (
+                <li key={d.monthStr}>
+                  {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
+                </li>
+              );
+            })}
+            {targetTotalDiffCents != null && targetAvgDiffCents != null && (
+              <li>{`Vs target · ${targetRangeLabel} · ${recordedMonths.length} recorded month${recordedMonths.length === 1 ? "" : "s"}: total ${fmtSigned(targetTotalDiffCents)} ${vsTargetWord(targetTotalDiffCents)} · average ${fmtSigned(targetAvgDiffCents)}/mo ${vsTargetWord(targetAvgDiffCents)}`}</li>
+            )}
           </ul>
+          {/* Legend: names every element of the chart with its
+              value — the two bar series and both horizontal
+              lines. The lines carry no inline labels (they sat
+              on top of the bars and collided when the average
+              and the target were close), so this legend is the
+              one place the line values are printed on the chart.
+              The line swatches are drawn exactly as the lines
+              themselves: target dashed in the text colour,
+              average dotted, thin, in the muted neutral dim
+              colour. */}
+          <div
+            aria-label="Chart legend"
+            className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-[var(--text)]"
+          >
+            <span className="inline-flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="inline-block h-[10px] w-[14px] rounded-[2px]"
+                style={{ background: "var(--accent)" }}
+              />
+              True cost
+            </span>
+            <span className="inline-flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="inline-block h-[10px] w-[14px] rounded-[2px]"
+                style={{ background: "var(--warn)" }}
+              />
+              Cash out
+            </span>
+            {targetMonthlyCents != null && (
+              <span className="tnum inline-flex items-center gap-2">
+                <svg
+                  aria-hidden="true"
+                  width="28"
+                  height="6"
+                  viewBox="0 0 28 6"
+                  className="shrink-0"
+                >
+                  <line
+                    x1="0"
+                    y1="3"
+                    x2="28"
+                    y2="3"
+                    stroke="var(--text)"
+                    strokeWidth="1.5"
+                    strokeDasharray="6 4"
+                    strokeOpacity="0.75"
+                  />
+                </svg>
+                {`Target ${fmt(targetMonthlyCents)}/mo`}
+              </span>
+            )}
+            {averageMonthlyCents != null && (
+              <span className="tnum inline-flex items-center gap-2">
+                <svg
+                  aria-hidden="true"
+                  width="28"
+                  height="6"
+                  viewBox="0 0 28 6"
+                  className="shrink-0"
+                >
+                  <line
+                    x1="0"
+                    y1="3"
+                    x2="28"
+                    y2="3"
+                    stroke="var(--dim)"
+                    strokeWidth="1"
+                    strokeDasharray="2 3"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                {`Average ${fmt(averageMonthlyCents)}/mo`}
+              </span>
+            )}
+          </div>
           <div className="mt-3 max-w-full overflow-x-auto">
             <div
               className="h-[300px]"
@@ -1262,6 +1459,15 @@ function SpendingTrueCostChart({
                     axisLine={false}
                     width={64}
                     tick={{ fill: "var(--dim)", fontSize: 12 }}
+                    domain={[
+                      0,
+                      (dataMax: number) =>
+                        Math.max(
+                          dataMax,
+                          (targetMonthlyCents ?? 0) / 100,
+                          (averageMonthlyCents ?? 0) / 100,
+                        ),
+                    ]}
                     tickFormatter={(value: number) =>
                       value >= 1000
                         ? `$${Number((value / 1000).toFixed(1)).toLocaleString("en-US")}k`
@@ -1289,14 +1495,30 @@ function SpendingTrueCostChart({
                             True cost {fmt(datum.trueCostCents)} · Cash out{" "}
                             {fmt(datum.cashOutCents)}
                           </p>
+                          {targetMonthlyCents != null && (
+                            <p className="tnum mt-0.5 text-[var(--dim)]">
+                              Target {fmt(targetMonthlyCents)}/mo
+                            </p>
+                          )}
+                          {targetMonthlyCents != null &&
+                            (() => {
+                              const diffCents =
+                                datum.trueCostCents - targetMonthlyCents;
+                              return (
+                                <p className="tnum mt-0.5 font-medium text-[var(--text)]">
+                                  Difference {fmtSigned(diffCents)}{" "}
+                                  {vsTargetWord(diffCents)}
+                                </p>
+                              );
+                            })()}
+                          {averageMonthlyCents != null && (
+                            <p className="tnum mt-0.5 text-[var(--dim)]">
+                              Average {fmt(averageMonthlyCents)}/mo
+                            </p>
+                          )}
                         </div>
                       );
                     }}
-                  />
-                  <Legend
-                    formatter={(value: string) => (
-                      <span style={{ color: "var(--text)" }}>{value}</span>
-                    )}
                   />
                   <Bar
                     dataKey="trueCost"
@@ -1416,10 +1638,49 @@ function SpendingTrueCostChart({
                       }}
                     />
                   </Bar>
+                  {/* The target line: dashed, no inline label —
+                      the legend above the chart names it with
+                      its value. */}
+                  {targetMonthlyCents != null && (
+                    <ReferenceLine
+                      y={targetMonthlyCents / 100}
+                      stroke="var(--text)"
+                      strokeDasharray="6 4"
+                      strokeWidth={1.5}
+                      strokeOpacity={0.75}
+                    />
+                  )}
+                  {/* The True cost average line: dotted, thin,
+                      and in the muted neutral dim colour — not
+                      the True cost teal and not the Cash out
+                      amber — so it reads as its own element and
+                      never as the target's dashed line. No inline
+                      label: the legend above the chart names it
+                      with its value. */}
+                  {averageMonthlyCents != null && (
+                    <ReferenceLine
+                      y={averageMonthlyCents / 100}
+                      stroke="var(--dim)"
+                      strokeDasharray="2 3"
+                      strokeWidth={1}
+                      strokeLinecap="round"
+                    />
+                  )}
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
+          {/* Vs-target summary line, under the chart: the total
+              and the per-month average of (True cost − Target)
+              over the recorded months only — the same months
+              the summary values above were computed from, so
+              entered-ahead (est.) pairs never enter either
+              figure. */}
+          {targetTotalDiffCents != null && targetAvgDiffCents != null && (
+            <p className="tnum mt-3 text-sm text-[var(--dim)]">
+              {`Vs target · ${targetRangeLabel} · ${recordedMonths.length} recorded month${recordedMonths.length === 1 ? "" : "s"} — total ${fmtSigned(targetTotalDiffCents)} ${vsTargetWord(targetTotalDiffCents)} · average ${fmtSigned(targetAvgDiffCents)}/mo ${vsTargetWord(targetAvgDiffCents)}${hasEstimate ? " · (est.) months not counted" : ""}`}
+            </p>
+          )}
         </>
       )}
     </section>
@@ -1451,10 +1712,14 @@ function YearTrueCostChart({
   year,
   months,
   onSelectMonth,
+  targetMonthlyCents,
 }: {
   year: number;
   months: YearMonthRow[];
   onSelectMonth: (month: string) => void;
+  // The spending target per month, in cents — the same live
+  // figure the Month-mode chart draws (see SpendingTrueCostChart).
+  targetMonthlyCents: number | null;
 }) {
   const chartData: YearChartDatum[] = months
     .filter((m) => m.hasData)
@@ -1471,6 +1736,23 @@ function YearTrueCostChart({
       cashOutCents: m.cashOutCents,
     }));
   const hasEstimate = chartData.some((d) => d.estimate);
+  /* Vs-target summary over this year's recorded months only:
+     (est.) pairs are never counted — an estimate may be
+     revised — so the total and the per-month average are sums
+     of (True cost − Target) over the recorded months alone,
+     computed here from the chart's own data. */
+  const recordedYearData = chartData.filter((d) => !d.estimate);
+  const yearTargetTotalDiffCents =
+    targetMonthlyCents != null
+      ? recordedYearData.reduce(
+          (sum, d) => sum + (d.trueCostCents - (targetMonthlyCents ?? 0)),
+          0,
+        )
+      : null;
+  const yearTargetAvgDiffCents =
+    yearTargetTotalDiffCents != null && recordedYearData.length > 0
+      ? Math.round(yearTargetTotalDiffCents / recordedYearData.length)
+      : null;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleChartClick = (state: any) => {
@@ -1494,14 +1776,81 @@ function YearTrueCostChart({
         {hasEstimate &&
           " An (est.) month is entered ahead and may be revised."}
       </p>
+      {targetMonthlyCents != null && (
+        <p className="tnum mt-1.5 text-sm text-[var(--dim)]">
+          Spending target {fmt(targetMonthlyCents)}/mo — the dashed line;
+          a month above it spent over the target.
+        </p>
+      )}
       {/* Screen-reader / text fallback carrying the exact figures. */}
       <ul className="sr-only">
-        {chartData.map((d) => (
-          <li key={d.monthStr}>
-            {`${d.name} ${year}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
-          </li>
-        ))}
+        {targetMonthlyCents != null && (
+          <li>{`Spending target: ${fmt(targetMonthlyCents)} per month`}</li>
+        )}
+        {chartData.map((d) => {
+          const diffCents =
+            targetMonthlyCents != null
+              ? d.trueCostCents - targetMonthlyCents
+              : null;
+          return (
+            <li key={d.monthStr}>
+              {`${d.name} ${year}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
+            </li>
+          );
+        })}
+        {yearTargetTotalDiffCents != null &&
+          yearTargetAvgDiffCents != null && (
+            <li>{`Vs target · ${year} · ${recordedYearData.length} recorded month${recordedYearData.length === 1 ? "" : "s"}: total ${fmtSigned(yearTargetTotalDiffCents)} ${vsTargetWord(yearTargetTotalDiffCents)} · average ${fmtSigned(yearTargetAvgDiffCents)}/mo ${vsTargetWord(yearTargetAvgDiffCents)}`}</li>
+          )}
       </ul>
+      {/* Legend: names every element of the chart with its
+          value — the two bar series and the dashed target
+          line (which carries no inline label; the legend
+          names it, matching the Month-mode chart). */}
+      <div
+        aria-label="Chart legend"
+        className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-[var(--text)]"
+      >
+        <span className="inline-flex items-center gap-2">
+          <span
+            aria-hidden="true"
+            className="inline-block h-[10px] w-[14px] rounded-[2px]"
+            style={{ background: "var(--accent)" }}
+          />
+          True cost
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span
+            aria-hidden="true"
+            className="inline-block h-[10px] w-[14px] rounded-[2px]"
+            style={{ background: "var(--warn)" }}
+          />
+          Cash out
+        </span>
+        {targetMonthlyCents != null && (
+          <span className="tnum inline-flex items-center gap-2">
+            <svg
+              aria-hidden="true"
+              width="28"
+              height="6"
+              viewBox="0 0 28 6"
+              className="shrink-0"
+            >
+              <line
+                x1="0"
+                y1="3"
+                x2="28"
+                y2="3"
+                stroke="var(--text)"
+                strokeWidth="1.5"
+                strokeDasharray="6 4"
+                strokeOpacity="0.75"
+              />
+            </svg>
+            {`Target ${fmt(targetMonthlyCents)}/mo`}
+          </span>
+        )}
+      </div>
       <div className="mt-3 max-w-full overflow-x-auto">
         <div className="h-[300px] min-w-[620px]">
           <ResponsiveContainer width="100%" height="100%">
@@ -1551,6 +1900,11 @@ function YearTrueCostChart({
                 axisLine={false}
                 width={64}
                 tick={{ fill: "var(--dim)", fontSize: 12 }}
+                domain={[
+                  0,
+                  (dataMax: number) =>
+                    Math.max(dataMax, (targetMonthlyCents ?? 0) / 100),
+                ]}
                 tickFormatter={(value: number) =>
                   value >= 1000
                     ? `$${Number((value / 1000).toFixed(1)).toLocaleString("en-US")}k`
@@ -1580,14 +1934,25 @@ function YearTrueCostChart({
                         True cost {fmt(datum.trueCostCents)} · Cash out{" "}
                         {fmt(datum.cashOutCents)}
                       </p>
+                      {targetMonthlyCents != null && (
+                        <p className="tnum mt-0.5 text-[var(--dim)]">
+                          Target {fmt(targetMonthlyCents)}/mo
+                        </p>
+                      )}
+                      {targetMonthlyCents != null &&
+                        (() => {
+                          const diffCents =
+                            datum.trueCostCents - targetMonthlyCents;
+                          return (
+                            <p className="tnum mt-0.5 font-medium text-[var(--text)]">
+                              Difference {fmtSigned(diffCents)}{" "}
+                              {vsTargetWord(diffCents)}
+                            </p>
+                          );
+                        })()}
                     </div>
                   );
                 }}
-              />
-              <Legend
-                formatter={(value: string) => (
-                  <span style={{ color: "var(--text)" }}>{value}</span>
-                )}
               />
               <Bar
                 dataKey="trueCost"
@@ -1625,10 +1990,31 @@ function YearTrueCostChart({
                   />
                 ))}
               </Bar>
+              {/* The target line: dashed, no inline label —
+                  the legend above the chart names it with
+                  its value. */}
+              {targetMonthlyCents != null && (
+                <ReferenceLine
+                  y={targetMonthlyCents / 100}
+                  stroke="var(--text)"
+                  strokeDasharray="6 4"
+                  strokeWidth={1.5}
+                  strokeOpacity={0.75}
+                />
+              )}
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
+      {/* Vs-target summary line, under the chart: the total and
+          the per-month average of (True cost − Target) over
+          this year's recorded months only — (est.) pairs never
+          enter either figure. */}
+      {yearTargetTotalDiffCents != null && yearTargetAvgDiffCents != null && (
+        <p className="tnum mt-3 text-sm text-[var(--dim)]">
+          {`Vs target · ${year} · ${recordedYearData.length} recorded month${recordedYearData.length === 1 ? "" : "s"} — total ${fmtSigned(yearTargetTotalDiffCents)} ${vsTargetWord(yearTargetTotalDiffCents)} · average ${fmtSigned(yearTargetAvgDiffCents)}/mo ${vsTargetWord(yearTargetAvgDiffCents)}${hasEstimate ? " · (est.) months not counted" : ""}`}
+        </p>
+      )}
     </section>
   );
 }
@@ -1658,6 +2044,15 @@ function retryReadOnlyLoad(failureCount: number, error: Error): boolean {
   return failureCount < 3;
 }
 
+/* Build v177 (re-audit NICE-TO-HAVE N-3): the bound on a
+   save fire path's hold polls — a fire path waiting for an
+   in-flight save to settle re-checks every 300 ms at most
+   this many times (100 × 300 ms = 30 s) before it gives up
+   explicitly instead of polling forever. The same bound and
+   give-up are applied in every writer that carries the hold
+   (Playground.tsx, RetirementCalc.tsx, RothConversion.tsx). */
+const SAVE_HOLD_MAX_POLLS = 100;
+
 export function App() {
   const queryClient = useQueryClient();
   const [month, setMonth] = useState(currentMonth());
@@ -1670,6 +2065,17 @@ export function App() {
      "networth" is its own self-contained view — while it is active
      none of the spending sections render. In-session only. */
   const [topView, setTopView] = useState<"spending" | "networth" | "retirement" | "roth" | "playground">("spending");
+  /* Cross-view jump target for the Tax Plan (PLAN TOTAL
+     VISIBILITY build): set by the Playground's Plan total tap —
+     RothConversion's existing jumpTarget mechanism
+     (build v133) jumps to the named field once the plan has
+     loaded, opening its section on the All settings face. The
+     nonce makes each tap fire exactly once. */
+  const [rothJumpTarget, setRothJumpTarget] = useState<{
+    fieldId: string;
+    section: "money";
+    nonce: number;
+  } | null>(null);
   const [viewYear, setViewYear] = useState<number>(() =>
     Number(currentMonth().slice(0, 4)),
   );
@@ -1692,15 +2098,326 @@ export function App() {
     queryClient.invalidateQueries({ queryKey: ["yearview"] });
   };
 
+  /* ---- Spending target (one source, multiple edit locations) ----
+     The target is the Tax Plan record's annual spending
+     (annualSpendingCents) — the same figure the Tax Plan,
+     Retirement, and Playground views read and edit. This view
+     shows it as a monthly line on the spending charts
+     (annual ÷ 12), compares it against the viewed month's true
+     monthly cost in the hero, and edits it in place through a
+     plain typed field beside that hero, with the same per
+     year / per month toggle the Tax Plan and Playground
+     spending fields carry (the state stays the annual string;
+     per-month entry converts at exactly monthly × 12 through
+     rothShared's shared helpers). The field writes
+     through to the record via saveRothInputs with CAS, exactly
+     like the Playground spending field (build v145, with the
+     v152 fresh-rebuild queue, the v151 failed-save retry, and
+     the v158 conflict reset): the queue holds ONLY the local
+     spending delta, the whole-record payload is rebuilt at fire
+     time from the freshest fetched record with only
+     annualSpendingCents replaced, and the mutation reads its
+     CAS base from that same refetch — so an edit here updates
+     the Tax Plan, Retirement, and Playground too, and another
+     view's save can never be silently reverted by this one.
+     Display resolution mirrors the Playground's: the record's
+     figure, falling back to the Retirement calculator's
+     default when the record has none; the chart line and the
+     hero comparison read the local field while it parses to a
+     positive figure, so they move live as the target is typed,
+     and fall back to the record's figure while the field is
+     blank or unparseable. When there is no saved Tax Plan
+     record yet, there is nothing to write through to and the
+     edit stays in this view only. No pricing is touched: the
+     target never enters the true-cost computation. */
+  const rothQ = useQuery({
+    queryKey: ["rothplanner"],
+    queryFn: () => api.getRothPlanner({}),
+  });
+  const retCalcQ = useQuery({
+    queryKey: ["retirementcalc"],
+    queryFn: () => api.getRetirementCalc({}),
+  });
+  const [spendingTarget, setSpendingTarget] = useState("");
+  const [spendingTargetMsg, setSpendingTargetMsg] = useState<string | null>(null);
+  const spendingTargetFocusedRef = useRef(false);
+  // Per year / per month entry unit for the target field: the
+  // same toggle the Tax Plan's "Yearly spending" field
+  // (build v141) and the Playground's spending field carry.
+  // "year" shows and edits the annual dollars directly;
+  // "month" shows annual ÷ 12 and turns a typed monthly amount
+  // into annual at exactly monthly × 12 (monthlyToAnnual in
+  // rothShared — the shared conversion, so the rounding is
+  // identical everywhere). The state stays the annual string
+  // in both units — the queue, the chart line, and the hero
+  // all keep reading it unchanged — and switching units never
+  // rewrites it. The unit is a local display preference (not
+  // persisted, no new stored field, no new action); the field
+  // opens per year.
+  const [spendingTargetUnit, setSpendingTargetUnit] = useState<"year" | "month">("year");
+  // Per-month draft: while the field is focused in per-month
+  // mode, the input shows the monthly figure as the user types
+  // it — the state is annual dollars, so the typed monthly
+  // string lives here until blur, and each keystroke also
+  // writes the annual equivalent (monthly × 12) into
+  // spendingTarget. Null whenever the field is not focused in
+  // per-month mode.
+  const [spendingTargetMonthlyDraft, setSpendingTargetMonthlyDraft] = useState<string | null>(null);
+  // The monthly figure for display when the field is not
+  // focused in per-month mode: the annual figure divided by
+  // twelve, rounded to the cent and grouped like the money
+  // fields ($180,000/yr shows as 15,000.00). Blank and
+  // unparseable text pass through exactly as typed.
+  const spendingTargetMonthlyDisplay = (): string => {
+    const cents = parseDollars(spendingTarget);
+    if (cents == null) return spendingTarget;
+    return fmtInputMoney(Math.round(cents / 12));
+  };
+  const spendingTargetSourceCents =
+    rothQ.data?.saved?.annualSpendingCents ??
+    retCalcQ.data?.defaultSpendingAnnualCents ??
+    null;
+  useEffect(() => {
+    if (spendingTargetSourceCents == null) return;
+    if (spendingTargetFocusedRef.current) return;
+    const next = fmtInputMoney(spendingTargetSourceCents);
+    setSpendingTarget((prev) => (prev === next ? prev : next));
+  }, [spendingTargetSourceCents]);
+  // The target the chart line and hero comparison use: the
+  // local field when it parses to a positive figure, else the
+  // record's resolved figure (hidden when neither resolves or
+  // the resolved figure is $0 — no target to compare against).
+  const spendingTargetResolvedCents =
+    spendingTargetSourceCents != null && spendingTargetSourceCents > 0
+      ? spendingTargetSourceCents
+      : null;
+  const spendingTargetLocalCents = parseDollars(spendingTarget);
+  const spendingTargetAnnualCents =
+    spendingTargetLocalCents != null && spendingTargetLocalCents > 0
+      ? spendingTargetLocalCents
+      : spendingTargetResolvedCents;
+  const spendingTargetMonthlyCents =
+    spendingTargetAnnualCents != null
+      ? Math.round(spendingTargetAnnualCents / 12)
+      : null;
+  const spendingTargetRevisionRef = useRef(0);
+  useEffect(() => {
+    if (rothQ.data) spendingTargetRevisionRef.current = rothQ.data.revision;
+  }, [rothQ.data]);
+  const spendingTargetTimer = useRef<number | null>(null);
+  const pendingSpendingTargetSave = useRef<{ annualSpendingCents: number } | null>(null);
+  const spendingTargetSaveInFlightRef = useRef(false);
+  // Build v177 (re-audit NICE-TO-HAVE N-3): consecutive
+  // hold polls by the fire path below while it waits for
+  // the in-flight save to settle, bounded by
+  // SAVE_HOLD_MAX_POLLS — see the hold branch there.
+  const spendingTargetHoldPollsRef = useRef(0);
+  const spendingTargetSave = useMutation({
+    mutationFn: (input: RothSavePayload) =>
+      api.saveRothInputs({
+        ...input,
+        baseRevision: spendingTargetRevisionRef.current,
+      }),
+    onError: () => {
+      // A failed write-through says so instead of vanishing
+      // silently (build v151): the edit stays queued and
+      // its per-call onError re-arms a retry.
+      setSpendingTargetMsg(
+        "Could not save — your entries stay on this screen.",
+      );
+    },
+    onSuccess: (res) => {
+      if (res.ok) {
+        setSpendingTargetMsg(null);
+        spendingTargetRevisionRef.current = res.revision;
+        queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
+        return;
+      }
+      // Conflict: a newer Tax Plan save landed first. Seed the
+      // cache with the record the refusal carries and RESET
+      // the field from it explicitly (build v158) — re-show
+      // the stored target — and say plainly what happened.
+      spendingTargetRevisionRef.current = res.revision;
+      if (spendingTargetTimer.current != null) {
+        window.clearTimeout(spendingTargetTimer.current);
+        spendingTargetTimer.current = null;
+      }
+      pendingSpendingTargetSave.current = null;
+      queryClient.setQueryData(["rothplanner"], res.record);
+      const storedCents = res.record.saved?.annualSpendingCents ?? null;
+      if (storedCents != null) {
+        setSpendingTarget(fmtInputMoney(storedCents));
+      }
+      queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
+      // Re-audit NICE-TO-HAVE N-2, twin instance (found while
+      // resolving N-2): this message was guarded by a
+      // pending-save flag with the same lifecycle as the
+      // Playground flag the N-2 build removed — initialised
+      // false, set to true only in queueSpendingTargetSave
+      // immediately before the only queued-delta assignment
+      // (the fire path sends nothing else), and never cleared
+      // — so the guard was always true by the time any
+      // conflict was handled and could never discriminate.
+      // The message is set unconditionally, exactly as it
+      // effectively behaved.
+      setSpendingTargetMsg(
+        "This plan was changed in the Tax Plan (or another tab), so the spending target edit just made here was not kept. The latest saved version is shown now.",
+      );
+    },
+  });
+  const spendingTargetSaveMutateRef = useRef(spendingTargetSave.mutate);
+  spendingTargetSaveMutateRef.current = spendingTargetSave.mutate;
+  // Build the whole-record save payload for a target spending
+  // value from the CURRENT fetched record (build v152):
+  // every field comes from the freshest record this view
+  // holds; only annualSpendingCents is the caller's. Returns
+  // null when there is no saved record to write through to,
+  // or when the fresh record already holds the target value.
+  const buildSpendingTargetPayload = (
+    targetCents: number,
+  ): RothSavePayload | null => {
+    const rp = rothQ.data;
+    if (!rp || !rp.saved) return null;
+    if (targetCents === rp.saved.annualSpendingCents) return null;
+    const {
+      rolledOver: _rolledOver,
+      clearedYear: _clearedYear,
+      ...execution
+    } = rp.execution;
+    return {
+      ...rp.saved,
+      ...execution,
+      ...rp.mcCheck,
+      ...rp.gift,
+      ...rp.taxReturn,
+      annualSpendingCents: targetCents,
+    };
+  };
+  const buildSpendingTargetPayloadRef = useRef(buildSpendingTargetPayload);
+  buildSpendingTargetPayloadRef.current = buildSpendingTargetPayload;
+  const firePendingSpendingTargetSave = () => {
+    const pending = pendingSpendingTargetSave.current;
+    if (!pending) return;
+    if (spendingTargetFocusedRef.current) {
+      // Settled-value gate: the field is still being edited, so
+      // the queued edit may still change. Hold it — the blur
+      // flush sends it once focus leaves the field.
+      return;
+    }
+    if (spendingTargetSaveInFlightRef.current) {
+      // Build v177 (re-audit NICE-TO-HAVE N-3): this hold
+      // is BOUNDED. Before v177 it re-armed the 300 ms
+      // re-check without limit: a save whose call never
+      // settles (a hung request — the mutation's promise
+      // neither resolves nor rejects, so onSettled never
+      // runs and the in-flight flag never clears) held the
+      // queued edit behind it forever, polling for the life
+      // of the view. After SAVE_HOLD_MAX_POLLS consecutive
+      // polls (100 × 300 ms = 30 s, far beyond any save this
+      // app makes) the hold gives up explicitly: polling
+      // stops, the edit STAYS queued (a later edit or the
+      // blur flush fires it, and if the wedged save ever
+      // does settle its own per-call handlers run exactly
+      // as before), and the failure is surfaced with the
+      // same line a failed save uses. Nothing is sent
+      // concurrently — the deferral behind a settling save
+      // is untouched.
+      spendingTargetHoldPollsRef.current += 1;
+      if (spendingTargetHoldPollsRef.current > SAVE_HOLD_MAX_POLLS) {
+        spendingTargetHoldPollsRef.current = 0;
+        if (spendingTargetTimer.current != null) {
+          window.clearTimeout(spendingTargetTimer.current);
+          spendingTargetTimer.current = null;
+        }
+        setSpendingTargetMsg(
+          "Could not save — your entries stay on this screen.",
+        );
+        return;
+      }
+      if (spendingTargetTimer.current != null) {
+        window.clearTimeout(spendingTargetTimer.current);
+      }
+      spendingTargetTimer.current = window.setTimeout(
+        firePendingSpendingTargetSave,
+        300,
+      );
+      return;
+    }
+    const payload = buildSpendingTargetPayloadRef.current(
+      pending.annualSpendingCents,
+    );
+    if (!payload) {
+      // Nothing to send: no saved record to write through to,
+      // or the fresh record already holds this target.
+      pendingSpendingTargetSave.current = null;
+      spendingTargetHoldPollsRef.current = 0;
+      return;
+    }
+    // The edit stays queued until the save SUCCEEDS (contract
+    // v151): success drops it, error re-arms a retry of it.
+    spendingTargetHoldPollsRef.current = 0;
+    spendingTargetSaveInFlightRef.current = true;
+    spendingTargetSaveMutateRef.current(payload, {
+      onSuccess: () => {
+        if (pendingSpendingTargetSave.current === pending) {
+          pendingSpendingTargetSave.current = null;
+        }
+      },
+      onError: () => {
+        if (pendingSpendingTargetSave.current === pending) {
+          if (spendingTargetTimer.current != null) {
+            window.clearTimeout(spendingTargetTimer.current);
+          }
+          spendingTargetTimer.current = window.setTimeout(
+            firePendingSpendingTargetSave,
+            3000,
+          );
+        }
+      },
+      onSettled: () => {
+        spendingTargetSaveInFlightRef.current = false;
+      },
+    });
+  };
+  const firePendingSpendingTargetSaveRef = useRef(firePendingSpendingTargetSave);
+  firePendingSpendingTargetSaveRef.current = firePendingSpendingTargetSave;
+  const queueSpendingTargetSave = () => {
+    // Queue ONLY the local spending delta (build v152) —
+    // never a whole-record payload.
+    const rp = rothQ.data;
+    if (!rp || !rp.saved) return;
+    const cents = parseDollars(spendingTarget);
+    // A blank or unparseable field queues nothing and leaves
+    // any earlier queued edit in place (a half-typed value can
+    // never blank or replace a queued save).
+    if (cents == null) return;
+    if (cents === rp.saved.annualSpendingCents) {
+      // The field is back at the stored value — the edit was
+      // reverted, so nothing is owed: drop any queued delta
+      // instead of leaving a superseded value queued to fire
+      // on blur (the Retirement queue's rule, build v153).
+      pendingSpendingTargetSave.current = null;
+      return;
+    }
+    pendingSpendingTargetSave.current = { annualSpendingCents: cents };
+    firePendingSpendingTargetSaveRef.current();
+  };
+  const queueSpendingTargetSaveRef = useRef(queueSpendingTargetSave);
+  queueSpendingTargetSaveRef.current = queueSpendingTargetSave;
+  useEffect(() => {
+    queueSpendingTargetSaveRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spendingTarget]);
+
   /* transaction form state */
   const [showTxnForm, setShowTxnForm] = useState(false);
   const [editingTxnId, setEditingTxnId] = useState<number | null>(null);
-  // Contract v65 (F13): the transaction as loaded when the editor
+  // Build v65 (F13): the transaction as loaded when the editor
   // opened — sent back as the update's CAS base.
   const [editingTxnBase, setEditingTxnBase] = useState<
     ApiRequest<typeof api, "updateTransaction">["base"] | null
   >(null);
-  // Contract v121 (F3): the restore epoch as loaded when the
+  // Build v121 (F3): the restore epoch as loaded when the
   // editor opened (getDashboard's restoreEpoch) — frozen at open
   // like the CAS base, so a restore since the load refuses the
   // save even when the stored row still equals the base.
@@ -1719,11 +2436,11 @@ export function App() {
   /* yearly form state */
   const [showYearlyForm, setShowYearlyForm] = useState(false);
   const [editingYearlyId, setEditingYearlyId] = useState<number | null>(null);
-  // Contract v65 (F17): the expense exactly as loaded when the
+  // Build v65 (F17): the expense exactly as loaded when the
   // editor opened — the save's CAS base (parent fields plus the
   // version stored for the save's effective month).
   const [editingYearly, setEditingYearly] = useState<Yearly | null>(null);
-  // Contract v121 (F3): the restore epoch as loaded when the
+  // Build v121 (F3): the restore epoch as loaded when the
   // editor opened — frozen at open like the CAS base.
   const [editingYearlyEpoch, setEditingYearlyEpoch] = useState<number | null>(null);
   const [yName, setYName] = useState("");
@@ -1742,7 +2459,7 @@ export function App() {
   /* monthly summary (one cash-out number) state */
   const [showSummaryForm, setShowSummaryForm] = useState(false);
   const [sMonth, setSMonth] = useState(currentMonth());
-  // Contract v65 (F15): the month + stored total as loaded when
+  // Build v65 (F15): the month + stored total as loaded when
   // the summary form opened — the save's CAS base. If the user
   // changes the month in the form, the base is recomputed from
   // the loaded dashboard for that month instead.
@@ -1750,7 +2467,7 @@ export function App() {
     month: string;
     cashOutCents: number | null;
   } | null>(null);
-  // Contract v121 (F3): the restore epoch as loaded when the
+  // Build v121 (F3): the restore epoch as loaded when the
   // summary form opened — frozen at open like the CAS base.
   const [summaryEpoch, setSummaryEpoch] = useState<number | null>(null);
   const [sDollars, setSDollars] = useState("");
@@ -1780,12 +2497,12 @@ export function App() {
   };
   const [showItemForm, setShowItemForm] = useState(false);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
-  // Contract v65 (F14): the cash-out item as loaded when the
+  // Build v65 (F14): the cash-out item as loaded when the
   // editor opened — sent back as the update's CAS base.
   const [editingItemBase, setEditingItemBase] = useState<
     ApiRequest<typeof api, "updateCashOutItem">["base"] | null
   >(null);
-  // Contract v121 (F3): the restore epoch as loaded when the
+  // Build v121 (F3): the restore epoch as loaded when the
   // editor opened — frozen at open like the CAS base.
   const [editingItemEpoch, setEditingItemEpoch] = useState<number | null>(null);
   const [iDate, setIDate] = useState(() => `${currentMonth()}-01`);
@@ -1797,12 +2514,12 @@ export function App() {
   /* monthly bills state */
   const [showBillForm, setShowBillForm] = useState(false);
   const [editingBillId, setEditingBillId] = useState<number | null>(null);
-  // Contract v65 (F18/F16): the bill exactly as loaded when the
+  // Build v65 (F18/F16): the bill exactly as loaded when the
   // editor opened — the CAS bases for the metadata save (all five
   // fields) and the chained amount save (the version stored for
   // the chosen effective month).
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
-  // Contract v121 (F3): the restore epoch as loaded when the
+  // Build v121 (F3): the restore epoch as loaded when the
   // editor opened — frozen at open like the CAS bases.
   const [editingBillEpoch, setEditingBillEpoch] = useState<number | null>(null);
   const [bName, setBName] = useState("");
@@ -1817,7 +2534,7 @@ export function App() {
   /* one-off notes state */
   const [showOneOffForm, setShowOneOffForm] = useState(false);
   const [editingOneOffId, setEditingOneOffId] = useState<number | null>(null);
-  // Contract v121 (F3): the restore epoch as loaded when the
+  // Build v121 (F3): the restore epoch as loaded when the
   // editor opened — frozen at open, so a restore since the load
   // refuses the save.
   const [editingOneOffEpoch, setEditingOneOffEpoch] = useState<number | null>(null);
@@ -1885,7 +2602,7 @@ export function App() {
 
   // Collapse-all flags: optimistic — each section flips immediately
   // from local state and the choice persists in the background
-  // (contract v132). Before the first read lands each shows
+  // (build v132). Before the first read lands each shows
   // collapsed, the stored default. On a refused write (a restore
   // since the load) the override is dropped so the section shows
   // the stored value again. A rapid second click reads the
@@ -1974,7 +2691,7 @@ export function App() {
     return [...s];
   }, [data]);
 
-  // Cash-out item Name options (contract v139): the distinct names
+  // Cash-out item Name options (build v139): the distinct names
   // already on cash-out items, most recent first, so last month's
   // names sit at the top. Exact strings only — similar-looking names
   // are separate entries, never merged. Derived from cashOutMonths
@@ -2017,7 +2734,7 @@ export function App() {
     }) => api.updateTransaction(input),
     onSuccess: (r) => {
       if (!r.ok) {
-        // CAS refusal (contract v65, F13): the stored row moved
+        // CAS refusal (build v65, F13): the stored row moved
         // since this form loaded — keep the form open and show
         // why instead of resetting over the newer value.
         setFormError(r.reason ?? "That transaction could not be updated.");
@@ -2029,7 +2746,7 @@ export function App() {
     onError: (e) => setFormError(String(e)),
   });
   const deleteTxn = useMutation({
-    // Contract v121 (F3): an immediate delete carries the epoch
+    // Build v121 (F3): an immediate delete carries the epoch
     // of the data on screen (the row the user is looking at).
     mutationFn: (id: number) => api.deleteTransaction({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -2054,7 +2771,7 @@ export function App() {
       api.updateYearlyExpense(input),
     onSuccess: (r) => {
       if (!r.ok) {
-        // CAS refusal (contract v65, F17): keep the form open and
+        // CAS refusal (build v65, F17): keep the form open and
         // show why instead of resetting over the newer value.
         setYearlyError(r.reason ?? "That expense could not be updated.");
         return;
@@ -2065,7 +2782,7 @@ export function App() {
     onError: (e) => setYearlyError(String(e)),
   });
   const deleteYearly = useMutation({
-    // Contract v121 (F3): an immediate delete carries the epoch
+    // Build v121 (F3): an immediate delete carries the epoch
     // of the data on screen.
     mutationFn: (id: number) => api.deleteYearlyExpense({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -2074,7 +2791,7 @@ export function App() {
     },
   });
   const deleteYearlyVersion = useMutation({
-    // Contract v121 (F3): carries the epoch of the data on screen.
+    // Build v121 (F3): carries the epoch of the data on screen.
     mutationFn: (versionId: number) => api.deleteYearlyExpenseVersion({ versionId, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       setConfirmYearlyVersionId(null);
@@ -2089,7 +2806,7 @@ export function App() {
     onError: (e) => setVersionDeleteError(String(e)),
   });
   const deleteMonthlyVersion = useMutation({
-    // Contract v121 (F3): carries the epoch of the data on screen.
+    // Build v121 (F3): carries the epoch of the data on screen.
     mutationFn: (versionId: number) => api.deleteMonthlyBillVersion({ versionId, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
       setConfirmMonthlyVersionId(null);
@@ -2108,7 +2825,7 @@ export function App() {
       api.upsertMonthlySummary(input),
     onSuccess: (r) => {
       if (!r.ok) {
-        // CAS refusal (contract v65, F15): keep the form open and
+        // CAS refusal (build v65, F15): keep the form open and
         // show why instead of closing over the newer value.
         setSummaryError(r.reason ?? "That month's total could not be saved.");
         return;
@@ -2122,7 +2839,7 @@ export function App() {
     onError: (e) => setSummaryError(String(e)),
   });
   const deleteSummary = useMutation({
-    // Contract v121 (F3): an immediate delete carries the epoch
+    // Build v121 (F3): an immediate delete carries the epoch
     // of the data on screen.
     mutationFn: (m: string) => api.deleteMonthlySummary({ month: m, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -2145,7 +2862,7 @@ export function App() {
       api.updateCashOutItem(input),
     onSuccess: (r, input) => {
       if (!r.ok) {
-        // CAS refusal (contract v65, F14): keep the form open and
+        // CAS refusal (build v65, F14): keep the form open and
         // show why instead of resetting over the newer value.
         setItemError(r.reason ?? "That item could not be updated.");
         return;
@@ -2157,7 +2874,7 @@ export function App() {
     onError: (e) => setItemError(String(e)),
   });
   const deleteCashOutItem = useMutation({
-    // Contract v121 (F3): an immediate delete carries the epoch
+    // Build v121 (F3): an immediate delete carries the epoch
     // of the data on screen.
     mutationFn: (id: number) => api.deleteCashOutItem({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -2182,7 +2899,7 @@ export function App() {
       api.updateMonthlyBill(input),
     onSuccess: (r) => {
       if (!r.ok) {
-        // CAS refusal (contract v65, F18): keep the form open and
+        // CAS refusal (build v65, F18): keep the form open and
         // show why — the chained amount save must NOT run either.
         setBillError(r.reason ?? "That bill could not be updated.");
         return;
@@ -2193,7 +2910,7 @@ export function App() {
     onError: (e) => setBillError(String(e)),
   });
   const deleteBill = useMutation({
-    // Contract v121 (F3): an immediate delete carries the epoch
+    // Build v121 (F3): an immediate delete carries the epoch
     // of the data on screen.
     mutationFn: (id: number) => api.deleteMonthlyBill({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -2206,7 +2923,7 @@ export function App() {
       api.setMonthlyBillAmount(input),
     onSuccess: (r) => {
       if (!r.ok) {
-        // CAS refusal (contract v65, F16): show why instead of
+        // CAS refusal (build v65, F16): show why instead of
         // resetting the form over the newer stored amount.
         setBillError(r.reason ?? "That bill amount could not be saved.");
         return;
@@ -2230,7 +2947,7 @@ export function App() {
       api.updateMonthlyOneOff(input),
     onSuccess: (r) => {
       if (!r.ok) {
-        // Result-honesty (contract v67, F04): a refused edit keeps
+        // Result-honesty (build v67, F04): a refused edit keeps
         // the editor open with the edit intact and shows why —
         // the same guard its four sibling editors carry.
         setOneOffError(r.reason ?? "That one-off could not be updated.");
@@ -2242,7 +2959,7 @@ export function App() {
     onError: (e) => setOneOffError(String(e)),
   });
   const deleteOneOff = useMutation({
-    // Contract v121 (F3): an immediate delete carries the epoch
+    // Build v121 (F3): an immediate delete carries the epoch
     // of the data on screen.
     mutationFn: (id: number) => api.deleteMonthlyOneOff({ id, baseEpoch: data?.restoreEpoch ?? 0 }),
     onSuccess: (r) => {
@@ -2251,7 +2968,7 @@ export function App() {
     },
   });
   const setDueMonth = useMutation({
-    // Contract v121 (F3): an immediate setter carries the epoch
+    // Build v121 (F3): an immediate setter carries the epoch
     // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyDueMonth">) =>
       api.setYearlyDueMonth({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2261,7 +2978,7 @@ export function App() {
     },
   });
   const setMonthlyCategory = useMutation({
-    // Contract v121 (F3): an immediate setter carries the epoch
+    // Build v121 (F3): an immediate setter carries the epoch
     // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillCategory">) =>
       api.setMonthlyBillCategory({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2271,7 +2988,7 @@ export function App() {
     },
   });
   const setYearlyCategory = useMutation({
-    // Contract v121 (F3): an immediate setter carries the epoch
+    // Build v121 (F3): an immediate setter carries the epoch
     // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyCategory">) =>
       api.setYearlyCategory({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2281,7 +2998,7 @@ export function App() {
     },
   });
   const setMonthlyKeepLightsOn = useMutation({
-    // Contract v121 (F3): an immediate setter carries the epoch
+    // Build v121 (F3): an immediate setter carries the epoch
     // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillKeepLightsOn">) =>
       api.setMonthlyBillKeepLightsOn({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2291,7 +3008,7 @@ export function App() {
     },
   });
   const setMonthlyBillsCollapsedAll = useMutation({
-    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // Build v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillsCollapsedAll">) =>
       api.setMonthlyBillsCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2304,7 +3021,7 @@ export function App() {
     },
   });
   const setYearlyBillsCollapsedAll = useMutation({
-    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // Build v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyBillsCollapsedAll">) =>
       api.setYearlyBillsCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2317,7 +3034,7 @@ export function App() {
     },
   });
   const setByCategoryCollapsedAll = useMutation({
-    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // Build v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setByCategoryCollapsedAll">) =>
       api.setByCategoryCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2330,7 +3047,7 @@ export function App() {
     },
   });
   const setYearInSpendingCollapsedAll = useMutation({
-    // Contract v130 (round-19 finding 10): carries the epoch of the
+    // Build v130 (round-19 finding 10): carries the epoch of the
     // data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearInSpendingCollapsedAll">) =>
       api.setYearInSpendingCollapsedAll({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2343,7 +3060,7 @@ export function App() {
     },
   });
 
-  // Optimistic flips (contract v132): each section re-renders from
+  // Optimistic flips (build v132): each section re-renders from
   // local state at once; the mutation persists the choice in the
   // background and its refetch then agrees with what is already
   // shown.
@@ -2364,7 +3081,7 @@ export function App() {
     setYearInSpendingCollapsedAll.mutate({ collapsed });
   };
   const setYearlyKeepLightsOn = useMutation({
-    // Contract v121 (F3): an immediate setter carries the epoch
+    // Build v121 (F3): an immediate setter carries the epoch
     // of the data on screen.
     mutationFn: (input: ApiRequest<typeof api, "setYearlyKeepLightsOn">) =>
       api.setYearlyKeepLightsOn({ ...input, baseEpoch: data?.restoreEpoch ?? 0 }),
@@ -2408,7 +3125,7 @@ export function App() {
 
   function openEditTxn(t: Txn) {
     setEditingTxnId(t.id);
-    // Contract v65 (F13): the row as loaded — the CAS base the
+    // Build v65 (F13): the row as loaded — the CAS base the
     // save carries back so a stale form can't overwrite a newer
     // stored value.
     setEditingTxnBase({
@@ -2424,7 +3141,7 @@ export function App() {
       category: t.category,
       yearlyExpenseId: t.yearlyExpenseId ?? null,
     });
-    // Contract v121 (F3): freeze the restore epoch with the base
+    // Build v121 (F3): freeze the restore epoch with the base
     // — a restore since this load refuses the save even when the
     // stored row still equals the base.
     setEditingTxnEpoch(data?.restoreEpoch ?? 0);
@@ -2507,7 +3224,7 @@ export function App() {
   function openEditYearly(y: Yearly) {
     setEditingYearlyId(y.id);
     setEditingYearly(y);
-    // Contract v121 (F3): freeze the restore epoch with the
+    // Build v121 (F3): freeze the restore epoch with the
     // loaded expense — a restore since this load refuses the save.
     setEditingYearlyEpoch(data?.restoreEpoch ?? 0);
     setShowYearlyForm(true);
@@ -2560,7 +3277,7 @@ export function App() {
       effectiveFrom: yEffectiveFrom,
     };
     if (editingYearlyId) {
-      // Contract v65 (F17): carry the loaded expense as the CAS
+      // Build v65 (F17): carry the loaded expense as the CAS
       // base — parent fields plus the version stored for the
       // chosen effective month (null when that month has none).
       const freqOf = (
@@ -2602,7 +3319,7 @@ export function App() {
     setSMonth(forMonth);
     setSDollars(existingCents != null ? String(existingCents / 100) : "");
     setSummaryBase({ month: forMonth, cashOutCents: existingCents ?? null });
-    // Contract v121 (F3): freeze the restore epoch with the base
+    // Build v121 (F3): freeze the restore epoch with the base
     // — a restore since this load refuses the save even when the
     // stored total still equals the base.
     setSummaryEpoch(data?.restoreEpoch ?? 0);
@@ -2621,7 +3338,7 @@ export function App() {
       setSummaryError("Enter the month's total cash out, e.g. 3850.00");
       return;
     }
-    // Contract v65 (F15): the base is the stored total for the
+    // Build v65 (F15): the base is the stored total for the
     // month being saved as loaded — the value captured when the
     // form opened for that month, or, if the month was changed
     // in the form, the loaded dashboard's stored total for the
@@ -2667,7 +3384,7 @@ export function App() {
       note: it.note ?? null,
       day: it.day,
     });
-    // Contract v121 (F3): freeze the restore epoch with the base.
+    // Build v121 (F3): freeze the restore epoch with the base.
     setEditingItemEpoch(data?.restoreEpoch ?? 0);
     setShowItemForm(true);
     setIDate(`${it.month}-${String(it.day).padStart(2, "0")}`);
@@ -2750,7 +3467,7 @@ export function App() {
   function openEditBill(b: Bill) {
     setEditingBillId(b.id);
     setEditingBill(b);
-    // Contract v121 (F3): freeze the restore epoch with the
+    // Build v121 (F3): freeze the restore epoch with the
     // loaded bill — both chained saves carry it.
     setEditingBillEpoch(data?.restoreEpoch ?? 0);
     setShowBillForm(true);
@@ -2784,7 +3501,7 @@ export function App() {
     const notes = bNotes.trim() ? bNotes.trim() : null;
     const paidBy = bPaidBy.trim() || "Checking";
     if (editingBillId) {
-      // Contract v65 (F18/F16): both saves carry their loaded
+      // Build v65 (F18/F16): both saves carry their loaded
       // bases, and the amount save chains ONLY when the metadata
       // save actually landed (a CAS refusal stops the chain).
       const billBase = editingBill
@@ -2850,7 +3567,7 @@ export function App() {
 
   function openEditOneOff(o: OneOff) {
     setEditingOneOffId(o.id);
-    // Contract v121 (F3): freeze the restore epoch at open.
+    // Build v121 (F3): freeze the restore epoch at open.
     setEditingOneOffEpoch(data?.restoreEpoch ?? 0);
     setShowOneOffForm(true);
     setOMonth(o.month);
@@ -2906,7 +3623,7 @@ export function App() {
      month with data). The window label is read off the
      server-published trailingMonths — the exact months averaged
      — so it names the window itself, never a span reconstructed
-     from the viewed month (before contract v123 it was rebuilt
+     from the viewed month (before build v123 it was rebuilt
      ending at the viewed month and named the wrong months
      whenever the viewed month was after the current month,
      the same stale assumption as the old chart slice). Hidden
@@ -3252,7 +3969,7 @@ export function App() {
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
-          <RothConversion />
+          <RothConversion jumpTarget={rothJumpTarget} />
         </main>
       </div>
     );
@@ -3264,7 +3981,16 @@ export function App() {
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
-          <Playground />
+          <Playground
+            onJumpToYourMoney={() => {
+              setRothJumpTarget({
+                fieldId: "roth-Exclude-from-plan",
+                section: "money",
+                nonce: Date.now(),
+              });
+              setTopView("roth");
+            }}
+          />
         </main>
       </div>
     );
@@ -3515,7 +4241,7 @@ export function App() {
                       the window ends at the current month, so slicing
                       the window off the history plotted the viewed
                       month's tail whenever the viewed month was after
-                      the current month — contract v123, round-18 F1).
+                      the current month — build v123, round-18 F1).
                       An empty window (0 covered months) renders the
                       chart's empty state. The chart — and only the
                       chart — then continues past the viewed month with
@@ -3529,6 +4255,10 @@ export function App() {
                   <SpendingTrueCostChart
                     months={data.trailingMonths}
                     aheadMonths={data.enteredAheadMonths}
+                    targetMonthlyCents={spendingTargetMonthlyCents}
+                    averageMonthlyCents={
+                      showAvgStrip ? data.avgSmoothedCents : null
+                    }
                     averageLine={
                       showAvgStrip
                         ? `Average month · ${avgWindowLabel} — True cost ${fmt(data.avgSmoothedCents)} · Cash out ${fmt(data.avgCashOutCents)}`
@@ -3546,6 +4276,7 @@ export function App() {
                 <YearTrueCostChart
                   year={viewYear}
                   months={yv.months}
+                  targetMonthlyCents={spendingTargetMonthlyCents}
                   onSelectMonth={(m) => {
                     setMonth(m);
                     setQuickMode("month");
@@ -3624,29 +4355,30 @@ export function App() {
             {/* hero: smoothed spend + formula */}
             <section id="section-true-cost" aria-label="True cost" className={`mt-4 scroll-mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6${highlightCls("section-true-cost")}`}>
               <div className="flex items-start justify-between gap-3">
-                <p className="text-sm font-medium text-[var(--dim)]">
-                  {monthLabel(month)} — your true monthly cost
-                </p>
-                <QuickViewReturnLink onReturn={scrollToQuickView} />
-              </div>
-              <p className="display tnum mt-1 text-5xl font-semibold">
-                {fmt(data.smoothedCents)}
-              </p>
-              {/* The section's one explainer door: the definition
-                  sentence that used to print here now lives in the
-                  True cost tile's ⓘ, so only this section's ⓘ remains
-                  under the number (contract v67: the former "More"
-                  link is the ⓘ now). Its tooltip text carries both
-                  this explainer's original paragraph and the full
-                  text of the former footer "How this math works"
-                  explainer, folded in here so the method is explained
-                  in exactly one place. */}
-              <Explainer
-                id="spending.trueCost"
-                label="True cost"
-                className="mt-1"
-                summary=""
-              >
+                <p className="flex items-center gap-1.5 text-sm font-medium text-[var(--dim)]">
+                  <span>
+                    {monthLabel(month)} — your true monthly cost
+                  </span>
+                  {/* The section's one explainer door: the ⓘ sits in
+                      this header row beside the label it explains.
+                      (It used to render as a block under the number,
+                      orphaned on its own line once the definition
+                      sentence that accompanied it moved into the True
+                      cost tile's ⓘ.) Its tooltip text carries both
+                      this explainer's original paragraph and the full
+                      text of the former footer "How this math works"
+                      explainer, folded in here so the method is
+                      explained in exactly one place (build v67:
+                      the former "More" link is the ⓘ now).
+                      align="start": the button sits near the left
+                      edge, so the bubble opens to the right instead
+                      of clipping off the screen's left edge on a
+                      phone. */}
+                  <ExplainerInfoTip
+                    id="spending.trueCost"
+                    label="True cost"
+                    align="start"
+                  >
                 <p>
                   Smoothed spend: yearly and periodic bills spread evenly,
                   so a month with a big bill doesn't look worse than it is.
@@ -3724,7 +4456,150 @@ export function App() {
                   them once to show the underlying regular spend — the
                   one-offs themselves are never added anywhere.
                 </p>
-              </Explainer>
+                  </ExplainerInfoTip>
+                </p>
+                <QuickViewReturnLink onReturn={scrollToQuickView} />
+              </div>
+              <p className="display tnum mt-1 text-5xl font-semibold">
+                {fmt(data.smoothedCents)}
+              </p>
+              {spendingTargetMonthlyCents != null && (
+                <p className="tnum mt-2 text-base">
+                  True monthly cost {fmt(data.smoothedCents)} · Target{" "}
+                  {fmt(spendingTargetMonthlyCents)} ·{" "}
+                  {(() => {
+                    const gapCents =
+                      data.smoothedCents - spendingTargetMonthlyCents;
+                    return (
+                      <span
+                        className="font-semibold"
+                        style={{
+                          color:
+                            gapCents > 0 ? "var(--bad)" : "var(--accent)",
+                        }}
+                      >
+                        {gapCents > 0
+                          ? `Over by ${fmt(gapCents)}/mo`
+                          : gapCents < 0
+                            ? `Under by ${fmt(-gapCents)}/mo`
+                            : "On target"}
+                      </span>
+                    );
+                  })()}
+                </p>
+              )}
+              {/* Spending target field: the Tax Plan record's
+                  annual spending, edited in place here (plain
+                  typed field — no steppers/sliders), with the
+                  same per year / per month toggle the Tax Plan
+                  and Playground spending fields carry. It writes
+                  through to the record via saveRothInputs with
+                  CAS, so editing it here updates the Tax Plan,
+                  Retirement, and Playground too. */}
+              <div className="mt-4 max-w-xs">
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5">
+                    <label
+                      className="block text-sm font-medium text-[var(--text)]"
+                      htmlFor="spending-target-per-year"
+                    >
+                      {spendingTargetUnit === "month"
+                        ? "Spending target per month"
+                        : "Spending target per year"}
+                    </label>
+                    <InfoTip
+                      ariaLabel="About the spending target"
+                      text="The Tax Plan’s annual spending — editing here changes the saved plan, like editing it in the Tax Plan, Retirement, or Playground."
+                    />
+                  </span>
+                  <div
+                    role="group"
+                    aria-label="Spending display period"
+                    className="flex overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+                  >
+                    <button
+                      type="button"
+                      aria-label="Show spending per year"
+                      aria-pressed={spendingTargetUnit === "year"}
+                      onClick={() => setSpendingTargetUnit("year")}
+                      className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                    >
+                      per year
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Show spending per month"
+                      aria-pressed={spendingTargetUnit === "month"}
+                      onClick={() => setSpendingTargetUnit("month")}
+                      className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
+                    >
+                      per month
+                    </button>
+                  </div>
+                </div>
+                <div className="relative">
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base text-[var(--dim)]"
+                  >
+                    $
+                  </span>
+                  <input
+                    id="spending-target-per-year"
+                    aria-label={
+                      spendingTargetUnit === "month"
+                        ? "Spending target per month"
+                        : "Spending target per year"
+                    }
+                    className="w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 pl-7 text-base text-[var(--text)]"
+                    inputMode="decimal"
+                    value={
+                      spendingTargetUnit === "month"
+                        ? (spendingTargetMonthlyDraft ?? spendingTargetMonthlyDisplay())
+                        : spendingTarget
+                    }
+                    onFocus={() => {
+                      spendingTargetFocusedRef.current = true;
+                      if (spendingTargetUnit === "month") {
+                        setSpendingTargetMonthlyDraft(monthlyRaw(spendingTarget));
+                      }
+                    }}
+                    onBlur={() => {
+                      spendingTargetFocusedRef.current = false;
+                      if (spendingTargetUnit === "month") {
+                        setSpendingTargetMonthlyDraft(null);
+                      }
+                      // The annual state is canonicalized on
+                      // blur, exactly as the Tax Plan's spending
+                      // field does: the same numeric value,
+                      // grouped.
+                      const d = parseDollars(spendingTarget);
+                      if (d != null) setSpendingTarget(fmtInputMoney(d));
+                      // Blur flush: the value is settled now, so
+                      // send any held Tax Plan write-through.
+                      firePendingSpendingTargetSaveRef.current();
+                    }}
+                    onChange={(e) => {
+                      if (spendingTargetUnit === "month") {
+                        setSpendingTargetMonthlyDraft(e.target.value);
+                        setSpendingTarget(monthlyToAnnual(e.target.value));
+                      } else {
+                        setSpendingTarget(e.target.value);
+                      }
+                    }}
+                  />
+                </div>
+                {spendingTargetUnit === "month" && (
+                  <p className="mt-1 text-xs text-[var(--dim)]">
+                    = {fmt(parseDollars(spendingTarget) ?? 0)}/yr
+                  </p>
+                )}
+                {spendingTargetMsg != null && (
+                  <p className="mt-1 text-xs text-[var(--bad)]" role="note">
+                    {spendingTargetMsg}
+                  </p>
+                )}
+              </div>
               {data.isSummaryMonth || data.isItemsMonth ? (
                 <dl className="tnum mt-4 space-y-1 border-t border-[var(--border)] pt-3 text-base">
                   <div className="flex justify-between gap-3">
@@ -5273,7 +6148,7 @@ export function App() {
                         {y.inEffectForMonth === false ? (
                           <span className="tnum text-sm text-[var(--dim)]">
                             {(() => {
-                              // Pre-start preview (contract v63, F3):
+                              // Pre-start preview (build v63, F3):
                               // every figure comes from the version
                               // in force at the START month — the
                               // earliest version (history is newest
@@ -5626,13 +6501,13 @@ function ReserveSettings({
   const [opening, setOpening] = useState("");
   const [start, setStart] = useState("");
   const [msg, setMsg] = useState("");
-  // Contract v65 (F26): the settings pair as loaded when the fold
+  // Build v65 (F26): the settings pair as loaded when the fold
   // opened — the save's CAS base.
   const [base, setBase] = useState<{
     openingReserveCents: number;
     reserveStartMonth: string | null;
   } | null>(null);
-  // Contract v121 (F3): the restore epoch as loaded when the fold
+  // Build v121 (F3): the restore epoch as loaded when the fold
   // opened — frozen with the base.
   const [baseEpoch, setBaseEpoch] = useState<number | null>(null);
   const save = useMutation({
@@ -5645,7 +6520,7 @@ function ReserveSettings({
       }),
     onSuccess: (r) => {
       if (!r.ok) {
-        // CAS refusal (contract v65, F26): show why instead of
+        // CAS refusal (build v65, F26): show why instead of
         // "Saved." over a newer stored value.
         setMsg(r.reason ?? "Those settings could not be saved.");
         return;
@@ -5668,7 +6543,7 @@ function ReserveSettings({
             openingReserveCents: data.openingReserveCents,
             reserveStartMonth: data.reserveStartMonth ?? null,
           });
-          // Contract v121 (F3): freeze the restore epoch with the base.
+          // Build v121 (F3): freeze the restore epoch with the base.
           setBaseEpoch(data.restoreEpoch ?? 0);
           setMsg("");
           setOpen(true);
@@ -5757,7 +6632,7 @@ function ImportPanel({
      months saved from this preview, and a save error line. */
   type RecordedCashOutMonth = ApiResponse<typeof api, "getImportData">["cashOut"][number];
   const [recordedCashOut, setRecordedCashOut] = useState<RecordedCashOutMonth[] | null>(null);
-  // Contract v121 (F3): the restore epoch as loaded by the same
+  // Build v121 (F3): the restore epoch as loaded by the same
   // getImportData read as the recorded cash out — the confirmed
   // proposal save carries it back as baseEpoch, so a panel that
   // loaded before a restore is refused.
@@ -5795,7 +6670,7 @@ function ImportPanel({
   }, [settingsQuery.data]);
 
   const saveSetup = useMutation({
-    // Contract v130 (round-19 finding 8): carries the epoch the
+    // Build v130 (round-19 finding 8): carries the epoch the
     // panel observed when it loaded its setup (the settings read's
     // restoreEpoch), so a restore since the panel loaded refuses
     // the save instead of overwriting the restored setup.
@@ -5968,7 +6843,7 @@ function ImportPanel({
   // with just the rows that did not land, so retrying imports only
   // those — never a duplicate of the rows already in.
   //
-  // Batch idempotency keys (contract v64, F02): each 500-row batch
+  // Batch idempotency keys (build v64, F02): each 500-row batch
   // is offered under ONE key, generated when the batch is first
   // offered and REUSED when the same batch (the same row objects,
   // re-offered whole from the remaining preview) is retried after a
@@ -6011,7 +6886,7 @@ function ImportPanel({
         const batch = rows.slice(i, i + BATCH);
         const batchKey = batchKeyFor(batch);
         try {
-          // Contract v130 (round-19 finding 7): carries the epoch
+          // Build v130 (round-19 finding 7): carries the epoch
           // the preview observed when it read the recorded data, so
           // a restore between preview and confirm refuses the batch
           // instead of landing rows the preview had cleared.
@@ -6343,7 +7218,7 @@ function ImportPanel({
       // below says to check it before saving again.
       if (rec) {
         for (const it of rec.items) {
-          // Contract v121 (F3): the delete carries the epoch
+          // Build v121 (F3): the delete carries the epoch
           // this comparison loaded at — a restore since then
           // refuses it before anything is removed.
           const del = await api.deleteCashOutItem({ id: it.id, baseEpoch: recordedCashOutEpoch ?? 0 });
@@ -6363,11 +7238,11 @@ function ImportPanel({
           note: null,
         });
       }
-      // Contract v65 (F15): the base is the month's recorded
+      // Build v65 (F15): the base is the month's recorded
       // entered total as this comparison loaded it — a refused
       // (conflicted) save throws into the proposal error path
       // below instead of silently overwriting a newer total.
-      // Contract v121 (F3): the save also carries the epoch this
+      // Build v121 (F3): the save also carries the epoch this
       // comparison loaded at, so a restore since then refuses it
       // even when the stored total still equals the base.
       const summaryRes = await api.upsertMonthlySummary({

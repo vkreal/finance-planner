@@ -71,6 +71,7 @@ import { fplFor, lawForYear, rmdAgeForBirthYear } from "@space/server/taxLaw";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
 import { fafsaReportableAssets, netCostBreakdown, priceExecutionYear, ROTH_MC_CHECK_SEED, ssAnnualAtClaimAge } from "@space/server/rothOptimizer";
 import { giftAgeGuardMessage } from "@space/server/giftModel";
+import { impliedYieldPctsFromTaxReturn, qualifiedDividendSharePctFromTaxReturn } from "@space/server/taxReturnCore";
 import { seedRothInputs, SEED_RETIREMENT_AGE_FALLBACK } from "@space/server/rothSeed";
 import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
@@ -268,6 +269,33 @@ export type RothSectionId = "household" | "money" | "income" | "aca" | "advanced
 // working inputs and results state.
 type RothResultsMode = "plan" | "optimize" | "compare" | "thisYear" | "yearFunding" | "workYears" | "gift" | "proof";
 const PROOF_END_AGE = 110;
+/* UI-state CAS save bound (S-6): persistUiState retries a
+   conflicted write at the server's fresh revision, but never
+   more than this many attempts in total, so a pathological
+   write storm cannot loop a save forever. */
+const UI_STATE_SAVE_MAX_ATTEMPTS = 5;
+/* UI-state write field keys (build v170, re-audit SHOULD
+   S-5): the logical fields one UI-state write carries, for
+   the supersede check in persistUiState. A section toggle
+   carries its section id (its `open` rides with it, so the
+   pair is ONE field); every other present key is its own
+   field. A key present with a null value (a cleared
+   detailYear or baseline name) is still a write of that
+   field, so presence — not truthiness — decides. */
+type UiStateWriteInput = Parameters<typeof api.setRothUiState>[0];
+function uiStateFieldKeys(input: UiStateWriteInput): string[] {
+  const rec = input as Record<string, unknown>;
+  const keys: string[] = [];
+  for (const k of Object.keys(rec)) {
+    if (k === "baseRevision" || k === "open") continue;
+    if (rec[k] === undefined) continue;
+    keys.push(k === "section" ? `section:${String(rec[k])}` : k);
+  }
+  if (rec.open !== undefined && rec.section === undefined) {
+    keys.push("open");
+  }
+  return keys;
+}
 const ROTH_MODE_OPTIONS: { id: RothResultsMode; label: string }[] = [
   { id: "plan", label: "Plan" },
   { id: "optimize", label: "Optimize" },
@@ -436,7 +464,32 @@ function WatchOutsPanel({
   );
 }
 
-// Cross-view jump target (contract v133): App passes the Tax
+/* Build v177 (re-audit NICE-TO-HAVE N-3): the bound on a
+   save fire path's hold polls — a fire path waiting for an
+   in-flight save to settle re-checks every 300 ms at most
+   this many times (100 × 300 ms = 30 s) before it gives up
+   explicitly instead of polling forever. The same bound and
+   give-up are applied in every writer that carries the hold
+   (App.tsx, Playground.tsx, RetirementCalc.tsx). */
+const SAVE_HOLD_MAX_POLLS = 100;
+
+/* Build v196 (re-audit round 3 SHOULD-7): how long a flush
+   deferred behind an in-flight save (the S-3 slot) waits
+   for that save to settle before the deferred send fires
+   anyway — the same 30 s scale as the hold bound above
+   (100 × 300 ms), far beyond any save this app makes. A
+   save that has not settled in 30 s is hung (its promise
+   neither resolves nor rejects, so its settle handlers —
+   the slot's only consumer — never run), and without this
+   bound the deferred edit sits in its slot forever: never
+   sent, never reported. On expiry the slot's send fires
+   through the retrying flush path exactly as it would
+   have on a settle (see the slot's comment below). The
+   same bound is applied in every writer that carries a
+   deferred slot (RetirementCalc.tsx, Playground.tsx). */
+const DEFERRED_FLUSH_GIVE_UP_MS = 30000;
+
+// Cross-view jump target (build v133): App passes the Tax
 // Plan field a Retirement-view tap asked for, when it switches
 // this view in. The effect below jumps to it once the plan has
 // loaded; the nonce makes each target fire exactly once.
@@ -466,6 +519,19 @@ export function RothConversion({
   // edit autosaves as usual.
   const suppressNextAutosaveRef = useRef(false);
   const [scenarioMsg, setScenarioMsg] = useState("");
+  // Re-audit round 3, SHOULD-8: the failure line for the
+  // scenario mutations (save / delete / rename / update),
+  // kept separate from scenarioMsg so a failure reads as a
+  // failure (bad colour, role="alert") instead of blending
+  // into the success / refusal line. Before SHOULD-8 those
+  // mutations had no error handler at all: a failed write
+  // (offline, gateway 500) surfaced nothing, the scenario
+  // list simply kept showing the old state, and the change
+  // was silently lost. Rendered beside every scenario
+  // action — the plan form's Save button, the optimizer's
+  // Save-as-scenario buttons, and the Strategy Lab's saved
+  // list — so the failure shows where the action was taken.
+  const [scenarioError, setScenarioError] = useState("");
   // The plan record's write revision (API follow-on 1): the CAS
   // base the next saveRothInputs autosave passes. Kept beside
   // the loaded record — set from the load, adopted from EVERY
@@ -478,6 +544,15 @@ export function RothConversion({
   // plan changed in another tab or on another device: the form
   // has been replaced with the latest saved version.
   const [planConflictMsg, setPlanConflictMsg] = useState("");
+  // Save status for the plan autosave (build v149): the
+  // autosave effect sets "Saving…" the moment an edit queues
+  // a save, the save's success sets "Saved", and a failed save
+  // says so plainly. Before v149 the autosave had no status at
+  // all — a queued save that was delayed (or dropped) looked
+  // exactly like a saved one, so an edit that had not landed
+  // yet read as if it had not stuck. Shown beside the
+  // changed-fields line at the top of the view, on every face.
+  const [planSaveNote, setPlanSaveNote] = useState("");
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
   const defaultsRef = useRef<{ label: string; value: string }[]>([]);
@@ -541,8 +616,9 @@ export function RothConversion({
   // balance, priced as mandatory income for the year
   // (dividends on the capital-gains stack, interest on the
   // ordinary stack). Blank (the state for any record written
-  // before these fields existed) = no yield modeled, and the
-  // plan prices exactly as before.
+  // before these fields existed) = no yield ENTERED: pricing
+  // stands in the implied estimate from the saved return's
+  // actuals (contract v136), or $0 when no actual is stored.
   const [divYieldPct, setDivYieldPct] = useState("");
   const [intYieldPct, setIntYieldPct] = useState("");
   // Spend-from-cash % (SPEND-FROM-CASH build): an API-only
@@ -563,7 +639,7 @@ export function RothConversion({
   const [flexFloorPct, setFlexFloorPct] = useState<number | null>(null);
   const [spending, setSpending] = useState("");
   // Per year / per month entry unit for the "Yearly spending"
-  // field (contract v141): mirrors the Retirement view's
+  // field (build v141): mirrors the Retirement view's
   // spending field. "year" shows and edits the stored annual
   // dollars directly (the long-standing behaviour); "month"
   // shows annual ÷ 12 and turns a typed monthly amount into
@@ -573,7 +649,7 @@ export function RothConversion({
   // new stored field, no new action); the field opens per year,
   // the Tax Plan's long-standing display.
   const [spendingUnit, setSpendingUnit] = useState<"year" | "month">("year");
-  // Per-month draft (contract v141): while the spending field
+  // Per-month draft (build v141): while the spending field
   // is focused in per-month mode, the input shows the monthly
   // figure as the user types it — the stored state is annual
   // dollars, so the typed monthly string lives here until blur,
@@ -613,14 +689,17 @@ export function RothConversion({
   const [convertedAlready, setConvertedAlready] = useState("");
   // Tax-return actuals (Form 1040 lines 2b / 3a / 3b from the
   // household's most recent return, plus the calendar year of
-  // that return — contract v147): plan-record-only fields,
+  // that return — build v147): plan-record-only fields,
   // following the execution / gift pattern — they save WITH the
   // plan record under their own taxReturn* keys (via
-  // buildInputsPayload only) and are read by exactly one thing:
-  // the Playground's "Start from my numbers" prefill. They
-  // never enter a scenario, a pricing request, or the working
-  // plan inputs — the plan keeps modelling interest and
-  // dividends from the yield fields. Blank = not entered.
+  // buildInputsPayload only) and are read by the Playground's
+  // "Start from my numbers" prefill and by the blank-yield
+  // fallback (contract v136: a blank yield field prices the
+  // implied yield these actuals describe — percentages only,
+  // derived where plan inputs are assembled). They never
+  // enter a scenario or a pricing request AS AMOUNTS — the
+  // plan keeps modelling interest and dividends from the
+  // yield fields. Blank = not entered.
   const [taxReturnInterest, setTaxReturnInterest] = useState("");
   const [taxReturnQualDiv, setTaxReturnQualDiv] = useState("");
   const [taxReturnOrdDiv, setTaxReturnOrdDiv] = useState("");
@@ -692,7 +771,7 @@ export function RothConversion({
   const [carryInSt, setCarryInSt] = useState("");
   const [carryInLt, setCarryInLt] = useState("");
   // Washington-attributable portions of the carryforwards
-  // above (contract v101): of each character's banked loss,
+  // above (build v101): of each character's banked loss,
   // the part from sales allocated to Washington — the only
   // part whose absorption by a year's gains reduces that
   // year's Washington capital-gains excise. Blank = none.
@@ -789,7 +868,7 @@ export function RothConversion({
   const [giftError, setGiftError] = useState("");
   const [optResult, setOptResult] = useState<OptData | null>(null);
   // Fingerprint of the exact request the optimizer last ran on
-  // (contract v109, round-16 F1): the Monte Carlo check is gated
+  // (build v109, round-16 F1): the Monte Carlo check is gated
   // on it, so a plan edited after the optimizer ran cannot be
   // checked as if the retained winner were priced on the
   // current inputs. Follows the sibling sections' pattern
@@ -1018,10 +1097,14 @@ export function RothConversion({
      or successfully saved at. Every save passes it as
      baseRevision; on a conflict (another writer — the
      Playground, or this view in another tab or on another
-     device — saved first) the write retries once at the
-     server's fresh revision. These writes each carry one
-     field's latest value and the server merges fields into
-     the current blob, so the retry lands this field without
+     device — saved first) the write retries at the server's
+     fresh revision, in a bounded loop: a conflict on the
+     retry (a third overlapping write landed in between)
+     retries again at that newer revision rather than
+     dropping the write, up to UI_STATE_SAVE_MAX_ATTEMPTS
+     attempts in total. These writes each carry one field's
+     latest value and the server merges fields into the
+     current blob, so a retry lands this field without
      disturbing the newer values of any other field — and a
      stale copy of the blob can never silently overwrite a
      newer save. A failed save stays silent, exactly as
@@ -1032,37 +1115,110 @@ export function RothConversion({
      failed, or a save somehow fires before it lands), the
      current state is fetched first and its revision adopted;
      if that fetch fails the write is skipped entirely and
-     the next toggle re-saves. */
+     the next toggle re-saves.
+     Build v170 (re-audit SHOULD S-5): the S-6 retry loop
+     above could land a SUPERSEDED value. Its payload is the
+     snapshot taken when this save was issued; while it sat
+     in the loop — conflicted, awaiting its next attempt — a
+     newer edit of the SAME field in this same view could be
+     issued and land, and the loop's next attempt then sent
+     the older snapshot at the fresh revision the newer
+     write had just stored, silently overwriting the newer
+     value with the older one. The server merges fields, so
+     no CAS check can see this: the retry's base is current,
+     only its value is stale. The fix follows the S-3/S-4
+     discipline — defer behind the in-flight save, and never
+     send a stale payload:
+     (1) Every issued write is stamped, SYNCHRONOUSLY at
+     issue time, with a sequence number recorded as the
+     latest for each field it carries (uiStateFieldKeys);
+     a newer issue for a field replaces that field's latest
+     stamp, which is what makes this write superseded.
+     (2) Writes run one at a time through a chain
+     (uiStateChainRef): a write issued while another is in
+     flight defers behind it and reads the CAS base only
+     when its turn comes, so it bases itself on the revision
+     the in-flight write landed — it never fires
+     concurrently under the same not-yet-advanced base.
+     (3) Before EVERY send — the first attempt and each
+     retry alike — the write re-checks its stamp against
+     the latest stamp for every field it carries: if a
+     newer write has superseded any of them, this write is
+     dropped and never sends (again). The newer write is
+     itself queued on the chain and lands its own value, so
+     the field ends at the newest value either way. A write
+     no newer write has superseded retries exactly as
+     before, up to the S-6 bound: a conflict from ANOTHER
+     writer (the Playground, another tab) does not
+     supersede a field, so cross-writer retries still land.
+     Stamps are per-field, so a newer write of a DIFFERENT
+     field never drops this one — it defers behind it on
+     the chain and lands after it, in issue order. */
   const uiRevisionRef = useRef<number | null>(null);
-  const persistUiState = async (
+  const uiStateSeqRef = useRef(0);
+  const uiStateLatestRef = useRef<Map<string, number>>(new Map());
+  const uiStateChainRef = useRef<Promise<void>>(Promise.resolve());
+  const persistUiState = (
     input: Parameters<typeof api.setRothUiState>[0],
   ): Promise<void> => {
-    let base = uiRevisionRef.current;
-    if (base == null) {
+    // Stamped synchronously at issue time — before any
+    // deferral — so a write issued while this one is still
+    // queued on the chain or sitting in its retry loop
+    // supersedes this one from the moment it is issued,
+    // not from the moment it happens to send.
+    const fieldKeys = uiStateFieldKeys(input);
+    const seq = ++uiStateSeqRef.current;
+    for (const k of fieldKeys) uiStateLatestRef.current.set(k, seq);
+    const isSuperseded = (): boolean =>
+      fieldKeys.some((k) => uiStateLatestRef.current.get(k) !== seq);
+    const run = async (): Promise<void> => {
+      if (isSuperseded()) return;
+      let base = uiRevisionRef.current;
+      if (base == null) {
+        try {
+          const fresh = await api.getRothUiState({});
+          base = fresh.revision;
+          uiRevisionRef.current = fresh.revision;
+        } catch {
+          return;
+        }
+        if (isSuperseded()) return;
+      }
       try {
-        const fresh = await api.getRothUiState({});
-        base = fresh.revision;
-        uiRevisionRef.current = fresh.revision;
+        let attemptBase = base;
+        for (let attempt = 0; attempt < UI_STATE_SAVE_MAX_ATTEMPTS; attempt++) {
+          // Never send a stale payload: a newer write of a
+          // field this save carries, issued while this save
+          // waited on the chain, fetched its base, or sat
+          // between conflict retries, drops this save here —
+          // the newer write lands its own value instead.
+          if (isSuperseded()) return;
+          const res = await api.setRothUiState({
+            ...input,
+            baseRevision: attemptBase,
+          });
+          uiRevisionRef.current = res.revision;
+          if (res.ok) return;
+          // Conflict: another writer saved first. Retry at the
+          // fresh revision the refusal carries — looping, so a
+          // third (or later) overlapping write landing during
+          // the retry cannot silently drop this one. The loop
+          // head re-checks the supersede stamp before the
+          // retry sends, so a retry this view's own newer
+          // edit has superseded never lands over it.
+          attemptBase = res.revision;
+        }
       } catch {
-        return;
+        // Display-only state: a failed save is silent, exactly
+        // as before — the next toggle re-saves.
       }
-    }
-    try {
-      const res = await api.setRothUiState({ ...input, baseRevision: base });
-      if (res.ok) {
-        uiRevisionRef.current = res.revision;
-        return;
-      }
-      uiRevisionRef.current = res.revision;
-      const retry = await api.setRothUiState({
-        ...input,
-        baseRevision: res.revision,
-      });
-      if (retry.ok) uiRevisionRef.current = retry.revision;
-    } catch {
-      // Display-only state: a failed save is silent, exactly
-      // as before — the next toggle re-saves.
-    }
+    };
+    // Defer behind the in-flight save: this write's run
+    // starts only once every write issued before it has
+    // settled, in issue order.
+    const chained = uiStateChainRef.current.then(run, run);
+    uiStateChainRef.current = chained.catch(() => {});
+    return chained;
   };
   const saveUiState = {
     mutate: (input: Parameters<typeof api.setRothUiState>[0]) => {
@@ -1098,7 +1254,7 @@ export function RothConversion({
     );
     setUiInit(true);
   }, [uiq.data, uiInit]);
-  // Cross-view jump (contract v133): when App switches this
+  // Cross-view jump (build v133): when App switches this
   // view in with a jump target (a Retirement-view tap), jump
   // to the field once the plan AND the UI state have loaded —
   // the fields only exist once the saved record lands. The
@@ -1192,7 +1348,7 @@ export function RothConversion({
   // execution year's "Show the math" expander: each persists
   // in the Roth UI state like the folds above, so it comes
   // back open or closed exactly as left. (The work-years and
-  // gift "More" explainers became ⓘ tooltips at contract v67
+  // gift "More" explainers became ⓘ tooltips at build v67
   // and no longer persist an open state.)
   const toggleOptHow = () => {
     const next = !optHowOpen;
@@ -1774,7 +1930,129 @@ export function RothConversion({
   const saveTimer = useRef<number | null>(null);
   const pendingSave = useRef<SavePayload | null>(null);
   const saveInFlightRef = useRef(false);
-  // Contract v131 — settled-value gate: the debounced autosave
+  // Build v177 (re-audit NICE-TO-HAVE N-3): consecutive
+  // hold polls by firePendingSave while it waits for the
+  // in-flight save to settle, bounded by
+  // SAVE_HOLD_MAX_POLLS — see the hold branch there.
+  const saveHoldPollsRef = useRef(0);
+  // Build v151 (audit M-5): the payload currently in
+  // flight, so the unmount flush can tell "queued behind the
+  // in-flight save" (a newer edit — flush it) from "the
+  // in-flight save itself" (already being written — firing
+  // it again would just duplicate the call).
+  const saveInFlightPayloadRef = useRef<SavePayload | null>(null);
+  // Build v205 (re-audit round 4 SHOULD R4-S4): a confirmed
+  // "Back to saved" discard that landed while a save was in
+  // flight. Dropping the QUEUED save (all backToSaved could
+  // do before v205) does not stop the in-flight one: it
+  // carries the discarded edit, its CAS base is still current
+  // (the discard writes nothing server-side), so it lands
+  // AFTER the form has been restored — the record silently
+  // ends up holding the discarded values at the next revision
+  // while the form shows the restored ones, the mutation's
+  // invalidation refetch cannot rehydrate the form (the init
+  // guard), and the divergence stays invisible until the next
+  // visit hydrates the discarded edit back onto the screen.
+  // backToSaved therefore sets this flag INSTEAD of the
+  // suppress flag when a save is in flight: the autosave
+  // effect consumes it and does NOT skip — it queues a payload
+  // built from the just-restored form (value-identical to the
+  // record as it stood before the discarded edit, exactly the
+  // payload the conflict path's rehydration persists) and arms
+  // the normal save timer. firePendingSave's in-flight hold
+  // serializes that write-back behind the landing save, whose
+  // adopted revision becomes its base, so the record ends
+  // holding the restored values and the form and the record
+  // agree. The in-flight save's per-call handlers cannot drop
+  // the write-back by identity (it is a different payload), a
+  // request error leaves it queued for its own timer, and a
+  // conflict still resolves through the mutation-level path,
+  // which drops the queue and re-shows the newer record — the
+  // deliberate outcome there, since that record is no longer
+  // the one the user discarded back to. With nothing in
+  // flight, backToSaved sets the suppress flag exactly as
+  // before and nothing is written at all.
+  const discardRestoreWriteBackRef = useRef(false);
+  // Build v168 (re-audit SHOULD S-3): a flush deferred
+  // behind the in-flight save. The unmount cleanup, finding a
+  // payload queued behind a save still in flight, stores its
+  // send here instead of firing it concurrently: both saves
+  // would read the same live CAS base (planRevisionRef adopts
+  // the in-flight save's revision only when it lands), so the
+  // server's guarded commit would accept exactly one and
+  // refuse the other — and when the refused one is the flush,
+  // its conflict handler runs on an unmounted view, so the
+  // newest edit is lost silently, with no retry and no visible
+  // note. The in-flight call's per-call handlers below consume
+  // this slot as that save settles: on a landed save they fire
+  // the deferred send (the mutation then reads the NEW base,
+  // so the queued payload lands on top of the in-flight one,
+  // in order); on an error they fire it too (nothing landed,
+  // the base is unchanged, and the queued payload supersedes
+  // the failed one); on a conflict they drop it (the conflict
+  // path's deliberate drop of the stale form's queued edits —
+  // the deferred payload belongs to that same form).
+  // Build v187 (re-audit round 3 MUST-3): the send stored
+  // here is no longer a bare mutate call — it is the ONE
+  // retrying flush send (sendFlushWithRetry, beside the
+  // unmount cleanup below), so a deferred flush whose own
+  // request fails re-arms a retry of itself instead of
+  // being dropped (see that send's comment).
+  const deferredFlushRef = useRef<(() => void) | null>(null);
+  // Build v196 (re-audit round 3 SHOULD-7): the deferred
+  // slot's GIVE-UP timer. Before v196 the slot's only
+  // consumer was the in-flight save's own per-call
+  // handlers: if that save hung forever (its request
+  // neither resolved nor rejected, so no handler ever
+  // ran), the deferred edit sat in the slot for the rest
+  // of the page's life — never sent and never reported,
+  // the exact stranding the N-3 hold bound (build v177)
+  // closed for the mounted fire path, one slot over. The
+  // unmount cleanup now ARMS this timer as it stores the
+  // deferred send (armDeferredFlushGiveUp below): if the
+  // in-flight save has not settled within
+  // DEFERRED_FLUSH_GIVE_UP_MS, the timer consumes the
+  // slot itself and fires the deferred send anyway,
+  // through the same retrying flush send a settle would
+  // have fired — so the edit is sent, its failure (if the
+  // send itself then fails) re-arms the flush's own 3 s
+  // retry exactly as a settle-fired flush's would, and a
+  // CAS conflict from sending while the wedged save is
+  // still in flight resolves through the mutation's
+  // normal conflict path instead of stranding the edit.
+  // A settle that lands first consumes the slot through
+  // takeDeferredFlush, which clears this timer, so a
+  // normally-settling save fires the deferred send
+  // exactly as before and the timer never fires at all.
+  // The timer lives in its own ref, cleared by nothing
+  // after unmount (the cleanup arms it as its last act),
+  // so it outlives the view like the flush retry timer.
+  const deferredFlushGiveUpTimerRef = useRef<number | null>(null);
+  const clearDeferredFlushGiveUp = () => {
+    if (deferredFlushGiveUpTimerRef.current != null) {
+      window.clearTimeout(deferredFlushGiveUpTimerRef.current);
+      deferredFlushGiveUpTimerRef.current = null;
+    }
+  };
+  // Consume the deferred slot (and disarm its give-up
+  // timer): the ONE way the slot is read, so a settle and
+  // the give-up can never both fire the same send.
+  const takeDeferredFlush = (): (() => void) | null => {
+    clearDeferredFlushGiveUp();
+    const deferred = deferredFlushRef.current;
+    deferredFlushRef.current = null;
+    return deferred;
+  };
+  const armDeferredFlushGiveUp = () => {
+    clearDeferredFlushGiveUp();
+    deferredFlushGiveUpTimerRef.current = window.setTimeout(() => {
+      deferredFlushGiveUpTimerRef.current = null;
+      const deferred = deferredFlushRef.current;
+      deferredFlushRef.current = null;
+      if (deferred) deferred();
+    }, DEFERRED_FLUSH_GIVE_UP_MS);
+  };
+  // Build v131 — settled-value gate: the debounced autosave
   // must only persist values the user has finished editing. A
   // field is settled once focus has left it; while an autosaved
   // input still has focus the value in it may be half-typed, so
@@ -1788,9 +2066,34 @@ export function RothConversion({
   const save = useMutation({
     mutationFn: (input: SavePayload) =>
       api.saveRothInputs({ ...input, baseRevision: planRevisionRef.current }),
+    onError: () => {
+      // Build v149 — save status: a failed save says so
+      // instead of leaving the last "Saving…" up forever. The
+      // typed entries stay in the form; nothing was written.
+      // Build v151 (audit M-5): the note is only half the
+      // fix — the fire path below keeps the payload queued
+      // until a save succeeds and re-arms a retry on error,
+      // so the failed save itself is not dropped either.
+      setPlanSaveNote("Could not save — your entries stay on this screen.");
+    },
     onSuccess: (res) => {
       if (res.ok) {
+        setPlanSaveNote("Saved");
         planRevisionRef.current = Math.max(planRevisionRef.current, res.revision);
+        // Build v148: the Playground and Retirement views
+        // read this same record through the ["rothplanner"]
+        // query — their own write-through saves already
+        // invalidate it, and this view's scenario writes do
+        // too, but the plain plan autosave did not, so after a
+        // save here the other views kept showing the pre-save
+        // copy from the shared cache (a spending edit in the
+        // Tax Plan did not show up in the Playground, and the
+        // Tax Plan itself re-opened on the stale copy, so the
+        // edit looked unsaved). Invalidate on every successful
+        // save, exactly as those writers do. This view's form
+        // is hydrated once (the init guard), so the refetch
+        // this triggers cannot clobber an edit in progress.
+        queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
         return;
       }
       // Conflict: a newer save landed first (another tab or
@@ -1806,6 +2109,7 @@ export function RothConversion({
       // reset.)
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
       pendingSave.current = null;
+      setPlanSaveNote("");
       queryClient.setQueryData(["rothplanner"], res.record);
       rehydrateFromRecord(res.record);
       setPlanConflictMsg(
@@ -1818,42 +2122,268 @@ export function RothConversion({
   const firePendingSave = () => {
     if (!pendingSave.current) return;
     if (formFocusedRef.current) {
-      // Contract v131 — settled-value gate: the user is still
+      // Build v131 — settled-value gate: the user is still
       // editing inside the form, so the pending payload may hold
-      // a half-typed value. Do not persist it. The pending save
-      // stays queued (the timer has already fired, so nothing
-      // re-fires it) and the root div's blur handler flushes it
-      // once focus leaves the view and the value is settled.
-      return;
+      // a half-typed value. Do not persist it.
+      // Build v149 — re-arm instead of stranding: before
+      // v149 this branch simply returned, so once the debounce
+      // timer had fired into the gate nothing ever re-fired
+      // the save — it sat queued until a blur happened to
+      // flush it, which could be minutes later (or never, on
+      // an unmount without a blur). Retry on a short timer:
+      // while an editable field genuinely still holds focus
+      // the gate keeps holding, and the moment focus has
+      // actually left every editable field — including the
+      // cases where no blur reaches the root div, such as the
+      // focused element being unmounted by a re-render — the
+      // retry sees focus is gone and fires.
+      const ae = document.activeElement as HTMLElement | null;
+      const aeIsEditable =
+        ae instanceof HTMLInputElement ||
+        ae instanceof HTMLSelectElement ||
+        ae instanceof HTMLTextAreaElement ||
+        (ae != null && ae.isContentEditable);
+      if (aeIsEditable) {
+        if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+        saveTimer.current = window.setTimeout(firePendingSave, 300);
+        return;
+      }
+      formFocusedRef.current = false;
     }
     if (saveInFlightRef.current) {
       // A save is already in flight: wait for it to settle (its
       // returned revision becomes the base) and re-fire.
+      // Build v177 (re-audit NICE-TO-HAVE N-3): this hold
+      // is BOUNDED. Before v177 it re-armed the 300 ms
+      // re-check without limit: a save whose call never
+      // settles (a hung request — the mutation's promise
+      // neither resolves nor rejects, so onSettled never
+      // runs and the in-flight flag never clears) held the
+      // queued save behind it forever, polling for the life
+      // of the view. After SAVE_HOLD_MAX_POLLS consecutive
+      // polls (100 × 300 ms = 30 s, far beyond any save this
+      // app makes) the hold gives up explicitly: polling
+      // stops, the save STAYS queued (a later edit, the blur
+      // flush, or the unmount flush fires it, and if the
+      // wedged save ever does settle its own per-call
+      // handlers still consume the deferred slot exactly as
+      // before), and the failure is surfaced with the same
+      // note a failed save uses. Nothing is sent
+      // concurrently — the S-3 deferral is untouched while
+      // the in-flight save settles normally.
+      saveHoldPollsRef.current += 1;
+      if (saveHoldPollsRef.current > SAVE_HOLD_MAX_POLLS) {
+        saveHoldPollsRef.current = 0;
+        if (saveTimer.current != null) {
+          window.clearTimeout(saveTimer.current);
+          saveTimer.current = null;
+        }
+        setPlanSaveNote("Could not save — your entries stay on this screen.");
+        return;
+      }
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(firePendingSave, 300);
       return;
     }
+    // Build v151 (audit M-5): the payload stays queued
+    // until the save SUCCEEDS — it is no longer dropped at
+    // the call. Before this, a failed save (offline, gateway
+    // 500) vanished silently: the payload was already gone,
+    // nothing retried, and the field kept showing the unsaved
+    // value until a reload reverted it. The per-call handlers
+    // below now own the queue: success drops the payload,
+    // error re-arms a retry of it.
     const payload = pendingSave.current;
-    pendingSave.current = null;
+    saveHoldPollsRef.current = 0;
     saveInFlightRef.current = true;
+    saveInFlightPayloadRef.current = payload;
     saveMutateRef.current(payload, {
+      onSuccess: (res) => {
+        // The save landed: drop the queued payload — but
+        // only if it is still this one. A newer edit queued
+        // while this save was in flight is a different
+        // payload and stays queued for its own fire. (A
+        // conflict also resolves here, after the
+        // mutation-level handler has already dropped the
+        // queue and replaced the form, so this is a no-op
+        // then — exactly the deliberate drop the conflict
+        // path intends.)
+        if (pendingSave.current === payload) pendingSave.current = null;
+        // Build v168 (re-audit SHOULD S-3): consume a
+        // flush the unmount cleanup deferred behind this
+        // save. The mutation-level handler above has already
+        // adopted a landed save's revision, so a deferred
+        // send fired now reads the new base and lands in
+        // order. A conflict (res.ok false) drops it instead:
+        // the conflict path has already replaced the form
+        // with the stored record, and the deferred payload
+        // is that same stale form's newest snapshot — sending
+        // it under the adopted base would silently overwrite
+        // the newer record the conflict just re-showed.
+        // Build v196: consumed through takeDeferredFlush,
+        // which also disarms the slot's give-up timer — a
+        // save that settles normally leaves no timer behind.
+        const deferred = takeDeferredFlush();
+        if (res.ok && deferred) deferred();
+      },
+      onError: () => {
+        // Keep the payload queued and re-arm a retry on the
+        // shared save timer, so the save lands once the
+        // server is reachable again. The discard flows govern
+        // this same timer (their confirms cancel it, their
+        // execute paths drop the payload), so a retry cannot
+        // land a payload a discard flow has dropped: the
+        // identity check then fails and nothing is re-armed.
+        // The mutation-level onError sets the visible note.
+        if (pendingSave.current === payload) {
+          if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+          saveTimer.current = window.setTimeout(firePendingSave, 3000);
+        }
+        // Build v168 (re-audit SHOULD S-3): this save
+        // never landed, so the base is unchanged and a flush
+        // deferred behind it at unmount fires now — the
+        // queued payload is the form's newest snapshot and
+        // supersedes the failed save outright (no retry of
+        // this payload was armed above: the queue no longer
+        // holds it, the cleanup moved it to the deferred
+        // slot).
+        // Build v196: consumed through takeDeferredFlush,
+        // which also disarms the slot's give-up timer.
+        const deferred = takeDeferredFlush();
+        if (deferred) deferred();
+      },
       onSettled: () => {
         saveInFlightRef.current = false;
+        saveInFlightPayloadRef.current = null;
       },
     });
   };
+  // Build v149 — timer helpers for the confirm flows: a
+  // flow that may DISCARD the queued edit (Back to saved, the
+  // two resets) cancels the pending timer when its confirm
+  // prompt opens, so the re-armed save cannot land while the
+  // user is deciding; cancelling the prompt re-arms it, so
+  // the edit still saves. The flows' execute paths drop the
+  // pending payload themselves, exactly as before.
+  const cancelPendingSaveTimer = () => {
+    if (saveTimer.current != null) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+  };
+  const rearmPendingSave = () => {
+    if (!pendingSave.current) return;
+    cancelPendingSaveTimer();
+    saveTimer.current = window.setTimeout(firePendingSave, 700);
+  };
+  // Build v187 (re-audit round 3 MUST-3): the ONE unmount-flush
+  // send, carrying the same retry firePendingSave's sends
+  // carry. Before v187 the unmount cleanup below fired the
+  // queued payload through saveMutateRef with NO per-call
+  // handlers — the immediate form at once, the deferred form
+  // (build v168) from the in-flight save's settle — so a flush
+  // whose request failed (a network error at the moment of
+  // navigation) was dropped outright: the mutation-level
+  // onError set the "Could not save…" note on an unmounted
+  // view, where nobody could see it (and the note resets to
+  // "" on remount), and the cleanup had already nulled the
+  // queue, so nothing ever retried and the edit silently
+  // never landed — returning to the view showed the old
+  // stored value with no explanation. This send is the
+  // flush's firePendingSave: its per-call onError re-arms a
+  // 3 s retry of the SAME payload, chained per failure
+  // exactly as firePendingSave's onError re-arms its own
+  // retry, so the flush lands once the server is reachable
+  // again. The retry timer lives in its own ref, not the
+  // shared save timer: the cleanup clears the save timer as
+  // it runs, and nothing runs after unmount to clear this
+  // one, so the retries outlive the view. Each attempt goes
+  // through this same send (the retry calls back through the
+  // ref, so it always reaches the current closure), and the
+  // mutation reads its CAS base live from planRevisionRef
+  // at each call — a retry of a deferred flush therefore
+  // rides the base the in-flight save adopted when it
+  // landed, exactly as its first send did. A conflict is
+  // NOT retried: it resolves through onSuccess with
+  // res.ok false, where the mutation-level handler has
+  // already applied the conflict path's deliberate drop, and
+  // re-sending the stale form would fight the newer record
+  // the refusal just re-showed — the same rule
+  // firePendingSave's per-call handlers follow.
+  const flushRetryTimerRef = useRef<number | null>(null);
+  const sendFlushWithRetry = (payload: SavePayload) => {
+    saveMutateRef.current(payload, {
+      onError: () => {
+        if (flushRetryTimerRef.current != null) {
+          window.clearTimeout(flushRetryTimerRef.current);
+        }
+        flushRetryTimerRef.current = window.setTimeout(() => {
+          sendFlushWithRetryRef.current(payload);
+        }, 3000);
+      },
+    });
+  };
+  const sendFlushWithRetryRef = useRef(sendFlushWithRetry);
+  sendFlushWithRetryRef.current = sendFlushWithRetry;
   useEffect(() => {
     return () => {
       if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
-      // Contract v131 — settled-value gate: only flush a pending
-      // save on unmount when the form is settled. If an input
-      // still has focus the value may be half-typed; dropping it
-      // keeps the last good saved record instead of persisting
-      // the intermediate text. (In the normal navigate-away case
-      // the blur already flushed it before the unmount runs, so
-      // this branch only matters for unmounts without a blur.)
-      if (pendingSave.current && !formFocusedRef.current) {
-        saveMutateRef.current(pendingSave.current);
+      // Build v149 — flush on the way out, focused or not:
+      // leaving the view IS the settle. Before v149 a pending
+      // save was flushed on unmount only when no field held
+      // focus, so an edit whose field still had focus when the
+      // view closed (a navigation that unmounts without a blur
+      // reaching the root div first) was silently dropped and
+      // the record kept the old value. The pending payload is
+      // the last value the form held; writing it is what the
+      // user saw on screen when they left. Flows that discard
+      // the edit (Back to saved, the resets, a save conflict)
+      // clear the pending payload before this can run, so a
+      // discarded edit still never lands.
+      // Build v151: the pending payload may BE the save
+      // currently in flight (the queue now clears on success,
+      // not at the call) — that one is already being written,
+      // so only flush a payload that is queued behind it.
+      // Build v168 (re-audit SHOULD S-3): a queued-behind
+      // payload is NOT fired while the in-flight save is
+      // still running — fired concurrently it would read the
+      // same not-yet-advanced CAS base, the server would
+      // refuse one of the two, and a refused flush is lost
+      // silently (its conflict handler runs on this unmounted
+      // view). It is deferred instead: the in-flight call's
+      // per-call handlers fire it the moment that save
+      // settles (see deferredFlushRef). With nothing in
+      // flight the flush sends at once, exactly as before.
+      // Build v187 (re-audit round 3 MUST-3): BOTH forms of
+      // the flush — the immediate send and the deferred send
+      // stored in deferredFlushRef — now go through the ONE
+      // retrying flush send (sendFlushWithRetry, above), not
+      // a bare mutate call. The queue is still nulled below,
+      // exactly as before, but the payload no longer depends
+      // on the queue for its survival: the send carries it in
+      // its closure and re-arms a 3 s retry of it on error,
+      // so a flush that fails at the moment of navigation is
+      // retried until it lands instead of being lost
+      // silently (see that send's comment).
+      // Build v196 (re-audit round 3 SHOULD-7): storing the
+      // deferred send now also ARMS its give-up timer — if
+      // the in-flight save never settles, the timer fires
+      // the deferred send through the same retrying flush
+      // send after DEFERRED_FLUSH_GIVE_UP_MS instead of
+      // leaving it stranded in the slot forever (see the
+      // timer's comment beside deferredFlushRef).
+      if (
+        pendingSave.current &&
+        pendingSave.current !== saveInFlightPayloadRef.current
+      ) {
+        const queued = pendingSave.current;
+        if (saveInFlightRef.current) {
+          deferredFlushRef.current = () =>
+            sendFlushWithRetryRef.current(queued);
+          armDeferredFlushGiveUp();
+        } else {
+          sendFlushWithRetryRef.current(queued);
+        }
       }
       pendingSave.current = null;
     };
@@ -2060,9 +2590,17 @@ export function RothConversion({
         return n == null ? null : Math.min(120, Math.max(0, n));
       })(),
       // The tax-return actuals save WITH the plan record too,
-      // under their own taxReturn* keys — the only other reader
-      // is the Playground's "Start from my numbers" prefill.
-      // Scenarios and every pricing run never see them. The
+      // under their own taxReturn* keys. Scenarios never carry
+      // them, and no pricing run ever sees the AMOUNTS — but
+      // pricing does reach them through the percentages derived
+      // from them: a blank yield field prices the implied yield
+      // these actuals describe (the blank-yield fallback,
+      // contract v136, audit MUST M-1 — threaded by
+      // resolveArgsBalances on the server and by this view's
+      // own working-plan construction), and the qualified
+      // share derived from them splits the priced dividend
+      // yield (contract v138). The other reader is the
+      // Playground's "Start from my numbers" prefill. The
       // year is clamped to a sane range (2000–2100), like the
       // other year fields in this payload.
       taxReturnInterestCents: parseMoney(taxReturnInterest),
@@ -2080,6 +2618,39 @@ export function RothConversion({
   // snapshot's bucket totals again. The fields immediately show
   // the snapshot values (blank for a bucket with no split), and
   // the cleared payload is saved at once — no other input moves.
+  // Serialization (re-audit round 3, SHOULD-9): the cleared
+  // payload goes through the SAME save serialization as every
+  // autosave — it becomes THE pending save and is fired through
+  // firePendingSave, never through a bare mutate call. Before
+  // this, the reset fired saveMutateRef.current directly,
+  // outside the queue: it neither set nor honoured
+  // saveInFlightRef, and it carried no per-call handlers, so
+  // while an autosave was in flight (or queued) the two writes
+  // raced on the same CAS base — one of them was refused or
+  // re-fired over the other, the reset could lose to the
+  // autosave's older payload, and the save-status note still
+  // read "Saved" (the winning autosave's own success), a
+  // misleading "done" over a lost reset; a reset whose own
+  // request failed likewise had no retry and no queue to fall
+  // back on. Queued as the pending save instead, the reset
+  // payload SUPERSEDES any queued autosave (it is built from
+  // the form as it stands, so it already carries every queued
+  // edit's values for the non-balance fields — only the
+  // balances change, to null), waits behind an in-flight save
+  // through firePendingSave's hold (its mutation then reads
+  // the base that save adopted when it landed, so the reset
+  // lands after it, in order), and inherits the fire path's
+  // handling wholesale: success drops it from the queue and
+  // adopts the new revision, a request failure keeps it queued
+  // and re-arms the 3 s retry with the "Could not save…" note
+  // showing (never a false "Saved"), and a CAS conflict
+  // resolves through the mutation's deliberate conflict path
+  // exactly like an autosave's. The autosave effect's own
+  // re-fire on the state changes above queues a payload built
+  // from the reset state itself — balances null under the
+  // cleared overrides — value-identical to this one, so
+  // whichever of the two the queue holds when it fires, the
+  // reset is what lands.
   const resetBalancesToNetWorth = () => {
     setConfirmResetBalances(false);
     const snapNow = data?.snapshot ?? null;
@@ -2090,17 +2661,25 @@ export function RothConversion({
     setTaxableBal(money(taxableSnapshotCents(snapNow)));
     setHsaBal(money(snapNow?.hsaCents ?? null));
     setBalanceOverrides({ pretax: false, pretaxSpouse: false, roth: false, taxable: false, hsa: false });
-    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
-    pendingSave.current = null;
+    // Built from the form as it stands (the setStates above
+    // have not applied to this closure, and buildInputsPayload
+    // reads the closure values): the current inputs payload
+    // with ONLY the balances nulled, exactly the payload the
+    // bare call used to send.
     const eff = buildInputsPayload();
-    saveMutateRef.current({
+    const resetPayload: SavePayload = {
       ...eff,
       pretaxCents: null,
       pretaxSpouseCents: null,
       rothCents: null,
       taxableCents: null,
       hsaCents: null,
-    });
+    };
+    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    pendingSave.current = resetPayload;
+    setPlanSaveNote("Saving…");
+    firePendingSave();
   };
 
   /* Reset plan to defaults: the server reseeds the whole plan
@@ -2115,15 +2694,36 @@ export function RothConversion({
      exactly like a save conflict.
      Autosave safety (the Load-into-plan problem): a debounced
      save of the PRE-reset form may still be queued when the
-     reset is confirmed — doResetPlan drops it before the call,
-     so it can never land after the reset and resurrect the old
-     values. Once the seed is applied, the autosave effect
-     re-fires on the new state and persists a payload built from
-     the seed itself — value-identical to the record the reset
-     just wrote. */
+     reset is confirmed — doResetPlan holds it aside before the
+     call, so it can never land after the reset and resurrect
+     the old values. Once the seed is applied, the autosave
+     effect re-fires on the new state and persists a payload
+     built from the seed itself — value-identical to the record
+     the reset just wrote.
+     Failure safety (re-audit round 3, MUST-2 — the M-5 pattern
+     every other failed save follows): the held-aside payload
+     is only DISCARDED once the reset lands. If the reset
+     request itself fails (offline, gateway 500), the mutation's
+     onError below puts the held payload back in the queue and
+     re-arms its save timer, so the edit the user typed still
+     saves as an ordinary autosave, and the failure is surfaced
+     — the reset error line under the reset controls, plus the
+     save-status note. Before this, doResetPlan dropped the
+     queued payload outright and the mutation had no onError:
+     a failed reset silently lost the edit — the form kept
+     showing it, nothing said the reset had failed, and a
+     reload reverted to the stored values. */
+  const resetHeldSaveRef = useRef<SavePayload | null>(null);
   const resetPlan = useMutation({
     mutationFn: () => api.resetRothPlanner({}),
     onSuccess: async (res) => {
+      // The reset landed (or was refused as a conflict, handled
+      // below exactly like a save conflict): either way the
+      // held-aside pre-reset payload is deliberately discarded
+      // — clear it BEFORE any await, so a failure in the
+      // refetch that follows can never resurrect it through
+      // onError.
+      resetHeldSaveRef.current = null;
       setConfirmResetPlan(false);
       if (res.ok === false) {
         if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
@@ -2142,12 +2742,47 @@ export function RothConversion({
       setScenarioMsg("Plan reset to the seeded defaults. Your saved strategies were kept.");
       queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
     },
+    onError: () => {
+      // Re-audit round 3, MUST-2 (the M-5 pattern): the reset
+      // request failed, so the plan was NOT reset — restore
+      // the held-aside queued autosave and re-arm its timer,
+      // so the edit the user typed is not lost: it lands as an
+      // ordinary autosave once the server is reachable, exactly
+      // as if the reset had never been attempted. Surface the
+      // failure plainly: the confirm closes, the reset error
+      // line under the reset controls shows (resetPlan.isError),
+      // and the save-status note says the entries are still
+      // here and will save. If a newer payload has been queued
+      // since (the user kept typing while the reset was in
+      // flight), it is already the queue's newest snapshot and
+      // its own timer is armed — leave it untouched.
+      const held = resetHeldSaveRef.current;
+      resetHeldSaveRef.current = null;
+      setConfirmResetPlan(false);
+      if (held) {
+        setPlanSaveNote(
+          "The reset did not go through — your entries stay on this screen and will save as usual.",
+        );
+        if (!pendingSave.current) {
+          pendingSave.current = held;
+          rearmPendingSave();
+        }
+      } else {
+        setPlanSaveNote("The reset did not go through — your plan was not changed.");
+      }
+    },
   });
   const doResetPlan = () => {
-    // Drop any queued autosave of the pre-reset form first (see
-    // the note above): the reset, not a stale payload, is the
-    // last word on the record.
+    // Hold any queued autosave of the pre-reset form aside
+    // first (see the note above): while the reset is in flight
+    // it cannot land, and if the reset lands it is discarded —
+    // the reset, not a stale payload, is the last word on the
+    // record. If the reset FAILS, the mutation's onError
+    // restores the held payload to the queue and re-arms its
+    // save, so the edit is never silently lost.
+    resetHeldSaveRef.current = pendingSave.current;
     if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+    saveTimer.current = null;
     pendingSave.current = null;
     resetPlan.mutate();
   };
@@ -2172,7 +2807,20 @@ export function RothConversion({
 
   useEffect(() => {
     if (!init) return;
-    if (suppressNextAutosaveRef.current) {
+    if (discardRestoreWriteBackRef.current) {
+      // Build v205 (re-audit round 4 SHOULD R4-S4): a
+      // confirmed "Back to saved" restore just landed WHILE a
+      // save of the discarded edit was still in flight. Do NOT
+      // skip this scheduled save: the payload queued below is
+      // built from the restored form and is the write-back
+      // that lands behind the in-flight save (serialized by
+      // firePendingSave's hold, on the base that save adopts),
+      // returning the record to the restored values so the
+      // confirmed discard is not silently undone when the
+      // in-flight save lands. Consume the flag and fall
+      // through to the ordinary queue-and-arm below.
+      discardRestoreWriteBackRef.current = false;
+    } else if (suppressNextAutosaveRef.current) {
       // A "Back to saved" restore just landed: the form now
       // holds the saved record's values, so there is nothing
       // to write. Skip exactly this one scheduled save.
@@ -2180,6 +2828,10 @@ export function RothConversion({
       return;
     }
     pendingSave.current = buildInputsPayload();
+    // Build v149 — save status: an edit has queued a save
+    // that has not landed yet, and the status says so until
+    // the save's own success replaces it with "Saved".
+    setPlanSaveNote("Saving…");
     if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(firePendingSave, 700);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2210,17 +2862,59 @@ export function RothConversion({
   // after the attempt, and the view adopts it as the save base
   // so its next plan autosave does not conflict against the
   // scenario write it just made.
+  // Failure safety (re-audit round 3, SHOULD-8 — the M-5
+  // pattern every other save in this view follows): before
+  // SHOULD-8 NONE of the four mutations below had an
+  // onError, so a failed write (offline, gateway 500) was
+  // silent — no message anywhere, the scenario list kept
+  // showing the old state, and the change was lost with no
+  // explanation (a server REFUSAL was already surfaced: it
+  // resolves through onSuccess with res.ok false and its
+  // reason in scenarioMsg, and the rename / update handlers
+  // already kept their editor open on a refusal — only the
+  // request-failure path was missing). Each mutation's
+  // onError now (a) surfaces a plain failure line in
+  // scenarioError, rendered beside every scenario action,
+  // and (b) loses nothing: the handler clears NO in-progress
+  // UI, so the rename field keeps the typed new name
+  // (renamingName / renameText untouched), the strategy
+  // editor keeps its edits (labEditingName and the ed*
+  // fields untouched), the delete confirmation stays open
+  // (the confirm's click no longer dismisses it up front —
+  // the mutation's onSuccess clears it once the delete
+  // lands, exactly as the load confirm already worked), and
+  // a save's source — the plan form itself, the optimizer
+  // result, or the duplicated row — stays on screen exactly
+  // as it was, so the user can simply try the same action
+  // again. The retry is deliberately the user's own click,
+  // not an automatic re-send: saveRothScenario APPENDS an
+  // auto-named scenario, so re-sending after a response was
+  // lost in transit could save a duplicate the user never
+  // asked for — the M-5 queue-and-retry shape belongs to
+  // the idempotent whole-form autosave, not to these
+  // one-shot writes. A successful attempt clears the error
+  // line (onMutate clears it when the attempt starts, so a
+  // stale failure never sits beside a retry in flight).
   const saveScenario = useMutation({
     mutationFn: (input: PlanPayload) => api.saveRothScenario(input),
+    onMutate: () => setScenarioError(""),
     onSuccess: (res) => {
+      setScenarioError("");
       planRevisionRef.current = Math.max(planRevisionRef.current, res.revision);
       setScenarioMsg(res.reason);
       queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
     },
+    onError: () => {
+      setScenarioError(
+        "Could not save the scenario — nothing was saved, and your plan and saved strategies stay as they were. Try saving again.",
+      );
+    },
   });
   const deleteScenario = useMutation({
     mutationFn: (name: string) => api.deleteRothScenario({ name }),
+    onMutate: () => setScenarioError(""),
     onSuccess: (res) => {
+      setScenarioError("");
       planRevisionRef.current = Math.max(planRevisionRef.current, res.revision);
       setScenarioMsg(res.reason);
       if (res.ok) {
@@ -2229,10 +2923,21 @@ export function RothConversion({
       }
       queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
     },
+    onError: (_err, name) => {
+      // The delete did not land: the row is still saved, and
+      // the confirmation stays open (nothing here or at the
+      // click site dismisses it), so the user can retry the
+      // delete or cancel it.
+      setScenarioError(
+        `Could not delete ${name} — it is still saved. Try again, or cancel the delete.`,
+      );
+    },
   });
   const renameScenario = useMutation({
     mutationFn: (args: { name: string; newName: string }) => api.renameRothScenario(args),
+    onMutate: () => setScenarioError(""),
     onSuccess: (res) => {
+      setScenarioError("");
       planRevisionRef.current = Math.max(planRevisionRef.current, res.revision);
       setScenarioMsg(res.reason);
       if (res.ok) {
@@ -2242,15 +2947,33 @@ export function RothConversion({
       }
       queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
     },
+    onError: (_err, args) => {
+      // The rename did not land: the scenario keeps its old
+      // name, and the rename field stays open with the typed
+      // new name still in it, so the user can retry as-is.
+      setScenarioError(
+        `Could not rename ${args.name} — it keeps its old name, and the new name stays in the field so you can try again.`,
+      );
+    },
   });
   const updateScenario = useMutation({
     mutationFn: (input: Parameters<typeof api.updateRothScenario>[0]) =>
       api.updateRothScenario(input),
+    onMutate: () => setScenarioError(""),
     onSuccess: (res) => {
+      setScenarioError("");
       planRevisionRef.current = Math.max(planRevisionRef.current, res.revision);
       setScenarioMsg(res.reason);
       if (res.ok) setLabEditingName(null);
       queryClient.invalidateQueries({ queryKey: ["rothplanner"] });
+    },
+    onError: (_err, input) => {
+      // The edit did not land: the strategy keeps its saved
+      // settings, and the editor stays open with the edits
+      // still in it, so the user can retry as-is.
+      setScenarioError(
+        `Could not save changes to ${input.name} — your edits stay in the editor so you can try again.`,
+      );
     },
   });
 
@@ -3018,7 +3741,7 @@ export function RothConversion({
   };
   const saveLabEditor = (sc: ScenarioRow) => {
     const { name, ...rest } = sc;
-    // Contract v65 (F22): the scenario payload exactly as loaded
+    // Build v65 (F22): the scenario payload exactly as loaded
     // is the save's scenario-level CAS base — the server refuses
     // when the stored scenario no longer matches it, and the
     // refusal reason surfaces via setScenarioMsg in the mutation's
@@ -3272,7 +3995,7 @@ export function RothConversion({
       fafsaReportableAssetsCents: fafsaReportableAssetsCentsValue(),
     });
   };
-  // The optimizer run's staleness (contract v109, round-16 F1):
+  // The optimizer run's staleness (build v109, round-16 F1):
   // the current fingerprint is built exactly as the Run button
   // builds its request, so any plan input that affects optimizer
   // pricing is covered. While stale, the retained winner was
@@ -3399,6 +4122,34 @@ export function RothConversion({
     const ageNow = startYear - byP;
     if (end <= ageNow) return null;
     const rmdAge = rmdAgeForBirthYear(byP);
+    // The priced taxable pool (see taxableStart below): a
+    // saved Taxable override prices exactly as entered; while
+    // following the snapshot, the displayed pool minus the
+    // exclusion, floored at $0.
+    const taxableStartDollars = balanceOverrides.taxable
+      ? (parseDollars(taxableBal) ?? 0)
+      : Math.max(
+          0,
+          (parseDollars(taxableBal) ?? 0) -
+            Math.max(0, parseDollars(taxableExclude) ?? 0),
+        );
+    // Blank-yield fallback (contract v136, audit MUST M-1):
+    // a blank yield field prices the implied estimate from
+    // the saved record's tax-return actuals over this pool —
+    // the ONE derivation (impliedYieldPctsFromTaxReturn) the
+    // server paths use — never $0-by-default. An entered %
+    // (0% included) always wins; with no stored actual for a
+    // line the implied yield is null and the blank field
+    // prices $0 as before.
+    const impliedYields = impliedYieldPctsFromTaxReturn(
+      data?.taxReturn ?? {
+        taxReturnInterestCents: null,
+        taxReturnQualifiedDividendsCents: null,
+        taxReturnOrdinaryDividendsCents: null,
+        taxReturnYear: null,
+      },
+      taxableStartDollars,
+    );
     return {
       startYear,
       birthYearPrimary: byP,
@@ -3417,13 +4168,7 @@ export function RothConversion({
       // is not spent, sold, yielded on, or counted in ending
       // wealth. A saved Taxable override prices exactly as
       // entered and the exclusion is inert.
-      taxableStart: balanceOverrides.taxable
-        ? (parseDollars(taxableBal) ?? 0)
-        : Math.max(
-            0,
-            (parseDollars(taxableBal) ?? 0) -
-              Math.max(0, parseDollars(taxableExclude) ?? 0),
-          ),
+      taxableStart: taxableStartDollars,
       hsaStart: parseDollars(hsaBal) ?? 0,
       taxableBasisPct: parseNum(basisPct) ?? 100,
       // A blank basis % models no gains on draws (the ?? 100
@@ -3437,12 +4182,32 @@ export function RothConversion({
       taxableBasisBlank:
         parseNum(basisPct) == null && tiersFromRows(basisTiers) == null,
       taxableTiers: tiersFromRows(basisTiers),
-      // Taxable yields: blank = no yield modeled (the engine
-      // prices the plan exactly as before); a typed % makes
-      // that share of each year's starting taxable balance
-      // mandatory dividend / interest income for the year.
-      taxableDividendYieldPct: parseNum(divYieldPct),
-      taxableInterestYieldPct: parseNum(intYieldPct),
+      // Taxable yields: a typed % makes that share of each
+      // year's starting taxable balance mandatory dividend /
+      // interest income for the year; a blank field takes the
+      // implied estimate from the saved return's actuals
+      // (impliedYields above, contract v136) — blank means
+      // "not entered", not "no income" — and prices $0 only
+      // when no actual is stored for that line.
+      taxableDividendYieldPct:
+        parseNum(divYieldPct) ?? impliedYields.dividendYieldPct,
+      taxableInterestYieldPct:
+        parseNum(intYieldPct) ?? impliedYields.interestYieldPct,
+      // Qualified-dividend share (contract v138, audit S-1):
+      // the share of the dividend yield income priced as
+      // qualified, derived from the saved return's actuals
+      // (line 3a ÷ line 3b — the ONE derivation the server
+      // paths use). Null when no return figures imply a
+      // share, and the engine then prices 100% qualified,
+      // exactly as before.
+      taxableDividendQualifiedPct: qualifiedDividendSharePctFromTaxReturn(
+        data?.taxReturn ?? {
+          taxReturnInterestCents: null,
+          taxReturnQualifiedDividendsCents: null,
+          taxReturnOrdinaryDividendsCents: null,
+          taxReturnYear: null,
+        },
+      ),
       // Spend-from-cash (API-only field, round-tripped above):
       // the local pricing carries it exactly like the server
       // paths, with the sleeve sized from the snapshot's cash
@@ -4120,16 +4885,28 @@ export function RothConversion({
   const sectionChangedCount = (keys: (keyof typeof changedFields)[]): number =>
     keys.filter((k) => changedFields[k]).length;
   // Restore the working form to the saved record's values.
-  // Presentation/state only: any queued autosave of the edited
-  // form is dropped and the restore itself schedules no save —
-  // nothing is written.
+  // Any queued autosave of the edited form is dropped. With
+  // nothing in flight the restore itself schedules no save —
+  // nothing is written, exactly as before. But a save already
+  // IN FLIGHT cannot be dropped from here: it will land after
+  // the restore and resurrect the discarded edit in the
+  // record (build v205, re-audit round 4 SHOULD R4-S4). In
+  // that case the restore arms the write-back instead (see
+  // discardRestoreWriteBackRef): the autosave effect queues a
+  // payload built from the restored form, and the serialized
+  // fire path lands it behind the in-flight save, so the
+  // record ends holding the restored values the form shows.
   const backToSaved = () => {
     const resolved = resolvedSavedInputs();
     setConfirmBackToSaved(false);
     if (!resolved) return;
     if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
     pendingSave.current = null;
-    suppressNextAutosaveRef.current = true;
+    if (saveInFlightRef.current) {
+      discardRestoreWriteBackRef.current = true;
+    } else {
+      suppressNextAutosaveRef.current = true;
+    }
     applyInputs(resolved);
     const s = data?.saved;
     setBalanceOverrides({
@@ -4148,7 +4925,7 @@ export function RothConversion({
      themselves, and a clause with no value behind it is simply
      left out). Display only: it reads the same state the
      fields edit and never touches pricing. */
-  /* The summary's clauses (contract v69): each clause that
+  /* The summary's clauses (build v69): each clause that
      names one editable field is a provenance tap — it jumps
      to that field in the All settings face (see jumpToField).
      The plain string below is the same clauses joined, for
@@ -4481,7 +5258,7 @@ export function RothConversion({
      as the ending strip (identical query key, so the two share
      one run), enabled wherever the plan workspace shows. The
      Tax by year section renders the baseline row's per-year
-     tax readouts (contract v51) — figures priced from the
+     tax readouts (build v51) — figures priced from the
      SAVED RECORD, never the working form, exactly like the
      strip: an unsaved form edit cannot move them. */
   const savedTaxQ = useQuery({
@@ -4929,7 +5706,7 @@ export function RothConversion({
           ? `lifetime net cost ${fmtDollars(planNet)}, the same as Do Nothing`
           : `lifetime net cost ${fmtDollars(planNet)} vs Do Nothing ${fmtDollars(dnNet)}`;
       const ending = endingFor(mainResult.endingPretax, planBd);
-      // Short line (contract v66): the visible line under the
+      // Short line (build v66): the visible line under the
       // ending strip is ONE line generated from the same
       // priced figures (the displayed-figure delta above);
       // the full sentence rides the line's ⓘ verbatim.
@@ -5037,7 +5814,7 @@ export function RothConversion({
     } else {
       endingClause = endingFor(mainResult.endingPretax, planBd);
     }
-    // Short line (contract v66), same treatment as the
+    // Short line (build v66), same treatment as the
     // converts-nothing branch: the conversion fact and the
     // exact delta vs Do Nothing on one line, the full
     // sentence verbatim in the line's ⓘ.
@@ -5185,7 +5962,9 @@ export function RothConversion({
                     </li>
                     {detailRow.detail.extraPreTaxDraw > 0 && (
                       <li>
-                        Extra pre-tax draw for spending:{" "}
+                        Extra pre-tax draw — the draw for spending plus the
+                        pre-tax debit that paid the tax bill (only the draw
+                        for spending is money out by choice):{" "}
                         <span className="tnum">{fmtDollars(detailRow.detail.extraPreTaxDraw)}</span>
                       </li>
                     )}
@@ -5664,6 +6443,28 @@ export function RothConversion({
   const planTotalCents = headerBalanceCents.some((c) => c != null)
     ? headerBalanceCents.reduce<number>((sum, c) => sum + (c ?? 0), 0)
     : null;
+  // Exclude-from-plan live remainder (EXCLUDE VISIBILITY build):
+  // derived from the typed field on every render, so the bold
+  // remainder beside the field moves as the user types, before
+  // any save lands. The remainder is the latest snapshot's
+  // total less the exclusion — every bucket the snapshot
+  // carries, the total the user thinks of as "all my money" —
+  // floored at $0. With no snapshot it falls back to the plan
+  // total above, which buildSavePayload has already netted of
+  // the exclusion. The taxable pool figure is the followed
+  // Taxable field (Taxable + Cash) less the exclusion, floored
+  // at $0 — the pool both this view and the Playground price.
+  // Display only: the exclusion itself is the saved plan input
+  // it has always been, and no Net Worth balance is touched.
+  const excludeLiveCents = Math.max(0, parseMoney(taxableExclude) ?? 0);
+  const taxablePoolAfterExcludeCents = Math.max(
+    0,
+    (parseMoney(taxableBal) ?? 0) - excludeLiveCents,
+  );
+  const totalAfterExcludeCents =
+    snap?.totalCents != null
+      ? Math.max(0, snap.totalCents - excludeLiveCents)
+      : planTotalCents;
   const planTotalHeader =
     planTotalCents != null ? (
       <span className="mt-1.5 flex flex-wrap items-baseline gap-x-2">
@@ -5671,6 +6472,7 @@ export function RothConversion({
         <span className="tnum text-xl font-bold text-[var(--accent)]">
           {fmtCentsExact(planTotalCents)}
         </span>
+        <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
       </span>
     ) : null;
   const exclusionSummary =
@@ -5890,7 +6692,7 @@ export function RothConversion({
     }, 80);
   };
 
-  /* Jump-and-highlight (contract v69): the provenance-tap
+  /* Jump-and-highlight (build v69): the provenance-tap
      mechanism modelled on Spending's scrollToSection — open
      the target's fold first, scroll on a later frame, then
      flash an outline on the field itself for ~1.6s. The flash
@@ -6111,7 +6913,7 @@ export function RothConversion({
 
   return (
     <div
-      // Contract v131 — settled-value gate: focus tracking for
+      // Build v131 — settled-value gate: focus tracking for
       // the autosave. onFocus fires (bubbling) when any
       // descendant takes focus; the gate only counts editable
       // fields (input/select/textarea) — a focused button is not
@@ -6120,12 +6922,18 @@ export function RothConversion({
       // field inside the view keeps the gate on, while leaving
       // the view means the value just edited is settled, so a
       // deferred save flushes. A move to a non-editable element
-      // inside the view (for example a button) does NOT flush
-      // and cancels the pending timer: the button may discard
-      // the edit (Back to saved) or change another value (which
-      // schedules its own save), so the pending save stays queued
-      // and flushes only once focus actually leaves the view, or
-      // an editable field regains focus and its value settles.
+      // inside the view (for example a button) means the edited
+      // value is settled too — focus has left the field — so
+      // build v149 re-arms the pending timer instead of
+      // cancelling it outright (the pre-v149 cancel stranded
+      // the queued save until focus left the whole view, which
+      // could be minutes, with no status saying so): the save
+      // fires on the re-armed timer unless the button's own
+      // click handler cancels it — the discard flows (Back to
+      // saved, the two resets) cancel the timer when their
+      // confirm prompt opens and drop or re-arm the pending
+      // save from there — or the button changes another value,
+      // which schedules its own save of the full form anyway.
       // A blur whose target is no longer in the document (the
       // focused element was unmounted by a re-render, e.g. the
       // Back to saved button swapping for its confirm prompt)
@@ -6151,21 +6959,19 @@ export function RothConversion({
         if (next != null && nextIsEditable && e.currentTarget.contains(next)) return;
         if (next != null && e.currentTarget.contains(next)) {
           // Focus moved to a non-editable element inside the view
-          // (a button): do not flush — the button may discard the
-          // edit. Cancel the pending timer, too: the timer was
-          // armed while the value was half-typed, and if it were
-          // left live it would fire once the ref below is no
-          // longer blocking and persist the intermediate text.
-          // The payload stays queued, and the gate stays closed
-          // (ref true), so a later fire is blocked as well. The
-          // pending save flushes only once focus actually leaves
-          // the view, or an editable field regains focus and its
-          // value settles (which schedules its own save).
-          if (saveTimer.current != null) {
-            window.clearTimeout(saveTimer.current);
-            saveTimer.current = null;
-          }
-          formFocusedRef.current = true;
+          // (a button): the field's value is settled — focus has
+          // left it — so build v149 re-arms the pending timer
+          // (700ms, the usual debounce) instead of cancelling it
+          // and stranding the save. The button's click handler
+          // runs immediately after this blur: a discard flow
+          // (Back to saved, the resets) cancels the timer when
+          // its confirm prompt opens, so the save cannot land
+          // while the user decides, and its execute path drops
+          // the pending payload itself; every other button lets
+          // the re-armed save land, which is what the user
+          // expects — they finished typing before they clicked.
+          formFocusedRef.current = false;
+          rearmPendingSave();
           return;
         }
         // Focus left the view — but only flush if the element
@@ -6221,7 +7027,7 @@ export function RothConversion({
           December draw
         </button>
 
-      {/* Sub-navigation (contract v67): underlined text tabs in
+      {/* Sub-navigation (build v67): underlined text tabs in
           the Retirement view's style — left-aligned over a
           hairline — instead of the former filled-pill segmented
           group, whose language competed with the main view tabs.
@@ -6303,6 +7109,12 @@ export function RothConversion({
                 disabled={changedCount === 0 && whatIfResult == null}
                 onClick={() => {
                   if (changedCount > 0) {
+                    // Build v149: hold the re-armed autosave
+                    // while the discard confirm is open — the
+                    // edit must not land before the user decides.
+                    // Confirming drops the pending save in
+                    // backToSaved; cancelling re-arms it.
+                    cancelPendingSaveTimer();
                     setConfirmBackToSaved(true);
                   } else if (whatIfResult != null) {
                     // No field has drifted, but a what-if answer
@@ -6323,6 +7135,17 @@ export function RothConversion({
                     : "Every field matches the saved plan."
                   : `${changedCount} field${changedCount === 1 ? "" : "s"} changed from the saved plan — marked “Changed” below.`}
               </span>
+              {/* Build v149 — the autosave's status, visible
+                  on every face beside the changed-fields line:
+                  "Saving…" while an edit is queued or in flight,
+                  "Saved" once it lands, and a plain failure note
+                  when it does not. Before v149 nothing here said
+                  whether a typed value had actually been saved. */}
+              {planSaveNote && (
+                <span className="text-xs font-medium text-[var(--text)]" aria-live="polite">
+                  {planSaveNote}
+                </span>
+              )}
             </>
           ) : (
             <>
@@ -6346,7 +7169,12 @@ export function RothConversion({
                 type="button"
                 aria-label="Cancel back to saved"
                 className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)]"
-                onClick={() => setConfirmBackToSaved(false)}
+                onClick={() => {
+                  setConfirmBackToSaved(false);
+                  // Build v149: the discard was called off —
+                  // re-arm the save held while the confirm was open.
+                  rearmPendingSave();
+                }}
               >
                 Cancel
               </button>
@@ -6697,7 +7525,7 @@ export function RothConversion({
             changed: changedFields.taxableBal,
           })}
           {moneyField("Exclude from plan", taxableExclude, setTaxableExclude, {
-            hint: "Part of the taxable pool (Taxable plus Cash) the plan leaves out of its calculations entirely — not spent, not sold, not counted in ending wealth. It stays in Net Worth in full. Blank = nothing excluded.",
+            hint: "Part of the taxable pool (Taxable plus Cash) the plan leaves out of its calculations entirely — not spent, not sold, not counted in ending wealth. The Tax Plan and the Playground both model the pool without it. It stays in Net Worth in full — no Net Worth balance changes. Blank = nothing excluded.",
             changed: changedFields.taxableExclude,
           })}
           {moneyField("HSA", hsaBal, setHsaBal, {
@@ -6710,31 +7538,33 @@ export function RothConversion({
             changed: changedFields.basisPct,
           })}
           {pctField("Taxable dividend yield", divYieldPct, setDivYieldPct, {
-            hint: "Share of the taxable balance paid out as dividends each year. That income is taxed on the capital-gains stack and counts toward MAGI every year, whether anything is sold or not. It is part of the expected return above, not extra growth, and it is treated as reinvested — it adds to the taxable basis. Blank = no dividend income is modelled.",
+            hint: "Share of the taxable balance paid out as dividends each year. That income counts toward MAGI every year, whether anything is sold or not — its qualified part is taxed on the capital-gains stack and the rest at ordinary rates, split by the qualified share your filed return implies (its qualified dividends ÷ its ordinary dividends). It is part of the expected return above, not extra growth, and it is treated as reinvested — it adds to the taxable basis. Blank = priced from the estimate your filed return implies (its ordinary dividends ÷ your taxable balance). Enter 0% to model no dividend income.",
             changed: changedFields.divYieldPct,
           })}
           {pctField("Taxable interest yield", intYieldPct, setIntYieldPct, {
-            hint: "Share of the taxable balance paid out as interest each year. That income is taxed as ordinary income and counts toward MAGI every year, whether anything is sold or not. It is part of the expected return above, not extra growth, and it is treated as reinvested — it adds to the taxable basis. Blank = no interest income is modelled.",
+            hint: "Share of the taxable balance paid out as interest each year. That income is taxed as ordinary income and counts toward MAGI every year, whether anything is sold or not. It is part of the expected return above, not extra growth, and it is treated as reinvested — it adds to the taxable basis. Blank = priced from the estimate your filed return implies (its taxable interest ÷ your taxable balance). Enter 0% to model no interest income.",
             changed: changedFields.intYieldPct,
           })}
         </div>
-        {(parseMoney(taxableExclude) ?? 0) > 0 && !balanceOverrides.taxable && (
-          <p className="mt-3 text-sm text-[var(--text)]">
-            Excluding {fmtCents(parseMoney(taxableExclude) ?? 0)} from the plan — the
-            taxable pool the plan prices is{" "}
-            {fmtCents(
-              Math.max(
-                0,
-                (parseMoney(taxableBal) ?? 0) -
-                  Math.max(0, parseMoney(taxableExclude) ?? 0),
-              ),
-            )}
-            . Net Worth still shows the full pool. This applies only in the
-            Tax Plan view — Net Worth, Retirement, and the other views
-            are unaffected.
-          </p>
+        {excludeLiveCents > 0 && !balanceOverrides.taxable && (
+          <div className="mt-3 text-sm text-[var(--text)]">
+            <p className="tnum text-base">
+              Exclude {fmtCentsExact(excludeLiveCents)} →{" "}
+              <strong>
+                {fmtCentsExact(totalAfterExcludeCents ?? 0)} remains
+              </strong>
+            </p>
+            <p className="mt-1">
+              The taxable pool the plan prices is{" "}
+              {fmtCentsExact(taxablePoolAfterExcludeCents)} — Taxable plus
+              Cash less the exclusion. The Tax Plan and the Playground both
+              follow this exclusion. Net Worth still shows the full
+              snapshot — the exclusion is a plan modeling input only and
+              changes no saved Net Worth balance.
+            </p>
+          </div>
         )}
-        {(parseMoney(taxableExclude) ?? 0) > 0 && balanceOverrides.taxable && (
+        {excludeLiveCents > 0 && balanceOverrides.taxable && (
           <p className="mt-3 text-sm text-[var(--text)]">
             A saved Taxable balance is in force, so the exclusion does not
             apply — it applies only while the Taxable balance follows Net
@@ -6844,7 +7674,12 @@ export function RothConversion({
                 aria-label="Reset balances to Net Worth"
                 className="px-1 py-2 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:opacity-50"
                 disabled={!init}
-                onClick={() => setConfirmResetBalances(true)}
+                onClick={() => {
+                  // Build v149: hold the re-armed autosave
+                  // while this confirm is open (see Back to saved).
+                  cancelPendingSaveTimer();
+                  setConfirmResetBalances(true);
+                }}
               >
                 Reset balances to Net Worth
               </button>
@@ -6869,7 +7704,12 @@ export function RothConversion({
                 type="button"
                 aria-label="Cancel reset balances"
                 className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)]"
-                onClick={() => setConfirmResetBalances(false)}
+                onClick={() => {
+                  setConfirmResetBalances(false);
+                  // Build v149: re-arm the save held while
+                  // the confirm was open.
+                  rearmPendingSave();
+                }}
               >
                 Cancel
               </button>
@@ -7186,7 +8026,7 @@ export function RothConversion({
         </div>
       ))}
 
-      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv", "taxReturnYear"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt", "taxReturnInterest", "taxReturnQualDiv", "taxReturnOrdDiv", "taxReturnYear"])} changed` : ""), (
+      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt"])} changed` : ""), (
         <>
           <p className="text-sm text-[var(--dim)]">
             From the retirement year, while anyone in the household is under 65, the household is priced as on the marketplace, and ACA MAGI sets the premium credit. Above 400% of the poverty line the credit is $0 — the whole year's credit is lost.
@@ -7280,33 +8120,7 @@ export function RothConversion({
               hint: "Counts toward provisional income and MAGI, though it is not itself taxed.",
               changed: changedFields.taxExempt,
             })}
-            {moneyField("Taxable interest — Form 1040 line 2b", taxReturnInterest, setTaxReturnInterest, {
-              hint: "From your most recent tax return. Prefill only — see the note below.",
-              changed: changedFields.taxReturnInterest,
-            })}
-            {moneyField("Qualified dividends — Form 1040 line 3a", taxReturnQualDiv, setTaxReturnQualDiv, {
-              hint: "From your most recent tax return. Prefill only — see the note below.",
-              changed: changedFields.taxReturnQualDiv,
-            })}
-            {moneyField("Ordinary dividends — Form 1040 line 3b", taxReturnOrdDiv, setTaxReturnOrdDiv, {
-              hint: "The total, including the line 3a qualified part. Prefill only — see the note below.",
-              changed: changedFields.taxReturnOrdDiv,
-            })}
-            {numField("Tax return year", taxReturnYear, setTaxReturnYear, {
-              hint: "The tax year the three Form 1040 figures above are from — your most recent filed return. Enter it once; the Playground shows it on the fields it prefills.",
-              changed: changedFields.taxReturnYear,
-            })}
           </div>
-          <p className="mt-3 text-xs text-[var(--dim)]">
-            The three Form 1040 lines above are{" "}
-            {taxReturnYear
-              ? `your ${parseIntField(taxReturnYear) ?? taxReturnYear} return\u2019s`
-              : "your most recent tax return\u2019s"}{" "}
-            actuals. They are used for one thing only: the Playground&rsquo;s
-            &ldquo;Start from my numbers&rdquo; fills its Interest and Dividends
-            fields from them. This plan does not price them — it models interest
-            and dividends from the yield fields under Your money.
-          </p>
           {acaSteps.length === 0 && (
             <p className={hintCls}>
               No household steps are set, so the household size stays{" "}
@@ -7720,11 +8534,13 @@ export function RothConversion({
           </span>
         )}
         <span className="text-xs text-[var(--dim)]" aria-live="polite">
-          {save.isPending
-            ? "Saving…"
-            : init
-              ? "Inputs save automatically, and the results below recalculate as you type."
-              : ""}
+          {planSaveNote
+            ? planSaveNote
+            : save.isPending
+              ? "Saving…"
+              : init
+                ? "Inputs save automatically, and the results below recalculate as you type."
+                : ""}
           {!planInputs &&
             " Check the inputs above — the plan needs a birth year, annual spending, a retirement age, an expected return, and an end age after the current age."}
         </span>
@@ -7732,6 +8548,11 @@ export function RothConversion({
       {scenarioMsg && (
         <p className="mt-2 text-sm text-[var(--dim)]" aria-live="polite">
           {scenarioMsg}
+        </p>
+      )}
+      {scenarioError && (
+        <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+          {scenarioError}
         </p>
       )}
       {planConflictMsg && (
@@ -7751,7 +8572,12 @@ export function RothConversion({
               aria-label="Reset plan to defaults"
               className="px-1 py-2 text-xs text-[var(--dim)] underline underline-offset-2 hover:text-[var(--accent)] disabled:opacity-50"
               disabled={!init || resetPlan.isPending}
-              onClick={() => setConfirmResetPlan(true)}
+              onClick={() => {
+                // Build v149: hold the re-armed autosave
+                // while this confirm is open (see Back to saved).
+                cancelPendingSaveTimer();
+                setConfirmResetPlan(true);
+              }}
             >
               Reset plan to defaults
             </button>
@@ -7780,7 +8606,12 @@ export function RothConversion({
               type="button"
               aria-label="Cancel reset plan"
               className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)]"
-              onClick={() => setConfirmResetPlan(false)}
+              onClick={() => {
+                setConfirmResetPlan(false);
+                // Build v149: re-arm the save held while
+                // the confirm was open.
+                rearmPendingSave();
+              }}
             >
               Cancel
             </button>
@@ -7795,11 +8626,49 @@ export function RothConversion({
         </>
       )}
 
+      {/* Plan total on the default face (PLAN TOTAL VISIBILITY
+          build): the same planTotalCents the Your money header
+          carries — Pre-tax (both spouses) + the taxable pool
+          after the exclusion + Roth + HSA; the College / 529 and
+          Non-Taxable buckets are never counted in it — shown
+          here so the figure is on the screen a fresh visit opens
+          on, without opening All settings. It is a tap target:
+          tapping it jumps to the Exclude from plan field in the
+          Your money panel (All settings face), the exclusion's
+          home, through the same jump-and-highlight the plain
+          summary's provenance taps use, so the exclusion can be
+          edited from there. Display only — it reads the same
+          effective inputs pricing uses and writes nothing. */}
+      {face === "plan" && planTotalCents != null && (
+        <section className={sectionCls} aria-label="Plan total">
+          <button
+            type="button"
+            aria-label={`Plan total ${fmtCentsExact(planTotalCents)} excluding 529 and Non-Taxable — go to Your money to edit the exclusion`}
+            className="flex w-full flex-wrap items-baseline gap-x-2 text-left"
+            onClick={() => jumpToField("roth-Exclude-from-plan", "money")}
+          >
+            <span className="text-sm text-[var(--dim)]">Plan total</span>
+            <span className="tnum text-xl font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+              {fmtCentsExact(planTotalCents)}
+            </span>
+            <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
+            {exclusionSummary && (
+              <span className="text-sm text-[var(--dim)]">
+                {exclusionSummary}
+              </span>
+            )}
+            <span className="text-sm text-[var(--dim)] underline underline-offset-2">
+              Edit the exclusion in Your money
+            </span>
+          </button>
+        </section>
+      )}
+
       {face === "plan" && (
         <section className={sectionCls} aria-label="What-if questions">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <span>What if…</span>
-            {/* Contract v114: the ⓘ sits immediately after
+            {/* Build v114: the ⓘ sits immediately after
                 the title, and the fold toggle stands alone
                 last at the far-right edge (ml-auto) — the
                 toggle keeps its accessible name, expanded
@@ -9465,11 +10334,14 @@ export function RothConversion({
             >
 <p>
                 How the gifted shares&rsquo; yield is priced depends on
-                the dividend and interest yields entered on your plan.
-                When no yields are entered, no yearly yield is priced
-                anywhere — so the gifted shares&rsquo; dividends are NOT
-                priced as income removed from your return. When dividend
-                or interest yields are entered, your priced yield income
+                the dividend and interest yields on your plan. When a
+                yield is left blank, the estimate implied by your filed
+                return is priced in its place; when a yield is blank and
+                no return figure is saved for it (or it is entered as
+                0%), no yearly yield is priced for it — so the gifted
+                shares&rsquo; dividends are NOT priced as income removed
+                from your return. When dividend or interest yields are
+                priced, your priced yield income
                 is worked out each year on your Taxable balance after
                 the gift — so from the gift year onward, the gifted
                 shares no longer generate priced yield income for you.
@@ -9747,6 +10619,11 @@ export function RothConversion({
               The search didn&rsquo;t finish. Check your connection and run it again.
             </p>
           )}
+          {scenarioError && (
+            <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+              {scenarioError}
+            </p>
+          )}
           {optResult && !optResult.ok && (
             <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
               {optResult.reason}
@@ -9881,7 +10758,7 @@ export function RothConversion({
                   </>
                 )}
               </div>
-              {/* Priced levers (contract v69): the top distinct
+              {/* Priced levers (build v69): the top distinct
                   strategies the search priced that beat the
                   saved plan, each with its exact gain vs the
                   saved plan from the optimizer's own figures
@@ -9893,7 +10770,7 @@ export function RothConversion({
                   says so instead. When Do Nothing won but priced
                   strategies still beat the saved plan, the
                   Do Nothing-won context is a sentence above the
-                  list, not a substitute for it (contract v106). */}
+                  list, not a substitute for it (build v106). */}
               <div className="mt-5">
                 <h3 className="text-base font-semibold">
                   What would improve this plan
@@ -10494,13 +11371,19 @@ export function RothConversion({
           renders, so the chart can never disagree with the table and
           no new pricing happens here). Segment sourcing, bottom to
           top, every figure read straight off the year's own priced
-          row: Interest ← detail.interestIncome; Qualified dividends
-          ← detail.dividendIncome; Other ordinary income ←
+          row: Interest ← detail.interestIncome; Dividend yield
+          income ← detail.dividendIncome (the year's priced
+          dividend yield income — the total distribution, priced
+          split between the stacks by the qualified share, not
+          the filed return's total); Other ordinary income ←
           detail.otherOrdinary; Taxable Social Security ←
           detail.ssTaxable; RMD ← rmd (the table's RMD column);
           Pre-tax money out ← conversion (the table's Conversion
-          column); Pre-tax draw for spending ←
-          detail.extraPreTaxDraw; Long-term gains ← detail.ltcg;
+          column); Pre-tax draw (spending + tax debit) ←
+          detail.extraPreTaxDraw (the year's total priced
+          pre-tax draw: its draw for spending plus the pre-tax
+          debit that paid its tax bill — only the spending draw
+          is money out by choice); Long-term gains ← detail.ltcg;
           Tax-exempt interest ← detail.taxExemptInterest; and, only
           in a year the capital-loss ledger prices one, the
           capital-loss allowance as a negative top segment
@@ -10514,13 +11397,13 @@ export function RothConversion({
           year's "Show the math" panel under the table below. */}
       {showPlanWorkspace && planInputs && mainResult && (() => {
         const planYears = mainResult.years;
-        // Income-stack palette (contract v136, "brighter, same
+        // Income-stack palette (build v136, "brighter, same
         // colors"): every segment one step brighter than the
         // muted 600-level it replaced, same hue — the dark
         // background washed the old set out, and the two teals
         // read as one block. The teals are separated by
         // lightness: the conversion is the darker teal, the
-        // spending draw the brighter one. The Playground's
+        // extra pre-tax draw the brighter one. The Playground's
         // single-year and projection charts carry the same
         // brightened set for the segments they share, so the
         // charts stay in sync. The ACA cliff line, the 0%
@@ -10528,12 +11411,12 @@ export function RothConversion({
         // income segments and keep their own colors.
         const segDefs = [
           { key: "interest", label: "Interest", color: "#3b82f6", amount: (y: RothYear) => y.detail.interestIncome },
-          { key: "qualdiv", label: "Qualified dividends", color: "#84cc16", amount: (y: RothYear) => y.detail.dividendIncome },
+          { key: "qualdiv", label: "Dividend yield income", color: "#84cc16", amount: (y: RothYear) => y.detail.dividendIncome },
           { key: "other", label: "Other ordinary income", color: "#f59e0b", amount: (y: RothYear) => y.detail.otherOrdinary },
           { key: "ss", label: "Taxable Social Security", color: "#ef4444", amount: (y: RothYear) => y.detail.ssTaxable },
           { key: "rmd", label: "RMD", color: "#8b5cf6", amount: (y: RothYear) => y.rmd },
           { key: "conv", label: "Pre-tax money out", color: "#0f766e", amount: (y: RothYear) => y.conversion },
-          { key: "extra", label: "Pre-tax draw for spending", color: "#2dd4bf", amount: (y: RothYear) => y.detail.extraPreTaxDraw },
+          { key: "extra", label: "Pre-tax draw (spending + tax debit)", color: "#2dd4bf", amount: (y: RothYear) => y.detail.extraPreTaxDraw },
           { key: "gains", label: "Long-term gains", color: "#f97316", amount: (y: RothYear) => y.detail.ltcg },
           { key: "taxexempt", label: "Tax-exempt interest", color: "#cbd5e1", amount: (y: RothYear) => y.detail.taxExemptInterest },
           { key: "lossallow", label: "Capital-loss allowance", color: "#64748b", amount: (y: RothYear) => -y.detail.lossAllowance },
@@ -10720,7 +11603,7 @@ export function RothConversion({
           Every figure comes from the baseline row of the
           saved-payload compare (savedTaxRow — the same run the
           ending strip prices from), whose per-year readouts
-          (contract v51) are read straight off the priced march
+          (build v51) are read straight off the priced march
           the lifetime totals sum. Priced from the saved record,
           never the working form: an unsaved edit cannot move
           these figures, exactly like the strip. The composition
@@ -10730,7 +11613,7 @@ export function RothConversion({
           pre-59½ penalties + tax on the ending pre-tax
           balance − refundable education credit) is named
           component by component in the title row's ⓘ
-          (taxByYearExplainer, contract v66), never folded
+          (taxByYearExplainer, build v66), never folded
           silently into the headline figures. */}
       {showPlanWorkspace && savedPlanPayload && (
         <section className={sectionCls} aria-label="Tax by year">
@@ -11516,6 +12399,11 @@ export function RothConversion({
               </span>
             )}
           </div>
+          {scenarioError && (
+            <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+              {scenarioError}
+            </p>
+          )}
           {matchedScenarios.length === 0 && (
             <p className="mt-3 text-sm text-[var(--dim)]" aria-live="polite">
               {"Current plan isn't a saved strategy."}
@@ -11684,10 +12572,7 @@ export function RothConversion({
                           aria-label={`Confirm delete of ${sc.name}`}
                           className="rounded-[var(--radius)] bg-[var(--bad)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                           disabled={deleteScenario.isPending}
-                          onClick={() => {
-                            setLabConfirmDelete(null);
-                            deleteScenario.mutate(sc.name);
-                          }}
+                          onClick={() => deleteScenario.mutate(sc.name)}
                         >
                           Delete
                         </button>

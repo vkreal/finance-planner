@@ -37,7 +37,7 @@ type RothData,
 // server/src/taxLaw.ts. The client runs the same code the fixtures
 // pin, so what is priced here is what is tested there.
 import { acaHouseholdSizeForYear, irmaaTierUpTo, simulateRothPlan } from "@space/server/taxEngine";
-import { taxReturnPrefillDollars } from "@space/server/taxReturnCore";
+import { impliedYieldPctsFromTaxReturn, qualifiedDividendSharePctFromTaxReturn, taxReturnPrefillDollars } from "@space/server/taxReturnCore";
 import { lawForYear, TAX_LAW_YEARS } from "@space/server/taxLaw";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
 import { compareStrategyFromSaved, parsePlaygroundPaste, planInputsFromSaved, pricePlaygroundYear, projectPlaygroundYears, solvePlaygroundAcaCliffFill, solvePlaygroundBracketFill, type PlaygroundProjection, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
@@ -96,7 +96,7 @@ const STACK_HATCH_STYLE = {
    strip's mini bar alike (the colour rides on the marker
    objects buildStackModel returns). The ACA cliff keeps
    var(--warn); the 0% gains-end line and its label keep
-   their own pink (#db2777 — contract v114: recoloured off
+   their own pink (#db2777 — build v114: recoloured off
    the qualified-dividends green #65a30d the gains segments
    and legend still use, so the marker can never be read as
    a segment edge); the 20%-floor tick is
@@ -117,7 +117,7 @@ type StackSegPos = StackSeg & {
 };
 
 /* Bracket-top tick labels at the top ends of their guide lines
-   (contract v84, de-collision fix within v84): the strip
+   (build v84, de-collision fix within v84): the strip
    above the bar carries one label per bracket top, each
    centred on its own dashed line. The labels are laid out
    on a single row — but at phone width two neighbouring
@@ -135,14 +135,14 @@ type StackSegPos = StackSeg & {
    changes: one row, same geometry as before. Measuring
    (not a character-width model) keeps the rule true
    whatever the figures or the rendered font. COLOR RULE
-   (contract v86): each label takes the exact colour of the
+   (build v86): each label takes the exact colour of the
    dashed guide line it names — the marker's `color`, carried
    through the TickLabel — never a per-label hard-coded hex. */
 type TickLabel = {
   rate: number;
   to: number;
   color: string;
-  /* Contract v114: an optional ⓘ note for one tick — the
+  /* Build v114: an optional ⓘ note for one tick — the
      landing bracket's top — composed live by the caller
      from the same marker figures. Ticks without a note
      render exactly as before (aria-hidden text only). */
@@ -164,11 +164,11 @@ function TickStrip({
   const spanRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const [staggered, setStaggered] =
     useState<ReadonlySet<number>>(EMPTY_STAGGERED);
-  /* Contract v120: which noted ticks have their tooltip open —
+  /* Build v120: which noted ticks have their tooltip open —
      the open tick's span lifts to 25, above its z-20 siblings,
      while its bubble is open, so the bubble paints above the
      neighbouring tick labels instead of underneath them; it
-     drops back to 20 when the bubble closes. Contract v129:
+     drops back to 20 when the bubble closes. Build v129:
      both levels sit below the z-30 sticky play strip, so the
      tick labels slide under the strip when the chart scrolls
      under it instead of painting over its text. A set, not a single
@@ -270,10 +270,10 @@ function TickStrip({
                  InfoNote pattern); the centring transform
                  traps the bubble's own z-index inside this
                  span, so the lift rides on the span itself.
-                 Contract v120: while the tick's own bubble
+                 Build v120: while the tick's own bubble
                  is open the span lifts to 25, above its
                  sibling ticks, so the bubble paints above
-                 them too. Contract v129: both levels sit
+                 them too. Build v129: both levels sit
                  below the z-30 sticky play strip, so the
                  tick labels slide under the strip when the
                  chart scrolls under it. */
@@ -340,7 +340,7 @@ function buildStackModel(
     );
     return reached != null ? reached : Math.max(top24, pg.taxableIncome);
   })();
-  /* Axis headroom (contract v76): the drawn axis extends a
+  /* Axis headroom (build v76): the drawn axis extends a
      margin past the rightmost plotted landmark, so landmarks
      that map just past the landing bracket's top — the stack
      end including gains, and the ACA cliff line's taxable-axis
@@ -392,7 +392,7 @@ function buildStackModel(
     // both charts) and whether its top falls inside the axis:
     // a marker beyond the base axis cap draws no line (the
     // ACA-line precedent), though its label stays, pinned at
-    // the chart's right edge. Headroom (contract v76) does
+    // the chart's right edge. Headroom (build v76) does
     // not promote a higher bracket's line: inAxis is judged
     // against the base axis end, before headroom is added.
     color: STACK_MARKER_COLORS[i] ?? "var(--dim)",
@@ -457,13 +457,13 @@ function buildStackModel(
 
 /* Cent-precision dollar formatting for the engine's own total
    tax (pg.totalTax — federal + state summed at cent precision
-   by the engine, contract v63 F2). The "Total tax" figures
+   by the engine, build v63 F2). The "Total tax" figures
    OUTSIDE the sale-after-tax readout print this value as-is, so
    a $0.60 federal / $0.42 state year reads $1.02 — the engine's
    total — not $2 (the sum of the separately rounded components).
    The sale-after-tax readout keeps its own deliberate
-   component-first rounding (see pgSaleLeftoverSegment and the
-   engine's saleAfterTax), untouched by this convention. */
+   component-first rounding (see the engine's
+   saleAfterTax), untouched by this convention. */
 function fmtDollarsExact(dollars: number): string {
   const neg = dollars < 0;
   const s = `$${Math.abs(dollars).toLocaleString("en-US", {
@@ -471,42 +471,6 @@ function fmtDollarsExact(dollars: number): string {
     maximumFractionDigits: 2,
   })}`;
   return neg ? `−${s}` : s;
-}
-
-/* The play strip's sale-leftover segment — derived from the
-   sale and the year's total tax alone, using the
-   engine-composed sale-after-tax leftover itself. Returns
-   null when no sale is in play (and when nothing is priced),
-   so the strip then renders exactly as before. `warn` marks
-   the over-the-sale form for the strip's warn colour
-   treatment. `note` is the segment's own plain-terms
-   explanation for the strip's ⓘ tooltip, interpolating
-   the SAME displayed figures the form itself was composed
-   from (no new arithmetic). The total tax is the same sum
-   of displayed components the readout's sale-after-tax line
-   uses — round(federal) + round(state) — so the totals
-   agree exactly. */
-function pgSaleLeftoverSegment(
-  pg: PlaygroundYearResult | null,
-  sold: string,
-): { text: string; warn: boolean; note: string } | null {
-  if (pg == null) return null;
-  const proceeds = Math.round(Math.max(0, parseDollars(sold) ?? 0));
-  if (proceeds <= 0 || pg.saleAfterTax == null) return null;
-  const totalTax = Math.round(pg.federalTax) + Math.round(pg.stateTax);
-  const leftover = pg.saleAfterTax.leftover;
-  if (leftover >= 0) {
-    return {
-      text: `${fmtDollars(leftover)} left`,
-      warn: false,
-      note: `What's left of the sale after this year's total tax. The sale brought in ${fmtDollars(proceeds)} and the year's total tax is ${fmtDollars(totalTax)}, so ${fmtDollars(leftover)} of the sale stays.`,
-    };
-  }
-  return {
-    text: `Tax ${fmtDollars(-leftover)} over the sale`,
-    warn: true,
-    note: `This year's total tax is ${fmtDollars(totalTax)} — more than the sale brought in (${fmtDollars(proceeds)}), by ${fmtDollars(-leftover)}. That much of the tax has to come from somewhere else.`,
-  };
 }
 
 /* Held fill target — a bracket top (its rate pct) or the ACA
@@ -520,11 +484,41 @@ type PgHeldTarget = number | "aca";
    field) — the form's dials in their own typed-string units. */
 type PgSavedForm = ApiResponse<typeof api, "getRothUiState">["playground"];
 
+/* A pending remembered-form save (build v195, re-audit
+   round 3 SHOULD-6): the form snapshot the debounced save
+   owes the store, the JSON it was captured from, and whether
+   it is a wholesale replacement (Reset / paste / prefill —
+   the pgForceWholesaleRef flag as it stood when this
+   snapshot was queued). The unmount flush carries exactly
+   this record, so a flush — and its retries — save the form
+   exactly as the debounced save would have. */
+type PgFormPendingSave = {
+  snapshot: PgSavedForm;
+  json: string;
+  wholesale: boolean;
+};
+
 /* The Tax Plan record's writer (saveRothInputs) — the
-   Spending dial's write-through (contract v145) saves
+   Spending dial's write-through (build v145) saves
    through it, the same writer the Tax Plan and Retirement
    views use. */
 type RothSavePayload = Parameters<typeof api.saveRothInputs>[0];
+
+/* A queued Tax Plan write-through edit (build v152,
+   audit M-3): ONLY the local spending delta — the target
+   annualSpendingCents this view means to write. The
+   whole-record payload is rebuilt from it at fire time; a
+   payload snapshotted at queue time is exactly what let a
+   stale write-through ride out under a fresh CAS base and
+   silently revert another tab's save. */
+type PgRothDelta = { annualSpendingCents: number };
+
+/* The Tax Plan record as getRothPlanner returns it — the
+   shape a whole-record save payload is built from. The
+   unmount flush's guard-holding path (build v169) builds
+   from a record fetched fresh at flush time, not from the
+   possibly stale fetched record the view last rendered. */
+type RothPlannerRecord = Awaited<ReturnType<typeof api.getRothPlanner>>;
 
 /* The projection template snapshot in the store's shape, and
    back: the store carries exactly the engine-input fields the
@@ -568,7 +562,44 @@ const projTemplateFromStored = (
   s: PgProjTemplateStored,
 ): PlaygroundYearInputs => ({ ...s });
 
-export function Playground() {
+/* Build v177 (re-audit NICE-TO-HAVE N-3): the bound on a
+   save fire path's hold polls — a fire path waiting for an
+   in-flight save to settle re-checks every 300 ms at most
+   this many times (100 × 300 ms = 30 s) before it gives up
+   explicitly instead of polling forever. The same bound and
+   give-up are applied in every writer that carries the hold
+   (App.tsx, RetirementCalc.tsx, RothConversion.tsx). */
+const SAVE_HOLD_MAX_POLLS = 100;
+
+/* Build v196 (re-audit round 3 SHOULD-7): how long a flush
+   deferred behind an in-flight save (the S-3 / S-4 slots —
+   this view carries two, the Tax Plan write-through's and
+   the remembered form's) waits for that save to settle
+   before the deferred send fires anyway — the same 30 s
+   scale as the hold bound above (100 × 300 ms), far beyond
+   any save this app makes. A save that has not settled in
+   30 s is hung (its promise neither resolves nor rejects,
+   so its settle handlers — the slot's only consumer —
+   never run), and without this bound the deferred edit
+   sits in its slot forever: never sent, never reported.
+   On expiry the slot's send fires through the retrying
+   flush path exactly as it would have on a settle (see
+   the slots' comments below). The same bound is applied
+   in every writer that carries a deferred slot
+   (RothConversion.tsx, RetirementCalc.tsx). */
+const DEFERRED_FLUSH_GIVE_UP_MS = 30000;
+
+export function Playground({
+  onJumpToYourMoney,
+}: {
+  /* Cross-view jump (PLAN TOTAL VISIBILITY build): App
+     switches to the Tax Plan view with a jump target for the
+     Exclude from plan field in its Your money panel, so the
+     Plan total tap at the top of this view lands on the
+     exclusion's home field where it can be edited. Optional:
+     without it the Plan total renders as plain text. */
+  onJumpToYourMoney?: () => void;
+} = {}) {
   const rq = useQuery({ queryKey: ["rothplanner"], queryFn: () => api.getRothPlanner({}) });
   // Remembered form state rides the Roth UI-state blob (its
   // own query key, so this view's cache entry is independent
@@ -588,7 +619,7 @@ export function Playground() {
      edits are never silently dropped. Null until the first
      read lands. */
   const pgRevisionRef = useRef<number | null>(null);
-  /* Landing-label connector (contract v114): the thin leader
+  /* Landing-label connector (build v114): the thin leader
      line from the floating landing-bracket label down to its
      dashed bracket-top guide line. The two ends live in
      different subtrees — the label row above the chart, the
@@ -605,7 +636,7 @@ export function Playground() {
   const stackChartRef = useRef<HTMLDivElement | null>(null);
   const stackLinesRef = useRef<HTMLDivElement | null>(null);
   const [landingLinkH, setLandingLinkH] = useState<number | null>(null);
-  /* Contract v120: which income-stack chart labels have their
+  /* Build v120: which income-stack chart labels have their
      tooltip open — the open label's span lifts to 25, above its
      z-20 siblings, while its bubble is open, so the bubble
      paints above the neighbouring labels instead of underneath
@@ -702,8 +733,31 @@ export function Playground() {
     pgPrefillSource?.taxReturnYear != null
       ? `your ${pgPrefillSource.taxReturnYear} return`
       : "your most recent return";
+  /* Rejected negative return actuals (contract v146,
+     re-audit round 3 NICE-1): the stored Form 1040 lines the
+     server's parse set aside as negative — a return income
+     line cannot be negative, so each reads as not entered
+     and its dial resolves by the ordinary provenance rules
+     (the plan's priced estimate where the plan prices the
+     year). The planner response reports them so the
+     rejection is visible here, beside the prefill controls
+     whose figures it changes, instead of the line silently
+     reading blank. Empty for every ordinary record. */
+  const pgRejectedReturnActuals =
+    rq.data?.taxReturn.rejectedNegativeActuals ?? [];
+  const pgRejectedReturnText = pgRejectedReturnActuals
+    .map((r) => {
+      const label =
+        r.line === "interest"
+          ? "taxable interest (line 2b)"
+          : r.line === "qualifiedDividends"
+            ? "qualified dividends (line 3a)"
+            : "ordinary dividends (line 3b)";
+      return `${label} was ${fmtDollars(r.cents / 100)}`;
+    })
+    .join("; ");
   /* Annual spending for the "enough for the year" comparison
-     (contract v126): the Tax Plan record's annual spending,
+     (build v126): the Tax Plan record's annual spending,
      falling back to the Retirement calculator's default —
      the same resolution the prefill source uses above. Null
      when neither answers, or when the resolved figure is $0
@@ -716,7 +770,7 @@ export function Playground() {
       null;
     return resolved != null && resolved > 0 ? resolved : null;
   }, [rq.data, retq.data]);
-  /* Spending dial (contract v145) — ONE SOURCE, multiple edit
+  /* Spending dial (build v145) — ONE SOURCE, multiple edit
      locations: the annual spending lives in the Tax Plan
      record, and this field edits it in place here, writing
      through to it via saveRothInputs — the record's own
@@ -749,6 +803,16 @@ export function Playground() {
   const [pgSpendingMonthlyDraft, setPgSpendingMonthlyDraft] = useState<string | null>(null);
   const [pgSpendingMsg, setPgSpendingMsg] = useState<string | null>(null);
   const pgSpendingFocusedRef = useRef(false);
+  /* Filed return figures: the "Your filed return — for the
+     estimate" editor section was removed at the user's
+     request — it only showed last year's actuals and asked
+     for last year's return, while the income dials themselves
+     are where the current year's estimate is entered. The
+     stored figures on the Tax Plan record are KEPT untouched
+     (they still back the return-year view and the "as filed"
+     preset internally), but there is no longer an editor for
+     them in this view. The write-through below therefore
+     preserves the tax-return block exactly as stored. */
   // Sourced from the Tax Plan record (falling back to the
   // Retirement calculator's default, the same resolution as
   // pgAnnualSpendingCents above): the field shows the stored
@@ -766,7 +830,7 @@ export function Playground() {
     const next = fmtMoneyInput(pgSpendingSourceCents / 100);
     setPgSpending((prev) => (prev === next ? prev : next));
   }, [pgSpendingSourceCents]);
-  // The spending the comparison prices (contract v145): the
+  // The spending the comparison prices (build v145): the
   // local field when it parses to a positive figure, else the
   // record's figure — so the row updates live while typing
   // and never vanishes on a blank or unparseable draft.
@@ -783,37 +847,207 @@ export function Playground() {
     if (cents == null) return pgSpending;
     return fmtMoneyInput(Math.round(cents / 12) / 100);
   };
-  /* Tax Plan write-through (contract v145, mirroring the
-     Retirement view's v140 write-through for this one field):
+  /* Tax Plan write-through (build v145, mirroring the
+     Retirement view's v140 write-through):
      the payload is the fetched record itself, flattened (its
      inputs, execution, market-check, gift, and tax-return
      blocks, minus the execution block's read-only
      rolledOver/clearedYear), with only annualSpendingCents
-     replaced by the field's current value. A blank or
+     replaced by the field's current value. The tax-return
+     block is carried through exactly as stored — the filed
+     return editor was removed, so this save never changes
+     those figures. A blank or
      unparseable field keeps the record's current value instead
      of overwriting it with null, so a half-typed edit can
      never blank a stored value, and an unchanged value saves
      nothing. The save is queued on change and fires at once
      when the field is not focused, and on blur when it is
-     (the settled-value gate, contract v131) — never while a
+     (the settled-value gate, build v131) — never while a
      half-typed value is in the field. Saves are serialized,
-     and a conflict re-reads the record (the sourced effect
-     then re-shows the stored values) and says so plainly.
+     and a conflict re-reads the record and explicitly resets
+     the field from the refusal's record (build v158,
+     audit S-5 — the sourced effect alone cannot be relied
+     on to re-show the stored value) and says so plainly.
      When there is no saved Tax Plan record yet, there is
      nothing to write through to and the edit stays in this
-     view only. */
+     view only.
+     Build v152 (audit MUST M-3): the queue holds ONLY the
+     local spending delta — the target annualSpendingCents —
+     never a whole-record payload, and the payload is rebuilt
+     at fire time from the freshest fetched record with only
+     that one field replaced. The mutation's baseRevision is
+     read from the same refetch the payload is rebuilt from,
+     so the two can never disagree: if another tab saved while
+     this edit sat queued (say the field was still focused),
+     the save carries that tab's newer values for every other
+     field instead of silently reverting them under a fresh
+     CAS base — the defect v145–v151 had, where the payload
+     was snapshotted at queue time but the base was read live
+     at send time. Save timing is unchanged: queue on change,
+     fire at once when unfocused, on blur when focused, and
+     the v151 failed-save retry re-fires the same queue entry,
+     rebuilding fresh again when it lands.
+     Build v169 (re-audit SHOULD S-4): the write-through
+     also flushes on unmount — before v169 it had NO unmount
+     flush at all, unlike the Tax Plan autosave and the
+     Retirement writers, so an edit still queued (or held by
+     the settled-value gate) when the view went away was
+     lost silently and the record kept the old value. The
+     flush follows the S-3 pattern the other writers landed
+     in v168: with nothing in flight the queued edit sends
+     at once through the ONE flush send (sendPgRothFlush,
+     which runs the M-4 coherence guard below); with a save
+     in flight the cleanup stores the send in a deferred
+     slot instead of firing it concurrently under the same
+     not-yet-advanced CAS base, and the in-flight call's own
+     per-call handlers consume the slot as that save
+     settles — firing it under the newly adopted base when
+     the save lands, firing it as a supersede when the save
+     errors, and dropping it when the save conflicts (the
+     conflict path's deliberate-drop semantics — the
+     deferred edit belongs to the same stale form). The
+     flush send runs the M-4 coherence guard (the Retirement
+     write-through's v162 rule): when the fetched record
+     this view holds is older than the base the mutation
+     would send under, the record is fetched fresh, the
+     payload is rebuilt from THAT record, and its revision
+     is adopted as the base before sending; if the fresh
+     fetch fails, or still returns a record older than the
+     base, the edit is dropped rather than sent stale. */
   const pgRothRevisionRef = useRef(0);
+  // The revision of the freshest FETCHED record — the one a
+  // rebuilt payload is spread from. pgRothRevisionRef can
+  // run one save ahead of it (a save result adopts its
+  // returned revision immediately; the refetch it triggers
+  // lands a moment later), and the unmount flush's coherence
+  // guard compares the two, so a flush payload is only ever
+  // sent under a base that describes the same record it was
+  // built from.
+  const pgRothFetchedRevisionRef = useRef(0);
   useEffect(() => {
-    if (rq.data) pgRothRevisionRef.current = rq.data.revision;
+    if (rq.data) {
+      pgRothRevisionRef.current = rq.data.revision;
+      pgRothFetchedRevisionRef.current = rq.data.revision;
+    }
   }, [rq.data]);
   const pgRothSaveTimer = useRef<number | null>(null);
-  const pendingPgRothSave = useRef<RothSavePayload | null>(null);
+  // The queued write-through edit: ONLY the spending value
+  // this view means to write (build v152, audit M-3). The
+  // whole-record payload is derived from it at fire time, so
+  // nothing stale can ride along — see the block comment
+  // above and buildPgRothSavePayload below.
+  const pendingPgRothSave = useRef<PgRothDelta | null>(null);
   const pgRothSaveInFlightRef = useRef(false);
+  // Build v177 (re-audit NICE-TO-HAVE N-3): consecutive
+  // hold polls by the fire path below while it waits for
+  // the in-flight save to settle, bounded by
+  // SAVE_HOLD_MAX_POLLS — see the hold branch there.
+  const pgRothHoldPollsRef = useRef(0);
+  // Build v151 (audit M-5): the edit currently in
+  // flight, so the unmount flush can tell "queued behind the
+  // in-flight save" (a newer edit — flush it) from "the
+  // in-flight save itself" (already being written — firing
+  // it again would just duplicate the call).
+  const pgRothSaveInFlightDeltaRef = useRef<PgRothDelta | null>(null);
+  // Build v169 (re-audit SHOULD S-4): a flush deferred
+  // behind the in-flight save, and the flush send itself,
+  // held in refs so the unmount cleanup (defined below,
+  // after the queue effect) can reach them. The cleanup,
+  // finding an edit queued behind a save still in flight,
+  // stores its send in deferredPgRothFlushRef instead of
+  // firing it concurrently under the same not-yet-advanced
+  // CAS base — the server accepts exactly one of two
+  // same-base saves, and a refused flush is lost silently
+  // on an unmounted view. The in-flight call's per-call
+  // handlers in the fire path consume the slot as that save
+  // settles: fire on a landed save or on an error, drop on
+  // a conflict (the conflict path's deliberate drop of the
+  // stale form's queued edits). sendPgRothFlushRef carries
+  // the ONE flush send (the M-4 coherence guard included),
+  // defined below beside buildPgRothSavePayload, so the
+  // immediate flush and the deferred flush are the same
+  // code, guard included.
+  // Build v189 (re-audit round 3 MUST-5): that send's two
+  // payload sends are no longer bare mutate calls — both go
+  // through the ONE retrying payload send
+  // (sendPgRothFlushPayload, beside sendPgRothFlush), so a
+  // flush whose own request fails re-arms a retry of itself
+  // instead of being dropped (see that send's comment).
+  const deferredPgRothFlushRef = useRef<(() => void) | null>(null);
+  const sendPgRothFlushRef = useRef<(pendingFlush: PgRothDelta) => void>(
+    () => {},
+  );
+  // Build v196 (re-audit round 3 SHOULD-7): the deferred
+  // slot's GIVE-UP timer — the RothConversion slot's shape.
+  // Before v196 the slot's only consumer was the in-flight
+  // write-through save's own per-call handlers: if that
+  // save hung forever (its request neither resolved nor
+  // rejected, so no handler ever ran), the deferred edit
+  // sat in the slot for the rest of the page's life —
+  // never sent and never reported, the exact stranding the
+  // N-3 hold bound (build v177) closed for the mounted
+  // fire path. The unmount cleanup now ARMS this timer as
+  // it stores the deferred send
+  // (armDeferredPgRothFlushGiveUp below): if the in-flight
+  // save has not settled within
+  // DEFERRED_FLUSH_GIVE_UP_MS, the timer consumes the slot
+  // itself and fires the deferred send anyway, through the
+  // same retrying flush send (sendPgRothFlush) a settle
+  // would have fired — so the edit is sent, its failure
+  // re-arms the flush's own 3 s retry (build v189), and a
+  // CAS conflict from sending while the wedged save is
+  // still in flight resolves through the mutation's
+  // normal conflict path instead of stranding the edit.
+  // A settle that lands first consumes the slot through
+  // takeDeferredPgRothFlush, which clears this timer, so a
+  // normally-settling save fires the deferred send exactly
+  // as before and the timer never fires at all. The timer
+  // lives in its own ref, cleared by nothing after
+  // unmount, so it outlives the view like the flush retry
+  // timer.
+  const deferredPgRothFlushGiveUpTimerRef = useRef<number | null>(null);
+  const clearDeferredPgRothFlushGiveUp = () => {
+    if (deferredPgRothFlushGiveUpTimerRef.current != null) {
+      window.clearTimeout(deferredPgRothFlushGiveUpTimerRef.current);
+      deferredPgRothFlushGiveUpTimerRef.current = null;
+    }
+  };
+  // Consume the deferred slot (and disarm its give-up
+  // timer): the ONE way the slot is read, so a settle and
+  // the give-up can never both fire the same send.
+  const takeDeferredPgRothFlush = (): (() => void) | null => {
+    clearDeferredPgRothFlushGiveUp();
+    const deferred = deferredPgRothFlushRef.current;
+    deferredPgRothFlushRef.current = null;
+    return deferred;
+  };
+  const armDeferredPgRothFlushGiveUp = () => {
+    clearDeferredPgRothFlushGiveUp();
+    deferredPgRothFlushGiveUpTimerRef.current = window.setTimeout(() => {
+      deferredPgRothFlushGiveUpTimerRef.current = null;
+      const deferred = deferredPgRothFlushRef.current;
+      deferredPgRothFlushRef.current = null;
+      if (deferred) deferred();
+    }, DEFERRED_FLUSH_GIVE_UP_MS);
+  };
   const pgRothSave = useMutation({
     mutationFn: (input: RothSavePayload) =>
       api.saveRothInputs({ ...input, baseRevision: pgRothRevisionRef.current }),
+    onError: () => {
+      // Build v151 (audit M-5): a failed write-through
+      // says so instead of vanishing silently. The edit
+      // stays queued (the fire path below clears it only on
+      // success) and its per-call onError re-arms a retry, so
+      // the edit lands once the server is reachable again.
+      setPgSpendingMsg(
+        "Could not save — your entries stay on this screen.",
+      );
+    },
     onSuccess: (res) => {
       if (res.ok) {
+        // A save landed: any "Could not save" note from an
+        // earlier failed attempt is stale now.
+        setPgSpendingMsg(null);
         pgRothRevisionRef.current = res.revision;
         // The Tax Plan view reads the same query key, so it
         // picks the new values up on its next render — and
@@ -821,11 +1055,52 @@ export function Playground() {
         pgQueryClient.invalidateQueries({ queryKey: ["rothplanner"] });
         return;
       }
-      // Conflict: a newer Tax Plan save landed first. Re-read
-      // the record — the sourced effect re-shows the stored
-      // values — and say plainly what happened.
+      // Conflict: a newer Tax Plan save landed first. Seed
+      // the cache with the record the refusal carries and
+      // RESET the field from it explicitly — re-show the
+      // stored spending — and say plainly what happened.
+      // Build v158 (audit SHOULD S-5): the reset must not
+      // rely on the sourced effect above. That effect bails
+      // while the field is focused and re-runs only when the
+      // stored spending itself changes, so when the other
+      // save changed a different field (or landed while this
+      // field held focus) it never re-synced, and the
+      // rejected edit stayed on screen under a message
+      // claiming the latest saved version was shown. This
+      // mirrors the Tax Plan's conflict path
+      // (rehydrateFromRecord): the refusal's own record is
+      // the stored truth, applied directly, focus or not.
       pgRothRevisionRef.current = res.revision;
+      // Drop any queued write-through of the stale form —
+      // the conflicted edit itself (the per-call handler in
+      // the fire path would drop it too) and anything queued
+      // behind it — so nothing from before this reset can
+      // fire later and save a value the field no longer
+      // shows. The Tax Plan's conflict path drops its queued
+      // autosave the same way.
+      if (pgRothSaveTimer.current != null) {
+        window.clearTimeout(pgRothSaveTimer.current);
+        pgRothSaveTimer.current = null;
+      }
+      pendingPgRothSave.current = null;
+      pgQueryClient.setQueryData(["rothplanner"], res.record);
+      const storedSpendingCents =
+        res.record.saved?.annualSpendingCents ?? null;
+      if (storedSpendingCents != null) {
+        setPgSpending(fmtMoneyInput(storedSpendingCents / 100));
+        // A per-month draft of the rejected edit must not
+        // survive either: the month display derives from
+        // the reset annual value once the draft is gone.
+        setPgSpendingMonthlyDraft(null);
+      }
       pgQueryClient.invalidateQueries({ queryKey: ["rothplanner"] });
+      // Re-audit NICE-TO-HAVE N-2: this message was guarded by
+      // a pending-save flag that every save capable of
+      // conflicting had already set (queuePgRothSave sets it
+      // for the only field this write-through carries, and
+      // nothing ever cleared it), so the guard could never
+      // discriminate — the message is set unconditionally,
+      // exactly as it effectively behaved.
       setPgSpendingMsg(
         "This plan was changed in the Tax Plan (or another tab), so the spending edit just made here was not kept. The latest saved version is shown now.",
       );
@@ -833,12 +1108,26 @@ export function Playground() {
   });
   const pgRothSaveMutateRef = useRef(pgRothSave.mutate);
   pgRothSaveMutateRef.current = pgRothSave.mutate;
-  const buildPgRothSavePayload = (): RothSavePayload | null => {
-    const rp = rq.data;
+  // Build the whole-record save payload for a target
+  // spending value from the CURRENT fetched record
+  // (build v152, audit M-3): every field comes from the
+  // freshest record this view holds; only annualSpendingCents
+  // is the caller's. Returns null when there is no saved
+  // record to write through to, or when the fresh record
+  // already holds the target value (nothing left to save —
+  // e.g. another tab saved the same spending first). The
+  // unmount flush's guard-holding path (build v169)
+  // passes the record it fetched fresh at flush time
+  // instead, so that payload is built from that record, not
+  // from the possibly stale fetched record the view last
+  // rendered.
+  const buildPgRothSavePayload = (
+    targetCents: number,
+    record?: RothPlannerRecord,
+  ): RothSavePayload | null => {
+    const rp = record ?? rq.data;
     if (!rp || !rp.saved) return null;
-    const cents = parseMoney(pgSpending);
-    const next = cents ?? rp.saved.annualSpendingCents;
-    if (next === rp.saved.annualSpendingCents) return null;
+    if (targetCents === rp.saved.annualSpendingCents) return null;
     const { rolledOver: _rolledOver, clearedYear: _clearedYear, ...execution } = rp.execution;
     return {
       ...rp.saved,
@@ -846,51 +1135,394 @@ export function Playground() {
       ...rp.mcCheck,
       ...rp.gift,
       ...rp.taxReturn,
-      annualSpendingCents: next,
+      annualSpendingCents: targetCents,
     };
   };
   const buildPgRothSavePayloadRef = useRef(buildPgRothSavePayload);
   buildPgRothSavePayloadRef.current = buildPgRothSavePayload;
+  // The ONE unmount-flush send for a queued write-through
+  // edit (build v169, re-audit SHOULD S-4): the immediate
+  // flush and the S-3-style deferred flush run identical
+  // code. The M-4 coherence guard (the Retirement
+  // write-through's build v162 rule) rides along:
+  //   - Guard not holding (fetched revision == base): build
+  //     from the fetched record and send at once.
+  //   - Guard holding: fetch the record fresh, rebuild the
+  //     payload from THAT record, adopt its revision as the
+  //     base, and only then send. If the fresh fetch fails,
+  //     or still returns a record older than the base, the
+  //     pending edit is dropped rather than sent stale.
+  // A deferred flush (fired when the save it queued behind
+  // settles) reaches this with the guard holding after a
+  // landed save — the fresh-fetch path is then the normal
+  // route, and the payload it builds already contains the
+  // just-landed save's values for every field outside the
+  // edit.
+  //
+  // Build v189 (re-audit round 3 MUST-5): the ONE payload
+  // send inside the flush, carrying the same retry
+  // firePendingPgRothSave's sends carry. Before v189 both of
+  // sendPgRothFlush's sends were bare
+  // pgRothSaveMutateRef.current(flushPayload) calls with NO
+  // per-call handlers — so a flush whose request failed (a
+  // network error at the moment of navigation) was dropped
+  // outright: the mutation-level onError above set the
+  // "Could not save" note on an unmounted view, where
+  // nobody could see it, the cleanup had already cleared
+  // the delta from the queue, and nothing ever retried, so
+  // the edit silently never landed — returning to the view
+  // showed the old stored value with no explanation. This
+  // send is the flush's firePendingPgRothSave: its per-call
+  // onError re-arms a 3 s retry of the SAME payload,
+  // chained per failure exactly as firePendingPgRothSave's
+  // onError re-arms its own retry, so the flush lands once
+  // the server is reachable again. The retry timer lives
+  // in its own ref, not the shared pgRoth save timer: the
+  // cleanup clears that timer as it runs, and nothing runs
+  // after unmount to clear this one, so the retries
+  // outlive the view. Each attempt goes through this same
+  // send (the retry calls back through the ref, so it
+  // always reaches the current closure), and the mutation
+  // reads its CAS base live from pgRothRevisionRef at each
+  // call — which still describes the record the payload
+  // was built from: on the guard-not-holding path the
+  // fetched and base revisions were equal at the build,
+  // and on the fresh-fetch path sendPgRothFlush adopts the
+  // fresh record's revision as the base before sending,
+  // so a retry rides exactly the base its first send did.
+  // A conflict is NOT retried: it resolves through
+  // onSuccess with res.ok false, where the mutation-level
+  // handler has already applied the conflict path's
+  // deliberate drop, and re-sending the stale-built
+  // payload would fight the newer record the refusal just
+  // re-showed — the same rule firePendingPgRothSave's
+  // per-call handlers follow. The pre-send drop paths in
+  // sendPgRothFlush (no fresh-enough record on the
+  // fresh-fetch path, or a payload the fresh record
+  // already satisfies) are unchanged: those are the M-4
+  // guard's deliberate outcomes, reached before any send
+  // exists to retry.
+  const pgRothFlushRetryTimerRef = useRef<number | null>(null);
+  const sendPgRothFlushPayload = (flushPayload: RothSavePayload) => {
+    pgRothSaveMutateRef.current(flushPayload, {
+      onError: () => {
+        if (pgRothFlushRetryTimerRef.current != null) {
+          window.clearTimeout(pgRothFlushRetryTimerRef.current);
+        }
+        pgRothFlushRetryTimerRef.current = window.setTimeout(() => {
+          sendPgRothFlushPayloadRef.current(flushPayload);
+        }, 3000);
+      },
+    });
+  };
+  const sendPgRothFlushPayloadRef = useRef(sendPgRothFlushPayload);
+  sendPgRothFlushPayloadRef.current = sendPgRothFlushPayload;
+  const sendPgRothFlush = (pendingFlush: PgRothDelta) => {
+    if (pgRothFetchedRevisionRef.current === pgRothRevisionRef.current) {
+      const flushPayload = buildPgRothSavePayloadRef.current(
+        pendingFlush.annualSpendingCents,
+      );
+      if (flushPayload) {
+        sendPgRothFlushPayload(flushPayload);
+      }
+    } else {
+      const baseAtFlush = pgRothRevisionRef.current;
+      void (async () => {
+        let fresh: RothPlannerRecord;
+        try {
+          fresh = await pgQueryClient.fetchQuery({
+            queryKey: ["rothplanner"],
+            queryFn: () => api.getRothPlanner({}),
+          });
+        } catch {
+          // No fresh record, no flush — never send the
+          // stale-built payload under the fresh base.
+          return;
+        }
+        if (!fresh.saved || fresh.revision < baseAtFlush) {
+          // The record on offer is still older than the
+          // base the stale payload would have ridden
+          // under — dropping the edit is the only safe
+          // outcome left.
+          return;
+        }
+        const flushPayload = buildPgRothSavePayloadRef.current(
+          pendingFlush.annualSpendingCents,
+          fresh,
+        );
+        if (!flushPayload) {
+          // The fresh record already holds the target
+          // value — the edit's goal is met, and every
+          // other field is the fresh record's to keep.
+          return;
+        }
+        // Adopt the fresh record's revision as the base
+        // BEFORE the send: the mutation reads its CAS
+        // base live from this ref at the call, so payload
+        // and base now describe the same record.
+        pgRothRevisionRef.current = fresh.revision;
+        pgRothFetchedRevisionRef.current = fresh.revision;
+        sendPgRothFlushPayload(flushPayload);
+      })();
+    }
+  };
+  sendPgRothFlushRef.current = sendPgRothFlush;
   const firePendingPgRothSave = () => {
-    if (!pendingPgRothSave.current) return;
+    const pending = pendingPgRothSave.current;
+    if (!pending) return;
     if (pgSpendingFocusedRef.current) {
-      // Settled-value gate: the field is still being edited,
-      // so the pending payload may hold a half-typed value.
-      // Hold it — the blur flush below sends it once focus
-      // leaves.
+      // Settled-value gate: the write-through field is still
+      // being edited, so the queued edit may still change.
+      // Hold it — the blur flush sends it once focus leaves
+      // the field.
       return;
     }
     if (pgRothSaveInFlightRef.current) {
+      // Build v177 (re-audit NICE-TO-HAVE N-3): this hold
+      // is BOUNDED. Before v177 it re-armed the 300 ms
+      // re-check without limit: a save whose call never
+      // settles (a hung request — the mutation's promise
+      // neither resolves nor rejects, so onSettled never
+      // runs and the in-flight flag never clears) held the
+      // queued edit behind it forever, polling for the life
+      // of the view. After SAVE_HOLD_MAX_POLLS consecutive
+      // polls (100 × 300 ms = 30 s, far beyond any save this
+      // app makes) the hold gives up explicitly: polling
+      // stops, the edit STAYS queued (a later edit, the blur
+      // flush, or the unmount flush fires it, and if the
+      // wedged save ever does settle its own per-call
+      // handlers still consume the deferred slot exactly as
+      // before), and the failure is surfaced with the same
+      // line a failed save uses. Nothing is sent
+      // concurrently — the S-4 deferral is untouched while
+      // the in-flight save settles normally.
+      pgRothHoldPollsRef.current += 1;
+      if (pgRothHoldPollsRef.current > SAVE_HOLD_MAX_POLLS) {
+        pgRothHoldPollsRef.current = 0;
+        if (pgRothSaveTimer.current != null) {
+          window.clearTimeout(pgRothSaveTimer.current);
+          pgRothSaveTimer.current = null;
+        }
+        setPgSpendingMsg(
+          "Could not save — your entries stay on this screen.",
+        );
+        return;
+      }
       if (pgRothSaveTimer.current != null) window.clearTimeout(pgRothSaveTimer.current);
       pgRothSaveTimer.current = window.setTimeout(firePendingPgRothSave, 300);
       return;
     }
-    const payload = pendingPgRothSave.current;
-    pendingPgRothSave.current = null;
+    // Build v152 (audit M-3): rebuild the payload NOW,
+    // from the freshest record, applying only the queued
+    // spending delta. The record may have advanced past the
+    // revision the edit was queued against (another tab's
+    // save, picked up by the bridge refetch while this field
+    // was focused) — rebuilding here carries that save's
+    // values for every other field, and the mutation reads
+    // its CAS base from the same refetch, so payload and
+    // base always describe the same record. A payload
+    // snapshotted at queue time must never be sent under a
+    // base read later: the server CAS would accept it and
+    // silently revert the other tab's edits.
+    const payload = buildPgRothSavePayloadRef.current(pending.annualSpendingCents);
+    if (!payload) {
+      // Nothing to send: no saved record to write through
+      // to, or the fresh record already holds this spending
+      // (another tab saved the same value first — the edit's
+      // goal is met, and every other field is theirs to
+      // keep). The owed save is complete either way.
+      pendingPgRothSave.current = null;
+      pgRothHoldPollsRef.current = 0;
+      return;
+    }
+    // Build v151 (audit M-5): the edit stays queued until
+    // the save SUCCEEDS — it is not dropped at the call, so
+    // a failed save (offline, gateway 500) cannot vanish
+    // silently. The per-call handlers below own the queue:
+    // success drops the edit, error re-arms a retry of it.
+    pgRothHoldPollsRef.current = 0;
     pgRothSaveInFlightRef.current = true;
+    pgRothSaveInFlightDeltaRef.current = pending;
     pgRothSaveMutateRef.current(payload, {
+      onSuccess: (res) => {
+        // The save landed (or a conflict re-read the record
+        // and re-showed the stored values — the deliberate
+        // drop): clear the queue only if it still holds this
+        // edit, never a newer one queued behind it.
+        if (pendingPgRothSave.current === pending) {
+          pendingPgRothSave.current = null;
+        }
+        // Build v169 (re-audit SHOULD S-4): consume a
+        // flush the unmount cleanup deferred behind this
+        // save — fire it on a landed save (the mutation-level
+        // handler has adopted the new revision; the deferred
+        // send runs the M-4 guard, which now routes it
+        // through the fresh-fetch path, so its payload is
+        // rebuilt from the record this save just landed),
+        // drop it on a conflict (the conflict path re-read
+        // the record and re-showed the stored values; the
+        // deferred edit is the same stale form's and must not
+        // ride out under the adopted base).
+        // Build v196: consumed through takeDeferredPgRothFlush,
+        // which also disarms the slot's give-up timer — a
+        // save that settles normally leaves no timer behind.
+        const deferred = takeDeferredPgRothFlush();
+        if (res.ok && deferred) deferred();
+      },
+      onError: () => {
+        // Keep the edit queued and re-arm a retry on the
+        // shared timer, so the save lands once the server is
+        // reachable again — rebuilt fresh at that fire, like
+        // every send. If the field is focused again by then,
+        // the settled-value gate holds the retry and the
+        // blur flush sends it, exactly as for a first
+        // attempt. The mutation-level onError sets the
+        // visible message.
+        if (pendingPgRothSave.current === pending) {
+          if (pgRothSaveTimer.current != null) {
+            window.clearTimeout(pgRothSaveTimer.current);
+          }
+          pgRothSaveTimer.current = window.setTimeout(firePendingPgRothSave, 3000);
+        }
+        // Build v169 (re-audit SHOULD S-4): this save
+        // never landed, so the base is unchanged and a flush
+        // deferred behind it at unmount fires now — its
+        // payload rebuilds from the same fetched record this
+        // save's payload was built from, applying only the
+        // deferred edit. No retry of this save was armed
+        // above: the queue no longer holds it, the cleanup
+        // moved it to the deferred slot.
+        // Build v196: consumed through takeDeferredPgRothFlush,
+        // which also disarms the slot's give-up timer.
+        const deferred = takeDeferredPgRothFlush();
+        if (deferred) deferred();
+      },
       onSettled: () => {
         pgRothSaveInFlightRef.current = false;
+        pgRothSaveInFlightDeltaRef.current = null;
       },
     });
   };
   const firePendingPgRothSaveRef = useRef(firePendingPgRothSave);
   firePendingPgRothSaveRef.current = firePendingPgRothSave;
   const queuePgRothSave = () => {
-    const payload = buildPgRothSavePayloadRef.current();
-    if (!payload) return;
-    pendingPgRothSave.current = payload;
+    // Queue ONLY the local spending delta (build v152,
+    // audit M-3) — never a whole-record payload. The payload
+    // is rebuilt from the fresh record when the save fires,
+    // so a refetch landing between queue and fire can never
+    // leave stale field values queued under a fresh base.
+    const rp = rq.data;
+    if (!rp || !rp.saved) return;
+    const cents = parseMoney(pgSpending);
+    // No delta is owed when the field is blank /
+    // unparseable or back at the stored value — the edit
+    // was cleared or reverted, so nothing should save.
+    // Drop any earlier queued edit instead of leaving it
+    // in place: the queued value must not outlive the
+    // field's current value, or blur would fire the
+    // superseded value and silently overwrite the revert
+    // (build v161, audit M-NEW-1 — the Retirement
+    // queue's rule, build v153).
+    if (cents == null || cents === rp.saved.annualSpendingCents) {
+      pendingPgRothSave.current = null;
+      return;
+    }
+    pendingPgRothSave.current = { annualSpendingCents: cents };
     firePendingPgRothSaveRef.current();
   };
   const queuePgRothSaveRef = useRef(queuePgRothSave);
   queuePgRothSaveRef.current = queuePgRothSave;
-  // Queue the write-through whenever the field changes; the
-  // fire sends it at once when the field is not focused, and
-  // the blur flush on the input sends it once focus leaves.
+  // Queue the write-through whenever a write-through field
+  // changes; the fire sends it at once when no write-through
+  // field is focused, and the blur flush sends it once focus
+  // leaves.
   useEffect(() => {
     queuePgRothSaveRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pgSpending]);
+  // Flush a queued write-through edit when leaving the
+  // screen, so an edit made in the last fraction of a second
+  // is not lost (build v169, re-audit SHOULD S-4 — before
+  // v169 this write-through had no unmount flush at all).
+  // It fires focused or not: leaving the view IS the settle,
+  // the Tax Plan's own v149 rule (the Retirement
+  // write-through adopted it in v159). Flushing the QUEUED
+  // edit is safe for a half-typed field: the queue only ever
+  // holds a parsed value that differs from the record's (a
+  // blank or unparseable field queues nothing), so there is
+  // no half-typed value in it to persist. The flush sends
+  // directly, not through the fire path: the fire path's
+  // settled-value gate would hold it for the very focus this
+  // flush must ignore, and its re-check timers cannot run
+  // once the view is gone.
+  useEffect(() => {
+    return () => {
+      if (pgRothSaveTimer.current != null) {
+        window.clearTimeout(pgRothSaveTimer.current);
+        pgRothSaveTimer.current = null;
+      }
+      // Build v151: the pending edit may BE the save
+      // currently in flight (the queue clears on success,
+      // not at the call) — that one is already being written,
+      // so only flush an edit queued behind it.
+      //
+      // Build v169 (re-audit SHOULD S-4): a queued-behind
+      // edit is NOT fired while the write-through's own save
+      // is still in flight — fired concurrently it would read
+      // the same not-yet-advanced CAS base, the server would
+      // accept exactly one of the two, and a refused flush
+      // would be lost silently (its conflict handling runs on
+      // this unmounted view) — the S-3 defect v168 fixed in
+      // the other three writers. It is deferred instead: the
+      // in-flight call's per-call handlers fire
+      // sendPgRothFlush the moment that save settles (on a
+      // landed save the M-4 guard routes the deferred send
+      // through the fresh-fetch path, so its payload is
+      // rebuilt from the record that save just landed; on an
+      // error the base is unchanged and the send proceeds
+      // exactly as an immediate flush would; on a conflict
+      // the slot is dropped, the conflict path's deliberate
+      // drop of the stale form's queued edits). With nothing
+      // in flight the flush sends at once through the same
+      // ONE send, guard included.
+      //
+      // Build v189 (re-audit round 3 MUST-5): BOTH forms of
+      // the flush — the immediate send and the deferred send
+      // stored in deferredPgRothFlushRef — now reach the
+      // server through the ONE retrying payload send inside
+      // sendPgRothFlush (sendPgRothFlushPayload), not a bare
+      // mutate call. The queue is still cleared just below
+      // before the send, exactly as before, but the edit no
+      // longer depends on the queue for its survival: once
+      // sendPgRothFlush builds the payload, the retrying send
+      // carries it in its closure and re-arms a 3 s retry of
+      // it on error, so a flush that fails at the moment of
+      // navigation is retried until it lands instead of
+      // being lost silently (see that send's comment).
+      if (
+        pendingPgRothSave.current &&
+        pendingPgRothSave.current !== pgRothSaveInFlightDeltaRef.current
+      ) {
+        const pendingFlush = pendingPgRothSave.current;
+        pendingPgRothSave.current = null;
+        if (pgRothSaveInFlightRef.current) {
+          deferredPgRothFlushRef.current = () =>
+            sendPgRothFlushRef.current(pendingFlush);
+          // Build v196 (re-audit round 3 SHOULD-7): storing
+          // the deferred send also ARMS its give-up timer —
+          // if the in-flight save never settles, the timer
+          // fires the deferred send through the same
+          // retrying flush send after
+          // DEFERRED_FLUSH_GIVE_UP_MS instead of leaving it
+          // stranded in the slot forever (see the timer's
+          // comment beside deferredPgRothFlushRef).
+          armDeferredPgRothFlushGiveUp();
+        } else {
+          sendPgRothFlushRef.current(pendingFlush);
+        }
+      }
+    };
+  }, []);
   const pgPrefillBlockerName = useMemo(
     () => pgPrefillBlocker(rq.data, retq.data),
     [rq.data, retq.data],
@@ -900,7 +1532,7 @@ export function Playground() {
      in the app's UI-state store (see the persistence block
      below) so the form remembers them between sessions, but
      nothing here is ever saved to the plan record or enters a
-     scenario — except the Spending dial (contract v145), which
+     scenario — except the Spending dial (build v145), which
      edits the Tax Plan record's annual spending in place and
      writes through to it. The playground prices ONE standalone
      year from typed dials through the shared engine
@@ -943,7 +1575,7 @@ export function Playground() {
   const [pgAcaSize, setPgAcaSize] = useState("");
   const [pgBenchmark, setPgBenchmark] = useState("");
   /* ACA cliff buffer — the "Buffer below the ACA cliff"
-     dial (ACA buffer guide build; contract v71): how far
+     dial (ACA buffer guide build; build v71): how far
      under the 400%-of-FPL cliff the ACA target sits. The
      ACA cliff chip, Hold's "aca" target, and the
      cliff − buffer fill all aim at cliff − buffer, and the
@@ -972,6 +1604,41 @@ export function Playground() {
     | { kind: "single"; value: number };
   const [pgBenchmarkLoaded, setPgBenchmarkLoaded] =
     useState<PgBenchmarkSource | null>(null);
+  /* Income-dial provenance (build v150) — remembered with
+     the rest of the form, like the benchmark source record
+     above: where each of the three income dials' current
+     figures came from. "return" = the stored tax return's
+     figure (year = the return's calendar year, null when the
+     record never named one); "plan" = the saved plan's priced
+     figure for that year (the yield-based estimate); "typed"
+     = the user's own value (typed in the dial, or loaded by
+     a paste). It drives ONLY each dial's source hint and the
+     year-change re-derivation (see the re-derivation effect
+     below): changing the Tax year re-derives a return- or
+     plan-sourced dial for the new year and never overwrites
+     a typed figure. It never enters pricing. Null = no
+     recorded source (a form remembered before provenance
+     existed, a blank dial, a reset). Provenance is EXPLICIT
+     ONLY (re-audit NICE-TO-HAVE N-1): a dial's source is
+     its recorded kind, never inferred from its value — a
+     dial with no recorded source is not treated as
+     return-sourced however its value compares to the
+     stored return figure, and a typed dial whose value
+     coincidentally equals that figure stays typed. */
+  type PgIncomeSource =
+    | { kind: "return"; year: number | null }
+    | { kind: "plan"; year: number }
+    | { kind: "typed" };
+  type PgIncomeSources = {
+    interest: PgIncomeSource | null;
+    ordinaryDividends: PgIncomeSource | null;
+    qualifiedDividends: PgIncomeSource | null;
+  };
+  const [pgIncomeSources, setPgIncomeSources] = useState<PgIncomeSources>({
+    interest: null,
+    ordinaryDividends: null,
+    qualifiedDividends: null,
+  });
   const [pgStateRate, setPgStateRate] = useState("0");
   // State of residence for this Playground year (T3 build):
   // "WA" prices Washington's capital-gains excise instead of
@@ -1004,7 +1671,7 @@ export function Playground() {
      another dial re-solves the conversion for that target (see
      the hold effect below) so the year stays on the bracket top
      or on the ACA cliff − buffer (Hold's "aca" target IS
-     cliff − buffer, contract v71). Typing in the conversion dial releases
+     cliff − buffer, build v71). Typing in the conversion dial releases
      the hold (pgHoldOn off; the target is kept as the
      last-tapped target, so toggling Hold back on resumes it);
      switching Hold off also releases while keeping the target.
@@ -1042,7 +1709,7 @@ export function Playground() {
   // The Projection panel's longer methodology: the panel's
   // always-visible intro is a short lead (what the panel is,
   // plus the ACA-convention disclosure), and the mechanics
-  // live in the ⓘ beside it (contract v67 — the former "More"
+  // live in the ⓘ beside it (build v67 — the former "More"
   // expander). The projHowOpen form field is retained in the
   // remembered form state for shape compatibility and is no
   // longer toggled.
@@ -1188,8 +1855,8 @@ export function Playground() {
       </button>
     </h3>
   );
-  /* Jump-and-highlight (contract v69, highlight strengthened
-     contract v124 round-18 F8): the provenance-tap mechanism
+  /* Jump-and-highlight (build v69, highlight strengthened
+     build v124 round-18 F8): the provenance-tap mechanism
      modelled on Spending's scrollToSection — open the target's
      face, group, and section first, scroll on a later frame,
      then mark the field itself for ~3s with a 2px accent
@@ -1240,7 +1907,7 @@ export function Playground() {
       }, 3000);
     }, 150);
   };
-  // Provenance taps (contract v134): only INPUT values are taps
+  // Provenance taps (build v134): only INPUT values are taps
   // — the ACA buffer figure, whose displayed value is the typed
   // buffer dial. Computed figures (tax, cash left, ACA credit,
   // MAGI, cliff, excise) are plain text: a computed result has
@@ -1324,6 +1991,38 @@ export function Playground() {
   const [pgConfirmReset, setPgConfirmReset] = useState(false);
   const pgSavedJsonRef = useRef<string | null>(null);
   const pgForceWholesaleRef = useRef(false);
+  // Build v206 (re-audit round 4 SHOULD R4-S6): the
+  // remembered-form save generation. "Reset playground"
+  // bumps this counter as it lands its wholesale save, and
+  // every remembered-form save carries the generation it
+  // began under (captured in executePgFormSave, threaded
+  // through runPgFormSaveAttempt into savePgCas). A save
+  // whose generation no longer matches has been superseded
+  // by the reset: it must not write again — above all its
+  // CAS conflict retry must not merge its pre-reset snapshot
+  // against the post-reset stored form, which (with
+  // pgSavedJsonRef already moved to the reset defaults)
+  // would resurrect every pre-reset dial at the next
+  // revision while the screen shows the blank form. Before
+  // v206 the reset had no such guard, so an in-flight save
+  // whose first write the reset's save refused would do
+  // exactly that on its merge-retry, and returning to the
+  // view rehydrated the pre-reset values — the reset was
+  // silently undone. A save that begins after the reset
+  // captures the new generation and saves normally, so
+  // prefill / paste-load (which queue their own save after
+  // any reset) still land as the last word, and a reset
+  // with nothing in flight behaves exactly as before.
+  const pgFormSaveGenRef = useRef(0);
+  // One-shot guard for the income re-derivation effect
+  // (build v150): the "as filed" preset sets the year to
+  // the return year but loads ONLY the lines the record
+  // holds — a line it has not entered keeps its dial exactly
+  // as it stands, by that preset's own contract. The preset
+  // arms this guard when it changes the year, and the effect
+  // consumes it on its next run instead of re-deriving over
+  // the preset's partial load.
+  const pgIncomeLoadGuardRef = useRef(false);
   // The form's JSON as of the latest render — lets an async
   // save tell whether the user has typed past the snapshot it
   // started from before applying a merged form back to the
@@ -1352,6 +2051,7 @@ export function Playground() {
     setPgBenchmark(s.acaBenchmark);
     setPgAcaBuffer(s.acaBuffer);
     setPgBenchmarkLoaded(s.benchmarkSource);
+    setPgIncomeSources(s.incomeSources);
     setPgStateRate(s.stateRate);
     setPgResidence(s.residenceState === "WA" ? "WA" : "other");
     setPgItemizedMortgage(s.itemizedMortgageInterest);
@@ -1428,6 +2128,7 @@ export function Playground() {
     acaBenchmark: pgBenchmark,
     acaBuffer: pgAcaBuffer,
     benchmarkSource: pgBenchmarkLoaded,
+    incomeSources: pgIncomeSources,
     stateRate: pgStateRate,
     residenceState: pgResidence,
     itemizedMortgageInterest: pgItemizedMortgage,
@@ -1509,6 +2210,11 @@ export function Playground() {
      failure leaves the tracked state untouched; the next edit
      re-saves. Nothing here surfaces an error, exactly as
      before: this is remembered form state, not plan data.
+     The return value reports whether the form landed (true)
+     or the save failed (false) — the debounced caller ignores
+     it (a later edit re-saves, as before), but the unmount
+     flush (build v195) retries on false, since after unmount
+     there is no later edit to re-save.
      The write is ALWAYS revision-checked — it never reaches
      setRothUiState without a baseRevision. When the tracked
      revision is still null (the first state read failed, or
@@ -1519,13 +2225,26 @@ export function Playground() {
      writer's newer fields survive; on the wholesale path the
      snapshot replaces the form whole, checked at the fetched
      revision. If that fetch fails the write is skipped
-     entirely; the next edit re-saves. */
+     entirely; the next edit re-saves.
+     Build v206 (R4-S6): `saveGen` is the save generation the
+     caller began under (see pgFormSaveGenRef). It is checked
+     on entry, after the null-base fresh read, and before the
+     conflict retry: once a "Reset playground" has bumped the
+     generation, a superseded save writes nothing further and
+     reports false (nothing of its snapshot landed) — the
+     reset's own wholesale save, begun under the new
+     generation, is the last word on the stored form. */
   const savePgCas = async (
     snapshot: PgSavedForm,
     baseRevision: number | null,
     startedJson: string,
     wholesale = false,
-  ): Promise<void> => {
+    saveGen = pgFormSaveGenRef.current,
+  ): Promise<boolean> => {
+    // Build v206 (R4-S6): a save a reset has superseded
+    // writes nothing — see pgFormSaveGenRef.
+    const saveSuperseded = () => saveGen !== pgFormSaveGenRef.current;
+    if (saveSuperseded()) return false;
     let formToSave = snapshot;
     let base = baseRevision;
     if (base == null) {
@@ -1533,10 +2252,14 @@ export function Playground() {
       try {
         fresh = await api.getRothUiState({});
       } catch {
-        return;
+        return false;
       }
       base = fresh.revision;
       pgRevisionRef.current = fresh.revision;
+      // Build v206 (R4-S6): a reset landed while this save
+      // was reading — do not merge (or write) its pre-reset
+      // snapshot against the post-reset form.
+      if (saveSuperseded()) return false;
       if (!wholesale) {
         const storedJson = JSON.stringify(fresh.playground);
         if (storedJson !== pgSavedJsonRef.current) {
@@ -1572,14 +2295,24 @@ export function Playground() {
         baseRevision: base,
       });
     } catch {
-      return;
+      return false;
     }
     if (res.ok) {
       pgRevisionRef.current = res.revision;
       pgSavedJsonRef.current = JSON.stringify(formToSave);
       cachePgForm(formToSave, res.revision);
-      return;
+      return true;
     }
+    // Build v206 (R4-S6): the conflict this save just hit
+    // may be the reset's own wholesale save landing first.
+    // If so, the merge below would run against the reset
+    // defaults with pgSavedJsonRef already moved to those
+    // defaults, so every pre-reset field would "win" and
+    // the retry would resurrect them over the reset. A
+    // superseded save stops here instead; a conflict from
+    // any other writer (generation unchanged) merges and
+    // retries exactly as before.
+    if (saveSuperseded()) return false;
     let lastSyncedSnapshot: PgSavedForm | null = null;
     try {
       lastSyncedSnapshot = pgSavedJsonRef.current
@@ -1599,9 +2332,9 @@ export function Playground() {
         baseRevision: res.revision,
       });
     } catch {
-      return;
+      return false;
     }
-    if (!retry.ok) return;
+    if (!retry.ok) return false;
     pgRevisionRef.current = retry.revision;
     pgSavedJsonRef.current = JSON.stringify(merged);
     cachePgForm(merged, retry.revision);
@@ -1611,65 +2344,339 @@ export function Playground() {
     ) {
       applyPgSavedForm(merged);
     }
+    return true;
   };
+  /* Build v195 (re-audit round 3 SHOULD-6): the unmount
+     flush for the remembered form, and the bookkeeping it
+     and the debounced save share. Before v195 the debounced
+     save below had NO unmount flush at all: its effect
+     cleanup only cleared the 400 ms timer, so a dial typed
+     just before the user switched views was never sent —
+     the timer died with the view, nothing else held the
+     edit, and returning re-hydrated the stored form, so the
+     dial silently reverted to its previous value. (The
+     write-through below has flushed since v169; this
+     remembered-form save was the one save path in the view
+     still missing one.) The bookkeeping mirrors the other
+     writers' flush machinery (the Tax Plan's v149/v168/v187
+     shape, the write-through's v169/v189 shape):
+       - pgFormPendingRef holds the ONE pending save — the
+         latest form snapshot that differs from the
+         last-synced JSON, with its wholesale flag captured
+         as it stood when queued. The debounced effect
+         records it on every form change and clears it when
+         the form is back at the synced value; a save that
+         lands clears it too (executePgFormSave below), so
+         at unmount it names exactly the edit still owed.
+       - pgFormSavesInFlightRef counts remembered-form saves
+         in flight (the debounced save is async — a fresh
+         read, a merge, and the CAS write), and
+         pgFormLastSettledRef records the last one's outcome,
+         so the unmount cleanup can tell "queued behind an
+         in-flight save" (defer the flush until that save
+         settles, the S-3 rule — firing concurrently would
+         race the same CAS base) from "the in-flight save
+         itself" (that save IS this edit: if it landed, the
+         flush is already done; if it failed, the flush is
+         its retry).
+       - deferredPgFormFlushRef is the deferred slot the
+         in-flight save's settle consumes (in
+         executePgFormSave), exactly as the other writers'
+         deferred slots are consumed by their in-flight
+         calls' per-call handlers.
+       - The flush send (flushPgFormSave) retries on failure
+         on its own timer (pgFormFlushRetryTimerRef), which
+         no cleanup clears, so the retries outlive the view —
+         the MUST-3 / MUST-4 / MUST-5 rule: a failed flush is
+         retried until it lands, never dropped silently. */
+  const pgFormPendingRef = useRef<PgFormPendingSave | null>(null);
+  const pgFormSavesInFlightRef = useRef(0);
+  const pgFormLastSettledRef = useRef<{
+    json: string;
+    ok: boolean;
+  } | null>(null);
+  const deferredPgFormFlushRef = useRef<(() => void) | null>(null);
+  const pgFormFlushRetryTimerRef = useRef<number | null>(null);
+  // Build v196 (re-audit round 3 SHOULD-7): the deferred
+  // slot's GIVE-UP timer — the same shape as the
+  // write-through slot's above, applied to this slot too
+  // (it was added by build v195, after SHOULD-7 was filed,
+  // with the same defect: its only consumer is the
+  // in-flight save's settle path in executePgFormSave, so
+  // a remembered-form save that hung forever — its promise
+  // neither resolving nor rejecting, its finally never
+  // running — would strand the deferred flush in the slot
+  // for the rest of the page's life, never sent and never
+  // reported). The unmount cleanup below ARMS this timer
+  // as it stores the deferred send: if the in-flight count
+  // has not reached zero within
+  // DEFERRED_FLUSH_GIVE_UP_MS, the timer consumes the
+  // slot itself and fires the deferred send anyway,
+  // through the same retrying flush send (flushPgFormSave)
+  // a settle would have fired — so the edit is sent, its
+  // failure re-arms the flush's own 3 s retry, and its
+  // save's own fresh-read / merge / CAS merge-retry
+  // handles any conflict from sending while the wedged
+  // save is still in flight. A settle that lands first
+  // consumes the slot through takeDeferredPgFormFlush,
+  // which clears this timer, so a normally-settling save
+  // fires the deferred send exactly as before and the
+  // timer never fires at all. The timer lives in its own
+  // ref, cleared by nothing after unmount, so it outlives
+  // the view like the flush retry timer.
+  const deferredPgFormFlushGiveUpTimerRef = useRef<number | null>(null);
+  const clearDeferredPgFormFlushGiveUp = () => {
+    if (deferredPgFormFlushGiveUpTimerRef.current != null) {
+      window.clearTimeout(deferredPgFormFlushGiveUpTimerRef.current);
+      deferredPgFormFlushGiveUpTimerRef.current = null;
+    }
+  };
+  // Consume the deferred slot (and disarm its give-up
+  // timer): the ONE way the slot is read, so a settle and
+  // the give-up can never both fire the same send.
+  const takeDeferredPgFormFlush = (): (() => void) | null => {
+    clearDeferredPgFormFlushGiveUp();
+    const deferred = deferredPgFormFlushRef.current;
+    deferredPgFormFlushRef.current = null;
+    return deferred;
+  };
+  const armDeferredPgFormFlushGiveUp = () => {
+    clearDeferredPgFormFlushGiveUp();
+    deferredPgFormFlushGiveUpTimerRef.current = window.setTimeout(() => {
+      deferredPgFormFlushGiveUpTimerRef.current = null;
+      const deferred = deferredPgFormFlushRef.current;
+      deferredPgFormFlushRef.current = null;
+      if (deferred) deferred();
+    }, DEFERRED_FLUSH_GIVE_UP_MS);
+  };
+  /* One attempt at the debounced save for a pending form —
+     the exact body the 400 ms timer used to run inline: a
+     wholesale pending saves whole; otherwise the stored
+     form is read fresh, and when another writer has moved
+     it since the last sync the three-way merge runs first
+     (the user's own changed fields win), with the merged
+     form applied back to the dials only while the form
+     still shows exactly the JSON the save began from.
+     Reports whether the form landed, for the flush's retry.
+     Build v206 (R4-S6): `saveGen` is the generation the
+     attempt began under, threaded into every savePgCas call
+     and re-checked here after the fresh read — a reset that
+     landed during the read supersedes the attempt, whose
+     merge would otherwise run its pre-reset snapshot
+     against the post-reset stored form. */
+  const runPgFormSaveAttempt = async (
+    pending: PgFormPendingSave,
+    saveGen: number,
+  ): Promise<boolean> => {
+    const localSnapshot = pending.snapshot;
+    const localJson = pending.json;
+    if (pending.wholesale) {
+      return savePgCas(
+        localSnapshot,
+        pgRevisionRef.current,
+        localJson,
+        true,
+        saveGen,
+      );
+    }
+    const lastSyncedJson = pgSavedJsonRef.current;
+    let storedSnapshot: PgSavedForm;
+    let storedJson: string;
+    let storedRevision: number;
+    try {
+      const fresh = await api.getRothUiState({});
+      storedSnapshot = fresh.playground;
+      storedJson = JSON.stringify(storedSnapshot);
+      storedRevision = fresh.revision;
+    } catch {
+      return savePgCas(
+        localSnapshot,
+        pgRevisionRef.current,
+        localJson,
+        false,
+        saveGen,
+      );
+    }
+    pgRevisionRef.current = storedRevision;
+    if (saveGen !== pgFormSaveGenRef.current) return false;
+    if (storedJson === lastSyncedJson) {
+      return savePgCas(localSnapshot, storedRevision, localJson, false, saveGen);
+    }
+    let lastSyncedSnapshot: PgSavedForm | null = null;
+    try {
+      lastSyncedSnapshot = lastSyncedJson
+        ? (JSON.parse(lastSyncedJson) as PgSavedForm)
+        : null;
+    } catch {
+      lastSyncedSnapshot = null;
+    }
+    if (!lastSyncedSnapshot) {
+      return savePgCas(localSnapshot, storedRevision, localJson, false, saveGen);
+    }
+    const mergedSnapshot = mergePgForms(
+      localSnapshot,
+      storedSnapshot,
+      lastSyncedSnapshot,
+    );
+    const mergedJson = JSON.stringify(mergedSnapshot);
+    const ok = await savePgCas(
+      mergedSnapshot,
+      storedRevision,
+      localJson,
+      false,
+      saveGen,
+    );
+    if (mergedJson !== localJson && pgFormJsonRef.current === localJson) {
+      applyPgSavedForm(mergedSnapshot);
+    }
+    return ok;
+  };
+  /* Run one remembered-form save attempt with the shared
+     bookkeeping: consume the wholesale flag a wholesale
+     pending carries (the pending record itself keeps the
+     flag, so a flush retry saves wholesale exactly as the
+     first attempt did), count the attempt as in flight,
+     record its outcome, drop the pending record when it
+     lands, and — when the last in-flight save settles —
+     consume a flush the unmount cleanup deferred behind it. */
+  const executePgFormSave = async (
+    pending: PgFormPendingSave,
+  ): Promise<boolean> => {
+    if (pending.wholesale) pgForceWholesaleRef.current = false;
+    // Build v206 (R4-S6): the attempt runs under the save
+    // generation as it stands when the attempt begins; a
+    // reset during the attempt supersedes it (see
+    // pgFormSaveGenRef).
+    const saveGen = pgFormSaveGenRef.current;
+    pgFormSavesInFlightRef.current += 1;
+    let ok = false;
+    try {
+      ok = await runPgFormSaveAttempt(pending, saveGen);
+    } finally {
+      pgFormSavesInFlightRef.current -= 1;
+      pgFormLastSettledRef.current = { json: pending.json, ok };
+      if (ok && pgFormPendingRef.current?.json === pending.json) {
+        pgFormPendingRef.current = null;
+      }
+      if (pgFormSavesInFlightRef.current === 0) {
+        // Build v196: consumed through
+        // takeDeferredPgFormFlush, which also disarms the
+        // slot's give-up timer — a save that settles
+        // normally leaves no timer behind.
+        const deferred = takeDeferredPgFormFlush();
+        if (deferred) deferred();
+      }
+    }
+    return ok;
+  };
+  const executePgFormSaveRef = useRef(executePgFormSave);
+  executePgFormSaveRef.current = executePgFormSave;
+  /* The ONE unmount-flush send for a pending remembered-form
+     save (build v195): run the same save the debounce would
+     have run, and on failure re-arm a 3 s retry of the SAME
+     pending record, chained per failure exactly as the other
+     flush sends re-arm theirs (builds v187–v189), so the
+     edit lands once the server is reachable again instead of
+     reverting silently. Each retry re-runs the full save —
+     fresh read, three-way merge, CAS write with its own
+     conflict retry — so a retry never rides a stale base:
+     another writer's intervening save is merged against,
+     never overwritten. The retry timer lives in its own
+     ref, not the debounce timer (the effect cleanup clears
+     that as it runs) — nothing runs after unmount to clear
+     this one, so the retries outlive the view. A record
+     whose JSON already matches the last-synced JSON needs
+     no send at all (an in-flight save landed it while the
+     flush waited). */
+  const flushPgFormSave = async (pending: PgFormPendingSave): Promise<void> => {
+    if (pending.json === pgSavedJsonRef.current) return;
+    const ok = await executePgFormSaveRef.current(pending);
+    if (ok) return;
+    if (pgFormFlushRetryTimerRef.current != null) {
+      window.clearTimeout(pgFormFlushRetryTimerRef.current);
+    }
+    pgFormFlushRetryTimerRef.current = window.setTimeout(() => {
+      void flushPgFormSaveRef.current(pending);
+    }, 3000);
+  };
+  const flushPgFormSaveRef = useRef(flushPgFormSave);
+  flushPgFormSaveRef.current = flushPgFormSave;
   useEffect(() => {
     if (!pgInit) return;
     if (pgFormJson === pgSavedJsonRef.current) {
       pgForceWholesaleRef.current = false;
+      pgFormPendingRef.current = null;
       return;
     }
     const localJson = pgFormJson;
     const localSnapshot = JSON.parse(localJson) as PgSavedForm;
-    const t = setTimeout(async () => {
-      if (pgForceWholesaleRef.current) {
-        pgForceWholesaleRef.current = false;
-        await savePgCas(localSnapshot, pgRevisionRef.current, localJson, true);
-        return;
-      }
-      const lastSyncedJson = pgSavedJsonRef.current;
-      let storedSnapshot: PgSavedForm;
-      let storedJson: string;
-      let storedRevision: number;
-      try {
-        const fresh = await api.getRothUiState({});
-        storedSnapshot = fresh.playground;
-        storedJson = JSON.stringify(storedSnapshot);
-        storedRevision = fresh.revision;
-      } catch {
-        await savePgCas(localSnapshot, pgRevisionRef.current, localJson);
-        return;
-      }
-      pgRevisionRef.current = storedRevision;
-      if (storedJson === lastSyncedJson) {
-        await savePgCas(localSnapshot, storedRevision, localJson);
-        return;
-      }
-      let lastSyncedSnapshot: PgSavedForm | null = null;
-      try {
-        lastSyncedSnapshot = lastSyncedJson
-          ? (JSON.parse(lastSyncedJson) as PgSavedForm)
-          : null;
-      } catch {
-        lastSyncedSnapshot = null;
-      }
-      if (!lastSyncedSnapshot) {
-        await savePgCas(localSnapshot, storedRevision, localJson);
-        return;
-      }
-      const mergedSnapshot = mergePgForms(
-        localSnapshot,
-        storedSnapshot,
-        lastSyncedSnapshot,
-      );
-      const mergedJson = JSON.stringify(mergedSnapshot);
-      await savePgCas(mergedSnapshot, storedRevision, localJson);
-      if (mergedJson !== localJson && pgFormJsonRef.current === localJson) {
-        applyPgSavedForm(mergedSnapshot);
-      }
+    // Build v195: record the pending save (with the
+    // wholesale flag as it stands for this snapshot) before
+    // arming the debounce, so the unmount flush below can
+    // send exactly this save if the view goes away first.
+    const pending: PgFormPendingSave = {
+      snapshot: localSnapshot,
+      json: localJson,
+      wholesale: pgForceWholesaleRef.current,
+    };
+    pgFormPendingRef.current = pending;
+    const t = setTimeout(() => {
+      void executePgFormSaveRef.current(pending);
     }, 400);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pgInit, pgFormJson]);
+  // Flush a pending remembered-form save when leaving the
+  // screen, so a dial typed in the last fraction of a second
+  // is not lost (build v195, re-audit round 3 SHOULD-6 —
+  // before v195 this save had no unmount flush at all; its
+  // debounce timer was simply cleared and the edit reverted
+  // on return). With nothing in flight the flush sends at
+  // once through the ONE retrying flush send above. With a
+  // save still in flight the flush is deferred instead —
+  // the S-3 rule the other writers follow: the in-flight
+  // save's settle consumes the deferred slot, and by then
+  // its outcome decides — if that save WAS this pending
+  // edit and it landed, the flush is already done and the
+  // slot's send is skipped; in every other case (a newer
+  // edit queued behind it, or that save failed) the slot
+  // fires the flush, which runs the pending save fresh
+  // under the now-current revision. A conflict inside the
+  // flush's save is not a failure to retry blindly:
+  // savePgCas already merge-retries a conflict once per
+  // attempt, and each flush retry re-reads and re-merges,
+  // so a further conflict resolves on the next attempt
+  // against the newest stored form rather than fighting it.
+  useEffect(() => {
+    return () => {
+      const pending = pgFormPendingRef.current;
+      if (!pending) return;
+      pgFormPendingRef.current = null;
+      if (pending.json === pgSavedJsonRef.current) return;
+      if (pgFormSavesInFlightRef.current > 0) {
+        deferredPgFormFlushRef.current = () => {
+          const settled = pgFormLastSettledRef.current;
+          if (settled && settled.json === pending.json && settled.ok) return;
+          void flushPgFormSaveRef.current(pending);
+        };
+        // Build v196 (re-audit round 3 SHOULD-7): storing
+        // the deferred send also ARMS its give-up timer —
+        // if the in-flight save never settles, the timer
+        // fires the deferred send through the same retrying
+        // flush send after DEFERRED_FLUSH_GIVE_UP_MS
+        // instead of leaving it stranded in the slot
+        // forever (see the timer's comment beside
+        // deferredPgFormFlushRef). Note the slot's own
+        // settled check above reads pgFormLastSettledRef
+        // as it stands when the timer fires: a wedged save
+        // never recorded an outcome, so the check cannot
+        // mistake this pending edit for a landed one.
+        armDeferredPgFormFlushGiveUp();
+      } else {
+        void flushPgFormSaveRef.current(pending);
+      }
+    };
+  }, []);
   /* Playground paste loader — the paste box itself is NOT
      remembered: the box, its error line, and its loaded note
      are never persisted, never reach an action, and a reload
@@ -1729,6 +2736,14 @@ export function Playground() {
     // A paste-load is the user's own typed value, not a plan
     // prefill — clear the benchmark source record (no caption).
     setPgBenchmarkLoaded(null);
+    // Same for the income dials: the pasted figures are the
+    // user's own values, so their provenance is "typed" — a
+    // later Tax year change never re-derives over them.
+    setPgIncomeSources({
+      interest: { kind: "typed" },
+      ordinaryDividends: { kind: "typed" },
+      qualifiedDividends: { kind: "typed" },
+    });
     setPgStateRate(String(inp.stateRatePct));
     setPgSoleBeneficiary(inp.spouseSoleBeneficiary);
     // Cold-AI audit fix: the paste payload now carries the
@@ -1777,6 +2792,11 @@ export function Playground() {
     setPgBenchmark("");
     setPgAcaBuffer("5000");
     setPgBenchmarkLoaded(null);
+    setPgIncomeSources({
+      interest: null,
+      ordinaryDividends: null,
+      qualifiedDividends: null,
+    });
     setPgStateRate("0");
     setPgResidence("other");
     setPgSoleBeneficiary(true);
@@ -1831,6 +2851,11 @@ export function Playground() {
       acaBenchmark: "",
       acaBuffer: "5000",
       benchmarkSource: null,
+      incomeSources: {
+        interest: null,
+        ordinaryDividends: null,
+        qualifiedDividends: null,
+      },
       stateRate: "0",
       residenceState: "other",
       itemizedMortgageInterest: "",
@@ -1864,8 +2889,31 @@ export function Playground() {
       groupOpen: { single: true, projection: true },
     };
     pgForceWholesaleRef.current = false;
+    // Build v206 (re-audit round 4 SHOULD R4-S6): supersede
+    // any remembered-form save already in flight BEFORE the
+    // wholesale save below lands. Bumping the save
+    // generation makes the in-flight save's remaining steps
+    // (its merge, its first write, and above all its CAS
+    // conflict merge-retry) refuse to write, so its
+    // pre-reset dials cannot land over the defaults the
+    // reset is about to store; the queued pending record is
+    // dropped for the same reason — the form now equals the
+    // last-synced defaults, so nothing is owed, and the
+    // unmount flush must never send the pre-reset snapshot
+    // either. The reset's own save runs under the NEW
+    // generation, so it is not superseded by its own bump.
+    // With nothing in flight the bump changes nothing: the
+    // wholesale save lands exactly as before.
+    pgFormSaveGenRef.current += 1;
+    pgFormPendingRef.current = null;
     pgSavedJsonRef.current = JSON.stringify(fresh);
-    void savePgCas(fresh, pgRevisionRef.current, JSON.stringify(fresh), true);
+    void savePgCas(
+      fresh,
+      pgRevisionRef.current,
+      JSON.stringify(fresh),
+      true,
+      pgFormSaveGenRef.current,
+    );
   };
 
   // Playground result: the form's dials priced live through
@@ -1945,7 +2993,7 @@ export function Playground() {
               expenses: money0(r.expenses),
               aotcEligible: r.aotcEligible,
             })),
-      // Annual spending (contract v126, "enough for the
+      // Annual spending (build v126, "enough for the
       // year", live from the Spending dial in v145): the
       // field's figure when it parses to a positive amount,
       // else the resolved record figure — or null when none
@@ -2009,7 +3057,7 @@ export function Playground() {
   // ACA target instead of a bracket top — set the conversion
   // dial to the exact amount that lands the year's ACA MAGI
   // on cliff − buffer (the 400%-of-FPL cliff minus the typed
-  // buffer; contract v71 — Hold's "aca" target IS
+  // buffer; build v71 — Hold's "aca" target IS
   // cliff − buffer, so the chip and Hold share one target,
   // the landing the December console targets), solved
   // through the shared engine (solvePlaygroundAcaCliffFill)
@@ -2028,7 +3076,7 @@ export function Playground() {
     setPgConversion(fmtMoneyInput(fill));
   };
 
-  /* The buffer (ACA buffer guide build; contract v71): the
+  /* The buffer (ACA buffer guide build; build v71): the
      typed buffer read as dollars — blank or negative reads
      as $0, like the money dials' clamp at buildPgInputs.
      It feeds the ACA solves — the cliff chip, Hold's "aca"
@@ -2039,7 +3087,7 @@ export function Playground() {
      when tapped (after render), never during render. */
   const pgAcaBufferDollars = Math.max(0, parseDollars(pgAcaBuffer) ?? 0);
   // "Fill conversion to cliff − buffer": the same solve the
-  // ACA cliff chip performs (contract v71) — it sets the
+  // ACA cliff chip performs (build v71) — it sets the
   // conversion dial so the year's priced ACA MAGI lands
   // exactly on cliff − buffer (verified against the engine
   // by the tax suite's playground-aca-buffer-fill fixtures).
@@ -2062,7 +3110,7 @@ export function Playground() {
      conversion for the held target and updates the conversion
      dial, so the year stays on that bracket top — or, for the
      ACA target, ACA MAGI stays on cliff − buffer (Hold's
-     "aca" target IS cliff − buffer, contract v71; the buffer
+     "aca" target IS cliff − buffer, build v71; the buffer
      dial is a trigger too, so editing the buffer while Hold
      is on re-solves to the new line) — and the
      stacking chart below re-renders from the same priced
@@ -2097,7 +3145,7 @@ export function Playground() {
     // guard but deliberately NOT a trigger — a solver write
     // must not re-trigger the solve (the guard would stop it,
     // but there is nothing new to solve). pgAcaBuffer IS a
-    // trigger (contract v71): Hold's "aca" target is
+    // trigger (build v71): Hold's "aca" target is
     // cliff − buffer, so a buffer edit re-solves; for a
     // bracket target the extra solve is idempotent and the
     // guard above leaves the dial untouched.
@@ -2322,6 +3370,76 @@ export function Playground() {
     setPgProjSelectedYear(calendarYear);
   };
 
+  /* The qualified part of a priced year's dividend income
+     (audit N-1): the plan prices the year's dividend total
+     split by the household's return-derived qualified share
+     (contract v138, S-1 — the share threaded through the
+     priced inputs as taxableDividendQualifiedPct, clamped
+     and rounded to the cent exactly as the engine splits
+     it), so a prefill from a priced year loads the qualified
+     dial at that share of the total, NOT the total itself —
+     copying the total into both dials claimed 100% qualified
+     and left $0 non-qualified, a pair the pair check could
+     never flag. A null share (no stored return figures)
+     falls back to the total, exactly as before, so a fresh
+     plan is unchanged. */
+  const pgPricedQualifiedDividends = (dividendIncome: number): number => {
+    const pct = pgSavedPlanYears?.inputs.taxableDividendQualifiedPct ?? null;
+    if (pct == null) return dividendIncome;
+    const clamped = Math.min(100, Math.max(0, pct));
+    return Math.round(((dividendIncome * clamped) / 100) * 100) / 100;
+  };
+
+  /* The ONE resolution of the three income dials for a tax
+     year (yield-first, build v147; provenance contract
+     v150): the return year itself takes the stored return
+     figures (that year's actuals); any other year the saved
+     plan prices takes the plan's priced interest and
+     dividends for that year (the yield-based estimate — the
+     priced dividend total is the ordinary dial, and the
+     qualified dial takes the plan's own qualified share of
+     it via pgPricedQualifiedDividends above, so the pair
+     the pricer splits is the pair the dials load — the same
+     figures "a year from my saved plan" loads); a
+     year the plan does not price falls back to the return
+     figures, carried forward as the estimate. The returned
+     source is the provenance all three dials take: the
+     return (with the record's named return year, or null
+     when it never named one) or the priced year. A line the
+     resolved source has not entered resolves null (the dial
+     loads blank). Null overall when there is no prefill
+     source to resolve from. Shared by the "Start from my
+     numbers" prefill and the Tax-year re-derivation effect
+     below, so the two can never resolve a year differently. */
+  const resolvePgIncomeForYear = (
+    year: number,
+  ): {
+    interest: number | null;
+    qualifiedDividends: number | null;
+    ordinaryDividends: number | null;
+    source: PgIncomeSource;
+  } | null => {
+    if (!pgPrefillSource) return null;
+    const pricedYear =
+      pgSavedPlanYears?.years.find((y) => y.year === year) ?? null;
+    if (year !== pgTaxReturnYear && pricedYear != null) {
+      return {
+        interest: pricedYear.detail.interestIncome,
+        qualifiedDividends: pgPricedQualifiedDividends(
+          pricedYear.detail.dividendIncome,
+        ),
+        ordinaryDividends: pricedYear.detail.dividendIncome,
+        source: { kind: "plan", year },
+      };
+    }
+    return {
+      interest: pgPrefillSource.taxReturnInterest,
+      qualifiedDividends: pgPrefillSource.taxReturnQualifiedDividends,
+      ordinaryDividends: pgPrefillSource.taxReturnOrdinaryDividends,
+      source: { kind: "return", year: pgPrefillSource.taxReturnYear },
+    };
+  };
+
   // "Start from my numbers": prefill the dials from the
   // saved plan (the working plan inputs, which already carry the
   // Net Worth-resolved balances). Ages derive from the plan's
@@ -2331,18 +3449,14 @@ export function Playground() {
   // plan's step-down year; the benchmark keys on who is on the
   // marketplace that year (see the pick below). Interest and
   // the two dividend dials resolve for the CHOSEN tax year
-  // (contract v147): when the chosen year IS the return year,
-  // the stored return figures are that year's actuals and load
-  // as before; otherwise, when the saved plan prices the chosen
-  // year, its priced interest and dividends for that year load
-  // instead (the yield-based estimate — the same figures "a
-  // year from my saved plan" loads), so a current/future year
-  // no longer defaults to the flat prior-year figure; when the
-  // plan does not price the chosen year, the return figures
-  // load as the best available estimate. Starting here
-  // never writes the plan, and editing the dials never writes
-  // back — the prefilled dials simply become the remembered
-  // form state, like typed values.
+  // through resolvePgIncomeForYear above (build v147), and
+  // the resolution's source is recorded as the dials'
+  // provenance (build v150), so each dial's hint can say
+  // where its figure came from and a later Tax year change
+  // re-derives the dials instead of stranding the figure.
+  // Starting here never writes the plan, and editing the
+  // dials never writes back — the prefilled dials simply
+  // become the remembered form state, like typed values.
   const prefillPlayground = () => {
     if (!pgPrefillSource) return;
     pgForceWholesaleRef.current = true;
@@ -2462,41 +3576,37 @@ export function Playground() {
         })),
     );
     // Tax-return actuals (1040 LINES build, yield-first
-    // contract v147): the three income dials resolve for the
-    // chosen tax year. When the chosen year IS the return year,
-    // the stored figures are that year's actuals — interest ←
-    // line 2b, qualified dividends ← line 3a, ordinary
-    // dividends ← the line 3b TOTAL (the dial takes the total;
-    // the pricer derives the non-qualified part). Otherwise,
-    // when the saved plan prices the chosen year, its priced
-    // interest and dividends for that year load instead (the
-    // plan's dividend income rides the gains stack, so it loads
-    // as both the total and the qualified part, counted once —
-    // the same figures "a year from my saved plan" loads).
-    // When the plan does not price the chosen year, the return
-    // figures load as the best available estimate. A line the
-    // chosen source has not entered leaves its dial blank.
-    const pgPricedYear =
-      pgSavedPlanYears?.years.find((y) => y.year === taxYear) ?? null;
-    const pgUseReturnFigures = taxYear === pgTaxReturnYear || pgPricedYear == null;
-    const pgIncomeInterest = pgUseReturnFigures
-      ? pgPrefillSource.taxReturnInterest
-      : pgPricedYear.detail.interestIncome;
-    const pgIncomeQualDiv = pgUseReturnFigures
-      ? pgPrefillSource.taxReturnQualifiedDividends
-      : pgPricedYear.detail.dividendIncome;
-    const pgIncomeOrdDiv = pgUseReturnFigures
-      ? pgPrefillSource.taxReturnOrdinaryDividends
-      : pgPricedYear.detail.dividendIncome;
-    setPgInterest(
-      pgIncomeInterest != null ? fmtMoneyInput(pgIncomeInterest) : "",
-    );
-    setPgQualDiv(
-      pgIncomeQualDiv != null ? fmtMoneyInput(pgIncomeQualDiv) : "",
-    );
-    setPgOrdDiv(
-      pgIncomeOrdDiv != null ? fmtMoneyInput(pgIncomeOrdDiv) : "",
-    );
+    // build v147; provenance build v150): the three
+    // income dials resolve for the chosen tax year through
+    // resolvePgIncomeForYear — interest ← line 2b, qualified
+    // dividends ← line 3a, ordinary dividends ← the line 3b
+    // TOTAL (the dial takes the total; the pricer derives
+    // the non-qualified part) when the source is the return;
+    // the plan's priced figures when the source is the plan.
+    // The resolution's source becomes the dials' recorded
+    // provenance. A line the chosen source has not entered
+    // leaves its dial blank.
+    const pgIncome = resolvePgIncomeForYear(taxYear);
+    if (pgIncome) {
+      setPgInterest(
+        pgIncome.interest != null ? fmtMoneyInput(pgIncome.interest) : "",
+      );
+      setPgQualDiv(
+        pgIncome.qualifiedDividends != null
+          ? fmtMoneyInput(pgIncome.qualifiedDividends)
+          : "",
+      );
+      setPgOrdDiv(
+        pgIncome.ordinaryDividends != null
+          ? fmtMoneyInput(pgIncome.ordinaryDividends)
+          : "",
+      );
+      setPgIncomeSources({
+        interest: pgIncome.source,
+        ordinaryDividends: pgIncome.source,
+        qualifiedDividends: pgIncome.source,
+      });
+    }
     setPgSoleBeneficiary(pgPrefillSource.spouseSoleBeneficiary);
   };
 
@@ -2522,7 +3632,54 @@ export function Playground() {
   const pgSavedPlanYears = useMemo(() => {
     const saved = rq.data?.saved;
     if (!saved || !pgPrefillSource) return null;
-    const inputs = planInputsFromSaved(saved, new Date().getFullYear());
+    // Blank-yield fallback (contract v136, audit MUST M-1):
+    // the saved record's yield fields may be blank; thread the
+    // implied yields from its stored tax-return actuals over
+    // the prefill's resolved taxable pool, so the plan's
+    // priced years — and therefore the income dials' priced-
+    // year resolution below — carry the estimate, not $0. The
+    // server pricing paths thread the same derivation
+    // (resolveArgsBalances), so the years priced here agree
+    // with the years the Plan tab prices. The prefill's pool
+    // is the plan's resolved pool — Taxable + Cash, less any
+    // exclusion, the pool resolvePlanBalances assembles —
+    // NOT the Taxable bucket alone (re-audit SHOULD S-1: the
+    // Taxable-only pool overstated both implied yields and
+    // the priced yield income drifted from the plan's,
+    // growing to −$1,917.66 by 2040).
+    const impliedYields = impliedYieldPctsFromTaxReturn(
+      rq.data?.taxReturn ?? {
+        taxReturnInterestCents: null,
+        taxReturnQualifiedDividendsCents: null,
+        taxReturnOrdinaryDividendsCents: null,
+        taxReturnYear: null,
+      },
+      pgPrefillSource.taxableStart,
+    );
+    const inputs = planInputsFromSaved(
+      {
+        ...saved,
+        yieldFallbackDividendPct: impliedYields.dividendYieldPct,
+        yieldFallbackInterestPct: impliedYields.interestYieldPct,
+        // Qualified-dividend share (contract v138, audit
+        // S-1): the saved record's stored return implies the
+        // share of its dividend yield income that is
+        // qualified (line 3a ÷ line 3b); thread it the same
+        // way, so the plan years priced here split the yield
+        // exactly as the server paths price them. Null when
+        // no return figures imply a share (100% qualified,
+        // as before).
+        qualifiedDividendSharePct: qualifiedDividendSharePctFromTaxReturn(
+          rq.data?.taxReturn ?? {
+            taxReturnInterestCents: null,
+            taxReturnQualifiedDividendsCents: null,
+            taxReturnOrdinaryDividendsCents: null,
+            taxReturnYear: null,
+          },
+        ),
+      },
+      new Date().getFullYear(),
+    );
     if (!inputs) return null;
     const patched = {
       ...inputs,
@@ -2562,7 +3719,101 @@ export function Playground() {
     }
   }, [pgSavedPlanYears, pgPlanPresetYear]);
 
-  /* "My <return year> return as filed" (contract v147): the
+  /* Income-dial re-derivation (build v150): before this
+     build the three income dials kept whatever figure they
+     held when the Tax year changed, so a stored return figure
+     (the 2025 line 3a, say) silently priced the newly chosen
+     year under a hint claiming it was the return's. Now, when
+     the Tax year changes — or when the plan data the
+     resolution reads first lands or changes — each income
+     dial whose provenance is the return or the plan is
+     re-derived for the current year through
+     resolvePgIncomeForYear, the prefill's own resolution: the
+     return year's actuals, else the plan's priced figure for
+     the year, else the return figures carried forward (the
+     dial's hint flags those as carried). A typed figure is
+     NEVER overwritten. Provenance is EXPLICIT ONLY
+     (re-audit NICE-TO-HAVE N-1): only a dial whose RECORDED
+     kind is "return" or "plan" re-derives — the recorded
+     kind governs, never the dial's value, so a typed dial
+     whose value coincidentally equals the stored return
+     figure stays typed and is never re-derived as
+     return-sourced, and a dial with no recorded provenance
+     (a form remembered before v150) is left exactly as it
+     stands, whatever its value. Loaders that set
+     the year and the dials together (prefill, "as filed", a
+     saved-plan year, a paste) record matching provenance in
+     the same act, so this effect leaves their loads
+     untouched: their recorded source already IS the new
+     year's resolution, and their values already match it. */
+  useEffect(() => {
+    if (!pgInit) return;
+    if (!pgPrefillSource) return;
+    if (pgIncomeLoadGuardRef.current) {
+      pgIncomeLoadGuardRef.current = false;
+      return;
+    }
+    const yearNum = parseIntField(pgYear);
+    if (yearNum == null) return;
+    const resolved = resolvePgIncomeForYear(yearNum);
+    if (!resolved) return;
+    const dials: {
+      key: keyof PgIncomeSources;
+      value: string;
+      set: (v: string) => void;
+      resolvedValue: number | null;
+    }[] = [
+      {
+        key: "interest",
+        value: pgInterest,
+        set: setPgInterest,
+        resolvedValue: resolved.interest,
+      },
+      {
+        key: "ordinaryDividends",
+        value: pgOrdDiv,
+        set: setPgOrdDiv,
+        resolvedValue: resolved.ordinaryDividends,
+      },
+      {
+        key: "qualifiedDividends",
+        value: pgQualDiv,
+        set: setPgQualDiv,
+        resolvedValue: resolved.qualifiedDividends,
+      },
+    ];
+    let nextSources: PgIncomeSources | null = null;
+    for (const d of dials) {
+      // Explicit provenance only (re-audit NICE-TO-HAVE
+      // N-1): the dial's RECORDED kind governs. There is no
+      // value-based inference — a dial with no recorded
+      // provenance, or a recorded "typed", is never treated
+      // as return-sourced, even when its value happens to
+      // equal the stored return figure exactly.
+      const recorded = pgIncomeSources[d.key];
+      if (recorded == null || recorded.kind === "typed") continue;
+      const resolvedText =
+        d.resolvedValue != null ? fmtMoneyInput(d.resolvedValue) : "";
+      const sourceMatches =
+        JSON.stringify(recorded) === JSON.stringify(resolved.source);
+      if (sourceMatches && d.value === resolvedText) {
+        // Already this year's resolution; the recorded
+        // provenance already says so, so nothing is written.
+        continue;
+      }
+      if (d.value !== resolvedText) d.set(resolvedText);
+      nextSources = nextSources ?? { ...pgIncomeSources };
+      nextSources[d.key] = resolved.source;
+    }
+    if (nextSources) setPgIncomeSources(nextSources);
+    // Keyed on the year and the plan data the resolution
+    // reads; the dial values and provenance it reads are the
+    // current render's, which is exactly the state a year
+    // change or a plan-data landing presents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pgInit, pgYear, pgPrefillSource, pgSavedPlanYears]);
+
+  /* "My <return year> return as filed" (build v147): the
      tax year becomes the RETURN year itself and the three
      income dials take the Form 1040 figures stored on the plan
      record (lines 2b / 3a / 3b — the prefill source's
@@ -2589,6 +3840,15 @@ export function Playground() {
       return;
     }
     pgForceWholesaleRef.current = true;
+    // A partial load (above): when the year changes, the
+    // re-derivation effect would resolve the lines this
+    // preset did NOT load for the return year too — blanking
+    // a dial the record never entered, against this preset's
+    // contract. Arm the one-shot guard so the load stands as
+    // the preset made it.
+    if (String(pgTaxReturnYear) !== pgYear) {
+      pgIncomeLoadGuardRef.current = true;
+    }
     setPgYear(String(pgTaxReturnYear));
     if (pgPrefillSource.taxReturnInterest != null) {
       setPgInterest(fmtMoneyInput(pgPrefillSource.taxReturnInterest));
@@ -2601,6 +3861,25 @@ export function Playground() {
     if (pgPrefillSource.taxReturnOrdinaryDividends != null) {
       setPgOrdDiv(fmtMoneyInput(pgPrefillSource.taxReturnOrdinaryDividends));
     }
+    // The loaded lines take the return's provenance at the
+    // return year just dialed (build v150), so their
+    // hints say so and a later year change re-derives them
+    // like any return figure; a line the record has not
+    // entered keeps its dial AND its provenance, untouched.
+    setPgIncomeSources((prev) => ({
+      interest:
+        pgPrefillSource.taxReturnInterest != null
+          ? { kind: "return", year: pgPrefillSource.taxReturnYear }
+          : prev.interest,
+      ordinaryDividends:
+        pgPrefillSource.taxReturnOrdinaryDividends != null
+          ? { kind: "return", year: pgPrefillSource.taxReturnYear }
+          : prev.ordinaryDividends,
+      qualifiedDividends:
+        pgPrefillSource.taxReturnQualifiedDividends != null
+          ? { kind: "return", year: pgPrefillSource.taxReturnYear }
+          : prev.qualifiedDividends,
+    }));
     const loadedBits: string[] = [];
     if (pgPrefillSource.taxReturnInterest != null) {
       loadedBits.push(
@@ -2653,6 +3932,11 @@ export function Playground() {
     setPgBenchmark("");
     setPgAcaBuffer("5000");
     setPgBenchmarkLoaded(null);
+    setPgIncomeSources({
+      interest: null,
+      ordinaryDividends: null,
+      qualifiedDividends: null,
+    });
     setPgStateRate("0");
     setPgResidence("other");
     setPgItemizedMortgage("");
@@ -2700,7 +3984,21 @@ export function Playground() {
     setPgMedS(null);
     setPgInterest(fmtMoneyInput(y.detail.interestIncome));
     setPgOrdDiv(fmtMoneyInput(y.detail.dividendIncome));
-    setPgQualDiv(fmtMoneyInput(y.detail.dividendIncome));
+    // The qualified dial takes the plan's own qualified
+    // share of the priced total (audit N-1 — see
+    // pgPricedQualifiedDividends), not the total itself.
+    setPgQualDiv(
+      fmtMoneyInput(pgPricedQualifiedDividends(y.detail.dividendIncome)),
+    );
+    // The loaded figures are the plan's priced figures for
+    // that year — record the provenance (build v150) so
+    // the dials' hints say so and a later Tax year change
+    // re-derives from there.
+    setPgIncomeSources({
+      interest: { kind: "plan", year: y.year },
+      ordinaryDividends: { kind: "plan", year: y.year },
+      qualifiedDividends: { kind: "plan", year: y.year },
+    });
     setPgOther(fmtMoneyInput(y.detail.otherOrdinary));
     setPgTaxExempt(fmtMoneyInput(y.detail.taxExemptInterest));
     setPgSsP(
@@ -2775,7 +4073,7 @@ export function Playground() {
     );
     setPgSoleBeneficiary(inputs.spouseSoleBeneficiary);
     setPgPresetNote(
-      `Loaded ${y.year} from your saved plan — interest ${fmtDollars(y.detail.interestIncome)}, dividends ${fmtDollars(y.detail.dividendIncome)}, pre-tax money out ${fmtDollars(y.conversion + y.detail.extraPreTaxDraw)}, priced by the plan before any dial changed. Your saved plan was not changed.`,
+      `Loaded ${y.year} from your saved plan — interest ${fmtDollars(y.detail.interestIncome)}, dividends ${fmtDollars(y.detail.dividendIncome)}, pre-tax out ${fmtDollars(y.conversion + y.detail.extraPreTaxDraw)} (the conversion plus the year's extra draw — its draw for spending plus the pre-tax debit that paid that year's tax bill), priced by the plan before any dial changed. Your saved plan was not changed.`,
     );
   };
 
@@ -2810,7 +4108,7 @@ export function Playground() {
     playgroundResult.aca.applies &&
     playgroundResult.aca.cliff != null;
   /* The held ACA target in dollars: cliff − buffer
-     (contract v71 — Hold's "aca" target IS cliff − buffer,
+     (build v71 — Hold's "aca" target IS cliff − buffer,
      so this is the buffered target the captions name, not
      the cliff itself; a $0 buffer makes it the cliff,
      exactly as before). */
@@ -2859,7 +4157,7 @@ export function Playground() {
       // the overage comes from the zero-pre-tax pricing, and
       // the cap is the typed balance after the RMD, as today.
       // Both are measured against the held target —
-      // cliff − buffer (contract v71) — so a year already
+      // cliff − buffer (build v71) — so a year already
       // past the buffer line at $0 out, or capped short of
       // it, says so; with a $0 buffer the target is the
       // cliff and the captions read exactly as before.
@@ -2922,7 +4220,7 @@ export function Playground() {
      is held (and no can't-hold caption applies — the render
      shows this only when pgHoldCantCaption is null), the
      caption names the target it is holding — cliff − buffer
-     while a buffer is set (contract v71), the cliff itself
+     while a buffer is set (build v71), the cliff itself
      at a $0 buffer — in the same place and style as the
      can't-hold captions. */
   const pgHoldCliffCaption: string | null = (() => {
@@ -2964,24 +4262,26 @@ export function Playground() {
   })();
 
   /* Dividend-pair guard (projection solidity check,
-     2026-10-21) — display ONLY, rendered under the Qualified
-     dividends dial in the Stock sale section. The Ordinary
-     dividends dial is the TOTAL (Form 1040 line 3b) and the
-     Qualified dial is a subset of it (line 3a), so a qualified
-     figure above the total is a pair that cannot occur on a
-     real 1099-DIV. The engine derives the non-qualified part
-     as max(0, total − qualified) — $0 on such a pair, the
-     excess not counted — and this note makes that visible at
-     the dials instead of letting the excess drop out
-     silently. It reads the two dials exactly as the priced
-     inputs clamp them (negatives to $0), so it appears
-     precisely when the priced pair is impossible, and it
-     never alters pricing. */
+     2026-10-21; clamp wording contract v137) — display ONLY,
+     rendered under the Qualified dividends dial in the Stock
+     sale section. The Ordinary dividends dial is the TOTAL
+     (Form 1040 line 3b) and the Qualified dial is a subset
+     of it (line 3a), so a qualified figure above the total
+     is a pair that cannot occur on a real 1099-DIV. The
+     engine clamps the qualified part to the total (audit
+     S-8 + S-11): on such a pair the qualified part prices
+     as the total, the non-qualified part prices as $0, and
+     the excess isn't counted on either stack — and this
+     note makes that visible at the dials instead of letting
+     the excess drop out silently. It reads the two dials
+     exactly as the priced inputs clamp them (negatives to
+     $0), so it appears precisely when the priced pair is
+     impossible, and it never alters pricing. */
   const pgDividendPairNote: string | null = (() => {
     const total = Math.max(0, parseDollars(pgOrdDiv) ?? 0);
     const qualified = Math.max(0, parseDollars(pgQualDiv) ?? 0);
     if (qualified <= total) return null;
-    return `Qualified dividends (${fmtDollars(qualified)}) can't exceed the total ordinary dividends (${fmtDollars(total)}) — the qualified figure is part of that total, so the excess isn't counted and the non-qualified part prices as $0.`;
+    return `Qualified dividends (${fmtDollars(qualified)}) can't exceed the total ordinary dividends (${fmtDollars(total)}) — the qualified figure is part of that total, so it prices as ${fmtDollars(total)}, the excess isn't counted, and the non-qualified part prices as $0.`;
   })();
 
   /* Section-header summaries — display ONLY, derived live from
@@ -3013,6 +4313,103 @@ export function Playground() {
     return fmtDollars(Math.max(0, p ?? 0) + Math.max(0, s ?? 0));
   })();
   const pgIncomeSummary = `Interest ${pgMoneySummary(pgInterest)} · Dividends ${pgMoneySummary(pgOrdDiv)} (qualified ${pgMoneySummary(pgQualDiv)}) · SS ${pgSsSummary}`;
+  /* Income strip + $0 warning figures — display ONLY, derived
+     from the three income dials exactly as buildPgInputs reads
+     them (money dials clamped at $0; blank counts as $0). The
+     year's income for the $0 check is Interest + Ordinary
+     dividends ONLY: Qualified dividends are part of the
+     Ordinary total (Form 1040 line 3a inside line 3b), not
+     additional income, so they are never added again. */
+  const pgInterestDollars = Math.max(0, parseDollars(pgInterest) ?? 0);
+  const pgOrdinaryDollars = Math.max(0, parseDollars(pgOrdDiv) ?? 0);
+  const pgQualifiedDollars = Math.max(0, parseDollars(pgQualDiv) ?? 0);
+  const pgYearIncomeTotal = pgInterestDollars + pgOrdinaryDollars;
+  const pgIncomeIsZero = pgYearIncomeTotal === 0;
+  /* Income-dial source words (build v150): each dial's
+     hint and ⓘ follow its RECORDED provenance and the year
+     being priced — never the blanket "stored figure from
+     your return" claim the dials carried before, which
+     stayed on screen even when the figure was the plan's
+     estimate for another year or the user's own typing. The
+     Form 1040 line lives here, as a statement of where the
+     figure came from — it is no longer part of any dial's
+     label. `line` is the dial's 1040 line ("2b" / "3a" /
+     "3b"); `planFigure` names what the plan priced
+     ("interest" / "dividends"); `extra` is a structural note
+     that holds whatever the source (the ordinary dial's
+     counted-once note, the qualified dial's part-of-the-
+     total note). */
+  const pgIncomeYearNum = parseIntField(pgYear) ?? new Date().getFullYear();
+  const pgReturnPhraseFor = (year: number | null): string =>
+    year != null ? `your ${year} return` : "your most recent return";
+  const pgIncomeHint = (
+    source: PgIncomeSource | null,
+    line: string,
+    planFigure: string,
+    extra?: string,
+  ): string | undefined => {
+    const parts: string[] = [];
+    if (source?.kind === "return") {
+      if (pgIncomeYearNum === pgTaxReturnYear) {
+        parts.push(
+          `From ${pgReturnPhraseFor(source.year)}, line ${line} — that year's actual.`,
+        );
+      } else {
+        parts.push(
+          `Estimate for ${pgIncomeYearNum}, carried from ${pgReturnPhraseFor(source.year)}, line ${line} — the saved plan does not price ${pgIncomeYearNum}, so that return's actual is the estimate in use; it is not a ${pgIncomeYearNum} figure.`,
+        );
+      }
+    } else if (source?.kind === "plan") {
+      parts.push(
+        `Estimate for ${source.year} from your saved plan — its priced ${planFigure} for that year, from its yield fields.`,
+      );
+    } else if (source?.kind === "typed") {
+      parts.push(
+        "Your typed figure — your current estimate for this year. Changing the Tax year won't replace it.",
+      );
+    } else {
+      parts.push(
+        `Current estimate for ${pgIncomeYearNum} — type your estimate here, or it comes from your plan's yield for that year.`,
+      );
+    }
+    if (extra) parts.push(extra);
+    return parts.length > 0 ? parts.join(" ") : undefined;
+  };
+  const pgIncomeInfo = (
+    source: PgIncomeSource | null,
+    line: string,
+    planFigure: string,
+    base: string,
+  ): string => {
+    const src =
+      source?.kind === "return"
+        ? pgIncomeYearNum === pgTaxReturnYear
+          ? ` This figure is from ${pgReturnPhraseFor(source.year)} (line ${line}) — that year's actual.`
+          : ` This figure is carried from ${pgReturnPhraseFor(source.year)} (line ${line}) as the estimate for ${pgIncomeYearNum} — the saved plan does not price ${pgIncomeYearNum}, so the return's actual is the estimate in use; it is not a ${pgIncomeYearNum} actual.`
+        : source?.kind === "plan"
+          ? ` This figure is your saved plan's priced ${planFigure} for ${source.year} — the yield-based estimate for that year. Changing the Tax year re-derives it for the new year.`
+          : source?.kind === "typed"
+            ? " This is your own figure — your current estimate for this year. Changing the Tax year never replaces it."
+            : " No source is recorded for this figure yet — type your current estimate for this year here, or it comes from your plan's yield for that year.";
+    return (
+      base +
+      src +
+      ` Where this estimate comes from: type your current estimate in this dial, or use your saved plan's yield for that year.`
+    );
+  };
+  /* Typing in an income dial marks its provenance "typed"
+     (build v150): from then on the year-change
+     re-derivation leaves the figure alone. moneyField calls
+     onEdit only from its change handler — never from its
+     blur reformat and never for a programmatic set — so
+     loader writes keep the provenance they record. */
+  const markPgIncomeTyped = (key: keyof PgIncomeSources) => {
+    setPgIncomeSources((prev) =>
+      prev[key]?.kind === "typed"
+        ? prev
+        : { ...prev, [key]: { kind: "typed" } },
+    );
+  };
   /* While Hold is engaged on the ACA cliff fill target, the
      card header's subline names the hold (2026-10-25), in
      the same muted summary text — no badge or chip. Display
@@ -3050,7 +4447,7 @@ export function Playground() {
       rate,
     ].join(" · ");
   })();
-  /* The Spending dial's header summary (contract v145): the
+  /* The Spending dial's header summary (build v145): the
      annual spending figure the "Left after a year's spending"
      comparison prices, or "—" when none resolves. */
   const pgSpendingSummary = ((): string => {
@@ -3149,32 +4546,32 @@ export function Playground() {
   return (
     <div>
         <section className={sectionCls} aria-label="Playground">
-          {/* Sticky play strip — a pure render over the SAME
-              priced result (`playgroundResult`) the readout below
-              renders: no new state, no storage, no actions, and
-              no pricing of its own. It pins at the top of the
-              Playground tab while the tab scrolls so the live
-              figures stay in view next to the dials. The app has
-              no sticky/fixed header of its own (the view switch
-              above scrolls away; the only fixed element is the
-              pointer-events-none safe-area scrim), so the strip
-              pins at the window's top, offset only by the
-              device's safe-area inset top — 0 on desktop. The
-              mini bar renders buildStackModel, the readout
-              chart's own segment computation, at a slim height:
-              same segments in engine order, deductions hatch at
-              the start, bracket-band shading behind, and the
-              10/12/22/24 tops as tick marks from the same model;
-              no legend and no in-bar labels (the full chart
-              below keeps all of that). The pinned figures are
-              the single-year answer the dials below drive — the
-              year's tax and its headline figures: total federal
-              tax, the total tax when a state tax prices (the
-              same displayed rounding the sale figure uses,
-              round(federal) + round(state)), MAGI, taxable
-              income, the bracket landing, and the ACA / IRMAA /
-              sale statuses — so cause and effect stay in view
-              together while the dials scroll. It is the One
+          {/* Sticky play strip — money outcomes only
+              (build v154): a pure render over the SAME priced
+              result (`playgroundResult`) the readout below renders:
+              no new state, no storage, no actions, and no pricing
+              of its own. It pins at the top of the Playground tab
+              while the tab scrolls so the live figures stay in
+              view next to the dials. The mini bar renders
+              buildStackModel, the readout chart's own segment
+              computation, at a slim height, exactly as before.
+              The pinned figures are ONLY the three money outcomes:
+              Cash left after tax (pg.cashLeftAfterTax — cash in
+              minus the net tax bill, before any spending),
+              Spending (the Tax Plan record's annual spending,
+              pgAnnualSpendingCents — the record resolution the
+              Spending dial itself sources from, NOT the dial's
+              local draft, so a stale local figure can never show
+              here), and Left after a year's spending (cash left
+              minus that Tax Plan spending — display arithmetic
+              only, the same comparison the Tax-for-the-year card
+              carries, with the same colour rule: red when the
+              year falls short of spending, teal when it covers
+              it). The total federal tax, MAGI, taxable income,
+              bracket landing, ACA cliff room, buffer line, IRMAA,
+              sale, and estimated ACA credit details are NOT shown
+              here — they stay in the Tax-for-the-year card and
+              the other readouts below, unchanged. It is the One
               year face's pinned answer, so it renders on that
               face only; the Projection face pins nothing — its
               charts carry their own readouts. */}
@@ -3182,156 +4579,16 @@ export function Playground() {
             const pg = playgroundResult;
             const stripYearNum =
               parseIntField(pgYear) ?? new Date().getFullYear();
-            const statuses: { key: string; text: string; warn: boolean; node?: ReactNode }[] = [];
-            if (pg != null && pg.conversion > 0) {
-              // The bracket landing, in the readout takeaway's
-              // own terms — read off the priced result, like
-              // every other figure in this strip.
-              statuses.push(
-                pg.landingBracketPct != null
-                  ? {
-                      key: "landing",
-                      text: pg.landingExactlyFilled
-                        ? `Fills the ${pg.landingBracketPct}% bracket exactly`
-                        : `Lands in the ${pg.landingBracketPct}% bracket`,
-                      warn: false,
-                    }
-                  : {
-                      key: "landing",
-                      text: "Pre-tax money out fully sheltered by deductions",
-                      warn: false,
-                    },
-              );
-            }
-            if (
-              pg != null &&
-              pg.aca.applies &&
-              pg.aca.cliff != null &&
-              pg.aca.positionDollars != null
-            ) {
-              // Composed from pg's ACA fields exactly as the
-              // readout states them: the stack note's room line
-              // and "No ACA cliff in {year}." phrasing, and the
-              // takeaway's over-the-cliff figure. The engine's
-              // cliff exists only for coverage 2026+ (its
-              // hasCliff rule), so a 2025 year shows the note's
-              // no-cliff line instead of a position.
-              if (stripYearNum < 2026) {
-                statuses.push({
-                  key: "aca",
-                  text: `No ACA cliff in ${stripYearNum}`,
-                  warn: false,
-                });
-              } else if (pg.aca.overCliff) {
-                statuses.push({
-                  key: "aca",
-                  text: `Over the ACA cliff by ${fmtDollars(-pg.aca.positionDollars)}`,
-                  warn: true,
-                });
-              } else {
-                statuses.push({
-                  key: "aca",
-                  text: `ACA cliff: ${fmtDollars(pg.aca.positionDollars)} of room`,
-                  warn: false,
-                });
-              }
-            }
-            if (pg != null && pgAcaHasHardCliff && pg.aca.cliff != null) {
-              // The buffer guide's landing readout (ACA
-              // buffer guide build): where the priced ACA
-              // MAGI landed against the cliff − buffer line —
-              // display arithmetic ONLY, off the same priced
-              // result and the typed buffer dial, in the
-              // strip's one-line style. Shown whenever the
-              // year has a hard cliff (ACA in play); a year
-              // with no ACA — everyone on Medicare, no
-              // household size, or a pre-2026 coverage year —
-              // has no line and shows nothing, exactly like
-              // the buffer dial and its fill in ACA & state.
-              const line = pg.aca.cliff - pgAcaBufferDollars;
-              const diff = line - pg.acaMagi;
-              // Reworded (contract v69) so the line cannot be
-              // misread as "over the cliff": MAGI is measured
-              // against the BUFFER line, and the buffer figure
-              // itself is a provenance tap to the "Buffer below
-              // the ACA cliff" field in ACA & state.
-              const bufferTap = (
-                <button
-                  type="button"
-                  aria-label="Go to the Buffer below the ACA cliff field"
-                  className={pgTapCls}
-                  onClick={() =>
-                    jumpToPgField("roth-Buffer-below-the-ACA-cliff")
-                  }
-                >
-                  {fmtDollars(pgAcaBufferDollars)}
-                </button>
-              );
-              if (Math.abs(diff) < 0.5) {
-                statuses.push({
-                  key: "acaBuffer",
-                  text: `MAGI ${fmtDollars(pg.acaMagi)} — right at your buffer line (cliff − ${fmtDollars(pgAcaBufferDollars)})`,
-                  node: (
-                    <>
-                      MAGI {fmtDollars(pg.acaMagi)} — right at your buffer
-                      line (cliff − {bufferTap})
-                    </>
-                  ),
-                  warn: false,
-                });
-              } else if (diff > 0) {
-                statuses.push({
-                  key: "acaBuffer",
-                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(diff)} under your buffer line (cliff − ${fmtDollars(pgAcaBufferDollars)})`,
-                  node: (
-                    <>
-                      MAGI {fmtDollars(pg.acaMagi)} — {fmtDollars(diff)} under
-                      your buffer line (cliff − {bufferTap})
-                    </>
-                  ),
-                  warn: false,
-                });
-              } else {
-                statuses.push({
-                  key: "acaBuffer",
-                  text: `MAGI ${fmtDollars(pg.acaMagi)} — ${fmtDollars(-diff)} past your buffer line (cliff − ${fmtDollars(pgAcaBufferDollars)})`,
-                  node: (
-                    <>
-                      MAGI {fmtDollars(pg.acaMagi)} — {fmtDollars(-diff)} past
-                      your buffer line (cliff − {bufferTap})
-                    </>
-                  ),
-                  warn: true,
-                });
-              }
-            }
-            if (pg != null && pg.irmaa.applies && pg.irmaa.tier >= 1) {
-              statuses.push({
-                key: "irmaa",
-                text: `IRMAA Tier ${pg.irmaa.tier}`,
-                warn: true,
-              });
-            }
             const model =
               pg != null ? buildStackModel(pg, stripYearNum, pgFiling) : null;
-            const saleSegment = pgSaleLeftoverSegment(pg, pgSold);
-            // The MAGI figure's own ⓘ note: static copy, except
-            // the ACA cliff amount in the parenthetical — the
-            // priced year's own cliff (the same pg.aca.cliff the
-            // ACA status above reads), present only when the ACA
-            // applies to this year and a cliff actually exists
-            // for the priced year. The engine carries the
-            // 400%-of-FPL dollar line in every year, but the
-            // cliff behaviour exists only for coverage 2026+
-            // (hasCliff = coverageYear >= 2026) — the same
-            // coverage-year rule the ACA status above uses for
-            // its no-cliff branch — so in 2025 the parenthetical
-            // is omitted entirely.
-            const magiNote = `MAGI — modified adjusted gross income: every dollar of income the year counts, added up before deductions — interest, dividends, other income, any RMD, the taxable part of Social Security, the pre-tax money out, and gains — with tax-exempt interest added back (that's the 'modified' part). It's the yardstick for both cliffs: the ACA cliff${
-              pg != null && stripYearNum >= 2026 && pg.aca.applies && pg.aca.cliff != null
-                ? ` (this year: ${fmtDollars(pg.aca.cliff)})`
-                : ""
-            } and the IRMAA tiers are lines drawn on MAGI. The ACA's version also counts the part of Social Security that isn't taxed.`;
+            const stripSpendingDollars =
+              pgAnnualSpendingCents != null
+                ? pgAnnualSpendingCents / 100
+                : null;
+            const stripLeftAfterSpending =
+              pg != null && stripSpendingDollars != null
+                ? pg.cashLeftAfterTax - stripSpendingDollars
+                : null;
             return (
               <div
                 className="sticky z-30 mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 shadow-md"
@@ -3434,172 +4691,39 @@ export function Playground() {
                 )}
                 <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
                   <span>
-                    Total federal tax{" "}
-                    <span className="font-bold text-[var(--bad)]">
-                      {fmtDollars(pg?.federalTax ?? 0)}
+                    Cash left after tax{" "}
+                    <span className="font-bold text-[var(--accent)]">
+                      {fmtDollars(pg?.cashLeftAfterTax ?? 0)}
                     </span>
                   </span>
-                  {pg != null && pg.stateTax > 0 && (
+                  {stripSpendingDollars != null && (
                     <span className="contents">
                       <span aria-hidden="true" className="text-[var(--dim)]">
                         ·
                       </span>
                       <span>
-                        Total tax{" "}
-                        <span className="font-bold text-[var(--accent)]">
-                          {fmtDollarsExact(pg.totalTax)}
+                        Spending{" "}
+                        <span className="font-bold">
+                          {fmtDollars(stripSpendingDollars)}
                         </span>
                       </span>
                     </span>
                   )}
-                  <span aria-hidden="true" className="text-[var(--dim)]">
-                    ·
-                  </span>
-                  <span>
-                    MAGI{" "}
-                    {fmtDollars(pg?.magi ?? 0)}
-                    {pg != null && (
-                      <InfoNote
-                        text={magiNote}
-                        ariaLabel="About MAGI in the play strip"
-                        viewportClamp
-                      />
-                    )}
-                  </span>
-                  {pg != null && (
-                    <span className="contents">
-                      <span aria-hidden="true" className="text-[var(--dim)]">
-                        ·
-                      </span>
-                      <span>Taxable income {fmtDollars(pg.taxableIncome)}</span>
-                    </span>
-                  )}
-                  {statuses.map((s) => (
-                    <span key={s.key} className="contents">
-                      <span aria-hidden="true" className="text-[var(--dim)]">
-                        ·
-                      </span>
-                      <span
-                        className={
-                          s.warn
-                            ? "font-medium text-[var(--warn)]"
-                            : "text-[var(--dim)]"
-                        }
-                      >
-                        {s.node ?? s.text}
-                      </span>
-                    </span>
-                  ))}
-                  {saleSegment != null && (
-                    <span className="contents">
-                      <span aria-hidden="true" className="text-[var(--dim)]">
-                        ·
-                      </span>
-                      <span
-                        className={
-                          saleSegment.warn
-                            ? "font-medium text-[var(--warn)]"
-                            : undefined
-                        }
-                      >
-                        {saleSegment.text}
-                        <InfoNote
-                          text={saleSegment.note}
-                          ariaLabel="About the sale figure in the play strip"
-                          align="right"
-                          viewportClamp
-                        />
-                      </span>
-                    </span>
-                  )}
-                  {/* Est. ACA credit (contract v80): the segment
-                      before the concluding cash-left figure, read
-                      live off the priced year's own ACA premium credit
-                      (pg.aca.credit — null when no benchmark
-                      premium was entered, $0 over the cliff),
-                      rounded to whole dollars by fmtDollars like
-                      the tax figure beside it. It renders only
-                      when the priced credit is above $0, so an
-                      over-the-cliff year shows nothing here.
-                      "Est." stays: the actual credit is capped
-                      at the enrolled plan's premium, so the
-                      benchmark-based figure is an estimate. */}
-                  {pg != null &&
-                    pg.aca.credit != null &&
-                    pg.aca.credit > 0 && (
-                      <span className="contents">
-                        <span aria-hidden="true" className="text-[var(--dim)]">
-                          ·
-                        </span>
-                        <span>
-                          Est. ACA credit{" "}
-                          <span className="font-bold text-[var(--accent)]">
-                            {fmtDollars(pg.aca.credit)}
-                          </span>
-                        </span>
-                      </span>
-                    )}
-                  {/* Cash left after tax (contract v129): the
-                      year's bottom line, read live off the
-                      priced year's own cash left
-                      (pg.cashLeftAfterTax — cash in minus the
-                      net tax bill, before any spending),
-                      rounded to whole dollars by fmtDollars
-                      like the tax figure beside it. It renders
-                      whenever a year is priced, after the
-                      credit — the credit is already inside the
-                      net tax bill, so cash left is the
-                      concluding figure of the line, followed
-                      (contract v142) by the "left after a
-                      year's spending" comparison. No tap
-                      (contract v134): a computed figure has
-                      no single source field, so it is plain
-                      text — the ⓘ on the Tax-for-the-year
-                      card's cash-left figure explains the
-                      computation. */}
-                  {pg != null && (
+                  {stripLeftAfterSpending != null && (
                     <span className="contents">
                       <span aria-hidden="true" className="text-[var(--dim)]">
                         ·
                       </span>
                       <span>
-                        Cash left after tax{" "}
-                        <span className="font-bold text-[var(--accent)]">
-                          {fmtDollars(pg.cashLeftAfterTax)}
+                        Left after a year&rsquo;s spending{" "}
+                        <span
+                          className={`font-bold ${stripLeftAfterSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
+                        >
+                          {fmtDollars(stripLeftAfterSpending)}
                         </span>
                       </span>
                     </span>
                   )}
-                  {/* Left after a year's spending (contract
-                      v142): the same comparison the
-                      Tax-for-the-year card carries (cash left
-                      after tax minus the annual spending),
-                      right after the cash-left figure, so the
-                      strip ends on whether the year covers
-                      spending. Same figure and colour rule as
-                      the card row — red when short, teal when
-                      enough. It renders only when spending
-                      resolves, like the card row. No tap
-                      (contract v134): a computed figure has
-                      no single source field, so it is plain
-                      text. */}
-                  {pg != null &&
-                    pg.cashLeftVsSpending != null &&
-                    pg.annualSpending != null && (
-                      <span className="contents">
-                        <span aria-hidden="true" className="text-[var(--dim)]">
-                          ·
-                        </span>
-                        <span>
-                          Left after a year&rsquo;s spending{" "}
-                          <span
-                            className={`font-bold ${pg.cashLeftVsSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
-                          >
-                            {fmtDollars(pg.cashLeftVsSpending)}
-                          </span>
-                        </span>
-                      </span>
-                    )}
                 </p>
               </div>
             );
@@ -3608,6 +4732,78 @@ export function Playground() {
           <p className="mt-1 max-w-3xl text-sm text-[var(--dim)]">
             Price one year or a projection from your own numbers — your plan is never touched.
           </p>
+          {/* Plan total at the top (PLAN TOTAL VISIBILITY build):
+              the same Plan total the Tax Plan view carries —
+              pgPrefillSource.planTotal, resolved from the one Tax
+              Plan record (Pre-tax both spouses + taxable pool
+              after the exclusion + Roth + HSA; the College / 529
+              and Non-Taxable buckets are never counted) — shown
+              here on the default
+              screen, above the income strip, so both views open
+              on the same figure. It is a tap target: tapping it
+              jumps to the Your money panel in the Tax Plan, on
+              the Exclude from plan field where the exclusion can
+              be edited (App owns the view switch; see
+              onJumpToYourMoney). Display only — it reads the
+              resolved source and writes nothing. */}
+          {pgPrefillSource && (
+            <p className="mt-2">
+              {onJumpToYourMoney ? (
+                <button
+                  type="button"
+                  aria-label={`Plan total ${fmtDollarsExact(pgPrefillSource.planTotal)} excluding 529 and Non-Taxable — go to Your money in the Tax Plan to edit the exclusion`}
+                  className="flex flex-wrap items-baseline gap-x-2 text-left"
+                  onClick={onJumpToYourMoney}
+                >
+                  <span className="text-sm text-[var(--dim)]">Plan total</span>
+                  <span className="tnum text-xl font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+                    {fmtDollarsExact(pgPrefillSource.planTotal)}
+                  </span>
+                  <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
+                  <span className="text-sm text-[var(--dim)] underline underline-offset-2">
+                    Edit the exclusion in Your money
+                  </span>
+                </button>
+              ) : (
+                <span className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="text-sm text-[var(--dim)]">Plan total</span>
+                  <span className="tnum text-xl font-bold text-[var(--accent)]">
+                    {fmtDollarsExact(pgPrefillSource.planTotal)}
+                  </span>
+                  <span className="text-sm text-[var(--dim)]">(excl. 529 &amp; Non-Taxable)</span>
+                </span>
+              )}
+            </p>
+          )}
+          {/* Income strip — always visible at the top of the
+              Playground, one line naming the three income
+              figures for the selected Tax year, so Interest,
+              Ordinary dividends and Qualified dividends are
+              seen without scrolling to the dials. Display only:
+              it reads the dials exactly as priced (see
+              pgInterestDollars above) and writes nothing. */}
+          <div
+            aria-label={`${pgTaxYearNum} income summary`}
+            className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2"
+          >
+            <p className="tnum text-sm font-medium text-[var(--text)]">
+              {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedDollars)}.
+            </p>
+          </div>
+          {/* $0 income warning — only when the year's income
+              (Interest + Ordinary dividends; Qualified is part
+              of Ordinary, not added again) is $0. Tapping it
+              jumps to the income dials (Interest first), using
+              the same jump-and-highlight as the provenance taps. */}
+          {pgIncomeIsZero && (
+            <button
+              type="button"
+              className="mt-2 w-full rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--text)] hover:opacity-90"
+              onClick={() => jumpToPgField("roth-Interest", "income")}
+            >
+              Your income for {pgTaxYearNum} is $0 — is that right?
+            </button>
+          )}
           {/* Face switch — two faces, one tool at a time. Both
               faces share the one dial state, so switching loses
               nothing and changes no value; it only chooses
@@ -3615,7 +4811,7 @@ export function Playground() {
               also opens the projection panel (pgProjOpen — the
               panel's own open state), which is what makes the
               projection run; switching back leaves it open. */}
-          {/* Face switch (contract v67): underlined text tabs in
+          {/* Face switch (build v67): underlined text tabs in
               the Retirement view's style, left-aligned over a
               hairline — the app's one sub-navigation language —
               instead of the former filled chips. */}
@@ -3732,6 +4928,47 @@ export function Playground() {
               </span>
             )}
           </div>
+          {/* Rejected negative return actuals (contract v146,
+              NICE-1): shown whenever the stored return carries
+              a negative line the parse set aside, so the user
+              sees why that line's dial resolves as not entered
+              instead of finding a silent blank. */}
+          {pgRejectedReturnActuals.length > 0 && (
+            <p
+              role="note"
+              className="mt-3 max-w-3xl rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-sm leading-relaxed"
+            >
+              <strong>
+                A figure on your saved return isn&rsquo;t being used.
+              </strong>{" "}
+              {pgRejectedReturnText}. An income line on a Form 1040
+              can&rsquo;t be negative, so{" "}
+              {pgRejectedReturnActuals.length === 1
+                ? "it counts"
+                : "each counts"}{" "}
+              as not entered — its dial uses the plan&rsquo;s estimate
+              where the plan prices the year, and your other return
+              figures are used as stored.
+            </p>
+          )}
+          {/* Exclude-from-plan visibility (EXCLUDE VISIBILITY
+              build): the resolved taxable pool this view prices
+              from the saved plan, with the Tax Plan record's
+              exclusion named beside it — the same pool
+              pgPrefillSourceFrom resolves (Taxable + Cash less
+              the exclusion). Shown only while an exclusion
+              actually applies; Net Worth balances never move. */}
+          {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
+            <p className="tnum mt-2 text-sm text-[var(--text)]">
+              <strong>
+                Taxable pool after exclusion:{" "}
+                {fmtDollarsExact(pgPrefillSource.taxableStart)}
+              </strong>{" "}
+              — Taxable plus Cash ({fmtDollarsExact(pgPrefillSource.taxablePoolGross)})
+              less the {fmtDollarsExact(pgPrefillSource.taxableExclude)}{" "}
+              excluded from the plan in the Tax Plan.
+            </p>
+          )}
 
           {/* Load inputs from a paste — an occasional-use tool,
               folded by default (see pasteOpen above): the heading
@@ -3947,7 +5184,7 @@ export function Playground() {
 
           {pgFace === "year" && (
             <>
-          {/* Single-year dials (contract v69): the group gets
+          {/* Single-year dials (build v69): the group gets
               the same outer shell as the section cards inside
               it, but quieter — a dashed border on the page
               background instead of a filled surface card — and
@@ -4114,13 +5351,15 @@ export function Playground() {
           {pgSectionCard("income", "Income for the year", pgIncomeSummary, (
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {moneyField("Interest", pgInterest, setPgInterest, {
-              hint: `Stored figure from ${pgReturnYearPhrase}, line 2b — last year's actual; update after you file.`,
-              info: `Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income. The stored return figure is from ${pgReturnYearPhrase} — last year's actual; update after you file.`,
+              hint: pgIncomeHint(pgIncomeSources.interest, "2b", "interest"),
+              info: pgIncomeInfo(pgIncomeSources.interest, "2b", "interest", "Interest your bank and bonds pay you during the year — savings accounts, CDs, Treasury and corporate bonds. It's taxed as ordinary income."),
+              onEdit: () => markPgIncomeTyped("interest"),
             })}
-            {moneyField("Ordinary dividends — total (line 3b)", pgOrdDiv, setPgOrdDiv, {
-              hint: `Stored figure from ${pgReturnYearPhrase}, line 3b — last year's actual; update after you file. Type it exactly as printed on the Form 1040 (line 3b). It includes the qualified dividends (line 3a) — they are counted once, not added again.`,
-              info: `All the ordinary dividends for the year — the total on Form 1040 line 3b (your 1099-DIV's total ordinary dividends). That total already includes the qualified dividends on line 3a: the qualified part is priced at the lower gains rates and the rest at ordinary rates, with the total counted once. The stored return figure is from ${pgReturnYearPhrase} — last year's actual; update after you file.`,
+            {moneyField("Ordinary dividends — total", pgOrdDiv, setPgOrdDiv, {
+              hint: pgIncomeHint(pgIncomeSources.ordinaryDividends, "3b", "dividends", "It includes the qualified dividends — they are counted once, not added again."),
+              info: pgIncomeInfo(pgIncomeSources.ordinaryDividends, "3b", "dividends", "All the ordinary dividends for the year — the total on Form 1040 line 3b (your 1099-DIV's total ordinary dividends). That total already includes the qualified dividends on line 3a: the qualified part is priced at the lower gains rates and the rest at ordinary rates, with the total counted once."),
               infoAlign: "right",
+              onEdit: () => markPgIncomeTyped("ordinaryDividends"),
             })}
             {moneyField("Other ordinary income (wages, pension)", pgOther, setPgOther, {
               info: "Everything else taxed at the regular rates — wages, pensions, rent, and withdrawals from a traditional IRA or 401(k). It stacks on the same shelf as interest and pre-tax money out.",
@@ -4260,9 +5499,10 @@ export function Playground() {
               info: "What you originally paid for the stock. Only the part of the sale above this is gain — the rest is your own money coming back, untaxed.",
               infoAlign: "right",
             })}
-            {moneyField("Qualified dividends (line 3a)", pgQualDiv, setPgQualDiv, {
-              hint: `Stored figure from ${pgReturnYearPhrase}, line 3a — last year's actual; update after you file. Part of the line 3b total above — not in addition to it.`,
-              info: `Dividends that qualify for the lower tax rate — Form 1040 line 3a, exactly as printed on ${pgReturnYearPhrase}. This amount is part of the total ordinary dividends (line 3b) you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates. Last year's actual — update after you file.`,
+            {moneyField("Qualified dividends", pgQualDiv, setPgQualDiv, {
+              hint: pgIncomeHint(pgIncomeSources.qualifiedDividends, "3a", "dividends", "Part of the ordinary dividends total above — not in addition to it."),
+              info: pgIncomeInfo(pgIncomeSources.qualifiedDividends, "3a", "dividends", "Dividends that qualify for the lower tax rate — Form 1040 line 3a. This amount is part of the total ordinary dividends you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates."),
+              onEdit: () => markPgIncomeTyped("qualifiedDividends"),
             })}
           </div>
           {pgDividendPairNote && (
@@ -4520,6 +5760,7 @@ export function Playground() {
             )}
           </div>
           ))}
+
             </>
           )}
           </section>
@@ -5305,7 +6546,7 @@ export function Playground() {
               if (pg.conversion <= 0) {
                 takeawayParts.push("No pre-tax money out typed");
               } else if (pg.landingBracketPct != null) {
-                // Contract v114: the room-left wording is gone
+                // Build v114: the room-left wording is gone
                 // from this headline sentence (room-left site 1)
                 // — the sentence names the landing bracket only,
                 // exactly as it already did when no room figure
@@ -5345,7 +6586,7 @@ export function Playground() {
                   `IRMAA Tier ${pg.irmaa.tier} for ${pg.irmaa.premiumYear}`,
                 );
               }
-              /* Landing-headline explainer (contract v77): the ⓘ
+              /* Landing-headline explainer (build v77): the ⓘ
                  on the landing headline, in the two-finish-lines
                  way the question was answered in chat — every
                  figure computed here from the priced result, no
@@ -5396,7 +6637,7 @@ export function Playground() {
                     ? `the ACA line of ${fmtDollars(bufferLine)} (the cliff of ${fmtDollars(cliff)} minus your ${fmtDollars(pgAcaBufferDollars)} safety buffer)`
                     : `the ACA cliff of ${fmtDollars(cliff)}`;
                 if (Math.abs(diff) <= 0.5 && room > 0.5) {
-                  // Contract v114: variant A reworded — it names
+                  // Build v114: variant A reworded — it names
                   // the two lines and which comes first, and no
                   // longer names the room figure (no room-left
                   // content anywhere in this tooltip).
@@ -5438,7 +6679,7 @@ export function Playground() {
                  result (`pg`, pricePlaygroundYear's own fields);
                  see buildStackModel's comment for the sourcing. */
               const stackModel = buildStackModel(pg, pgYearNum, pgFiling);
-              /* Bracket-by-bracket status (contract v69): the
+              /* Bracket-by-bracket status (build v69): the
                  text the chart's legend used to print under the
                  bar — every bracket top with its passed-by /
                  room-left standing, and the 0% gains line — now
@@ -5484,7 +6725,7 @@ export function Playground() {
                   taxX,
                   hatchStyle,
                 } = stackModel;
-                /* Legend provenance taps (contract v144, extended
+                /* Legend provenance taps (build v144, extended
                    v142): only the legend items that ARE a dial
                    input are taps — they jump to that input field
                    (scroll + flash, via jumpToPgField). The others
@@ -5494,10 +6735,10 @@ export function Playground() {
                    - Pre-tax money out → the Pre-tax money out
                      (draw or conversion) dial (conversion section).
                    - Qualified dividends → the Qualified dividends
-                     (line 3a) dial (stock section).
+                     dial (stock section).
                    - Ordinary dividends (non-qualified part) →
-                     the Ordinary dividends total (line 3b) dial
-                     (income section, contract v142): the
+                     the Ordinary dividends total dial
+                     (income section, build v142): the
                      non-qualified figure itself is computed
                      (ordinary total minus qualified, from TWO
                      inputs), so the tap goes to the parent
@@ -5518,7 +6759,7 @@ export function Playground() {
                     ariaLabel: "Go to the Interest field",
                   },
                   orddiv: {
-                    fieldId: "roth-Ordinary-dividends-total-line-3b-",
+                    fieldId: "roth-Ordinary-dividends-total",
                     section: "income",
                     ariaLabel: "Go to the Ordinary dividends field",
                   },
@@ -5528,7 +6769,7 @@ export function Playground() {
                     ariaLabel: "Go to the Pre-tax money out field",
                   },
                   qualdiv: {
-                    fieldId: "roth-Qualified-dividends-line-3a-",
+                    fieldId: "roth-Qualified-dividends",
                     section: "stock",
                     ariaLabel: "Go to the Qualified dividends field",
                   },
@@ -5560,7 +6801,7 @@ export function Playground() {
                   }
                   return { xPct: taxX(taxablePos), cliff: pg.aca.cliff };
                 })();
-                /* Buffer line (contract v69): the same
+                /* Buffer line (build v69): the same
                    construction aimed at cliff − buffer — the
                    MAGI the dials actually target. Drawn only
                    when a hard cliff applies (the same rule as
@@ -5579,11 +6820,11 @@ export function Playground() {
                   }
                   return { xPct: taxX(taxablePos), magi: target };
                 })();
-                /* Floating landmark labels (contract v75): exactly
+                /* Floating landmark labels (build v75): exactly
                    TWO of the pre-v69 floating labels return — the
                    LANDING bracket's top label (the first bracket
                    whose top is at or above the ordinary taxable
-                   total; contract v89: the bracket rate only, the
+                   total; build v89: the bracket rate only, the
                    pre-v69 "rate · room left" tail removed — from
                    the same marker figures the heading's ⓘ
                    status string uses) and the "0% gains end" label
@@ -5603,20 +6844,20 @@ export function Playground() {
                 );
                 const landingMarker =
                   landingIndex >= 0 ? (markers[landingIndex] ?? null) : null;
-                /* Contract v89: the landing label shows the
+                /* Build v89: the landing label shows the
                    bracket rate only — the "· $X left" tail and
                    the v82 ⓘ beside it are removed at the user's
                    direction (the room figure confused more
                    than it helped); position, anchoring, font,
                    colour, and stagger behaviour are unchanged.
-                   Contract v114: an ⓘ returns beside the rate
+                   Build v114: an ⓘ returns beside the rate
                    (the landing tooltip, composed from the priced
                    figures, with no room figure in it), and a
                    thin connector line drops from the label to
                    its dashed guide line — see the label block
                    below. */
                 const showGainsEndLabel = gainsTotal > 0;
-                /* Axis-row stacking (contract v76): whether the
+                /* Axis-row stacking (build v76): whether the
                    cliff and buffer axis labels sit close enough
                    to need two rows. On narrow screens the
                    axis-end figure also needs its own row: at
@@ -5632,7 +6873,7 @@ export function Playground() {
                    desktop widths the rows are exactly as
                    before. The marker labels' wording and
                    positions are unchanged at every width.
-                   Contract v84: the bracket-top tick labels
+                   Build v84: the bracket-top tick labels
                    no longer live below the bar at all (see
                    below), so the axis block below the bar is
                    back to exactly these pre-v83 rows — the
@@ -5643,8 +6884,8 @@ export function Playground() {
                   acaCliffLine != null &&
                   acaBufferLine != null &&
                   Math.abs(acaCliffLine.xPct - acaBufferLine.xPct) < 30;
-                /* Bracket-top tick labels (contract v77, anchored
-                   contract v79, moved to the line tops contract
+                /* Bracket-top tick labels (build v77, anchored
+                   build v79, moved to the line tops contract
                    v84): one small tick label for each bracket
                    top whose guide line is drawn — the same
                    inAxis rule the lines use, judged against
@@ -5709,7 +6950,7 @@ export function Playground() {
                     : "h-4";
                 const axisMagiRowTop = "";
                 const axisBufferRowTop = axisLinesClose ? "top-4" : "";
-                /* Contract v115: the fallback is an explicit
+                /* Build v115: the fallback is an explicit
                    top-0, not "": the axis-end span now rides
                    outside the axis block (see its render below),
                    so it can no longer take the block's top from
@@ -5744,7 +6985,7 @@ export function Playground() {
                                 transform: "translateX(-50%)",
                                 /* Lift this label's stacking context
                                    above the chart-area wrapper below
-                                   (contract v87, mirroring the v82
+                                   (build v87, mirroring the v82
                                    landing-label lift): the centring
                                    transform traps the bubble's own
                                    z-index inside this span, so
@@ -5753,11 +6994,11 @@ export function Playground() {
                                    labels, guide lines, tint, and
                                    the z-1 gains track — paints over
                                    the downward-opening bubble.
-                                   Contract v120: while this label's
+                                   Build v120: while this label's
                                    own bubble is open the span lifts
                                    to 25, above its sibling labels,
                                    so the bubble paints above them
-                                   too. Contract v129: the lift is
+                                   too. Build v129: the lift is
                                    z-20, below the z-30 sticky play
                                    strip, so the label slides under
                                    the strip when the chart scrolls
@@ -5805,7 +7046,7 @@ export function Playground() {
                                   color: landingMarker.color,
                                   left: `clamp(66px, ${taxX(landingMarker.to)}%, calc(100% - 66px))`,
                                   transform: "translateX(-50%)",
-                                  /* Stacking lift (contract v129):
+                                  /* Stacking lift (build v129):
                                      the label rides at z-20 — above
                                      the chart-area content below it
                                      but below the z-30 sticky play
@@ -5817,7 +7058,7 @@ export function Playground() {
                                      which is the overlap the user
                                      reported); removing the ⓘ must
                                      not move the label's paint order.
-                                     Contract v120: while this
+                                     Build v120: while this
                                      label's own bubble is open the
                                      span lifts to 25, above its
                                      sibling labels, so the bubble
@@ -5867,7 +7108,7 @@ export function Playground() {
                         )}
                       </div>
                     )}
-                    {/* Buffer label (contract v85): the v79
+                    {/* Buffer label (build v85): the v79
                         bracket's label WITHOUT the brace — the
                         tinted buffer span below (see the chart
                         area) now marks the zone, so the brace
@@ -5892,7 +7133,7 @@ export function Playground() {
                         below are unchanged. */}
                     {acaCliffLine != null && acaBufferLine != null && (
                       <div className="relative h-[26px]">
-                        {/* Contract v114: the label gains the
+                        {/* Build v114: the label gains the
                             buffer ⓘ (the 0% InfoNote pattern —
                             live-composed text, align by the
                             label's position, the z-20 lift on
@@ -5908,7 +7149,7 @@ export function Playground() {
                           style={{
                             left: `clamp(40px, ${(acaBufferLine.xPct + acaCliffLine.xPct) / 2}%, calc(100% - 40px))`,
                             transform: "translateX(-50%)",
-                            /* Contract v120: while this label's own
+                            /* Build v120: while this label's own
                                bubble is open the span lifts to 25,
                                above its sibling labels, so the
                                bubble paints above them too. Contract
@@ -5934,7 +7175,7 @@ export function Playground() {
                       </div>
                     )}
                     <div className="relative" ref={stackChartRef}>
-                      {/* Buffer-span tint (contract v85): the
+                      {/* Buffer-span tint (build v85): the
                           region between the buffer dashed line
                           and the cliff dashed line, filled with
                           a translucent tint in the cliff line's
@@ -5972,7 +7213,7 @@ export function Playground() {
                         />
                       )}
                       {/* Bracket-top tick labels at the top ends
-                          of their guide lines (contract v84):
+                          of their guide lines (build v84):
                           the strip above the bar, then the
                           10px spacer the dashed lines run up
                           through to meet the labels. Both render
@@ -5983,7 +7224,7 @@ export function Playground() {
                       {hasAxisTicks && (
                         <TickStrip
                           ticks={axisBracketTicks.map((m) => {
-                            /* Contract v114: the landing bracket's
+                            /* Build v114: the landing bracket's
                                tick carries the bracket-top ⓘ,
                                composed live from the same marker
                                figures and the law row's rate list
@@ -6140,14 +7381,14 @@ export function Playground() {
                           />
                         )}
                       </div>
-                      {/* White-line ⓘ (contract v79, amendment): the
+                      {/* White-line ⓘ (build v79, amendment): the
                           shared InfoNote ⓘ at the top of the solid
                           $0 line, where the deductions hatch ends.
                           Its copy is plain English composed live
                           from the priced deductions total — never
                           written in — and names it simply
                           "the line", with no colour claim
-                          (contract v88). The
+                          (build v88). The
                           marker sits inside the bar at the line's
                           top, clear of the floating labels and the
                           bracket row above, with its centre
@@ -6175,7 +7416,7 @@ export function Playground() {
                       <div
                         className="absolute z-10"
                         style={{
-                          /* Contract v84: the marker sits at the
+                          /* Build v84: the marker sits at the
                              top of the BAR area — below the tick
                              strip and dash spacer while ticks are
                              present, at the chart's top as before
@@ -6259,12 +7500,12 @@ export function Playground() {
                           Buffer · MAGI {fmtDollars(acaBufferLine.magi)}
                         </span>
                       )}
-                      {/* Contract v84: the bracket-top tick labels
+                      {/* Build v84: the bracket-top tick labels
                           moved to the top ends of their guide
                           lines, above the bar — nothing renders
                           for them in this below-bar block. */}
                     </div>
-                    {/* Contract v115: the axis-end figure — the
+                    {/* Build v115: the axis-end figure — the
                         right end of the chart's scale — gains the
                         ⓘ (the 0% InfoNote pattern: live-composed
                         copy, align by the label's position, the
@@ -6290,10 +7531,10 @@ export function Playground() {
                         $0 taxable label and its ⓘ are untouched. */}
                     <span
                       className={`tnum absolute inline-flex items-center text-[11px] whitespace-nowrap text-[var(--dim)] ${axisEndRowTop}`}
-                      /* Contract v120: while this label's own
+                      /* Build v120: while this label's own
                          bubble is open the span lifts to 25,
                          above its sibling labels, so the bubble
-                         paints above them too. Contract v129:
+                         paints above them too. Build v129:
                          the lift is z-20, below the z-30 sticky
                          play strip. */
                       style={{ right: 0, zIndex: chartLabelZ("axisEnd") }}
@@ -6823,15 +8064,25 @@ export function Playground() {
                       )}
                     {pg.amtOwed > 0 &&
                       stackRow(
-                        "Alternative minimum tax (AMT)",
+                        <>
+                          Alternative minimum tax (AMT)
+                          <InfoNote
+                            text={`Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) beat the regular tax — the difference is already inside the total federal tax.`}
+                            ariaLabel="About the alternative minimum tax"
+                          />
+                        </>,
                         fmtDollars(pg.amtOwed),
-                        `Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) beat the regular tax — the difference is already inside the total federal tax.`,
                       )}
                     {pg.amtOwed === 0 && pg.amti > 0 &&
                       stackRow(
-                        "Alternative minimum tax (AMT)",
+                        <>
+                          Alternative minimum tax (AMT)
+                          <InfoNote
+                            text={`Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) did not beat the regular tax.`}
+                            ariaLabel="About the alternative minimum tax"
+                          />
+                        </>,
                         "$0",
-                        `Tentative minimum tax ${fmtDollars(pg.amtTentativeTax)} on AMT income ${fmtDollars(pg.amti)} (exemption ${fmtDollars(pg.amtExemption)}) did not beat the regular tax.`,
                       )}
                     {pg.stateTax > 0 &&
                       stackRow("State tax", fmtDollars(pg.stateTax))}
@@ -6848,8 +8099,8 @@ export function Playground() {
                         fmtDollars(pg.acaMagi),
                         "MAGI plus the untaxed part of Social Security",
                       )}
-                    {/* Cash left after tax (contract v114, fixed
-                        text + ⓘ contract v116): the
+                    {/* Cash left after tax (build v114, fixed
+                        text + ⓘ build v116): the
                         engine-priced readout on the same pricing
                         (pg.cashIn / pg.netTaxBill /
                         pg.cashLeftAfterTax — never client
@@ -6883,7 +8134,7 @@ export function Playground() {
                         annual spending (the Retirement
                         calculator's default when the record
                         has none), now editable in this view's
-                        Spending dial (contract v145, one
+                        Spending dial (build v145, one
                         source); the row hides when no spending
                         resolves. No provenance tap: a tap to
                         the income inputs would mislead — the
@@ -6978,7 +8229,7 @@ export function Playground() {
                   </h3>
                   {(() => {
                     // Gains stack as a horizontal stacked bar
-                    // (contract v69), in the income stack's visual
+                    // (build v69), in the income stack's visual
                     // language: one segment per rate tier sized by
                     // the dollars taxed there, with the unused 0%
                     // room drawn first as an empty hatched segment
@@ -7127,6 +8378,26 @@ type PgPrefillSource = {
   expectedReturnPct: number;
   taxableStart: number;
   rothStart: number;
+  // Exclude-from-plan visibility (EXCLUDE VISIBILITY build):
+  // the Tax Plan record's exclusion as it applies to this
+  // source, in dollars — $0 when a saved Taxable override is in
+  // force (the exclusion is inert beside it) or nothing is
+  // excluded — and the taxable pool BEFORE it (Taxable + Cash,
+  // or the saved override itself). taxableStart above is the
+  // pool AFTER the exclusion; these two let the view show the
+  // resolved pool with the exclusion named beside it.
+  taxableExclude: number;
+  taxablePoolGross: number;
+  // Plan total (PLAN TOTAL VISIBILITY build), in dollars: the
+  // same total the Tax Plan view's Plan total carries — Pre-tax
+  // (both spouses, as pretaxStart + pretaxSpouseStart resolve
+  // them) + the taxable pool after the exclusion (taxableStart)
+  // + Roth + HSA, each resolved from the saved record or the
+  // snapshot exactly as the fields above resolve them. The
+  // College / 529 and Non-Taxable buckets are never counted in
+  // it. Display only: it prices nothing and writes nothing.
+  planTotal: number;
+  hsaStart: number;
 };
 
 function pgPrefillSourceFrom(
@@ -7160,6 +8431,40 @@ function pgPrefillSourceFrom(
         ? Math.max(0, snap.pretaxCents - (wifeSavedCents ?? 0))
         : null))
     : (snap?.pretaxCents ?? null);
+  // The plan's resolved taxable pool, in cents — the SAME
+  // resolution the plan engine's march uses (resolvePlanBalances
+  // in rothOptimizer.ts; the December console's harvest pool and
+  // the Tax Plan view's snapshot resolution assemble it the same
+  // way): a saved Taxable override exactly as entered; while
+  // following the snapshot, the Taxable bucket PLUS the Cash
+  // bucket, less any exclude-from-plan amount, floored at $0;
+  // $0 when neither bucket has a split. (Re-audit SHOULD S-1:
+  // this read the Taxable bucket alone, so the M-1 blank-yield
+  // fallback below derived its implied yields over a smaller
+  // pool than the plan engine's — and the saved-plan years
+  // priced from this source opened on that smaller pool — so
+  // the Playground's priced yields drifted from the plan's.)
+  const taxablePoolCents =
+    s?.taxableCents ??
+    (snap != null && (snap.taxableCents != null || snap.cashCents != null)
+      ? Math.max(
+          0,
+          (snap.taxableCents ?? 0) +
+            (snap.cashCents ?? 0) -
+            Math.max(0, s?.taxableExcludeCents ?? 0),
+        )
+      : 0);
+  // The same resolution, split for display: the pool before
+  // the exclusion and the exclusion that actually applied
+  // (inert — $0 — beside a saved Taxable override, exactly as
+  // the engine treats it).
+  const taxablePoolGrossCents =
+    s?.taxableCents ??
+    (snap != null && (snap.taxableCents != null || snap.cashCents != null)
+      ? (snap.taxableCents ?? 0) + (snap.cashCents ?? 0)
+      : 0);
+  const taxableExcludeAppliedCents =
+    s?.taxableCents != null ? 0 : Math.max(0, s?.taxableExcludeCents ?? 0);
   const taxReturnDollars = taxReturnPrefillDollars(data.taxReturn);
   return {
     birthYearPrimary: byP,
@@ -7227,9 +8532,18 @@ function pgPrefillSourceFrom(
     taxReturnYear: data.taxReturn.taxReturnYear ?? null,
     spouseSoleBeneficiary: s ? (s.spouseSoleBeneficiary ?? true) : true,
     expectedReturnPct: expRet,
-    taxableStart:
-      ((s ? s.taxableCents : null) ?? snap?.taxableCents ?? 0) / 100,
+    taxableStart: taxablePoolCents / 100,
     rothStart: ((s ? s.rothCents : null) ?? snap?.rothCents ?? 0) / 100,
+    taxableExclude: taxableExcludeAppliedCents / 100,
+    taxablePoolGross: taxablePoolGrossCents / 100,
+    hsaStart: ((s ? s.hsaCents : null) ?? snap?.hsaCents ?? 0) / 100,
+    planTotal:
+      ((primaryEffectiveCents ?? 0) +
+        (wifeSavedCents ?? 0) +
+        taxablePoolCents +
+        ((s ? s.rothCents : null) ?? snap?.rothCents ?? 0) +
+        ((s ? s.hsaCents : null) ?? snap?.hsaCents ?? 0)) /
+      100,
   };
 }
 

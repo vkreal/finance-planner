@@ -52,7 +52,7 @@ function fmtDateLong(date: string): string {
 const btnGhost =
   "rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-medium text-[var(--text)]";
 
-/* The Net Worth anchor reconciliation (contract v67): the full
+/* The Net Worth anchor reconciliation (build v67): the full
    computed note — first + " " + rest, byte-identical to the
    paragraph that used to print below the Trend table — now
    lives in the ⓘ on the "Trend — all years" title and in the
