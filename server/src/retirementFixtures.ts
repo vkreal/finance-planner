@@ -212,7 +212,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 2400000, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"endingCents":882162136},
   },
-  // ---- F6 horizon-convention group (contract v99): the
+  // ---- F6 horizon-convention group (build v99): the
   // end-age year is priced and its return applied, matching
   // the Roth plan engine's march. Hand-derived from the
   // closed form: with no spending and a steady 10% return the
@@ -249,7 +249,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "hist-constant-5050-30y",
     kind: "historical",
-    note: "50/50 mix, retire at 65, plan to 95 — 31 priced years under the F6 inclusive horizon (a 30-year span before contract v99).",
+    note: "50/50 mix, retire at 65, plan to 95 — 31 priced years under the F6 inclusive horizon (a 30-year span before build v99).",
     input: { portfolioCents: 100000000, spendingCents: 4500000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 50, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"successRate":80.9,"medianEndingCents":73039277,"worstEndingCents":0,"worstStartYear":1937,"runCount":68},
   },
@@ -305,7 +305,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "hist-short-plan-15y",
     kind: "historical",
-    note: "Short plan (65 to 80): 16 priced years under the F6 inclusive horizon (a 15-year span before contract v99) — many more start-year windows fit.",
+    note: "Short plan (65 to 80): 16 priced years under the F6 inclusive horizon (a 15-year span before build v99) — many more start-year windows fit.",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 65, retirementAge: 65, endAge: 80, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"successRate":100,"medianEndingCents":225892999,"worstEndingCents":15642457,"worstStartYear":1969,"runCount":83},
   },
@@ -464,7 +464,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "solver-mc-refill-fundable-95",
     kind: "solver",
-    note: "The refill plan scaled up: a $40,000 portfolio CAN fund some spending until the $48,000/yr income starts at 67 — $3,000/yr at 95.9% on the unified tab stream under the never-runs-out rule (the next $100 step scores 94.6%). The old ending-balance scoring solved this to $50,500/yr at 100%, pure refill credit. Re-pinned from the old solver-only stream's 95.4% at the same $3,000; the rate was 95.3% before the F6 inclusive horizon (contract v99).",
+    note: "The refill plan scaled up: a $40,000 portfolio CAN fund some spending until the $48,000/yr income starts at 67 — $3,000/yr at 95.9% on the unified tab stream under the never-runs-out rule (the next $100 step scores 94.6%). The old ending-balance scoring solved this to $50,500/yr at 100%, pure refill credit. Re-pinned from the old solver-only stream's 95.4% at the same $3,000; the rate was 95.3% before the F6 inclusive horizon (build v99).",
     input: { portfolioCents: 4000000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
@@ -489,7 +489,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "solver-mc-guardrails-refill-95",
     kind: "solver",
-    note: "The guardrails refill plan scanned on the unified tab stream: $3,200 at 95.5% (next step 94.6%); before the F6 inclusive horizon (contract v99) it solved to the same $3,200 at 96.1% (next step 94.8%). The old ending-balance scan solved it to $15,600 at 95.2%, and the old solver-only stream's never-runs-out scan solved it to $3,300 at 95.0%.",
+    note: "The guardrails refill plan scanned on the unified tab stream: $3,200 at 95.5% (next step 94.6%); before the F6 inclusive horizon (build v99) it solved to the same $3,200 at 96.1% (next step 94.8%). The old ending-balance scan solved it to $15,600 at 95.2%, and the old solver-only stream's never-runs-out scan solved it to $3,300 at 95.0%.",
     input: { portfolioCents: 3000000, spendingCents: 900000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: 4800000, extraIncomeStartAge: 67, expectedReturnPct: 5.75, volatilityPct: 15, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: 120, guardrailsRaisePct: 80, guardrailsAdjustmentPct: 10 },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
@@ -498,7 +498,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "solver-mc-unified-stream-95",
     kind: "solver",
-    note: "Unified-stream regression (the reported disagreement): a $3,062,500 portfolio spending $150,000/yr, solved on the Monte Carlo TAB's stream (seed 12345, 1,000 runs). (Portfolio and spending rotated to synthetic sample figures in the pre-publication privacy scrub; the property is unchanged.) On the unified stream the solver finds $75,200 at 95.0% — and the runner's direct tab-stream run at the solved spending must reproduce that 95.0% and the median ending exactly (the next $100 step scores 94.9% on the tab stream). Before the F6 inclusive horizon (contract v99) it found $75,800 at 95.1%.",
+    note: "Unified-stream regression (the reported disagreement): a $3,062,500 portfolio spending $150,000/yr, solved on the Monte Carlo TAB's stream (seed 12345, 1,000 runs). (Portfolio and spending rotated to synthetic sample figures in the pre-publication privacy scrub; the property is unchanged.) On the unified stream the solver finds $75,200 at 95.0% — and the runner's direct tab-stream run at the solved spending must reproduce that 95.0% and the median ending exactly (the next $100 step scores 94.9% on the tab stream). Before the F6 inclusive horizon (build v99) it found $75,800 at 95.1%.",
     input: { portfolioCents: 306250000, spendingCents: 15000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 95,
@@ -522,7 +522,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "hist-atrisk-just-above-95",
     kind: "historical",
-    note: "Boundary case, re-derived under F6 (contract v99): before the inclusive horizon this plan landed just ABOVE the 95% Historical at-risk cutoff (66 of 69 start years); the extra priced year moves it to 94.1% (64 of 68 start years) — just BELOW the cutoff, so the case now pins the below side alongside its sibling. The id keeps its original name as history.",
+    note: "Boundary case, re-derived under F6 (build v99): before the inclusive horizon this plan landed just ABOVE the 95% Historical at-risk cutoff (66 of 69 start years); the extra priced year moves it to 94.1% (64 of 68 start years) — just BELOW the cutoff, so the case now pins the below side alongside its sibling. The id keeps its original name as history.",
     input: { portfolioCents: 100000000, spendingCents: 4000000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"successRate":94.1,"neverOutSuccessRate":94.1,"medianEndingCents":234004588,"worstEndingCents":0,"worstStartYear":1965,"runCount":68},
   },
@@ -536,7 +536,7 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "mc-atrisk-just-above-85",
     kind: "montecarlo",
-    note: "Boundary case, re-derived under F6 (contract v99): before the inclusive horizon this plan landed just ABOVE the 85% Monte Carlo at-risk cutoff (85.6%, seed 12345); the extra priced year moves it to 84.1% — just BELOW the cutoff, so the case now pins the below side alongside its sibling. The id keeps its original name as history.",
+    note: "Boundary case, re-derived under F6 (build v99): before the inclusive horizon this plan landed just ABOVE the 85% Monte Carlo at-risk cutoff (85.6%, seed 12345); the extra priced year moves it to 84.1% — just BELOW the cutoff, so the case now pins the below side alongside its sibling. The id keeps its original name as history.",
     input: { portfolioCents: 100000000, spendingCents: 3700000, currentAge: 65, retirementAge: 65, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "constant", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     expected: {"successRate":84.1,"neverOutSuccessRate":84.1,"p10Cents":0,"p50Cents":135860945,"p90Cents":655367077},
@@ -589,12 +589,12 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "solver-hist-phased-95",
     kind: "solver",
-    note: "Max Spending, Historical engine, Phased strategy (step-down from 75 at 1%/yr), 95% target: the solved figure is the maximum STARTING (pre-decline) annual spending, priced through the phased path — $81,500/yr at 96.6%, above Constant's $80,200 on the same plan because the later years spend less. Verified by a brute-force $100-step scan over the historical engine's never-runs-out rate (the next step, $81,600, scores 94.8%). Before the F6 inclusive horizon (contract v99) it solved to $81,900 (next step 94.9%).",
+    note: "Max Spending, Historical engine, Phased strategy (step-down from 75 at 1%/yr), 95% target: the solved figure is the maximum STARTING (pre-decline) annual spending, priced through the phased path — $81,500/yr at 96.6%, above Constant's $80,200 on the same plan because the later years spend less. Verified by a brute-force $100-step scan over the historical engine's never-runs-out rate (the next step, $81,600, scores 94.8%). Before the F6 inclusive horizon (build v99) it solved to $81,900 (next step 94.9%).",
     input: { portfolioCents: 200000000, spendingCents: 10000000, currentAge: 55, retirementAge: 57, endAge: 95, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: null, volatilityPct: null, strategy: "phased", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null, phaseStartAge: 75, phaseDeclinePct: 1 },
     solverEngine: "historical", solverTargetPct: 95,
     expected: {"solvedSpendingCents":8150000,"successRate":96.6,"medianEndingCents":678284587,"solvedPercent":null},
   },
-  // ---- Prompt 13 guardrails fixes (contract v40): the two
+  // ---- Prompt 13 guardrails fixes (build v40): the two
   // equality rails, genuine crossings past the tolerance, and
   // the solver's inclusive endpoint. The equality expectations
   // are the audit's hand-derived rule-correct figures (the
@@ -605,35 +605,35 @@ export const RETIREMENT_FIXTURES: FixtureCase[] = [
   {
     id: "proj-guardrails-equality-cut-no-fire",
     kind: "projection",
-    note: "Prompt 13 Defect 1, Case A (equality at the CUT rail, hand-derived): $1,200,000 portfolio, $200,000/yr spending, retire at 60, 0% returns, default 120/80/10 guardrails. The initial rate is 200000/1200000 = 16⅔%; at age 61 the balance is exactly $1,000,000, so the current 20% rate is mathematically EQUAL to 120% of the initial rate — the strict rule fires NO cut, so age-61 spending stays $200,000 and the plan ends at $800,000. Before the tolerance fix the raw float rail (120/100)×initial evaluated to 0.19999999999999998 < 0.2 and the engine cut to $180,000 (ending $820,000). F6 re-pin (contract v99): the inclusive horizon adds the age-62 year — its rate is $200,000/$800,000 = 25%, genuinely past the 20% cut rail, so spending cuts 10% to $180,000 and the plan ends at $620,000; the pinned age-61 gross (the equality year itself) is unchanged.",
+    note: "Prompt 13 Defect 1, Case A (equality at the CUT rail, hand-derived): $1,200,000 portfolio, $200,000/yr spending, retire at 60, 0% returns, default 120/80/10 guardrails. The initial rate is 200000/1200000 = 16⅔%; at age 61 the balance is exactly $1,000,000, so the current 20% rate is mathematically EQUAL to 120% of the initial rate — the strict rule fires NO cut, so age-61 spending stays $200,000 and the plan ends at $800,000. Before the tolerance fix the raw float rail (120/100)×initial evaluated to 0.19999999999999998 < 0.2 and the engine cut to $180,000 (ending $820,000). F6 re-pin (build v99): the inclusive horizon adds the age-62 year — its rate is $200,000/$800,000 = 25%, genuinely past the 20% cut rail, so spending cuts 10% to $180,000 and the plan ends at $620,000; the pinned age-61 gross (the equality year itself) is unchanged.",
     input: { portfolioCents: 120000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"endingCents":62000000,"grossByAgeCents":[{"age":61,"cents":20000000}]},
   },
   {
     id: "proj-guardrails-equality-raise-no-fire",
     kind: "projection",
-    note: "Prompt 13 Defect 1, Case B (equality at the RAISE rail, hand-derived): $1,000,000 portfolio, $200,000/yr spending, retire at 60, default guardrails, initial rate 20%. The audit's return path (+56.25% then 0%) is reproduced at the step that matters by a uniform +56.25% expected return: after age 60 the balance is exactly $1,250,000 (800,000 × 1.5625), so the age-61 rate 200000/1250000 = 16% is mathematically EQUAL to 80% of the initial rate — the strict rule fires NO raise, so age-61 spending stays $200,000. (The second year's return differs from the audit path, so the ending — (1,250,000 − 200,000) × 1.5625 = $1,640,625 — reflects the uniform return; the pinned age-61 gross is the audit's discriminating figure.) Before the fix the raw float rail (80/100)×0.2 evaluated to 0.16000000000000003 > 0.16 and the engine raised to $220,000. F6 re-pin (contract v99): the inclusive horizon adds the age-62 year — its rate is $200,000/$1,640,625 ≈ 12.2%, genuinely below the 16% raise rail, so spending raises 10% to $220,000 and the ending is ($1,640,625 − $220,000) × 1.5625 = $2,219,726.56; the pinned age-61 gross is unchanged.",
+    note: "Prompt 13 Defect 1, Case B (equality at the RAISE rail, hand-derived): $1,000,000 portfolio, $200,000/yr spending, retire at 60, default guardrails, initial rate 20%. The audit's return path (+56.25% then 0%) is reproduced at the step that matters by a uniform +56.25% expected return: after age 60 the balance is exactly $1,250,000 (800,000 × 1.5625), so the age-61 rate 200000/1250000 = 16% is mathematically EQUAL to 80% of the initial rate — the strict rule fires NO raise, so age-61 spending stays $200,000. (The second year's return differs from the audit path, so the ending — (1,250,000 − 200,000) × 1.5625 = $1,640,625 — reflects the uniform return; the pinned age-61 gross is the audit's discriminating figure.) Before the fix the raw float rail (80/100)×0.2 evaluated to 0.16000000000000003 > 0.16 and the engine raised to $220,000. F6 re-pin (build v99): the inclusive horizon adds the age-62 year — its rate is $200,000/$1,640,625 ≈ 12.2%, genuinely below the 16% raise rail, so spending raises 10% to $220,000 and the ending is ($1,640,625 − $220,000) × 1.5625 = $2,219,726.56; the pinned age-61 gross is unchanged.",
     input: { portfolioCents: 100000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 56.25, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"endingCents":221972656,"grossByAgeCents":[{"age":61,"cents":20000000}]},
   },
   {
     id: "proj-guardrails-genuine-cut-compounds",
     kind: "projection",
-    note: "Prompt 13 companion pin: a rate genuinely past the cut rail by far more than the 1e-9 tolerance still fires exactly ONE adjustment per year, compounding on the adjusted level (hand-derived): $1,000,000 portfolio, $50,000/yr spending (5% initial rate; cut rail 6%), −50% returns every year. Age 60: no adjustment (rate = initial), balance (1,000,000 − 50,000) × 0.5 = $475,000. Age 61: rate 50,000/475,000 = 10.53% > 6% → cut 10% to $45,000; balance (475,000 − 45,000) × 0.5 = $215,000. Age 62: rate 45,000/215,000 = 20.93% > 6% → cut 10% again, applied to $45,000 (not reset to $50,000) = $40,500; balance (215,000 − 40,500) × 0.5 = $87,250. F6 re-pin (contract v99): the inclusive horizon adds age 63 — rate 40,500/87,250 ≈ 46.4% > 6% → cut 10% again to $36,450; ending (87,250 − 36,450) × 0.5 = $25,400.",
+    note: "Prompt 13 companion pin: a rate genuinely past the cut rail by far more than the 1e-9 tolerance still fires exactly ONE adjustment per year, compounding on the adjusted level (hand-derived): $1,000,000 portfolio, $50,000/yr spending (5% initial rate; cut rail 6%), −50% returns every year. Age 60: no adjustment (rate = initial), balance (1,000,000 − 50,000) × 0.5 = $475,000. Age 61: rate 50,000/475,000 = 10.53% > 6% → cut 10% to $45,000; balance (475,000 − 45,000) × 0.5 = $215,000. Age 62: rate 45,000/215,000 = 20.93% > 6% → cut 10% again, applied to $45,000 (not reset to $50,000) = $40,500; balance (215,000 − 40,500) × 0.5 = $87,250. F6 re-pin (build v99): the inclusive horizon adds age 63 — rate 40,500/87,250 ≈ 46.4% > 6% → cut 10% again to $36,450; ending (87,250 − 36,450) × 0.5 = $25,400.",
     input: { portfolioCents: 100000000, spendingCents: 5000000, currentAge: 60, retirementAge: 60, endAge: 63, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: -50, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"endingCents":2540000,"grossByAgeCents":[{"age":61,"cents":4500000},{"age":62,"cents":4050000}]},
   },
   {
     id: "proj-guardrails-genuine-raise-fires",
     kind: "projection",
-    note: "Prompt 13 companion pin: a rate genuinely past the raise rail by far more than the tolerance still fires (hand-derived): $1,000,000 portfolio, $200,000/yr spending (20% initial rate; raise rail 16%), +100% returns every year. Age 60: no adjustment, balance (1,000,000 − 200,000) × 2 = $1,600,000. Age 61: rate 200,000/1,600,000 = 12.5% < 16% by 3.5 points → raise 10% to $220,000; balance (1,600,000 − 220,000) × 2 = $2,760,000. F6 re-pin (contract v99): the inclusive horizon adds age 62 — rate 220,000/2,760,000 ≈ 8.0% < 16% → raise 10% again to $242,000; ending (2,760,000 − 242,000) × 2 = $5,036,000.",
+    note: "Prompt 13 companion pin: a rate genuinely past the raise rail by far more than the tolerance still fires (hand-derived): $1,000,000 portfolio, $200,000/yr spending (20% initial rate; raise rail 16%), +100% returns every year. Age 60: no adjustment, balance (1,000,000 − 200,000) × 2 = $1,600,000. Age 61: rate 200,000/1,600,000 = 12.5% < 16% by 3.5 points → raise 10% to $220,000; balance (1,600,000 − 220,000) × 2 = $2,760,000. F6 re-pin (build v99): the inclusive horizon adds age 62 — rate 220,000/2,760,000 ≈ 8.0% < 16% → raise 10% again to $242,000; ending (2,760,000 − 242,000) × 2 = $5,036,000.",
     input: { portfolioCents: 100000000, spendingCents: 20000000, currentAge: 60, retirementAge: 60, endAge: 62, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 100, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     expected: {"endingCents":503600000,"grossByAgeCents":[{"age":61,"cents":22000000}]},
   },
   {
     id: "solver-guardrails-one-year-fully-funded",
     kind: "solver",
-    note: "Prompt 13 Defect 2 case (the audit's reproduction, hand-derived), re-derived under F6 (contract v99): $1,000 portfolio, retire at 60, end at 61, no extra income, 0% return / 0% volatility, Monte Carlo engine (seed 12345, 1,000 identical zero-volatility runs), 100% never-short target. Before F6 this was a one-year plan (age 60 only): a $1,000 withdrawal was fully funded and the guardrails maximum was $1,000 with a $0 median ending (before the inclusive-endpoint fix the scan bound subtracted one cent and solved to $900). Under the inclusive horizon TWO years price (ages 60 and 61): at $500/yr the first year leaves $500, the age-61 rate (100%) is past the cut rail (120% of the 50% initial rate), so spending cuts 10% to $450 — fully funded, ending at $50; at $600/yr the age-61 cut lands at $540 against a $400 balance, short — so the maximum is $500 with a $50 median ending.",
+    note: "Prompt 13 Defect 2 case (the audit's reproduction, hand-derived), re-derived under F6 (build v99): $1,000 portfolio, retire at 60, end at 61, no extra income, 0% return / 0% volatility, Monte Carlo engine (seed 12345, 1,000 identical zero-volatility runs), 100% never-short target. Before F6 this was a one-year plan (age 60 only): a $1,000 withdrawal was fully funded and the guardrails maximum was $1,000 with a $0 median ending (before the inclusive-endpoint fix the scan bound subtracted one cent and solved to $900). Under the inclusive horizon TWO years price (ages 60 and 61): at $500/yr the first year leaves $500, the age-61 rate (100%) is past the cut rail (120% of the 50% initial rate), so spending cuts 10% to $450 — fully funded, ending at $50; at $600/yr the age-61 cut lands at $540 against a $400 balance, short — so the maximum is $500 with a $50 median ending.",
     input: { portfolioCents: 100000, spendingCents: 100000, currentAge: 60, retirementAge: 60, endAge: 61, stocksPct: 75, extraIncomeCents: null, extraIncomeStartAge: null, expectedReturnPct: 0, volatilityPct: 0, strategy: "guardrails", percentOfPortfolio: 5, guardrailsCutPct: null, guardrailsRaisePct: null, guardrailsAdjustmentPct: null },
     mcSeed: 12345,
     solverEngine: "montecarlo", solverTargetPct: 100,
@@ -707,7 +707,7 @@ function runFixtureCase(c: FixtureCase): FixtureCaseResult {
   const { inputs, stocks, expected, vol } = built;
   const exp = c.expected;
   if (c.kind === "projection") {
-    // Inclusive horizon (F6, contract v99): the projection's
+    // Inclusive horizon (F6, build v99): the projection's
     // return stream covers every priced year, end age included.
     const years = Math.max(0, inputs.endAge - inputs.currentAge + 1);
     const returns = Array.from({ length: years }, () => expected);
@@ -868,7 +868,7 @@ export function runRetirementFixtures(
    The anchor passes when each app rate lands in the published
    neighbourhood (within the tolerance below), which is what
    "explainable by window and method" means numerically.
-   F6 WINDOW EFFECT (contract v99): under the inclusive
+   F6 WINDOW EFFECT (build v99): under the inclusive
    horizon this case (age 65 to end age 95) prices 31 years,
    not the published study's 30, so one fewer overlapping
    window fits the dataset — 68 windows starting 1928–1995,

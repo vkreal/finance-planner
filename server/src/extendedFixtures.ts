@@ -109,6 +109,7 @@ ROTH_UI_STATE_KEY,
 applyRothUiWrite,
 commitGuardedRothUiWrite,
 commitInsertOnlyRothUiWrite,
+decideRothUiWriteChecked,
 parseRothUiState,
 type RothUiState,
 } from "./rothUiStateCore";
@@ -177,6 +178,7 @@ GUARDRAILS_SEMANTICS,
 LAW_YEAR_SEMANTICS,
 RESTORE_VALIDATION_SEMANTICS,
 PLAYGROUND_YEAR_SEMANTICS,
+PRETAX_DRAW_SPLIT_SEMANTICS,
 PROTECT_MIN_SEMANTICS,
 ROTH_BALANCE_KEYS,
 ROTH_COMPARE_EXAMPLE,
@@ -559,7 +561,7 @@ function f2RetirementDefault(core: SpendingCore, currentMonth: string) {
 // current month — the trailing window ends at the current month
 // while the 12-entry history ends at the viewed month). The helpers
 // below mirror the handler line for line: the trailing window's own
-// months (contract v123's trailingMonths, built in the averaging
+// months (build v123's trailingMonths, built in the averaging
 // loop from the same eff() figures) and the pre-v123 client slice
 // (the last trailingMonthsCovered history entries), so the fixtures
 // pin both what the chart plots now and how far the old slice
@@ -586,7 +588,7 @@ function f1Core(): SpendingCore {
   });
 }
 
-// getDashboard's trailing window months (contract v123): up to 12
+// getDashboard's trailing window months (build v123): up to 12
 // months ending at `currentMonth`, starting at the earliest data
 // month — the months the trailing averages cover and the chart plots.
 // meanSmoothed is the mean of the plotted months' bars, avgSmoothed
@@ -865,7 +867,7 @@ function f7AvailableYears(requestedYear: number) {
   // The handler's union inputs, as the fixture dataset carries
   // them: no snapshots, one 2026 transaction, no summaries, no
   // items, no one-offs, no monthly bill versions — plus the
-  // smoothed bill-version effective years (contract v124).
+  // smoothed bill-version effective years (build v124).
   for (const t of txns) yearSet.add(Number(t.date.slice(0, 4)));
   for (const v of yearlyVersions) yearSet.add(Number(v.effectiveFrom.slice(0, 4)));
   if (yearSet.size === 0) yearSet.add(requestedYear);
@@ -1399,7 +1401,7 @@ export type ExtendedFixtureCase = {
 
 const billById = (id: number) => YEARLY.find((y) => y.id === id) as CoreYearlyBillNamed;
 
-// "Enough for the year" (contract v126): the shared Playground
+// "Enough for the year" (build v126): the shared Playground
 // year for the cash-left-vs-spending fixtures — 2026, MFJ,
 // ages 60/58, $1,000 interest + $50,000 other ordinary income,
 // nothing else. Cash in $51,000; the 2026 MFJ standard
@@ -1491,7 +1493,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-accrual-cumulative-conservation",
     kind: "spending",
-    note: "Cumulative rounding conservation (contract v59, F3): one yearly bill of $100.00/yr. Monthly set-aside for month n = round(10000 × n/12) − round(10000 × (n−1)/12): Jan $8.33 (833), Feb $8.34 (1667 − 833), Aug $8.34 (6667 − 5833), Dec $8.33 (10000 − 9167) — February and August differ from the old flat round(10000/12) = $8.33 repeated. The twelve monthly set-asides sum to exactly $100.00 (10000), where the flat rule summed to $99.96. Three such bills: the year's total set-aside is exactly $300.00 (30000).",
+    note: "Cumulative rounding conservation (build v59, F3): one yearly bill of $100.00/yr. Monthly set-aside for month n = round(10000 × n/12) − round(10000 × (n−1)/12): Jan $8.33 (833), Feb $8.34 (1667 − 833), Aug $8.34 (6667 − 5833), Dec $8.33 (10000 − 9167) — February and August differ from the old flat round(10000/12) = $8.33 repeated. The twelve monthly set-asides sum to exactly $100.00 (10000), where the flat rule summed to $99.96. Three such bills: the year's total set-aside is exactly $300.00 (30000).",
     expected: { jan: 833, feb: 834, aug: 834, dec: 833, yearOneBill: 10000, yearThreeBills: 30000 },
     actual: () => {
       const bills3: CoreYearlyBillNamed[] = [1, 2, 3].map((id) => ({
@@ -1543,7 +1545,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-cash-basis-micro-case",
     kind: "spending",
-    note: "One cash basis for every entry mode (contract v59, F1 — the audit's micro-case 1, all transaction-recorded): a $1,000.00 monthly bill leaves checking each month (unlinked checking spending), a $1,200.00 yearly bill (set-aside $100.00/mo) is paid from checking in February, and a $300.00 card charge made in January is paid from checking in February; spending otherwise zero. Cash out: Jan $1,000.00, Feb $1,000 + $1,200 + $300 = $2,500.00, Mar $1,000.00. True cost = cash out − settled yearly lumps + set-aside: Jan 1000 − 0 + 100 = $1,100.00; Feb 2500 − 1200 + 100 = $1,400.00; Mar 1000 − 0 + 100 = $1,100.00. (The pre-v59 incurred branch priced Jan $1,400.00 / Feb $1,100.00.) Everything else (cash out − monthly bills − yearly paid out): Jan $0.00, Feb $300.00, Mar $0.00; yearly paid out counts the $1,200.00 in February, its settlement month.",
+    note: "One cash basis for every entry mode (build v59, F1 — the audit's micro-case 1, all transaction-recorded): a $1,000.00 monthly bill leaves checking each month (unlinked checking spending), a $1,200.00 yearly bill (set-aside $100.00/mo) is paid from checking in February, and a $300.00 card charge made in January is paid from checking in February; spending otherwise zero. Cash out: Jan $1,000.00, Feb $1,000 + $1,200 + $300 = $2,500.00, Mar $1,000.00. True cost = cash out − settled yearly lumps + set-aside: Jan 1000 − 0 + 100 = $1,100.00; Feb 2500 − 1200 + 100 = $1,400.00; Mar 1000 − 0 + 100 = $1,100.00. (The pre-v59 incurred branch priced Jan $1,400.00 / Feb $1,100.00.) Everything else (cash out − monthly bills − yearly paid out): Jan $0.00, Feb $300.00, Mar $0.00; yearly paid out counts the $1,200.00 in February, its settlement month.",
     expected: {
       janTrue: 110000, febTrue: 140000, marTrue: 110000,
       janElse: 0, febElse: 30000, marElse: 0,
@@ -1593,7 +1595,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-card-settlement-attribution",
     kind: "spending",
-    note: "The yearly-payment correction follows the money (contract v59, F2 — the audit's two-month case): a $1,200.00 yearly bill (set-aside $100.00/mo) is CHARGED to a card in January; January's entered cash-out total is $0. In February a generic $1,200.00 card payment leaves checking and February's entered total is $1,200.00; no other spending. FIFO attribution settles the January charge with the February payment, so the correction fires in February: Jan True cost = 0 − 0 + 100 = $100.00; Feb True cost = 1200 − 1200 settled + 100 = $100.00 (the pre-v59 code priced February $1,300.00 — the correction never fired). Yearly paid out counts the payment in its settlement month: Jan $0.00, Feb $1,200.00; settled lumps: Jan $0.00, Feb $1,200.00.",
+    note: "The yearly-payment correction follows the money (build v59, F2 — the audit's two-month case): a $1,200.00 yearly bill (set-aside $100.00/mo) is CHARGED to a card in January; January's entered cash-out total is $0. In February a generic $1,200.00 card payment leaves checking and February's entered total is $1,200.00; no other spending. FIFO attribution settles the January charge with the February payment, so the correction fires in February: Jan True cost = 0 − 0 + 100 = $100.00; Feb True cost = 1200 − 1200 settled + 100 = $100.00 (the pre-v59 code priced February $1,300.00 — the correction never fired). Yearly paid out counts the payment in its settlement month: Jan $0.00, Feb $1,200.00; settled lumps: Jan $0.00, Feb $1,200.00.",
     expected: {
       janTrue: 10000, febTrue: 10000,
       janPaid: 0, febPaid: 120000,
@@ -1651,7 +1653,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-txn-month-eff",
     kind: "spending",
-    note: "Jan 2025 (transaction-only month, cash basis — contract v59 F1/F2): incurred = $500.00 spending + $200.00 BiWater + $300.00 card-paid QuarterFee = $1,000.00 (reported, no longer the True cost basis); cash out counts checking only = $700.00 (the card charge is not cash out); lumps = the yearly money whose cash left checking in January = BiWater's $200.00 only — QuarterFee's $300.00 card charge is settled by February's card payment, so its correction lands in February; smoothed = cash out 700 − 200 settled + 400 set-aside = $900.00. (Pre-v59 this pinned the incurred basis: 1000 − 500 + 400 = $900.00 — the same total by coincidence, with the card charge counted in both incurred and lumps.)",
+    note: "Jan 2025 (transaction-only month, cash basis — build v59 F1/F2): incurred = $500.00 spending + $200.00 BiWater + $300.00 card-paid QuarterFee = $1,000.00 (reported, no longer the True cost basis); cash out counts checking only = $700.00 (the card charge is not cash out); lumps = the yearly money whose cash left checking in January = BiWater's $200.00 only — QuarterFee's $300.00 card charge is settled by February's card payment, so its correction lands in February; smoothed = cash out 700 − 200 settled + 400 set-aside = $900.00. (Pre-v59 this pinned the incurred basis: 1000 − 500 + 400 = $900.00 — the same total by coincidence, with the card charge counted in both incurred and lumps.)",
     expected: { incurred: 100000, cashOut: 70000, lumps: 20000, smoothed: 90000 },
     actual: (w) => {
       const e = w.core.eff("2025-01");
@@ -1661,7 +1663,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-summary-month-lump-fallback",
     kind: "spending",
-    note: "Feb 2025 (entered total $9,000.00): the total is the base — the month's transactions are not added. The settled lumps subtracted are AnnualSub's early $1,200.00 checking payment PLUS QuarterFee's $300.00 card charge from January, settled by February's $300.00 card payment (FIFO attribution, contract v59 F2) = $1,500.00. Smoothed = 9000 − 1500 + 400 = $7,900.00. (Pre-v59: only the checking lump was subtracted and February priced $8,200.00 — the card settlement was missed entirely.)",
+    note: "Feb 2025 (entered total $9,000.00): the total is the base — the month's transactions are not added. The settled lumps subtracted are AnnualSub's early $1,200.00 checking payment PLUS QuarterFee's $300.00 card charge from January, settled by February's $300.00 card payment (FIFO attribution, build v59 F2) = $1,500.00. Smoothed = 9000 − 1500 + 400 = $7,900.00. (Pre-v59: only the checking lump was subtracted and February priced $8,200.00 — the card settlement was missed entirely.)",
     expected: { incurred: 900000, cashOut: 900000, lumps: 150000, smoothed: 790000 },
     actual: (w) => {
       const e = w.core.eff("2025-02");
@@ -1691,7 +1693,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-reserve-accumulation",
     kind: "spending",
-    note: "Reserve from Nov 2024 (opening $0), on the settlement basis (contract v59) — the start is the first bill-effective month (contract v122, round-18 F2): the four smoothed bills take effect Nov 2024, so Nov +400 set-aside − 0 settled = +$400.00 and Dec +400 − 0 = +$800.00 before January; Jan +400 − 200 settled lumps (BiWater's checking payment; QuarterFee's card charge settles in Feb) = +$1,000.00; Feb +400 − 1,500 settled (AnnualSub's early $1,200.00 checking payment + QuarterFee's $300.00 settlement) = −$100.00; Mar +600 − 600 (SemiIns's late checking payment) = −$100.00. (Pre-v122 the start was the first transaction month, Jan 2025, and January read +$200.00 — the Nov–Dec accruals were missing.)",
+    note: "Reserve from Nov 2024 (opening $0), on the settlement basis (build v59) — the start is the first bill-effective month (build v122, round-18 F2): the four smoothed bills take effect Nov 2024, so Nov +400 set-aside − 0 settled = +$400.00 and Dec +400 − 0 = +$800.00 before January; Jan +400 − 200 settled lumps (BiWater's checking payment; QuarterFee's card charge settles in Feb) = +$1,000.00; Feb +400 − 1,500 settled (AnnualSub's early $1,200.00 checking payment + QuarterFee's $300.00 settlement) = −$100.00; Mar +600 − 600 (SemiIns's late checking payment) = −$100.00. (Pre-v122 the start was the first transaction month, Jan 2025, and January read +$200.00 — the Nov–Dec accruals were missing.)",
     expected: { startMonth: 202411, jan: 100000, feb: -10000, mar: -10000 },
     actual: (w) => ({
       startMonth: w.core.reserveStartMonth ? Number(w.core.reserveStartMonth.replace("-", "")) : null,
@@ -1703,7 +1705,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "sp-forecast-card-and-late-payments",
     kind: "spending",
-    note: "Forecast viewed from Jan 2025. The projected reserve accumulates from the reserve start, Nov 2024 (contract v122, round-18 F2 — the first bill-effective month; see sp-reserve-accumulation), so January's projection already carries the Nov–Dec accruals. Jan: QuarterFee due — its recorded card payment ($300.00) is the amount; BiWater due and paid ($200.00); total due $500.00, projected reserve = 400 + 400 (Nov–Dec set-asides) + 200 (Jan: +400 set-aside − 200 settled) = +$1,000.00 (settlement basis). Feb: SemiIns due, unpaid yet — expected $600.00; projected reserve 1,000 + 400 − 600 due − 1,200 (AnnualSub's early Feb payment for a bill not due in Feb) = −$400.00. Mar: AnnualSub due — expected $1,200.00 (its actual landed in Feb); BiWater due $200.00; projected reserve −400 + 600 − 1,400 due − 600 (SemiIns's late Mar payment, not due in Mar) = −$1,800.00.",
+    note: "Forecast viewed from Jan 2025. The projected reserve accumulates from the reserve start, Nov 2024 (build v122, round-18 F2 — the first bill-effective month; see sp-reserve-accumulation), so January's projection already carries the Nov–Dec accruals. Jan: QuarterFee due — its recorded card payment ($300.00) is the amount; BiWater due and paid ($200.00); total due $500.00, projected reserve = 400 + 400 (Nov–Dec set-asides) + 200 (Jan: +400 set-aside − 200 settled) = +$1,000.00 (settlement basis). Feb: SemiIns due, unpaid yet — expected $600.00; projected reserve 1,000 + 400 − 600 due − 1,200 (AnnualSub's early Feb payment for a bill not due in Feb) = −$400.00. Mar: AnnualSub due — expected $1,200.00 (its actual landed in Feb); BiWater due $200.00; projected reserve −400 + 600 − 1,400 due − 600 (SemiIns's late Mar payment, not due in Mar) = −$1,800.00.",
     expected: {
       janDue: 50000, janProjected: 100000, janY3Amount: 30000,
       febDue: 60000, febProjected: -40000, febY2Amount: 60000,
@@ -2075,7 +2077,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "ys-2025-spending",
     kind: "yearsummary",
-    note: "2025 spending over all 12 data months (the monthly bills make every month a data month): True cost = Jan $900.00 + Feb $7,900.00 + Mar $4,500.00 + 9 accrual-only months × $600.00 = $18,700.00; cash out = $700.00 + $9,000.00 + $4,500.00 = $14,200.00; average = 18700/12 rounded = $1,558.33. (February is $7,900.00 since contract v59 — its entered total also settles January's $300.00 card-paid QuarterFee; pre-v59 the year read $19,000.00.) Scope endpoints: January (1) through December (12).",
+    note: "2025 spending over all 12 data months (the monthly bills make every month a data month): True cost = Jan $900.00 + Feb $7,900.00 + Mar $4,500.00 + 9 accrual-only months × $600.00 = $18,700.00; cash out = $700.00 + $9,000.00 + $4,500.00 = $14,200.00; average = 18700/12 rounded = $1,558.33. (February is $7,900.00 since build v59 — its entered total also settles January's $300.00 card-paid QuarterFee; pre-v59 the year read $19,000.00.) Scope endpoints: January (1) through December (12).",
     expected: { months: 12, trueCost: 1870000, cashOut: 1420000, average: 155833, firstMonthNum: 1, lastMonthNum: 12 },
     actual: (w) => yearSpending(w.core, 2025),
   },
@@ -2363,7 +2365,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "ys-top-categories-pivot-and-residual",
     kind: "yearsummary",
-    note: "Top categories for 2025, derived BY HAND with the category assignments stated above categoryPivot. Over the 12 included months: Housing = Rent $1,000.00 × 12 = $12,000.00; Health = Gym $50.00 × 12 = $600.00; Subscriptions = AnnualSub accrual $100.00 × 12 ($1,200.00) + LateStart accrual $200.00 × Mar–Dec 10 months ($2,000.00) = $3,200.00; Insurance = SemiIns $100.00 × 12 = $1,200.00; Fees = QuarterFee $100.00 × 12 = $1,200.00; Utilities = BiWater $100.00 × 12 = $1,200.00. Pivot total = 12,000 + 600 + 3,200 + 1,200 × 3 = $19,400.00. Total True cost is $18,700.00 (ys-2025-spending), so the Other spending residual (the True-cost residual's label since contract v59, F5) = 18,700 − 19,400 = −$700.00. Sorted desc with label tie-breaks, the top 5 are Housing, Subscriptions, then Fees / Insurance / Utilities (tied at $1,200.00, alphabetical) — Other spending (−$700.00) and Health ($600.00) fall outside the top 5, and all 7 rows sum exactly to True cost. Over Jan–Mar alone the same pivot gives: pivot $4,550.00 (Housing $3,000.00 + Health $150.00 + Subscriptions $300.00 + $200.00 + Insurance $300.00 + Fees $300.00 + Utilities $300.00) against True cost $900.00 + $7,900.00 + $4,500.00 = $13,300.00, so the residual is $8,750.00 and IS the top row — the residual competes like any other row.",
+    note: "Top categories for 2025, derived BY HAND with the category assignments stated above categoryPivot. Over the 12 included months: Housing = Rent $1,000.00 × 12 = $12,000.00; Health = Gym $50.00 × 12 = $600.00; Subscriptions = AnnualSub accrual $100.00 × 12 ($1,200.00) + LateStart accrual $200.00 × Mar–Dec 10 months ($2,000.00) = $3,200.00; Insurance = SemiIns $100.00 × 12 = $1,200.00; Fees = QuarterFee $100.00 × 12 = $1,200.00; Utilities = BiWater $100.00 × 12 = $1,200.00. Pivot total = 12,000 + 600 + 3,200 + 1,200 × 3 = $19,400.00. Total True cost is $18,700.00 (ys-2025-spending), so the Other spending residual (the True-cost residual's label since build v59, F5) = 18,700 − 19,400 = −$700.00. Sorted desc with label tie-breaks, the top 5 are Housing, Subscriptions, then Fees / Insurance / Utilities (tied at $1,200.00, alphabetical) — Other spending (−$700.00) and Health ($600.00) fall outside the top 5, and all 7 rows sum exactly to True cost. Over Jan–Mar alone the same pivot gives: pivot $4,550.00 (Housing $3,000.00 + Health $150.00 + Subscriptions $300.00 + $200.00 + Insurance $300.00 + Fees $300.00 + Utilities $300.00) against True cost $900.00 + $7,900.00 + $4,500.00 = $13,300.00, so the residual is $8,750.00 and IS the top row — the residual competes like any other row.",
     expected: {
       pivotTotal: 1940000, residual: -70000,
       top1Total: 1200000, top2Total: 320000, top3Total: 120000,
@@ -4927,7 +4929,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cold-audit-wording-content",
     kind: "apicontract",
-    note: "Cold-AI audit wording (2026-10-21 audit, explanation-level findings; threshold statement REWRITTEN by contract v61, F1): describeApi publishes STATE_SEMANTICS and EDUCATION_CREDIT_SEMANTICS verbatim, and they must state two things the audit found unstated — whether the Washington $1,000,000 surtax threshold deflates (it DOES, since v61: the threshold is statute-fixed — RCW 82.87.040(1)(b), absent from RCW 82.87.150's indexed list — so it deflates in today's-dollars projections like the federal fixed thresholds, while the DOR-indexed standard deduction and charitable amounts stay at their published nominal values; the 2026-10-21 wording stated the opposite and was superseded by the tax-law data audit settlement of 2026-10-27), and how the Playground's totalTax treats the refundable education credit (totalTax is federalTax plus stateTax and does NOT subtract the refundable portion, which is reported separately and never netted into federalTax or totalTax — the same treatment the plan score identity gives it). This fixture pins only that the published text cannot silently lose either statement.",
+    note: "Cold-AI audit wording (2026-10-21 audit, explanation-level findings; threshold statement REWRITTEN by build v61, F1): describeApi publishes STATE_SEMANTICS and EDUCATION_CREDIT_SEMANTICS verbatim, and they must state two things the audit found unstated — whether the Washington $1,000,000 surtax threshold deflates (it DOES, since v61: the threshold is statute-fixed — RCW 82.87.040(1)(b), absent from RCW 82.87.150's indexed list — so it deflates in today's-dollars projections like the federal fixed thresholds, while the DOR-indexed standard deduction and charitable amounts stay at their published nominal values; the 2026-10-21 wording stated the opposite and was superseded by the tax-law data audit settlement of 2026-10-27), and how the Playground's totalTax treats the refundable education credit (totalTax is federalTax plus stateTax and does NOT subtract the refundable portion, which is reported separately and never netted into federalTax or totalTax — the same treatment the plan score identity gives it). This fixture pins only that the published text cannot silently lose either statement.",
     expected: { phrasesFound: 4 },
     actual: () => {
       const phrases: [string, string][] = [
@@ -4944,8 +4946,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-playground-year-semantics-content",
     kind: "apicontract",
-    note: "Playground year semantics — the dividend derivation (dividend-pair guard, projection solidity check 2026-10-21): describeApi publishes PLAYGROUND_YEAR_SEMANTICS verbatim, and it must state the single-year pricer's dividend rule in as many words — the Ordinary dividends input is 'the TOTAL ordinary dividends' (the 'Form 1099-DIV box 1a' figure), the Qualified input 'is a subset of that total', the derivation 'nonQualifiedDividends = max(0, ordinaryDividends − qualifiedDividends)', the overage rule (the qualified figure 'cannot exceed the total'; the derivation 'floors the non-qualified part at $0' and 'the excess is not counted'), and that the Playground flags the pair ('shows a note on the form in that case'). The behaviour itself is pinned by the tax suite's playground-dividend-split-normal and playground-dividend-split-overage fixtures; this fixture pins only that the published text cannot silently lose the derivation.",
-    expected: { phrasesFound: 7 },
+    note: "Playground year semantics — the dividend derivation (dividend-pair guard, projection solidity check 2026-10-21; qualified clamp added contract v137, audit S-8 + S-11; the clamp's tax consequence stated contract v143, re-audit SHOULD S-10): describeApi publishes PLAYGROUND_YEAR_SEMANTICS verbatim, and it must state the single-year pricer's dividend rule in as many words — the Ordinary dividends input is 'the TOTAL ordinary dividends' (the 'Form 1099-DIV box 1a' figure), the Qualified input 'is a subset of that total', the derivation 'nonQualifiedDividends = max(0, ordinaryDividends − qualifiedDividends)', the overage rule (the qualified figure 'cannot exceed the total'; the derivation 'floors the non-qualified part at $0' and 'the excess is not counted'), the clamp (the qualified part is 'clamped to the total' before pricing — 'min(qualifiedDividends, ordinaryDividends)'), and that the Playground flags the pair ('shows a note on the form in that case'). The v143 sentences state the clamp's TAX CONSEQUENCE on the fictional sample household's transposed pair ('TAX CONSEQUENCE OF THE CLAMP': the filed pair 'entered TRANSPOSED' prices at 'a federal tax of $12,103.41' under the clamp, and 'the clamp's tax consequence on this pair is exactly $750.00'). The behaviour itself is pinned by the tax suite's playground-dividend-split-normal, playground-dividend-split-overage, and playground-dividend-clamp-s11-example fixtures, and the consequence's figures by playground-dividend-clamp-consequence-s10; this fixture pins only that the published text cannot silently lose the derivation, the clamp, or the stated consequence.",
+    expected: { phrasesFound: 13 },
     actual: () => {
       const phrases = [
         "the TOTAL ordinary dividends",
@@ -4955,6 +4957,12 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "cannot exceed the total",
         "floors the non-qualified part at $0",
         "the excess is not counted",
+        "clamped to the total",
+        "min(qualifiedDividends, ordinaryDividends)",
+        "TAX CONSEQUENCE OF THE CLAMP",
+        "entered TRANSPOSED",
+        "a federal tax of $12,103.41",
+        "the clamp's tax consequence on this pair is exactly $750.00",
       ];
       return {
         phrasesFound: phrases.filter((p) => PLAYGROUND_YEAR_SEMANTICS.includes(p))
@@ -4965,8 +4973,8 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-tax-return-semantics-content",
     kind: "apicontract",
-    note: "Tax-return semantics (1040 LINES build; year added contract v147): describeApi publishes TAX_RETURN_SEMANTICS verbatim, and it must state the three amount fields and the return year and their prefill-only role in as many words — the fields are the return's 'Form 1040 actuals' (line 2b 'taxable interest', line 3a 'qualified dividends', line 3b 'ordinary dividends'), they are 'plan-record only' (accepted ONLY by saveRothInputs, returned ONLY by getRothPlanner, 'never enter a saved scenario'), their consumers are the Playground prefill with the mapping 'interest ← line 2b', 'qualified dividends ← line 3a', and ordinary dividends '← line 3b written as the TOTAL' ('never the non-qualified remainder'), and 'Plan pricing NEVER reads them' — pricing keeps modelling from 'the plan's yield fields' and a saved plan 'prices bit-identically with the three fields set or blank'. The text also states the year field (taxReturnYear — the calendar year of the return the amounts are from), the prefill's yield-first resolution for a priced year, and the 'as filed' preset loading the return figures into the return year itself. The behaviour itself is pinned by the tax suite's tax-return-prefill-mapping and tax-return-pricing-identity fixtures; this fixture pins only that the published text cannot silently lose the prefill-only role.",
-    expected: { phrasesFound: 12 },
+    note: "Tax-return semantics (1040 LINES build; year added build v147; dial provenance build v150; blank-yield fallback contract v136; qualified pricing rule corrected contract v139, re-audit MUST M-1): describeApi publishes TAX_RETURN_SEMANTICS verbatim, and it must state the three amount fields and the return year and their prefill role in as many words — the fields are the return's 'Form 1040 actuals' (line 2b 'taxable interest', line 3a 'qualified dividends', line 3b 'ordinary dividends'), they are 'plan-record only' (accepted ONLY by saveRothInputs, returned ONLY by getRothPlanner, 'never enter a saved scenario'), their consumers are the Playground prefill with the mapping 'interest ← line 2b', 'qualified dividends ← line 3a', and ordinary dividends '← line 3b written as the TOTAL' ('never the non-qualified remainder'), and the QUALIFIED pricing rule (v139): 'the return amounts never enter pricing as amounts' and 'pricing reads only the two derived percentages' — the earlier claim that plan pricing never reads them and prices bit-identically with the fields set or blank was FALSE on the action path (every compute action routes through resolveArgsBalances, which threads the derived percentages first) and must not return. The text also states the year field (taxReturnYear — the calendar year of the return the amounts are from), the prefill's yield-first resolution for a priced year, and the 'as filed' preset loading the return figures into the return year itself. The v150 sentences state the dial-label rule (the dials 'carry no Form 1040 line in their labels'; the line reference lives in the source hint), the per-dial provenance record ('remembers the provenance of its current figure'), the year-change re-derivation ('Changing the Playground's Tax year re-derives'), and the typed-value protection ('never overwrites a figure the user typed'). The v136 sentences state the first pricing-adjacent role: 'a blank yield field is filled with the implied yield' 'divided by the plan's resolved taxable pool', and 'An entered yield always wins over the fallback'. The v138 sentences state the second pricing-adjacent role (audit S-1): the plan engine splits its dividend yield income by 'the qualified share the stored return implies' — 'line 3a divided by line 3b' — and where no share is implied it 'prices 100% of its dividend income as qualified', as before. The behaviour itself is pinned by the tax suite's tax-return-prefill-mapping, tax-return-pricing-identity (re-scoped in v139 to the ACTION path through resolveArgsBalances' threading, not the bare planInputsFromSaved conversion), blank-yield-fallback, and plan-dividend-qualified-share-s1 fixtures; this fixture pins only that the published text cannot silently lose the prefill role, the qualified pricing rule, or the fallback rule. The v140 sentences (re-audit SHOULD S-2) state the compare refinement: in a compare run 'the fallback is derived for each scenario from THAT scenario's own resolved taxable pool', 'a scenario that leaves the pool unchanged derives exactly the base plan's percentages', and 'the qualified share is never re-derived'; the behaviour is pinned by the tax suite's compare-fallback-rederive-s2 fixture. The v146 sentences (re-audit round 3 NICE-1) state the negative-actual rule: 'a negative stored actual is rejected at parse' (the line reads as not entered and never surfaces as a negative prefill dollar) and the rejection is reported on getRothPlanner's taxReturn block as 'rejectedNegativeActuals'; the behaviour is pinned by the tax suite's tax-return-negative-actuals-rejected-nice1 fixture.",
+    expected: { phrasesFound: 27 },
     actual: () => {
       const phrases = [
         "Form 1040 actuals",
@@ -4979,8 +4987,23 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
         "qualified dividends ← line 3a",
         "line 3b written as the TOTAL",
         "never the non-qualified remainder",
-        "Plan pricing NEVER reads them",
-        "prices bit-identically with the three fields set or blank",
+        "the return amounts never enter pricing as amounts",
+        "pricing reads only the two derived percentages",
+        "carry no Form 1040 line in their labels",
+        "remembers the provenance of its current figure",
+        "Changing the Playground's Tax year re-derives",
+        "never overwrites a figure the user typed",
+        "a blank yield field is filled with the implied yield",
+        "divided by the plan's resolved taxable pool",
+        "An entered yield always wins over the fallback",
+        "the qualified share the stored return implies",
+        "line 3a divided by line 3b",
+        "prices 100% of its dividend income as qualified",
+        "the fallback is derived for each scenario from THAT scenario's own resolved taxable pool",
+        "a scenario that leaves the pool unchanged derives exactly the base plan's percentages",
+        "the qualified share is never re-derived",
+        "a negative stored actual is rejected at parse",
+        "rejectedNegativeActuals",
       ];
       return {
         phrasesFound: phrases.filter((p) => TAX_RETURN_SEMANTICS.includes(p))
@@ -5027,9 +5050,33 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "api-pretax-draw-split-semantics-content",
+    kind: "apicontract",
+    note: "Pre-tax draw split semantics (audit S-10's definition, build v127; documented and surfaced under re-audit SHOULD S-8): describeApi publishes PRETAX_DRAW_SPLIT_SEMANTICS verbatim (the handler returns this exact constant), and it must state the S-10 split in as many words — the total ('extraPreTaxDraw = pretaxSpendingDraw + pretaxTaxDebit'), the spending component ('the pre-tax draw for SPENDING alone', 'BY CHOICE'), the tax component ('the pre-tax debits that paid the TAX BILL alone', 'NOT money out by choice'), the compare readout's construction ('pretaxOutByChoiceCents is the year's conversion plus pretaxSpendingDraw ONLY'), the funding readout's different construction ('the year's APPLIED pre-tax funding source'), the withholding caveat ('counts conversion withholding that the priced total does not'), and the display-only scope ('no score, ranking, delta, or funding source is derived from the components'). The behaviour itself is pinned by the tax suite's tax-compare-pretax-out-by-choice-s10 fixture (the components and the compare/funding totals at the fictional worked example); this fixture pins only that the published text cannot silently lose the split or collapse the two readouts back into one quantity.",
+    expected: { phrasesFound: 9 },
+    actual: () => {
+      const phrases = [
+        "extraPreTaxDraw = pretaxSpendingDraw + pretaxTaxDebit",
+        "the pre-tax draw for SPENDING alone",
+        "BY CHOICE",
+        "the pre-tax debits that paid the TAX BILL alone",
+        "NOT money out by choice",
+        "pretaxOutByChoiceCents is the year's conversion plus pretaxSpendingDraw ONLY",
+        "the year's APPLIED pre-tax funding source",
+        "counts conversion withholding that the priced total does not",
+        "no score, ranking, delta, or funding source is derived from the components",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) =>
+          PRETAX_DRAW_SPLIT_SEMANTICS.includes(p),
+        ).length,
+      };
+    },
+  },
+  {
     id: "api-guardrails-semantics",
     kind: "apicontract",
-    note: "Guardrails semantics (Prompt 13 fix, contract v40): describeApi publishes GUARDRAILS_SEMANTICS verbatim (the handler returns this exact constant), and it must state the shipped behaviour — the strict rail rule ('strictly above guardrailsCutPct', 'strictly below guardrailsRaisePct', a rate exactly AT a rail fires neither), the numerical tolerance ('relative tolerance of 1e-9') with its IEEE-754 rationale specimens (the cut product '0.19999999999999998' and the raise product '0.16000000000000003'), the shared-comparison guarantee ('one shared helper', so simulator and solver cannot disagree), and the solver endpoint ('INCLUSIVE of its proven ceiling', feasibility 'decided by runNeverRunsOut'). The behaviour itself is pinned by the retirement suite's Prompt 13 fixtures; this fixture pins only that the published text cannot silently lose the tolerance or the inclusive endpoint.",
+    note: "Guardrails semantics (Prompt 13 fix, build v40): describeApi publishes GUARDRAILS_SEMANTICS verbatim (the handler returns this exact constant), and it must state the shipped behaviour — the strict rail rule ('strictly above guardrailsCutPct', 'strictly below guardrailsRaisePct', a rate exactly AT a rail fires neither), the numerical tolerance ('relative tolerance of 1e-9') with its IEEE-754 rationale specimens (the cut product '0.19999999999999998' and the raise product '0.16000000000000003'), the shared-comparison guarantee ('one shared helper', so simulator and solver cannot disagree), and the solver endpoint ('INCLUSIVE of its proven ceiling', feasibility 'decided by runNeverRunsOut'). The behaviour itself is pinned by the retirement suite's Prompt 13 fixtures; this fixture pins only that the published text cannot silently lose the tolerance or the inclusive endpoint.",
     expected: { phrasesFound: 8 },
     actual: () => {
       const phrases = [
@@ -5949,7 +5996,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "restore-writer-illegal-fields-refused-preflight",
     kind: "restore",
-    note: "Contract v60, packaged-parity F4 (the full sweep): starting from one complete, valid payload (controlRestores 1), EVERY backed-up field is mutated in turn to a value its ordinary writer refuses — string lengths (names, descriptions, categories, paid-by labels, notes, FITID), ranges (dueMonth 13 and 0, cash-out day 32 and Feb 31, negative amounts), enum membership (frequency, paidByType, sourceType, kind, propertyKind), flag representations (keepLightsOn 2/5, backfill −1, collapsed 2, custodial 2, archived −1), id positivity and referential integrity, a tax-bucket split on a property account's balance (writers store those whole), and the typed settings parsers. Every mutation must be refused BEFORE any write: no commit and the prior state byte-identical (allRefused / allIntact). Refusals land in the shared fieldValidators schema fragments or in preflightRestoreBackup — the same rules the writers enforce, never a second copy.",
+    note: "Build v60, packaged-parity F4 (the full sweep): starting from one complete, valid payload (controlRestores 1), EVERY backed-up field is mutated in turn to a value its ordinary writer refuses — string lengths (names, descriptions, categories, paid-by labels, notes, FITID), ranges (dueMonth 13 and 0, cash-out day 32 and Feb 31, negative amounts), enum membership (frequency, paidByType, sourceType, kind, propertyKind), flag representations (keepLightsOn 2/5, backfill −1, collapsed 2, custodial 2, archived −1), id positivity and referential integrity, a tax-bucket split on a property account's balance (writers store those whole), and the typed settings parsers. Every mutation must be refused BEFORE any write: no commit and the prior state byte-identical (allRefused / allIntact). Refusals land in the shared fieldValidators schema fragments or in preflightRestoreBackup — the same rules the writers enforce, never a second copy.",
     expected: {
       controlRestores: 1, allRefused: 1, allIntact: 1, atLeastFiftyMutations: 1,
     },
@@ -6099,7 +6146,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "seed-guard-global-emptiness",
     kind: "backup",
-    note: "Contract v60, packaged-parity F7: seedGuardCore's ONE emptiness predicate. The all-empty presence map seeds (allEmptySeeds 1); a record in ANY single dataset table blocks (everyTableBlocks — the loop flips each of the DATASET_TABLES in turn, settings included: the pre-v60 guards checked only four spending tables in one seed and only Net Worth accounts in the other, so a lone settings record let sample rows land beside real data); and unknown state fails closed — a table missing from the map, or an empty map, is NOT empty (missingTableFailsClosed / emptyMapFailsClosed).",
+    note: "Build v60, packaged-parity F7: seedGuardCore's ONE emptiness predicate. The all-empty presence map seeds (allEmptySeeds 1); a record in ANY single dataset table blocks (everyTableBlocks — the loop flips each of the DATASET_TABLES in turn, settings included: the pre-v60 guards checked only four spending tables in one seed and only Net Worth accounts in the other, so a lone settings record let sample rows land beside real data); and unknown state fails closed — a table missing from the map, or an empty map, is NOT empty (missingTableFailsClosed / emptyMapFailsClosed).",
     expected: {
       allEmptySeeds: 1, everyTableBlocks: 1,
       missingTableFailsClosed: 1, emptyMapFailsClosed: 1,
@@ -6177,7 +6224,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "restore-bucket-undecryptable-enc-prefix-refused",
     kind: "restore",
-    note: "Contract v94, stored-data finding F6 (the reviewer's reproduction): a restore carrying a Net Worth account whose bucket value is an undecryptable enc:v1:-prefixed value is REFUSED at preflight, before any write — no commit, the prior state byte-identical, and the reason names the bucket field. Two value classes are refused: malformed base64 after the prefix, and a plausible-looking prefixed body that is not genuine ciphertext. The control — the same payload with a plaintext legacy bucket — restores. The refusal is the preflight's, not the schema's: the payload schema types the bucket as an unrestricted string, so only the decrypt verdict can refuse it.",
+    note: "Build v94, stored-data finding F6 (the reviewer's reproduction): a restore carrying a Net Worth account whose bucket value is an undecryptable enc:v1:-prefixed value is REFUSED at preflight, before any write — no commit, the prior state byte-identical, and the reason names the bucket field. Two value classes are refused: malformed base64 after the prefix, and a plausible-looking prefixed body that is not genuine ciphertext. The control — the same payload with a plaintext legacy bucket — restores. The refusal is the preflight's, not the schema's: the payload schema types the bucket as an unrestricted string, so only the decrypt verdict can refuse it.",
     expected: {
       malformedRefused: 1, malformedCommitted: 0, malformedPriorIntact: 1,
       malformedReasonNamesBucket: 1, plausibleRefused: 1, plausiblePriorIntact: 1,
@@ -6218,7 +6265,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "restore-bucket-legacy-forms-accepted",
     kind: "restore",
-    note: "Contract v94, stored-data finding F6 (the acceptance leg): valid legacy bucket forms still restore. A plaintext bucket lands verbatim, and a genuinely decryptable prefixed bucket — model ciphertext in this fixture model, standing in for a real ciphertext the handler's decrypt attempt verifies — also restores and lands verbatim, so a restore of a backup exported from a store holding an older encrypted bucket loses nothing. A prefixed value that is not genuine ciphertext refuses, pinning that the acceptance is the decrypt verdict, not the prefix alone. No plaintext domain is invented: a plaintext bucket tag outside the current bucket names restores too, because the export reader returns plaintext as itself and no writer restricts legacy plaintext tags.",
+    note: "Build v94, stored-data finding F6 (the acceptance leg): valid legacy bucket forms still restore. A plaintext bucket lands verbatim, and a genuinely decryptable prefixed bucket — model ciphertext in this fixture model, standing in for a real ciphertext the handler's decrypt attempt verifies — also restores and lands verbatim, so a restore of a backup exported from a store holding an older encrypted bucket loses nothing. A prefixed value that is not genuine ciphertext refuses, pinning that the acceptance is the decrypt verdict, not the prefix alone. No plaintext domain is invented: a plaintext bucket tag outside the current bucket names restores too, because the export reader returns plaintext as itself and no writer restricts legacy plaintext tags.",
     expected: {
       plaintextRestores: 1, plaintextLands: 1, modelCiphertextRestores: 1,
       modelCiphertextLands: 1, plausiblePrefixRefused: 1, otherPlaintextRestores: 1,
@@ -6252,7 +6299,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "restore-encrypted-at-rest-key-list-complete",
     kind: "restore",
-    note: "Security round-2, finding 3 regression pin, extended at contract v60: the restore handler's settings loop branches on restoreCore's isEncryptedAtRestSettingKey, whose list (ENCRYPTED_AT_REST_SETTING_KEYS) must name EXACTLY the settings the ordinary writers store encrypted — opening_reserve_cents, the encryption key check, retirement_calc_inputs_v1, retirement_calc_baseline_v1, roth_conversion_inputs_v1, BOTH import-settings blobs, and (added v60, caught by the packaged F5 cross-install acceptance) BOTH encrypted sticky entry defaults, entry_default_monthly_paid_from_v1 and entry_default_yearly_paid_name_v1, whose omission left a cross-key restore holding the source install's ciphertext and failing every later dashboard load. Extended at contract v90 (stored-data findings F2/F3): the December projection blob december_projection_v1 and the Roth/Playground UI-state blob roth_ui_state_v1, whose writers encrypt them at rest — their omission would leave a restored value as the backup's plaintext until a later save rewrote it, and a cross-key restore carrying them as ciphertext would fail every later read. Before the round-2 build the handler's hand-written list omitted spending_import_settings_v1, so a restored spending-import settings value sat in the database as the backup's plaintext until a later save rewrote it; every key on the list is now re-encrypted by the restore as it stores the row. The pin is exact in both directions: all eleven expected keys are listed (expectedKeysListed 11) and the list carries nothing else (listLength 11), so neither a future omission nor a silent broadening passes.",
+    note: "Security round-2, finding 3 regression pin, extended at build v60: the restore handler's settings loop branches on restoreCore's isEncryptedAtRestSettingKey, whose list (ENCRYPTED_AT_REST_SETTING_KEYS) must name EXACTLY the settings the ordinary writers store encrypted — opening_reserve_cents, the encryption key check, retirement_calc_inputs_v1, retirement_calc_baseline_v1, roth_conversion_inputs_v1, BOTH import-settings blobs, and (added v60, caught by the packaged F5 cross-install acceptance) BOTH encrypted sticky entry defaults, entry_default_monthly_paid_from_v1 and entry_default_yearly_paid_name_v1, whose omission left a cross-key restore holding the source install's ciphertext and failing every later dashboard load. Extended at build v90 (stored-data findings F2/F3): the December projection blob december_projection_v1 and the Roth/Playground UI-state blob roth_ui_state_v1, whose writers encrypt them at rest — their omission would leave a restored value as the backup's plaintext until a later save rewrote it, and a cross-key restore carrying them as ciphertext would fail every later read. Before the round-2 build the handler's hand-written list omitted spending_import_settings_v1, so a restored spending-import settings value sat in the database as the backup's plaintext until a later save rewrote it; every key on the list is now re-encrypted by the restore as it stores the row. The pin is exact in both directions: all eleven expected keys are listed (expectedKeysListed 11) and the list carries nothing else (listLength 11), so neither a future omission nor a silent broadening passes.",
     expected: { expectedKeysListed: 11, listLength: 11, spendingImportListed: 1 },
     actual: () => {
       const expectedKeys = [
@@ -6298,7 +6345,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cas-core-deep-equal",
     kind: "apicontract",
-    note: "Contract v65 (CAS sweep): the pure comparison seam every guarded writer shares (server/src/casCore.ts). casDeepEqual is key-order independent (object key order carries no meaning across a JSON round trip), treats an absent member and an undefined member as the same, treats -0 as 0, is ARRAY-order sensitive (a reordered list is a different value), distinguishes null from a missing value, and recurses into nested objects. casCanonical is the stable stringify behind it: equal values canonicalize identically regardless of key order.",
+    note: "Build v65 (CAS sweep): the pure comparison seam every guarded writer shares (server/src/casCore.ts). casDeepEqual is key-order independent (object key order carries no meaning across a JSON round trip), treats an absent member and an undefined member as the same, treats -0 as 0, is ARRAY-order sensitive (a reordered list is a different value), distinguishes null from a missing value, and recurses into nested objects. casCanonical is the stable stringify behind it: equal values canonicalize identically regardless of key order.",
     expected: {
       keyOrderIgnored: 1,
       undefinedEqualsAbsent: 1,
@@ -6337,7 +6384,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cas-core-field-mismatch-and-revision",
     kind: "apicontract",
-    note: "Contract v65 (CAS sweep): casFieldMismatch reports a mismatch only for a LISTED field whose stored value differs from its base — an unlisted field may differ freely (partial writers guard only what they write), a listed field absent from the base counts as a mismatch, and null compares as a value. decideCasRevision mirrors the blob CAS decision: a missing base is the tolerated legacy path (allowed, next = stored + 1), a matching base is allowed at stored + 1, and a stale base is refused with next = stored.",
+    note: "Build v65 (CAS sweep): casFieldMismatch reports a mismatch only for a LISTED field whose stored value differs from its base — an unlisted field may differ freely (partial writers guard only what they write), a listed field absent from the base counts as a mismatch, and null compares as a value. decideCasRevision mirrors the blob CAS decision: a missing base is the tolerated legacy path (allowed, next = stored + 1), a matching base is allowed at stored + 1, and a stale base is refused with next = stored.",
     expected: {
       listedDiffers: 1,
       listedSame: 0,
@@ -6378,7 +6425,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cas-restore-epoch",
     kind: "apicontract",
-    note: "Contract v93 (stored-data finding F5): the restore epoch in the CAS decision (server/src/casCore.ts). The epoch is stored under one settings key as a plain integer string; absent or unparseable reads as 0; a restore stamps one past the pre-restore epoch, whatever a backup carried. The epoch check runs before the revision check and is independent of it: a supplied epoch that differs from the stored epoch is refused as an epoch conflict even when the revision numbers match (the restored snapshot restarts at revision 0, so revision equality cannot tell a pre-restore editor from a fresh one). A missing epoch keeps the pre-v93 revision-only behaviour, and the epoch refusal reason names the restore.",
+    note: "Build v93 (stored-data finding F5): the restore epoch in the CAS decision (server/src/casCore.ts). The epoch is stored under one settings key as a plain integer string; absent or unparseable reads as 0; a restore stamps one past the pre-restore epoch, whatever a backup carried. The epoch check runs before the revision check and is independent of it: a supplied epoch that differs from the stored epoch is refused as an epoch conflict even when the revision numbers match (the restored snapshot restarts at revision 0, so revision equality cannot tell a pre-restore editor from a fresh one). A missing epoch keeps the pre-v93 revision-only behaviour, and the epoch refusal reason names the restore.",
     expected: {
       epochKey: 1,
       parseAbsent: 0,
@@ -6451,7 +6498,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cas-restore-epoch-interleaving",
     kind: "apicontract",
-    note: "Contract v93 (F5): the reviewer's interleaving replayed through the pure epoch seam — editor reads a snapshot at revision 0, epoch 0; a restore replaces it (revision restarts at 0, epoch stamped to 1); the pre-restore editor's write is refused as an epoch conflict and the restored state is untouched by the decision; a fresh editor reading after the restore (revision 0, epoch 1) writes successfully and the revision advances; a second restore stamps epoch 2 and the first-restore-era editor's write is refused again. Each step's decision is the exact function the handlers run.",
+    note: "Build v93 (F5): the reviewer's interleaving replayed through the pure epoch seam — editor reads a snapshot at revision 0, epoch 0; a restore replaces it (revision restarts at 0, epoch stamped to 1); the pre-restore editor's write is refused as an epoch conflict and the restored state is untouched by the decision; a fresh editor reading after the restore (revision 0, epoch 1) writes successfully and the revision advances; a second restore stamps epoch 2 and the first-restore-era editor's write is refused again. Each step's decision is the exact function the handlers run.",
     expected: {
       staleAfterFirstRestoreRefused: 0,
       staleAfterFirstRestoreIsEpoch: 1,
@@ -6517,7 +6564,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cas-restore-epoch-spending",
     kind: "apicontract",
-    note: "Contract v121 (round-18 F3): the restore-epoch guard generalised to the spending editors and deletes — the pure decideRestoreEpoch seam the handlers run. The settlement's re-derived example: an editor loads a month total at epoch 0; a restore replaces the dataset with the SAME total (same value, different generation, epoch 0 -> 1); the stale editor's save is refused as an epoch conflict even though the stored value still equals the base, so the value-CAS check alone would have let it through. A fresh editor loading after the restore (epoch 1) writes; omitting baseEpoch keeps the legacy unchecked behaviour; the refusal reason names the restore and the record.",
+    note: "Build v121 (round-18 F3): the restore-epoch guard generalised to the spending editors and deletes — the pure decideRestoreEpoch seam the handlers run. The settlement's re-derived example: an editor loads a month total at epoch 0; a restore replaces the dataset with the SAME total (same value, different generation, epoch 0 -> 1); the stale editor's save is refused as an epoch conflict even though the stored value still equals the base, so the value-CAS check alone would have let it through. A fresh editor loading after the restore (epoch 1) writes; omitting baseEpoch keeps the legacy unchecked behaviour; the refusal reason names the restore and the record.",
     expected: {
       sameValueStaleRefused: 0,
       sameValueStaleIsEpochConflict: 1,
@@ -6552,7 +6599,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-cas-restore-epoch-delete",
     kind: "apicontract",
-    note: "Contract v121 (round-18 F4): the restore-epoch guard on deletes — the pure decideRestoreEpoch seam the delete handlers run. The restore path re-inserts snapshots with their explicit ids, so a stale tab holding a pre-restore snapshot id would otherwise delete the restored snapshot. A delete carrying the pre-restore epoch is refused as an epoch conflict; a delete carrying the post-restore epoch is allowed; a second restore refuses the first-restore-era delete again. The refusal reason names the restore and the record.",
+    note: "Build v121 (round-18 F4): the restore-epoch guard on deletes — the pure decideRestoreEpoch seam the delete handlers run. The restore path re-inserts snapshots with their explicit ids, so a stale tab holding a pre-restore snapshot id would otherwise delete the restored snapshot. A delete carrying the pre-restore epoch is refused as an epoch conflict; a delete carrying the post-restore epoch is allowed; a second restore refuses the first-restore-era delete again. The refusal reason names the restore and the record.",
     expected: {
       staleDeleteRefused: 0,
       staleDeleteIsEpochConflict: 1,
@@ -6590,7 +6637,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "api-optimizer-improvements-selection",
     kind: "apicontract",
-    note: "Contract v69 (priced levers): optimizerImprovements selects the candidates the optimizer response publishes as improvements over the entered plan. Pins, on synthetic scored stubs (net costs in dollars): Do Nothing is excluded even when it beats the plan; a candidate whose gain rounds below one cent is excluded; the same lever (name, window stop, claiming ages, draw order) priced by both runs collapses to its cheapest pricing; ordering is lowest net cost first; the gain is savedPlanNetCost − netCost rounded to the cent; and the list caps at three.",
+    note: "Build v69 (priced levers): optimizerImprovements selects the candidates the optimizer response publishes as improvements over the entered plan. Pins, on synthetic scored stubs (net costs in dollars): Do Nothing is excluded even when it beats the plan; a candidate whose gain rounds below one cent is excluded; the same lever (name, window stop, claiming ages, draw order) priced by both runs collapses to its cheapest pricing; ordering is lowest net cost first; the gain is savedPlanNetCost − netCost rounded to the cent; and the list caps at three.",
     expected: {
       count: 3,
       firstGainCents: 50000,
@@ -6668,7 +6715,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "pg-cash-left-vs-spending-surplus",
     kind: "apicontract",
-    note: "Enough for the year (contract v126), surplus: the year leaves $49,120 cash left after tax; against $40,000 of annual spending it is enough by $9,120 (49,120 − 40,000). The spending never enters the tax — cash left is identical with and without it.",
+    note: "Enough for the year (build v126), surplus: the year leaves $49,120 cash left after tax; against $40,000 of annual spending it is enough by $9,120 (49,120 − 40,000). The spending never enters the tax — cash left is identical with and without it.",
     expected: { cashLeft: 4912000, vsSpending: 912000, echoed: 4000000, identityHolds: 1, cashLeftUnchanged: 1 },
     actual: () => {
       const withSpend = pricePlaygroundYear({ ...PG_VS_SPENDING_BASE, annualSpending: 40000 });
@@ -6686,7 +6733,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "pg-cash-left-vs-spending-shortfall",
     kind: "apicontract",
-    note: "Enough for the year (contract v126), shortfall: the same year against $80,000 of annual spending is short by $30,880 (49,120 − 80,000), a negative comparison. Nothing else moves.",
+    note: "Enough for the year (build v126), shortfall: the same year against $80,000 of annual spending is short by $30,880 (49,120 − 80,000), a negative comparison. Nothing else moves.",
     expected: { cashLeft: 4912000, vsSpending: -3088000, echoed: 8000000, identityHolds: 1, cashLeftUnchanged: 1 },
     actual: () => {
       const withSpend = pricePlaygroundYear({ ...PG_VS_SPENDING_BASE, annualSpending: 80000 });
@@ -6704,7 +6751,7 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
   {
     id: "pg-cash-left-vs-spending-absent",
     kind: "apicontract",
-    note: "Enough for the year (contract v126), null contract: with no spending given, both new fields are null and cash left prices exactly as the baseline — the comparison adds nothing and changes nothing.",
+    note: "Enough for the year (build v126), null contract: with no spending given, both new fields are null and cash left prices exactly as the baseline — the comparison adds nothing and changes nothing.",
     expected: { cashLeft: 4912000, vsSpending: null, echoed: null },
     actual: () => {
       const plain = pricePlaygroundYear(PG_VS_SPENDING_BASE);
@@ -6785,6 +6832,10 @@ export function runExtendedTeethCheck(): {
    against synthetic stored blobs, never the user's data:
    (a) a stale-revision save is refused and the stored blob is
        left untouched, with the current blob carried back;
+   (a2) a save with NO base revision is refused the same way
+       (audit N-2 — baseRevision is required, there is no
+       unchecked write path), against a stored blob and
+       against an absent row alike;
    (b) a matching-revision save succeeds and increments;
    (c) a legacy blob without a revision loads as revision 0
        and its first save establishes revision 1;
@@ -6823,7 +6874,12 @@ export function runExtendedTeethCheck(): {
        guide build): a legacy blob without the key parses it
        at the $5,000 default, a typed value round-trips, an
        unrelated write preserves it, and a malformed value
-       falls back to the default.
+       falls back to the default;
+   (k) the Playground income dials' provenance records
+       (re-audit NICE-TO-HAVE N-1): the stored kind is
+       explicit only — a legacy blob parses all three null,
+       and typed / return / null kinds round-trip exactly,
+       never re-derived from a dial's value.
    Expected values follow from the contract itself (revision
    arithmetic and field preservation), not from app output. */
 
@@ -6954,21 +7010,48 @@ const uiCasCases: {
     },
   },
   {
-    id: "ui-cas-unchecked-write-still-bumps",
-    note: "A write with no base revision (the legacy unchecked path) is always allowed and still bumps the revision (2 to 3), so CAS writers that read afterwards see it.",
+    id: "ui-cas-missing-base-refused-storage-untouched",
+    note: "Audit N-2: setRothUiState REQUIRES baseRevision, exactly as saveRothInputs does. Its strict decision (decideRothUiWriteChecked — the exact decision applyRothUiWrite, the handler's write path, runs) refuses a call with NO baseRevision: against a stored revision-2 blob the refusal carries revision 2, produces no raw form to persist, and the stored blob re-parses exactly as before with the refused write's change absent; against an ABSENT row a missing base is likewise refused (it is not a first write — nothing is established). Controls: base 0 against the absent row IS the first-ever creation and is allowed (stores revision 1), and a matching base against the stored blob is allowed (2 → 3).",
     run: () => {
       const failures: string[] = [];
       const raw = uiRawAtRevision(2);
+      const before = parseRothUiState(raw);
+      const checked = decideRothUiWriteChecked(2, undefined);
+      if (checked.allowed)
+        failures.push("the strict decision must refuse a missing base");
+      else if (checked.storedRevision !== 2)
+        failures.push(`missing-base refusal must carry the stored revision 2, got ${checked.storedRevision}`);
       const res = applyRothUiWrite(raw, undefined, (s) => {
         s.labDialsOpen = true;
       });
-      if (res.status !== "ok") {
-        failures.push(`status: expected ok, got ${res.status}`);
+      if (res.status !== "conflict") {
+        failures.push(`status: expected conflict, got ${res.status}`);
         return failures;
       }
-      if (res.revision !== 3) failures.push(`revision: expected 3, got ${res.revision}`);
-      if (parseRothUiState(res.raw).labDialsOpen !== true)
-        failures.push("stored labDialsOpen: expected true");
+      if ("raw" in res) failures.push("conflict result must not carry a raw form to persist");
+      if (res.revision !== 2) failures.push(`conflict revision: expected 2, got ${res.revision}`);
+      if (res.state.labDialsOpen !== before.labDialsOpen)
+        failures.push("conflict state must carry the current stored values, not the refused write's");
+      const after = parseRothUiState(raw);
+      if (JSON.stringify(after) !== JSON.stringify(before))
+        failures.push("stored blob changed under a missing-base refusal");
+      const absent = applyRothUiWrite(undefined, undefined, (s) => {
+        s.labDialsOpen = true;
+      });
+      if (absent.status !== "conflict")
+        failures.push("a missing base against an absent row must be refused, not treated as a first write");
+      else if (absent.revision !== 0)
+        failures.push(`absent-row missing-base refusal must carry revision 0, got ${absent.revision}`);
+      const firstEver = applyRothUiWrite(undefined, 0, (s) => {
+        s.labDialsOpen = true;
+      });
+      if (firstEver.status !== "ok" || firstEver.revision !== 1)
+        failures.push("control: base 0 against an absent row must establish revision 1");
+      const matching = applyRothUiWrite(raw, 2, (s) => {
+        s.labDialsOpen = true;
+      });
+      if (matching.status !== "ok" || matching.revision !== 3)
+        failures.push("control: a matching base must be allowed and store revision 3");
       return failures;
     },
   },
@@ -7503,6 +7586,60 @@ const uiCasCases: {
       const badParsed = parseRothUiState(JSON.stringify(bad)).playground;
       if (badParsed.acaBuffer !== "5000")
         failures.push(`malformed acaBuffer (number): expected the "5000" default, got ${JSON.stringify(badParsed.acaBuffer)}`);
+      return failures;
+    },
+  },
+  {
+    id: "ui-pg-income-sources-explicit-only",
+    note: "Income-dial provenance is EXPLICIT ONLY (re-audit NICE-TO-HAVE N-1): the stored incomeSources kind is a dial's source and is never re-derived from the dial's value. A legacy blob written before the field existed parses all three sources null; a write storing a typed interest dial (its value is just a typed string here — storage attaches no meaning to it), a return-sourced ordinary dial at a named year, and a null qualified source round-trips each kind EXACTLY through applyRothUiWrite and parse — typed stays typed, return stays return, null stays null — and an unrelated field write preserves all three. The client-side rule this storage supports (a typed dial whose value coincidentally equals the stored return figure is never re-derived as return-sourced) lives in the Playground's re-derivation effect, which now reads only the recorded kind.",
+    run: () => {
+      const failures: string[] = [];
+      const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
+      delete (legacyObj.playground as Record<string, unknown>).incomeSources;
+      const raw = JSON.stringify(legacyObj);
+      const legacyParsed = parseRothUiState(raw).playground;
+      if (
+        legacyParsed.incomeSources.interest !== null ||
+        legacyParsed.incomeSources.ordinaryDividends !== null ||
+        legacyParsed.incomeSources.qualifiedDividends !== null
+      )
+        failures.push("legacy blob: expected all three income sources null");
+      const res = applyRothUiWrite(raw, 0, (s) => {
+        s.playground.interest = "4242";
+        s.playground.incomeSources = {
+          interest: { kind: "typed" },
+          ordinaryDividends: { kind: "return", year: 2024 },
+          qualifiedDividends: null,
+        };
+      });
+      if (res.status !== "ok") {
+        failures.push(`write: expected ok, got ${res.status}`);
+        return failures;
+      }
+      const stored = parseRothUiState(res.raw).playground;
+      if (stored.incomeSources.interest?.kind !== "typed")
+        failures.push(`stored blob: expected interest source typed, got ${JSON.stringify(stored.incomeSources.interest)}`);
+      const ord = stored.incomeSources.ordinaryDividends;
+      if (ord?.kind !== "return" || ord.year !== 2024)
+        failures.push(`stored blob: expected ordinary source return/2024, got ${JSON.stringify(ord)}`);
+      if (stored.incomeSources.qualifiedDividends !== null)
+        failures.push("stored blob: expected qualified source null");
+      if (stored.interest !== "4242")
+        failures.push("stored blob: the typed dial's value must round-trip unchanged");
+      const res2 = applyRothUiWrite(res.raw, res.revision, (s) => {
+        s.playground.conversion = "999";
+      });
+      if (res2.status !== "ok") {
+        failures.push(`unrelated write: expected ok, got ${res2.status}`);
+        return failures;
+      }
+      const after = parseRothUiState(res2.raw).playground;
+      if (after.incomeSources.interest?.kind !== "typed")
+        failures.push("unrelated write must preserve the typed source");
+      if (after.incomeSources.ordinaryDividends?.kind !== "return")
+        failures.push("unrelated write must preserve the return source");
+      if (after.incomeSources.qualifiedDividends !== null)
+        failures.push("unrelated write must preserve the null source");
       return failures;
     },
   },

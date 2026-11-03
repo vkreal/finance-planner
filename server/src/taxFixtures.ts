@@ -37,6 +37,7 @@ import {
 DEFAULT_DRAW_ORDER,
 DRAW_ORDER_OPTIONS,
 acaCreditFor,
+acaEmbeddedNetPremiumFor,
 acaFirstStepYear,
 acaHouseholdSizeForYear,
 applyLossLedger,
@@ -113,10 +114,11 @@ type RothSavedLike,
 type ScoredCandidate,
 } from "./rothOptimizer";
 import { parseRothBlobRevision } from "./rothRevisionCore";
-import { CHARITABLE_CEILING, CURRENT_LAW, DEDUCTION_2026, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear, saltScheduleForYear } from "./taxLaw";
+import { CHARITABLE_CEILING, CURRENT_LAW, DEDUCTION_2026, EARLIEST_LAW, TAX_LAW_2025, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear, saltScheduleForYear } from "./taxLaw";
 import { ACA_HOUSEHOLD_SCHEDULE_SEMANTICS, ACA_SEMANTICS, AMT_SEMANTICS, EDUCATION_CREDIT_SEMANTICS, IRMAA_LOOKBACK_SEMANTICS, ITEMIZED_DEDUCTION_SEMANTICS, LOSS_CARRYFORWARD_SEMANTICS, bracketTopPctField, playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
 import { computeGiftComparison, parseRothGift } from "./giftModel";
-import { parseRothTaxReturn, taxReturnPrefillDollars } from "./taxReturnCore";
+import { seedRothInputs } from "./rothSeed";
+import { impliedYieldPctsFromTaxReturn, parseRothTaxReturn, qualifiedDividendSharePctFromTaxReturn, rejectedNegativeTaxReturnActuals, taxReturnPrefillDollars } from "./taxReturnCore";
 import {
 contributionStack,
 payrollTaxBreakdown,
@@ -125,6 +127,17 @@ rollWorkYears,
 runWorkYearsCompare,
 type WorkYearJob,
 } from "./workYears";
+import {
+SAMPLE_BIRTH_YEAR_PRIMARY,
+SAMPLE_BIRTH_YEAR_SPOUSE,
+SAMPLE_PRETAX_CENTS,
+SAMPLE_SS_PRIMARY_CENTS,
+SAMPLE_SS_SPOUSE_CENTS,
+SAMPLE_TAX_RETURN_INTEREST_CENTS,
+SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS,
+SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS,
+samplePlanInputs,
+} from "./sampleHousehold";
 
 export type TaxFixtureCase = {
   id: string;
@@ -1052,8 +1065,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-aca-cliff-converges-with-gain-bearing-tax-payment",
     kind: "tax",
-    note: "Fill ceilings bind the FINAL priced year (convergence): Fill capped at the ACA cliff only, MFJ 2026, household of 3 (cliff $106,600), no spending, no SS, tax paid from Taxable at 60% basis (40% gains). Solved conversion-only, the fill is $106,600 and its $8,432 tax (taxable $74,400: $2,480 + 12% × $49,600) realizes $3,372.80 of gains, pushing final ACA MAGI to $109,972.80 and the credit to $0. Iterating to convergence: re-solving against the realized gains gives $103,200 (the largest $100 step with conversion + $3,372.80 ≤ $106,600); its tax is $8,024 (taxable $71,000), realizing $3,209.60 of gains (taxed at 0% — ordinary taxable income $71,000 is inside the $98,900 0% space), so final ACA MAGI is $103,200 + $3,209.60 = $106,409.60 ≤ cliff. Credit at 399.29% FPL (flat 9.96% band): $20,000 − 9.96% × $106,409.60 = $9,401.60 kept.",
-    expected: { conversion: 103200, acaMagi: 106409.6, federalTax: 8024, credit: 9401.6 },
+    note: "Fill ceilings bind the FINAL priced year (convergence): Fill capped at the ACA cliff only, MFJ 2026, household of 3 (cliff $106,600), no spending, no SS, tax paid from Taxable at 60% basis (40% gains). Solved conversion-only, the fill is $106,600 and its $8,432 tax (taxable $74,400: $2,480 + 12% × $49,600) realizes $3,372.80 of gains, pushing final ACA MAGI to $109,972.80 and the credit to $0. Iterating to convergence: re-solving against the realized gains gives $103,200 (the largest $100 step with conversion + $3,372.80 ≤ $106,600); its tax is $8,024 (taxable $71,000), realizing $3,209.60 of gains (taxed at 0% — ordinary taxable income $71,000 is inside the $98,900 0% space), so final ACA MAGI is $103,200 + $3,209.60 = $106,409.60 ≤ cliff. Credit at 399.29% FPL (flat 9.96% band): $20,000 − 9.96% × $106,409.60 = $9,401.60 kept. (RE-PINNED for SHOULD-1, re-audit round 3: the cliff grow-back is no longer gated on premium reconciliation or spend-from-cash, so this plain cliff-capped year grows past the $100-step shrink landing to the exact settlement fixed point — conversion C with tax(C) = $2,480 + 12% × (C − $57,000) and gains 40% × tax(C), satisfying C + 0.40 × tax(C) = $106,600: C = $103,381.68, tax $8,045.80 (taxable $71,181.68), gains $3,218.32, final ACA MAGI exactly $106,600.00 — on the cliff, not $190.40 under it — and credit $20,000 − 9.96% × $106,600 = $9,382.64. Verified by isolation: with the pre-SHOULD-1 gate restored this fixture returns exactly the previous pins.)",
+    expected: { conversion: 103381.68, acaMagi: 106600, federalTax: 8045.8, credit: 9382.64 },
     actual: () => {
       const plan = basePlan({
         taxableBasisPct: 60,
@@ -1074,8 +1087,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-aca-cliff-converges-with-gain-bearing-spending",
     kind: "tax",
-    note: "Same ACA-cliff convergence with $50,000/yr of spending drawn from Taxable (60% basis): the conversion-only fill ($106,600) plus $58,432 of taxable draws ($8,432 tax + $50,000 spending) realizes $23,372.80 of gains → final ACA MAGI $129,972.80, credit $0. Re-solving against those gains gives $83,200 (largest $100 step with conversion + $23,372.80 ≤ $106,600); its tax is $5,624 (taxable $51,000: $2,480 + 12% × $26,200), total draws $55,624 realize $22,249.60 of gains (0% space), so final ACA MAGI is $83,200 + $22,249.60 = $105,449.60 ≤ cliff, and the credit is $20,000 − 9.96% × $105,449.60 = $9,497.22.",
-    expected: { conversion: 83200, acaMagi: 105449.6, federalTax: 5624, credit: 9497.22 },
+    note: "Same ACA-cliff convergence with $50,000/yr of spending drawn from Taxable (60% basis): the conversion-only fill ($106,600) plus $58,432 of taxable draws ($8,432 tax + $50,000 spending) realizes $23,372.80 of gains → final ACA MAGI $129,972.80, credit $0. Re-solving against those gains gives $83,200 (largest $100 step with conversion + $23,372.80 ≤ $106,600); its tax is $5,624 (taxable $51,000: $2,480 + 12% × $26,200), total draws $55,624 realize $22,249.60 of gains (0% space), so final ACA MAGI is $83,200 + $22,249.60 = $105,449.60 ≤ cliff, and the credit is $20,000 − 9.96% × $105,449.60 = $9,497.22. (RE-PINNED for SHOULD-1, re-audit round 3: with the cliff grow-back ungated, this plain cliff-capped year grows past the $100-step shrink landing to the exact settlement fixed point — conversion C with tax(C) = $2,480 + 12% × (C − $57,000) and total draws $50,000 + tax(C) realizing gains 40% × ($50,000 + tax(C)), satisfying C + 0.40 × ($50,000 + tax(C)) = $106,600: C = $84,297.71, tax $5,755.73 (taxable $52,097.71), draws $55,755.73, gains $22,302.29, final ACA MAGI exactly $106,600.00 — on the cliff, not $1,150.40 under it — and credit $20,000 − 9.96% × $106,600 = $9,382.64. Verified by isolation: with the pre-SHOULD-1 gate restored this fixture returns exactly the previous pins.)",
+    expected: { conversion: 84297.71, acaMagi: 106600, federalTax: 5755.73, credit: 9382.64 },
     actual: () => {
       const plan = basePlan({
         taxableBasisPct: 60,
@@ -1645,8 +1658,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-aca-bunching-beats-level-cliff",
     kind: "tax",
-    note: "ACA bunching: both spouses under 65 from 57, other income $35,000/yr, benchmark premium $12,000/yr priced, pre-tax $900,000, 0% return. The best LEVEL cliff-respecting candidate (fill up to the ACA cliff every year) scores a $17,861.40 lifetime net cost; the best bunching candidate — alternate a big conversion year (credit forfeited) with a $0 year (credit kept at the low applicable percentage) — scores $5,027.63. On this constructed case the alternating schedule beats the level cliff schedule on the same net-cost objective. (Re-pinned 2026-10-14 for the newest-row FPL fallback, hand-reconciled against the pre-fallback run: bunching's winner is the same candidate with identical tax / terminal / conversions — only its kept credits moved, +$63.22 in each $0 year 2029–2043 and +$64.65 in 2044, +$570.41 in all, so its net fell $5,598.04 → $5,027.63. The level-cliff winner converts $1,900/yr more in 2028–2034 as the household-of-2 cliff rises $84,600 → $86,560: tax +$1,543.43, terminal −$2,810.35 (ending pre-tax −$12,774.31 × 22%), kept credits −$555.61 — net $18,572.71 → $17,861.40.) (Re-pinned 2026-10-21 for round-7 R7-5: the winning bunching candidate carries an IRMAA tier cap, and the aligned sizer now grows its capped years' conversions up to the tier top instead of stopping short — its lifetime net cost falls $5,027.63 → $5,002.56. Verified by isolation: with the R7-5 grow-back disabled this fixture returns exactly $5,027.63. The level-cliff winner and the bunching ranking are unchanged.) (RE-PINNED 2026-10-25 with provenance — environment-stamped pins: the previous pins (bestBunching $5,002.56, bestLevelCliff $17,861.40) and this environment's deterministic outcomes (bestBunching $5,046.81, bestLevelCliff $18,086.30; deltas +$44.25 / +$224.90) are BOTH recorded here — the pick between the two candidate outcomes is last-ulp-sensitive, turning on a near-tie candidate selection inside the optimizer's march where a one-ulp floating-point difference flips which candidate is scored best. The cross-runtime experiment of 2026-10-25 (~/workspace/verification/cross-runtime-experiment-2026-10-25.md) REFUTED the runtime-divergence explanation: Node (V8) and Bun 1.4.4 / 1.3.10 (JavaScriptCore) are each internally bit-reproducible and agree with each other EXACTLY on this fixture — the genuine Math.pow last-ulp split between the engines never reaches a priced figure — so the old pins are environment-stamped from hardware / a tree state this machine cannot reproduce, not a code defect and not browser-dependent pricing. The structural assertions still pin as before: the same strategies win (bunchingWins stays 1 — no winner flip in any runtime) and only the two sensitive net-cost figures moved.)",
-    expected: { bestBunching: 5046.81, bestLevelCliff: 18086.3, bunchingWins: 1 },
+    note: "ACA bunching: both spouses under 65 from 57, other income $35,000/yr, benchmark premium $12,000/yr priced, pre-tax $900,000, 0% return. The best LEVEL cliff-respecting candidate (fill up to the ACA cliff every year) scores a $17,861.40 lifetime net cost; the best bunching candidate — alternate a big conversion year (credit forfeited) with a $0 year (credit kept at the low applicable percentage) — scores $5,027.63. On this constructed case the alternating schedule beats the level cliff schedule on the same net-cost objective. (Re-pinned 2026-10-14 for the newest-row FPL fallback, hand-reconciled against the pre-fallback run: bunching's winner is the same candidate with identical tax / terminal / conversions — only its kept credits moved, +$63.22 in each $0 year 2029–2043 and +$64.65 in 2044, +$570.41 in all, so its net fell $5,598.04 → $5,027.63. The level-cliff winner converts $1,900/yr more in 2028–2034 as the household-of-2 cliff rises $84,600 → $86,560: tax +$1,543.43, terminal −$2,810.35 (ending pre-tax −$12,774.31 × 22%), kept credits −$555.61 — net $18,572.71 → $17,861.40.) (Re-pinned 2026-10-21 for round-7 R7-5: the winning bunching candidate carries an IRMAA tier cap, and the aligned sizer now grows its capped years' conversions up to the tier top instead of stopping short — its lifetime net cost falls $5,027.63 → $5,002.56. Verified by isolation: with the R7-5 grow-back disabled this fixture returns exactly $5,027.63. The level-cliff winner and the bunching ranking are unchanged.) (RE-PINNED 2026-10-25 with provenance — environment-stamped pins: the previous pins (bestBunching $5,002.56, bestLevelCliff $17,861.40) and this environment's deterministic outcomes (bestBunching $5,046.81, bestLevelCliff $18,086.30; deltas +$44.25 / +$224.90) are BOTH recorded here — the pick between the two candidate outcomes is last-ulp-sensitive, turning on a near-tie candidate selection inside the optimizer's march where a one-ulp floating-point difference flips which candidate is scored best. The cross-runtime experiment of 2026-10-25 (~/workspace/verification/cross-runtime-experiment-2026-10-25.md) REFUTED the runtime-divergence explanation: Node (V8) and Bun 1.4.4 / 1.3.10 (JavaScriptCore) are each internally bit-reproducible and agree with each other EXACTLY on this fixture — the genuine Math.pow last-ulp split between the engines never reaches a priced figure — so the old pins are environment-stamped from hardware / a tree state this machine cannot reproduce, not a code defect and not browser-dependent pricing. The structural assertions still pin as before: the same strategies win (bunchingWins stays 1 — no winner flip in any runtime) and only the two sensitive net-cost figures moved.) (RE-PINNED for SHOULD-1, re-audit round 3: the best LEVEL cliff candidate is a plain cliff-capped shape — no premium reconciliation, no spend-from-cash — so the ungated cliff grow-back now lands its cliff years on their cliffs instead of at the shrink-loop landings under them; its lifetime net cost falls $18,086.30 → $18,085.33. Verified by isolation: with the pre-SHOULD-1 gate restored this fixture returns exactly $18,086.30. The bunching winner ($5,046.81) and the ranking are unchanged.)",
+    expected: { bestBunching: 5046.81, bestLevelCliff: 18085.33, bunchingWins: 1 },
     actual: () => {
       const scored = scoreAllCandidates(optAcaPlan());
       const bunch = scored.filter((s) => s.spec.bunching);
@@ -5864,7 +5877,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-harvest-completeness-micro",
     kind: "tax",
-    note: "Gain-harvesting completeness (contract v56, HAND-DERIVED micro-case): single filer, birthYearPrimary 1966, start 2026, end age 61, retirement age 61, conversion window ages 60–61, annual spending $85,000, pre-tax $10,000, taxable $200,000 at 0% basis (explicitly entered, not blank), Roth $0, HSA $0, expected return 0%, inflation 0%, state other/0%, no Social Security, no other income, heir rate 20%, draw order Taxable → Pre-tax → Roth. Hand derivation: 2026 converts $10,000 tax-free under the $16,100 single standard deduction and harvests $55,550 into the 0% LTCG band (the $49,450 0% cutoff plus the $6,100 of deduction left after the conversion); the stepped-up basis makes 2027's $85,000 sale land exactly at the $49,450 cutoff, $0 tax — so the harvesting winner's net cost is exactly $0.00. Do Nothing prices $5,432.35 ($3,432.35 of tax + $2,000 terminal at the 20% heir rate on the $10,000 pre-tax left standing). Before v56 the optimizer never generated a gainsHarvest candidate, so its best on this plan was a non-harvest strategy costing over $1,400; the winner of BOTH the joint and the fixed-age search must now be a gainsHarvest strategy at $0.00, named with the harvesting phrase, and Do Nothing (never a harvest twin) must carry gainsHarvest false at $5,432.35.",
+    note: "Gain-harvesting completeness (build v56, HAND-DERIVED micro-case): single filer, birthYearPrimary 1966, start 2026, end age 61, retirement age 61, conversion window ages 60–61, annual spending $85,000, pre-tax $10,000, taxable $200,000 at 0% basis (explicitly entered, not blank), Roth $0, HSA $0, expected return 0%, inflation 0%, state other/0%, no Social Security, no other income, heir rate 20%, draw order Taxable → Pre-tax → Roth. Hand derivation: 2026 converts $10,000 tax-free under the $16,100 single standard deduction and harvests $55,550 into the 0% LTCG band (the $49,450 0% cutoff plus the $6,100 of deduction left after the conversion); the stepped-up basis makes 2027's $85,000 sale land exactly at the $49,450 cutoff, $0 tax — so the harvesting winner's net cost is exactly $0.00. Do Nothing prices $5,432.35 ($3,432.35 of tax + $2,000 terminal at the 20% heir rate on the $10,000 pre-tax left standing). Before v56 the optimizer never generated a gainsHarvest candidate, so its best on this plan was a non-harvest strategy costing over $1,400; the winner of BOTH the joint and the fixed-age search must now be a gainsHarvest strategy at $0.00, named with the harvesting phrase, and Do Nothing (never a harvest twin) must carry gainsHarvest false at $5,432.35.",
     expected: {
       jointWinnerHarvest: 1,
       jointWinnerNet: 0,
@@ -5922,7 +5935,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-conflict-locked",
     kind: "tax",
-    note: "Claiming-age floor conflict honesty (contract v56): the opt-claim-locked-already-claimed plan shape (single filer born 1951, claim already started at 67, $48,000/yr) with claimAgeFloor 70 added. The claim is locked at 67 — the benefit has already started, so the entered age cannot move — and the single-combination path crowns the same claim-67 winner as before (the crowning is unchanged), but the result now reports the conflict instead of asserting compliance: claimAgeFloorMet is false, the claim-search note states the conflict plainly naming floor 70 and the winner's age 67 and gives the locked reason, the note does NOT contain the compliance assertion ('the winner is the best strategy at a claiming age of 70 or later'), and — the claim age table being empty on this path — the note never references below-floor markings in the table.",
+    note: "Claiming-age floor conflict honesty (build v56): the opt-claim-locked-already-claimed plan shape (single filer born 1951, claim already started at 67, $48,000/yr) with claimAgeFloor 70 added. The claim is locked at 67 — the benefit has already started, so the entered age cannot move — and the single-combination path crowns the same claim-67 winner as before (the crowning is unchanged), but the result now reports the conflict instead of asserting compliance: claimAgeFloorMet is false, the claim-search note states the conflict plainly naming floor 70 and the winner's age 67 and gives the locked reason, the note does NOT contain the compliance assertion ('the winner is the best strategy at a claiming age of 70 or later'), and — the claim age table being empty on this path — the note never references below-floor markings in the table.",
     expected: {
       claimAgeFloorMetFalse: 1,
       winnerAge: 67,
@@ -6345,7 +6358,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-irmaa-matches-engine",
     kind: "tax",
-    note: "Playground anchor 4 (cross-check, no second table): the playground's IRMAA tier for a MAGI must equal the engine's own classifier (irmaaTierFor, the one the plan's year table reports) at the same MAGI and filing status, graded under the premium year's law row. MFJ MAGI $220,000 → Tier 1 (2026 MFJ lines: $218,000 / $274,000); MFJ MAGI $340,000 → Tier 2 (line $342,000); Single MAGI $150,000 → Tier 2 (single lines $137,000 / $171,000). Tier 1 surcharge per person (2026 CMS): Part B total $284.10 − standard $202.90 = $81.20, plus Part D $14.50 → $95.70/mo, $1,148.40/yr, $2,296.80/yr for two people on Medicare; the next tier line above $220,000 is $274,000, leaving $54,000 of room; the tier set by 2026 MAGI is paid in 2028. RE-PINNED for contract v97: the spouse ages are set so both spouses count on Medicare in the premium year (premium-year ages 68/68 in the first two legs) — under the pre-v97 flag count a spouse aged 55 with the flag on counted two people too, but the premium-year age rule counts only the primary at that age, so the ages, not the household figure, moved.",
+    note: "Playground anchor 4 (cross-check, no second table): the playground's IRMAA tier for a MAGI must equal the engine's own classifier (irmaaTierFor, the one the plan's year table reports) at the same MAGI and filing status, graded under the premium year's law row. MFJ MAGI $220,000 → Tier 1 (2026 MFJ lines: $218,000 / $274,000); MFJ MAGI $340,000 → Tier 2 (line $342,000); Single MAGI $150,000 → Tier 2 (single lines $137,000 / $171,000). Tier 1 surcharge per person (2026 CMS): Part B total $284.10 − standard $202.90 = $81.20, plus Part D $14.50 → $95.70/mo, $1,148.40/yr, $2,296.80/yr for two people on Medicare; the next tier line above $220,000 is $274,000, leaving $54,000 of room; the tier set by 2026 MAGI is paid in 2028. RE-PINNED for build v97: the spouse ages are set so both spouses count on Medicare in the premium year (premium-year ages 68/68 in the first two legs) — under the pre-v97 flag count a spouse aged 55 with the flag on counted two people too, but the premium-year age rule counts only the primary at that age, so the ages, not the household figure, moved.",
     expected: {
       tierA: 1,
       engineTierA: 1,
@@ -6426,7 +6439,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-irmaa-premium-year-participants-by-age",
     kind: "tax",
-    note: "Engine-calendar fix F3 (contract v97): the Playground's IRMAA participants count by AGE in the premium year, not by the priced year's Medicare flags — the plan engine's rule. Single, tax year with the primary aged 63 and the Medicare flag off: the premium year is two years later, when the primary is 65, so one person counts and the surcharge prices, where the flag-based count priced nothing. The tier and rates come from the premium year's law row (the carried-forward newest row for a premium year past the table): a single MAGI in the third tier prices the third tier's Part B total less the standard premium plus its Part D surcharge, monthly and annualised, with the next tier line and the room under it from the same row. The spouse legs pin the same age rule for the second person: a spouse aged 62 in the priced year (64 in the premium year) does not count while the primary does, and a spouse aged 63 (65 in the premium year) counts alongside the primary — both with the flags off, so the flags alone cannot produce either count.",
+    note: "Engine-calendar fix F3 (build v97): the Playground's IRMAA participants count by AGE in the premium year, not by the priced year's Medicare flags — the plan engine's rule. Single, tax year with the primary aged 63 and the Medicare flag off: the premium year is two years later, when the primary is 65, so one person counts and the surcharge prices, where the flag-based count priced nothing. The tier and rates come from the premium year's law row (the carried-forward newest row for a premium year past the table): a single MAGI in the third tier prices the third tier's Part B total less the standard premium plus its Part D surcharge, monthly and annualised, with the next tier line and the room under it from the same row. The spouse legs pin the same age rule for the second person: a spouse aged 62 in the priced year (64 in the premium year) does not count while the primary does, and a spouse aged 63 (65 in the premium year) counts alongside the primary — both with the flags off, so the flags alone cannot produce either count.",
     expected: {
       magiA: 200000,
       personsA: 1,
@@ -6513,7 +6526,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-irmaa-premium-year-law-row",
     kind: "tax",
-    note: "Engine-calendar fix F4 (contract v97): the Playground grades the IRMAA tier AND prices the surcharge under the PREMIUM year's law row — thresholds and rates together — the plan engine's rule, via the same carried-forward newest row for a premium year past the table. A single return in the earlier law year with MAGI just over that year's first tier line is Tier 1 under the source year's row but Tier 0 under the premium year's carried-forward row, whose first tier line sits higher: no surcharge, with the next tier line and the room under it from the premium row. The second leg proves the premium row still tiers above its own line: a MAGI just over the premium row's first line prices that row's first-tier surcharge (its Part B total less the standard premium plus its Part D surcharge). Both legs are on Medicare in the priced year and the premium year, so the participant count cannot explain either figure.",
+    note: "Engine-calendar fix F4 (build v97): the Playground grades the IRMAA tier AND prices the surcharge under the PREMIUM year's law row — thresholds and rates together — the plan engine's rule, via the same carried-forward newest row for a premium year past the table. A single return in the earlier law year with MAGI just over that year's first tier line is Tier 1 under the source year's row but Tier 0 under the premium year's carried-forward row, whose first tier line sits higher: no surcharge, with the next tier line and the room under it from the premium row. The second leg proves the premium row still tiers above its own line: a MAGI just over the premium row's first line prices that row's first-tier surcharge (its Part B total less the standard premium plus its Part D surcharge). Both legs are on Medicare in the priced year and the premium year, so the participant count cannot explain either figure.",
     expected: {
       magiA: 108000,
       tierA: 0,
@@ -6638,7 +6651,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-rmd-and-watch-outs",
     kind: "tax",
-    note: "Playground RMD + watch-outs (hand-derived): (a) a $1,000,000 prior-Dec-31 balance at primary 75 / spouse 64, spouse sole beneficiary, prices the plan's own Joint Life RMD — divisor 25.3 (Pub. 590-B), RMD $39,525.69 — through rmdForYear, the same rule the plan uses. (b) At 57 (RMD age 75 for a 1969 birth year) no RMD is priced, and a typed $60,000 conversion against a $50,000 balance is flagged as exceeding the balance. (c) RE-PINNED by round-7 R7-1 (the old pin described the defect): a sale of $40,000 against a $90,000 basis is a $50,000 capital loss from capital transactions only; the $10,000 of qualified dividends are NOT netted against it (§§1222/1(h)) — they price whole in the preferential stack (ltcgPriced $10,000), the capital loss is the full $50,000, and $3,000 of it applies against ordinary income under §1211(b): AGI is $10,000 − $3,000 = $7,000, taxable income is $0 after the $32,200 standard deduction, so the federal tax is $0 and the remaining loss is reported, not hidden.",
+    note: "Playground RMD + watch-outs (hand-derived): (a) a $1,000,000 prior-Dec-31 balance at primary 75 / spouse 64, spouse sole beneficiary, prices the plan's own Joint Life RMD — divisor 25.3 (Pub. 590-B), RMD $39,525.69 — through rmdForYear, the same rule the plan uses. (b) At 57 (RMD age 75 for a 1969 birth year) no RMD is priced, and a typed $60,000 conversion against a $50,000 balance is flagged as exceeding the balance. (c) RE-PINNED by round-7 R7-1 (the old pin described the defect): a sale of $40,000 against a $90,000 basis is a $50,000 capital loss from capital transactions only; the $10,000 of qualified dividends (entered as a $10,000 ordinary total, all of it qualified — the pair made consistent under the contract v137 clamp, every figure unchanged) are NOT netted against it (§§1222/1(h)) — they price whole in the preferential stack (ltcgPriced $10,000), the capital loss is the full $50,000, and $3,000 of it applies against ordinary income under §1211(b): AGI is $10,000 − $3,000 = $7,000, taxable income is $0 after the $32,200 standard deduction, so the federal tax is $0 and the remaining loss is reported, not hidden.",
     expected: {
       rmd: 39525.69,
       rmdDivisor: 25.3,
@@ -6701,6 +6714,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         pretaxBalance: null,
         stockSold: 40000,
         stockBasis: 90000,
+        ordinaryDividends: 10000,
         qualifiedDividends: 10000,
       });
       return {
@@ -6970,7 +6984,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-chip-fill-gains-dont-shrink",
     kind: "tax",
-    note: "Playground chip fill, gains stack on top (hand-derived): 2026 MFJ, ages 55/44, interest $5,000 plus qualified dividends $50,000; the 12% chip. Qualified dividends ride the gains staircase — they do NOT consume ordinary bracket room — so the fill is $128,000, IDENTICAL to the interest-only chip case, even though MAGI is $50,000 higher ($183,000) and total taxable income is $150,800 (ordinary $100,800 + gains $50,000). The gains price on top: ordinary taxable income $100,800 is past the $98,900 0% gains ceiling, so the whole $50,000 prices at 15% = $7,500, and federal tax is $11,600 + $7,500 = $19,100.",
+    note: "Playground chip fill, gains stack on top (hand-derived): 2026 MFJ, ages 55/44, interest $5,000 plus $50,000 of dividends, all of it qualified (a $50,000 ordinary total — the pair made consistent under the contract v137 clamp, every figure unchanged); the 12% chip. Qualified dividends ride the gains staircase — they do NOT consume ordinary bracket room — so the fill is $128,000, IDENTICAL to the interest-only chip case, even though MAGI is $50,000 higher ($183,000) and total taxable income is $150,800 (ordinary $100,800 + gains $50,000). The gains price on top: ordinary taxable income $100,800 is past the $98,900 0% gains ceiling, so the whole $50,000 prices at 15% = $7,500, and federal tax is $11,600 + $7,500 = $19,100.",
     expected: {
       fill: 128000,
       magi: 183000,
@@ -6990,7 +7004,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         onMedicarePrimary: false,
         onMedicareSpouse: false,
         interest: 5000,
-        ordinaryDividends: 0,
+        ordinaryDividends: 50000,
         otherOrdinary: 0,
         taxExemptInterest: 0,
         ssPrimary: 0,
@@ -7861,7 +7875,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-super-catchup-60-61",
     kind: "tax",
-    note: "Super catch-up at 60–61 (SECURE 2.0 §414(v)): the 60–63 catch-up limit is $11,250 (Roth at this salary, as in the 56–59 case), so the mega backdoor shrinks to $72,000 − $24,500 − $11,250 = $36,250 and the total sheltered stays $81,750. Taxable wages / federal / FICA / surplus are unchanged from the 56–59 case (the catch-up is Roth either way, so it never touched taxable wages). Pinned at both 60 and 61 (calendar 2030/2031 price under the latest law row, 2030). (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $11,250 super catch-up is excluded from §415(c) annual additions, so the shrinkage described above no longer happens — the mega backdoor stays $47,500 at 60 and 61, total sheltered rises to $93,000, and surplus falls by the extra $11,250 sheltered, to $91,804.62.) (RE-PINNED by contract v61, F2/F3 — the statute-fixed work-years amounts now deflate: both years price off the 2026 row at the plan's 2.5% inflation, so the §223(b)(3) HSA catch-up deflates (2030: $1,000 × 0.9059506448 = $905.95 → HSA limit $9,655.95, own HSA $94.05 less than the flat $9,750; 2031: × 0.8838542878 = $883.85 → limit $9,633.85, $116.15 less) and the §3101(b)(2) threshold deflates ($226,487.66 in 2030, $220,963.57 in 2031). Sheltered falls by exactly each year's HSA shortfall ($92,905.95 / $92,883.85; the §414(v) catch-up and the mega are unmoved). Surplus 2030: +$94.05 (own contributions fall) − $213.82 FICA (Additional Medicare $1,699.71 vs $1,487.25 on the deflated threshold, Medicare +$1.36 on the higher FICA wages) − $22.57 federal (24% × the $94.05 of extra taxable wages) = −$142.34 → $91,662.28. Surplus 2031: +$116.15 − $264.05 FICA − $27.88 federal = −$175.78 → $91,628.84. The two years no longer pin equal: each carried year deflates one step further.)",
+    note: "Super catch-up at 60–61 (SECURE 2.0 §414(v)): the 60–63 catch-up limit is $11,250 (Roth at this salary, as in the 56–59 case), so the mega backdoor shrinks to $72,000 − $24,500 − $11,250 = $36,250 and the total sheltered stays $81,750. Taxable wages / federal / FICA / surplus are unchanged from the 56–59 case (the catch-up is Roth either way, so it never touched taxable wages). Pinned at both 60 and 61 (calendar 2030/2031 price under the latest law row, 2030). (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the $11,250 super catch-up is excluded from §415(c) annual additions, so the shrinkage described above no longer happens — the mega backdoor stays $47,500 at 60 and 61, total sheltered rises to $93,000, and surplus falls by the extra $11,250 sheltered, to $91,804.62.) (RE-PINNED by build v61, F2/F3 — the statute-fixed work-years amounts now deflate: both years price off the 2026 row at the plan's 2.5% inflation, so the §223(b)(3) HSA catch-up deflates (2030: $1,000 × 0.9059506448 = $905.95 → HSA limit $9,655.95, own HSA $94.05 less than the flat $9,750; 2031: × 0.8838542878 = $883.85 → limit $9,633.85, $116.15 less) and the §3101(b)(2) threshold deflates ($226,487.66 in 2030, $220,963.57 in 2031). Sheltered falls by exactly each year's HSA shortfall ($92,905.95 / $92,883.85; the §414(v) catch-up and the mega are unmoved). Surplus 2030: +$94.05 (own contributions fall) − $213.82 FICA (Additional Medicare $1,699.71 vs $1,487.25 on the deflated threshold, Medicare +$1.36 on the higher FICA wages) − $22.57 federal (24% × the $94.05 of extra taxable wages) = −$142.34 → $91,662.28. Surplus 2031: +$116.15 − $264.05 FICA − $27.88 federal = −$175.78 → $91,628.84. The two years no longer pin equal: each carried year deflates one step further.)",
     expected: {
       catchUp60: 11250,
       mega60: 47500,
@@ -8120,7 +8134,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v61-workyears-additional-medicare-deflates",
     kind: "tax",
-    note: "Contract v61, F2 — THE ADDITIONAL MEDICARE THRESHOLD DEFLATES IN WORK YEARS (tax-law data audit acceptance case, hand-derived; IRC §3101(b)(2)): the $250,000 MFJ threshold is statute-fixed (not indexed), so a work year priced off a carried law row deflates it by deflationFactor(calendarYear, law.year, plan.inflationPct), threaded from priceOneWorkYear (the plan's inflationPct) into payrollTaxBreakdown; the indexed wage base and the rates stay as read. Case: 3% inflation, calendar 2027 priced off the 2026 row, MFJ FICA wages $260,000 — the deflated threshold is $250,000 / 1.03 = $242,718.45, so the Additional Medicare Tax is 0.9% × $17,281.55 = $155.53 (pre-fix: 0.9% × $10,000 = $90.00) and the payroll total is $11,439.00 (capped Social Security) + $3,770.00 (Medicare) + $155.53 = $15,364.53. Pinned at the payrollTaxBreakdown mechanics and end-to-end through priceOneWorkYear (age 45 in 2027, salary $268,750, own HSA the $8,750 family limit, so FICA wages are exactly $260,000); the no-factor control keeps the pre-fix $90.00 / $15,299.00, and a year with its own row (factor 1.0) prices bit-identically to before.",
+    note: "Build v61, F2 — THE ADDITIONAL MEDICARE THRESHOLD DEFLATES IN WORK YEARS (tax-law data audit acceptance case, hand-derived; IRC §3101(b)(2)): the $250,000 MFJ threshold is statute-fixed (not indexed), so a work year priced off a carried law row deflates it by deflationFactor(calendarYear, law.year, plan.inflationPct), threaded from priceOneWorkYear (the plan's inflationPct) into payrollTaxBreakdown; the indexed wage base and the rates stay as read. Case: 3% inflation, calendar 2027 priced off the 2026 row, MFJ FICA wages $260,000 — the deflated threshold is $250,000 / 1.03 = $242,718.45, so the Additional Medicare Tax is 0.9% × $17,281.55 = $155.53 (pre-fix: 0.9% × $10,000 = $90.00) and the payroll total is $11,439.00 (capped Social Security) + $3,770.00 (Medicare) + $155.53 = $15,364.53. Pinned at the payrollTaxBreakdown mechanics and end-to-end through priceOneWorkYear (age 45 in 2027, salary $268,750, own HSA the $8,750 family limit, so FICA wages are exactly $260,000); the no-factor control keeps the pre-fix $90.00 / $15,299.00, and a year with its own row (factor 1.0) prices bit-identically to before.",
     expected: {
       directAdditional: 155.53,
       directTotal: 15364.53,
@@ -8160,7 +8174,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v61-workyears-hsa-catchup-deflates",
     kind: "tax",
-    note: "Contract v61, F3 — THE HSA AGE-55 CATCH-UP DEFLATES IN WORK YEARS (tax-law data audit acceptance case, hand-derived; IRC §223(b)(3)): the $1,000 catch-up has been statute-fixed since 2009, so a work year priced off a carried law row deflates ONLY the catch-up by the year's deflationFactor, threaded from priceOneWorkYear into contributionStack; the indexed base limits (family $8,750 / self-only $4,400 on the 2026 row) stay as read. Case: 3% inflation, calendar 2027 priced off the 2026 row, a 55-year-old with family coverage — the limit is $8,750 + $1,000 / 1.03 = $8,750 + $970.87 = $9,720.87 (pre-fix $9,750); self-only is $4,400 + $970.87 = $5,370.87. Pinned at the contributionStack mechanics and end-to-end through priceOneWorkYear (age 55 in 2027, salary $100,000, no employer HSA: own HSA fills the deflated limit, so FICA wages are $100,000 − $9,720.87 = $90,279.13); the no-factor control keeps the pre-fix $9,750 limit.",
+    note: "Build v61, F3 — THE HSA AGE-55 CATCH-UP DEFLATES IN WORK YEARS (tax-law data audit acceptance case, hand-derived; IRC §223(b)(3)): the $1,000 catch-up has been statute-fixed since 2009, so a work year priced off a carried law row deflates ONLY the catch-up by the year's deflationFactor, threaded from priceOneWorkYear into contributionStack; the indexed base limits (family $8,750 / self-only $4,400 on the 2026 row) stay as read. Case: 3% inflation, calendar 2027 priced off the 2026 row, a 55-year-old with family coverage — the limit is $8,750 + $1,000 / 1.03 = $8,750 + $970.87 = $9,720.87 (pre-fix $9,750); self-only is $4,400 + $970.87 = $5,370.87. Pinned at the contributionStack mechanics and end-to-end through priceOneWorkYear (age 55 in 2027, salary $100,000, no employer HSA: own HSA fills the deflated limit, so FICA wages are $100,000 − $9,720.87 = $90,279.13); the no-factor control keeps the pre-fix $9,750 limit.",
     expected: {
       directLimit: 9720.87,
       directSelfLimit: 5370.87,
@@ -8219,7 +8233,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-payroll-fold-in-identity",
     kind: "tax",
-    note: "T2 — the fold-in identity on the saved record's $400,000 example-salary shape (the golden work-to-60 shape, employer $0, four work years): payroll tax is its own component of the roll totals and of the compare row, and it folds into the plan's total tax and all-in score. (RE-PINNED by contract v61, F2/F3 — the four work years are calendar 2031–2034, priced off the 2026 row at the plan's 2.5% inflation, and the two statute-fixed work-years amounts now deflate: per-year payroll is $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 — own HSA $9,633.85 → $9,570.75 as the §223(b)(3) catch-up deflates, Additional Medicare $1,749.62 → $1,892.18 as the §3101(b)(2) threshold deflates from $220,963.57 to $205,186.64 — so over four years payrollTax = $77,135.04 with parts Social Security $45,756.00 (capped, unmoved), Medicare $24,093.08, Additional Medicare $7,285.95; the rounded parts sum to $77,135.03, one cent under the round-once total — the breakdown's documented seam, pinned as partsDiff −0.01 (pre-v61 the parts summed exactly). The federal total rises $142.05 to $285,134.05 (the four years' Σ $591.83 of HSA-catch-up shortfall is extra taxable wages at the 24% margin). The winner net does NOT move ($386,045.08): the deltas land in the work years and in ending balances, not in the winner's tax, so all-in rises by exactly ΔworkTax = $142.05 + $1,345.52 = $1,487.57, to $748,314.17. Pre-v61 pins: payroll $75,789.52 at $18,947.38/yr, federal $284,992, all-in $746,826.60.) The identities asserted: workTax = federal + state + payroll (diff $0); totalTax = winnerTax + workTax (diff $0); allInTax = totalTax + penalty + irmaa − acaCredit + terminal (diff $0) — the contract's score identity with payroll inside totalTax. The zero-salary control row prices payrollTax $0 and totalTax exactly the winner's tax (diff $0).",
+    note: "T2 — the fold-in identity on the saved record's $400,000 example-salary shape (the golden work-to-60 shape, employer $0, four work years): payroll tax is its own component of the roll totals and of the compare row, and it folds into the plan's total tax and all-in score. (RE-PINNED by build v61, F2/F3 — the four work years are calendar 2031–2034, priced off the 2026 row at the plan's 2.5% inflation, and the two statute-fixed work-years amounts now deflate: per-year payroll is $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 — own HSA $9,633.85 → $9,570.75 as the §223(b)(3) catch-up deflates, Additional Medicare $1,749.62 → $1,892.18 as the §3101(b)(2) threshold deflates from $220,963.57 to $205,186.64 — so over four years payrollTax = $77,135.04 with parts Social Security $45,756.00 (capped, unmoved), Medicare $24,093.08, Additional Medicare $7,285.95; the rounded parts sum to $77,135.03, one cent under the round-once total — the breakdown's documented seam, pinned as partsDiff −0.01 (pre-v61 the parts summed exactly). The federal total rises $142.05 to $285,134.05 (the four years' Σ $591.83 of HSA-catch-up shortfall is extra taxable wages at the 24% margin). The winner net does NOT move ($386,045.08): the deltas land in the work years and in ending balances, not in the winner's tax, so all-in rises by exactly ΔworkTax = $142.05 + $1,345.52 = $1,487.57, to $748,314.17. Pre-v61 pins: payroll $75,789.52 at $18,947.38/yr, federal $284,992, all-in $746,826.60.) The identities asserted: workTax = federal + state + payroll (diff $0); totalTax = winnerTax + workTax (diff $0); allInTax = totalTax + penalty + irmaa − acaCredit + terminal (diff $0) — the contract's score identity with payroll inside totalTax. The zero-salary control row prices payrollTax $0 and totalTax exactly the winner's tax (diff $0).",
     expected: {
       payrollTotal: 77135.04,
       payrollSsTotal: 45756,
@@ -8334,13 +8348,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-quit-56",
     kind: "tax",
-    note: "GOLDEN end-to-end, quit at the window-start age 56 = ZERO work years, so the row must reproduce the plain joint optimizer run on the analysis plan shape exactly (MFJ 1975/1985, spending $150,000, preserve $500,000 @ 10%, heir 22%, return 5.75%, SS $48,000 @67, spouse declared no benefit, protect $50,000, ACA household 5 with $20,000 / $15,000 benchmarks, balances pre-tax $1,800,000 / Roth $550,000 / Taxable $2,400,000 / HSA $110,000): winner “Fill to the top of the 24% bracket”, claim 62, net cost $156,321.51, after-tax ending wealth $25,626,403.68, all-in tax = net (no work years). These are the one-off analysis's own figures, now regression anchors. (Net re-pinned 2026-10-14 from $199,063.41 for the newest-row FPL fallback, hand-reconciled: the winner is the same candidate with identical tax, conversions, terminal tax, and ending wealth — only its kept ACA credits moved, +$140.13/yr in coverage 2033–2046 (14 years = +$1,961.82), so the net fell by exactly that. The joint run's Do Nothing benchmark — best Do Nothing over claiming ages — moved from $2,493,613.74 at claim 63 to $2,533,166.17 at claim 64: at claim 63 its household MAGI (Social Security claimed at 63, ≈$37,890) sits between the 2025-row household-of-5 FPL ($37,650, 100.6% — credits priced) and the 2026-row FPL ($38,680, 97.9% — below 100% FPL, credits $0), so that claiming age lost its $202,451.72 of credits and the benchmark's best age moved to 64, whose figures are unmoved. The claim-67 best on this shape moved $302,860.32 → $301,388.37, again exactly its credit delta (+$163.55/yr in 2038–2046 = +$1,471.95) with tax and terminal identical.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "GOLDEN end-to-end, quit at the window-start age 56 = ZERO work years, so the row must reproduce the plain joint optimizer run on the analysis plan shape exactly (MFJ 1975/1985, spending $150,000, preserve $500,000 @ 10%, heir 22%, return 5.75%, SS $48,000 @67, spouse declared no benefit, protect $50,000, ACA household 5 with $20,000 / $15,000 benchmarks, balances pre-tax $1,800,000 / Roth $550,000 / Taxable $2,400,000 / HSA $110,000): winner “Fill to the top of the 24% bracket”, claim 62, net cost $156,321.51, after-tax ending wealth $25,626,403.68, all-in tax = net (no work years). These are the one-off analysis's own figures, now regression anchors. (Net re-pinned 2026-10-14 from $199,063.41 for the newest-row FPL fallback, hand-reconciled: the winner is the same candidate with identical tax, conversions, terminal tax, and ending wealth — only its kept ACA credits moved, +$140.13/yr in coverage 2033–2046 (14 years = +$1,961.82), so the net fell by exactly that. The joint run's Do Nothing benchmark — best Do Nothing over claiming ages — moved from $2,493,613.74 at claim 63 to $2,533,166.17 at claim 64: at claim 63 its household MAGI (Social Security claimed at 63, ≈$37,890) sits between the 2025-row household-of-5 FPL ($37,650, 100.6% — credits priced) and the 2026-row FPL ($38,680, 97.9% — below 100% FPL, credits $0), so that claiming age lost its $202,451.72 of credits and the benchmark's best age moved to 64, whose figures are unmoved. The claim-67 best on this shape moved $302,860.32 → $301,388.37, again exactly its credit delta (+$163.55/yr in 2038–2046 = +$1,471.95) with tax and terminal identical.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       workYears: 0,
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 62,
       net: 156321.51,
-      afterTax: 25626403.68,
+      afterTax: 26375297.91,
       allIn: 156321.51,
     },
     actual: () => {
@@ -8364,7 +8378,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-60-no-employer",
     kind: "tax",
-    note: "GOLDEN, work to 60 with employer $0 (4 work years, ages 56–59): balances at 60 — pre-tax $2,357,877.13, Roth $906,719.82, HSA $180,061.52 (the analysis's figures, reproduced exactly by grow-then-year-end-contributions); Taxable $3,589,252.71 — the analysis printed $3,589,252.73, a 2¢ seam from its carrying the unrounded half-cent FICA ($18,947.375) into the surplus while printing $18,947.38; the engine rounds each year's FICA to the cent like every other year figure in the app, and this case pins the engine's consistent construction. Winner net $386,045.08, after-tax ending $34,086,735.45 (analysis: $35,009,641.22 — the same 2¢ seam grown for 35 years), all-in = $386,045.08 + federal $284,992 + FICA $75,789.52 = $746,826.60 (analysis: ≈$804,200 from FICA $75,789.50 unrounded, at the analysis's $443,418.49 net). (Net and all-in re-pinned 2026-10-14 from $443,418.49 / $804,200.01 for the newest-row FPL fallback, hand-reconciled: same winner “Fill to the top of the 32% bracket” at claim 65 with identical tax, IRMAA, terminal, conversions, and ending wealth — only kept ACA credits moved, +$172.18 in 2035 and +$179.36/yr in 2036–2046 = +$2,145.14.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $47,500 rather than $39,500 — the $8,000 catch-up no longer nets against the §415(c) room — so $8,000/yr more lands in Roth and $8,000/yr less banks to Taxable: Roth at 60 is $929,726.92 and Taxable at 60 is $3,415,748.78 (a $34,867.32 shift, the $8,000/yr grown at 5.75%); winner, net, and after-tax ending are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — per-year payroll $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 (FICA total $77,135.04, +$1,345.52) and federal +$142.05 (the Σ $591.83 HSA-catch-up shortfall in taxable wages at the 24% margin), so all-in rises by exactly ΔworkTax $1,487.57 to $748,314.17. The per-year surplus shortfalls (−$175.78 / −$208.41 / −$240.25 / −$271.30) grown at 5.75% leave Taxable at 60 lower by $966.31 ($3,414,782.47) and the HSA lower by the grown catch-up shortfalls, $638.45 ($179,423.07); pre-tax, Roth, the winner, and its net ($386,045.08) are unmoved — the winner's bracket-fill tax is balance-insensitive at this scale, so the whole delta lands in ending balances: after-tax ending −$12,008.91 ($34,074,726.54), the at-60 deltas compounded through the march.)",
+    note: "GOLDEN, work to 60 with employer $0 (4 work years, ages 56–59): balances at 60 — pre-tax $2,357,877.13, Roth $906,719.82, HSA $180,061.52 (the analysis's figures, reproduced exactly by grow-then-year-end-contributions); Taxable $3,589,252.71 — the analysis printed $3,589,252.73, a 2¢ seam from its carrying the unrounded half-cent FICA ($18,947.375) into the surplus while printing $18,947.38; the engine rounds each year's FICA to the cent like every other year figure in the app, and this case pins the engine's consistent construction. Winner net $386,045.08, after-tax ending $34,086,735.45 (analysis: $35,009,641.22 — the same 2¢ seam grown for 35 years), all-in = $386,045.08 + federal $284,992 + FICA $75,789.52 = $746,826.60 (analysis: ≈$804,200 from FICA $75,789.50 unrounded, at the analysis's $443,418.49 net). (Net and all-in re-pinned 2026-10-14 from $443,418.49 / $804,200.01 for the newest-row FPL fallback, hand-reconciled: same winner “Fill to the top of the 32% bracket” at claim 65 with identical tax, IRMAA, terminal, conversions, and ending wealth — only kept ACA credits moved, +$172.18 in 2035 and +$179.36/yr in 2036–2046 = +$2,145.14.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $47,500 rather than $39,500 — the $8,000 catch-up no longer nets against the §415(c) room — so $8,000/yr more lands in Roth and $8,000/yr less banks to Taxable: Roth at 60 is $929,726.92 and Taxable at 60 is $3,415,748.78 (a $34,867.32 shift, the $8,000/yr grown at 5.75%); winner, net, and after-tax ending are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — per-year payroll $19,211.43 / $19,260.44 / $19,308.26 / $19,354.91 (FICA total $77,135.04, +$1,345.52) and federal +$142.05 (the Σ $591.83 HSA-catch-up shortfall in taxable wages at the 24% margin), so all-in rises by exactly ΔworkTax $1,487.57 to $748,314.17. The per-year surplus shortfalls (−$175.78 / −$208.41 / −$240.25 / −$271.30) grown at 5.75% leave Taxable at 60 lower by $966.31 ($3,414,782.47) and the HSA lower by the grown catch-up shortfalls, $638.45 ($179,423.07); pre-tax, Roth, the winner, and its net ($386,045.08) are unmoved — the winner's bracket-fill tax is balance-insensitive at this scale, so the whole delta lands in ending balances: after-tax ending −$12,008.91 ($34,074,726.54), the at-60 deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       pretaxAt60: 2357877.13,
       rothAt60: 929726.92,
@@ -8373,7 +8387,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       federalTotal: 285134.05,
       ficaTotal: 77135.04,
       net: 386045.08,
-      afterTax: 34074726.54,
+      afterTax: 34422800.14,
       allIn: 748314.17,
     },
     actual: () => {
@@ -8398,12 +8412,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-62-no-employer",
     kind: "tax",
-    note: "GOLDEN, work to 62 with employer $0 (6 work years): winner “Fill to the top of the 24% bracket”, claim 69, net $544,573.72, after-tax ending $38,629,259.08 (analysis: $39,663,955.44 — the same half-cent FICA rounding seam as the work-to-60 case, grown), all-in $1,085,746.00 (analysis: ≈$1,158,215, stated rounded to the dollar, at the analysis's $617,042.28 net). (Net and all-in re-pinned 2026-10-14 from $617,042.28 / $1,158,214.56 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3: the six work years are calendar 2031–2036, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — ΔworkTax over the six years is $2,538.38 (payroll +$2,296.00 on the deflating §3101(b)(2) threshold; federal +$242.38 = 24% × the Σ $1,009.91 HSA-catch-up shortfall), so all-in rises by exactly that to $1,088,284.38; winner, claim age, and net are unmoved, and after-tax ending falls $19,233.32 to $38,610,025.76, the at-62 balance deltas compounded through the march.)",
+    note: "GOLDEN, work to 62 with employer $0 (6 work years): winner “Fill to the top of the 24% bracket”, claim 69, net $544,573.72, after-tax ending $38,629,259.08 (analysis: $39,663,955.44 — the same half-cent FICA rounding seam as the work-to-60 case, grown), all-in $1,085,746.00 (analysis: ≈$1,158,215, stated rounded to the dollar, at the analysis's $617,042.28 net). (Net and all-in re-pinned 2026-10-14 from $617,042.28 / $1,158,214.56 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3: the six work years are calendar 2031–2036, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate — ΔworkTax over the six years is $2,538.38 (payroll +$2,296.00 on the deflating §3101(b)(2) threshold; federal +$242.38 = 24% × the Σ $1,009.91 HSA-catch-up shortfall), so all-in rises by exactly that to $1,088,284.38; winner, claim age, and net are unmoved, and after-tax ending falls $19,233.32 to $38,610,025.76, the at-62 balance deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 69,
       net: 544573.72,
-      afterTax: 38610025.76,
+      afterTax: 38802264.64,
       allIn: 1088284.38,
     },
     actual: () => {
@@ -8426,7 +8440,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-60-employer",
     kind: "tax",
-    note: "GOLDEN, work to 60 WITH the example employer figures ($16,250 401(k) / $1,500 HSA): balances at 60 — pre-tax $2,428,701.38, Roth $835,895.57, Taxable $3,664,891.92, HSA $180,061.52 (the analysis's figures, all exact). Winner “Fill to the top of the 24% bracket”, claim 66, net $410,260.22, after-tax ending $35,489,154.78 (exact); all-in $772,622.74 (analysis: $829,544.09 at its $467,181.59 net — the 2¢ half-cent FICA seam: $18,982.625/yr carried unrounded there, rounded to the cent here). (Net and all-in re-pinned 2026-10-14 from $467,181.59 / $829,544.11 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,793.99 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $31,250 rather than $23,250 — the catch-up no longer nets against the §415(c) room — so Roth at 60 is $858,902.67 and Taxable at 60 is $3,491,387.98. The after-tax ending value of $34,516,787.14 (up $0.07) is an engine-produced downstream re-price of the shifted age-60 balances, not hand-derived; the winner, claim age, and net are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3, the same work-years deflation as the employer-$0 golden: the employer-HSA shape carries the identical per-year deltas (the HSA bucket fills to the deflated limit in both shapes), so Taxable at 60 falls $966.31 to $3,490,421.67, the HSA falls $638.45 to $179,423.07, all-in rises by exactly ΔworkTax $1,487.57 to $774,110.31, and after-tax ending falls $12,008.91 to $34,504,778.23; pre-tax, Roth, winner, claim age, and net are unmoved.)",
+    note: "GOLDEN, work to 60 WITH the example employer figures ($16,250 401(k) / $1,500 HSA): balances at 60 — pre-tax $2,428,701.38, Roth $835,895.57, Taxable $3,664,891.92, HSA $180,061.52 (the analysis's figures, all exact). Winner “Fill to the top of the 24% bracket”, claim 66, net $410,260.22, after-tax ending $35,489,154.78 (exact); all-in $772,622.74 (analysis: $829,544.09 at its $467,181.59 net — the 2¢ half-cent FICA seam: $18,982.625/yr carried unrounded there, rounded to the cent here). (Net and all-in re-pinned 2026-10-14 from $467,181.59 / $829,544.11 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,793.99 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned under Fix 2 (§415(c) catch-up exclusion): each work year's mega backdoor is $31,250 rather than $23,250 — the catch-up no longer nets against the §415(c) room — so Roth at 60 is $858,902.67 and Taxable at 60 is $3,491,387.98. The after-tax ending value of $34,516,787.14 (up $0.07) is an engine-produced downstream re-price of the shifted age-60 balances, not hand-derived; the winner, claim age, and net are unmoved.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3, the same work-years deflation as the employer-$0 golden: the employer-HSA shape carries the identical per-year deltas (the HSA bucket fills to the deflated limit in both shapes), so Taxable at 60 falls $966.31 to $3,490,421.67, the HSA falls $638.45 to $179,423.07, all-in rises by exactly ΔworkTax $1,487.57 to $774,110.31, and after-tax ending falls $12,008.91 to $34,504,778.23; pre-tax, Roth, winner, claim age, and net are unmoved.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       pretaxAt60: 2428701.38,
       rothAt60: 858902.67,
@@ -8435,7 +8449,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 66,
       net: 410260.22,
-      afterTax: 34504778.23,
+      afterTax: 34852851.84,
       allIn: 774110.31,
     },
     actual: () => {
@@ -8460,12 +8474,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-golden-work-62-employer",
     kind: "tax",
-    note: "GOLDEN, work to 62 WITH employer figures: winner “Fill to the top of the 24% bracket”, claim 70, net $582,483.94, after-tax ending $39,241,837.23 (exact); all-in $1,126,027.72 (analysis: $1,199,809.30 at its $656,265.55 net — the 3¢ half-cent FICA seam over 6 years). (Net and all-in re-pinned 2026-10-14 from $656,265.55 / $1,199,809.33 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by contract v61, F2/F3, the same six-year work-years deflation as the employer-$0 quit-62 golden: ΔworkTax $2,538.38, so all-in rises to $1,128,566.10 and after-tax ending falls the identical $19,233.32 to $39,222,603.91; winner, claim age, and net are unmoved.)",
+    note: "GOLDEN, work to 62 WITH employer figures: winner “Fill to the top of the 24% bracket”, claim 70, net $582,483.94, after-tax ending $39,241,837.23 (exact); all-in $1,126,027.72 (analysis: $1,199,809.30 at its $656,265.55 net — the 3¢ half-cent FICA seam over 6 years). (Net and all-in re-pinned 2026-10-14 from $656,265.55 / $1,199,809.33 for the newest-row FPL fallback: same winner and claim age, ending wealth unmoved — the −$1,445.28 is kept ACA credits in coverage 2028+ only, the same credit-only mechanism hand-reconciled on the quit-56 and work-60 golden rows.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (RE-PINNED by build v61, F2/F3, the same six-year work-years deflation as the employer-$0 quit-62 golden: ΔworkTax $2,538.38, so all-in rises to $1,128,566.10 and after-tax ending falls the identical $19,233.32 to $39,222,603.91; winner, claim age, and net are unmoved.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       winnerName: "Fill to the top of the 24% bracket",
       claimAge: 70,
       net: 582483.94,
-      afterTax: 39222603.91,
+      afterTax: 39417622.78,
       allIn: 1128566.1,
     },
     actual: () => {
@@ -8488,7 +8502,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-zero-salary",
     kind: "tax",
-    note: "Zero-salary case: with no salary entered there is no stack and no FICA at ANY quit age — every quit-age row is a no-work run. On the golden plan shape, quit 56 and quit 60 with salary $0 both price 0 work years and a $0 ledger. (Re-pinned 2026-10-27 for contract v58, F5a: the rows no longer share one no-work run — a zero-year row prices retiring AT its quit age, so quit 60 now prices retirement at 60 (winner still “Fill to the top of the 24% bracket”, claim 66, net $393,236.47, all-in the same with no work tax) while quit 56, whose quit age equals the saved retirement age, reproduces the quit-56 golden net $156,321.51 bit for bit. The pre-v58 pin asserted both rows at $156,321.51 because the zero-year path returned the saved plan untouched. Earlier re-pins: 2026-10-14 for the newest-row FPL fallback; 2026-10-19 for the E2 Joint Life Table II completion.)",
+    note: "Zero-salary case: with no salary entered there is no stack and no FICA at ANY quit age — every quit-age row is a no-work run. On the golden plan shape, quit 56 and quit 60 with salary $0 both price 0 work years and a $0 ledger. (Re-pinned 2026-10-27 for build v58, F5a: the rows no longer share one no-work run — a zero-year row prices retiring AT its quit age, so quit 60 now prices retirement at 60 (winner still “Fill to the top of the 24% bracket”, claim 66, net $393,236.47, all-in the same with no work tax) while quit 56, whose quit age equals the saved retirement age, reproduces the quit-56 golden net $156,321.51 bit for bit. The pre-v58 pin asserted both rows at $156,321.51 because the zero-year path returned the saved plan untouched. Earlier re-pins: 2026-10-14 for the newest-row FPL fallback; 2026-10-19 for the E2 Joint Life Table II completion.)",
     expected: {
       years56: 0,
       years60: 0,
@@ -8690,7 +8704,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-state-tax-line-roll",
     kind: "tax",
-    note: "Salary-year STATE tax at a 5% rate on the golden employer shape (salary $400,000, employer 401(k) $16,250, employer HSA $1,500; the golden plan with stateRatePct 5). Age-56 line: the stack is unchanged from the employer-displacement case, so taxable wages = $400,000 − $24,500 − $8,250 = $392,250 and federal = $71,608; taxable income = $392,250 − $32,200 MFJ standard deduction = $360,050, so state tax = 5% × $360,050 = $18,002.50; FICA = $18,982.63 (as in the displacement case); surplus = $400,000 − $71,608 − $18,002.50 − $18,982.63 − $150,000 spending − $64,000 own contributions = $94,974.79. Quit-60 roll (four identical years, ages 56–59): state total = 4 × $18,002.50 = $72,010.00, federal total $286,432, FICA total $75,930.52, surplus banked = 4 × $94,974.79 = $379,899.16, banked = $327,000 contributions (unchanged) + $379,899.16 = $736,627.48 (the 0% golden banked $778,909.16 − $72,010). Balances at 60: Pre-tax / Roth / HSA are unchanged from the 0% golden employer case ($2,428,701.38 / $835,895.57 / $180,061.52 — contributions do not depend on the state rate); Taxable is re-derived from the reduced surplus stream grown at 5.75%: each year's surplus is $18,002.50 lower and the four reductions compound by (1.0575³ + 1.0575² + 1.0575 + 1) = 4.35841511, a $78,462.37 reduction, so Taxable = $3,664,891.92 − $78,462.37 = $3,586,429.55. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the stack is the corrected displacement stack — mega $31,250, own contributions $72,000 — so the age-56 surplus is $94,406.87 and the four-year surplus total is $377,627.48; banked is unchanged at $736,627.48 (contributions $359,000 + surplus $377,627.48). Balances at 60 follow the corrected golden employer case (Roth $858,902.67), and Taxable = $3,630,024.60 − $78,462.37 = $3,412,925.61 — the state-tax reduction itself is unchanged.) (RE-PINNED by contract v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate. Age-56 (2031) line: the deflated HSA limit leaves own HSA $8,133.85, so taxable wages rise by the $116.15 catch-up shortfall to $392,366.15, federal +$27.88 (24% margin) to $71,635.88, state +$5.81 (5% × $116.15) to $18,008.31, FICA +$264.05 (Additional Medicare on the deflated $220,963.57 threshold, plus Medicare on the higher wages) to $19,246.68, and surplus = +$116.15 − $27.88 − $5.81 − $264.05 = −$181.59, to $94,225.28. Roll totals: federal +$142.05, FICA +$1,345.52 (the golden channels), state +$29.60 (5% × the Σ $591.83 shortfall, per-year rounding); surplus total −$925.34 (the per-year shortfalls net of the added taxes); total contributions fall by the Σ $591.83 shortfall (the HSA bucket receives the deflated limit), so banked falls $925.34 + $591.83 = $1,517.17 to $735,110.31; Taxable at 60 falls $998.24 (the grown surplus shortfalls) to $3,411,927.37 and the HSA falls $638.45 to $179,423.07; pre-tax and Roth are unmoved.)",
+    note: "Salary-year STATE tax at a 5% rate on the golden employer shape (salary $400,000, employer 401(k) $16,250, employer HSA $1,500; the golden plan with stateRatePct 5). Age-56 line: the stack is unchanged from the employer-displacement case, so taxable wages = $400,000 − $24,500 − $8,250 = $392,250 and federal = $71,608; taxable income = $392,250 − $32,200 MFJ standard deduction = $360,050, so state tax = 5% × $360,050 = $18,002.50; FICA = $18,982.63 (as in the displacement case); surplus = $400,000 − $71,608 − $18,002.50 − $18,982.63 − $150,000 spending − $64,000 own contributions = $94,974.79. Quit-60 roll (four identical years, ages 56–59): state total = 4 × $18,002.50 = $72,010.00, federal total $286,432, FICA total $75,930.52, surplus banked = 4 × $94,974.79 = $379,899.16, banked = $327,000 contributions (unchanged) + $379,899.16 = $736,627.48 (the 0% golden banked $778,909.16 − $72,010). Balances at 60: Pre-tax / Roth / HSA are unchanged from the 0% golden employer case ($2,428,701.38 / $835,895.57 / $180,061.52 — contributions do not depend on the state rate); Taxable is re-derived from the reduced surplus stream grown at 5.75%: each year's surplus is $18,002.50 lower and the four reductions compound by (1.0575³ + 1.0575² + 1.0575 + 1) = 4.35841511, a $78,462.37 reduction, so Taxable = $3,664,891.92 − $78,462.37 = $3,586,429.55. (Re-pinned under Fix 2 (§415(c) catch-up exclusion): the stack is the corrected displacement stack — mega $31,250, own contributions $72,000 — so the age-56 surplus is $94,406.87 and the four-year surplus total is $377,627.48; banked is unchanged at $736,627.48 (contributions $359,000 + surplus $377,627.48). Balances at 60 follow the corrected golden employer case (Roth $858,902.67), and Taxable = $3,630,024.60 − $78,462.37 = $3,412,925.61 — the state-tax reduction itself is unchanged.) (RE-PINNED by build v61, F2/F3: the four work years are calendar 2031–2034, priced off the 2026 row at 2.5% inflation, and the two statute-fixed amounts now deflate. Age-56 (2031) line: the deflated HSA limit leaves own HSA $8,133.85, so taxable wages rise by the $116.15 catch-up shortfall to $392,366.15, federal +$27.88 (24% margin) to $71,635.88, state +$5.81 (5% × $116.15) to $18,008.31, FICA +$264.05 (Additional Medicare on the deflated $220,963.57 threshold, plus Medicare on the higher wages) to $19,246.68, and surplus = +$116.15 − $27.88 − $5.81 − $264.05 = −$181.59, to $94,225.28. Roll totals: federal +$142.05, FICA +$1,345.52 (the golden channels), state +$29.60 (5% × the Σ $591.83 shortfall, per-year rounding); surplus total −$925.34 (the per-year shortfalls net of the added taxes); total contributions fall by the Σ $591.83 shortfall (the HSA bucket receives the deflated limit), so banked falls $925.34 + $591.83 = $1,517.17 to $735,110.31; Taxable at 60 falls $998.24 (the grown surplus shortfalls) to $3,411,927.37 and the HSA falls $638.45 to $179,423.07; pre-tax and Roth are unmoved.)",
     expected: {
       taxableWages: 392366.15,
       federal: 71635.88,
@@ -8735,14 +8749,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-state-tax-quit-60",
     kind: "tax",
-    note: "Salary-year state tax, full quit-60 compare at a 5% state rate on the golden employer shape. Work tax = federal $286,432 + state $72,010 + FICA $75,930.52 = $434,372.52. The winner is “Fill to the top of the 35% bracket”, claim 66, and the optimizer net is NOT the 0% golden net: the same 5% rate also prices state tax in the conversion years, so the net rises to $532,596.79 — $148,425.16 above the current 0% golden net of $468,432.05 (the difference of the two current engine pins; the build-time decomposition verified that a 0% run on these same rolled balances reproduced the then-golden net to the cent, i.e. the increase is conversion-year state pricing, but that reproduction was verified under the pre-E2 table and is not re-asserted here). All-in tax = $532,596.79 + $434,372.52 = $966,969.31; after-tax ending wealth $33,149,625.38. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the winner was “Fill to a $500,000 MAGI cap” at claim 64 with net $608,840.55, all-in $1,043,213.07 and after-tax ending $34,068,453 — pricing the plans' late-life RMD years on the true Table II cells flipped this close winner and repriced the row; earlier re-pin history: 2026-10-14 for the newest-row FPL fallback, and under Fix 2 (§415(c) catch-up exclusion) for the corrected rolled balances.) (RE-PINNED by contract v61, F2/F3, on the state-tax-line-roll derivation: work tax rises by exactly the four years' added work tax — federal +$142.05, FICA +$1,345.52, state +$29.60 = +$1,517.17 — to $435,889.69, and all-in rises by the same $1,517.17 to $968,486.48; winner, claim age, and net are unmoved, and after-tax ending falls $12,247.86 to $33,137,377.52, the rolled-balance deltas compounded through the march.)",
+    note: "Salary-year state tax, full quit-60 compare at a 5% state rate on the golden employer shape. Work tax = federal $286,432 + state $72,010 + FICA $75,930.52 = $434,372.52. The winner is “Fill to the top of the 35% bracket”, claim 66, and the optimizer net is NOT the 0% golden net: the same 5% rate also prices state tax in the conversion years, so the net rises to $532,596.79 — $148,425.16 above the current 0% golden net of $468,432.05 (the difference of the two current engine pins; the build-time decomposition verified that a 0% run on these same rolled balances reproduced the then-golden net to the cent, i.e. the increase is conversion-year state pricing, but that reproduction was verified under the pre-E2 table and is not re-asserted here). All-in tax = $532,596.79 + $434,372.52 = $966,969.31; after-tax ending wealth $33,149,625.38. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion: pre-E2 the winner was “Fill to a $500,000 MAGI cap” at claim 64 with net $608,840.55, all-in $1,043,213.07 and after-tax ending $34,068,453 — pricing the plans' late-life RMD years on the true Table II cells flipped this close winner and repriced the row; earlier re-pin history: 2026-10-14 for the newest-row FPL fallback, and under Fix 2 (§415(c) catch-up exclusion) for the corrected rolled balances.) (RE-PINNED by build v61, F2/F3, on the state-tax-line-roll derivation: work tax rises by exactly the four years' added work tax — federal +$142.05, FICA +$1,345.52, state +$29.60 = +$1,517.17 — to $435,889.69, and all-in rises by the same $1,517.17 to $968,486.48; winner, claim age, and net are unmoved, and after-tax ending falls $12,247.86 to $33,137,377.52, the rolled-balance deltas compounded through the march.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       winnerName: "Fill to the top of the 35% bracket",
       claimAge: 66,
       net: 532596.79,
       workTax: 435889.69,
       allIn: 968486.48,
-      afterTax: 33137377.52,
+      afterTax: 33485451.13,
     },
     actual: () => {
       const base = goldenWorkPlan();
@@ -8779,7 +8793,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       const plan = basePlan({
         // startYear 2025: the plan's current age is 50, the
         // window-start age — so the two-year roll prices 2025
-        // and 2026 as intended (contract v58, F5b: a 2026
+        // and 2026 as intended (build v58, F5b: a 2026
         // startYear would make the 2025 year a past year the
         // roll may no longer price, and the case would roll
         // only 2026). Expectations are unchanged.
@@ -8820,7 +8834,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       const plan = basePlan({
         // startYear 2025, as in workyears-catchup-prior-year-
         // wages: current age 50 = window start, so both years
-        // roll (contract v58, F5b). Expectations unchanged.
+        // roll (build v58, F5b). Expectations unchanged.
         startYear: 2025,
         birthYearPrimary: 1975,
         birthYearSpouse: 1986,
@@ -9038,7 +9052,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-deficit-sale-gains-priced",
     kind: "tax",
-    note: "F1 (contract v58) — a deficit-funding Taxable sale realizes capital gains inside the work year. The settlement micro-case: MFJ, primary b.1971, spouse b.1982, window start 55, salary $100,000, employer 401(k) $5,000, employer HSA $0, spending $100,000, return 0, Taxable $200,000 at 0% basis single-pool, no yields, no SS; quit 56 (one work year, 2026). The contribution stack is the audit's passing base case (deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 = $84,750; FICA $6,904.13), so at ltcg $0 the deficit is $94,224.13. Selling at 0% basis realizes the whole drawn amount as gain; the first $73,350 of gain sits in the 0% LTCG band ($98,900 MFJ threshold − $25,550 ordinary taxable income) and the rest prices at 15%, so the converged sale x solves x = $94,224.13 + 0.15(x − $73,350), giving x = $97,907.80 and gains tax $3,683.67. Federal tax is therefore $2,570 + $3,683.67 = $6,253.67, total work tax $6,253.67 + $6,904.13 = $13,157.80, at-quit Taxable $200,000 − $97,907.80 = $102,092.20, shortfall $0, and the line's realized gain is the full drawn $97,907.80. Hand-derived in the audit settlement; the pre-fix roll reported Taxable $105,775.87 with the gains tax omitted.",
+    note: "F1 (build v58) — a deficit-funding Taxable sale realizes capital gains inside the work year. The settlement micro-case: MFJ, primary b.1971, spouse b.1982, window start 55, salary $100,000, employer 401(k) $5,000, employer HSA $0, spending $100,000, return 0, Taxable $200,000 at 0% basis single-pool, no yields, no SS; quit 56 (one work year, 2026). The contribution stack is the audit's passing base case (deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 = $84,750; FICA $6,904.13), so at ltcg $0 the deficit is $94,224.13. Selling at 0% basis realizes the whole drawn amount as gain; the first $73,350 of gain sits in the 0% LTCG band ($98,900 MFJ threshold − $25,550 ordinary taxable income) and the rest prices at 15%, so the converged sale x solves x = $94,224.13 + 0.15(x − $73,350), giving x = $97,907.80 and gains tax $3,683.67. Federal tax is therefore $2,570 + $3,683.67 = $6,253.67, total work tax $6,253.67 + $6,904.13 = $13,157.80, at-quit Taxable $200,000 − $97,907.80 = $102,092.20, shortfall $0, and the line's realized gain is the full drawn $97,907.80. Hand-derived in the audit settlement; the pre-fix roll reported Taxable $105,775.87 with the gains tax omitted.",
     expected: {
       federal: 6253.67,
       fica: 6904.13,
@@ -9082,7 +9096,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-basis-dollars-roll-forward",
     kind: "tax",
-    note: "F2 (contract v58) — basis dollars roll forward with the balance. The base micro-case (MFJ b.1971/b.1982, window 55, salary $100,000, employer 401(k) $5,000, spending $5,000, return 0, quit 56) with Taxable starting at $10,000 at 50% basis: the year's surplus is the base case's $775.87, a real inflow of 100%-basis cash, so the rolled balance is $10,000 + $775.87 = $10,775.87 and the rolled basis is $5,000 + $775.87 = $5,775.87. The pre-fix roll kept the entered 50% against the moved balance, imputing $5,387.94 of basis — $387.94 of phantom gain on a full sale.",
+    note: "F2 (build v58) — basis dollars roll forward with the balance. The base micro-case (MFJ b.1971/b.1982, window 55, salary $100,000, employer 401(k) $5,000, spending $5,000, return 0, quit 56) with Taxable starting at $10,000 at 50% basis: the year's surplus is the base case's $775.87, a real inflow of 100%-basis cash, so the rolled balance is $10,000 + $775.87 = $10,775.87 and the rolled basis is $5,000 + $775.87 = $5,775.87. The pre-fix roll kept the entered 50% against the moved balance, imputing $5,387.94 of basis — $387.94 of phantom gain on a full sale.",
     expected: {
       taxableAtQuit: 10775.87,
       basisAtQuit: 5775.87,
@@ -9117,7 +9131,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-basis-growth-adds-none",
     kind: "tax",
-    note: "F2 (contract v58) — growth adds no basis. The basis-dollars micro-case at a 10% return instead of 0%: the surplus is unchanged at $775.87 (no yields are entered, so the return prices no income), the balance is the grown $10,000 × 1.10 + $775.87 = $11,775.87, and the basis is the starting $5,000 + the landed surplus $775.87 = $5,775.87 — the $1,000 of market growth added no basis dollars.",
+    note: "F2 (build v58) — growth adds no basis. The basis-dollars micro-case at a 10% return instead of 0%: the surplus is unchanged at $775.87 (no yields are entered, so the return prices no income), the balance is the grown $10,000 × 1.10 + $775.87 = $11,775.87, and the basis is the starting $5,000 + the landed surplus $775.87 = $5,775.87 — the $1,000 of market growth added no basis dollars.",
     expected: {
       taxableAtQuit: 11775.87,
       basisAtQuit: 5775.87,
@@ -9152,7 +9166,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-yields-priced",
     kind: "tax",
-    note: "F3 (contract v58) — taxable yields price as work-year income. The base micro-case with Taxable $200,000 at 100% basis, interest yield 5%, return 5%, spending $5,000, quit 56: interest income is 5% × $200,000 = $10,000 on the opening balance, lifting taxable income from $25,550 to $35,550 and federal tax from $2,570 to $2,480 + 12% × $10,750 = $3,770. The year's surplus is $775.87 − $1,200 = −$424.13 — a small deficit sale, but at the post-step-up basis (the $10,000 yield steps basis up to the grown $210,000 balance) it realizes no gain, isolating the yield pricing. At-quit Taxable = $210,000 − $424.13 = $209,575.87. The pre-fix roll priced no yield and reported $210,775.87.",
+    note: "F3 (build v58) — taxable yields price as work-year income. The base micro-case with Taxable $200,000 at 100% basis, interest yield 5%, return 5%, spending $5,000, quit 56: interest income is 5% × $200,000 = $10,000 on the opening balance, lifting taxable income from $25,550 to $35,550 and federal tax from $2,570 to $2,480 + 12% × $10,750 = $3,770. The year's surplus is $775.87 − $1,200 = −$424.13 — a small deficit sale, but at the post-step-up basis (the $10,000 yield steps basis up to the grown $210,000 balance) it realizes no gain, isolating the yield pricing. At-quit Taxable = $210,000 − $424.13 = $209,575.87. The pre-fix roll priced no yield and reported $210,775.87.",
     expected: {
       interestIncome: 10000,
       federal: 3770,
@@ -9191,7 +9205,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-ss-benefits-deposited",
     kind: "tax",
-    note: "F4 (contract v58) — Social Security already started counts during work years. MFJ, primary b.1959, spouse b.1982, window start 67, salary $20,000, employer $0/$0, spending $0, return 0, Taxable $5,000, primary benefit $24,000 from age 62, quit 68 (one work year at 67, calendar 2026). The stack defers the whole $20,000 salary, so taxable wages are $0; provisional income is $12,000 (half the benefit), under the MFJ §86 threshold, so federal tax is $0; FICA is 7.65% × $20,000 = $1,530. The benefit deposits into the surplus: at-quit Taxable = $5,000 + $20,000 salary − $20,000 deferral − $1,530 FICA + $24,000 benefit = $27,470. The pre-fix roll ignored the benefit and reported $3,470. The earnings test is not modeled (stated in the action's purpose).",
+    note: "F4 (build v58) — Social Security already started counts during work years. MFJ, primary b.1959, spouse b.1982, window start 67, salary $20,000, employer $0/$0, spending $0, return 0, Taxable $5,000, primary benefit $24,000 from age 62, quit 68 (one work year at 67, calendar 2026). The stack defers the whole $20,000 salary, so taxable wages are $0; provisional income is $12,000 (half the benefit), under the MFJ §86 threshold, so federal tax is $0; FICA is 7.65% × $20,000 = $1,530. The benefit deposits into the surplus: at-quit Taxable = $5,000 + $20,000 salary − $20,000 deferral − $1,530 FICA + $24,000 benefit = $27,470. The pre-fix roll ignored the benefit and reported $3,470. The earnings test is not modeled (stated in the action's purpose).",
     expected: {
       federal: 0,
       fica: 1530,
@@ -9232,7 +9246,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-zero-year-quit-age-handoff",
     kind: "tax",
-    note: "F5a (contract v58) — a zero-work-year quit prices retiring AT the quit age. Window start 55, saved retirement age 57, quit 55, Roth $100,000, spending $10,000, end age 58, 0% return, no other balances or income: the row prices four spending years (55–58) out of Roth, ending at $60,000 after tax. The pre-fix zero-year path returned the saved plan untouched, pricing only ages 57–58 and ending at $80,000.",
+    note: "F5a (build v58) — a zero-work-year quit prices retiring AT the quit age. Window start 55, saved retirement age 57, quit 55, Roth $100,000, spending $10,000, end age 58, 0% return, no other balances or income: the row prices four spending years (55–58) out of Roth, ending at $60,000 after tax. The pre-fix zero-year path returned the saved plan untouched, pricing only ages 57–58 and ending at $80,000.",
     expected: {
       workYears: 0,
       endingAfterTax: 60000,
@@ -9267,7 +9281,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-no-past-year-priced",
     kind: "tax",
-    note: "F5b (contract v58) — the roll never prices a past year. startYear 2026, primary b.1971 (current age 55), window start 54, salary $100,000, quit 55: the roll's first year is max(54, 55) = 55, so the count is 0 and the at-quit balances are the plan's starts, unchanged. The pre-fix roll counted from the window start and priced a full already-past 2025 salary year onto today's balances.",
+    note: "F5b (build v58) — the roll never prices a past year. startYear 2026, primary b.1971 (current age 55), window start 54, salary $100,000, quit 55: the roll's first year is max(54, 55) = 55, so the count is 0 and the at-quit balances are the plan's starts, unchanged. The pre-fix roll counted from the window start and priced a full already-past 2025 salary year onto today's balances.",
     expected: {
       workYears: 0,
       pretax: 1000,
@@ -9307,7 +9321,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "workyears-medicare-hsa-ineligible",
     kind: "tax",
-    note: "F6 (contract v58) — Medicare enrollment stops HSA contributions. Single filer (no spouse), primary b.1961, window start 65, salary $100,000, employer 401(k) $0, employer HSA $1,000, medicareAgePrimary 65, quit 66 (one work year at 65, calendar 2026): the household is HSA-ineligible, so the stack's own HSA, employer HSA, and HSA bucket are all $0. Taxable wages rise to $100,000 − $24,500 deferral − $8,000 pre-tax catch-up = $67,500, and FICA wages are the full $100,000 (no HSA exclusion), so FICA is $7,650 — both exactly as the audit hand-derived. Federal tax pins $4,954, NOT the audit's $6,020: the audit's federal arithmetic omitted the two deductions the shared pricer applies to any 65-year-old — the §63(f) age-65 standard-deduction add-on ($2,050 single, 2026 row) and the §151(d)(5)(C) senior deduction ($6,000, unphased at this MAGI, added on top of the standard side). Taxable income is $67,500 − ($16,100 + $2,050) − $6,000 = $43,350, and the 2026 single brackets give $1,240 + 12% × $30,950 = $4,954 exactly. The audit's FICA delta against the eligible case (+$336.60) reproduces exactly; its federal delta does not survive the deduction rules every other fixture pins.",
+    note: "F6 (build v58) — Medicare enrollment stops HSA contributions. Single filer (no spouse), primary b.1961, window start 65, salary $100,000, employer 401(k) $0, employer HSA $1,000, medicareAgePrimary 65, quit 66 (one work year at 65, calendar 2026): the household is HSA-ineligible, so the stack's own HSA, employer HSA, and HSA bucket are all $0. Taxable wages rise to $100,000 − $24,500 deferral − $8,000 pre-tax catch-up = $67,500, and FICA wages are the full $100,000 (no HSA exclusion), so FICA is $7,650 — both exactly as the audit hand-derived. Federal tax pins $4,954, NOT the audit's $6,020: the audit's federal arithmetic omitted the two deductions the shared pricer applies to any 65-year-old — the §63(f) age-65 standard-deduction add-on ($2,050 single, 2026 row) and the §151(d)(5)(C) senior deduction ($6,000, unphased at this MAGI, added on top of the standard side). Taxable income is $67,500 − ($16,100 + $2,050) − $6,000 = $43,350, and the 2026 single brackets give $1,240 + 12% × $30,950 = $4,954 exactly. The audit's FICA delta against the eligible case (+$336.60) reproduces exactly; its federal delta does not survive the deduction rules every other fixture pins.",
     expected: {
       ownHsa: 0,
       employerHsa: 0,
@@ -9840,7 +9854,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-loss-position",
     kind: "tax",
-    note: "Loss position under the §1015 dual basis — RE-PINNED in contract v57 (F3): gift $50,000 (the gift-date fair market value) with an $80,000 donor basis, sold at $50,000 (0% return). The gain basis is the donor's $80,000, but the LOSS basis is the lower gift-date FMV, $50,000; a sale at exactly $50,000 falls between the two bases, so the recognized gain/loss is $0. (Pre-fix the model computed value − donor basis and displayed −$30,000 — a loss §1015 does not recognize; the child's tax was already $0 because the taxed gain floors at $0, so childTax 0 and netToChild $50,000 are unchanged by the re-pin.) (The display suppresses the step-up sentence here: there is no gain for a step-up to wipe out.)",
+    note: "Loss position under the §1015 dual basis — RE-PINNED in build v57 (F3): gift $50,000 (the gift-date fair market value) with an $80,000 donor basis, sold at $50,000 (0% return). The gain basis is the donor's $80,000, but the LOSS basis is the lower gift-date FMV, $50,000; a sale at exactly $50,000 falls between the two bases, so the recognized gain/loss is $0. (Pre-fix the model computed value − donor basis and displayed −$30,000 — a loss §1015 does not recognize; the child's tax was already $0 because the taxed gain floors at $0, so childTax 0 and netToChild $50,000 are unchanged by the re-pin.) (The display suppresses the step-up sentence here: there is no gain for a step-up to wipe out.)",
     expected: { value: 50000, gain: 0, childTax: 0, netToChild: 50000 },
     actual: () => {
       const cmp = computeGiftComparison(giftFixturePlan(), {
@@ -9886,7 +9900,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-outflow-specific-basis",
     kind: "tax",
-    note: "F1 (contract v57) — specific-lot basis into the march, no-spending shape (hand-derived from the audit's case): single filer, plan year 2026 at age 57, Taxable $1,000,000 at a 50% basis ($500,000 of basis dollars), no other balances or income, 0% return, no spending, Do Nothing. A $200,000 gift at 57 of shares carrying a $20,000 basis (giftOutflowBasis) removes exactly that parcel's basis: the gift year ends with Taxable $800,000 and $480,000 of basis dollars ($500,000 − $20,000). The same outflow WITHOUT giftOutflowBasis keeps the legacy pro-rata removal — $500,000 − $200,000 × ($500,000 / $1,000,000) = $400,000 — pinning the absent-field fallback as unchanged.",
+    note: "F1 (build v57) — specific-lot basis into the march, no-spending shape (hand-derived from the audit's case): single filer, plan year 2026 at age 57, Taxable $1,000,000 at a 50% basis ($500,000 of basis dollars), no other balances or income, 0% return, no spending, Do Nothing. A $200,000 gift at 57 of shares carrying a $20,000 basis (giftOutflowBasis) removes exactly that parcel's basis: the gift year ends with Taxable $800,000 and $480,000 of basis dollars ($500,000 − $20,000). The same outflow WITHOUT giftOutflowBasis keeps the legacy pro-rata removal — $500,000 − $200,000 × ($500,000 / $1,000,000) = $400,000 — pinning the absent-field fallback as unchanged.",
     expected: {
       giftYearBasisEnd: 480000,
       giftYearTaxableEnd: 800000,
@@ -9925,7 +9939,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-outflow-specific-basis-tax",
     kind: "tax",
-    note: "F1 (contract v57) — specific-lot basis into the march, spending shape (hand-derived in the audit, from the 2026 single-filer law row): the gift-outflow-specific-basis plan with $200,000/yr of spending drawn taxable-first and tax paid from taxable, Do Nothing. In the gift year the zero-tax gains space is $16,100 (standard deduction) + $49,450 (0% LTCG top) = $65,550. With the parcel's own $20,000 basis gone, the remaining $800,000 carries $480,000 of basis — a 40% gain fraction — so the year's gains tax T solves T = 0.15 × (0.40 × ($200,000 + T) − $65,550), giving T = $2,305.85. Under the legacy pro-rata removal the gain fraction stays 50% and the same equation gives $5,586.49 — the overstatement the fix removes. The gift year's basis ledger ends at $480,000 − 0.60 × ($200,000 + $2,305.85) = $358,616.49 (the year's sales retire basis at the pool's 60% basis fraction).",
+    note: "F1 (build v57) — specific-lot basis into the march, spending shape (hand-derived in the audit, from the 2026 single-filer law row): the gift-outflow-specific-basis plan with $200,000/yr of spending drawn taxable-first and tax paid from taxable, Do Nothing. In the gift year the zero-tax gains space is $16,100 (standard deduction) + $49,450 (0% LTCG top) = $65,550. With the parcel's own $20,000 basis gone, the remaining $800,000 carries $480,000 of basis — a 40% gain fraction — so the year's gains tax T solves T = 0.15 × (0.40 × ($200,000 + T) − $65,550), giving T = $2,305.85. Under the legacy pro-rata removal the gain fraction stays 50% and the same equation gives $5,586.49 — the overstatement the fix removes. The gift year's basis ledger ends at $480,000 − 0.60 × ($200,000 + $2,305.85) = $358,616.49 (the year's sales retire basis at the pool's 60% basis fraction).",
     expected: {
       giftYearFedTax: 2305.85,
       giftYearBasisEnd: 358616.49,
@@ -9964,7 +9978,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-outflow-specific-basis-tiers",
     kind: "tax",
-    note: "F1 (contract v57) — the specific-basis shapes on the basis-TIERS ledger: the gift-outflow-specific-basis plans with the 50% basis carried as a single tier (100% share at a 50% basis ratio). The tier balances fall pro-rata by balance while the tier basis removal totals the parcel's own $20,000 exactly, so every figure agrees with the single-pool pins to the cent: no-spending gift year ends at Taxable $800,000 with $480,000 of basis dollars, and the spending shape's gift-year federal capital-gains tax is $2,305.85.",
+    note: "F1 (build v57) — the specific-basis shapes on the basis-TIERS ledger: the gift-outflow-specific-basis plans with the 50% basis carried as a single tier (100% share at a 50% basis ratio). The tier balances fall pro-rata by balance while the tier basis removal totals the parcel's own $20,000 exactly, so every figure agrees with the single-pool pins to the cent: no-spending gift year ends at Taxable $800,000 with $480,000 of basis dollars, and the spending shape's gift-year federal capital-gains tax is $2,305.85.",
     expected: {
       giftYearBasisEnd: 480000,
       giftYearTaxableEnd: 800000,
@@ -10010,7 +10024,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-counterfactual-sale-exhausted",
     kind: "tax",
-    note: "F6 (contract v57) — the counterfactual sale is capped at the shares the baseline still holds: single filer, $100,000 of zero-basis stock, $100,000/yr of spending taxable-first, 0% return; a gift of all $100,000 at 57 with a counterfactual sale at 60. The no-gift baseline spends the whole Taxable bucket in the first year, so at the start of the sale year it holds $0 of the shares — the capped injection is $0 and the comparison's baseline side is BIT-IDENTICAL to the plain plan run (same winner, $0 net-cost and ending-wealth differences). Pre-fix the baseline injected the full $100,000 gain at 60 and assessed $5,167.50 of tax on shares no longer owned. The child's side is untouched: the shares are worth $100,000 at sale with a $0 basis, the child (born 2000, age 29 at the 2029 sale, no kiddie gate) pays 15% on $100,000 − $16,100 − $49,450 = $34,450 of taxable gains = $5,167.50, netting $94,832.50.",
+    note: "F6 (build v57) — the counterfactual sale is capped at the shares the baseline still holds: single filer, $100,000 of zero-basis stock, $100,000/yr of spending taxable-first, 0% return; a gift of all $100,000 at 57 with a counterfactual sale at 60. The no-gift baseline spends the whole Taxable bucket in the first year, so at the start of the sale year it holds $0 of the shares — the capped injection is $0 and the comparison's baseline side is BIT-IDENTICAL to the plain plan run (same winner, $0 net-cost and ending-wealth differences). Pre-fix the baseline injected the full $100,000 gain at 60 and assessed $5,167.50 of tax on shares no longer owned. The child's side is untouched: the shares are worth $100,000 at sale with a $0 basis, the child (born 2000, age 29 at the 2029 sale, no kiddie gate) pays 15% on $100,000 − $16,100 − $49,450 = $34,450 of taxable gains = $5,167.50, netting $94,832.50.",
     expected: {
       baselineNetDiff: 0,
       baselineWealthDiff: 0,
@@ -10056,7 +10070,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-donors-after-spouse-death",
     kind: "tax",
-    note: "F2 (contract v57) — the exclusion's donor count follows the gift year's filing status: MFJ plan, primary born 1971 (plan starts 2026 at age 55), spouse dies in 2028 (survivor scenario on), $38,000 gift. The death year itself still files jointly: a gift at age 57 (2028) has two donors, $38,000 of exclusion, $0 over. The next year the survivor files single: a gift at age 58 (2029) has ONE donor, $19,000 of exclusion, $19,000 over the exclusion. Pre-fix the count read the plan's static MFJ status and priced two donors in both years.",
+    note: "F2 (build v57) — the exclusion's donor count follows the gift year's filing status: MFJ plan, primary born 1971 (plan starts 2026 at age 55), spouse dies in 2028 (survivor scenario on), $38,000 gift. The death year itself still files jointly: a gift at age 57 (2028) has two donors, $38,000 of exclusion, $0 over. The next year the survivor files single: a gift at age 58 (2029) has ONE donor, $19,000 of exclusion, $19,000 over the exclusion. Pre-fix the count read the plan's static MFJ status and priced two donors in both years.",
     expected: {
       deathYearDonors: 2,
       deathYearAvail: 38000,
@@ -10216,7 +10230,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-plan-year-detail-2040",
     kind: "tax",
-    note: "Engine access, plan-year detail on the golden plan shape (planInputsFromSaved on the golden saved shape, Fill 12% strategy, entered claim age 67): year 2036 (primary 65, spouse 54) converts $134,600 — the 12% fill: deductions $33,850 ($32,200 + one 65+ add-on $1,650), taxable income $134,600 − $33,850 = $100,750, federal tax $2,480 + 12% × $75,950 = $11,594. Only the spouse is on the marketplace that year (benchmark single $15,000; household size 5, FPL $38,680 on the newest-row fallback, MAGI at 347.98% of FPL → applicable 9.96% → expected contribution $13,406.16 → credit $1,593.84). The with/without two-pricing (pricePlanYearDetail, the second run forcing 2036's conversion to $0): without the conversion the year has NO income at all — federal tax $0 and, household income being under 100% of FPL, an ACA credit of $0 (the credit prices only from 100% of FPL, so this conversion CREATES the year's credit rather than shrinking it). Deltas: Δfederal +$11,594, Δstate $0, ΔIRMAA-paid $0 (the year's surcharge was set by 2034 MAGI, identical in both runs; 2036 MAGI sets Tier 0 either way), ΔACA credit +$1,593.84; total conversion cost $11,594 − $1,593.84 = $10,000.16, an effective (average) rate of 6.09% on the $134,600. The year's separate next-$100 MARGINAL rate is 17.0% (the fill lands $50 under the 12% top, so the next $100 straddles: $50 at 12% + $50 at 22%) — a different figure from the average rate, pinned separately so the two are never conflated.",
+    note: "Engine access, plan-year detail on the golden plan shape (planInputsFromSaved on the golden saved shape, Fill 12% strategy, entered claim age 67): year 2036 (primary 65, spouse 54) converts $134,600 — the 12% fill: deductions $33,850 ($32,200 + one 65+ add-on $1,650), taxable income $134,600 − $33,850 = $100,750, federal tax $2,480 + 12% × $75,950 = $11,594. Only the spouse is on the marketplace that year (benchmark single $15,000; household size 5, FPL $38,680 on the newest-row fallback, MAGI at 347.98% of FPL → applicable 9.96% → expected contribution $13,406.16 → credit $1,593.84). The with/without two-pricing (pricePlanYearDetail, the second run forcing 2036's conversion to $0): without the conversion the year has NO income at all — federal tax $0 and, household income being under 100% of FPL, an ACA credit of $0 (the credit prices only from 100% of FPL, so this conversion CREATES the year's credit rather than shrinking it). Deltas: Δfederal +$11,594, Δstate $0, ΔIRMAA-paid $0 (the year's surcharge was set by 2034 MAGI, identical in both runs; 2036 MAGI sets Tier 0 either way), ΔACA credit +$1,593.84; total conversion cost $11,594 − $1,593.84 = $10,000.16, an effective (average) rate of 6.09% on the $134,600. The year's separate next-$100 MARGINAL rate is 17.0% (the fill lands $50 under the 12% top, so the next $100 straddles: $50 at 12% + $50 at 22%) — a different figure from the average rate, pinned separately so the two are never conflated. (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       conversion: 134600,
       deductions: 33850,
@@ -10227,7 +10241,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       magi: 134600,
       endingPretax: 1495412.45,
       endingRoth: 2851210.8,
-      endingTaxable: 2212889.91,
+      endingTaxable: 2242523.4,
       endingHsa: 203458.96,
       withoutConversion: 0,
       withoutFederal: 0,
@@ -10414,7 +10428,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-plan-year-detail-2042-ss-year",
     kind: "tax",
-    note: "Engine access, plan-year detail on the SAME golden anchor shape as ea-plan-year-detail-2036, targeted at 2038 — the first Social Security year (primary 67, spouse 56; benefits $48,000 start at the entered claim age 67). With the Fill 12% conversion of $93,800, provisional income is far past the §86 second tier, so benefits are taxed at the 85% cap: taxable SS $40,800 (the settled §86 pin), AGI $134,600, deductions $33,850, taxable income $100,750, federal tax $2,480 + 12% × $75,992 = $11,594.00. ACA MAGI adds back the untaxed benefits: $134,600 + $7,578 = $142,220, and the spouse's marketplace credit (single benchmark $15,000) is $876.72. The without-conversion two-pricing is the NEGATIVE-ΔACA case: with no conversion, provisional income is just half of benefits ($24,000), which lands in the first §86 tier once the fixed $32,000 threshold is deflated to 2038, taxing only $1,222.00 of benefits (1.45%); federal tax is $0, but ACA MAGI counts the FULL $48,000 of benefits, which sits in the credit band, so the without year KEEPS a $13,992.00 credit — and the conversion SHRINKS it: ΔACA credit −$13,104.19. Total conversion cost $11,594.00 + $13,104.19 = $24,709.28, an average (effective) rate of 26.94% on the $93,800 — a DIFFERENT figure from the row's next-$100 marginal rate of 21.2% (the §86 phase-in plus the shrinking credit), pinned separately so the two are never conflated.",
+    note: "Engine access, plan-year detail on the SAME golden anchor shape as ea-plan-year-detail-2036, targeted at 2038 — the first Social Security year (primary 67, spouse 56; benefits $48,000 start at the entered claim age 67). With the Fill 12% conversion of $93,800, provisional income is far past the §86 second tier, so benefits are taxed at the 85% cap: taxable SS $40,800 (the settled §86 pin), AGI $134,600, deductions $33,850, taxable income $100,750, federal tax $2,480 + 12% × $75,992 = $11,594.00. ACA MAGI adds back the untaxed benefits: $134,600 + $7,578 = $142,220, and the spouse's marketplace credit (single benchmark $15,000) is $876.72. The without-conversion two-pricing is the NEGATIVE-ΔACA case: with no conversion, provisional income is just half of benefits ($24,000), which lands in the first §86 tier once the fixed $32,000 threshold is deflated to 2038, taxing only $1,222.00 of benefits (1.45%); federal tax is $0, but ACA MAGI counts the FULL $48,000 of benefits, which sits in the credit band, so the without year KEEPS a $13,992.00 credit — and the conversion SHRINKS it: ΔACA credit −$13,104.19. Total conversion cost $11,594.00 + $13,104.19 = $24,709.28, an average (effective) rate of 26.94% on the $93,800 — a DIFFERENT figure from the row's next-$100 marginal rate of 21.2% (the §86 phase-in plus the shrinking credit), pinned separately so the two are never conflated. (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       conversion: 93800,
       deductions: 33850,
@@ -10427,7 +10441,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       ssPctTaxed: 85,
       endingPretax: 1422611.57,
       endingRoth: 3438244.38,
-      endingTaxable: 2173851.38,
+      endingTaxable: 2210592.55,
       endingHsa: 227529.43,
       withoutConversion: 0,
       withoutSsPctTaxed: 2.55,
@@ -10503,7 +10517,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-plan-year-detail-2050-rmd",
     kind: "tax",
-    note: "Engine access, plan-year detail on the SAME golden anchor shape, targeted at 2046 — the first RMD year (primary 75, spouse 64). The RMD is the settled pin: the prior Dec-31 pre-tax balance divided by the 25.3 Joint Life divisor (spouse sole beneficiary, more than 10 years younger) = $51,939.97. The conversion window has closed by then (window stop age 74), so the year's conversion is $0 and the with/without two-pricing is degenerate by construction: the without run forces a conversion that is already $0, both rows are identical, and every delta is $0 with a null average rate (no conversion to price). The row itself: benefits $48,000 taxed at the 85% cap ($40,800), AGI $51,939.97 + $40,800 = $92,739.97, deductions $33,850, taxable income $57,239.97, federal tax $6,372.80, and the spouse (64, still on the marketplace) keeps a $0.00 credit.",
+    note: "Engine access, plan-year detail on the SAME golden anchor shape, targeted at 2046 — the first RMD year (primary 75, spouse 64). The RMD is the settled pin: the prior Dec-31 pre-tax balance divided by the 25.3 Joint Life divisor (spouse sole beneficiary, more than 10 years younger) = $51,939.97. The conversion window has closed by then (window stop age 74), so the year's conversion is $0 and the with/without two-pricing is degenerate by construction: the without run forces a conversion that is already $0, both rows are identical, and every delta is $0 with a null average rate (no conversion to price). The row itself: benefits $48,000 taxed at the 85% cap ($40,800), AGI $51,939.97 + $40,800 = $92,739.97, deductions $33,850, taxable income $57,239.97, federal tax $6,372.80, and the spouse (64, still on the marketplace) keeps a $0.00 credit. (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       rmd: 51939.97,
       conversion: 0,
@@ -10517,7 +10531,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       ssPctTaxed: 85,
       endingPretax: 1296265.81,
       endingRoth: 6251295.95,
-      endingTaxable: 2282077.41,
+      endingTaxable: 2351529.05,
       endingHsa: 355861.15,
       withoutRmd: 51939.97,
       withoutFederal: 6372.8,
@@ -10588,7 +10602,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-balance-resolution-mixed",
     kind: "tax",
-    note: "Engine access, MIXED balance resolution: an optimizer payload with ONE balance explicit at a NON-snapshot value (Pre-tax $1,000,000 = 100000000¢, deliberately not the snapshot's $1,800,000) and the other three null. resolvePlanBalances keeps the explicit Pre-tax as given and resolves only the nulls from the snapshot (Roth 55000000¢, Taxable 240000000¢ — Taxable plus Cash folded in — HSA 11000000¢), so the mixed plan is BIT-IDENTICAL to the same call with all four balances entered explicitly, and the joint optimizer on it returns the identical winner: the Fill-to-12% through-RMD candidate (spec key pinned) at claim age 62, lifetime net cost −$88,424.11 (negative — on this smaller pre-tax balance the lifetime ACA credits kept exceed the tax and terminal costs), Do Nothing $1,081,917.27 — winner identity and net cost pinned exactly for BOTH payloads. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Engine access, MIXED balance resolution: an optimizer payload with ONE balance explicit at a NON-snapshot value (Pre-tax $1,000,000 = 100000000¢, deliberately not the snapshot's $1,800,000) and the other three null. resolvePlanBalances keeps the explicit Pre-tax as given and resolves only the nulls from the snapshot (Roth 55000000¢, Taxable 240000000¢ — Taxable plus Cash folded in — HSA 11000000¢), so the mixed plan is BIT-IDENTICAL to the same call with all four balances entered explicitly, and the joint optimizer on it returns the identical winner: the Fill-to-12% through-RMD candidate (spec key pinned) at claim age 62, lifetime net cost −$88,424.11 (negative — on this smaller pre-tax balance the lifetime ACA credits kept exceed the tax and terminal costs), Do Nothing $1,081,917.27 — winner identity and net cost pinned exactly for BOTH payloads. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Winner net RE-PINNED 2026-11-03, recorded during the SHOULD-1 build but NOT a SHOULD-1 effect: the winner's net reads −$88,327.86 in this environment, $4.63 below the previous pin, and it reads exactly −$88,327.86 with the SHOULD-1 grow-back gate BOTH restored and removed — the ungating does not move this case at all. The drift is the same environment-stamped near-tie candidate-selection behavior documented at length on opt-aca-bunching-beats-level-cliff (2026-10-25): the joint optimizer's march selects among near-tie candidates and a one-ulp difference moves the scored winner's net by small dollars. The property this fixture exists to pin is untouched: mixed ≡ explicit bit-for-bit (both payloads return the identical winner key, claim age 63, and net), and Do Nothing is unmoved at $1,081,917.27.)",
     expected: {
       resolvedPretaxCents: 100000000,
       resolvedRothCents: 55000000,
@@ -10599,8 +10613,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       explicitWinnerKey: "22|-|-|a|-:95:-:-:taxable-pretax-roth",
       mixedWinnerClaimAge: 63,
       explicitWinnerClaimAge: 63,
-      mixedWinnerNet: -88323.23,
-      explicitWinnerNet: -88323.23,
+      mixedWinnerNet: -88327.86,
+      explicitWinnerNet: -88327.86,
       mixedDoNothingNet: 1081917.27,
       explicitDoNothingNet: 1081917.27,
     },
@@ -10846,7 +10860,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-playground-year-irmaa-anchor",
     kind: "tax",
-    note: "Engine access, the Playground's IRMAA anchor priced through pricePlaygroundYear — the exact function the runPlaygroundYear ACTION calls (the action adds only input normalization, identity on this dial set) — not merely the client-side readout: 2026, MFJ, both spouses on Medicare, $20,000 of other ordinary income plus a $200,000 conversion lands MAGI at exactly $220,000, inside Tier 1 (2026 MFJ lines $218,000 / $274,000). The 2026 law row the engine prices from carries the standard Part B premium at $202.90/mo and the Tier 1 Part B total at $284.10/mo with a $14.50 Part D surcharge, so the Tier 1 surcharge is ($284.10 − $202.90) + $14.50 = $95.70/mo per person — $1,148.40/yr per person, $2,296.80/yr for the two people on Medicare — and the tier this 2026 MAGI sets is paid in 2028. RE-PINNED for contract v97: the spouse age is set so both spouses count on Medicare in the premium year — under the pre-v97 flag count a spouse aged 55 with the flag on counted two people too, but the premium-year age rule counts only the primary at that age, so the age, not any figure, moved.",
+    note: "Engine access, the Playground's IRMAA anchor priced through pricePlaygroundYear — the exact function the runPlaygroundYear ACTION calls (the action adds only input normalization, identity on this dial set) — not merely the client-side readout: 2026, MFJ, both spouses on Medicare, $20,000 of other ordinary income plus a $200,000 conversion lands MAGI at exactly $220,000, inside Tier 1 (2026 MFJ lines $218,000 / $274,000). The 2026 law row the engine prices from carries the standard Part B premium at $202.90/mo and the Tier 1 Part B total at $284.10/mo with a $14.50 Part D surcharge, so the Tier 1 surcharge is ($284.10 − $202.90) + $14.50 = $95.70/mo per person — $1,148.40/yr per person, $2,296.80/yr for the two people on Medicare — and the tier this 2026 MAGI sets is paid in 2028. RE-PINNED for build v97: the spouse age is set so both spouses count on Medicare in the premium year — under the pre-v97 flag count a spouse aged 55 with the flag on counted two people too, but the premium-year age rule counts only the primary at that age, so the age, not any figure, moved.",
     expected: {
       magi: 220000,
       tier: 1,
@@ -11024,7 +11038,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-golden-blank-reserve",
     kind: "tax",
-    note: "Blank reserve on the anchor shape (preserve floor $0 = no reserve; engine-derived 2026-10-15, matching the figures settled by review): the joint winner is “Fill to the top of the 24% bracket” at claim 65, net $211,132.62, with the joint Do Nothing at $2,478,733.88 (claim 65). The fixed-claiming-age search (entered claim 67, all six draw orders, 1,513 candidates) crowns “Fill to a $400,000 MAGI cap”, net $216,031.85, against a fixed Do Nothing of $2,545,904.28 — the blank-reserve terminal prices the whole ending pre-tax at the heir rate, unlike the $250,000 @10% split on the preserved shape. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (jointNet re-pinned 2026-10-21 for round-7 R7-5: the joint winner is the IRMAA Tier 1 ceiling candidate, and the aligned sizer now grows its capped years' conversions up to the tier top — on this shape the extra conversions cost slightly more than they save, so its net rises $211,132.62 → $211,157.55; it remains the winner, and the fixed-claiming-age figures (a MAGI-cap winner, no IRMAA cap) are unmoved. Verified by isolation: with the R7-5 grow-back disabled this fixture returns exactly $211,132.62.)",
+    note: "Blank reserve on the anchor shape (preserve floor $0 = no reserve; engine-derived 2026-10-15, matching the figures settled by review): the joint winner is “Fill to the top of the 24% bracket” at claim 65, net $211,132.62, with the joint Do Nothing at $2,478,733.88 (claim 65). The fixed-claiming-age search (entered claim 67, all six draw orders, 1,513 candidates) crowns “Fill to a $400,000 MAGI cap”, net $216,031.85, against a fixed Do Nothing of $2,545,904.28 — the blank-reserve terminal prices the whole ending pre-tax at the heir rate, unlike the $250,000 @10% split on the preserved shape. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (jointNet re-pinned 2026-10-21 for round-7 R7-5: the joint winner is the IRMAA Tier 1 ceiling candidate, and the aligned sizer now grows its capped years' conversions up to the tier top — on this shape the extra conversions cost slightly more than they save, so its net rises $211,132.62 → $211,157.55; it remains the winner, and the fixed-claiming-age figures (a MAGI-cap winner, no IRMAA cap) are unmoved. Verified by isolation: with the R7-5 grow-back disabled this fixture returns exactly $211,132.62.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       jointCandidates: 2277,
       jointName: "Fill up to the IRMAA Tier 1 ceiling",
@@ -11033,7 +11047,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       jointDnNet: 2478733.88,
       fixedCandidates: 1513,
       fixedName: "Fill to a $400,000 MAGI cap",
-      fixedNet: 216031.85,
+      fixedNet: 216114.67,
       fixedDnNet: 2545904.28,
     },
     actual: () => {
@@ -11126,11 +11140,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-tie-break-plan-order",
     kind: "tax",
-    note: "Tie-break order among converting candidates (blank-reserve anchor shape, fixed-claiming-age search): eight candidates tie exactly at the winning net $216,031.85 — the $250,000 MAGI cap at window stops 74 and 95 under the four draw orders that price identically here. The deterministic comparator (net cost, then Do Nothing rank, then the plan's own draw order, then candidate key) crowns the plan-order (Taxable → Pre-tax → Roth), stop-74 key — a different order or window must price strictly lower to be recommended. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Tie-break order among converting candidates (blank-reserve anchor shape, fixed-claiming-age search): eight candidates tie exactly at the winning net $216,031.85 — the $250,000 MAGI cap at window stops 74 and 95 under the four draw orders that price identically here. The deterministic comparator (net cost, then Do Nothing rank, then the plan's own draw order, then candidate key) crowns the plan-order (Taxable → Pre-tax → Roth), stop-74 key — a different order or window must price strictly lower to be recommended. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       winnerName: "Fill to a $400,000 MAGI cap",
       winnerKey: "-|-|-|-|400000:65:-:bu:pretax-roth-taxable",
-      winnerNet: 216031.85,
+      winnerNet: 216114.67,
       tiedCount: 6,
       winnerIsPlanOrder: 0,
       winnerWindowStop: 65,
@@ -11460,7 +11474,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-law-fallback-guard",
     kind: "tax",
-    note: "Law-table fallback guard: a year with no published row prices under the newest row — lawForYear(2030) resolves to the 2026 law (year field 2026), and acaTableFor(2030) resolves to the 2026 ACA table (6 bands, identical to acaTableFor(2026) band for band, top band's final applicable percentage 9.96). Future years never price under a stale older row by accident.",
+    note: "Law-table fallback guard (future direction): a year past the newest published row prices under that newest row — lawForYear(2030) resolves to the 2026 law (year field 2026), and acaTableFor(2030) resolves to the 2026 ACA table (6 bands, identical to acaTableFor(2026) band for band, top band's final applicable percentage 9.96). Future years never price under a stale older row by accident. (The past direction — a year earlier than the oldest row — is pinned separately by tax-law-pre-table-year-earliest-row-should10: it resolves to the OLDEST row, never to this newest one.)",
     expected: { lawYear2030: 2026, acaBands2030: 6, acaLastFinal2030: 9.96, acaEquals2026: 1 },
     actual: () => {
       const t30 = acaTableFor(2030);
@@ -11483,6 +11497,50 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         TAX_LAW_YEARS[TAX_LAW_YEARS.length - 1] === CURRENT_LAW ? 1 : 0,
       fallback2200: lawForYear(2200).year,
     }),
+  },
+  {
+    id: "tax-law-pre-table-year-earliest-row-should10",
+    kind: "tax",
+    note: "Pre-table-year law fallback (re-audit round 3 SHOULD-10): a tax year EARLIER than the oldest published law row prices under that OLDEST row — the earliest law the table holds — never under a later year's law. Before this fix lawForYear resolved EVERY rowless year to the newest row, so a 2023 or 2024 year was silently taxed with 2026 brackets, standard deduction, and thresholds. Pins: lawForYear(2024) IS the 2025 row (object identity, not a copy), lawForYear(2023) names 2025, and EARLIEST_LAW is derived from the table as its first element (the same object). PRICED LEG, hand-derived: a 66/60 MFJ couple with $100,000 of ordinary income at 0% inflation priced for 2024 reads the 2025 row — standard deduction $31,500 + one $1,600 age-65 add-on (only the 66-year-old) = $33,100, taxable $66,900, federal tax $2,385 (10% of the $23,850 first bracket top) + 12% × $43,050 = $7,551 — and the §151(d)(5)(C) senior deduction is $0 because its 2025–2028 window is dated by CALENDAR year, so 2024 is outside it even under the 2025 row. The same shape priced for 2025 (its own row) confirms the row is doing the work: same $33,100 standard deduction, plus the full $6,000 senior deduction (AGI $100,000 is under the $150,000 phase-out start) for deductions $39,100, taxable $60,900, tax $2,385 + 12% × $37,050 = $6,831. PRE-FIX BEHAVIOUR (what this fixture catches): the 2024 price under the newest row read standard deduction $33,850 ($32,200 + $1,650), taxable $66,150, tax $7,442 — the 2026 figures the t1-carry-forward-beyond-newest-table fixture pins for its own years.",
+    expected: {
+      lawYear2024: 2025,
+      law2024IsRow2025: 1,
+      lawYear2023: 2025,
+      earliestIsFirstRow: 1,
+      ded2024: 33100,
+      senior2024: 0,
+      taxable2024: 66900,
+      tax2024: 7551,
+      ded2025: 33100,
+      senior2025: 6000,
+      tax2025: 6831,
+    },
+    actual: () => {
+      const shape = {
+        agePrimary: 66,
+        ageSpouse: 60,
+        otherOrdinary: 100000,
+        inflationPct: 0,
+      };
+      const p24 = priceYear(basePrice({ calendarYear: 2024, ...shape }));
+      const p25 = priceYear(basePrice({ calendarYear: 2025, ...shape }));
+      return {
+        lawYear2024: lawForYear(2024).year,
+        law2024IsRow2025: lawForYear(2024) === TAX_LAW_2025 ? 1 : 0,
+        lawYear2023: lawForYear(2023).year,
+        earliestIsFirstRow:
+          TAX_LAW_YEARS[0] === EARLIEST_LAW && EARLIEST_LAW === TAX_LAW_2025
+            ? 1
+            : 0,
+        ded2024: p24.standardDeduction,
+        senior2024: p24.seniorDeduction,
+        taxable2024: p24.taxableIncome,
+        tax2024: p24.federalTax,
+        ded2025: p25.standardDeduction,
+        senior2025: p25.seniorDeduction,
+        tax2025: p25.federalTax,
+      };
+    },
   },
   {
     id: "tax-senior-deduction-sunset",
@@ -11811,9 +11869,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "reserve-floor-conversions-only",
     kind: "tax",
-    note: "Characterization — the reserve floor caps CONVERSIONS only, never draws or RMDs (settled design; pinned on the anchor shape variant with a $950,000 floor and end age 74, engine-derived 2026-10-15): under Do Nothing with a pre-tax-first draw order, lifetime spending draws pull the ending pre-tax to $782,645.20 — BELOW the $950,000 floor — while the same plan at its own (Taxable-first) order ends at $5,785,530. Under the entered Fill 12% strategy, every converting year's post-conversion balance stays at or above the floor (the minimum over the window is $1,208,248.93): the conversion side respects the floor exactly, the draw side is never checked against it.",
+    note: "Characterization — the reserve floor caps CONVERSIONS only, never draws or RMDs (settled design; pinned on the anchor shape variant with a $950,000 floor and end age 74, engine-derived 2026-10-15): under Do Nothing with a pre-tax-first draw order, lifetime spending draws pull the ending pre-tax to $782,645.20 — BELOW the $950,000 floor — while the same plan at its own (Taxable-first) order ends at $5,785,530. Under the entered Fill 12% strategy, every converting year's post-conversion balance stays at or above the floor (the minimum over the window is $1,208,248.93): the conversion side respects the floor exactly, the draw side is never checked against it. (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      dnPretaxFirstEnding: 782645.2,
+      dnPretaxFirstEnding: 800820.96,
       dnBelowFloor: 1,
       dnPlanOrderEnding: 5506555.57,
       minPostConversion: 1208248.93,
@@ -12458,16 +12516,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-o2-monte-carlo-production",
     kind: "tax",
-    note: "Presentation pin O2 / MT-O2 (engine-derived fresh 2026-10-15 at PRODUCTION parameters — 250 paired paths, seed 12345, volatility 15% — on the anchor shape's joint winner vs its Do Nothing): the winner wins 221 of 250 paths (88.4%); the median advantage is $1,174,980.76, with the 10th percentile at −$24,673.08 (the check honestly shows paths where converting loses) and the 90th at $5,872,178.26; median net costs: winner $317,760.39, Do Nothing $1,465,241.19. The review-era figures for this check were STALE-SUSPECT and are superseded by these derived values. This is golden-battery Q21. (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–250 are different market trials than under the old variable-length draw. Every figure moved from the prior pin: wins 205 → 221, win rate 82% → 88.4%, median advantage $1,101,401.10 → $1,174,980.76, p10 −$77,606.49 → −$24,673.08, p90 $5,493,643.26 → $5,872,178.26, winner median net $304,037.46 → $317,760.39, Do Nothing median net $1,408,184.05 → $1,465,241.19.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Presentation pin O2 / MT-O2 (engine-derived fresh 2026-10-15 at PRODUCTION parameters — 250 paired paths, seed 12345, volatility 15% — on the anchor shape's joint winner vs its Do Nothing): the winner wins 221 of 250 paths (88.4%); the median advantage is $1,174,980.76, with the 10th percentile at −$24,673.08 (the check honestly shows paths where converting loses) and the 90th at $5,872,178.26; median net costs: winner $317,760.39, Do Nothing $1,465,241.19. The review-era figures for this check were STALE-SUSPECT and are superseded by these derived values. This is golden-battery Q21. (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–250 are different market trials than under the old variable-length draw. Every figure moved from the prior pin: wins 205 → 221, win rate 82% → 88.4%, median advantage $1,101,401.10 → $1,174,980.76, p10 −$77,606.49 → −$24,673.08, p90 $5,493,643.26 → $5,872,178.26, winner median net $304,037.46 → $317,760.39, Do Nothing median net $1,408,184.05 → $1,465,241.19.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: the production plan shape carries marketplace benchmarks, so the march now funds each marketplace year's own priced net premium; the winner is unchanged and its median advantage is essentially unchanged, with the win count moving one stream on the pinned seed, 221 → 222 of 250.)",
     expected: {
       paths: 250,
-      wins: 221,
-      winRatePct: 88.4,
-      medianAdvantage: 1174980.76,
-      p10Advantage: -24673.08,
+      wins: 222,
+      winRatePct: 88.8,
+      medianAdvantage: 1175040.43,
+      p10Advantage: -25141.14,
       p90Advantage: 5872178.26,
-      winnerMedianNetCost: 317760.39,
-      doNothingMedianNetCost: 1465241.19,
+      winnerMedianNetCost: 315830.53,
+      doNothingMedianNetCost: 1475558.98,
     },
     actual: () => {
       const plan = goldenWorkPlan();
@@ -12585,7 +12643,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-pg2-niit-distinguishing",
     kind: "tax",
-    note: "Playground pin PG2 / MT-PG2 (engine-derived 2026-10-15; re-pinned for the §1411 base fix): the NIIT distinguishing case, companion to playground-niit-interest-only-zero. Same $300,000 of interest (MAGI now $305,000) PLUS $5,000 of qualified dividends: the §1411 base is the whole $305,000 of net investment income (interest + dividends), so the NIIT prices at 3.8% × min($305,000, $305,000 − $250,000) = 3.8% × $55,000 = $2,090. (Before the fix only the $5,000 of dividends counted and the NIIT was $190.) Federal tax foots by hand: ordinary tax $49,468 (on $267,800 of ordinary taxable income, exactly the interest-only case) + 15% × $5,000 of gains ($750) + $2,090 NIIT = $52,308.",
+    note: "Playground pin PG2 / MT-PG2 (engine-derived 2026-10-15; re-pinned for the §1411 base fix): the NIIT distinguishing case, companion to playground-niit-interest-only-zero. Same $300,000 of interest (MAGI now $305,000) PLUS $5,000 of dividends, all of it qualified (a $5,000 ordinary total — the pair made consistent under the contract v137 clamp, every figure unchanged): the §1411 base is the whole $305,000 of net investment income (interest + dividends), so the NIIT prices at 3.8% × min($305,000, $305,000 − $250,000) = 3.8% × $55,000 = $2,090. (Before the fix only the $5,000 of dividends counted and the NIIT was $190.) Federal tax foots by hand: ordinary tax $49,468 (on $267,800 of ordinary taxable income, exactly the interest-only case) + 15% × $5,000 of gains ($750) + $2,090 NIIT = $52,308.",
     expected: {
       magi: 305000,
       ltcgPriced: 5000,
@@ -12602,7 +12660,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         onMedicarePrimary: false,
         onMedicareSpouse: false,
         interest: 300000,
-        ordinaryDividends: 0,
+        ordinaryDividends: 5000,
         otherOrdinary: 0,
         taxExemptInterest: 0,
         ssPrimary: 0,
@@ -12878,8 +12936,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gq-winner-ending-wealth",
     kind: "tax",
-    note: "Golden battery Q23 (engine-derived 2026-10-15): the joint winner's ending after-tax wealth on the anchor shape is $25,626,403.68 — the figure the work-years quit-56 golden pins through its own path (workyears-golden-quit-56), asserted here directly off the winner's priced result so a chat answer can cite either. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
-    expected: { endingAfterTaxWealth: 25626403.68 },
+    note: "Golden battery Q23 (engine-derived 2026-10-15): the joint winner's ending after-tax wealth on the anchor shape is $25,626,403.68 — the figure the work-years quit-56 golden pins through its own path (workyears-golden-quit-56), asserted here directly off the winner's priced result so a chat answer can cite either. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    expected: { endingAfterTaxWealth: 26375297.91 },
     actual: () => {
       const plan = goldenWorkPlan();
       if (!plan) return { endingAfterTaxWealth: null };
@@ -13638,8 +13696,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-lab-basis-dial-reprice",
     kind: "tax",
-    note: "Strategy Lab debate-dial repricing (ENGINE-DERIVED REGRESSION PIN, Strategy Lab build — a full-plan lifetime total no hand calculation can produce; it pins the verified implementation's output so drift fails loudly, and is not a hand-derived statutory figure): the Lab prices a saved strategy as a full-record patch over the plan base, and its taxable-basis dial is that same patch with ONLY taxableBasisPct moved. Both runs below start at the SAME year (2026) on the identical golden base, so the only difference between them is taxableBasisPct: at 50% basis, the pre-tax-first cliff-capped strategy (the Option 1 shape: ACA cliff cap, draw order Pre-tax → Taxable → Roth) nets 139145441 cents; with the basis dial at 20 the identical patch nets 181907125 cents. The dial moves the price through the compare machinery itself, never a Lab-side calculation, and the two pins are the figures a dial-moved Lab run must reproduce. (START-YEAR ALIGNMENT, fixture-honesty repair 2026-10-23: this case previously ran the 50% run at start year 2030 and the 20% run at start year 2026, so the two pins confounded the basis dial with the pricing horizon and the 50% pin read 56468789; aligned to 2026 — the year the 20% run already used — the 50% pin is 139145441 and the 20% pin is unchanged at 181907125, recomputed from the aligned runs. The older headline figures once quoted here, 92306344 / 155451552, matched no pinned expectation and no longer stand as figures of this case; they had also propagated into tax-lab-null-fields-ride-patch's note, corrected there to the aligned figure.) (RE-PINNED by the BASIS-DRIFT build from 49078265 / 55837768: an entered basis % is now the starting share of a basis-dollars ledger — the share drifts down as the account compounds, so later draws price more gain than the flat % did; the drift anchors are pinned in tax-drift-sample-shape-anchors-basis-50. RE-PINNED AGAIN by the M-1 FIX from 54160335 / 59667748: the capped pre-tax draw now converges against settled gains, so the strategy's capped years land on the ACA cliff and keep the credit the leak forfeited. Under the leak the kept credit was $0 on any base, so this golden-base figure equalled the owner's record figure; it no longer does — the golden base carries the $20,000 couple benchmark with the family field blank (lifetime kept credit $73,207.91) while his record carries the $32,000 family benchmark (kept credit $184,182.95, pinned on his shape in tax-m1-cliff-cap-draw-lands-on-cliff-basis-50), and the two nets differ by exactly that credit difference.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
-    expected: { netBasis50: 139145441, netBasis20: 181907125, dialMovesPrice: 1 },
+    note: "Strategy Lab debate-dial repricing (ENGINE-DERIVED REGRESSION PIN, Strategy Lab build — a full-plan lifetime total no hand calculation can produce; it pins the verified implementation's output so drift fails loudly, and is not a hand-derived statutory figure): the Lab prices a saved strategy as a full-record patch over the plan base, and its taxable-basis dial is that same patch with ONLY taxableBasisPct moved. Both runs below start at the SAME year (2026) on the identical golden base, so the only difference between them is taxableBasisPct: at 50% basis, the pre-tax-first cliff-capped strategy (the Option 1 shape: ACA cliff cap, draw order Pre-tax → Taxable → Roth) nets 139145441 cents; with the basis dial at 20 the identical patch nets 181907125 cents. The dial moves the price through the compare machinery itself, never a Lab-side calculation, and the two pins are the figures a dial-moved Lab run must reproduce. (START-YEAR ALIGNMENT, fixture-honesty repair 2026-10-23: this case previously ran the 50% run at start year 2030 and the 20% run at start year 2026, so the two pins confounded the basis dial with the pricing horizon and the 50% pin read 56468789; aligned to 2026 — the year the 20% run already used — the 50% pin is 139145441 and the 20% pin is unchanged at 181907125, recomputed from the aligned runs. The older headline figures once quoted here, 92306344 / 155451552, matched no pinned expectation and no longer stand as figures of this case; they had also propagated into tax-lab-null-fields-ride-patch's note, corrected there to the aligned figure.) (RE-PINNED by the BASIS-DRIFT build from 49078265 / 55837768: an entered basis % is now the starting share of a basis-dollars ledger — the share drifts down as the account compounds, so later draws price more gain than the flat % did; the drift anchors are pinned in tax-drift-sample-shape-anchors-basis-50. RE-PINNED AGAIN by the M-1 FIX from 54160335 / 59667748: the capped pre-tax draw now converges against settled gains, so the strategy's capped years land on the ACA cliff and keep the credit the leak forfeited. Under the leak the kept credit was $0 on any base, so this golden-base figure equalled the owner's record figure; it no longer does — the golden base carries the $20,000 couple benchmark with the family field blank (lifetime kept credit $73,207.91) while his record carries the $32,000 family benchmark (kept credit $184,182.95, pinned on his shape in tax-m1-cliff-cap-draw-lands-on-cliff-basis-50), and the two nets differ by exactly that credit difference.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    expected: { netBasis50: 138157962, netBasis20: 180767408, dialMovesPrice: 1 },
     actual: () => {
       const base = { ...goldenCompareBase(), taxableBasisPct: 50 };
       const option1 = {
@@ -13670,9 +13728,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-lab-null-fields-ride-patch",
     kind: "tax",
-    note: "Strategy Lab patch construction, null fields (Review Pass 1 Finding 1 regression pin): the Lab builds each row's compare patch from the saved record by omitting a null ONLY for the four snapshot-followed balances (pretaxCents, rothCents, taxableCents, hsaCents — null there means follow the snapshot, so the patch inherits the base's resolved balance); every other recorded null rides as an explicit null, exactly as ceilings: null does, because the compare merge treats a present null as an override and an absent key as inherit-the-base. This case mirrors that construction (the client's buildLabRequest loop, replicated field for field) for the Option 1 saved shape — cliff cap, Pre-tax → Taxable → Roth, balances null, draw-order switch / ACA household schedule / gain harvesting all null — against a constructed base plan carrying non-null values for all three strategy fields (switch at 75 to Taxable → Pre-tax → Roth, household schedule stepping to 2 in 2040, harvesting on) on the golden shape at 50% basis. The Lab patch prices the SAVED shape's figure, 139145441 cents (the golden-base Option 1 figure at basis 50, per the basis-dial pin above — the figure this note once cited, 92306344, was a stale headline figure that matched no pinned expectation; corrected by the fixture-honesty repair 2026-10-23 to the basis-dial case's aligned start-2026 pin, which this case's own netLabPatch expectation equals — RE-PINNED by the BASIS-DRIFT build from 49078265, the flat-% figure, and RE-PINNED AGAIN by the M-1 FIX from 54160335: the capped draw now converges against settled gains and keeps the ACA credit, priced here on the golden base's benchmarks; the base here carries basis 50, an entered %, so the drift ledger prices it); the pre-fix construction (omit every null except ceilings) and each single-field omission (switch pair only, schedule only, harvest only) each price a DIFFERENT figure on this same base, so the pin discriminates the over-broad omission field by field and fails if any of the three nulls stops riding the patch. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Strategy Lab patch construction, null fields (Review Pass 1 Finding 1 regression pin): the Lab builds each row's compare patch from the saved record by omitting a null ONLY for the four snapshot-followed balances (pretaxCents, rothCents, taxableCents, hsaCents — null there means follow the snapshot, so the patch inherits the base's resolved balance); every other recorded null rides as an explicit null, exactly as ceilings: null does, because the compare merge treats a present null as an override and an absent key as inherit-the-base. This case mirrors that construction (the client's buildLabRequest loop, replicated field for field) for the Option 1 saved shape — cliff cap, Pre-tax → Taxable → Roth, balances null, draw-order switch / ACA household schedule / gain harvesting all null — against a constructed base plan carrying non-null values for all three strategy fields (switch at 75 to Taxable → Pre-tax → Roth, household schedule stepping to 2 in 2040, harvesting on) on the golden shape at 50% basis. The Lab patch prices the SAVED shape's figure, 139145441 cents (the golden-base Option 1 figure at basis 50, per the basis-dial pin above — the figure this note once cited, 92306344, was a stale headline figure that matched no pinned expectation; corrected by the fixture-honesty repair 2026-10-23 to the basis-dial case's aligned start-2026 pin, which this case's own netLabPatch expectation equals — RE-PINNED by the BASIS-DRIFT build from 49078265, the flat-% figure, and RE-PINNED AGAIN by the M-1 FIX from 54160335: the capped draw now converges against settled gains and keeps the ACA credit, priced here on the golden base's benchmarks; the base here carries basis 50, an entered %, so the drift ledger prices it); the pre-fix construction (omit every null except ceilings) and each single-field omission (switch pair only, schedule only, harvest only) each price a DIFFERENT figure on this same base, so the pin discriminates the over-broad omission field by field and fails if any of the three nulls stops riding the patch. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      netLabPatch: 139145441,
+      netLabPatch: 138157962,
       balancesOmitted: 1,
       nullsRide: 1,
       oldRuleDiverges: 1,
@@ -13768,14 +13826,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-aca-spouse-end-age-null-identity",
     kind: "tax",
-    note: "Spouse ACA end age, null identity (KNOBS build, Part C.1): on the sample shape (the golden compare base carrying the entered benchmarks — couple $24,000, family $32,000 — at a 50% taxable basis, claim 67), a record with the acaSpouseEndAge key ABSENT, one with it explicitly NULL, and one with it set to 65 all price BIT-IDENTICALLY: Option 1 (the cliff-capped pre-tax-first shape) nets 81208840 cents and Do Nothing nets 253046013 cents in all three forms, and the plan-year detail for 2047 (spouse 65) still prices no ACA credit (acaPriced false) — the pre-build behaviour, pinned so the new field cannot move an untouched record. (The two net figures were RE-PINNED by the BASIS-DRIFT build from 49078265 / 243105153 — this shape's basis is an entered 50%, so the drift ledger prices it; the Option 1 figure was RE-PINNED AGAIN by the M-1 FIX from 54160335 — the capped pre-tax draw now converges against settled gains and keeps the ACA credit — while Do Nothing's figure is unmoved; the identity across the three key forms is the pin's subject and is unchanged.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Spouse ACA end age, null identity (KNOBS build, Part C.1): on the sample shape (the golden compare base carrying the entered benchmarks — couple $24,000, family $32,000 — at a 50% taxable basis, claim 67), a record with the acaSpouseEndAge key ABSENT, one with it explicitly NULL, and one with it set to 65 all price BIT-IDENTICALLY: Option 1 (the cliff-capped pre-tax-first shape) nets 81208840 cents and Do Nothing nets 253046013 cents in all three forms, and the plan-year detail for 2047 (spouse 65) still prices no ACA credit (acaPriced false) — the pre-build behaviour, pinned so the new field cannot move an untouched record. (The two net figures were RE-PINNED by the BASIS-DRIFT build from 49078265 / 243105153 — this shape's basis is an entered 50%, so the drift ledger prices it; the Option 1 figure was RE-PINNED AGAIN by the M-1 FIX from 54160335 — the capped pre-tax draw now converges against settled gains and keeps the ACA credit — while Do Nothing's figure is unmoved; the identity across the three key forms is the pin's subject and is unchanged.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      option1Absent: 45668789,
-      doNothingAbsent: 238593411,
-      option1Null: 45668789,
-      doNothingNull: 238593411,
-      option1At65: 45668789,
-      doNothingAt65: 238593411,
+      option1Absent: 45349179,
+      doNothingAbsent: 237496535,
+      option1Null: 45349179,
+      doNothingNull: 237496535,
+      option1At65: 45349179,
+      doNothingAt65: 237496535,
       priced2050: 0,
     },
     actual: () => {
@@ -13819,14 +13877,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-aca-spouse-end-age-70",
     kind: "tax",
-    note: "Spouse ACA end age 70 discriminates (KNOBS build, Part C.2; ENGINE-DERIVED REGRESSION PIN on the sample shape at basis 50 — the lifetime totals below are the verified implementation's output, pinned so drift fails loudly, not hand-derived figures; note rewritten by the fixture-honesty repair 2026-10-23 to state exactly the figures and checks the assertions pin, replacing a stale note whose totals and years matched nothing pinned): with the end age at 70 the spouse's marketplace years extend past 65 — under the unset end age she is priced through 2049 (age 64) and stops in 2050 (age 65, personsOnMedicare 2), while at end age 70 the Do Nothing plan-year detail still prices 2048 with acaPriced true, she is NOT counted on Medicare in the extended years (personsOnMedicare 1 in 2051 — the primary alone, spouse 66 and still on the marketplace), and pricing stops at 2055, the year she reaches the end age of 70 (priced2055 false, persons2055 2). Strategy totals move in the directions the extended coverage dictates: Option 1's cliff cap binds five more years (2050–2054, the extended marketplace years), and its net RISES from 45668789 cents (end age unset) to 52482203 cents (option1Net70); Do Nothing keeps the same ACA credit but pays no IRMAA for her until 70, so its net FALLS from 238593411 to 237901611 cents (doNothingNet70) — the fall of 691800 cents is exactly its lifetime IRMAA dropping from 17902800 to 17211000 cents (doNothingIrmaa70). (The four net figures were RE-PINNED by the BASIS-DRIFT build from 49078265 / 49617159 / 243105153 / 242124873 — this shape's basis is an entered 50%, so the drift ledger prices it. The Option 1 figures were RE-PINNED AGAIN by the M-1 FIX from 54160335 / 56676284 — the capped draw now converges against settled gains and keeps the ACA credit in both the base and the extended shapes; Do Nothing's figures are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Spouse ACA end age 70 discriminates (KNOBS build, Part C.2; ENGINE-DERIVED REGRESSION PIN on the sample shape at basis 50 — the lifetime totals below are the verified implementation's output, pinned so drift fails loudly, not hand-derived figures; note rewritten by the fixture-honesty repair 2026-10-23 to state exactly the figures and checks the assertions pin, replacing a stale note whose totals and years matched nothing pinned): with the end age at 70 the spouse's marketplace years extend past 65 — under the unset end age she is priced through 2049 (age 64) and stops in 2050 (age 65, personsOnMedicare 2), while at end age 70 the Do Nothing plan-year detail still prices 2048 with acaPriced true, she is NOT counted on Medicare in the extended years (personsOnMedicare 1 in 2051 — the primary alone, spouse 66 and still on the marketplace), and pricing stops at 2055, the year she reaches the end age of 70 (priced2055 false, persons2055 2). Strategy totals move in the directions the extended coverage dictates: Option 1's cliff cap binds five more years (2050–2054, the extended marketplace years), and its net RISES from 45668789 cents (end age unset) to 52482203 cents (option1Net70); Do Nothing keeps the same ACA credit but pays no IRMAA for her until 70, so its net FALLS from 238593411 to 237901611 cents (doNothingNet70) — the fall of 691800 cents is exactly its lifetime IRMAA dropping from 17902800 to 17211000 cents (doNothingIrmaa70). (The four net figures were RE-PINNED by the BASIS-DRIFT build from 49078265 / 49617159 / 243105153 / 242124873 — this shape's basis is an entered 50%, so the drift ledger prices it. The Option 1 figures were RE-PINNED AGAIN by the M-1 FIX from 54160335 / 56676284 — the capped draw now converges against settled gains and keeps the ACA credit in both the base and the extended shapes; Do Nothing's figures are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       priced2048: 1,
       priced2055: 0,
       persons2051: 1,
       persons2055: 2,
-      option1Net70: 52482203,
-      doNothingNet70: 237901611,
+      option1Net70: 51269940,
+      doNothingNet70: 236804735,
       doNothingIrmaa70: 17211000,
       option1MovesUp: 1,
       doNothingMovesDown: 1,
@@ -13908,16 +13966,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-lab-knobs-dials-reprice",
     kind: "tax",
-    note: "Strategy Lab KNOBS dials reprice through the compare machinery (KNOBS build, Part C.4; engine-derived on the sample shape at basis 50): a dial is a compare override on the row's patch, so a dial-set row must price EXACTLY as the same field set directly on the plan. (a) End-age dial 70 on the Option 1 row: 83132014 cents, the figure the end-age-70 case pins for that shape, identical to the base carrying acaSpouseEndAge 70 directly. (b) Starting pre-tax dial $1,500,000 on the Option 1 row: 28813449 cents, identical to the base carrying pretaxCents 150000000 directly. (c) One-spouse benchmark dial $20,000 on the Do Nothing row (the row whose kept credit the benchmark actually moves): 249846013 cents, identical to the base carrying acaBenchmarkSingleCents 2000000 directly — and different from the undialed 250238871, so the dial genuinely repriced the row. (All figures RE-PINNED by the BASIS-DRIFT build from 49617159 / 26471700 / 239905153 / 243105153 — this shape's basis is an entered 50%, so the drift ledger prices it; the dial-equals-direct identities are the pin's subject and are unchanged. The two Option 1 figures were RE-PINNED AGAIN by the M-1 FIX from 56676284 / 31885598 — the capped draw now converges against settled gains and keeps the ACA credit; the Do Nothing benchmark figures are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "Strategy Lab KNOBS dials reprice through the compare machinery (KNOBS build, Part C.4; engine-derived on the sample shape at basis 50): a dial is a compare override on the row's patch, so a dial-set row must price EXACTLY as the same field set directly on the plan. (a) End-age dial 70 on the Option 1 row: 83132014 cents, the figure the end-age-70 case pins for that shape, identical to the base carrying acaSpouseEndAge 70 directly. (b) Starting pre-tax dial $1,500,000 on the Option 1 row: 28813449 cents, identical to the base carrying pretaxCents 150000000 directly. (c) One-spouse benchmark dial $20,000 on the Do Nothing row (the row whose kept credit the benchmark actually moves): 249846013 cents, identical to the base carrying acaBenchmarkSingleCents 2000000 directly — and different from the undialed 250238871, so the dial genuinely repriced the row. (All figures RE-PINNED by the BASIS-DRIFT build from 49617159 / 26471700 / 239905153 / 243105153 — this shape's basis is an entered 50%, so the drift ledger prices it; the dial-equals-direct identities are the pin's subject and are unchanged. The two Option 1 figures were RE-PINNED AGAIN by the M-1 FIX from 56676284 / 31885598 — the capped draw now converges against settled gains and keeps the ACA credit; the Do Nothing benchmark figures are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      endAgeDialNet: 52482203,
-      endAgeDirectNet: 52482203,
+      endAgeDialNet: 51269940,
+      endAgeDirectNet: 51269940,
       endAgeDialMatches: 1,
-      balanceDialNet: 21945371,
-      balanceDirectNet: 21945371,
+      balanceDialNet: 21772223,
+      balanceDirectNet: 21772223,
       balanceDialMatches: 1,
-      benchDialNet: 233593411,
-      benchDirectNet: 233593411,
+      benchDialNet: 232496535,
+      benchDirectNet: 232496535,
       benchDialMatches: 1,
       benchDialMoves: 1,
     },
@@ -14016,8 +14074,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-drift-null-basis-identity",
     kind: "tax",
-    note: "BASIS-DRIFT null identity (BASIS-DRIFT build, fixture 1): a BLANK basis % keeps the pre-drift pricing bit-identically — the record layer maps blank to 100 with the blank flag set, the engine stays on its legacy path, and no basis ledger is invented. On the sample shape with the basis null (the entered benchmarks — couple $24,000, family $32,000 — claim 67), the blank-basis compare figures of record stand exactly: Do Nothing nets 266968556 cents and the Option 1 shape (ACA cliff cap, draw order Pre-tax → Taxable → Roth) nets 27430979 cents. Any drift leak into the blank path moves these. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
-    expected: { doNothingBlank: 251590428, option1Blank: 23686237 },
+    note: "BASIS-DRIFT null identity (BASIS-DRIFT build, fixture 1): a BLANK basis % keeps the pre-drift pricing bit-identically — the record layer maps blank to 100 with the blank flag set, the engine stays on its legacy path, and no basis ledger is invented. On the sample shape with the basis null (the entered benchmarks — couple $24,000, family $32,000 — claim 67), the blank-basis compare figures of record stand exactly: Do Nothing nets 266968556 cents and the Option 1 shape (ACA cliff cap, draw order Pre-tax → Taxable → Roth) nets 27430979 cents. Any drift leak into the blank path moves these. (RE-PINNED under the MUST-1 cliff grow-back, re-audit round 3: the Option 1 shape reconciles — benchmarks are entered on this base — so its cliff years now grow back to the cliff and the Option 1 pin moves to 23678859 cents; the Do Nothing pin is unmoved, and the blank-basis identity is unchanged, the blank path pricing the grow-back exactly as an entered basis does.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    expected: { doNothingBlank: 251590428, option1Blank: 23678859 },
     actual: () => {
       const blankBase = {
         ...goldenCompareBase(),
@@ -14164,26 +14222,26 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-drift-sample-shape-anchors-basis-50",
     kind: "tax",
-    note: "BASIS-DRIFT re-pinned sample-shape anchors at basis 50 (BASIS-DRIFT build, fixture 6; engine-derived under drift, claim 67, the sample shape — the golden compare base with the entered benchmarks, couple $24,000 / family $32,000): Option 1 (cliff cap, Pre-tax → Taxable → Roth) 81208840 cents, Option 3 (Fill 22% + cliff cap, Taxable first) 210980910 cents, Option 4 (Fill 22% uncapped, Taxable first) 135969651 cents, Do Nothing 253046013 cents, and Option 1 + gain harvesting (the interim Option 8) 75213747 cents. These SUPERSEDE the flat-% figures of record (49078265 / 152893186 / 83784864 / 243105153 / 50056946): under drift the basis dollars stay fixed while the taxable balance compounds at 5.75%, so the basis share falls year by year and later draws realize more gain than the flat 50% priced — every strategy's lifetime tax rises, harvesting's step-ups claw part of Option 1's rise back (75213747 < 81208840), and the ordering of the five is unchanged. (RE-PINNED by the M-1 FIX from 54160335 / 53420794 — Option 1 and Option 8 only: the cliff-capped pre-tax draw now converges against settled tax-payment and spill gains, so their capped years land on the cliff and keep the lifetime ACA credit the leak forfeited, pinned year by year in tax-m1-cliff-cap-draw-lands-on-cliff-basis-50. Options 3, 4, and Do Nothing do not price the capped-draw settlement the fix changes and are unmoved. RE-PINNED AGAIN by the settlement iteration, FIX 1 — all five: every year's tax-channel sales now price their gains, so capped draws trim further, trajectories diverge, and the lifetime credit is $184,182.95 with 2046 settling over on mandatory income.) (DRIFT QUANTITIES pinned by the BASIS-DRIFT FIXTURE FIX — finding F-B: net costs alone cannot catch a basis-path regression — right totals, wrong ledger — so this fixture now also pins ending taxable basis dollars and realized draw gains at the sensitive years, each derived from the drift rules, not transcribed. Option 1, 2027 (first capped year): the M-1 fixture's hand-derived settlement as iterated by FIX 1 — draw $134,975.21, spill $22,456.87, and every Taxable sale realizing gains at the entering ratio $1,268,378.18/$2,682,619.84 (gain rate 0.52718676): gains = ($22,456.87 spill + $14,996.26 tax sale) × 0.52718676 = $19,744.79, the tax priced from the 2026 MFJ law row (ordinary tax on $102,775.21 = $12,034.55, plus the $19,744.79 of gains at 15% = $2,961.72 because ordinary taxable income alone passes the $98,900 0% top); every outflow is pro-rata on the ledger, so the basis ends at $1,268,378.18 − ($22,456.87 + $14,996.26) × 0.47281324 = $1,250,669.84. Option 1, 2036 (first one-spouse year): basis $1,099,969.26, gains $38,469.89. Option 1, 2046 (first RMD year — the RMD's forced income shrinks the capped draw to $0 and the settlement's Taxable draws jump): basis $979,607.28, gains $31,876.73. Option 1's trajectory endpoint (2066): basis $995,351.73. A from-rules ledger replay of all 41 years (pro-rata outflows at the entering ratio, draw gains = Taxable draws × (1 − ratio), settlement deltas as pro-rata outflows or dollar-for-dollar credits, no surplus on this shape) reproduces every year's ending basis to under a cent, so the chain of pins is load-bearing year to year. Option 8, 2026: the harvest steps the basis up in the inert first year by exactly the 0% space at zero other income — $32,200 standard deduction + $98,900 0% top = $131,100 — from $1,268,378.18 to $1,399,478.18; its 2046 pair is basis $1,101,466.40 / gains $34,609.86 and its 2066 endpoint basis is $1,111,957.48 (two decades of step-ups leave it $56,365.92 above Option 1's endpoint). Do Nothing, 2046: the basis RISES, $456,739.20 → $536,243.62 — the first RMD ($228,677.08) plus Social Security ($48,000) exceeds spending plus the $42,260.58 tax by exactly the $79,504.42 rise, saved into Taxable dollar-for-dollar, with $0 of Taxable draws and $0 of draw gains that year.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "BASIS-DRIFT re-pinned sample-shape anchors at basis 50 (BASIS-DRIFT build, fixture 6; engine-derived under drift, claim 67, the sample shape — the golden compare base with the entered benchmarks, couple $24,000 / family $32,000): Option 1 (cliff cap, Pre-tax → Taxable → Roth) 81208840 cents, Option 3 (Fill 22% + cliff cap, Taxable first) 210980910 cents, Option 4 (Fill 22% uncapped, Taxable first) 135969651 cents, Do Nothing 253046013 cents, and Option 1 + gain harvesting (the interim Option 8) 75213747 cents. These SUPERSEDE the flat-% figures of record (49078265 / 152893186 / 83784864 / 243105153 / 50056946): under drift the basis dollars stay fixed while the taxable balance compounds at 5.75%, so the basis share falls year by year and later draws realize more gain than the flat 50% priced — every strategy's lifetime tax rises, harvesting's step-ups claw part of Option 1's rise back (75213747 < 81208840), and the ordering of the five is unchanged. (RE-PINNED by the M-1 FIX from 54160335 / 53420794 — Option 1 and Option 8 only: the cliff-capped pre-tax draw now converges against settled tax-payment and spill gains, so their capped years land on the cliff and keep the lifetime ACA credit the leak forfeited, pinned year by year in tax-m1-cliff-cap-draw-lands-on-cliff-basis-50. Options 3, 4, and Do Nothing do not price the capped-draw settlement the fix changes and are unmoved. RE-PINNED AGAIN by the settlement iteration, FIX 1 — all five: every year's tax-channel sales now price their gains, so capped draws trim further, trajectories diverge, and the lifetime credit is $184,182.95 with 2046 settling over on mandatory income.) (DRIFT QUANTITIES pinned by the BASIS-DRIFT FIXTURE FIX — finding F-B: net costs alone cannot catch a basis-path regression — right totals, wrong ledger — so this fixture now also pins ending taxable basis dollars and realized draw gains at the sensitive years, each derived from the drift rules, not transcribed. Option 1, 2027 (first capped year): the M-1 fixture's hand-derived settlement as iterated by FIX 1 — draw $134,975.21, spill $22,456.87, and every Taxable sale realizing gains at the entering ratio $1,268,378.18/$2,682,619.84 (gain rate 0.52718676): gains = ($22,456.87 spill + $14,996.26 tax sale) × 0.52718676 = $19,744.79, the tax priced from the 2026 MFJ law row (ordinary tax on $102,775.21 = $12,034.55, plus the $19,744.79 of gains at 15% = $2,961.72 because ordinary taxable income alone passes the $98,900 0% top); every outflow is pro-rata on the ledger, so the basis ends at $1,268,378.18 − ($22,456.87 + $14,996.26) × 0.47281324 = $1,250,669.84. Option 1, 2036 (first one-spouse year): basis $1,099,969.26, gains $38,469.89. Option 1, 2046 (first RMD year — the RMD's forced income shrinks the capped draw to $0 and the settlement's Taxable draws jump): basis $979,607.28, gains $31,876.73. Option 1's trajectory endpoint (2066): basis $995,351.73. A from-rules ledger replay of all 41 years (pro-rata outflows at the entering ratio, draw gains = Taxable draws × (1 − ratio), settlement deltas as pro-rata outflows or dollar-for-dollar credits, no surplus on this shape) reproduces every year's ending basis to under a cent, so the chain of pins is load-bearing year to year. Option 8, 2026: the harvest steps the basis up in the inert first year by exactly the 0% space at zero other income — $32,200 standard deduction + $98,900 0% top = $131,100 — from $1,268,378.18 to $1,399,478.18; its 2046 pair is basis $1,101,466.40 / gains $34,609.86 and its 2066 endpoint basis is $1,111,957.48 (two decades of step-ups leave it $56,365.92 above Option 1's endpoint). Do Nothing, 2046: the basis RISES, $456,739.20 → $536,243.62 — the first RMD ($228,677.08) plus Social Security ($48,000) exceeds spending plus the $42,260.58 tax by exactly the $79,504.42 rise, saved into Taxable dollar-for-dollar, with $0 of Taxable draws and $0 of draw gains that year.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.) (RE-PINNED under the MUST-1 cliff grow-back, re-audit round 3 — Option 3 only: Fill 22% + cliff cap is the conversion-fill shape whose reconciliation years collapsed at a 50% basis — its pre-fix net of 202242268 cents sat $761k above Option 4's uncapped Fill 22%, which was the collapse pricing, not a capped fill's price; its fills now land on the 22% top or the cliff, whichever binds first, and the pin moves to 164887495 cents, between Option 4 and Do Nothing as a capped fill should sit. Options 1, 4, 8, Do Nothing, and every drift-quantity pin are unmoved — Options 1 and 8 are draw-landed shapes whose capped years strand no conversion.)",
     expected: {
-      option1: 45668789,
-      option3: 191077074,
-      option4: 117030088,
-      doNothing: 238593411,
-      option8: 43120771,
+      option1: 45349179,
+      option3: 164887495,
+      option4: 126118202,
+      doNothing: 237496535,
+      option8: 42777628,
       opt1Y2031Basis: 1189185.66,
       opt1Y2031Gains: 12057.99,
-      opt1Y2040Basis: 1096180.95,
-      opt1Y2040Gains: 24185.72,
-      opt1Y2050Basis: 1025324.26,
+      opt1Y2040Basis: 1096496.47,
+      opt1Y2040Gains: 23397.52,
+      opt1Y2050Basis: 1028209.25,
       opt1Y2050Gains: 12934.63,
-      opt1FinalBasis: 995351.73,
+      opt1FinalBasis: 998236.72,
       opt8Y2030Harvested: 131100,
       opt8Y2030Basis: 1331100,
-      opt8Y2050Basis: 1151808.02,
+      opt8Y2050Basis: 1154917.39,
       opt8Y2050Gains: 12608.31,
-      opt8FinalBasis: 1111957.48,
-      dnY2050Basis: 508391.68,
+      opt8FinalBasis: 1113025.67,
+      dnY2050Basis: 547338.46,
       dnY2050Gains: 0,
     },
     actual: () => {
@@ -14282,12 +14340,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-tiers-single-tier-identity-sample-shape",
     kind: "tax",
-    note: "BASIS TIERS one-tier identity (BASIS TIERS build, fixture a): a single tier at 100% share carrying the record's own 50% basis must reproduce the single pool TO THE CENT on the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67). With one tier, the tier's ratio is the pool's ratio at every step, so highest-first sales ARE the pool's pro-rata sales. The cliff-capped pre-tax-first strategy nets 101471817 cents with the tier and without it, and the taxable-first Fill 22% strategy nets 152082589 cents both ways — the record's own live prices for those two shapes, reproduced on this fixture base. Any leak of tier machinery into the one-tier path, or of the flat path into the tier path, moves one side of a pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "BASIS TIERS one-tier identity (BASIS TIERS build, fixture a): a single tier at 100% share carrying the record's own 50% basis must reproduce the single pool TO THE CENT on the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67). With one tier, the tier's ratio is the pool's ratio at every step, so highest-first sales ARE the pool's pro-rata sales. The cliff-capped pre-tax-first strategy nets 101471817 cents with the tier and without it, and the taxable-first Fill 22% strategy nets 152082589 cents both ways — the record's own live prices for those two shapes, reproduced on this fixture base. Any leak of tier machinery into the one-tier path, or of the flat path into the tier path, moves one side of a pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      cliffPool: 69851052,
-      cliffTier: 69851052,
-      fill22Pool: 132200101,
-      fill22Tier: 132200101,
+      cliffPool: 69275870,
+      cliffTier: 69275870,
+      fill22Pool: 140763475,
+      fill22Tier: 140763475,
     },
     actual: () => {
       const base57 = {
@@ -14533,7 +14591,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-m1-cliff-cap-draw-lands-on-cliff-basis-50",
     kind: "tax",
-    note: "M-1 FIX, capped pre-tax draw converges (M-1 fix build, fixture 1; year figures derived independently of the engine): on the sample shape at a 50% basis (retire 56, claim 67, the entered benchmarks), the Option 1 shape (ACA cliff cap, Pre-tax → Taxable → Roth) spends from pre-tax first, so each capped year's draw was sized pre-settlement and the spill into Taxable realized gains the cap never saw — before the fix every capped year settled over the cliff (2027: MAGI $054,750.69, $30.69 over) and the lifetime ACA credit was $0. 2027 derived by hand: 2026 is inert (age 55, pre-retirement, out of the window), so Taxable enters 2027 at $2,400,000 × 1.0575 = $2,682,619.84 against $0,268,378.18 of basis dollars — a gain rate of 0.52718676; with no RMD, Social Security, or other income and the conversion solved to $0 against the draw, MAGI = draw + gains, where the gains are realized by EVERY Taxable sale at that rate — the spending spill (spending − draw) and, under the settlement iteration (FIX 1), the sale that pays the year's tax. The tax itself is $04,996.26 (ordinary tax on $002,775.21 = $02,034.55 plus 15% × $09,744.79 of gains = $2,961.72), so gains = ($22,456.87 spill + $04,996.26 tax sale) × 0.52718676 = $09,744.79 and the largest cent draw keeping MAGI ≤ $054,720 (400% of the 2026-guideline FPL for a household of 5, $38,680) is $034,975.21, landing MAGI exactly on $054,720.00. (The M-1-era pin — draw $051,696.04, gains $3,023.96 — priced only the spill; the tax sale's $7,906.26 of gains was the Finding B gap.) The credit at the line is the family benchmark less the 300–400% band's 9.96% applicable percentage (Rev. Proc. 2025-25): $32,000 − 0.0996 × $054,720 = $08,920.45. In 2036 only the spouse is on the marketplace (the primary is 65), so the one-spouse benchmark prices the same landing: $05,000 − 0.0996 × $054,720 = $0,389.89. Every capped year 2027–2045 lands on the cliff; 2046 cannot land under any draw cap — the RMD ($83,465.83) plus Social Security ($48,000) leave $20,734.17 of room, the pre-tax draw is already $0, and the spending deficit's forced Taxable spill plus the tax sale realize $31,876.73 of gains, settling ACA MAGI at $065,862.56 with the credit lost (the mandatory-income outcome). The lifetime credit is 9 family years (2027–2035) at $08,920.45 plus 10 one-spouse years (2036–2045) at $0,389.89 = $084,182.95 (18418295 cents). The lifetime net (81208840 cents) is engine-derived: tax on the iterated settlements less that credit. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "M-1 FIX, capped pre-tax draw converges (M-1 fix build, fixture 1; year figures derived independently of the engine): on the sample shape at a 50% basis (retire 56, claim 67, the entered benchmarks), the Option 1 shape (ACA cliff cap, Pre-tax → Taxable → Roth) spends from pre-tax first, so each capped year's draw was sized pre-settlement and the spill into Taxable realized gains the cap never saw — before the fix every capped year settled over the cliff (2027: MAGI $054,750.69, $30.69 over) and the lifetime ACA credit was $0. 2027 derived by hand: 2026 is inert (age 55, pre-retirement, out of the window), so Taxable enters 2027 at $2,400,000 × 1.0575 = $2,682,619.84 against $0,268,378.18 of basis dollars — a gain rate of 0.52718676; with no RMD, Social Security, or other income and the conversion solved to $0 against the draw, MAGI = draw + gains, where the gains are realized by EVERY Taxable sale at that rate — the spending spill (spending − draw) and, under the settlement iteration (FIX 1), the sale that pays the year's tax. The tax itself is $04,996.26 (ordinary tax on $002,775.21 = $02,034.55 plus 15% × $09,744.79 of gains = $2,961.72), so gains = ($22,456.87 spill + $04,996.26 tax sale) × 0.52718676 = $09,744.79 and the largest cent draw keeping MAGI ≤ $054,720 (400% of the 2026-guideline FPL for a household of 5, $38,680) is $034,975.21, landing MAGI exactly on $054,720.00. (The M-1-era pin — draw $051,696.04, gains $3,023.96 — priced only the spill; the tax sale's $7,906.26 of gains was the Finding B gap.) The credit at the line is the family benchmark less the 300–400% band's 9.96% applicable percentage (Rev. Proc. 2025-25): $32,000 − 0.0996 × $054,720 = $08,920.45. In 2036 only the spouse is on the marketplace (the primary is 65), so the one-spouse benchmark prices the same landing: $05,000 − 0.0996 × $054,720 = $0,389.89. Every capped year 2027–2045 lands on the cliff; 2046 cannot land under any draw cap — the RMD ($83,465.83) plus Social Security ($48,000) leave $20,734.17 of room, the pre-tax draw is already $0, and the spending deficit's forced Taxable spill plus the tax sale realize $31,876.73 of gains, settling ACA MAGI at $065,862.56 with the credit lost (the mandatory-income outcome). The lifetime credit is 9 family years (2027–2035) at $08,920.45 plus 10 one-spouse years (2036–2045) at $0,389.89 = $084,182.95 (18418295 cents). The lifetime net (81208840 cents) is engine-derived: tax on the iterated settlements less that credit. (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       y2031Magi: 154720,
       y2031Credit: 16589.89,
@@ -14543,7 +14601,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       y2040Credit: 0,
       yearsOverCliff: 0,
       lifetimeCreditCents: 14930901,
-      lifetimeNetCents: 128345441,
+      lifetimeNetCents: 127357962,
     },
     actual: () => {
       const option1 = {
@@ -14588,16 +14646,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-m1-cliff-cap-draw-lands-on-cliff-basis-20-80",
     kind: "tax",
-    note: "M-1 FIX at second basis levels (M-1 fix build, fixture 2; derived as in fixture 1): the 2031 landing is basis-independent — only the draw/gain split moves, and under the settlement iteration (FIX 1) the gains are realized by every Taxable sale (the spending spill plus the tax sale) at the pool's gain rate. At a 20% basis the basis dollars are $507,351.27 against the same $2,682,619.84 entering balance (gain rate 0.81087470), so the draw must stop at $117,834.20 with $36,885.79 of gains (draw + gains = $154,719.99, the largest cent landing); at an 80% basis ($2,029,405.08 of basis dollars, gain rate 0.24349882) the draw reaches $150,000.00 with $3,876.87 of gains. Both land MAGI on $153,876.87 (the 20% case one cent under) and keep the $16,589.89 credit (the fixture-1 derivation at the family benchmark). (The M-1-era pins — $143,091.98 / $11,628.02 and $153,847.05 / $872.95 — priced only the spill's gains.) Before the fix, capped draws at a set basis settled over the cliff and kept $0 of lifetime credit.",
+    note: "M-1 FIX at second basis levels (M-1 fix build, fixture 2; derived as in fixture 1): the 2031 landing is basis-independent — only the draw/gain split moves, and under the settlement iteration (FIX 1) the gains are realized by every Taxable sale (the spending spill plus the tax sale) at the pool's gain rate. At a 20% basis the basis dollars are $507,351.27 against the same $2,682,619.84 entering balance (gain rate 0.81087470), so the draw must stop at $117,834.20 with $36,885.79 of gains (draw + gains = $154,719.99, the largest cent landing); at an 80% basis ($2,029,405.08 of basis dollars, gain rate 0.24349882) the draw reaches $150,000.00 with $3,876.87 of gains. Both land MAGI on $153,876.87 (the 20% case one cent under) and keep the $16,589.89 credit (the fixture-1 derivation at the family benchmark). (The M-1-era pins — $143,091.98 / $11,628.02 and $153,847.05 / $872.95 — priced only the spill's gains.) Before the fix, capped draws at a set basis settled over the cliff and kept $0 of lifetime credit. (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.) (RE-PINNED under the MUST-1 cliff grow-back, re-audit round 3 — the 80% landing only: at an 80% basis the 2031 draw is need-sized at $150,000.00, which left $942.18 of cliff room that the reconciliation re-solve stranded the conversion fill out of — the year settled at MAGI $153,777.82 with credit $16,683.73; the grow-back now fills that room, landing MAGI exactly on the $154,720 cliff with the fixture-1 credit of $16,589.89 and gains of $3,921.28 on the larger tax sale. The 20% landing is unmoved: its draw is cliff-sized, so no conversion room is stranded there.)",
     expected: {
       draw20: 117834.2,
       gains20: 36885.79,
       magi20: 154719.99,
       credit20: 16589.89,
       draw80: 150000,
-      gains80: 3876.87,
-      magi80: 153876.87,
-      credit80: 16673.86,
+      gains80: 3921.28,
+      magi80: 154720,
+      credit80: 16589.89,
     },
     actual: () => {
       const option1 = {
@@ -14637,13 +14695,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-m1-cliff-cap-mandatory-income-unmoved",
     kind: "tax",
-    note: "M-1 FIX, mandatory income unmoved (M-1 fix build, fixture 3): a capped year whose mandatory income alone breaches the cliff cannot be landed by any draw cap, and the cap machinery leaves it exactly as it settled before. Construction: the sample shape moved to a 1951/1972 couple (spouse sole beneficiary, 21 years younger) with $8,000,000 of pre-tax and $400,000 of spending, retire 57, Option 1 ceilings and draw order. In 2026 the primary is 75: the RMD is $8,000,000 ÷ 33.2 = $240,963.86 (Joint Life and Last Survivor Table — Table II, IRS Publication 590-B (2025), Appendix B: owner 75, beneficiary 54), itself far over the household-of-5 cliff ($150,600 for coverage 2026, at the 2025 guideline), so the capped draw's room is $0 (draw2026 0), the year settles over on the RMD plus the spill's gains and — under the settlement iteration (FIX 1) — the gains on the sale that pays the year's tax (ACA MAGI $374,908.38 — engine-derived under the corrected table), and the credit is $0, in 2027 as well. RE-PINNED 2026-10-19 (E2 build, the deliberate Table II re-pin): this fixture previously pinned divisor 28.3, RMD $282,685.51 and MAGI $400,543.87 (the MAGI itself repriced from the M-1-era $394,214.06 when the tax-sale gains were first priced). 28.3 is Table II's value for a beneficiary aged 60, not 54 — the pre-E2 partial grid covered spouse ages 60–75 only and clamped the 54-year-old beneficiary to 60, reading the wrong cell. The IRS value for owner 75 / beneficiary 54 is 33.2; the pins now read divisor 33.2, RMD $240,963.86, MAGI $374,908.38. The qualitative pins are unmoved: draw $0, credit $0, over the cliff in 2026 and 2027. The RMD is never reduced to chase the line — the draw cap binds only the spending draw. (Whole-trajectory bit-identity between the pre-fix and fixed engines on this construction was verified at build time.)",
+    note: "M-1 FIX, mandatory income unmoved (M-1 fix build, fixture 3): a capped year whose mandatory income alone breaches the cliff cannot be landed by any draw cap, and the cap machinery leaves it exactly as it settled before. Construction: the sample shape moved to a 1951/1972 couple (spouse sole beneficiary, 21 years younger) with $8,000,000 of pre-tax and $400,000 of spending, retire 57, Option 1 ceilings and draw order. In 2026 the primary is 75: the RMD is $8,000,000 ÷ 33.2 = $240,963.86 (Joint Life and Last Survivor Table — Table II, IRS Publication 590-B (2025), Appendix B: owner 75, beneficiary 54), itself far over the household-of-5 cliff ($150,600 for coverage 2026, at the 2025 guideline), so the capped draw's room is $0 (draw2026 0), the year settles over on the RMD plus the spill's gains and — under the settlement iteration (FIX 1) — the gains on the sale that pays the year's tax (ACA MAGI $374,908.38 — engine-derived under the corrected table), and the credit is $0, in 2027 as well. RE-PINNED 2026-10-19 (E2 build, the deliberate Table II re-pin): this fixture previously pinned divisor 28.3, RMD $282,685.51 and MAGI $400,543.87 (the MAGI itself repriced from the M-1-era $394,214.06 when the tax-sale gains were first priced). 28.3 is Table II's value for a beneficiary aged 60, not 54 — the pre-E2 partial grid covered spouse ages 60–75 only and clamped the 54-year-old beneficiary to 60, reading the wrong cell. The IRS value for owner 75 / beneficiary 54 is 33.2; the pins now read divisor 33.2, RMD $240,963.86, MAGI $374,908.38. The qualitative pins are unmoved: draw $0, credit $0, over the cliff in 2026 and 2027. The RMD is never reduced to chase the line — the draw cap binds only the spending draw. (Whole-trajectory bit-identity between the pre-fix and fixed engines on this construction was verified at build time.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       rmd2026: 240963.86,
       divisor2026: 33.2,
       draw2026: 0,
       credit2026: 0,
-      magi2026: 374908.38,
+      magi2026: 374908.51,
       over2026: 1,
       credit2027: 0,
       over2027: 1,
@@ -14693,7 +14751,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-m1-cliff-cap-draw-paytaxfrom-conversion",
     kind: "tax",
-    note: "M-1 FIX, tax paid from the conversion (M-1 fix build, fixture 4): the sample shape at basis 50 with payTaxFrom 'conversion'. On this path the year's tax is withheld from the conversion rather than paid by a Taxable sale, and any overflow the conversion cannot absorb is debited down the accounts. Under the settlement iteration (FIX 1) those debits price their income exactly as the taxable path's sales do — the Taxable leg's gains and the pre-tax legs' amounts feed back into the year's pricing — so on this shape, which converts $0 in every capped year, the two paths' settlements coincide: with no conversion to withhold from, the whole tax overflows to the same Taxable-first debit chain the taxable path pays directly. 2027 is identical to the taxable path's (fixture 1): the draw lands at $034,975.21 with $09,744.79 of gains, MAGI on $054,720.00, credit $08,920.45. Every capped year 2027–2045 lands and 2046 settles over on mandatory income (fixture 1's account), so the lifetime credit is fixture 1's $084,182.95 decomposition and the lifetime net (81208840 cents, engine-derived) equals the taxable path's to the cent. (Pre-FIX-1 the paths differed — net 35033355 vs 36568391 — because the debited tax realized no priced gains on this path.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "M-1 FIX, tax paid from the conversion (M-1 fix build, fixture 4): the sample shape at basis 50 with payTaxFrom 'conversion'. On this path the year's tax is withheld from the conversion rather than paid by a Taxable sale, and any overflow the conversion cannot absorb is debited down the accounts. Under the settlement iteration (FIX 1) those debits price their income exactly as the taxable path's sales do — the Taxable leg's gains and the pre-tax legs' amounts feed back into the year's pricing — so on this shape, which converts $0 in every capped year, the two paths' settlements coincide: with no conversion to withhold from, the whole tax overflows to the same Taxable-first debit chain the taxable path pays directly. 2027 is identical to the taxable path's (fixture 1): the draw lands at $034,975.21 with $09,744.79 of gains, MAGI on $054,720.00, credit $08,920.45. Every capped year 2027–2045 lands and 2046 settles over on mandatory income (fixture 1's account), so the lifetime credit is fixture 1's $084,182.95 decomposition and the lifetime net (81208840 cents, engine-derived) equals the taxable path's to the cent. (Pre-FIX-1 the paths differed — net 35033355 vs 36568391 — because the debited tax realized no priced gains on this path.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       y2031Magi: 154720,
       y2031Credit: 16589.89,
@@ -14701,7 +14759,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       y2031Gains: 12057.99,
       yearsOverCliff: 0,
       lifetimeCreditCents: 14930901,
-      lifetimeNetCents: 45668789,
+      lifetimeNetCents: 45349179,
     },
     actual: () => {
       const option1 = {
@@ -14739,12 +14797,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-blank-zero-identity-sample-shape",
     kind: "tax",
-    note: "TAXABLE YIELDS blank / zero identity (TAXABLE YIELDS build, fixture a): on the sample shape at retire 57 (50% basis, the entered benchmarks — couple $24,000, family $32,000 — claim 67), the cliff-capped pre-tax-first strategy and the taxable-first Fill 22% strategy price TO THE CENT with the yield fields absent (blank), and again with both yields set to an explicit 0 in the scenario patch — 101471817 and 152082589 cents, the record's own live prices for those shapes (the same anchors the BASIS TIERS one-tier identity pins). Any leak of yield machinery into the blank path moves one side of a pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "TAXABLE YIELDS blank / zero identity (TAXABLE YIELDS build, fixture a): on the sample shape at retire 57 (50% basis, the entered benchmarks — couple $24,000, family $32,000 — claim 67), the cliff-capped pre-tax-first strategy and the taxable-first Fill 22% strategy price TO THE CENT with the yield fields absent (blank), and again with both yields set to an explicit 0 in the scenario patch — 101471817 and 152082589 cents, the record's own live prices for those shapes (the same anchors the BASIS TIERS one-tier identity pins). Any leak of yield machinery into the blank path moves one side of a pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      cliffBlank: 69851052,
-      cliffZero: 69851052,
-      fill22Blank: 132200101,
-      fill22Zero: 132200101,
+      cliffBlank: 69275870,
+      cliffZero: 69275870,
+      fill22Blank: 140763475,
+      fill22Zero: 140763475,
     },
     actual: () => {
       const base57 = {
@@ -14808,10 +14866,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-era-cliff-absent-false-identity-sample-shape",
     kind: "tax",
-    note: "ERA-AWARE ACA CLIFF CAP absent / false identity (ERA-AWARE ACA CLIFF CAP build, fixture a): on the sample shape at retire 57 (50% basis, the entered benchmarks — couple $24,000, family $32,000 — claim 67, no step-down year set), the cliff-capped pre-tax-first strategy prices TO THE CENT with the ceilings key acaCliffCapFamilyOnly absent from the scenario patch (a pre-build record's shape) and again with it explicitly false — 101471817 cents both ways, the record's own live price (the same anchor the BASIS TIERS and TAXABLE YIELDS identities pin). Any leak of era machinery into the flag-off path moves one side of the pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "ERA-AWARE ACA CLIFF CAP absent / false identity (ERA-AWARE ACA CLIFF CAP build, fixture a): on the sample shape at retire 57 (50% basis, the entered benchmarks — couple $24,000, family $32,000 — claim 67, no step-down year set), the cliff-capped pre-tax-first strategy prices TO THE CENT with the ceilings key acaCliffCapFamilyOnly absent from the scenario patch (a pre-build record's shape) and again with it explicitly false — 101471817 cents both ways, the record's own live price (the same anchor the BASIS TIERS and TAXABLE YIELDS identities pin). Any leak of era machinery into the flag-off path moves one side of the pair. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      cliffAbsent: 69851052,
-      cliffFalse: 69851052,
+      cliffAbsent: 69275870,
+      cliffFalse: 69275870,
     },
     actual: () => {
       const base57 = {
@@ -14853,16 +14911,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-era-cliff-family-only-stepdown-2040-sample-shape",
     kind: "tax",
-    note: "ERA-AWARE ACA CLIFF CAP family-only pricing (ERA-AWARE ACA CLIFF CAP build, fixtures b + c): the sample shape at retire 57 with a household schedule stepping 5 → 2 in 2040 (the migrated form of the old acaStepDownYear 2040). Defended in every year (flag off), the settlement chases the stepped-down $86,560 line — in 2040 the capped pre-tax spending draw is shrunk to nothing and the year still settles over the line on spill gains, so no credit survives — and the plan nets far more, leaving millions of pre-tax undrained. With acaCliffCapFamilyOnly on, the family years defend exactly as before — 2028 lands ACA MAGI exactly on the $154,720 household-of-5 cliff and keeps its full credit — while from 2040 the cap is off: 2040 prices undefended, its ACA MAGI well above the household-of-2 line (the year’s spending, drawn in full — extraPreTaxDraw $150,000 — plus the tax-sale gains the settlement iteration prices), the credit computed on the household-of-2 math (line $86,560) and honestly zero at that MAGI; the plan nets far less and keeps a substantial lifetime credit. Fixture c rides along: flag on with no schedule steps (no step-down) prices identically to flag off, the cap applying in all years. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "ERA-AWARE ACA CLIFF CAP family-only pricing (ERA-AWARE ACA CLIFF CAP build, fixtures b + c): the sample shape at retire 57 with a household schedule stepping 5 → 2 in 2040 (the migrated form of the old acaStepDownYear 2040). Defended in every year (flag off), the settlement chases the stepped-down $86,560 line — in 2040 the capped pre-tax spending draw is shrunk to nothing and the year still settles over the line on spill gains, so no credit survives — and the plan nets far more, leaving millions of pre-tax undrained. With acaCliffCapFamilyOnly on, the family years defend exactly as before — 2028 lands ACA MAGI exactly on the $154,720 household-of-5 cliff and keeps its full credit — while from 2040 the cap is off: 2040 prices undefended, its ACA MAGI well above the household-of-2 line (the year’s spending, drawn in full — extraPreTaxDraw $150,000 — plus the tax-sale gains the settlement iteration prices), the credit computed on the household-of-2 math (line $86,560) and honestly zero at that MAGI; the plan nets far less and keeps a substantial lifetime credit. Fixture c rides along: flag on with no schedule steps (no step-down) prices identically to flag off, the cap applying in all years. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       defendedNet: 122775178,
-      eraNet: 55483328,
+      eraNet: 55776336,
       eraCreditCents: 13271912,
-      eraNoStepdownNet: 69851052,
+      eraNoStepdownNet: 69275870,
       y2032AcaMagi: 154720,
       y2032Credit: 16589.89,
-      y2040AcaMagi: 161978.71,
-      y2040Draw: 150000,
+      y2040AcaMagi: 161496.43,
+      y2040Draw: 149589.89,
       y2040Credit: 0,
       y2040Cliff: 86560,
       y2040Outcome: "era-cliff-off",
@@ -14949,10 +15007,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-era-cliff-family-only-yields-sample-shape",
     kind: "tax",
-    note: "ERA-AWARE ACA CLIFF CAP with the working yield calibration (ERA-AWARE ACA CLIFF CAP build, fixture d): the sample shape at retire 57 with a household schedule stepping 5 → 2 in 2036 and the record's working yields (interest 0.6307267152401136% / dividends 0.0788408394050142% of the taxable balance). Defended in every year the cliff plan nets 233844665 cents; with acaCliffCapFamilyOnly on — family years defended around the yield income, stepped-down years undefended — it nets 168419989 cents. The flag-off side is the yields build's defended-stepdown shape; any era leak into it, or yield leak into the era path, moves a side. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned 2026-10-20 for the §1411 NIIT base fix: this shape carries the working interest yield (0.6307% of the taxable balance), and interest is now in the NIIT base per §1411(c)(1)(A)(i), so over-threshold years charge 3.8% on that interest and the added tax compounds through the settlement — defended 206977017 → 211436020, era 146933261 → 153123073. Plan years price dividends on the gains stack, which was already in the base, so the whole movement is the interest inclusion; proof: reverting only the NIIT base line in a scratch copy of the engine reproduces the previous pins exactly.)",
+    note: "ERA-AWARE ACA CLIFF CAP with the working yield calibration (ERA-AWARE ACA CLIFF CAP build, fixture d): the sample shape at retire 57 with a household schedule stepping 5 → 2 in 2036 and the record's working yields (interest 0.6307267152401136% / dividends 0.0788408394050142% of the taxable balance). Defended in every year the cliff plan nets 233844665 cents; with acaCliffCapFamilyOnly on — family years defended around the yield income, stepped-down years undefended — it nets 168419989 cents. The flag-off side is the yields build's defended-stepdown shape; any era leak into it, or yield leak into the era path, moves a side. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned 2026-10-20 for the §1411 NIIT base fix: this shape carries the working interest yield (0.6307% of the taxable balance), and interest is now in the NIIT base per §1411(c)(1)(A)(i), so over-threshold years charge 3.8% on that interest and the added tax compounds through the settlement — defended 206977017 → 211436020, era 146933261 → 153123073. Plan years price dividends on the gains stack, which was already in the base, so the whole movement is the interest inclusion; proof: reverting only the NIIT base line in a scratch copy of the engine reproduces the previous pins exactly.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      defendedNet: 211436020,
-      eraNet: 153123073,
+      defendedNet: 211446305,
+      eraNet: 153287608,
     },
     actual: () => {
       const baseStepYields = {
@@ -15218,13 +15276,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-dividend-split-overage",
     kind: "tax",
-    note: "Playground dividend derivation, the overage case (dividend-pair guard; hand-derived; synthetic example with invented figures): the same synthetic year with the pair inverted — total ordinary dividends $7,000 and qualified dividends $15,000. That pair cannot occur in the underlying dividend reporting, where the qualified figure is a subset of the total and cannot exceed it. The derivation floors at zero: max(0, $7,000 − $15,000) = $0 of non-qualified dividends, so nothing rides the ordinary stack (otherOrdinaryTotal $0) and the excess is not counted as non-qualified dividends; the qualified figure as entered still rides the gains stack whole (ltcgPriced $15,000, as in the normal split). The Playground form shows a note on this pair (the qualified figure can't exceed the total and the excess isn't counted) instead of pricing it silently.",
+    note: "Playground dividend derivation, the overage case (dividend-pair guard; re-pinned under contract v137 for the audit S-8 + S-11 clamp; hand-derived; synthetic example with invented figures): the same synthetic year with the pair inverted — total ordinary dividends $7,000 and qualified dividends $15,000. That pair cannot occur in the underlying dividend reporting, where the qualified figure is a subset of the total and cannot exceed it. The derivation floors at zero: max(0, $7,000 − $15,000) = $0 of non-qualified dividends, so nothing rides the ordinary stack (otherOrdinaryTotal $0) and the excess is not counted as non-qualified dividends. The qualified part is ALSO clamped to the total (the S-11 fix): the priced and reported qualifiedDividends is min($15,000, $7,000) = $7,000, so the gains stack prices $7,000 (ltcgPriced $7,000) and AGI is the entered total counted once, $7,000 — before the clamp the entered $15,000 rode the gains stack whole and $8,000 of phantom dividends entered AGI. The Playground form shows a note on this pair (the qualified figure can't exceed the total and the excess isn't counted) instead of pricing it silently.",
     expected: {
       ordinaryDividends: 7000,
-      qualifiedDividends: 15000,
+      qualifiedDividends: 7000,
       nonQualifiedDividends: 0,
       otherOrdinaryTotal: 0,
-      ltcgPriced: 15000,
+      ltcgPriced: 7000,
+      agi: 7000,
     },
     actual: () => {
       const r = pricePlaygroundYear({
@@ -15256,6 +15315,126 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         nonQualifiedDividends: r.nonQualifiedDividends,
         otherOrdinaryTotal: r.otherOrdinaryTotal,
         ltcgPriced: r.ltcgPriced,
+        agi: r.agi,
+      };
+    },
+  },
+  {
+    id: "playground-dividend-clamp-s11-example",
+    kind: "tax",
+    note: "Audit S-11 worked example, priced after the clamp (contract v137; hand-derived; synthetic example with invented figures): runPlaygroundYear's pair — tax year 2026, married filing jointly, every other dial $0 — with ordinaryDividends $1,000 and qualifiedDividends $5,000. Before the clamp the response priced the full $5,000 as gains against a $1,000 total (ltcgPriced $5,000, AGI $5,000 — $4,000 of phantom dividends in AGI, MAGI, and the ACA / NIIT bases). With the qualified part clamped to the total, the priced and reported qualifiedDividends is $1,000, the non-qualified part is $0, ltcgPriced is $1,000, and AGI / MAGI / ACA MAGI are $1,000 — the entered total, counted once.",
+    expected: {
+      qualifiedDividends: 1000,
+      nonQualifiedDividends: 0,
+      ltcgPriced: 1000,
+      agi: 1000,
+      magi: 1000,
+      acaMagi: 1000,
+    },
+    actual: () => {
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 50,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 1000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 5000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      });
+      return {
+        qualifiedDividends: r.qualifiedDividends,
+        nonQualifiedDividends: r.nonQualifiedDividends,
+        ltcgPriced: r.ltcgPriced,
+        agi: r.agi,
+        magi: r.magi,
+        acaMagi: r.acaMagi,
+      };
+    },
+  },
+  {
+    id: "playground-dividend-clamp-consequence-s10",
+    kind: "tax",
+    note: "Literal-clamp TAX CONSEQUENCE (re-audit SHOULD S-10; hand-derived; the fictional sample household of server/src/sampleHousehold.ts): the household's filed pair — ordinary dividends $20,000 (the line 3b total), qualified $15,000 (line 3a) — entered TRANSPOSED into the Playground dials (ordinaryDividends $15,000, qualifiedDividends $20,000 — an impossible pair, excess $5,000), priced for 2043, the year the primary (born 1968) is 75 and the spouse (born 1970) is 73, with the household's other sample figures: taxable interest $1,500, both Social Security benefits at their sample amounts ($48,000 + $30,000, each from age 67 — 85% taxable = $66,300), both spouses on Medicare, no ACA benchmark, and the sample $1,500,000 prior-Dec-31 pre-tax balance, whose RMD (spouse sole beneficiary but only 2 years younger, so the Uniform Lifetime table; divisor 24.6 at 75) is $60,975.61. The year prices under the 2026 law row (the newest published; lawForYear carries it forward) with no deflation (the single-year pricer passes inflationPct 0), and the temporary §151(d)(5)(C) senior deduction does not apply — its statutory window is 2025–2028. UNDER THE CLAMP: the qualified part prices at the total, $15,000, the non-qualified part $0 — AGI = $60,975.61 + $66,300 + $1,500 + $15,000 = $143,775.61; deductions $35,500 ($32,200 standard + two $1,650 age-65 add-ons) → taxable $108,275.61; ordinary taxable $108,275.61 − $15,000 = $93,275.61 → ordinary tax $2,480 + 12% × $68,475.61 = $10,697.07; the $15,000 preferential stack sits on $93,275.61 — $5,624.39 fills the 0% space to the $98,900 top, the remaining $9,375.61 at 15% = $1,406.34 — federal tax $12,103.41. THE COUNTERFACTUAL (the entered $20,000 priced whole, as before the clamp — reproduced by the possible pair $20,000 / $20,000, whose stacks are identical): AGI $148,775.61, federal tax $12,853.41 (the same ordinary tax; $14,375.61 of the $20,000 stack at 15% = $2,156.34, the rest in the 0% space). THE CONSEQUENCE: $12,853.41 − $12,103.41 = exactly $750.00 = $5,000 × 15% — the excess is not taxed at all. The contract's playgroundYearSemantics states this same consequence (contract v143), and the entered-pair echo pins (wasClamped as 1, excess $5,000) are the S-7 surfaced clamp inputs. Before this fixture, the clamp's tax consequence was stated in no contract text and pinned by no fixture.",
+    expected: {
+      ordinaryDividendsEntered: 15000,
+      qualifiedDividendsEntered: 20000,
+      qualifiedDividendsWasClamped: 1,
+      qualifiedDividendsExcess: 5000,
+      qualifiedDividends: 15000,
+      nonQualifiedDividends: 0,
+      ltcgPriced: 15000,
+      rmd: 60975.61,
+      agi: 143775.61,
+      magi: 143775.61,
+      taxableIncome: 108275.61,
+      federalTax: 12103.41,
+      counterfactualAgi: 148775.61,
+      counterfactualFederalTax: 12853.41,
+      clampTaxConsequence: 750,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2043,
+        filingStatus: "mfj" as const,
+        agePrimary: 2043 - SAMPLE_BIRTH_YEAR_PRIMARY,
+        ageSpouse: 2043 - SAMPLE_BIRTH_YEAR_SPOUSE,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: SAMPLE_TAX_RETURN_INTEREST_CENTS / 100,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: SAMPLE_SS_PRIMARY_CENTS / 100,
+        ssSpouse: SAMPLE_SS_SPOUSE_CENTS / 100,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        pretaxBalance: SAMPLE_PRETAX_CENTS / 100,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const clamped = pricePlaygroundYear({
+        ...base,
+        ordinaryDividends: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
+        qualifiedDividends: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+      });
+      const counterfactual = pricePlaygroundYear({
+        ...base,
+        ordinaryDividends: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+        qualifiedDividends: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+      });
+      return {
+        ordinaryDividendsEntered: clamped.ordinaryDividendsEntered,
+        qualifiedDividendsEntered: clamped.qualifiedDividendsEntered,
+        qualifiedDividendsWasClamped: clamped.qualifiedDividendsWasClamped ? 1 : 0,
+        qualifiedDividendsExcess: clamped.qualifiedDividendsExcess,
+        qualifiedDividends: clamped.qualifiedDividends,
+        nonQualifiedDividends: clamped.nonQualifiedDividends,
+        ltcgPriced: clamped.ltcgPriced,
+        rmd: clamped.rmd,
+        agi: clamped.agi,
+        magi: clamped.magi,
+        taxableIncome: clamped.taxableIncome,
+        federalTax: clamped.federalTax,
+        counterfactualAgi: counterfactual.agi,
+        counterfactualFederalTax: counterfactual.federalTax,
+        clampTaxConsequence:
+          Math.round((counterfactual.federalTax - clamped.federalTax) * 100) / 100,
       };
     },
   },
@@ -15703,14 +15882,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-blank-basis-legacy-basis-clamp",
     kind: "tax",
-    note: "TAXABLE YIELDS on a BLANK basis — the legacy display counter (YIELD FIX build; the Review Pass 3 corner): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) with the basis % left BLANK (taxableBasisPct null, so the record layer maps it to 100 and the engine takes the legacy path) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return. On the legacy path the basis ledger is a display-only counter (draws price at the flat gain %, which is 0 here), and it adds each year's reinvested yield with no balance clamp: the counter starts at the $2,400,000 starting balance and each year adds the dividend + interest and subtracts the taxable sales at 100% basis, so 2033 ends at $2,839,815.28 — above the $2,589,081.18 settled balance, the reinvested yield's basis standing where a clamp would have discarded it. The priced figures for the shape DID NOT MOVE — 2033 federal tax is still $19,961.86, the ending taxable balance still $2,589,081.18, and the year's dividend and interest income still $104,730.62 each. (ENGINES BATCH F2 re-pin: the old clamp held the counter at the settled balance — $2,448,303.72 in 2033 — and the case asserted basis-within-balance in every year; the clamp is removed, so the invariant is now the floor at $0 — the counter is non-negative in every one of the run's 41 years, verified by recomputing it from first principles: starting balance + each year's yield − each year's sales, matching the engine to the cent in 2030–2033.)",
+    note: "TAXABLE YIELDS on a BLANK basis — the legacy display counter (YIELD FIX build; the Review Pass 3 corner): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) with the basis % left BLANK (taxableBasisPct null, so the record layer maps it to 100 and the engine takes the legacy path) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return. On the legacy path the basis ledger is a display-only counter (draws price at the flat gain %, which is 0 here), and it adds each year's reinvested yield with no balance clamp: the counter starts at the $2,400,000 starting balance and each year adds the dividend + interest and subtracts the taxable sales at 100% basis, so 2033 ends at $2,839,815.28 — above the $2,589,081.18 settled balance, the reinvested yield's basis standing where a clamp would have discarded it. The priced figures for the shape DID NOT MOVE — 2033 federal tax is still $19,961.86, the ending taxable balance still $2,589,081.18, and the year's dividend and interest income still $104,730.62 each. (ENGINES BATCH F2 re-pin: the old clamp held the counter at the settled balance — $2,448,303.72 in 2033 — and the case asserted basis-within-balance in every year; the clamp is removed, so the invariant is now the floor at $0 — the counter is non-negative in every one of the run's 41 years, verified by recomputing it from first principles: starting balance + each year's yield − each year's sales, matching the engine to the cent in 2030–2033.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       basisBlank: 1,
-      y2033FederalTax: 19961.86,
-      y2033TaxableEnd: 2589081.18,
-      y2033Dividend: 104730.62,
-      y2033Interest: 104730.62,
-      y2033Basis: 2839815.28,
+      y2033FederalTax: 19667.13,
+      y2033TaxableEnd: 2553296.47,
+      y2033Dividend: 104028.87,
+      y2033Interest: 104028.87,
+      y2033Basis: 2805526.73,
       allYearsBasisNonNegative: 1,
     },
     actual: () => {
@@ -15757,13 +15936,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-tiers-exceeds-return-basis-within-balance",
     kind: "tax",
-    note: "TAXABLE YIELDS exceeding the return on the BASIS TIERS path — the committed tier ledger keeps 0 ≤ basis ≤ balance in every year (TIERS YIELD FIX build; the yield build's restarted Review Pass 2 MEDIUM finding): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return, sustained. Before the fix the settlement routed the reinvested yield through the after-tax inflow helper, which raised the inflow tier's BALANCE with the basis even though the settlement's taxable balance does not rise (the yield is already inside the total return): the committed tier ledger drifted above the settled balance by roughly each year's yield, the growth step re-derived the basis scalar as the tier sum (overwriting the commit's scalar clamp), and by 2046 the year detail printed an endingTaxableBasis of $3,032,552.82 against an endingTaxable of $2,410,114.02 — basis at 125.8% of the balance it describes, overstating the ledger and shrinking harvest room (balance − basis) by bookkeeping. The fix lands the reinvested yield's basis WITHOUT phantom balance — filling the tiers' unrealized gain up to each tier's own balance, the single-pool clamp-at-balance treatment of tax-yield-exceeds-return-clamp-at-balance — and clamps the committed tier ledger to the settled balance at commit and after growth: 2046 now ends at a $2,284,197.50 basis inside a $2,415,538.86 balance, inside the balance in every year of the run. PRICED MOVEMENT ON THIS BROKEN SHAPE, reported per the fix brief: the phantom lot's balance had distorted which tier later sales drew from (sales the phantom priced at the lot's 100% basis ratio now price at the real tiers' ratios once the genuine 100%-basis tier is consumed), so taxes paid from Taxable across the intervening years moved and the balance trajectory followed — pre-fix → post-fix for 2046: endingTaxable $2,410,114.02 → $2,421,821.54, federal tax $80,593.01 → $80,785.85, dividend and interest income $89,561.76 → $90,012.31 each (priced in full on the year's opening balance, as always — the balance path is what moved), ending pre-tax $5,876,371.96 and ending Roth $1,809,986.05 unchanged. (The settlement iteration, FIX 1, then moved the 2046 endpoints again — endingTaxable $2,415,538.86, basis $2,284,197.50, federal tax $80,682.37, dividend and interest $89,770.53 each — the figures now pinned; ending pre-tax and ending Roth did not move.) No shape outside the broken region moves: the full fixture census carries zero priced re-pins. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
+    note: "TAXABLE YIELDS exceeding the return on the BASIS TIERS path — the committed tier ledger keeps 0 ≤ basis ≤ balance in every year (TIERS YIELD FIX build; the yield build's restarted Review Pass 2 MEDIUM finding): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return, sustained. Before the fix the settlement routed the reinvested yield through the after-tax inflow helper, which raised the inflow tier's BALANCE with the basis even though the settlement's taxable balance does not rise (the yield is already inside the total return): the committed tier ledger drifted above the settled balance by roughly each year's yield, the growth step re-derived the basis scalar as the tier sum (overwriting the commit's scalar clamp), and by 2046 the year detail printed an endingTaxableBasis of $3,032,552.82 against an endingTaxable of $2,410,114.02 — basis at 125.8% of the balance it describes, overstating the ledger and shrinking harvest room (balance − basis) by bookkeeping. The fix lands the reinvested yield's basis WITHOUT phantom balance — filling the tiers' unrealized gain up to each tier's own balance, the single-pool clamp-at-balance treatment of tax-yield-exceeds-return-clamp-at-balance — and clamps the committed tier ledger to the settled balance at commit and after growth: 2046 now ends at a $2,284,197.50 basis inside a $2,415,538.86 balance, inside the balance in every year of the run. PRICED MOVEMENT ON THIS BROKEN SHAPE, reported per the fix brief: the phantom lot's balance had distorted which tier later sales drew from (sales the phantom priced at the lot's 100% basis ratio now price at the real tiers' ratios once the genuine 100%-basis tier is consumed), so taxes paid from Taxable across the intervening years moved and the balance trajectory followed — pre-fix → post-fix for 2046: endingTaxable $2,410,114.02 → $2,421,821.54, federal tax $80,593.01 → $80,785.85, dividend and interest income $89,561.76 → $90,012.31 each (priced in full on the year's opening balance, as always — the balance path is what moved), ending pre-tax $5,876,371.96 and ending Roth $1,809,986.05 unchanged. (The settlement iteration, FIX 1, then moved the 2046 endpoints again — endingTaxable $2,415,538.86, basis $2,284,197.50, federal tax $80,682.37, dividend and interest $89,770.53 each — the figures now pinned; ending pre-tax and ending Roth did not move.) No shape outside the broken region moves: the full fixture census carries zero priced re-pins. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      y2050TaxableEnd: 2166789.98,
-      y2050Basis: 2048973.98,
-      y2050FederalTax: 26858.26,
-      y2050Dividend: 87159.23,
-      y2050Interest: 87159.23,
+      y2050TaxableEnd: 1961392.21,
+      y2050Basis: 1854744.4,
+      y2050FederalTax: 22837,
+      y2050Dividend: 79166.85,
+      y2050Interest: 79166.85,
       y2050PretaxEnd: 4656277.96,
       y2050RothEnd: 1422751.6,
       allYearsBasisWithinBalance: 1,
@@ -16080,11 +16259,11 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-blank-identity",
     kind: "tax",
-    note: "SPEND-FROM-CASH blank identity (SPEND-FROM-CASH build, fixture 1): The sample era shape (retire 57, step-down 2036, family-only cliff cap, 50% basis) with the snapshot cash sleeve threaded onto the base exactly as the server threads it (spendFromCashSleeveCents 20000000 — the snapshot Cash bucket of the folded $2,400,000 pool) but spendFromCashPct ABSENT from the scenario (a pre-build record's shape) and again explicitly null: both price the era anchor 75714363 cents, and the defended-cliff shape (the patch removes the step-down year and turns the family-only flag off) at pct null prices the defended anchor 101471817. A supplied sleeve with the percentage blank is inert — the sleeve alone never turns the feature on. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH blank identity (SPEND-FROM-CASH build, fixture 1): The sample era shape (retire 57, step-down 2036, family-only cliff cap, 50% basis) with the snapshot cash sleeve threaded onto the base exactly as the server threads it (spendFromCashSleeveCents 20000000 — the snapshot Cash bucket of the folded $2,400,000 pool) but spendFromCashPct ABSENT from the scenario (a pre-build record's shape) and again explicitly null: both price the era anchor 75714363 cents, and the defended-cliff shape (the patch removes the step-down year and turns the family-only flag off) at pct null prices the defended anchor 101471817. A supplied sleeve with the percentage blank is inert — the sleeve alone never turns the feature on. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      eraAbsent: 55483328,
-      eraNull: 55483328,
-      defendedNull: 69851052,
+      eraAbsent: 55776336,
+      eraNull: 55776336,
+      defendedNull: 69275870,
     },
     actual: () => {
       const ceilings = (familyOnly: boolean) => ({
@@ -16132,9 +16311,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-zero-identity",
     kind: "tax",
-    note: "SPEND-FROM-CASH X=0 identity (SPEND-FROM-CASH build, fixture 2): spendFromCashPct 0 on the era shape (sleeve threaded) prices EXACTLY the blank plan — net cost 75714363 cents and the full lifetime ACA credit — because a 0% share takes $0 of cash in every settlement, so every kept settlement is the blank settlement. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH X=0 identity (SPEND-FROM-CASH build, fixture 2): spendFromCashPct 0 on the era shape (sleeve threaded) prices EXACTLY the blank plan — net cost 75714363 cents and the full lifetime ACA credit — because a 0% share takes $0 of cash in every settlement, so every kept settlement is the blank settlement. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      zeroNet: 55483328,
+      zeroNet: 55776336,
       zeroCreditCents: 13271912,
     },
     actual: () => {
@@ -16164,14 +16343,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-x50-funding-rows",
     kind: "tax",
-    note: "SPEND-FROM-CASH X=50 funding rows (SPEND-FROM-CASH build, fixture 3; note and assertions reconciled by the fixture-honesty repair 2026-10-23 — the previous note derived a $78,716.04 annual share that does not foot and quoted a plan net, 72545094 cents, that matched nothing pinned, while the assertions pinned only nulls for years the funding rows do not contain): the era shape at spendFromCashPct 50 with the $200,000 sleeve, priced from start year 2034 — the built scenario's first funding row, and the first year its rows expose a spending need. Spending is $150,000/yr, so the cash share is 50% of $150,000 = a $75,000 nominal annual share (7500000 cents): the funding rows' cashSpendCents is 7500000 in 2034 and again in 2035; the sleeve then holds 20000000 − 2 × 7500000 = 5000000 cents, which is 2036's partial share, and 2037 is 0 (the sleeve never refills). Those per-year amounts are pinned below exactly as the funding rows compute them. cashSpendCents stands as one of the twelve funding sources and the twelve sources foot each year's totalNeedCents exactly (maxDiffCents 0 across every funding row) — that footing invariant is the case's other assertion. The plan nets 38685357 cents (an engine-derived regression pin: the verified implementation's lifetime total for this shape, pinned so drift fails loudly). (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH X=50 funding rows (SPEND-FROM-CASH build, fixture 3; note and assertions reconciled by the fixture-honesty repair 2026-10-23 — the previous note derived a $78,716.04 annual share that does not foot and quoted a plan net, 72545094 cents, that matched nothing pinned, while the assertions pinned only nulls for years the funding rows do not contain): the era shape at spendFromCashPct 50 with the $200,000 sleeve, priced from start year 2034 — the built scenario's first funding row, and the first year its rows expose a spending need. Spending is $150,000/yr, so the cash share is 50% of $150,000 = a $75,000 nominal annual share (7500000 cents): the funding rows' cashSpendCents is 7500000 in 2034 and again in 2035; the sleeve then holds 20000000 − 2 × 7500000 = 5000000 cents, which is 2036's partial share, and 2037 is 0 (the sleeve never refills). Those per-year amounts are pinned below exactly as the funding rows compute them. cashSpendCents stands as one of the twelve funding sources and the twelve sources foot each year's totalNeedCents exactly (maxDiffCents 0 across every funding row) — that footing invariant is the case's other assertion. The plan nets 38685357 cents (an engine-derived regression pin: the verified implementation's lifetime total for this shape, pinned so drift fails loudly). (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       cash2034: 7500000,
       cash2035: 7500000,
       cash2036: 5000000,
       cash2037: 0,
       maxDiffCents: 0,
-      net: 38685357,
+      net: 38736743,
     },
     actual: () => {
       const saved = { ...spendCashEraBase(), spendFromCashPct: 50 };
@@ -16275,12 +16454,12 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-x100-drain",
     kind: "tax",
-    note: "SPEND-FROM-CASH X=100 (SPEND-FROM-CASH build, fixture 5): at 100% the whole spending need comes from cash while the sleeve lasts — 2028 pays the full 15000000 cents, leaving 20000000 − 15000000 = 6659440 cents, which is 2029's partial share; 2030 pays $0. Hand-derived from the sleeve and the need. The plan nets 74945603 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH X=100 (SPEND-FROM-CASH build, fixture 5): at 100% the whole spending need comes from cash while the sleeve lasts — 2028 pays the full 15000000 cents, leaving 20000000 − 15000000 = 6659440 cents, which is 2029's partial share; 2030 pays $0. Hand-derived from the sleeve and the need. The plan nets 74945603 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       cash2032: null,
       cash2033: null,
       cash2034: null,
-      net: 39068325,
+      net: 39162748,
     },
     actual: () => {
       const saved = { ...spendCashEraBase(), spendFromCashPct: 100 };
@@ -16328,13 +16507,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-tiers-agreement",
     kind: "tax",
-    note: "SPEND-FROM-CASH with basis tiers (SPEND-FROM-CASH build, fixture 6): The sample shape's tiers — the cash tier at sharePct 8.333333333333334 / basisPct 100 (exactly the $200,000 snapshot cash) over a 45.45454545454545%-basis tier — at X=50 on the era shape. The sleeve IS the cash tier's balance: the 2028 cash-paid share is the same hand-derived 7871604 cents, the sleeve ends 2028 at $164,543.56 (the cash tier's own balance after the year's cash debit AND the highest-basis-first tax sales, which drain the cash tier first — the tiers signature, absent in the single pool), the tier empties during 2030 (partial share $71,137.12, end $0), and the plan nets 70859796 cents. Any disagreement between the sleeve ledger and the tier ledger moves the 2028 sleeve-end pin. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH with basis tiers (SPEND-FROM-CASH build, fixture 6): The sample shape's tiers — the cash tier at sharePct 8.333333333333334 / basisPct 100 (exactly the $200,000 snapshot cash) over a 45.45454545454545%-basis tier — at X=50 on the era shape. The sleeve IS the cash tier's balance: the 2028 cash-paid share is the same hand-derived 7871604 cents, the sleeve ends 2028 at $164,543.56 (the cash tier's own balance after the year's cash debit AND the highest-basis-first tax sales, which drain the cash tier first — the tiers signature, absent in the single pool), the tier empties during 2030 (partial share $71,137.12, end $0), and the plan nets 70859796 cents. Any disagreement between the sleeve ledger and the tier ledger moves the 2028 sleeve-end pin. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
       cash2032Cents: null,
       sleeveEnd2032: null,
       cash2034: 75000,
       sleeveEnd2034: 114867.34,
-      net: 37848070,
+      net: 37932588,
     },
     actual: () => {
       const saved = {
@@ -16426,9 +16605,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-yields",
     kind: "tax",
-    note: "SPEND-FROM-CASH X=50 with the working yields (SPEND-FROM-CASH build, fixture 8): the era shape carrying the record's working yield calibration (interest 0.6307267152401136% / dividends 0.0788408394050142% of the folded pool). Yields are still charged on the year's starting taxable balance exactly as without the feature — 2028 prices $17,892.90 of interest and $2,236.61 of dividends — the cash share is still the hand-derived $78,716.04 (the yield cash is reinvested, never counted as sleeve), the sleeve ends 2028 at the pure remainder $145,310.44 (= 200000 − 78716.04), the capped year still lands on the cliff, and the plan nets 156426066 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned 2026-10-20 for the §1411 NIIT base fix: net 88985327 → 94304718. The shape carries the working interest yield, interest is now in the NIIT base per §1411(c)(1)(A)(i), and the added 3.8% on over-threshold years' interest compounds through the settlement; every 2028 detail pin in this case (interest, dividends, cash share, sleeve, ACA MAGI) is unchanged, and reverting only the NIIT base line in a scratch copy of the engine reproduces 88985327 exactly, so the whole movement is the interest inclusion.)",
+    note: "SPEND-FROM-CASH X=50 with the working yields (SPEND-FROM-CASH build, fixture 8): the era shape carrying the record's working yield calibration (interest 0.6307267152401136% / dividends 0.0788408394050142% of the folded pool). Yields are still charged on the year's starting taxable balance exactly as without the feature — 2028 prices $17,892.90 of interest and $2,236.61 of dividends — the cash share is still the hand-derived $78,716.04 (the yield cash is reinvested, never counted as sleeve), the sleeve ends 2028 at the pure remainder $145,310.44 (= 200000 − 78716.04), the capped year still lands on the cliff, and the plan nets 156426066 cents. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned 2026-10-20 for the §1411 NIIT base fix: net 88985327 → 94304718. The shape carries the working interest yield, interest is now in the NIIT base per §1411(c)(1)(A)(i), and the added 3.8% on over-threshold years' interest compounds through the settlement; every 2028 detail pin in this case (interest, dividends, cash share, sleeve, ACA MAGI) is unchanged, and reverting only the NIIT base line in a scratch copy of the engine reproduces 88985327 exactly, so the whole movement is the interest inclusion.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      net: 94304718,
+      net: 94601417,
       cash2032: null,
       sleeveEnd2032: null,
       interest2032: null,
@@ -16472,10 +16651,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-zero-sleeve",
     kind: "tax",
-    note: "SPEND-FROM-CASH with $0 cash in the pool (SPEND-FROM-CASH build, fixture 9): X=50 with the sleeve explicitly 0 cents, and again with the sleeve key absent from the base entirely (the shape a compute base with explicit balances and no snapshot context presents), both price EXACTLY the blank era anchor 75714363 — no phantom cash is invented. The threaded-sleeve contrast on the same shape prices 75311039 (fixture 3), so the pair pins the sleeve's provenance: it comes only from the snapshot threading / the supplied sleeve input, never from the percentage alone. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH with $0 cash in the pool (SPEND-FROM-CASH build, fixture 9): X=50 with the sleeve explicitly 0 cents, and again with the sleeve key absent from the base entirely (the shape a compute base with explicit balances and no snapshot context presents), both price EXACTLY the blank era anchor 75714363 — no phantom cash is invented. The threaded-sleeve contrast on the same shape prices 75311039 (fixture 3), so the pair pins the sleeve's provenance: it comes only from the snapshot threading / the supplied sleeve input, never from the percentage alone. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      zeroSleeveNet: 55483328,
-      absentSleeveNet: 55728074,
+      zeroSleeveNet: 55776336,
+      absentSleeveNet: 54938289,
     },
     actual: () => {
       const patch = {
@@ -16503,10 +16682,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-spend-cash-carried-shapes",
     kind: "tax",
-    note: "SPEND-FROM-CASH carried by the survivor and draw-order-switch shapes (SPEND-FROM-CASH build, fixture 10): the era shape at X=50 with the survivor lens on (primary dies 2041) nets 115723784 cents, and with the draw order switching at 75 to Roth → Taxable → Pre-tax nets 75941042 cents — both priced WITH the field active (the built inputs still carry spendFromCashPct 50, pinned directly), so neither shape silently drops it. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.)",
+    note: "SPEND-FROM-CASH carried by the survivor and draw-order-switch shapes (SPEND-FROM-CASH build, fixture 10): the era shape at X=50 with the survivor lens on (primary dies 2041) nets 115723784 cents, and with the draw order switching at 75 to Roth → Taxable → Pre-tax nets 75941042 cents — both priced WITH the field active (the built inputs still carry spendFromCashPct 50, pinned directly), so neither shape silently drops it. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned 2026-10-19 for the E2 Joint Life Table II completion — Table II, IRS Publication 590-B (2025), Appendix B: the completed Table II prices the true cells where the old partial grid clamped divisors; the pinned figures above are re-derived from it.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
     expected: {
-      survivorNet: 97440992,
-      switchNet: 62864727,
+      survivorNet: 97729873,
+      switchNet: 62979592,
       carriedPct: 50,
     },
     actual: () => {
@@ -17465,7 +17644,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "playground-2027-schema-and-fallback-pricing",
     kind: "tax",
-    note: "Playground contract truth (API follow-on 2, finding F20), pinned through the ACTION's own schema + handler construction (playgroundYearIn and playgroundInputsFromArgs from apiContractCore — the exact objects runPlaygroundYear publishes and uses): the 2027 paste-loader worked example (interest $16,000, qualified dividends $2,000, conversion $136,720, household 5, benchmark $32,000, everything else $0 / blank) validates and prices MAGI $154,720 (= 16,000 + 2,000 + 136,720), federal tax $16,238.40 — under the 2026 law row via the lawForYear fallback, so lawYearUsed is 2026. ACA credit RE-DERIVED for Build C: this is a SPECIFIC 2027 coverage year priced by the single-year pricer, so its applicable percentage now comes from the published 2027 table (Rev. Proc. 2026-26) — MAGI $154,720 is exactly 400% of the household-of-5 FPL on the 2026 guidelines ($38,680 × 4), the 2027 table's 300–400% percentage is 10.22%, the expected contribution is $154,720 × 10.22% = $15,812.38, and the credit is $32,000 − $15,812.38 = $16,187.62 (the pre-Build-C pin of $16,589.89 priced the 2026 table's 9.96% — the exact figure Build C corrects for a specific 2027 year). The tightened schema REJECTS a negative interest dial, a 150% state rate, and taxYear 1999, while otherOrdinary −$500 is accepted by design (a loss keeps its sign) and prices MAGI exactly $500 lower, $154,220.",
+    note: "Playground contract truth (API follow-on 2, finding F20), pinned through the ACTION's own schema + handler construction (playgroundYearIn and playgroundInputsFromArgs from apiContractCore — the exact objects runPlaygroundYear publishes and uses): the 2027 paste-loader worked example (interest $16,000, ordinary dividends $2,000 — all of it qualified (the pair made consistent under the contract v137 clamp, every figure unchanged) — conversion $136,720, household 5, benchmark $32,000, everything else $0 / blank) validates and prices MAGI $154,720 (= 16,000 + 2,000 + 136,720), federal tax $16,238.40 — under the 2026 law row via the lawForYear fallback, so lawYearUsed is 2026. ACA credit RE-DERIVED for Build C: this is a SPECIFIC 2027 coverage year priced by the single-year pricer, so its applicable percentage now comes from the published 2027 table (Rev. Proc. 2026-26) — MAGI $154,720 is exactly 400% of the household-of-5 FPL on the 2026 guidelines ($38,680 × 4), the 2027 table's 300–400% percentage is 10.22%, the expected contribution is $154,720 × 10.22% = $15,812.38, and the credit is $32,000 − $15,812.38 = $16,187.62 (the pre-Build-C pin of $16,589.89 priced the 2026 table's 9.96% — the exact figure Build C corrects for a specific 2027 year). The tightened schema REJECTS a negative interest dial, a 150% state rate, and taxYear 1999, while otherOrdinary −$500 is accepted by design (a loss keeps its sign) and prices MAGI exactly $500 lower, $154,220.",
     expected: {
       schemaAccepted: 1,
       magi: 154720,
@@ -17487,7 +17666,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         onMedicarePrimary: false,
         onMedicareSpouse: false,
         interest: 16000,
-        ordinaryDividends: 0,
+        ordinaryDividends: 2000,
         otherOrdinary: 0,
         taxExemptInterest: 0,
         ssPrimary: 0,
@@ -18114,7 +18293,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v61-wa-surtax-threshold-deflates",
     kind: "tax",
-    note: "Contract v61, F1 — THE WA SURTAX THRESHOLD DEFLATES (tax-law data audit acceptance case, hand-derived; RCW 82.87.040(1)(b), RCW 82.87.150): the $1,000,000 surtax threshold is statute-fixed — it is NOT among the amounts RCW 82.87.150 adjusts annually — so a year priced off a carried law row deflates it by deflationFactor, while the DOR-indexed standard deduction ($278,000) and charitable threshold / cap stay at their nominal row values. Case: gains priced as calendar 2027 off the 2026 law row at 3% inflation — $1,278,000 of WA long-term gains − $278,000 standard deduction = $1,000,000 of taxable gains; the deflated threshold is $1,000,000 / 1.03 = $970,873.79, so the tax is 7% × $970,873.79 + 9.9% × $29,126.21 = $67,961.17 + $2,883.50 = $70,844.66 (the pre-fix engine priced the nominal threshold: 7% × $1,000,000 = $70,000, an $844.66 understatement). Pinned three ways: a direct waCapitalGainsTax call with the explicit factor, the same year priced through priceYear, and the no-factor control at exactly $70,000 — the direct fixture calls of t3-wa-boundary keep pinning current-year behavior bit-identically, because a year with its own row has factor 1.0.",
+    note: "Build v61, F1 — THE WA SURTAX THRESHOLD DEFLATES (tax-law data audit acceptance case, hand-derived; RCW 82.87.040(1)(b), RCW 82.87.150): the $1,000,000 surtax threshold is statute-fixed — it is NOT among the amounts RCW 82.87.150 adjusts annually — so a year priced off a carried law row deflates it by deflationFactor, while the DOR-indexed standard deduction ($278,000) and charitable threshold / cap stay at their nominal row values. Case: gains priced as calendar 2027 off the 2026 law row at 3% inflation — $1,278,000 of WA long-term gains − $278,000 standard deduction = $1,000,000 of taxable gains; the deflated threshold is $1,000,000 / 1.03 = $970,873.79, so the tax is 7% × $970,873.79 + 9.9% × $29,126.21 = $67,961.17 + $2,883.50 = $70,844.66 (the pre-fix engine priced the nominal threshold: 7% × $1,000,000 = $70,000, an $844.66 understatement). Pinned three ways: a direct waCapitalGainsTax call with the explicit factor, the same year priced through priceYear, and the no-factor control at exactly $70,000 — the direct fixture calls of t3-wa-boundary keep pinning current-year behavior bit-identically, because a year with its own row has factor 1.0.",
     expected: {
       directTax: 70844.66,
       directTaxable: 1000000,
@@ -18587,7 +18766,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t4-wa-excise-takes-no-carryforward",
     kind: "tax",
-    note: "T4 (f) — WASHINGTON EXCISE ON GROSS GAINS WHEN NO WASHINGTON-ALLOCATED PORTION IS ENTERED (hand-derived; the carry-out RE-PINNED by the round-3 carryover fix — the original pin consumed the allowance in a year that could not use it; the figures are UNCHANGED by contract v101, which corrected the rule's statement and scope: this case enters no Washington-attributable portion of its banked loss, so under RCW 82.87.020(1)(c)–(e) the whole carryforward is added back and the base stays at the gross gains — the v101 fixtures pin the entered-attribution cases): a WA plan with a $600,000 long-term banked loss realizes $500,000 of gains in one year ($1,000,000 drawn from a $1,000,000 account at 50% basis). Federally the loss absorbs every gain (absorbed $500,000), the year is still a net-loss year (allowance $3,000 claimed), and the federal tax is $0 — but the excise prices on the year's OWN gains, untouched by the federal ledger: $500,000 − $278,000 standard deduction = $222,000 of taxable Washington gains at 7% = $15,540 of state tax, even with a 5% flat rate also entered (the excise replaces it). The $15,540 is paid from the $100,000 pre-tax balance (the taxable account is empty after the draw), which is a distribution, not a gain — the excise base does not move. That distribution is the year's only income beside the absorbed gains, and the $32,200 standard deduction shelters it in full even before the allowance, so the year has no taxable income for the allowance to offset: none of it is used, and the full $100,000 residue carries out.",
+    note: "T4 (f) — WASHINGTON EXCISE ON GROSS GAINS WHEN NO WASHINGTON-ALLOCATED PORTION IS ENTERED (hand-derived; the carry-out RE-PINNED by the round-3 carryover fix — the original pin consumed the allowance in a year that could not use it; the figures are UNCHANGED by build v101, which corrected the rule's statement and scope: this case enters no Washington-attributable portion of its banked loss, so under RCW 82.87.020(1)(c)–(e) the whole carryforward is added back and the base stays at the gross gains — the v101 fixtures pin the entered-attribution cases): a WA plan with a $600,000 long-term banked loss realizes $500,000 of gains in one year ($1,000,000 drawn from a $1,000,000 account at 50% basis). Federally the loss absorbs every gain (absorbed $500,000), the year is still a net-loss year (allowance $3,000 claimed), and the federal tax is $0 — but the excise prices on the year's OWN gains, untouched by the federal ledger: $500,000 − $278,000 standard deduction = $222,000 of taxable Washington gains at 7% = $15,540 of state tax, even with a 5% flat rate also entered (the excise replaces it). The $15,540 is paid from the $100,000 pre-tax balance (the taxable account is empty after the draw), which is a distribution, not a gain — the excise base does not move. That distribution is the year's only income beside the absorbed gains, and the $32,200 standard deduction shelters it in full even before the allowance, so the year has no taxable income for the allowance to offset: none of it is used, and the full $100,000 residue carries out.",
     expected: {
       federalTax: 0,
       stateTax: 15540,
@@ -18682,7 +18861,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t4-entering-input-and-no-move-anchor",
     kind: "tax",
-    note: "T4 (h) — ENTERING INPUT PLUMBING + NO-MOVE ANCHOR: the saved shape's capitalLossCarryInStCents / capitalLossCarryInLtCents convert through planInputsFromSaved (the one conversion every pricing path flows through) to engine dollars ($12,345 / $6,789 from 1234500 / 678900 cents), and a record without the keys converts to $0 / $0. Extended by contract v101: the Washington-attributable portions capitalLossCarryInStWaCents / capitalLossCarryInLtWaCents convert the same way ($2,345 / $3,456 from 234500 / 345600 cents), and a record without those keys converts to $0 / $0. On a plan with real conversions, draws, and taxes (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65), an explicit $0 / $0 entering pair prices BIT-IDENTICALLY to the absent pair — same lifetime federal and state tax, same ending wealth, same per-year taxes — which is the anchor every pre-T4 plan relies on. The contract's lossCarryforwardSemantics names the input fields, the $3,000 allowance, the character rule, Washington, and the Playground exclusion.",
+    note: "T4 (h) — ENTERING INPUT PLUMBING + NO-MOVE ANCHOR: the saved shape's capitalLossCarryInStCents / capitalLossCarryInLtCents convert through planInputsFromSaved (the one conversion every pricing path flows through) to engine dollars ($12,345 / $6,789 from 1234500 / 678900 cents), and a record without the keys converts to $0 / $0. Extended by build v101: the Washington-attributable portions capitalLossCarryInStWaCents / capitalLossCarryInLtWaCents convert the same way ($2,345 / $3,456 from 234500 / 345600 cents), and a record without those keys converts to $0 / $0. On a plan with real conversions, draws, and taxes (Fill 12%, $500,000 pre-tax, $500,000 taxable at 50% basis, $50,000 spending, ages 57–65), an explicit $0 / $0 entering pair prices BIT-IDENTICALLY to the absent pair — same lifetime federal and state tax, same ending wealth, same per-year taxes — which is the anchor every pre-T4 plan relies on. The contract's lossCarryforwardSemantics names the input fields, the $3,000 allowance, the character rule, Washington, and the Playground exclusion.",
     expected: {
       stDollars: 12345,
       ltDollars: 6789,
@@ -20019,7 +20198,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-owing-itemized-salt",
     kind: "tax",
-    note: "T7 (a) — AN AMT-OWING YEAR (hand-derived; IRC §55, Form 6251, Rev. Proc. 2025-32; RE-DERIVED for Build A's deduction trio — the pre-trio pin priced the charitable component whole with no §68; RE-DERIVED AGAIN for contract v36's Form 6251 Part III stacking fix — the pre-v36 pin stacked the preferential staircase on the AMT excess's $10,000 ordinary portion): 2026 MFJ, $1,400,000 of long-term gains and no ordinary income, itemizing mortgage interest $30,000 + SALT paid $40,400 + charitable $5,000. At AGI $1,400,000 the §164(b)(6) cap phases down to its $10,000 floor (cap $40,400 − 30% × $895,000, floored), so SALT allowed is $10,000; the §170(b)(1)(I) floor is 0.5% × $1,400,000 = $7,000 — more than the $5,000 given — so the charitable component is $0 and the otherwise-allowable itemized total is $40,000; §68 then reduces it by 2/37 × min($40,000, $1,400,000 − $768,700) = $2,162.16, leaving $37,837.84, which still beats the $32,200 standard. Regular tax: taxable income $1,362,162.16, all gains — $98,900 at 0%, $514,800 at 15%, $748,462.16 at 20% = $226,912.43, plus NIIT $43,700 (3.8% × ($1,400,000 − $250,000)). AMT keeps the UNREDUCED-§68 figures: AMTI = the $1,360,000 taxable income without regard to §68 + the $10,000 SALT actually taken added back (§56(b)(1)) = $1,370,000; the exemption is FULLY phased out ($140,200 − 50% × ($1,370,000 − $1,000,000) < 0 → $0), so the taxable excess is $1,370,000: the $10,000 added-back SALT is ordinary excess at 26% = $2,600, and the $1,360,000 preferential part prices on the Part III staircase stacked on the REGULAR-TAX ordinary stack — $0 here, because the regular taxable income is all gains — so the full thresholds remain: $98,900 at 0%, $514,800 at 15%, $746,300 at 20% = $226,480 — for a tentative minimum tax of $229,080. (The pre-v36 engine stacked on the $10,000 ordinary excess, shrinking the 0% space to $88,900 and pinning $231,080.) AMT owed = $229,080 − $226,912.43 = $2,167.57 (the NIIT is not part of the comparison), inside a federal tax of $226,912.43 + $43,700 + $2,167.57 = $272,780.",
+    note: "T7 (a) — AN AMT-OWING YEAR (hand-derived; IRC §55, Form 6251, Rev. Proc. 2025-32; RE-DERIVED for Build A's deduction trio — the pre-trio pin priced the charitable component whole with no §68; RE-DERIVED AGAIN for build v36's Form 6251 Part III stacking fix — the pre-v36 pin stacked the preferential staircase on the AMT excess's $10,000 ordinary portion): 2026 MFJ, $1,400,000 of long-term gains and no ordinary income, itemizing mortgage interest $30,000 + SALT paid $40,400 + charitable $5,000. At AGI $1,400,000 the §164(b)(6) cap phases down to its $10,000 floor (cap $40,400 − 30% × $895,000, floored), so SALT allowed is $10,000; the §170(b)(1)(I) floor is 0.5% × $1,400,000 = $7,000 — more than the $5,000 given — so the charitable component is $0 and the otherwise-allowable itemized total is $40,000; §68 then reduces it by 2/37 × min($40,000, $1,400,000 − $768,700) = $2,162.16, leaving $37,837.84, which still beats the $32,200 standard. Regular tax: taxable income $1,362,162.16, all gains — $98,900 at 0%, $514,800 at 15%, $748,462.16 at 20% = $226,912.43, plus NIIT $43,700 (3.8% × ($1,400,000 − $250,000)). AMT keeps the UNREDUCED-§68 figures: AMTI = the $1,360,000 taxable income without regard to §68 + the $10,000 SALT actually taken added back (§56(b)(1)) = $1,370,000; the exemption is FULLY phased out ($140,200 − 50% × ($1,370,000 − $1,000,000) < 0 → $0), so the taxable excess is $1,370,000: the $10,000 added-back SALT is ordinary excess at 26% = $2,600, and the $1,360,000 preferential part prices on the Part III staircase stacked on the REGULAR-TAX ordinary stack — $0 here, because the regular taxable income is all gains — so the full thresholds remain: $98,900 at 0%, $514,800 at 15%, $746,300 at 20% = $226,480 — for a tentative minimum tax of $229,080. (The pre-v36 engine stacked on the $10,000 ordinary excess, shrinking the 0% space to $88,900 and pinning $231,080.) AMT owed = $229,080 − $226,912.43 = $2,167.57 (the NIIT is not part of the comparison), inside a federal tax of $226,912.43 + $43,700 + $2,167.57 = $272,780.",
     expected: {
       deductionTaken: "itemized",
       saltAllowed: 10000,
@@ -20093,7 +20272,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-preferential-rates-preserved",
     kind: "tax",
-    note: "T7 (c) — PREFERENTIAL RATES PRESERVED INSIDE THE TENTATIVE TAX (hand-derived; §55(b)(3) capital-gain worksheet treatment; RE-DERIVED for contract v36's Form 6251 Part III stacking fix — the pre-v36 pin stacked the staircase on the AMT excess's ordinary portion, $0 in this year, and pinned $24,135): 2026 MFJ, $100,000 of other ordinary income plus $300,000 of long-term gains, standard deduction. Regular tax: taxable income $367,800 — ordinary part $67,800 taxed $7,640; gains $31,100 at 0% and $268,900 at 15% = $40,335; income tax $47,975, plus NIIT $5,700 (3.8% × ($400,000 − $250,000)) → federal tax $53,675. AMT: AMTI = $367,800 + $32,200 = $400,000; exemption $140,200 (below the phase-out start); taxable excess $259,800, ALL preferential (the ordinary excess is $0) — but Part III stacks the staircase on the REGULAR-TAX ordinary stack ($67,800), so only $98,900 − $67,800 = $31,100 of 0% space remains and the staircase prices $31,100 at 0% and the remaining $228,700 at 15% (the 20% floor is not reached: $67,800 + $259,800 < $613,700) = $34,305 of tentative tax. Had the gains been re-taxed at the flat AMT rates the tentative tax would be 26% × $244,500 + 28% × $15,300 = $67,854 and the year would owe $19,879 of AMT; with the preferential rates preserved it owes $0 — this case fails if the preservation is dropped.",
+    note: "T7 (c) — PREFERENTIAL RATES PRESERVED INSIDE THE TENTATIVE TAX (hand-derived; §55(b)(3) capital-gain worksheet treatment; RE-DERIVED for build v36's Form 6251 Part III stacking fix — the pre-v36 pin stacked the staircase on the AMT excess's ordinary portion, $0 in this year, and pinned $24,135): 2026 MFJ, $100,000 of other ordinary income plus $300,000 of long-term gains, standard deduction. Regular tax: taxable income $367,800 — ordinary part $67,800 taxed $7,640; gains $31,100 at 0% and $268,900 at 15% = $40,335; income tax $47,975, plus NIIT $5,700 (3.8% × ($400,000 − $250,000)) → federal tax $53,675. AMT: AMTI = $367,800 + $32,200 = $400,000; exemption $140,200 (below the phase-out start); taxable excess $259,800, ALL preferential (the ordinary excess is $0) — but Part III stacks the staircase on the REGULAR-TAX ordinary stack ($67,800), so only $98,900 − $67,800 = $31,100 of 0% space remains and the staircase prices $31,100 at 0% and the remaining $228,700 at 15% (the 20% floor is not reached: $67,800 + $259,800 < $613,700) = $34,305 of tentative tax. Had the gains been re-taxed at the flat AMT rates the tentative tax would be 26% × $244,500 + 28% × $15,300 = $67,854 and the year would owe $19,879 of AMT; with the preferential rates preserved it owes $0 — this case fails if the preservation is dropped.",
     expected: {
       ordinaryTax: 7640,
       ltcgTax: 40335,
@@ -20217,7 +20396,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-playground-parity",
     kind: "tax",
-    note: "T7 (g) — THE PLAYGROUND PRICES THE SAME AMT IDENTICALLY (the T7 (a) shape as Playground dials, as re-derived for Build A's deduction trio and contract v36's Part III stacking fix): the single-year Playground shares the year pricer, so 2026 MFJ, ages 60/49, a $1,400,000 stock sale at $0 basis, mortgage interest $30,000, SALT paid $40,400, charitable $5,000 returns the same AMTI ($1,370,000), exemption ($0), tentative tax ($229,080), AMT owed ($2,167.57) and federal tax ($272,780) as priceYear — field for field. A payload with no AMT exposure (the T7 (d) year) prices AMT owed $0 and the unadjusted $7,640 federal tax, exactly as before this build.",
+    note: "T7 (g) — THE PLAYGROUND PRICES THE SAME AMT IDENTICALLY (the T7 (a) shape as Playground dials, as re-derived for Build A's deduction trio and build v36's Part III stacking fix): the single-year Playground shares the year pricer, so 2026 MFJ, ages 60/49, a $1,400,000 stock sale at $0 basis, mortgage interest $30,000, SALT paid $40,400, charitable $5,000 returns the same AMTI ($1,370,000), exemption ($0), tentative tax ($229,080), AMT owed ($2,167.57) and federal tax ($272,780) as priceYear — field for field. A payload with no AMT exposure (the T7 (d) year) prices AMT owed $0 and the unadjusted $7,640 federal tax, exactly as before this build.",
     expected: {
       amti: 1370000,
       amtExemption: 0,
@@ -20337,7 +20516,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-part3-stacking-gains-heavy",
     kind: "tax",
-    note: "T7 (i) — FORM 6251 PART III STACKING, GAINS-HEAVY YEAR (contract v36; the ChatGPT AMT audit's Case 1, reconciled line-by-line on Form 6251): 2025 MFJ, ages 60/59, other ordinary $230,000, NON-qualified dividends $90,000, qualified dividends $80,000, long-term gains $1,200,000. (Executed inputs stated honestly: the audit's narrative called the $90,000 'ordinary dividends including $80,000 qualified', but its harness ran $90,000 non-qualified PLUS $80,000 qualified — the only reading under which its AGI is $1,600,000 — and both of its columns share those inputs, so the delta isolates the staircase.) AGI $1,600,000; standard deduction $31,500 → regular taxable income $1,568,500, of which the regular ordinary stack is $288,500 and the preferential stack $1,280,000. AMT: AMTI = $1,568,500 + $31,500 = $1,600,000; exemption $137,000 − 25% × ($1,600,000 − $1,252,700) = $50,175; taxable excess $1,549,825. Part III: the ordinary excess $269,825 prices at 26% × $239,100 + 28% × $30,725 = $70,769, and the $1,280,000 preferential part stacks on the REGULAR ordinary stack $288,500 (not on the $269,825 ordinary excess): the 0% top ($96,700) is already consumed, so $600,050 − $288,500 = $311,550 prices at 15% and $968,450 at 20% = $240,422.50 — tentative tax $311,191.50. Regular tax $295,356.50 (ordinary $54,934 + gains $240,422.50), so AMT owed = $15,835.00. The pre-v36 engine stacked on the ordinary excess and understated both: tentative $310,257.75, owed $14,901.25 — the $18,675 of gains it shifted from 20% to 15% × 5% is exactly the $933.75 delta. NIIT $51,300 (3.8% × min($1,370,000 of investment income, $1,600,000 − $250,000)) rides beside the AMT: federal tax $295,356.50 + $51,300 + $15,835 = $362,491.50. BOTH the tentative tax and the owed amount are pinned — the audit's Case 2 lesson (T7 (k)) is that owed can read $0 while the tentative tax is wrong.",
+    note: "T7 (i) — FORM 6251 PART III STACKING, GAINS-HEAVY YEAR (build v36; the ChatGPT AMT audit's Case 1, reconciled line-by-line on Form 6251): 2025 MFJ, ages 60/59, other ordinary $230,000, NON-qualified dividends $90,000, qualified dividends $80,000, long-term gains $1,200,000. (Executed inputs stated honestly: the audit's narrative called the $90,000 'ordinary dividends including $80,000 qualified', but its harness ran $90,000 non-qualified PLUS $80,000 qualified — the only reading under which its AGI is $1,600,000 — and both of its columns share those inputs, so the delta isolates the staircase.) AGI $1,600,000; standard deduction $31,500 → regular taxable income $1,568,500, of which the regular ordinary stack is $288,500 and the preferential stack $1,280,000. AMT: AMTI = $1,568,500 + $31,500 = $1,600,000; exemption $137,000 − 25% × ($1,600,000 − $1,252,700) = $50,175; taxable excess $1,549,825. Part III: the ordinary excess $269,825 prices at 26% × $239,100 + 28% × $30,725 = $70,769, and the $1,280,000 preferential part stacks on the REGULAR ordinary stack $288,500 (not on the $269,825 ordinary excess): the 0% top ($96,700) is already consumed, so $600,050 − $288,500 = $311,550 prices at 15% and $968,450 at 20% = $240,422.50 — tentative tax $311,191.50. Regular tax $295,356.50 (ordinary $54,934 + gains $240,422.50), so AMT owed = $15,835.00. The pre-v36 engine stacked on the ordinary excess and understated both: tentative $310,257.75, owed $14,901.25 — the $18,675 of gains it shifted from 20% to 15% × 5% is exactly the $933.75 delta. NIIT $51,300 (3.8% × min($1,370,000 of investment income, $1,600,000 − $250,000)) rides beside the AMT: federal tax $295,356.50 + $51,300 + $15,835 = $362,491.50. BOTH the tentative tax and the owed amount are pinned — the audit's Case 2 lesson (T7 (k)) is that owed can read $0 while the tentative tax is wrong.",
     expected: {
       amti: 1600000,
       amtExemption: 50175,
@@ -20369,7 +20548,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-part3-stacking-conversion",
     kind: "tax",
-    note: "T7 (j) — FORM 6251 PART III STACKING, ROTH CONVERSION YEAR (contract v36; the audit's Case 3): 2025 MFJ, ages 60/59, other ordinary $100,000, Roth conversion $300,000, long-term gains $900,000, NON-qualified dividends $50,000, qualified dividends $50,000. (Executed inputs stated honestly: the audit's narrative said '$50,000 ordinary dividends (all qualified)', whose stated inputs sum to AGI $1,350,000 — but its Form 6251 reconciliation runs on AGI $1,400,000, and the reading that reproduces its column to the cent is the two additive $50,000 dividend inputs, the same narrative-vs-executed pattern the settlement documented for its Case 1.) AGI $1,400,000; standard deduction $31,500 → taxable income $1,368,500; regular ordinary stack $418,500, preferential stack $950,000. AMT: AMTI = $1,368,500 + $31,500 = $1,400,000; exemption $137,000 − 25% × $147,300 = $100,175; taxable excess $1,299,825. The ordinary excess $349,825 prices at 26% × $239,100 + 28% × $110,725 = $93,169; the preferential $950,000 stacks on the regular stack $418,500: no 0% space remains, $600,050 − $418,500 = $181,550 at 15% and $768,450 at 20% = $180,922.50 — tentative tax $274,091.50. Regular tax $268,968.50, so AMT owed = $5,123.00. (Pre-v36: tentative $270,657.75, owed $1,689.25 — $68,675 of gains shifted from 20% to 15% × 5% = the $3,433.75 delta.) As the audit's control showed, the same shape with the conversion at $0 owes $0 — the conversion creates the liability the faulty stacking understated. NIIT $38,000 (3.8% × the $1,000,000 investment-income base) → federal tax $268,968.50 + $38,000 + $5,123 = $312,091.50. Tentative tax and owed both pinned.",
+    note: "T7 (j) — FORM 6251 PART III STACKING, ROTH CONVERSION YEAR (build v36; the audit's Case 3): 2025 MFJ, ages 60/59, other ordinary $100,000, Roth conversion $300,000, long-term gains $900,000, NON-qualified dividends $50,000, qualified dividends $50,000. (Executed inputs stated honestly: the audit's narrative said '$50,000 ordinary dividends (all qualified)', whose stated inputs sum to AGI $1,350,000 — but its Form 6251 reconciliation runs on AGI $1,400,000, and the reading that reproduces its column to the cent is the two additive $50,000 dividend inputs, the same narrative-vs-executed pattern the settlement documented for its Case 1.) AGI $1,400,000; standard deduction $31,500 → taxable income $1,368,500; regular ordinary stack $418,500, preferential stack $950,000. AMT: AMTI = $1,368,500 + $31,500 = $1,400,000; exemption $137,000 − 25% × $147,300 = $100,175; taxable excess $1,299,825. The ordinary excess $349,825 prices at 26% × $239,100 + 28% × $110,725 = $93,169; the preferential $950,000 stacks on the regular stack $418,500: no 0% space remains, $600,050 − $418,500 = $181,550 at 15% and $768,450 at 20% = $180,922.50 — tentative tax $274,091.50. Regular tax $268,968.50, so AMT owed = $5,123.00. (Pre-v36: tentative $270,657.75, owed $1,689.25 — $68,675 of gains shifted from 20% to 15% × 5% = the $3,433.75 delta.) As the audit's control showed, the same shape with the conversion at $0 owes $0 — the conversion creates the liability the faulty stacking understated. NIIT $38,000 (3.8% × the $1,000,000 investment-income base) → federal tax $268,968.50 + $38,000 + $5,123 = $312,091.50. Tentative tax and owed both pinned.",
     expected: {
       amti: 1400000,
       amtExemption: 100175,
@@ -20402,7 +20581,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-part3-stacking-itemized-tentative-only",
     kind: "tax",
-    note: "T7 (k) — FORM 6251 PART III STACKING, ITEMIZED YEAR: TENTATIVE TAX WRONG, AMT OWED $0 (contract v36; the audit's Case 2 — the reason every AMT fixture pins BOTH the tentative tax and the owed amount): 2026 MFJ, other ordinary $700,000, long-term gains $80,000, SALT paid $40,000, mortgage interest $90,000, charitable $30,000. AGI $780,000; SALT allowed $10,000 (the 2026 cap phases down past its floor: $40,400 − 30% × ($780,000 − $505,000) < $10,000, so the $10,000 floor governs); charitable allowed $30,000 − 0.5% × $780,000 = $26,100; itemized total before §68 $126,100; §68 reduction 2/37 × min($126,100, $780,000 − $768,700) = $610.81, leaving $125,489.19, which beats the $32,200 standard. Regular taxable income $654,510.81; regular ordinary stack $574,510.81; regular tax $152,657.82. AMT keeps the unreduced-§68 figures: AMTI = $653,900 (taxable income without regard to §68) + the $10,000 SALT added back = $663,900; exemption $140,200 (AMTI is below the phase-out start); taxable excess $523,700 — the ordinary excess $443,700 at 26% × $244,500 + 28% × $199,200 = $119,346, and the $80,000 preferential part stacks on the regular stack $574,510.81: no 0% space, $613,700 − $574,510.81 = $39,189.19 at 15% and $40,810.81 at 20% = $14,040.54 — tentative tax $133,386.54. The regular tax exceeds it, so AMT owed is $0 under BOTH the broken and corrected computations, while the pre-v36 tentative tax was $131,346 — $2,040.54 understated with no owed amount to show for it. NIIT $3,040 (3.8% × $80,000) → federal tax $152,657.82 + $3,040 = $155,697.82.",
+    note: "T7 (k) — FORM 6251 PART III STACKING, ITEMIZED YEAR: TENTATIVE TAX WRONG, AMT OWED $0 (build v36; the audit's Case 2 — the reason every AMT fixture pins BOTH the tentative tax and the owed amount): 2026 MFJ, other ordinary $700,000, long-term gains $80,000, SALT paid $40,000, mortgage interest $90,000, charitable $30,000. AGI $780,000; SALT allowed $10,000 (the 2026 cap phases down past its floor: $40,400 − 30% × ($780,000 − $505,000) < $10,000, so the $10,000 floor governs); charitable allowed $30,000 − 0.5% × $780,000 = $26,100; itemized total before §68 $126,100; §68 reduction 2/37 × min($126,100, $780,000 − $768,700) = $610.81, leaving $125,489.19, which beats the $32,200 standard. Regular taxable income $654,510.81; regular ordinary stack $574,510.81; regular tax $152,657.82. AMT keeps the unreduced-§68 figures: AMTI = $653,900 (taxable income without regard to §68) + the $10,000 SALT added back = $663,900; exemption $140,200 (AMTI is below the phase-out start); taxable excess $523,700 — the ordinary excess $443,700 at 26% × $244,500 + 28% × $199,200 = $119,346, and the $80,000 preferential part stacks on the regular stack $574,510.81: no 0% space, $613,700 − $574,510.81 = $39,189.19 at 15% and $40,810.81 at 20% = $14,040.54 — tentative tax $133,386.54. The regular tax exceeds it, so AMT owed is $0 under BOTH the broken and corrected computations, while the pre-v36 tentative tax was $131,346 — $2,040.54 understated with no owed amount to show for it. NIIT $3,040 (3.8% × $80,000) → federal tax $152,657.82 + $3,040 = $155,697.82.",
     expected: {
       deductionTaken: "itemized",
       saltAllowed: 10000,
@@ -20439,7 +20618,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t7-amt-senior-deduction-addback",
     kind: "tax",
-    note: "T7 (l) — THE §151(d)(5)(C) SENIOR DEDUCTION IS ADDED BACK IN BOTH DEDUCTION BRANCHES (contract v36; §56(b)(5)(D) per the 2025 Form 6251 instructions — the pre-v36 contract text answered §56(b)(1) alone and did not add it back). STANDARD BRANCH: 2025 MFJ, ages 66/64 (one 65+ claimant), other ordinary $148,000, no itemized inputs. Standard deduction $31,500 + the $1,600 age-65+ add-on = $33,100; the §151(d)(5)(C) deduction is the full $6,000 (AGI $148,000 is under the $150,000 MFJ phase-out start); taxable income $108,900; regular tax $13,786. AMTI = $108,900 + $33,100 + $6,000 = $148,000: the §151(d)(5)(C) amount raises AMTI dollar-for-dollar (without the add-back AMTI would be $142,000 and the tentative tax $1,300). Exemption $137,000 → taxable excess $11,000 → tentative tax 26% × $11,000 = $2,860, below the regular tax, so AMT owed is $0. ITEMIZED BRANCH: the same household shape with other ordinary $190,000, mortgage interest $40,000, SALT paid $10,000 (allowed in full — the 2025 cap does not phase down at this AGI). The §151(d)(5)(C) deduction phases out to $6,000 − 6% × ($190,000 − $150,000) = $3,600; the $50,000 itemized total beats the $33,100 standard; taxable income $190,000 − $50,000 − $3,600 = $136,400; regular tax $19,836. AMTI = $136,400 + the $10,000 SALT + the $3,600 §151(d)(5)(C) amount = $150,000 (without the §151(d)(5)(C) add-back: $146,400 and a tentative tax of $2,444 — the delta is exactly 26% × $3,600 = $936). Exemption $137,000 → excess $13,000 → tentative tax $3,380, AMT owed $0. Both branches pin the tentative tax AND the owed amount, per the Case 2 lesson.",
+    note: "T7 (l) — THE §151(d)(5)(C) SENIOR DEDUCTION IS ADDED BACK IN BOTH DEDUCTION BRANCHES (build v36; §56(b)(5)(D) per the 2025 Form 6251 instructions — the pre-v36 contract text answered §56(b)(1) alone and did not add it back). STANDARD BRANCH: 2025 MFJ, ages 66/64 (one 65+ claimant), other ordinary $148,000, no itemized inputs. Standard deduction $31,500 + the $1,600 age-65+ add-on = $33,100; the §151(d)(5)(C) deduction is the full $6,000 (AGI $148,000 is under the $150,000 MFJ phase-out start); taxable income $108,900; regular tax $13,786. AMTI = $108,900 + $33,100 + $6,000 = $148,000: the §151(d)(5)(C) amount raises AMTI dollar-for-dollar (without the add-back AMTI would be $142,000 and the tentative tax $1,300). Exemption $137,000 → taxable excess $11,000 → tentative tax 26% × $11,000 = $2,860, below the regular tax, so AMT owed is $0. ITEMIZED BRANCH: the same household shape with other ordinary $190,000, mortgage interest $40,000, SALT paid $10,000 (allowed in full — the 2025 cap does not phase down at this AGI). The §151(d)(5)(C) deduction phases out to $6,000 − 6% × ($190,000 − $150,000) = $3,600; the $50,000 itemized total beats the $33,100 standard; taxable income $190,000 − $50,000 − $3,600 = $136,400; regular tax $19,836. AMTI = $136,400 + the $10,000 SALT + the $3,600 §151(d)(5)(C) amount = $150,000 (without the §151(d)(5)(C) add-back: $146,400 and a tentative tax of $2,444 — the delta is exactly 26% × $3,600 = $936). Exemption $137,000 → excess $13,000 → tentative tax $3,380, AMT owed $0. Both branches pin the tentative tax AND the owed amount, per the Case 2 lesson.",
     expected: {
       stdSenior: 6000,
       stdTaken: "standard",
@@ -20496,7 +20675,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "proj-reproduces-single-year",
     kind: "tax",
-    note: "Playground projection (a) — A PROJECTED YEAR REPRODUCES THE SINGLE-YEAR PRICER, with the ONE sanctioned difference named in the contract: the projection prices the ACA cliff on the plan convention (the newest guideline row, in today's dollars) while the single-year pricer applies the statutory lookback. Template: 2026 MFJ, ages 57/46, interest $10,000, other ordinary $20,000, pre-tax money out $50,000, pre-tax balance $1,000,000, household 5, benchmark $32,000, projected for the template year only, every projection switch aligned (claim ages unset, no step-down, no stop, repeat draw). Every non-ACA figure must match pricePlaygroundYear on the same inputs exactly. The cliffs differ by construction: lookback 2026 coverage uses the 2025 guidelines — household of 5 = $15,650 + 4 × $5,500 = $37,650, cliff $150,600; the newest row (2026 guidelines) gives $15,960 + 4 × $5,680 = $38,680, cliff $154,720. ACA MAGI is $80,000 either way ($10,000 + $20,000 + $50,000, no Social Security), so the positions are $70,600 of room (lookback) vs $74,720 (plan convention). The ACA CREDIT under both conventions is pinned separately (cold-AI audit fix — the projection build pinned the two cliffs but not the credit): at MAGI $80,000 the lookback reads 212.48% of the $37,650 FPL — the 200–250% band interpolates to a 7.06% applicable percentage, expected contribution $5,647.51, credit $32,000 − $5,647.51 = $26,352.49 — while the plan convention reads 206.83% of the $38,680 FPL. (The credit figures were re-derived for the engine-audit round-2 fix: the projection's coverage year under the newest convention is 2027, so its applicable percentage then came from the 2027 table — the 200–250% band interpolates 6.78% → 8.66% to ≈7.04% at 206.83% — expected contribution ≈$5,629.30, credit $26,370.70. Contract v95 (F1) corrects that: the relabelled coverage year fetches only the guideline row, and the percentage table keys on the real coverage year 2026, so the projected side prices the 2026 table's ≈6.85% and credits $26,519.07 — the figure the projection carried before the round-2 re-derivation, now for the corrected reason.) Same inputs, same benchmark: the conventions now move the credit by $26,519.07 − $26,352.49 = $166.58.",
+    note: "Playground projection (a) — A PROJECTED YEAR REPRODUCES THE SINGLE-YEAR PRICER, with the ONE sanctioned difference named in the contract: the projection prices the ACA cliff on the plan convention (the newest guideline row, in today's dollars) while the single-year pricer applies the statutory lookback. Template: 2026 MFJ, ages 57/46, interest $10,000, other ordinary $20,000, pre-tax money out $50,000, pre-tax balance $1,000,000, household 5, benchmark $32,000, projected for the template year only, every projection switch aligned (claim ages unset, no step-down, no stop, repeat draw). Every non-ACA figure must match pricePlaygroundYear on the same inputs exactly. The cliffs differ by construction: lookback 2026 coverage uses the 2025 guidelines — household of 5 = $15,650 + 4 × $5,500 = $37,650, cliff $150,600; the newest row (2026 guidelines) gives $15,960 + 4 × $5,680 = $38,680, cliff $154,720. ACA MAGI is $80,000 either way ($10,000 + $20,000 + $50,000, no Social Security), so the positions are $70,600 of room (lookback) vs $74,720 (plan convention). The ACA CREDIT under both conventions is pinned separately (cold-AI audit fix — the projection build pinned the two cliffs but not the credit): at MAGI $80,000 the lookback reads 212.48% of the $37,650 FPL — the 200–250% band interpolates to a 7.06% applicable percentage, expected contribution $5,647.51, credit $32,000 − $5,647.51 = $26,352.49 — while the plan convention reads 206.83% of the $38,680 FPL. (The credit figures were re-derived for the engine-audit round-2 fix: the projection's coverage year under the newest convention is 2027, so its applicable percentage then came from the 2027 table — the 200–250% band interpolates 6.78% → 8.66% to ≈7.04% at 206.83% — expected contribution ≈$5,629.30, credit $26,370.70. Build v95 (F1) corrects that: the relabelled coverage year fetches only the guideline row, and the percentage table keys on the real coverage year 2026, so the projected side prices the 2026 table's ≈6.85% and credits $26,519.07 — the figure the projection carried before the round-2 re-derivation, now for the corrected reason.) Same inputs, same benchmark: the conventions now move the credit by $26,519.07 − $26,352.49 = $166.58.",
     expected: {
       years: 1,
       sameMagi: 1,
@@ -20577,7 +20756,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "proj-switches-and-balances",
     kind: "tax",
-    note: "Playground projection (b) — THE AGE-DRIVEN SWITCHES AND THE BALANCE WALK, hand-derived. Template: 2026 MFJ, ages 63/54, pre-tax balance $246,000, money out $10,000/yr as a conversion, return 0%, taxable start $50,000 (no sale), Roth start $5,000; Social Security $30,000/yr claiming at 67 (typed $0 in the template year); born 1963, so the RMD age is 75 (SECURE 2.0, born 1960+). Medicare: the IRMAA block switches on at priced age 63 — the premium year is then 65, and participants count by premium-year age — so it already applies at 64 and at 65 (RE-PINNED for contract v97; the pre-v97 priced-year flag count switched on at 65). Social Security pays $0 at 66 and $30,000 at 67. Balances at 0% return fall by exactly the money out: $246,000 − 12 × $10,000 (ages 63–74, no RMD before 75) leaves $126,000 at the start of 75, whose RMD is $126,000 ÷ 24.6 (Uniform Lifetime, Pub. 590-B) = $5,121.95; the end-of-75 pre-tax balance is $126,000 − $5,121.95 − $10,000 = $110,878.05. The Roth balance takes every conversion: $5,000 + 5 × $10,000 = $55,000 at the end of age 67, and $5,000 + 14 × $10,000 = $145,000 at the end of age 76. The taxable balance never moves (no sale, 0% return).",
+    note: "Playground projection (b) — THE AGE-DRIVEN SWITCHES AND THE BALANCE WALK, hand-derived. Template: 2026 MFJ, ages 63/54, pre-tax balance $246,000, money out $10,000/yr as a conversion, return 0%, taxable start $50,000 (no sale), Roth start $5,000; Social Security $30,000/yr claiming at 67 (typed $0 in the template year); born 1963, so the RMD age is 75 (SECURE 2.0, born 1960+). Medicare: the IRMAA block switches on at priced age 63 — the premium year is then 65, and participants count by premium-year age — so it already applies at 64 and at 65 (RE-PINNED for build v97; the pre-v97 priced-year flag count switched on at 65). Social Security pays $0 at 66 and $30,000 at 67. Balances at 0% return fall by exactly the money out: $246,000 − 12 × $10,000 (ages 63–74, no RMD before 75) leaves $126,000 at the start of 75, whose RMD is $126,000 ÷ 24.6 (Uniform Lifetime, Pub. 590-B) = $5,121.95; the end-of-75 pre-tax balance is $126,000 − $5,121.95 − $10,000 = $110,878.05. The Roth balance takes every conversion: $5,000 + 5 × $10,000 = $55,000 at the end of age 67, and $5,000 + 14 × $10,000 = $145,000 at the end of age 76. The taxable balance never moves (no sale, 0% return).",
     expected: {
       years: 14,
       medicareAt64: 1,
@@ -20853,7 +21032,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "proj-from-age-early-late-and-clear",
     kind: "tax",
-    note: "Playground projection (f) — THE START-AGE CONTROL (fromAge), hand-derived. Template: 2030 MFJ, ages 70/60, pre-tax balance $246,000, money out $10,000/yr as a conversion, return 0%, taxable start $50,000 (no sale), Roth start $5,000, Social Security $30,000/yr claiming at 67 (typed $0 in the template year), household 2 with a $24,000 benchmark; born 1960, so the RMD age is 75 (SECURE 2.0, born 1960+) and the spouse is exactly 10 years younger, so the Uniform Lifetime table prices the RMD (divisor at 75 = 24.6, Pub. 590-B). EARLY START (fromAge 63): the walk itself starts at 63 — calendar year and spouse age shift by the same −7 (first year 2023, spouse 53), the starting balances are the entered balances AT that first year ($246,000 / $50,000 / $5,000), and every switch follows the projected ages: Medicare (IRMAA) on from priced age 63 (premium year 65, participants by premium-year age — RE-PINNED for contract v97; the pre-v97 priced-year flag count was off at 64 and on at 65), Social Security $0 at 66 and $30,000 at 67, the spouse on Medicare at primary 75 (spouse 65) and not at 74, ACA applying at 74 (spouse 64, not yet on Medicare) and off at 75 (everyone on Medicare), no RMD at 74. Balances at 0% fall by the money out: $246,000 − 12 × $10,000 (ages 63–74) leaves $126,000 at the start of 75, whose RMD is $126,000 ÷ 24.6 = $5,121.95, ending 75 at $110,878.05; Roth at the end of 67 is $5,000 + 5 × $10,000 = $55,000. LATE START (fromAge 72, same template): the walk still runs from the template year, so the shown years are 72–76 (5) and the first shown year's starting balances are the WALKED ones — pre-tax $246,000 − 2 × $10,000 = $226,000, Roth $5,000 + 2 × $10,000 = $25,000 — and the final Roth balance is the full walk's $5,000 + 7 × $10,000 = $75,000. CLEARED (fromAge null): every figure returns to the plain template walk — 7 years from 2030 (age 70, spouse 60), the start-of-75 balance is $246,000 − 5 × $10,000 = $196,000, its RMD is $196,000 ÷ 24.6 = $7,967.48, and 75 ends at $178,032.52.",
+    note: "Playground projection (f) — THE START-AGE CONTROL (fromAge), hand-derived. Template: 2030 MFJ, ages 70/60, pre-tax balance $246,000, money out $10,000/yr as a conversion, return 0%, taxable start $50,000 (no sale), Roth start $5,000, Social Security $30,000/yr claiming at 67 (typed $0 in the template year), household 2 with a $24,000 benchmark; born 1960, so the RMD age is 75 (SECURE 2.0, born 1960+) and the spouse is exactly 10 years younger, so the Uniform Lifetime table prices the RMD (divisor at 75 = 24.6, Pub. 590-B). EARLY START (fromAge 63): the walk itself starts at 63 — calendar year and spouse age shift by the same −7 (first year 2023, spouse 53), the starting balances are the entered balances AT that first year ($246,000 / $50,000 / $5,000), and every switch follows the projected ages: Medicare (IRMAA) on from priced age 63 (premium year 65, participants by premium-year age — RE-PINNED for build v97; the pre-v97 priced-year flag count was off at 64 and on at 65), Social Security $0 at 66 and $30,000 at 67, the spouse on Medicare at primary 75 (spouse 65) and not at 74, ACA applying at 74 (spouse 64, not yet on Medicare) and off at 75 (everyone on Medicare), no RMD at 74. Balances at 0% fall by the money out: $246,000 − 12 × $10,000 (ages 63–74) leaves $126,000 at the start of 75, whose RMD is $126,000 ÷ 24.6 = $5,121.95, ending 75 at $110,878.05; Roth at the end of 67 is $5,000 + 5 × $10,000 = $55,000. LATE START (fromAge 72, same template): the walk still runs from the template year, so the shown years are 72–76 (5) and the first shown year's starting balances are the WALKED ones — pre-tax $246,000 − 2 × $10,000 = $226,000, Roth $5,000 + 2 × $10,000 = $25,000 — and the final Roth balance is the full walk's $5,000 + 7 × $10,000 = $75,000. CLEARED (fromAge null): every figure returns to the plain template walk — 7 years from 2030 (age 70, spouse 60), the start-of-75 balance is $246,000 − 5 × $10,000 = $196,000, its RMD is $196,000 ÷ 24.6 = $7,967.48, and 75 ends at $178,032.52.",
     expected: {
       years: 14,
       firstYear: 2023,
@@ -21024,9 +21203,153 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-return-negative-actuals-rejected-nice1",
+    kind: "tax",
+    note: "Negative tax-return actuals are rejected at parse (contract v146, re-audit round 3 NICE-1): a Form 1040 income line cannot be negative, so a negative stored actual (a mistyped or sign-flipped figure) reads as NOT ENTERED and never surfaces as a negative prefill dollar. All shapes are the shared fictional sample household's 2025 return (server/src/sampleHousehold.ts: line 2b interest $1,500 = 150000c, line 3a qualified $15,000 = 1500000c, line 3b ordinary $20,000 = 2000000c, year 2025; implied yields over its $2,000,000 taxable balance: dividend 1%, interest 0.075%; qualified share 75%). MIXED (interest stored at −150000c, the sign-flip of the sample figure): the parse nulls ONLY that line (qualified / ordinary / year exact), the prefill maps it to null (a blank dial — never −$1,500) with the other two dials at $15,000 / $20,000, the rejection report names exactly that line with its stored −150000c, and the derivations treat it as unentered (implied dividend 1% stands, implied interest null, share 75%). ALL-NEGATIVE: all three lines null at parse and at prefill, three rejections reported, both implied yields and the share null. NEGATIVE ORDINARY (3b at −2000000c): the total reads unentered, so the dividend yield and the share derive null while the interest side is untouched (prefill $1,500 / $15,000, implied interest 0.075%), and the report names ordinaryDividends. POSITIVE CONTROL: the sample return itself parses and prefills exactly ($1,500 / $15,000 / $20,000) with an empty report — a normal actual is untouched. ZERO CONTROL: $0 lines are real entered figures, never rejected — they parse as 0, prefill as $0, imply 0% yields, and report nothing. MAPPING GUARD: taxReturnPrefillDollars handed a negative shape directly (bypassing the parse) still maps that line to null, so the mapping itself can never produce a negative prefill dollar.",
+    expected: {
+      mixedInterest: null,
+      mixedQualified: 1500000,
+      mixedOrdinary: 2000000,
+      mixedYear: 2025,
+      mixedPrefillInterest: null,
+      mixedPrefillQualified: 15000,
+      mixedPrefillOrdinary: 20000,
+      mixedRejectedCount: 1,
+      mixedRejectedLine: "interest",
+      mixedRejectedCents: -150000,
+      mixedImpliedDividend: 1,
+      mixedImpliedInterest: null,
+      mixedShare: 75,
+      allNegParsedNulls: 3,
+      allNegPrefillNulls: 3,
+      allNegRejectedCount: 3,
+      allNegImpliedDividend: null,
+      allNegImpliedInterest: null,
+      allNegShare: null,
+      negOrdParsedOrdinary: null,
+      negOrdPrefillInterest: 1500,
+      negOrdPrefillQualified: 15000,
+      negOrdPrefillOrdinary: null,
+      negOrdImpliedDividend: null,
+      negOrdImpliedInterest: 0.075,
+      negOrdShare: null,
+      negOrdRejectedLine: "ordinaryDividends",
+      posParsedInterest: 150000,
+      posPrefillInterest: 1500,
+      posPrefillQualified: 15000,
+      posPrefillOrdinary: 20000,
+      posRejectedCount: 0,
+      zeroParsedInterest: 0,
+      zeroPrefillInterest: 0,
+      zeroRejectedCount: 0,
+      zeroImpliedDividend: 0,
+      zeroImpliedInterest: 0,
+      guardPrefillInterest: null,
+    },
+    actual: () => {
+      const pool = 2000000; // the sample household's taxable balance, dollars
+      const mixedRaw = {
+        taxReturnInterestCents: -SAMPLE_TAX_RETURN_INTEREST_CENTS,
+        taxReturnQualifiedDividendsCents: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS,
+        taxReturnOrdinaryDividendsCents: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS,
+        taxReturnYear: 2025,
+      };
+      const mixed = parseRothTaxReturn(mixedRaw);
+      const mixedPrefill = taxReturnPrefillDollars(mixed);
+      const mixedRejected = rejectedNegativeTaxReturnActuals(mixedRaw);
+      const mixedImplied = impliedYieldPctsFromTaxReturn(mixed, pool);
+      const allNegRaw = {
+        taxReturnInterestCents: -SAMPLE_TAX_RETURN_INTEREST_CENTS,
+        taxReturnQualifiedDividendsCents: -SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS,
+        taxReturnOrdinaryDividendsCents: -SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS,
+        taxReturnYear: 2025,
+      };
+      const allNeg = parseRothTaxReturn(allNegRaw);
+      const allNegPrefill = taxReturnPrefillDollars(allNeg);
+      const allNegImplied = impliedYieldPctsFromTaxReturn(allNeg, pool);
+      const negOrdRaw = {
+        taxReturnInterestCents: SAMPLE_TAX_RETURN_INTEREST_CENTS,
+        taxReturnQualifiedDividendsCents: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS,
+        taxReturnOrdinaryDividendsCents: -SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS,
+        taxReturnYear: 2025,
+      };
+      const negOrd = parseRothTaxReturn(negOrdRaw);
+      const negOrdPrefill = taxReturnPrefillDollars(negOrd);
+      const negOrdImplied = impliedYieldPctsFromTaxReturn(negOrd, pool);
+      const negOrdRejected = rejectedNegativeTaxReturnActuals(negOrdRaw);
+      const posRaw = {
+        taxReturnInterestCents: SAMPLE_TAX_RETURN_INTEREST_CENTS,
+        taxReturnQualifiedDividendsCents: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS,
+        taxReturnOrdinaryDividendsCents: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS,
+        taxReturnYear: 2025,
+      };
+      const pos = parseRothTaxReturn(posRaw);
+      const posPrefill = taxReturnPrefillDollars(pos);
+      const zeroRaw = {
+        taxReturnInterestCents: 0,
+        taxReturnQualifiedDividendsCents: 0,
+        taxReturnOrdinaryDividendsCents: 0,
+        taxReturnYear: 2025,
+      };
+      const zero = parseRothTaxReturn(zeroRaw);
+      const zeroPrefill = taxReturnPrefillDollars(zero);
+      const zeroImplied = impliedYieldPctsFromTaxReturn(zero, pool);
+      const guardPrefill = taxReturnPrefillDollars({
+        taxReturnInterestCents: -SAMPLE_TAX_RETURN_INTEREST_CENTS,
+        taxReturnQualifiedDividendsCents: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS,
+        taxReturnOrdinaryDividendsCents: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS,
+        taxReturnYear: 2025,
+      });
+      return {
+        mixedInterest: mixed.taxReturnInterestCents,
+        mixedQualified: mixed.taxReturnQualifiedDividendsCents,
+        mixedOrdinary: mixed.taxReturnOrdinaryDividendsCents,
+        mixedYear: mixed.taxReturnYear,
+        mixedPrefillInterest: mixedPrefill.interest,
+        mixedPrefillQualified: mixedPrefill.qualifiedDividends,
+        mixedPrefillOrdinary: mixedPrefill.ordinaryDividends,
+        mixedRejectedCount: mixedRejected.length,
+        mixedRejectedLine: mixedRejected[0]?.line ?? null,
+        mixedRejectedCents: mixedRejected[0]?.cents ?? null,
+        mixedImpliedDividend: mixedImplied.dividendYieldPct,
+        mixedImpliedInterest: mixedImplied.interestYieldPct,
+        mixedShare: qualifiedDividendSharePctFromTaxReturn(mixed),
+        allNegParsedNulls: [
+          allNeg.taxReturnInterestCents,
+          allNeg.taxReturnQualifiedDividendsCents,
+          allNeg.taxReturnOrdinaryDividendsCents,
+        ].filter((v) => v === null).length,
+        allNegPrefillNulls: Object.values(allNegPrefill).filter((v) => v === null).length,
+        allNegRejectedCount: rejectedNegativeTaxReturnActuals(allNegRaw).length,
+        allNegImpliedDividend: allNegImplied.dividendYieldPct,
+        allNegImpliedInterest: allNegImplied.interestYieldPct,
+        allNegShare: qualifiedDividendSharePctFromTaxReturn(allNeg),
+        negOrdParsedOrdinary: negOrd.taxReturnOrdinaryDividendsCents,
+        negOrdPrefillInterest: negOrdPrefill.interest,
+        negOrdPrefillQualified: negOrdPrefill.qualifiedDividends,
+        negOrdPrefillOrdinary: negOrdPrefill.ordinaryDividends,
+        negOrdImpliedDividend: negOrdImplied.dividendYieldPct,
+        negOrdImpliedInterest: negOrdImplied.interestYieldPct,
+        negOrdShare: qualifiedDividendSharePctFromTaxReturn(negOrd),
+        negOrdRejectedLine: negOrdRejected[0]?.line ?? null,
+        posParsedInterest: pos.taxReturnInterestCents,
+        posPrefillInterest: posPrefill.interest,
+        posPrefillQualified: posPrefill.qualifiedDividends,
+        posPrefillOrdinary: posPrefill.ordinaryDividends,
+        posRejectedCount: rejectedNegativeTaxReturnActuals(posRaw).length,
+        zeroParsedInterest: zero.taxReturnInterestCents,
+        zeroPrefillInterest: zeroPrefill.interest,
+        zeroRejectedCount: rejectedNegativeTaxReturnActuals(zeroRaw).length,
+        zeroImpliedDividend: zeroImplied.dividendYieldPct,
+        zeroImpliedInterest: zeroImplied.interestYieldPct,
+        guardPrefillInterest: guardPrefill.interest,
+      };
+    },
+  },
+  {
     id: "tax-return-saved-shape-round-trip",
     kind: "tax",
-    note: "Saved-shape round-trip for the tax-return fields (1040 LINES build, year added contract v147): the stored shape {taxReturnInterestCents 123400, taxReturnQualifiedDividendsCents 567800, taxReturnOrdinaryDividendsCents 901200, taxReturnYear 2025} parses back with all four values exactly, and split/join of the blob carrying it is byte-identical. The all-null shape parses to four nulls (count 4) — a line not entered stays null, never coerced to $0, and a missing year stays null, never defaulted — and an absent shape (a record written before this build) parses to the same four nulls.",
+    note: "Saved-shape round-trip for the tax-return fields (1040 LINES build, year added build v147): the stored shape {taxReturnInterestCents 123400, taxReturnQualifiedDividendsCents 567800, taxReturnOrdinaryDividendsCents 901200, taxReturnYear 2025} parses back with all four values exactly, and split/join of the blob carrying it is byte-identical. The all-null shape parses to four nulls (count 4) — a line not entered stays null, never coerced to $0, and a missing year stays null, never defaulted — and an absent shape (a record written before this build) parses to the same four nulls.",
     expected: {
       interest: 123400,
       qualified: 567800,
@@ -21070,8 +21393,22 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-return-pricing-identity",
     kind: "tax",
-    note: "GUARD — the tax-return actuals never reach plan pricing (1040 LINES build): the saved-plan anchor shape (the same record family gift-main-run-identity pins — born 1975/1985, Fill-era plan with real balances, benchmarks, and yields modelled from the yield fields) with all three tax-return fields sentinel-set and the same record with all three blank convert through planInputsFromSaved to BIT-IDENTICAL plan inputs — the conversion never reads the tax-return fields (they are read only by the Playground prefill) — so the joint optimizer's winner net cost differs by exactly $0 and the saved plan prices bit-identically with the fields set or blank. The parse layer proves the fields were really present in one record (sentinel interest $99,999,999 in cents) and really absent in the other (null).",
-    expected: { plansIdentical: 1, winnerNetDiff: 0, sentinelParsed: 99999999, blankParsed: null },
+    note: "GUARD — the tax-return amounts never enter pricing AS amounts on the ACTION path (1040 LINES build; re-scoped contract v139, re-audit MUST M-1). The earlier version of this fixture pinned the BARE planInputsFromSaved conversion (fields set vs blank → bit-identical inputs) and the published contract claimed that of the actions — FALSE since v136/v138, because every compute action routes through resolveArgsBalances (actions.ts), which reads the stored record and threads the derived percentages BEFORE the conversion. This fixture pins the action path instead. Honest scope: the fixture harness cannot import the handlers in actions.ts, so it reproduces resolveArgsBalances' threading exactly — the ONE derivations it calls (impliedYieldPctsFromTaxReturn over the resolved pool, qualifiedDividendSharePctFromTaxReturn) threaded as the yieldFallback / qualifiedDividendSharePct transients onto the payload, then planInputsFromSaved — the shared construction every compute action executes. DERIVATION, hand-computed: a fictional return (interest $1,500 = 150000c line 2b, qualified $15,000 = 1500000c line 3a, ordinary $20,000 = 2000000c line 3b) over the anchor's resolved pool $2,400,000 (taxableCents 240000000) implies dividend yield 20000 / 2400000 = 0.8333% (0.833333… rounded to 4dp = 0.8333), interest yield 1500 / 2400000 = 0.0625%, and qualified share 15000 / 20000 = 75%. ACTION PATH: the return-threaded plan resolves exactly those three percentages (0.8333 / 0.0625 / 75) and is BIT-IDENTICAL — plan JSON and joint-optimizer winner net cost (diff exactly $0) — to a plan threaded with ONLY the hand-computed derived percentages as literals, no amounts anywhere: once the percentages are derived, the amounts are discarded and pricing reads the percentages alone. And the action path is NOT identity across set-vs-blank: the same payload threaded from a BLANK return (null fallbacks, null share) resolves null yields / null share and a DIFFERENT plan — a plan can price differently with the fields set than blank, through the derived percentages alone. The parse layer still proves the fields were really present in one record (sentinel interest $99,999,999 in cents) and really absent in the other (null).",
+    expected: {
+      actionPlansDerivedOnlyIdentical: 1,
+      winnerNetDiffDerivedOnly: 0,
+      actionVsBlankPlansDiffer: 1,
+      derivedDiv: 0.8333,
+      derivedInt: 0.0625,
+      derivedShare: 75,
+      resolvedDiv: 0.8333,
+      resolvedInt: 0.0625,
+      resolvedShare: 75,
+      blankResolvedDiv: null,
+      blankResolvedShare: null,
+      sentinelParsed: 99999999,
+      blankParsed: null,
+    },
     actual: () => {
       const savedShape: RothSavedLike = {
         birthYearPrimary: 1975,
@@ -21126,22 +21463,496 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         taxReturnQualifiedDividendsCents: null,
         taxReturnOrdinaryDividendsCents: null,
       };
-      const withReturn = planInputsFromSaved({ ...savedShape, ...sentinel }, 2026);
-      const withoutReturn = planInputsFromSaved({ ...savedShape, ...blankReturn }, 2026);
-      const netWith = withReturn ? runJointOptimizer(withReturn).winner.cost.netCost : null;
-      const netWithout = withoutReturn ? runJointOptimizer(withoutReturn).winner.cost.netCost : null;
+      // The ACTION path (resolveArgsBalances' threading,
+      // reproduced with its exact derivations): read the
+      // stored return, derive the two implied yields over
+      // the resolved pool and the qualified share, thread
+      // them as transients, then convert.
+      const fictionalReturn = parseRothTaxReturn({
+        taxReturnInterestCents: 150000,
+        taxReturnQualifiedDividendsCents: 1500000,
+        taxReturnOrdinaryDividendsCents: 2000000,
+        taxReturnYear: 2025,
+      });
+      const poolDollars = (savedShape.taxableCents ?? 0) / 100;
+      const implied = impliedYieldPctsFromTaxReturn(fictionalReturn, poolDollars);
+      const share = qualifiedDividendSharePctFromTaxReturn(fictionalReturn);
+      const actionThreaded = planInputsFromSaved(
+        {
+          ...savedShape,
+          yieldFallbackDividendPct: implied.dividendYieldPct,
+          yieldFallbackInterestPct: implied.interestYieldPct,
+          qualifiedDividendSharePct: share,
+        },
+        2026,
+      );
+      // Derived-percentages ONLY: the same transients as
+      // hand-computed literals, no return amounts involved.
+      const derivedOnly = planInputsFromSaved(
+        {
+          ...savedShape,
+          yieldFallbackDividendPct: 0.8333,
+          yieldFallbackInterestPct: 0.0625,
+          qualifiedDividendSharePct: 75,
+        },
+        2026,
+      );
+      // The blank-return action path: no actuals stored, so
+      // resolveArgsBalances derives nulls and threads nulls.
+      const blankImplied = impliedYieldPctsFromTaxReturn(
+        parseRothTaxReturn(blankReturn),
+        poolDollars,
+      );
+      const blankShare = qualifiedDividendSharePctFromTaxReturn(
+        parseRothTaxReturn(blankReturn),
+      );
+      const blankThreaded = planInputsFromSaved(
+        {
+          ...savedShape,
+          yieldFallbackDividendPct: blankImplied.dividendYieldPct,
+          yieldFallbackInterestPct: blankImplied.interestYieldPct,
+          qualifiedDividendSharePct: blankShare,
+        },
+        2026,
+      );
+      const netAction = actionThreaded
+        ? runJointOptimizer(actionThreaded).winner.cost.netCost
+        : null;
+      const netDerivedOnly = derivedOnly
+        ? runJointOptimizer(derivedOnly).winner.cost.netCost
+        : null;
       return {
-        plansIdentical:
-          withReturn != null && withoutReturn != null &&
-          JSON.stringify(withReturn) === JSON.stringify(withoutReturn)
+        actionPlansDerivedOnlyIdentical:
+          actionThreaded != null && derivedOnly != null &&
+          JSON.stringify(actionThreaded) === JSON.stringify(derivedOnly)
             ? 1
             : 0,
-        winnerNetDiff:
-          netWith != null && netWithout != null
-            ? Math.round((netWith - netWithout) * 100) / 100
+        winnerNetDiffDerivedOnly:
+          netAction != null && netDerivedOnly != null
+            ? Math.round((netAction - netDerivedOnly) * 100) / 100
             : null,
+        actionVsBlankPlansDiffer:
+          actionThreaded != null && blankThreaded != null &&
+          JSON.stringify(actionThreaded) !== JSON.stringify(blankThreaded)
+            ? 1
+            : 0,
+        derivedDiv: implied.dividendYieldPct,
+        derivedInt: implied.interestYieldPct,
+        derivedShare: share,
+        resolvedDiv: actionThreaded?.taxableDividendYieldPct ?? null,
+        resolvedInt: actionThreaded?.taxableInterestYieldPct ?? null,
+        resolvedShare: actionThreaded?.taxableDividendQualifiedPct ?? null,
+        blankResolvedDiv: blankThreaded?.taxableDividendYieldPct ?? null,
+        blankResolvedShare: blankThreaded?.taxableDividendQualifiedPct ?? null,
         sentinelParsed: parseRothTaxReturn(sentinel).taxReturnInterestCents,
         blankParsed: parseRothTaxReturn(blankReturn).taxReturnInterestCents,
+      };
+    },
+  },
+  {
+    id: "blank-yield-fallback",
+    kind: "tax",
+    note: "Blank-yield fallback (contract v136, audit MUST M-1): a blank yield field means 'no yield entered', not 'no yield income', so where plan inputs are assembled it is filled with the implied yield from the record's stored tax-return actuals. DERIVATION, hand-computed from fictional worked figures: actuals interest $1,500 (150000 cents, line 2b) and ordinary dividends $20,000 (2000000 cents, line 3b — the TOTAL, never the $15,000 line 3a part) over the plan's resolved taxable pool $2,500,000 imply 1500 / 2500000 = 0.06% and 20000 / 2500000 = 0.8% (4 decimal places) through impliedYieldPctsFromTaxReturn — the ONE derivation the actions layer and the client constructions share. A blank record derives two nulls (nothing stored, nothing invented), a $0 pool derives two nulls, and a partial record (only 3b entered) derives the dividend side only. RESOLUTION in planInputsFromSaved: a blank-yield shape carrying the threaded fallback transients resolves to 0.8 / 0.06; entered yields (2.5 / 1.25) win over the transients; an explicit 0 / 0 also wins (0% is a real answer); and a blank shape with NO transients keeps null yields (the legacy $0 pricing, bit-identical to before). MARCH (Do Nothing, taxable opening $2,500,000, spending $0, no other income): the resolved plan's 2026 prices dividend $20,000 and interest $1,500 (the implied yields on the opening pool, to the cent — the fictional figures are chosen so the yields are exact, so the priced dollars equal the filed dollars in the first year), its 2028 AGI is positive and is exactly that year's dividend + interest (the yield is the year's only income — before this build it priced $0), while the legacy (no-transient) and explicit-zero marches price $0 / $0 in 2026. The return amounts never enter pricing as amounts: the identity fixture above pins the action path (resolveArgsBalances' threading — pricing reads only the derived percentages), and this fixture's march prices yields, not the return's dollars in any year but the first.",
+    expected: {
+      impliedDiv: 0.8,
+      impliedInt: 0.06,
+      blankRecordNulls: 2,
+      zeroPoolNulls: 2,
+      partialDiv: 0.8,
+      partialInt: null,
+      resolvedDiv: 0.8,
+      resolvedInt: 0.06,
+      enteredDiv: 2.5,
+      enteredInt: 1.25,
+      zeroDiv: 0,
+      zeroInt: 0,
+      legacyDiv: null,
+      legacyInt: null,
+      y2026Div: 20000,
+      y2026Int: 1500,
+      y2028AgiPositive: 1,
+      y2028AgiIsYieldOnly: 1,
+      legacyY2026Div: 0,
+      legacyY2026Int: 0,
+      zeroY2026Div: 0,
+      zeroY2026Int: 0,
+    },
+    actual: () => {
+      const stored = parseRothTaxReturn({
+        taxReturnInterestCents: 150000,
+        taxReturnQualifiedDividendsCents: 1500000,
+        taxReturnOrdinaryDividendsCents: 2000000,
+        taxReturnYear: 2025,
+      });
+      const implied = impliedYieldPctsFromTaxReturn(stored, 2500000);
+      const blankImplied = impliedYieldPctsFromTaxReturn(
+        parseRothTaxReturn({}),
+        2500000,
+      );
+      const zeroPoolImplied = impliedYieldPctsFromTaxReturn(stored, 0);
+      const partialImplied = impliedYieldPctsFromTaxReturn(
+        parseRothTaxReturn({
+          taxReturnInterestCents: null,
+          taxReturnQualifiedDividendsCents: null,
+          taxReturnOrdinaryDividendsCents: 2000000,
+          taxReturnYear: 2025,
+        }),
+        2500000,
+      );
+      const shape: RothSavedLike = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj",
+        pretaxCents: 0,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 0,
+        taxableCents: 250000000,
+        hsaCents: 0,
+        taxableBasisPct: null,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 95,
+        expectedReturnPct: 5,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssPrimaryNoBenefit: true,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: null,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 1,
+        acaHouseholdSchedule: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const fallbacks = {
+        yieldFallbackDividendPct: implied.dividendYieldPct,
+        yieldFallbackInterestPct: implied.interestYieldPct,
+      };
+      const resolved = planInputsFromSaved({ ...shape, ...fallbacks }, 2026);
+      const entered = planInputsFromSaved(
+        {
+          ...shape,
+          ...fallbacks,
+          taxableDividendYieldPct: 2.5,
+          taxableInterestYieldPct: 1.25,
+        },
+        2026,
+      );
+      const zero = planInputsFromSaved(
+        {
+          ...shape,
+          ...fallbacks,
+          taxableDividendYieldPct: 0,
+          taxableInterestYieldPct: 0,
+        },
+        2026,
+      );
+      const legacy = planInputsFromSaved({ ...shape }, 2026);
+      const march = resolved ? simulateRothPlan(resolved, DO_NOTHING) : null;
+      const legacyMarch = legacy ? simulateRothPlan(legacy, DO_NOTHING) : null;
+      const zeroMarch = zero ? simulateRothPlan(zero, DO_NOTHING) : null;
+      const y2026 = march?.years.find((y) => y.year === 2026) ?? null;
+      const y2028 = march?.years.find((y) => y.year === 2028) ?? null;
+      const legacyY2026 =
+        legacyMarch?.years.find((y) => y.year === 2026) ?? null;
+      const zeroY2026 = zeroMarch?.years.find((y) => y.year === 2026) ?? null;
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      return {
+        impliedDiv: implied.dividendYieldPct,
+        impliedInt: implied.interestYieldPct,
+        blankRecordNulls: Object.values(blankImplied).filter((v) => v === null)
+          .length,
+        zeroPoolNulls: Object.values(zeroPoolImplied).filter((v) => v === null)
+          .length,
+        partialDiv: partialImplied.dividendYieldPct,
+        partialInt: partialImplied.interestYieldPct,
+        resolvedDiv: resolved?.taxableDividendYieldPct ?? null,
+        resolvedInt: resolved?.taxableInterestYieldPct ?? null,
+        enteredDiv: entered?.taxableDividendYieldPct ?? null,
+        enteredInt: entered?.taxableInterestYieldPct ?? null,
+        zeroDiv: zero?.taxableDividendYieldPct ?? null,
+        zeroInt: zero?.taxableInterestYieldPct ?? null,
+        legacyDiv: legacy?.taxableDividendYieldPct ?? null,
+        legacyInt: legacy?.taxableInterestYieldPct ?? null,
+        y2026Div: y2026?.detail.dividendIncome ?? null,
+        y2026Int: y2026?.detail.interestIncome ?? null,
+        y2028AgiPositive: y2028 != null && y2028.agi > 0 ? 1 : 0,
+        y2028AgiIsYieldOnly:
+          y2028 != null &&
+          r2(y2028.agi) ===
+            r2(y2028.detail.dividendIncome + y2028.detail.interestIncome)
+            ? 1
+            : 0,
+        legacyY2026Div: legacyY2026?.detail.dividendIncome ?? null,
+        legacyY2026Int: legacyY2026?.detail.interestIncome ?? null,
+        zeroY2026Div: zeroY2026?.detail.dividendIncome ?? null,
+        zeroY2026Int: zeroY2026?.detail.interestIncome ?? null,
+      };
+    },
+  },
+  {
+    id: "compare-fallback-rederive-s2",
+    kind: "tax",
+    note: "Compare fallback re-derivation (contract v140, re-audit SHOULD S-2): a compare scenario used to inherit the base plan's blank-yield fallback percentages — derived over the BASE pool — even when its overrides changed the taxable pool, so it priced its yield income off the base's pool. DERIVATION, hand-computed from fictional stored 2025 actuals (interest $1,500 line 2b, ordinary dividends $20,000 line 3b): over the base pool $2,000,000 the implied yields are 1% / 0.075% (the percentages resolveArgsBalances threads onto the base, pricing 2026 dividend $20,000 and interest $1,500 — the filed dollars); over a half pool of $1,000,000 the SAME actuals imply 2% / 0.15%. BUILD (buildCompareScenario with the stored actuals supplied, as the compare actions now supply them): the no-override scenario re-derives exactly the base's percentages (1 / 0.075 — bit-identical pricing to the inheritance it replaces); the half-pool scenario re-derives 2 / 0.15 from its OWN pool and its 2026 march prices the filed dollars again ($20,000 / $1,500, AGI $21,500 — the same first year as the base-pool scenario); an entered dividend yield on the scenario (2.5%) still wins over any fallback while the blank interest side re-derives (0.15). LEGACY PATH PINNED: the same half-pool build WITHOUT the actuals argument keeps the pre-v140 inheritance (1 / 0.075, 2026 dividend $10,000 / interest $750 — exactly half the filed dollars, the defect this build fixes on the action path), so pure callers that hold no record are unchanged. The qualified share rides the merged shape untouched by the re-derivation (75 on every build — a ratio of the dividend lines, never pool-derived).",
+    expected: {
+      baseImpliedDiv: 1,
+      baseImpliedInt: 0.075,
+      sameDiv: 1,
+      sameInt: 0.075,
+      halfDiv: 2,
+      halfInt: 0.15,
+      halfY2026Div: 20000,
+      halfY2026Int: 1500,
+      halfY2026Agi: 21500,
+      sameY2026Agi: 21500,
+      enteredDiv: 2.5,
+      enteredInt: 0.15,
+      legacyDiv: 1,
+      legacyInt: 0.075,
+      legacyY2026Div: 10000,
+      legacyY2026Int: 750,
+      shareUnchanged: 3,
+    },
+    actual: () => {
+      const stored = parseRothTaxReturn({
+        taxReturnInterestCents: 150000,
+        taxReturnQualifiedDividendsCents: 1500000,
+        taxReturnOrdinaryDividendsCents: 2000000,
+        taxReturnYear: 2025,
+      });
+      const baseImplied = impliedYieldPctsFromTaxReturn(stored, 2000000);
+      const base: RothCompareBaseSaved = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj",
+        pretaxCents: 0,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 0,
+        taxableCents: 200000000,
+        hsaCents: 0,
+        taxableBasisPct: null,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 95,
+        expectedReturnPct: 5,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssPrimaryNoBenefit: true,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: null,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 1,
+        acaHouseholdSchedule: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+        taxableDividendYieldPct: null,
+        taxableInterestYieldPct: null,
+        yieldFallbackDividendPct: baseImplied.dividendYieldPct,
+        yieldFallbackInterestPct: baseImplied.interestYieldPct,
+        qualifiedDividendSharePct:
+          qualifiedDividendSharePctFromTaxReturn(stored),
+        ceilings: null,
+      };
+      const same = buildCompareScenario(base, "Same pool", {}, 2026, stored);
+      const half = buildCompareScenario(
+        base,
+        "Half pool",
+        { taxableCents: 100000000 },
+        2026,
+        stored,
+      );
+      const entered = buildCompareScenario(
+        base,
+        "Half pool, entered dividend yield",
+        { taxableCents: 100000000, taxableDividendYieldPct: 2.5 },
+        2026,
+        stored,
+      );
+      const legacy = buildCompareScenario(
+        base,
+        "Half pool, no actuals",
+        { taxableCents: 100000000 },
+        2026,
+      );
+      const march = (b: typeof half) =>
+        b ? simulateRothPlan(b.inputs, b.strategy) : null;
+      const y2026 = (b: typeof half) =>
+        march(b)?.years.find((y) => y.year === 2026) ?? null;
+      const halfY = y2026(half);
+      const sameY = y2026(same);
+      const legacyY = y2026(legacy);
+      return {
+        baseImpliedDiv: baseImplied.dividendYieldPct,
+        baseImpliedInt: baseImplied.interestYieldPct,
+        sameDiv: same?.inputs.taxableDividendYieldPct ?? null,
+        sameInt: same?.inputs.taxableInterestYieldPct ?? null,
+        halfDiv: half?.inputs.taxableDividendYieldPct ?? null,
+        halfInt: half?.inputs.taxableInterestYieldPct ?? null,
+        halfY2026Div: halfY?.detail.dividendIncome ?? null,
+        halfY2026Int: halfY?.detail.interestIncome ?? null,
+        halfY2026Agi: halfY?.agi ?? null,
+        sameY2026Agi: sameY?.agi ?? null,
+        enteredDiv: entered?.inputs.taxableDividendYieldPct ?? null,
+        enteredInt: entered?.inputs.taxableInterestYieldPct ?? null,
+        legacyDiv: legacy?.inputs.taxableDividendYieldPct ?? null,
+        legacyInt: legacy?.inputs.taxableInterestYieldPct ?? null,
+        legacyY2026Div: legacyY?.detail.dividendIncome ?? null,
+        legacyY2026Int: legacyY?.detail.interestIncome ?? null,
+        shareUnchanged: [same, half, legacy].filter(
+          (b) => b?.inputs.taxableDividendQualifiedPct === 75,
+        ).length,
+      };
+    },
+  },
+  {
+    id: "plan-dividend-qualified-share-s1",
+    kind: "tax",
+    note: "Qualified-dividend share (contract v138, audit SHOULD S-1): the plan engine used to price 100% of its dividend yield as qualified; a fictional 2025 return is only 75% qualified. DERIVATION: qualifiedDividendSharePctFromTaxReturn on the stored fictional actuals (line 3a $15,000 of line 3b $20,000) derives 75% (4 decimal places, the implied yields' precision — it prices exactly $15,000 of qualified on a $20,000 distribution); a blank record and a record with only line 3b entered derive null (no share implied — the engine keeps pricing 100% qualified, the fresh-plan behaviour); a line 3a above its total clamps to 100. RESOLUTION: planInputsFromSaved passes the threaded transient to the engine as taxableDividendQualifiedPct (75), and a shape with no transient resolves null. MARCH — A WORKED EXAMPLE, hand-derived and reproduced here through the march itself: a 2026 year (MFJ, born 1975/1985, conversion $130,000 already converted, interest $1,500, dividend total $20,000 priced off a $2,000,000 pool at a 1% yield, spending $0, tax paid from a blank-basis taxable pool so the settlement creates no feedback gains) prices federal tax $14,620 with ordinary taxable $104,300 and gains taxable $15,000 under the split — versus $14,420 / $99,300 / $20,000 for the same shape with NO share threaded (the pre-fix all-qualified pricing): the split raises the year's priced tax by exactly $200, and AGI is $151,500 under both (the total is counted once; only its character moves). Hand derivation of the split year: ordinary stack $130,000 + $1,500 + ($20,000 − $15,000) = $136,500, less the $32,200 standard deduction = $104,300, taxed $2,480 + $9,120 + 22% × $3,500 = $12,370; the $15,000 qualified part sits wholly past the $98,900 0% top (the ordinary stack alone exceeds it), at 15% = $2,250; total $14,620. Legacy year: ordinary stack $131,500 − $32,200 = $99,300, taxed $2,480 + 12% × $74,500 = $11,420, plus $20,000 at 15% = $3,000; total $14,420.",
+    expected: {
+      share: 75,
+      blankShare: null,
+      partialShare: null,
+      overShare: 100,
+      resolvedShare: 75,
+      legacyShare: null,
+      splitDividend: 20000,
+      splitInterest: 1500,
+      splitAgi: 151500,
+      splitFederalTax: 14620,
+      splitOrdinaryTaxable: 104300,
+      splitGainsTaxable: 15000,
+      legacyFederalTax: 14420,
+      legacyOrdinaryTaxable: 99300,
+      legacyGainsTaxable: 20000,
+      taxDifference: 200,
+    },
+    actual: () => {
+      const stored = parseRothTaxReturn({
+        taxReturnInterestCents: 150000,
+        taxReturnQualifiedDividendsCents: 1500000,
+        taxReturnOrdinaryDividendsCents: 2000000,
+        taxReturnYear: 2025,
+      });
+      const share = qualifiedDividendSharePctFromTaxReturn(stored);
+      const blankShare = qualifiedDividendSharePctFromTaxReturn(
+        parseRothTaxReturn({}),
+      );
+      const partialShare = qualifiedDividendSharePctFromTaxReturn(
+        parseRothTaxReturn({
+          taxReturnOrdinaryDividendsCents: 2000000,
+        }),
+      );
+      const overShare = qualifiedDividendSharePctFromTaxReturn(
+        parseRothTaxReturn({
+          taxReturnQualifiedDividendsCents: 2500000,
+          taxReturnOrdinaryDividendsCents: 2000000,
+        }),
+      );
+      const shape: RothSavedLike = {
+        birthYearPrimary: 1975,
+        birthYearSpouse: 1985,
+        filingStatus: "mfj",
+        pretaxCents: 180000000,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: 0,
+        taxableCents: 200000000,
+        hsaCents: 0,
+        taxableBasisPct: null,
+        taxableDividendYieldPct: 1,
+        taxableInterestYieldPct: (1500 / 2000000) * 100,
+        convertedAlreadyCents: 13000000,
+        annualSpendingCents: 0,
+        retirementAge: 57,
+        endAge: 95,
+        expectedReturnPct: 5,
+        ssPrimaryAnnualCents: null,
+        ssPrimaryStartAge: null,
+        ssPrimaryNoBenefit: true,
+        ssSpouseAnnualCents: null,
+        ssSpouseStartAge: null,
+        ssSpouseNoBenefit: true,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: null,
+        claimAgeFloor: null,
+        drawOrder: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 1,
+        acaHouseholdSchedule: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 2.5,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const resolved = planInputsFromSaved(
+        { ...shape, qualifiedDividendSharePct: share },
+        2026,
+      );
+      const legacy = planInputsFromSaved({ ...shape }, 2026);
+      const splitMarch = resolved ? simulateRothPlan(resolved, DO_NOTHING) : null;
+      const legacyMarch = legacy ? simulateRothPlan(legacy, DO_NOTHING) : null;
+      const splitY = splitMarch?.years.find((y) => y.year === 2026) ?? null;
+      const legacyY = legacyMarch?.years.find((y) => y.year === 2026) ?? null;
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      return {
+        share,
+        blankShare,
+        partialShare,
+        overShare,
+        resolvedShare: resolved?.taxableDividendQualifiedPct ?? null,
+        legacyShare: legacy?.taxableDividendQualifiedPct ?? null,
+        splitDividend: splitY?.detail.dividendIncome ?? null,
+        splitInterest: splitY?.detail.interestIncome ?? null,
+        splitAgi: splitY?.agi ?? null,
+        splitFederalTax: splitY?.federalTax ?? null,
+        splitOrdinaryTaxable: splitY?.detail.ordinaryTaxableIncome ?? null,
+        splitGainsTaxable: splitY?.detail.gainsInTaxableIncome ?? null,
+        legacyFederalTax: legacyY?.federalTax ?? null,
+        legacyOrdinaryTaxable: legacyY?.detail.ordinaryTaxableIncome ?? null,
+        legacyGainsTaxable: legacyY?.detail.gainsInTaxableIncome ?? null,
+        taxDifference:
+          splitY != null && legacyY != null
+            ? r2(splitY.federalTax - legacyY.federalTax)
+            : null,
       };
     },
   },
@@ -21426,7 +22237,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v61-section170p-cap-deflates",
     kind: "tax",
-    note: "Contract v61, F4 — THE §170(p) CAP DEFLATES (tax-law data audit acceptance case, hand-derived; IRC §170(p), §63(b)(4)): the non-itemizer charitable caps are statute-fixed ($2,000 MFJ / $1,000 single or HOH, not indexed), so a year priced off a carried law row deflates the cap by deflationFactor at its use site — the same treatment priceYear gives the §151(d)(5)(C) senior deduction in the same function. Case: priced as calendar 2027 off the 2026 law row at 3% inflation — MFJ, $100,000 of ordinary AGI, $2,000 of qualifying cash giving, the standard side wins. The deflated cap is $2,000 / 1.03 = $1,941.75, so deductions are $32,200 + $1,941.75 = $34,141.75, taxable income is $65,858.25, and federal tax is $2,480 + 12% × $41,058.25 = $7,406.99 — exactly $6.99 above the undeflated pricing (taxable income $65,800, tax $7,400 — the T8 (d) figures, pinned here as the 2026 control: own row, factor 1.0, bit-identical to the pre-fix engine).",
+    note: "Build v61, F4 — THE §170(p) CAP DEFLATES (tax-law data audit acceptance case, hand-derived; IRC §170(p), §63(b)(4)): the non-itemizer charitable caps are statute-fixed ($2,000 MFJ / $1,000 single or HOH, not indexed), so a year priced off a carried law row deflates the cap by deflationFactor at its use site — the same treatment priceYear gives the §151(d)(5)(C) senior deduction in the same function. Case: priced as calendar 2027 off the 2026 law row at 3% inflation — MFJ, $100,000 of ordinary AGI, $2,000 of qualifying cash giving, the standard side wins. The deflated cap is $2,000 / 1.03 = $1,941.75, so deductions are $32,200 + $1,941.75 = $34,141.75, taxable income is $65,858.25, and federal tax is $2,480 + 12% × $41,058.25 = $7,406.99 — exactly $6.99 above the undeflated pricing (taxable income $65,800, tax $7,400 — the T8 (d) figures, pinned here as the 2026 control: own row, factor 1.0, bit-identical to the pre-fix engine).",
     expected: {
       cappedDeduction: 1941.75,
       deductions: 34141.75,
@@ -21664,7 +22475,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "t8-trio-plan-march-and-contract",
     kind: "tax",
-    note: "T8 (k) — THE TRIO FLOWS THROUGH THE PLAN MARCH, THE FUNDING ROWS, AND THE CONTRACT TEXT (hand-derived from T8 (d)): a two-year plan (2026–2027, ages 57–58, $100,000 of other ordinary income, $2,000 of charitable contributions entered, no balances, no spending, Do Nothing) prices the T8 (d) year twice — with one contract-v61 correction: the 2027 year carries the 2026 law row forward and the §170(p) cap is statute-fixed, so it DEFLATES at the plan's 2.5% inflation (F4): the 2027 cap is $2,000 / 1.025 = $1,951.22, that year's federal tax is $2,480 + 12% × $41,048.78 = $7,405.85, and the lifetime federal tax is $7,400 + $7,405.85 = $14,805.85 (pre-v61 pins: $2,000 / $7,400 / $14,800, from the false premise that nothing in the carried year deflates). The 2026 year is unmoved: §170(p) deduction $2,000 on its detail, AGI $100,000 (§170(p) is below the line per §63(b)(4) and does not reduce AGI), federal tax $7,400. The funding rows carry the FIRST year's §170(p) figure in integer cents ($200,000) with a $0 §68 reduction. The contract's itemizedDeductionSemantics names all three rules, the statute sections, the 2/37 fraction, the below-the-line placement (§63(b)(4)), the assumed married-filing-separately figure, and the cash-treatment simplification.",
+    note: "T8 (k) — THE TRIO FLOWS THROUGH THE PLAN MARCH, THE FUNDING ROWS, AND THE CONTRACT TEXT (hand-derived from T8 (d)): a two-year plan (2026–2027, ages 57–58, $100,000 of other ordinary income, $2,000 of charitable contributions entered, no balances, no spending, Do Nothing) prices the T8 (d) year twice — with one build-v61 correction: the 2027 year carries the 2026 law row forward and the §170(p) cap is statute-fixed, so it DEFLATES at the plan's 2.5% inflation (F4): the 2027 cap is $2,000 / 1.025 = $1,951.22, that year's federal tax is $2,480 + 12% × $41,048.78 = $7,405.85, and the lifetime federal tax is $7,400 + $7,405.85 = $14,805.85 (pre-v61 pins: $2,000 / $7,400 / $14,800, from the false premise that nothing in the carried year deflates). The 2026 year is unmoved: §170(p) deduction $2,000 on its detail, AGI $100,000 (§170(p) is below the line per §63(b)(4) and does not reduce AGI), federal tax $7,400. The funding rows carry the FIRST year's §170(p) figure in integer cents ($200,000) with a $0 §68 reduction. The contract's itemizedDeductionSemantics names all three rules, the statute sections, the 2/37 fraction, the below-the-line placement (§63(b)(4)), the assumed married-filing-separately figure, and the cash-treatment simplification.",
     expected: {
       years: 2,
       y1NonItemizer: 2000,
@@ -22308,7 +23119,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-aca-f1-table-year-decoupled-from-fpl-relabel",
     kind: "tax",
-    note: "Contract v95 (F1) — THE PERCENTAGE TABLE KEYS ON THE REAL COVERAGE YEAR, NOT ON THE RELABELLED YEAR THAT FETCHES THE GUIDELINE ROW (hand-derived, through pricePlaygroundYear under the 'newest' convention): household of 2, ACA household MAGI $60,000, benchmark $12,000. The relabel fetches the newest guideline row (household-of-2 FPL $21,640, cliff $86,560), so MAGI sits at 277.26% of FPL, in the 250–300% band. Under the 2026 table that band runs 8.44% → 9.96%, interpolating to 9.27% at 277.26% FPL: required contribution $5,561.30, credit $6,438.70. Before the fix the relabelled year (2027) also selected the 2027 table (9.51%, credit $6,293.61) — the Playground diverged from the plan march, which prices coverage 2026 on the 2026 table. The fixture pins the fixed figure AND that the guideline row stays the newest row (FPL and cliff unchanged), plus the unaffected cases bit-identically: a real 2027 under 'newest' still prices the 2027 table (9.51%, same credit, same newest-row cliff — the relabel is the identity there); a 2028 under 'newest' still falls back to the 2026 table (9.27%, same credit); a 2026 under the statutory 'lookback' convention is untouched (prior-year guidelines, cliff $84,600, 9.46%); and a pre-2026 year under 'newest' keeps the real year (2025 enhanced schedule, no cliff). The without-gains ACA comparison inside pricePlaygroundYear takes the same split, so no second leg is needed here.",
+    note: "Build v95 (F1) — THE PERCENTAGE TABLE KEYS ON THE REAL COVERAGE YEAR, NOT ON THE RELABELLED YEAR THAT FETCHES THE GUIDELINE ROW (hand-derived, through pricePlaygroundYear under the 'newest' convention): household of 2, ACA household MAGI $60,000, benchmark $12,000. The relabel fetches the newest guideline row (household-of-2 FPL $21,640, cliff $86,560), so MAGI sits at 277.26% of FPL, in the 250–300% band. Under the 2026 table that band runs 8.44% → 9.96%, interpolating to 9.27% at 277.26% FPL: required contribution $5,561.30, credit $6,438.70. Before the fix the relabelled year (2027) also selected the 2027 table (9.51%, credit $6,293.61) — the Playground diverged from the plan march, which prices coverage 2026 on the 2026 table. The fixture pins the fixed figure AND that the guideline row stays the newest row (FPL and cliff unchanged), plus the unaffected cases bit-identically: a real 2027 under 'newest' still prices the 2027 table (9.51%, same credit, same newest-row cliff — the relabel is the identity there); a 2028 under 'newest' still falls back to the 2026 table (9.27%, same credit); a 2026 under the statutory 'lookback' convention is untouched (prior-year guidelines, cliff $84,600, 9.46%); and a pre-2026 year under 'newest' keeps the real year (2025 enhanced schedule, no cliff). The without-gains ACA comparison inside pricePlaygroundYear takes the same split, so no second leg is needed here.",
     expected: {
       newest2026App: 9.27,
       newest2026Credit: 6438.7,
@@ -22514,7 +23325,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "audit2-workyear-refundable-aotc-deposit",
     kind: "tax",
-    note: "ENGINE-AUDIT ROUND 2, FIX 3 — THE WORK-YEAR REFUNDABLE AOTC LANDS IN THE ROLL-FORWARD (hand-derived; IRC §25A(b), §25A(i)): MFJ, one work year at age 56 (calendar 2026), salary $40,000, no employer contributions, $0 spending, 0% return, taxable start $100,000, one AOTC-eligible student with $4,000 of expenses in 2026. The contribution stack shelters the whole salary (deferral $24,500 + pre-tax catch-up $8,000 + own HSA $7,500 = $40,000), so taxable wages and federal tax are $0 with or without the student, and FICA is $2,486.25 (SS wages $32,500: $2,015.00 + Medicare $471.25). The student's AOTC is the $2,500 maximum (100% of the first $2,000 + 25% of the next $2,000, reached at $4,000 of expenses; AGI $0 is far under the §25A(d) phase-out), of which 40% = $1,000 is refundable. Under the round-2 fix the refundable $1,000 was added to the year's surplus: surplus −$1,486.25 with the student vs −$2,486.25 without — a difference of exactly $1,000 — and the one-year roll banked it into Taxable: retirement-start taxable $98,513.75 with the student vs $97,513.75 without, again exactly $1,000 higher (the pre-fix path priced the without-student figure even with the student entered: the refund vanished). RE-DERIVED (contract v96): the surplus leg of that derivation is superseded — the same-year surplus now excludes the refundable portion, so both surplus figures are −$2,486.25 and the gap is $0, with the $1,000 carried undeposited and reported on the year's line — while the roll's taxable figures are UNCHANGED, because this one-year roll's credit arises in its last work year and the horizon-end deposit lands the same $1,000 in the quit-age balance. The nonrefundable $1,500 has no tax to offset in this shape and is simply unused, so the federal-tax difference is $0 and the $1,000 gap is the refundable deposit alone.",
+    note: "ENGINE-AUDIT ROUND 2, FIX 3 — THE WORK-YEAR REFUNDABLE AOTC LANDS IN THE ROLL-FORWARD (hand-derived; IRC §25A(b), §25A(i)): MFJ, one work year at age 56 (calendar 2026), salary $40,000, no employer contributions, $0 spending, 0% return, taxable start $100,000, one AOTC-eligible student with $4,000 of expenses in 2026. The contribution stack shelters the whole salary (deferral $24,500 + pre-tax catch-up $8,000 + own HSA $7,500 = $40,000), so taxable wages and federal tax are $0 with or without the student, and FICA is $2,486.25 (SS wages $32,500: $2,015.00 + Medicare $471.25). The student's AOTC is the $2,500 maximum (100% of the first $2,000 + 25% of the next $2,000, reached at $4,000 of expenses; AGI $0 is far under the §25A(d) phase-out), of which 40% = $1,000 is refundable. Under the round-2 fix the refundable $1,000 was added to the year's surplus: surplus −$1,486.25 with the student vs −$2,486.25 without — a difference of exactly $1,000 — and the one-year roll banked it into Taxable: retirement-start taxable $98,513.75 with the student vs $97,513.75 without, again exactly $1,000 higher (the pre-fix path priced the without-student figure even with the student entered: the refund vanished). RE-DERIVED (build v96): the surplus leg of that derivation is superseded — the same-year surplus now excludes the refundable portion, so both surplus figures are −$2,486.25 and the gap is $0, with the $1,000 carried undeposited and reported on the year's line — while the roll's taxable figures are UNCHANGED, because this one-year roll's credit arises in its last work year and the horizon-end deposit lands the same $1,000 in the quit-age balance. The nonrefundable $1,500 has no tax to offset in this shape and is simply unused, so the federal-tax difference is $0 and the $1,000 gap is the refundable deposit alone.",
     expected: {
       surplusWith: -2486.25,
       surplusWithout: -2486.25,
@@ -22561,7 +23372,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v96-workyear-refundable-aotc-next-spring-deposit",
     kind: "tax",
-    note: "CONTRACT v96 (engine-calendar fix F2, settled round-13 audit) — THE WORK-YEAR REFUNDABLE AOTC DEPOSITS THE NEXT SPRING, LIKE THE PLAN MARCH (hand-derived; IRC §25A(b), §25A(i)): MFJ, two work years at ages 56–57 (calendar 2026–2027), salary $120,000, no employer contributions, $0 spending, 0% return, taxable start $100,000 at 100% basis, a 10% taxable interest yield, one AOTC-eligible student with $2,000 of expenses in 2026 only. The contribution stack shelters $24,500 deferral + $8,000 pre-tax catch-up + $47,500 mega backdoor + $9,750 own HSA = $89,750, so taxable wages are $77,750; with $10,000 of interest on the opening balance, MAGI is $87,750, far under the §25A(d) phase-out, so the student's AOTC is the full $2,000 (100% of the first $2,000 of expenses), of which 40% = $800 is refundable and $1,200 is nonrefundable. The nonrefundable portion is fully used: federal tax falls from $6,170 without the student to $4,970 with the student, exactly $1,200. The same-year surplus therefore differs by exactly the $1,200 nonrefundable portion — $16,845.87 with the student vs $15,645.87 without — and EXCLUDES the $800 refundable portion, which the year's line reports separately (educationRefundable $800) and the roll carries undeposited. The next year's opening pool proves the deposit: the second year opens at $117,645.87 with the student ($100,000 + the first year's surplus + the $800 deposit) vs $115,645.87 without, a $2,000 gap, and its interest income is $11,764.59 vs $11,564.59 — a $200 gap, of which the yield on the $1,200 surplus gap is $120, leaving exactly $80 = 10% × $800 of yield on the deposit itself. The deposit's yield costs $24 of extra second-year tax (12% × $200), so the second-year surplus is $24 lower with the student, and the two-year quit-age taxable balance is $133,099.59 vs $131,123.59, a $1,976 gap = $1,200 + $800 − $24. The roll's surplusBanked counts the landed deposit, so it is $33,099.59 with the student vs $31,123.59 without. HORIZON END: the same shape rolled for one work year only (quit at 57) still lands the $800 — the last year's credit has no following work year, so the horizon-end deposit adds it to the quit-age balance directly: taxable $117,645.87 vs $115,645.87, a $2,000 gap = the $1,200 surplus gap + the $800 deposit, and surplusBanked $17,645.87 vs $15,645.87. The deposit lands at 100% basis (the two-year quit-age basis equals its balance). Under the pre-v96 same-year banking the first year's surplus gap would have been the full $2,000 credit; that timing is what this fixture discriminates.",
+    note: "BUILD v96 (engine-calendar fix F2, settled round-13 audit) — THE WORK-YEAR REFUNDABLE AOTC DEPOSITS THE NEXT SPRING, LIKE THE PLAN MARCH (hand-derived; IRC §25A(b), §25A(i)): MFJ, two work years at ages 56–57 (calendar 2026–2027), salary $120,000, no employer contributions, $0 spending, 0% return, taxable start $100,000 at 100% basis, a 10% taxable interest yield, one AOTC-eligible student with $2,000 of expenses in 2026 only. The contribution stack shelters $24,500 deferral + $8,000 pre-tax catch-up + $47,500 mega backdoor + $9,750 own HSA = $89,750, so taxable wages are $77,750; with $10,000 of interest on the opening balance, MAGI is $87,750, far under the §25A(d) phase-out, so the student's AOTC is the full $2,000 (100% of the first $2,000 of expenses), of which 40% = $800 is refundable and $1,200 is nonrefundable. The nonrefundable portion is fully used: federal tax falls from $6,170 without the student to $4,970 with the student, exactly $1,200. The same-year surplus therefore differs by exactly the $1,200 nonrefundable portion — $16,845.87 with the student vs $15,645.87 without — and EXCLUDES the $800 refundable portion, which the year's line reports separately (educationRefundable $800) and the roll carries undeposited. The next year's opening pool proves the deposit: the second year opens at $117,645.87 with the student ($100,000 + the first year's surplus + the $800 deposit) vs $115,645.87 without, a $2,000 gap, and its interest income is $11,764.59 vs $11,564.59 — a $200 gap, of which the yield on the $1,200 surplus gap is $120, leaving exactly $80 = 10% × $800 of yield on the deposit itself. The deposit's yield costs $24 of extra second-year tax (12% × $200), so the second-year surplus is $24 lower with the student, and the two-year quit-age taxable balance is $133,099.59 vs $131,123.59, a $1,976 gap = $1,200 + $800 − $24. The roll's surplusBanked counts the landed deposit, so it is $33,099.59 with the student vs $31,123.59 without. HORIZON END: the same shape rolled for one work year only (quit at 57) still lands the $800 — the last year's credit has no following work year, so the horizon-end deposit adds it to the quit-age balance directly: taxable $117,645.87 vs $115,645.87, a $2,000 gap = the $1,200 surplus gap + the $800 deposit, and surplusBanked $17,645.87 vs $15,645.87. The deposit lands at 100% basis (the two-year quit-age basis equals its balance). Under the pre-v96 same-year banking the first year's surplus gap would have been the full $2,000 credit; that timing is what this fixture discriminates.",
     expected: {
       refundable56: 800,
       federalWith56: 4970,
@@ -22644,7 +23455,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v98-workyears-rmd-priced-in-salary-years",
     kind: "tax",
-    note: "CONTRACT v98 (engine-calendar fix F5, settled round-13 audit) — RMDS PRICE IN SALARY YEARS, ON THE PRIOR-DEC-31 BALANCE, THROUGH THE SHARED HELPER (hand-derived; SECURE 2.0 §107 RMD ages; IRS Pub. 590-B Uniform Lifetime Table; IRC §401(a)(9)): MAIN LEG — single filer born 1955 (RMD age 73), starting pre-tax balance $200,000, three work years at ages 71–73 (calendar 2026–2028), salary $50,000, no employer contributions, on Medicare from 65 so no HSA contribution, $0 spending, 0% return and 0% inflation, Taxable starting at $50,000 at 100% basis. Each year's pre-tax stack is the $24,500 deferral plus the $8,000 pre-tax catch-up (Box-3 wages $50,000 are under the Roth catch-up threshold) = $32,500 into pre-tax, plus a $17,500 mega-backdoor Roth contribution; taxable wages are $50,000 − $32,500 = $17,500 every year. Ages 71 and 72 are before the RMD age, so their RMDs are $0, their AGI of $17,500 is fully sheltered by the $24,150 of deductions (single standard $16,100 + age-65 add-on $2,050 + the $6,000 senior deduction), their federal tax is $0, and their surplus is −$3,825 (the FICA: 6.2% + 1.45% on $50,000). The prior-Dec-31 balance entering age 73 is $200,000 + 2 × $32,500 = $265,000 — the age-73 year's own $32,500 contribution does NOT count toward it (counting it would price $297,500 ÷ 26.5 = $11,226.42 instead) — so the age-73 RMD is $265,000 ÷ 26.5 (the Uniform divisor at 73) = $10,000.00 on the Uniform table, AGI is $17,500 + $10,000 = $27,500, taxable income is $27,500 − $24,150 = $3,350, and the federal tax is 10% × $3,350 = $335.00. The distribution is household cash in the year's surplus: $50,000 − $335 − $3,825 FICA − $50,000 of own contributions + $10,000 RMD = $5,840, and it leaves the pre-tax balance before growth: the quit-age pre-tax balance is ($265,000 − $10,000) + $32,500 = $287,500, Roth is 3 × $17,500 = $52,500, and Taxable walks $50,000 − $3,825 − $3,825 + $5,840 = $48,190 at 100% basis throughout (the deficit years sell at no gain). STANDALONE LEG: the same shape priced one year at a time at age 73 on a $265,000 starting balance prices the same $10,000.00 RMD at divisor 26.5 and the same $335.00 tax — the plan's starting balances are the standalone year's opening balances. JOINT LEGS: a couple with the primary born 1951 and the spouse 11 years younger, priced at primary age 75 on a $1,000,000 balance — with the spouse as sole beneficiary the primary's divisor is the Joint table's 25.3 and the RMD is $39,525.69; with that fact off the divisor is the Uniform 24.6 and the RMD is $40,650.41 — the work-years selection is the plan march's own per-owner rule, through the same helper. SPOUSE LEG: the spouse born 1955 carries her own $265,000 balance beside a primary born 1960 (RMD age 75); rolled at primary ages 66–68, her RMD first prices in the year SHE reaches 73 (primary 68) at $265,000 ÷ 26.5 = $10,000.00 on the Uniform table (her own beneficiary fact is unestablished, so the march's absent-fact rule prices Uniform), the primary's RMD stays $0, and her balance ends at $255,000 while his three years of contributions end at $97,500. Before this fix every salary year priced its RMD at $0 (the pricer passed rmd: 0 unconditionally), so the age-73 year priced $0 of RMD and $0 of tax on these facts. No still-working exception is priced in any leg: the balances carry no 401(k)/IRA distinction (the settled limitation).",
+    note: "BUILD v98 (engine-calendar fix F5, settled round-13 audit) — RMDS PRICE IN SALARY YEARS, ON THE PRIOR-DEC-31 BALANCE, THROUGH THE SHARED HELPER (hand-derived; SECURE 2.0 §107 RMD ages; IRS Pub. 590-B Uniform Lifetime Table; IRC §401(a)(9)): MAIN LEG — single filer born 1955 (RMD age 73), starting pre-tax balance $200,000, three work years at ages 71–73 (calendar 2026–2028), salary $50,000, no employer contributions, on Medicare from 65 so no HSA contribution, $0 spending, 0% return and 0% inflation, Taxable starting at $50,000 at 100% basis. Each year's pre-tax stack is the $24,500 deferral plus the $8,000 pre-tax catch-up (Box-3 wages $50,000 are under the Roth catch-up threshold) = $32,500 into pre-tax, plus a $17,500 mega-backdoor Roth contribution; taxable wages are $50,000 − $32,500 = $17,500 every year. Ages 71 and 72 are before the RMD age, so their RMDs are $0, their AGI of $17,500 is fully sheltered by the $24,150 of deductions (single standard $16,100 + age-65 add-on $2,050 + the $6,000 senior deduction), their federal tax is $0, and their surplus is −$3,825 (the FICA: 6.2% + 1.45% on $50,000). The prior-Dec-31 balance entering age 73 is $200,000 + 2 × $32,500 = $265,000 — the age-73 year's own $32,500 contribution does NOT count toward it (counting it would price $297,500 ÷ 26.5 = $11,226.42 instead) — so the age-73 RMD is $265,000 ÷ 26.5 (the Uniform divisor at 73) = $10,000.00 on the Uniform table, AGI is $17,500 + $10,000 = $27,500, taxable income is $27,500 − $24,150 = $3,350, and the federal tax is 10% × $3,350 = $335.00. The distribution is household cash in the year's surplus: $50,000 − $335 − $3,825 FICA − $50,000 of own contributions + $10,000 RMD = $5,840, and it leaves the pre-tax balance before growth: the quit-age pre-tax balance is ($265,000 − $10,000) + $32,500 = $287,500, Roth is 3 × $17,500 = $52,500, and Taxable walks $50,000 − $3,825 − $3,825 + $5,840 = $48,190 at 100% basis throughout (the deficit years sell at no gain). STANDALONE LEG: the same shape priced one year at a time at age 73 on a $265,000 starting balance prices the same $10,000.00 RMD at divisor 26.5 and the same $335.00 tax — the plan's starting balances are the standalone year's opening balances. JOINT LEGS: a couple with the primary born 1951 and the spouse 11 years younger, priced at primary age 75 on a $1,000,000 balance — with the spouse as sole beneficiary the primary's divisor is the Joint table's 25.3 and the RMD is $39,525.69; with that fact off the divisor is the Uniform 24.6 and the RMD is $40,650.41 — the work-years selection is the plan march's own per-owner rule, through the same helper. SPOUSE LEG: the spouse born 1955 carries her own $265,000 balance beside a primary born 1960 (RMD age 75); rolled at primary ages 66–68, her RMD first prices in the year SHE reaches 73 (primary 68) at $265,000 ÷ 26.5 = $10,000.00 on the Uniform table (her own beneficiary fact is unestablished, so the march's absent-fact rule prices Uniform), the primary's RMD stays $0, and her balance ends at $255,000 while his three years of contributions end at $97,500. Before this fix every salary year priced its RMD at $0 (the pricer passed rmd: 0 unconditionally), so the age-73 year priced $0 of RMD and $0 of tax on these facts. No still-working exception is priced in any leg: the balances carry no 401(k)/IRA distinction (the settled limitation).",
     expected: {
       rmd71: 0,
       rmd72: 0,
@@ -22782,7 +23593,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v100-workyears-capital-loss-carryforward-allowance",
     kind: "tax",
-    note: "CONTRACT v100 (round-14 fix F2, settled pricing-parity audit) — CAPITAL-LOSS CARRYFORWARDS PRICE IN THE WORK YEARS: THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (IRC §§1211(b) / 1212; the 2026 MFJ row: standard deduction $32,200, 10% band top $24,800 of taxable income): MFJ, primary born 1981 (age 45 in 2026), salary $100,000, no employer contributions, no other income, no gains, $0 spending, 0% return and 0% inflation, $10,000 of entering LONG-TERM carryforward. The contribution stack is $24,500 deferral + $8,750 family HSA = $33,250 (the $47,500 mega-backdoor is after-tax and never touches taxable wages), so taxable wages are $66,750 and taxable income before the allowance is $66,750 − $32,200 = $34,550. WITHOUT the carryforward (the control, and the pre-fix price): tax is 10% × $24,800 + 12% × $9,750 = $3,650.00 and MAGI is $66,750. WITH it: the year's own result is a $10,000 net loss, the §1211(b) allowance is the $3,000 cap, taxable income is $31,550, and the tax is $2,480 + 12% × $6,750 = $3,290.00 — the $360.00 overstatement the fix corrects — with MAGI $63,750 (the allowance subtracts from AGI). Utilization: allowance used = min($3,000, $34,550) = $3,000, so the carryforward into 2027 is $7,000 long-term, and the one-year roll's rolledInputs hand the retirement march exactly that $7,000 — before the fix the roll spread the plan untouched, so the march entered with the full $10,000 and priced the consumed $3,000 a second time. TWO-YEAR LEG (the threading itself): a second identical work year (age 46, calendar 2027 priced off the 2026 row) enters with $7,000, prices the same $3,290.00, consumes another $3,000, and the two-year roll hands the march $4,000. A standalone priceOneWorkYear prices from the plan's entering carryforward as its entering state, so its line pins the same figures as the roll's first year.",
+    note: "BUILD v100 (round-14 fix F2, settled pricing-parity audit) — CAPITAL-LOSS CARRYFORWARDS PRICE IN THE WORK YEARS: THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (IRC §§1211(b) / 1212; the 2026 MFJ row: standard deduction $32,200, 10% band top $24,800 of taxable income): MFJ, primary born 1981 (age 45 in 2026), salary $100,000, no employer contributions, no other income, no gains, $0 spending, 0% return and 0% inflation, $10,000 of entering LONG-TERM carryforward. The contribution stack is $24,500 deferral + $8,750 family HSA = $33,250 (the $47,500 mega-backdoor is after-tax and never touches taxable wages), so taxable wages are $66,750 and taxable income before the allowance is $66,750 − $32,200 = $34,550. WITHOUT the carryforward (the control, and the pre-fix price): tax is 10% × $24,800 + 12% × $9,750 = $3,650.00 and MAGI is $66,750. WITH it: the year's own result is a $10,000 net loss, the §1211(b) allowance is the $3,000 cap, taxable income is $31,550, and the tax is $2,480 + 12% × $6,750 = $3,290.00 — the $360.00 overstatement the fix corrects — with MAGI $63,750 (the allowance subtracts from AGI). Utilization: allowance used = min($3,000, $34,550) = $3,000, so the carryforward into 2027 is $7,000 long-term, and the one-year roll's rolledInputs hand the retirement march exactly that $7,000 — before the fix the roll spread the plan untouched, so the march entered with the full $10,000 and priced the consumed $3,000 a second time. TWO-YEAR LEG (the threading itself): a second identical work year (age 46, calendar 2027 priced off the 2026 row) enters with $7,000, prices the same $3,290.00, consumes another $3,000, and the two-year roll hands the march $4,000. A standalone priceOneWorkYear prices from the plan's entering carryforward as its entering state, so its line pins the same figures as the roll's first year.",
     expected: {
       standaloneFederal: 3290,
       standaloneMagi: 63750,
@@ -22860,7 +23671,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v100-workyears-capital-loss-gains-year-and-unused-allowance",
     kind: "tax",
-    note: "CONTRACT v100 (round-14 fix F2) — A GAINS YEAR NETS ITS DEFICIT-FUNDING SALE AGAINST THE CARRYFORWARD, AND A ZERO-TAXABLE-INCOME YEAR USES NONE OF ITS ALLOWANCE (hand-derived; IRC §§1211(b) / 1212 and the Capital Loss Carryover Worksheet utilization limit). GAINS LEG: the workyears-deficit-sale-gains-priced micro-case (MFJ b.1971/b.1982, window 55, salary $100,000, employer 401(k) $5,000, spending $100,000, 0% return, Taxable $200,000 at 0% basis, one work year in 2026) plus a $50,000 entering long-term carryforward. The stack shelters $84,750 (deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750), taxable wages are $57,750, ordinary taxable income is $57,750 − $32,200 = $25,550 (ordinary tax $2,570), and FICA is $6,904.13, so at a $0 gains tax the deficit is $94,224.13. Selling at 0% basis realizes the whole drawn amount as the gross gain; netted against the carryforward the priced gain is $94,224.13 − $50,000 = $44,224.13, which fits entirely inside the 0% LTCG space ($98,900 threshold − $25,550 ordinary stack = $73,350), so the gains tax is $0 and the fixed point is exact: gross gain $94,224.13, federal tax $2,570.00, the whole $50,000 carry-in absorbed by gains, no allowance (no net loss remains), carry-out $0, at-quit Taxable $200,000 − $94,224.13 = $105,775.87, and the rolled plan enters the march with $0 of carryforward. The no-carryforward control is the standing micro-case itself: gross gain $97,907.80 and federal $6,253.67 (its gains above the 0% space price at 15%). ZERO-INCOME LEG: MFJ b.1970/b.1981, one work year at 56, salary $40,000 fully sheltered by the stack (deferral $24,500 + pre-tax catch-up $8,000 + own HSA $7,500 = $40,000, so taxable wages are $0), $0 spending, Taxable $100,000 at 100% basis, $10,000 entering long-term carryforward. The $3,000 allowance is CLAIMED (it prices the year's AGI at −$3,000 and the federal tax stays $0) but the year's taxable income before the allowance is $0, so the used part is $0 and the whole $10,000 carries out — the roll hands the march the untouched $10,000. The year's surplus is −$2,486.25 (its FICA), a deficit the 100%-basis balance absorbs at no gain, ending Taxable at $97,513.75. Before this fix both legs priced with no ledger at all: the gains leg taxed the gross gain and the zero-income leg's plan handed the march a carryforward its work year should have been measured against.",
+    note: "BUILD v100 (round-14 fix F2) — A GAINS YEAR NETS ITS DEFICIT-FUNDING SALE AGAINST THE CARRYFORWARD, AND A ZERO-TAXABLE-INCOME YEAR USES NONE OF ITS ALLOWANCE (hand-derived; IRC §§1211(b) / 1212 and the Capital Loss Carryover Worksheet utilization limit). GAINS LEG: the workyears-deficit-sale-gains-priced micro-case (MFJ b.1971/b.1982, window 55, salary $100,000, employer 401(k) $5,000, spending $100,000, 0% return, Taxable $200,000 at 0% basis, one work year in 2026) plus a $50,000 entering long-term carryforward. The stack shelters $84,750 (deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750), taxable wages are $57,750, ordinary taxable income is $57,750 − $32,200 = $25,550 (ordinary tax $2,570), and FICA is $6,904.13, so at a $0 gains tax the deficit is $94,224.13. Selling at 0% basis realizes the whole drawn amount as the gross gain; netted against the carryforward the priced gain is $94,224.13 − $50,000 = $44,224.13, which fits entirely inside the 0% LTCG space ($98,900 threshold − $25,550 ordinary stack = $73,350), so the gains tax is $0 and the fixed point is exact: gross gain $94,224.13, federal tax $2,570.00, the whole $50,000 carry-in absorbed by gains, no allowance (no net loss remains), carry-out $0, at-quit Taxable $200,000 − $94,224.13 = $105,775.87, and the rolled plan enters the march with $0 of carryforward. The no-carryforward control is the standing micro-case itself: gross gain $97,907.80 and federal $6,253.67 (its gains above the 0% space price at 15%). ZERO-INCOME LEG: MFJ b.1970/b.1981, one work year at 56, salary $40,000 fully sheltered by the stack (deferral $24,500 + pre-tax catch-up $8,000 + own HSA $7,500 = $40,000, so taxable wages are $0), $0 spending, Taxable $100,000 at 100% basis, $10,000 entering long-term carryforward. The $3,000 allowance is CLAIMED (it prices the year's AGI at −$3,000 and the federal tax stays $0) but the year's taxable income before the allowance is $0, so the used part is $0 and the whole $10,000 carries out — the roll hands the march the untouched $10,000. The year's surplus is −$2,486.25 (its FICA), a deficit the 100%-basis balance absorbs at no gain, ending Taxable at $97,513.75. Before this fix both legs priced with no ledger at all: the gains leg taxed the gross gain and the zero-income leg's plan handed the march a carryforward its work year should have been measured against.",
     expected: {
       gainsGross: 94224.13,
       gainsNet: 44224.13,
@@ -22971,7 +23782,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-wa-allocated-carryforward-acceptance",
     kind: "tax",
-    note: "CONTRACT v101 (round-14 fix F4, settled pricing-parity audit) — THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (RCW 82.87.040(3) and the RCW 82.87.020(1) definitional chain; the 2026 Washington row: $278,000 standard deduction, 7% up to $1,000,000 of taxable gains and 9.9% above it): a WA plan (2026, MFJ) realizes $1,300,000 of long-term gains in one year — the whole $2,600,000 taxable account at 50% basis drawn for spending, so the gross gains are exactly $1,300,000 whatever the year's tax settlement draws from the $2,000,000 pre-tax balance — against a $100,000 entering long-term carryforward stated FULLY Washington-attributable (capitalLossCarryInLtWa = the whole $100,000). Federally the gains absorb the whole carryforward (absorbed $100,000, no allowance, nothing carries out) and price at $1,200,000. BEFORE this fix the engine overrode the Washington base with the gross gains: $1,300,000 − $278,000 = $1,022,000 of taxable Washington gains → 7% × $1,000,000 + 9.9% × $22,000 = $72,178.00 of excise — the corrected error, an overstatement of $7,638.00. AFTER the fix the base is the gross gains minus the Washington-attributable absorbed part: $1,300,000 − $100,000 = $1,200,000, taxable Washington gains $1,200,000 − $278,000 = $922,000, excise 7% × $922,000 = $64,540.00. A 5% flat rate is also entered and is ignored, as in every Washington case (the excise replaces it).",
+    note: "BUILD v101 (round-14 fix F4, settled pricing-parity audit) — THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (RCW 82.87.040(3) and the RCW 82.87.020(1) definitional chain; the 2026 Washington row: $278,000 standard deduction, 7% up to $1,000,000 of taxable gains and 9.9% above it): a WA plan (2026, MFJ) realizes $1,300,000 of long-term gains in one year — the whole $2,600,000 taxable account at 50% basis drawn for spending, so the gross gains are exactly $1,300,000 whatever the year's tax settlement draws from the $2,000,000 pre-tax balance — against a $100,000 entering long-term carryforward stated FULLY Washington-attributable (capitalLossCarryInLtWa = the whole $100,000). Federally the gains absorb the whole carryforward (absorbed $100,000, no allowance, nothing carries out) and price at $1,200,000. BEFORE this fix the engine overrode the Washington base with the gross gains: $1,300,000 − $278,000 = $1,022,000 of taxable Washington gains → 7% × $1,000,000 + 9.9% × $22,000 = $72,178.00 of excise — the corrected error, an overstatement of $7,638.00. AFTER the fix the base is the gross gains minus the Washington-attributable absorbed part: $1,300,000 − $100,000 = $1,200,000, taxable Washington gains $1,200,000 − $278,000 = $922,000, excise 7% × $922,000 = $64,540.00. A 5% flat rate is also entered and is ignored, as in every Washington case (the excise replaces it).",
     expected: {
       stateTax: 64540,
       waGains: 1200000,
@@ -23014,7 +23825,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-wa-nonwa-carryforward-base-unchanged",
     kind: "tax",
-    note: "CONTRACT v101 (round-14 fix F4) — A NON-WASHINGTON-ONLY CARRYFORWARD LEAVES THE WASHINGTON BASE AT THE GROSS GAINS (hand-derived; RCW 82.87.020(1)(c)–(e)): the acceptance case's exact shape — $1,300,000 of gross gains against a $100,000 entering long-term carryforward — but with NO Washington-attributable portion entered (capitalLossCarryInLtWa $0). The federal NETTING is identical to the acceptance case (the same $100,000 absorbed, the same $1,200,000 priced gain, nothing carried out — the two runs' final federal bills differ only through the settlement feedback, the larger excise being paid by a larger pre-tax distribution, which is itself ordinary income), but the whole carryforward is in the statutory addback population, so the Washington base stays at the gross $1,300,000: taxable Washington gains $1,022,000 and excise $72,178.00 — the pre-fix figure, correct for THIS attribution. The state-tax gap between the two runs is exactly the $7,638.00 the acceptance fixture corrects when the attribution is entered.",
+    note: "BUILD v101 (round-14 fix F4) — A NON-WASHINGTON-ONLY CARRYFORWARD LEAVES THE WASHINGTON BASE AT THE GROSS GAINS (hand-derived; RCW 82.87.020(1)(c)–(e)): the acceptance case's exact shape — $1,300,000 of gross gains against a $100,000 entering long-term carryforward — but with NO Washington-attributable portion entered (capitalLossCarryInLtWa $0). The federal NETTING is identical to the acceptance case (the same $100,000 absorbed, the same $1,200,000 priced gain, nothing carried out — the two runs' final federal bills differ only through the settlement feedback, the larger excise being paid by a larger pre-tax distribution, which is itself ordinary income), but the whole carryforward is in the statutory addback population, so the Washington base stays at the gross $1,300,000: taxable Washington gains $1,022,000 and excise $72,178.00 — the pre-fix figure, correct for THIS attribution. The state-tax gap between the two runs is exactly the $7,638.00 the acceptance fixture corrects when the attribution is entered.",
     expected: {
       stateTax: 72178,
       waGains: 1300000,
@@ -23072,7 +23883,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-wa-mixed-carryforward-split-and-threading",
     kind: "tax",
-    note: "CONTRACT v101 (round-14 fix F4) — A MIXED WASHINGTON / NON-WASHINGTON CARRYFORWARD PINS THE SPLIT, AND THE ATTRIBUTION THREADS ACROSS YEARS (hand-derived; RCW 82.87.040(3), RCW 82.87.020(1)). SPLIT LEGS (one year, 2026, the acceptance shape): a $2,000,000 entering long-term carryforward meets $1,300,000 of gross gains, so the gains absorb $1,300,000 of the pool and a $700,000 net loss remains (allowance $3,000 claimed). With HALF the pool Washington-attributable ($1,000,000), the fungible pool's pro-rata attribution puts $650,000 of the absorption on the Washington side: base $1,300,000 − $650,000 = $650,000, taxable Washington gains $372,000, excise 7% × $372,000 = $26,040.00. With the WHOLE pool attributable the absorbed $1,300,000 is all Washington: base $0, excise $0. With NONE attributable the base stays at gross: excise $72,178.00, as in the non-Washington fixture. THREADING LEG (two years): a $200,000 long-term carryforward, half Washington-attributable ($100,000), meets $100,000 of gains in 2026 ($200,000 drawn from a $1,000,000 account at 50% basis for spending; no other income, no tax): pro-rata absorption is $100,000 total / $50,000 Washington, so the 2026 base is $50,000 (excise $0, under the $278,000 deduction); the $3,000 allowance is claimed but the year has no taxable income before it, so none is used and $100,000 carries out — $50,000 of it still Washington-attributable. In 2027 Social Security of $400,000 (from age 58) covers the $200,000 spending AND the year's whole tax bill from cash — no account is drawn — and an injected $400,000 long-term sale gain (the engine's one-time sale-gain input) meets the carried $100,000: absorption $100,000 total / $50,000 Washington, base $400,000 − $50,000 = $350,000, taxable Washington gains $72,000, excise 7% × $72,000 = $5,040.00, and nothing carries out, the 2027 gross gains staying exactly the injected $400,000.",
+    note: "BUILD v101 (round-14 fix F4) — A MIXED WASHINGTON / NON-WASHINGTON CARRYFORWARD PINS THE SPLIT, AND THE ATTRIBUTION THREADS ACROSS YEARS (hand-derived; RCW 82.87.040(3), RCW 82.87.020(1)). SPLIT LEGS (one year, 2026, the acceptance shape): a $2,000,000 entering long-term carryforward meets $1,300,000 of gross gains, so the gains absorb $1,300,000 of the pool and a $700,000 net loss remains (allowance $3,000 claimed). With HALF the pool Washington-attributable ($1,000,000), the fungible pool's pro-rata attribution puts $650,000 of the absorption on the Washington side: base $1,300,000 − $650,000 = $650,000, taxable Washington gains $372,000, excise 7% × $372,000 = $26,040.00. With the WHOLE pool attributable the absorbed $1,300,000 is all Washington: base $0, excise $0. With NONE attributable the base stays at gross: excise $72,178.00, as in the non-Washington fixture. THREADING LEG (two years): a $200,000 long-term carryforward, half Washington-attributable ($100,000), meets $100,000 of gains in 2026 ($200,000 drawn from a $1,000,000 account at 50% basis for spending; no other income, no tax): pro-rata absorption is $100,000 total / $50,000 Washington, so the 2026 base is $50,000 (excise $0, under the $278,000 deduction); the $3,000 allowance is claimed but the year has no taxable income before it, so none is used and $100,000 carries out — $50,000 of it still Washington-attributable. In 2027 Social Security of $400,000 (from age 58) covers the $200,000 spending AND the year's whole tax bill from cash — no account is drawn — and an injected $400,000 long-term sale gain (the engine's one-time sale-gain input) meets the carried $100,000: absorption $100,000 total / $50,000 Washington, base $400,000 − $50,000 = $350,000, taxable Washington gains $72,000, excise 7% × $72,000 = $5,040.00, and nothing carries out, the 2027 gross gains staying exactly the injected $400,000.",
     expected: {
       mixedWaGains: 650000,
       mixedWaTaxable: 372000,
@@ -23174,7 +23985,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v101-workyears-wa-allocated-carryforward",
     kind: "tax",
-    note: "CONTRACT v101 (round-14 fix F4) — A WORK YEAR'S WASHINGTON BASE DEDUCTS ONLY THE WASHINGTON-ATTRIBUTABLE ABSORBED PART (hand-derived; RCW 82.87.040(3); the workyears-deficit-sale shape of the contract v100 gains leg: MFJ b.1971/b.1982, one work year at 55 in 2026, salary $100,000, employer 401(k) $5,000, 0% return, Taxable at 0% basis so a deficit-funding sale realizes its whole drawn amount as the gross gain; the stack shelters $84,750 — deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 — so taxable wages are $57,750, ordinary taxable income is $25,550, the ordinary federal tax is $2,570.00, and FICA is $6,904.13; a $400,000 entering long-term carryforward nets the sale federally in both legs). MIXED LEG (spending $404,235.87; $100,000 of the carryforward Washington-attributable): at a gross gain of $400,000 the netted federal gain is $0 (federal tax stays the $2,570.00 ordinary tax, no allowance — no net loss remains), the Washington base is $400,000 − $100,000 = $300,000, taxable Washington gains $22,000, excise $1,540.00, and the fixed point is exact: deficit = $404,235.87 + $2,570.00 + $1,540.00 + $6,904.13 + $84,750.00 − $100,000.00 = $400,000.00 of sale, leaving Taxable at $600,000 of the $1,000,000 and handing the march a $0 carryforward with a $0 Washington remainder. NON-WASHINGTON LEG (spending $443,735.87; no Washington portion entered): at a gross gain of $450,000 the netted gain is $50,000, inside the $73,350 of remaining 0% space ($98,900 threshold − $25,550 ordinary stack), so the federal tax is again $2,570.00, but the Washington base stays at the gross $450,000 — taxable Washington gains $172,000, excise $12,040.00 — and the fixed point is again exact: $443,735.87 − $5,775.87 (salary less FICA, contributions, and the ordinary tax) + $12,040.00 = $450,000.00, leaving Taxable at $550,000. Before this fix a work year inherited the march's gross-base override for the whole carryforward (and, read the other way, netting the full carryforward against the base would have priced the mixed leg's excise at $0): both legs now price the base the statute prices. A 5% flat rate is entered in both legs and ignored (the excise replaces it).",
+    note: "BUILD v101 (round-14 fix F4) — A WORK YEAR'S WASHINGTON BASE DEDUCTS ONLY THE WASHINGTON-ATTRIBUTABLE ABSORBED PART (hand-derived; RCW 82.87.040(3); the workyears-deficit-sale shape of the build v100 gains leg: MFJ b.1971/b.1982, one work year at 55 in 2026, salary $100,000, employer 401(k) $5,000, 0% return, Taxable at 0% basis so a deficit-funding sale realizes its whole drawn amount as the gross gain; the stack shelters $84,750 — deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750 — so taxable wages are $57,750, ordinary taxable income is $25,550, the ordinary federal tax is $2,570.00, and FICA is $6,904.13; a $400,000 entering long-term carryforward nets the sale federally in both legs). MIXED LEG (spending $404,235.87; $100,000 of the carryforward Washington-attributable): at a gross gain of $400,000 the netted federal gain is $0 (federal tax stays the $2,570.00 ordinary tax, no allowance — no net loss remains), the Washington base is $400,000 − $100,000 = $300,000, taxable Washington gains $22,000, excise $1,540.00, and the fixed point is exact: deficit = $404,235.87 + $2,570.00 + $1,540.00 + $6,904.13 + $84,750.00 − $100,000.00 = $400,000.00 of sale, leaving Taxable at $600,000 of the $1,000,000 and handing the march a $0 carryforward with a $0 Washington remainder. NON-WASHINGTON LEG (spending $443,735.87; no Washington portion entered): at a gross gain of $450,000 the netted gain is $50,000, inside the $73,350 of remaining 0% space ($98,900 threshold − $25,550 ordinary stack), so the federal tax is again $2,570.00, but the Washington base stays at the gross $450,000 — taxable Washington gains $172,000, excise $12,040.00 — and the fixed point is again exact: $443,735.87 − $5,775.87 (salary less FICA, contributions, and the ordinary tax) + $12,040.00 = $450,000.00, leaving Taxable at $550,000. Before this fix a work year inherited the march's gross-base override for the whole carryforward (and, read the other way, netting the full carryforward against the base would have priced the mixed leg's excise at $0): both legs now price the base the statute prices. A 5% flat rate is entered in both legs and ignored (the excise replaces it).",
     expected: {
       mixedGross: 400000,
       mixedNet: 0,
@@ -23254,7 +24065,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v102-workyears-tax-exempt-interest-ss-taxation",
     kind: "tax",
-    note: "CONTRACT v102 (round-14 fix F1, settled pricing-parity audit) — TAX-EXEMPT INTEREST PRICES IN THE WORK YEARS FOR §86 SOCIAL SECURITY TAXATION: THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (26 U.S.C. §86(b)(1)-(2): provisional income is AGI excluding benefits, increased by tax-exempt interest, plus one-half of benefits, against the $32,000 / $44,000 joint base / adjusted-base amounts; the 2026 MFJ row: standard deduction $32,200, 10% band top $24,800 of taxable income). MFJ, primary born 1962 (age 64 in 2026), salary $80,000, Social Security benefits $10,000 (started at 64), $6,000 of tax-exempt interest, no employer contributions, $0 spending, 0% return and 0% inflation. The 2026 contribution stack is $24,500 elective + $8,000 catch-up (age 64 takes the 50+ band, NOT the 60-63 band) + $9,750 HSA ($8,750 family + $1,000 age-55 catch-up) = $42,250 of pre-tax shelter, plus a $37,750 mega-backdoor (after-tax; §415(c) room $72,000 − $24,500, capped by the $37,750 of salary left after the pre-tax stack and the HSA), so taxable wages are $37,750 and the employee's own contributions total the whole $80,000 salary. The §414(v)(7) Roth-catch-up mandate is inert: Box-3 wages are $80,000 − $9,750 = $70,250, under the $150,000 threshold, so the catch-up stays pre-tax. WITH the $6,000: provisional income is $37,750 + $6,000 + $5,000 = $48,750, so taxable Social Security is min(0.85 × $10,000, min(0.5 × $10,000, 0.5 × ($44,000 − $32,000)) + 0.85 × ($48,750 − $44,000)) = min($8,500, $5,000 + $4,037.50) = $8,500; AGI is $46,250, taxable income is $46,250 − $32,200 = $14,050, and the federal tax is 10% × $14,050 = $1,405.00. BEFORE this fix the work-year pricer passed $0 of tax-exempt interest: provisional income was $42,750, taxable Social Security was $5,000, taxable income was $10,550, and the tax was $1,055.00 — the corrected error, a $350.00 understatement named here as the before-fix figure. MAGI is $46,250 + $6,000 = $52,250 (the shared priceYear adds the tax-exempt interest to AGI for MAGI), and the taxable-benefits figure pinned below is read off the line as MAGI − $6,000 − taxable wages = $8,500, the line carrying no separate benefits-taxed field. FICA on $70,250 of wages is $4,355.50 Social Security (6.2%, under the $184,500 wage base) + $1,018.63 Medicare (1.45%, rounded from $1,018.625; the payroll total rounds once from $5,374.125 to $5,374.13) with no Additional Medicare. CASH PARITY (verified in the plan march): the march's cash-in is RMDs + benefits + other ordinary income ONLY — the tax-exempt dollars are priced for §86 / MAGI purposes and are never banked as household cash — so the work year mirrors that exactly: the surplus is $80,000 − $1,405.00 − $5,374.13 − $80,000 of own contributions + $10,000 of benefits = $3,220.87, with NO $6,000 inflow term, and the one-year roll banks exactly that into Taxable at the quit age. The roll leg pins the same federal tax and MAGI through rollWorkYears, proving the roll and the standalone price share the one corrected priceYear call.",
+    note: "BUILD v102 (round-14 fix F1, settled pricing-parity audit) — TAX-EXEMPT INTEREST PRICES IN THE WORK YEARS FOR §86 SOCIAL SECURITY TAXATION: THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (26 U.S.C. §86(b)(1)-(2): provisional income is AGI excluding benefits, increased by tax-exempt interest, plus one-half of benefits, against the $32,000 / $44,000 joint base / adjusted-base amounts; the 2026 MFJ row: standard deduction $32,200, 10% band top $24,800 of taxable income). MFJ, primary born 1962 (age 64 in 2026), salary $80,000, Social Security benefits $10,000 (started at 64), $6,000 of tax-exempt interest, no employer contributions, $0 spending, 0% return and 0% inflation. The 2026 contribution stack is $24,500 elective + $8,000 catch-up (age 64 takes the 50+ band, NOT the 60-63 band) + $9,750 HSA ($8,750 family + $1,000 age-55 catch-up) = $42,250 of pre-tax shelter, plus a $37,750 mega-backdoor (after-tax; §415(c) room $72,000 − $24,500, capped by the $37,750 of salary left after the pre-tax stack and the HSA), so taxable wages are $37,750 and the employee's own contributions total the whole $80,000 salary. The §414(v)(7) Roth-catch-up mandate is inert: Box-3 wages are $80,000 − $9,750 = $70,250, under the $150,000 threshold, so the catch-up stays pre-tax. WITH the $6,000: provisional income is $37,750 + $6,000 + $5,000 = $48,750, so taxable Social Security is min(0.85 × $10,000, min(0.5 × $10,000, 0.5 × ($44,000 − $32,000)) + 0.85 × ($48,750 − $44,000)) = min($8,500, $5,000 + $4,037.50) = $8,500; AGI is $46,250, taxable income is $46,250 − $32,200 = $14,050, and the federal tax is 10% × $14,050 = $1,405.00. BEFORE this fix the work-year pricer passed $0 of tax-exempt interest: provisional income was $42,750, taxable Social Security was $5,000, taxable income was $10,550, and the tax was $1,055.00 — the corrected error, a $350.00 understatement named here as the before-fix figure. MAGI is $46,250 + $6,000 = $52,250 (the shared priceYear adds the tax-exempt interest to AGI for MAGI), and the taxable-benefits figure pinned below is read off the line as MAGI − $6,000 − taxable wages = $8,500, the line carrying no separate benefits-taxed field. FICA on $70,250 of wages is $4,355.50 Social Security (6.2%, under the $184,500 wage base) + $1,018.63 Medicare (1.45%, rounded from $1,018.625; the payroll total rounds once from $5,374.125 to $5,374.13) with no Additional Medicare. CASH PARITY (verified in the plan march): the march's cash-in is RMDs + benefits + other ordinary income ONLY — the tax-exempt dollars are priced for §86 / MAGI purposes and are never banked as household cash — so the work year mirrors that exactly: the surplus is $80,000 − $1,405.00 − $5,374.13 − $80,000 of own contributions + $10,000 of benefits = $3,220.87, with NO $6,000 inflow term, and the one-year roll banks exactly that into Taxable at the quit age. The roll leg pins the same federal tax and MAGI through rollWorkYears, proving the roll and the standalone price share the one corrected priceYear call.",
     expected: {
       standaloneFederal: 1405,
       standaloneMagi: 52250,
@@ -23318,7 +24129,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v102-workyears-tax-exempt-interest-zero-identity",
     kind: "tax",
-    note: "CONTRACT v102 (round-14 fix F1) — THE $0 TAX-EXEMPT-INTEREST IDENTITY CASE: the acceptance example's exact shape (MFJ, primary born 1962, age 64 in 2026, salary $80,000, Social Security $10,000 from 64, no employer contributions, $0 spending, 0% return and 0% inflation) with NO tax-exempt interest entered. A plan with $0 / absent tax-exempt interest must price bit-identically to before the fix, and it does — these are the pre-fix figures themselves: provisional income $37,750 + $0 + $5,000 = $42,750, taxable Social Security min(0.5 × $10,000, 0.5 × ($42,750 − $32,000)) = min($5,000, $5,375) = $5,000 (read off the line as MAGI − $0 − taxable wages), AGI and MAGI both $42,750, taxable income $10,550, federal tax 10% × $10,550 = $1,055.00, FICA $5,374.13 as in the acceptance fixture. The cross-leg pins the cash-parity rule from the other side: the with-interest surplus ($3,220.87, acceptance fixture) minus this case's surplus ($3,570.87) is exactly −$350.00 — the tax difference alone — so the $6,000 of tax-exempt interest is priced for §86 / MAGI and banked NOWHERE, exactly as the plan march treats it (its cash-in is RMDs + benefits + other ordinary income only).",
+    note: "BUILD v102 (round-14 fix F1) — THE $0 TAX-EXEMPT-INTEREST IDENTITY CASE: the acceptance example's exact shape (MFJ, primary born 1962, age 64 in 2026, salary $80,000, Social Security $10,000 from 64, no employer contributions, $0 spending, 0% return and 0% inflation) with NO tax-exempt interest entered. A plan with $0 / absent tax-exempt interest must price bit-identically to before the fix, and it does — these are the pre-fix figures themselves: provisional income $37,750 + $0 + $5,000 = $42,750, taxable Social Security min(0.5 × $10,000, 0.5 × ($42,750 − $32,000)) = min($5,000, $5,375) = $5,000 (read off the line as MAGI − $0 − taxable wages), AGI and MAGI both $42,750, taxable income $10,550, federal tax 10% × $10,550 = $1,055.00, FICA $5,374.13 as in the acceptance fixture. The cross-leg pins the cash-parity rule from the other side: the with-interest surplus ($3,220.87, acceptance fixture) minus this case's surplus ($3,570.87) is exactly −$350.00 — the tax difference alone — so the $6,000 of tax-exempt interest is priced for §86 / MAGI and banked NOWHERE, exactly as the plan march treats it (its cash-in is RMDs + benefits + other ordinary income only).",
     expected: {
       zeroFederal: 1055,
       zeroMagi: 42750,
@@ -24179,7 +24990,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-f6-horizon-matches-retirement",
     kind: "tax",
-    note: "F6 horizon convention (contract v99; hand-derived from the closed form): the plan march prices every year from the start age THROUGH the end age, applying the year's growth at the loop tail — the convention the Retirement engines were aligned to in the same contract. A no-spending, no-income plan holding $100,000 of taxable money at a steady 10% return therefore ends at $100,000 × 1.10^n with n the inclusive year count: age 55 to end age 95 is 41 priced years ending at $4,978,518.11, and age 55 to end age 110 is 56 priced years ending at $20,796,505.67. The Retirement projection pins the identical figures in its own suite (fixtures proj-f6-horizon-55-to-95 and proj-f6-horizon-55-to-110), so the cross-surface comparability this fix exists for is itself under test. This case's own engine is untouched by F6: its figures are the pre-existing march output, re-derived here from the closed form.",
+    note: "F6 horizon convention (build v99; hand-derived from the closed form): the plan march prices every year from the start age THROUGH the end age, applying the year's growth at the loop tail — the convention the Retirement engines were aligned to in the same contract. A no-spending, no-income plan holding $100,000 of taxable money at a steady 10% return therefore ends at $100,000 × 1.10^n with n the inclusive year count: age 55 to end age 95 is 41 priced years ending at $4,978,518.11, and age 55 to end age 110 is 56 priced years ending at $20,796,505.67. The Retirement projection pins the identical figures in its own suite (fixtures proj-f6-horizon-55-to-95 and proj-f6-horizon-55-to-110), so the cross-surface comparability this fix exists for is itself under test. This case's own engine is untouched by F6: its figures are the pre-existing march output, re-derived here from the closed form.",
     expected: {
       yearsTo95: 41,
       endingTo95: 4978518.11,
@@ -24343,7 +25154,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-loader-year-reprices",
     kind: "tax",
-    note: "ENGINES BATCH F1 (hand-derived property): the saved-plan-year loader's inputs must reprice the march year. The 2028 cliff-fill year (spending $180,000, pre-tax $1,500,000, taxable $2,000,000 at 100% basis, household 5, benchmark $36,000) prices a $149,720 pre-tax money out — the conversion plus the extra pre-tax draw — and taxable sales for spending and tax. Feeding exactly those figures into the Playground pricer — conversion + extraPreTaxDraw as the conversion dial, the funding's spending + tax sales as the stock sale with basis = proceeds − drawGains, the split prior balances, and the year's income pieces — reproduces the march year's federal tax to the cent (taxDiff 0). Before the fix the loader carried only the conversion and cleared the sales, so the loaded year priced $0 tax on a year the march priced at the cliff.",
+    note: "ENGINES BATCH F1 (hand-derived property): the saved-plan-year loader's inputs must reprice the march year. The 2028 cliff-fill year (spending $180,000, pre-tax $1,500,000, taxable $2,000,000 at 100% basis, household 5, benchmark $36,000) prices a $149,720 pre-tax money out — the conversion plus the extra pre-tax draw — and taxable sales for spending and tax. Feeding exactly those figures into the Playground pricer — conversion + extraPreTaxDraw as the conversion dial, the funding's spending + tax sales as the stock sale with basis = proceeds − drawGains, the split prior balances, and the year's income pieces — reproduces the march year's federal tax to the cent (taxDiff 0). Before the fix the loader carried only the conversion and cleared the sales, so the loaded year priced $0 tax on a year the march priced at the cliff. Generalized 2026-11-02 to the shared fictional household (this fixture originally carried a real household's balances): the fictional shape was run through the engine and the march still prices the $149,720 cliff-sized money out, with the repricing still landing at taxDiff 0.",
     expected: { taxDiff: 0 },
     actual: () => {
       const plan = basePlan({
@@ -24360,8 +25171,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         acaHouseholdSize: 5,
         acaHouseholdSchedule: [{ fromYear: 2036, householdSize: 2 }],
         acaBenchmarkFamily: 36000,
-        acaBenchmarkCouple: 24000,
-        acaBenchmarkSingle: 16800,
+        acaBenchmarkCouple: 25000,
+        acaBenchmarkSingle: 17500,
         drawOrder: ["pretax", "taxable", "roth"],
       });
       const cliffFill: RothStrategy = {
@@ -24412,6 +25223,307 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         annualSpending: 180000,
       });
       return { taxDiff: Math.round((pg.federalTax - y.federalTax) * 100) / 100 };
+    },
+  },
+  {
+    id: "tax-aca-premium-reconciliation-pair",
+    kind: "tax",
+    note: "ACA PREMIUM RECONCILIATION (fresh-round finding 1, build v135; hand-derived from a fictional worked example — this fixture originally carried a real household's settlement shape; generalized 2026-11-02 to fictional figures with every worked figure re-derived by hand and the two lifetime wealth totals re-pinned as engine-derived regression pins): the fictional plan (spending $180,000 embedding a $15,000 net premium; benchmarks $36,000 / $25,000 / $17,500; household 5 stepping to 2 in 2036). BUFFERED 2028 (Fill 22% capped at the cliff with a $5,000 buffer): the march prices MAGI $149,720 and credit $36,000 − 9.96% × $149,720 = $21,087.89, so the year's actual net premium is 9.96% × $149,720 = $14,912.11 and the funded spending is $180,000 − $15,000 + $14,912.11 = $179,912.11 (adjustment −$87.89) — the reconciled march funds the premium its own pricing implies, not the embedded one verbatim. (RE-PINNED under the MUST-1 cliff grow-back, re-audit round 3: the buffered year now lands exactly on its $149,720 buffered target — the $5,000 buffer below the $154,720 cliff — where the shrink-only convergence previously left it $20 under the target at $149,700; every 2028 figure above is re-derived from the $149,720 landing by the same 9.96% arithmetic, and the reconciled ending wealth re-pins to $7,359,927.17.) OVER-CLIFF FAMILY YEAR (same plan plus a $200,000 pension, Do Nothing): ACA MAGI is past the $154,720 cliff, the credit is $0, the net premium is the full $36,000, and the funded spending is $180,000 − $15,000 + $36,000 = $201,000 (adjustment +$21,000). OVER-CLIFF SPOUSE-ONLY YEAR (the buffered plan's own 2038: spouse alone on the marketplace, credit $0, one-spouse benchmark $17,500): funded spending $180,000 − $15,000 + $17,500 = $182,500, an adjustment of +$2,500. LEGACY IDENTITY: the same plan with no embedded premium separated funds $180,000 in 2028 with every adjustment $0. The reconciliation moves the plan's ending wealth (legacy $7,314,375.83 → reconciled $7,359,927.17 on this shape, engine-pinned: the early years' credits run above the embedded assumption by more than the 2038–2046 shortfalls take back). (LEGACY WEALTH RE-PINNED for SHOULD-1, re-audit round 3: the legacy run carries NO embedded premium, so it is a plain cliff-capped shape whose post-2028 cliff years the ungated grow-back now lands on their buffered targets instead of at the shrink-loop landings under them — converting more in those years, its ending wealth re-pins $7,314,375.83 → $7,313,385.89. Every 2028 figure above and the reconciled wealth ($7,359,927.17) are unchanged — the reconciliation shape already grew back under MUST-1. Verified by isolation: with the pre-SHOULD-1 gate restored this fixture returns exactly $7,314,375.83.)",
+    expected: {
+      bufferedSpending: 179912.11,
+      bufferedCredit: 21087.89,
+      bufferedAdjustment: -87.89,
+      bufferedNet: 14912.11,
+      overCliffSpending: 201000,
+      overCliffCredit: 0,
+      overCliffAdjustment: 21000,
+      spouseOnlySpending: 182500,
+      spouseOnlyAdjustment: 2500,
+      spouseOnlyCredit: 0,
+      legacySpending: 180000,
+      legacyAdjustment: 0,
+      legacyWealth: 7313385.89,
+      reconciledWealth: 7359927.17,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2028,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        endAgePrimary: 95,
+        retirementAge: 57,
+        pretaxStart: 1500000,
+        pretaxSpouseStart: 150000,
+        rothStart: 400000,
+        taxableStart: 2000000,
+        taxableBasisPct: 100,
+        annualSpending: 180000,
+        expectedReturnPct: 5,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        acaHouseholdSize: 5,
+        acaHouseholdSchedule: [{ fromYear: 2036, householdSize: 2 }],
+        acaBenchmarkFamily: 36000,
+        acaBenchmarkCouple: 25000,
+        acaBenchmarkSingle: 17500,
+        acaEmbeddedNetPremium: 15000,
+        inflationPct: 0,
+      });
+      const cliffFill: RothStrategy = {
+        id: "compare",
+        name: "fill",
+        ceilings: {
+          bracketTopPct: 22,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: 5000,
+        },
+      };
+      const doNothing: RothStrategy = { id: "none", name: "Do Nothing", ceilings: null };
+      const recon = simulateRothPlan(plan, cliffFill);
+      const buffered = recon.years[0]!;
+      const spouseOnly = recon.years.find((y) => y.year === 2038)!;
+      const over = simulateRothPlan(
+        { ...plan, otherOrdinaryAnnual: 200000 },
+        doNothing,
+      ).years[0]!;
+      const legacy = simulateRothPlan(
+        { ...plan, acaEmbeddedNetPremium: null },
+        cliffFill,
+      );
+      const legacyYear = legacy.years[0]!;
+      return {
+        bufferedSpending: buffered.funding.spending,
+        bufferedCredit: buffered.acaCreditKept,
+        bufferedAdjustment: buffered.detail.acaPremiumAdjustment,
+        bufferedNet: buffered.detail.acaPremiumNet,
+        overCliffSpending: over.funding.spending,
+        overCliffCredit: over.acaCreditKept,
+        overCliffAdjustment: over.detail.acaPremiumAdjustment,
+        spouseOnlySpending: spouseOnly.funding.spending,
+        spouseOnlyAdjustment: spouseOnly.detail.acaPremiumAdjustment,
+        spouseOnlyCredit: spouseOnly.acaCreditKept,
+        legacySpending: legacyYear.funding.spending,
+        legacyAdjustment: legacyYear.detail.acaPremiumAdjustment,
+        legacyWealth: legacy.endingAfterTaxWealth,
+        reconciledWealth: recon.endingAfterTaxWealth,
+      };
+    },
+  },
+  {
+    id: "tax-aca-premium-reconciliation-derivation",
+    kind: "tax",
+    note: "ACA PREMIUM RECONCILIATION — DERIVATION + FUNDING PATH (build v135; hand-derived; shape generalized to fictional figures 2026-11-02 alongside the pair fixture, worked figures re-derived by hand): the embedded premium is a property of the plan, derived once from its FIRST marketplace year: for the fictional shape that year is 2028 (household 5, family benchmark $36,000, cliff 4 × FPL(5) = $154,720); priced at MAGI exactly at the cliff the applicable percentage is the 2026 table's 9.96% cap, so the credit is $36,000 − 0.0996 × $154,720 = $20,589.89 and the embedded net premium is $36,000 − $20,589.89 = $15,410.11 (the 9.96% × cliff product — benchmark-independent whenever the benchmark exceeds it). acaEmbeddedNetPremiumFor returns exactly that, planInputsFromSaved threads the same $15,410.11 into the saved plan's engine inputs, and a plan with no benchmark entered derives null (the reconciliation never engages). Through the funding builder on the derived inputs (the buffered cliff-fill strategy), 2028's funded spending is $180,000 − $15,410.11 + $14,912.11 = $179,502.00 — the settlement-priced net premium ($14,912.11, as in the pair fixture) against the cliff-referenced embedded premium: an adjustment of −$498.00, which is 9.96% × the $5,000 MAGI gap between the cliff the embedded premium is referenced to ($154,720) and the buffered march's landing ($149,720 — exactly the $5,000 buffer target; re-pinned under the MUST-1 cliff grow-back, re-audit round 3, which lands the buffered year on its target where the shrink-only convergence left it $20 under). Every funding row still foots (sources + shortfall + unpaid = needs) and the compare run's ending taxable balance for the same scenario equals the direct engine run's to the cent.",
+    expected: {
+      derived: 15410.11,
+      savedDerived: 15410.11,
+      noBenchmarkDerived: null,
+      fundingSpending: 179502,
+      fundingAdjustment: -498,
+      fundingRowsUnfooted: 0,
+      endingTaxableMatches: 1,
+    },
+    actual: () => {
+      const plan = basePlan({
+        startYear: 2028,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        endAgePrimary: 95,
+        retirementAge: 57,
+        pretaxStart: 1500000,
+        pretaxSpouseStart: 150000,
+        rothStart: 400000,
+        taxableStart: 2000000,
+        taxableBasisPct: 100,
+        annualSpending: 180000,
+        expectedReturnPct: 5,
+        ssPrimaryAnnual: 48000,
+        ssPrimaryStartAge: 67,
+        acaHouseholdSize: 5,
+        acaHouseholdSchedule: [{ fromYear: 2036, householdSize: 2 }],
+        acaBenchmarkFamily: 36000,
+        acaBenchmarkCouple: 25000,
+        acaBenchmarkSingle: 17500,
+      });
+      const derived = acaEmbeddedNetPremiumFor(plan);
+      const noBenchmarkDerived = acaEmbeddedNetPremiumFor({
+        ...plan,
+        acaBenchmarkFamily: null,
+        acaBenchmarkCouple: null,
+        acaBenchmarkSingle: null,
+      });
+      const saved: RothSavedLike = {
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj",
+        pretaxCents: 150000000,
+        pretaxSpouseCents: 15000000,
+        rothCents: 40000000,
+        taxableCents: 200000000,
+        hsaCents: 0,
+        taxableBasisPct: 100,
+        annualSpendingCents: 18000000,
+        retirementAge: 57,
+        endAge: 95,
+        expectedReturnPct: 5,
+        ssPrimaryAnnualCents: 4800000,
+        ssPrimaryStartAge: 67,
+        ssSpouseAnnualCents: 0,
+        ssSpouseStartAge: null,
+        otherOrdinaryCents: 0,
+        taxExemptInterestCents: 0,
+        convertedAlreadyCents: 0,
+        windowStartAge: 57,
+        windowStopAge: 74,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: 0,
+        drawOrder: "pretax,taxable,roth",
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaHouseholdSchedule: [{ fromYear: 2036, householdSize: 2 }],
+        acaBenchmarkCoupleCents: 2500000,
+        acaBenchmarkSingleCents: 1750000,
+        acaBenchmarkFamilyCents: 3600000,
+        inflationPct: 0,
+        stateRatePct: 0,
+        heirRatePct: 22,
+      };
+      const savedInputs = planInputsFromSaved(saved, 2028);
+      const cliffFill: RothStrategy = {
+        id: "compare",
+        name: "fill",
+        ceilings: {
+          bracketTopPct: 22,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: 5000,
+        },
+      };
+      const funding = savedInputs
+        ? buildRothFunding(savedInputs, cliffFill)
+        : null;
+      const first = funding?.[0];
+      let unfooted = 0;
+      for (const row of funding ?? []) {
+        const sources =
+          row.ssCents + row.rmdCents + row.otherIncomeCents + row.taxExemptCents +
+          row.interestYieldCents + row.dividendYieldCents + row.pretaxDrawCents +
+          row.taxableSoldForSpendingCents + row.taxableSoldForTaxCents +
+          row.cashSpendCents + row.rothDrawCents + row.salarySurplusCents;
+        if (sources + row.spendShortfallCents + row.unpaidTaxCents !== row.totalNeedCents) unfooted++;
+      }
+      const direct = savedInputs ? simulateRothPlan(savedInputs, cliffFill) : null;
+      const cmp = runRothCompare(
+        {
+          ...saved,
+          ceilings: {
+            bracketTopPct: 22,
+            irmaaTierCap: null,
+            ltcgZeroCap: false,
+            acaCliffCap: true,
+            acaCliffCapFamilyOnly: false,
+            magiCapCents: null,
+            acaCliffBufferCents: 500000,
+          },
+        },
+        [{ name: "Buffered cliff fill", overrides: {} }],
+        2028,
+      );
+      return {
+        derived,
+        savedDerived: savedInputs?.acaEmbeddedNetPremium ?? null,
+        noBenchmarkDerived,
+        fundingSpending: first ? first.spendingCents / 100 : null,
+        fundingAdjustment: direct ? direct.years[0]!.detail.acaPremiumAdjustment : null,
+        fundingRowsUnfooted: unfooted,
+        endingTaxableMatches:
+          cmp.ok && direct != null
+            ? cmp.scenarios[0]!.endingTaxableCents ===
+              Math.round(direct.endingTaxable * 100)
+              ? 1
+              : 0
+            : 0,
+      };
+    },
+  },
+  {
+    id: "tax-aca-cliff-fill-reconciliation-growback-must1",
+    kind: "tax",
+    note: "ACA CLIFF FILL × PREMIUM RECONCILIATION (re-audit round 3, MUST-1; engine-derived regression pin on the shared fictional sample household of server/src/sampleHousehold.ts — 60% taxable basis, spending $180,000, benchmarks $36,000 / $25,000 / $17,500, household 4, window 62–73, strategy Fill up to the ACA cliff with no other ceiling): with premium reconciliation ON (the embedded net premium acaEmbeddedNetPremiumFor derives for this household, $13,147.20), the pre-fix march collapsed — the breaching settlement priced credit $0, its funded need jumped by the full benchmark, the sales funding it realized gains large enough that the shrink-only re-solve returned ~$0, and the whole march converted $800 in a single year. The cliff grow-back now lands every ACA year on its cliff: 2030–2034 each settle at ACA MAGI $132,000 (the household-of-4 cliff) with the credit kept, converting $21,516.67 / $19,673.93 / $17,994.41 / $16,543.19 / $15,179.57 — lifetime conversions $90,907.77. The 100%-basis v135 pair fixture above could not catch this defect: at 100% basis the breaching settlement's gains are small and the fill survives. (EXTENDED by SHOULD-1, the MUST-1 residual: as originally pinned, the reconciliation-OFF shape converted only $28,000.00 across the same five years ($10,400 / $7,800 / $5,300 / $3,300 / $1,200) — its shrink-loop landing sat $11,180.00 under the 2030 cliff (ACA MAGI $120,820.11 against $132,000), because the grow-back then ran only in reconciliation and spend-from-cash years. The grow-back is now ungated for cliff-capped years, so the off shape grows back too: re-derived by direct engine probe, its five ACA years land on the same cliff with the same per-year conversions as the reconciliation-on shape ($21,516.67 / $19,673.93 / $17,994.41 / $16,543.19 / $15,179.57; 2030 ACA MAGI exactly $132,000, credit $22,852.80 kept — at the on-cliff landing the two shapes' settlements coincide, the embedded premium only changing the path taken to the landing, not the landing itself), and its window total is $90,907.77. The reconciliation-on pins above are bit-identical to the MUST-1 build. Verified as the sole mover by re-running this fixture with the pre-SHOULD-1 gate restored: the off pins return exactly $28,000.00 / $10,400 and every reconciliation-on pin still passes.)",
+    expected: {
+      embedded: 13147.2,
+      reconConv2030: 21516.67,
+      reconConv2031: 19673.93,
+      reconConv2032: 17994.41,
+      reconConv2033: 16543.19,
+      reconConv2034: 15179.57,
+      reconAcaMagi2030: 132000,
+      reconCredit2030: 22852.8,
+      reconTotalConv: 90907.77,
+      offTotalAcaConv: 90907.77,
+      offConv2030: 21516.67,
+      offConv2031: 19673.93,
+      offConv2032: 17994.41,
+      offConv2033: 16543.19,
+      offConv2034: 15179.57,
+      offAcaMagi2030: 132000,
+      offCredit2030: 22852.8,
+    },
+    actual: () => {
+      const cliffFill: RothStrategy = {
+        id: "compare",
+        name: "Fill up to the ACA cliff",
+        ceilings: {
+          bracketTopPct: null,
+          irmaaTierCap: null,
+          ltcgZeroCap: false,
+          acaCliffCap: true,
+          acaCliffCapFamilyOnly: false,
+          magiCap: null,
+          acaCliffBuffer: null,
+        },
+      };
+      const embedded = acaEmbeddedNetPremiumFor(samplePlanInputs());
+      const reconInputs = samplePlanInputs();
+      if (embedded != null) reconInputs.acaEmbeddedNetPremium = embedded;
+      const recon = simulateRothPlan(reconInputs, cliffFill);
+      const off = simulateRothPlan(samplePlanInputs(), cliffFill);
+      const conv = (res: typeof recon, yr: number) =>
+        res.years.find((y) => y.year === yr)?.conversion ?? null;
+      const acaWindowTotal = (res: typeof recon) =>
+        res.years
+          .filter((y) => y.year >= 2030 && y.year <= 2034)
+          .reduce((s, y) => Math.round((s + y.conversion) * 100) / 100, 0);
+      const y2030 = recon.years.find((y) => y.year === 2030);
+      const off2030 = off.years.find((y) => y.year === 2030);
+      return {
+        embedded,
+        reconConv2030: conv(recon, 2030),
+        reconConv2031: conv(recon, 2031),
+        reconConv2032: conv(recon, 2032),
+        reconConv2033: conv(recon, 2033),
+        reconConv2034: conv(recon, 2034),
+        reconAcaMagi2030: y2030?.acaMagi ?? null,
+        reconCredit2030: y2030?.acaCreditKept ?? null,
+        reconTotalConv:
+          Math.round(
+            recon.years.reduce((s, y) => s + y.conversion, 0) * 100,
+          ) / 100,
+        offTotalAcaConv: acaWindowTotal(off),
+        offConv2030: conv(off, 2030),
+        offConv2031: conv(off, 2031),
+        offConv2032: conv(off, 2032),
+        offConv2033: conv(off, 2033),
+        offConv2034: conv(off, 2034),
+        offAcaMagi2030: off2030?.acaMagi ?? null,
+        offCredit2030: off2030?.acaCreditKept ?? null,
+      };
     },
   },
   {
@@ -24472,10 +25584,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-tax-exempt-funds-spending",
     kind: "tax",
-    note: "ENGINES BATCH F6 (hand-derived): the 2028 cliff-fill year (spending $180,000, pre-tax $1,500,000, taxable $2,000,000 at 100% basis, household 5, benchmark $36,000). Without tax-exempt interest the spending sale is $22,624.19. With $10,000 of tax-exempt interest — cash the household receives — the spending sale is still $22,624.19: the $10,000 funds spending dollar-for-dollar, so the taxable sale does not grow by it. Before the fix the march ignored the tax-exempt cash and the sale grew to $32,624.19, overselling Taxable by exactly the $10,000. The funding row carries the $10,000 as its own tax-exempt source, and the year's tax and MAGI are unchanged ($13,078.40 / $149,720 — the draw is cliff-sized, so the income is the same).",
+    note: "ENGINES BATCH F6 (hand-derived): the 2028 cliff-fill year (spending $180,000, pre-tax $1,500,000, taxable $2,000,000 at 100% basis, household 5, benchmark $36,000). Without tax-exempt interest the spending sale is $30,280. With $10,000 of tax-exempt interest — cash the household receives — the spending sale is still $30,280: the $10,000 funds spending dollar-for-dollar, so the taxable sale does not grow by it. Before the fix the march ignored the tax-exempt cash and the sale grew to $40,280, overselling Taxable by exactly the $10,000. The funding row carries the $10,000 as its own tax-exempt source, and the year's tax and MAGI are unchanged ($13,078.40 / $149,720 — the draw is cliff-sized, so the income is the same). Generalized 2026-11-02 to the shared fictional household (this fixture originally carried a real household's balances): the spending sale was re-pinned by running the engine at the fictional shape — $180,000 of spending less the $149,720 cliff-sized pre-tax money out is $30,280 — and the tax, MAGI, and tax-exempt pins re-verified unchanged at the new shape.",
     expected: {
-      noTeSpendSale: 22624.19,
-      withTeSpendSale: 22624.19,
+      noTeSpendSale: 30280,
+      withTeSpendSale: 30280,
       withTeTaxExempt: 10000,
       withTeTax: 13078.4,
       withTeMagi: 149720,
@@ -24497,8 +25609,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           acaHouseholdSize: 5,
           acaHouseholdSchedule: [{ fromYear: 2036, householdSize: 2 }],
           acaBenchmarkFamily: 36000,
-          acaBenchmarkCouple: 24000,
-          acaBenchmarkSingle: 16800,
+          acaBenchmarkCouple: 25000,
+          acaBenchmarkSingle: 17500,
           drawOrder: ["pretax", "taxable", "roth"],
         });
       const cliffFill: RothStrategy = {
@@ -24528,7 +25640,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-playground-credit-not-double-counted",
     kind: "tax",
-    note: "ENGINES BATCH F7 (hand-derived): Playground 2028, MFJ, ages 57/46, conversion $149,720 (cliff-sized), household 5, benchmark $36,000, spending $180,000 — which holds the NET premium ($36,000 − $21,087.89 credit = $14,912.11). Federal tax $15,278.40 (taxable income $149,720 − $32,200 = $117,520: 10% × $24,800 = $2,480 + 12% × $76,000 = $9,120 + 22% × $16,720 = $3,678.40); ACA credit kept $21,087.89. The net tax bill is the federal tax alone, $15,278.40 — the credit is NOT subtracted, because the spending already nets it out. Cash in $149,720 − net tax $15,278.40 = cash left $134,441.60; left after spending $134,441.60 − $180,000 = −$45,558.40. Before the fix the credit was subtracted, so the net bill was −$5,809.49 and the cash left overstated by the credit at $155,529.49.",
+    note: "ENGINES BATCH F7 (hand-derived): Playground 2028, MFJ, ages 57/46, conversion $149,720 (cliff-sized), household 5, benchmark $36,000, spending $180,000. The credit at the landing is $36,000 − 9.96% × $149,720 = $21,087.89, so the year's net premium is $14,912.11 — and the spending already nets it out, so the credit is NOT subtracted again in the tax bill. Federal tax $15,278.40 (taxable income $149,720 − $32,200 = $117,520: 10% × $24,800 = $2,480 + 12% × $76,000 = $9,120 + 22% × $16,720 = $3,678.40); ACA credit kept $21,087.89. The net tax bill is the federal tax alone, $15,278.40. Cash in $149,720 − net tax $15,278.40 = cash left $134,441.60; left after spending $134,441.60 − $180,000 = −$45,558.40. Before the fix the credit was subtracted, so the net bill was −$5,809.49 and the cash left overstated by the credit at $155,529.49. Generalized 2026-11-03 to the shared fictional household (this fixture originally carried a real household's benchmark and spending): the credit and left-after-spending pins were re-pinned by running the engine at the fictional shape — the federal tax, net bill, and cash left are unmoved, since they depend only on the conversion and the 2028 deduction.",
     expected: {
       federalTax: 15278.4,
       acaCredit: 21087.89,
@@ -24573,6 +25685,81 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         netTaxBill: pg.netTaxBill,
         cashLeftAfterTax: pg.cashLeftAfterTax,
         cashLeftVsSpending: pg.cashLeftVsSpending,
+      };
+    },
+  },
+  {
+    id: "tax-compare-pretax-out-by-choice-s10",
+    kind: "tax",
+    note: "Audit S-10 (build v127 definition): runRothCompare's pretaxOutByChoiceCents is the conversion plus the pre-tax draw for SPENDING only — the pre-tax debits that paid the tax bill are NOT money out by choice and belong only to runRothFunding's pretaxDrawCents. Worked example (the audit's own): the seeded fresh-user plan at start year 2026, $180,000/yr spending, payTaxFrom \"conversion\", ceilings null (Do Nothing), taxable $1,000, pre-tax $1,800,000. In 2033 the conversion is $0, the pre-tax spending draw is $180,000.00, and the year's $28,128.20 federal tax is paid by a pre-tax debit (payTaxFrom conversion with no conversion to withhold from), so the detail's total priced draw (extraPreTaxDraw) is $208,128.20 — the figure the funding row's pretaxDrawCents also reports. The compare readout must report $180,000.00 (18,000,000¢), NOT $208,128.20: before the fix it read detail.extraPreTaxDraw and equalled the funding field exactly, collapsing the v127 distinction. The detail split pins the components: pretaxSpendingDraw $180,000 + pretaxTaxDebit $28,128.20 = extraPreTaxDraw $208,128.20, and the year's priced figures (AGI $208,128.20, federal tax $28,128.20) are unchanged — display-only fix, no pricing moves. Surfacing (re-audit SHOULD S-8): the compare year readout and the funding row now also carry those same components and their total in cents (pretaxSpendingDrawCents / pretaxTaxDebitCents / extraPreTaxDrawCents), pinned here against the same worked example, and the split is stated in the contract's pretaxDrawSplitSemantics convention. Re-pin record (2026-11-02): the worked example's spending was generalized to a fictional $180,000/yr and every pin re-derived by running the engine at the new spending (the $28,128.20 tax cross-checked against standalone single-year pricing of the $208,128.20 AGI); the v127 distinction this case pins is unchanged.",
+    expected: {
+      byChoice2033: 18000000,
+      fundingDraw2033: 20812820,
+      conversion2033: 0,
+      fieldsDiffer2033: 1,
+      detailSpendingDraw2033: 180000,
+      detailTaxDebit2033: 28128.2,
+      detailExtraTotal2033: 208128.2,
+      agi2033: 208128.2,
+      federalTax2033: 28128.2,
+      compareSpendingDraw2033: 18000000,
+      compareTaxDebit2033: 2812820,
+      compareExtraTotal2033: 20812820,
+      fundingSpendingDraw2033: 18000000,
+      fundingTaxDebit2033: 2812820,
+      fundingExtraTotal2033: 20812820,
+    },
+    actual: () => {
+      const base = {
+        ...seedRothInputs({
+          annualSpendingCents: 18000000,
+          retirementAge: 57,
+          expectedReturnPct: 5,
+        }),
+        payTaxFrom: "conversion" as const,
+        ceilings: null,
+        pretaxCents: 180000000,
+        pretaxSpouseCents: null,
+        rothCents: null,
+        taxableCents: 100000,
+        hsaCents: null,
+      };
+      const cmp = runRothCompare(
+        base,
+        [{ name: "Do Nothing", overrides: { ceilings: null } }],
+        2026,
+      );
+      const cy = cmp.scenarios[0]?.years.find((y) => y.year === 2033);
+      const inputs = planInputsFromSaved(base, 2026);
+      const direct = inputs ? simulateRothPlan(inputs, DO_NOTHING) : null;
+      const dy = direct?.years.find((y) => y.year === 2033);
+      const funding = inputs ? buildRothFunding(inputs, DO_NOTHING) : null;
+      const fy = funding?.find((r) => r.year === 2033);
+      return {
+        byChoice2033: cy?.pretaxOutByChoiceCents ?? null,
+        fundingDraw2033: fy?.pretaxDrawCents ?? null,
+        conversion2033: cy?.conversionCents ?? null,
+        fieldsDiffer2033:
+          cy != null && fy != null && cy.pretaxOutByChoiceCents !== fy.pretaxDrawCents
+            ? 1
+            : 0,
+        detailSpendingDraw2033: dy?.detail.pretaxSpendingDraw ?? null,
+        detailTaxDebit2033: dy?.detail.pretaxTaxDebit ?? null,
+        detailExtraTotal2033: dy?.detail.extraPreTaxDraw ?? null,
+        agi2033: dy?.agi ?? null,
+        federalTax2033: dy?.federalTax ?? null,
+        // Surfacing (re-audit SHOULD S-8): the compare year
+        // readout and the funding row now carry the split
+        // components and their total beside the by-choice /
+        // applied figures, in cents — the same components
+        // the detail pins above, so the published responses
+        // expose the split the detail already computed.
+        compareSpendingDraw2033: cy?.pretaxSpendingDrawCents ?? null,
+        compareTaxDebit2033: cy?.pretaxTaxDebitCents ?? null,
+        compareExtraTotal2033: cy?.extraPreTaxDrawCents ?? null,
+        fundingSpendingDraw2033: fy?.pretaxSpendingDrawCents ?? null,
+        fundingTaxDebit2033: fy?.pretaxTaxDebitCents ?? null,
+        fundingExtraTotal2033: fy?.extraPreTaxDrawCents ?? null,
       };
     },
   },
