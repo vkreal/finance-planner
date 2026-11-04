@@ -2284,16 +2284,51 @@ function stepUpTiers(tiers: TierLedger[], amount: number): void {
 // tier balance moves here — unlike a real after-tax inflow
 // (buyIntoTiers), which arrives with its own balance and
 // raises the inflow tier's balance with it. Only the basis
-// ledger rises, dollar for dollar up to the balance cap —
-// the single-pool treatment: the added basis fills the tiers'
-// unrealized gain, lowest basis ratio first, capped at each
-// tier's own balance (the stepUpTiers mechanics), so every
-// tier keeps 0 ≤ basis ≤ its own balance and the total basis
-// can never pass the total balance. Any yield beyond the
-// pool's whole unrealized gain adds no basis — the excess is
-// capped, never a modeled capital loss.
+// ledger rises, by the FULL yield amount — the single pool's
+// uncapped basisIn treatment (basisBal += yieldTotal), NOT
+// the harvest's step-up helper: stepUpTiers caps each tier's
+// addition at its own unrealized gain, which is right for a
+// harvest rebuy (the rebuy's basis cannot exceed the gain it
+// realized) but wrong for reinvested yield, whose basis is
+// dollars actually paid for the reinvested shares. Capping
+// it discarded real basis whenever a tier stood at (or
+// under) its basis — a 100%-basis tier reinvesting a 2%
+// yield added NO basis at all — and invented a gain on the
+// later sale (FOLLOW-UP #2, engines review: the settlement's
+// worked example priced $300 of extra federal tax at 15% on
+// a $100,000 pool for exactly this discard).
+// Distribution: the added basis fills the tiers in the
+// ledger's standing order — lowest basis ratio first, the
+// order the capped path already used, so every total the
+// cap did not bind is unchanged — but it does NOT stop at
+// each tier's balance: once every tier stands at (or above)
+// its own balance, the remaining yield basis lands on the
+// first tier in that order, pushing its basis past its
+// balance rather than being discarded. A tier's basis may
+// therefore pass its balance when the tier is underwater at
+// reinvestment time (a decline shrank the balance, not the
+// basis paid); that excess is real basis, floored at $0
+// only, exactly as the single pool and the commit/growth
+// reconciler already treat it. The total added is the full
+// amount in every case.
 function reinvestYieldIntoTiers(tiers: TierLedger[], amount: number): void {
-  stepUpTiers(tiers, amount);
+  if (amount <= 0 || tiers.length === 0) return;
+  const ranked = tiers
+    .map((t, i) => ({ i, ratio: t.bal > 0 ? t.basis / t.bal : 1 }))
+    .sort((a, b) => a.ratio - b.ratio);
+  let remaining = amount;
+  for (const { i } of ranked) {
+    if (remaining <= 0) break;
+    const t = tiers[i]!;
+    const room = Math.max(0, t.bal - t.basis);
+    const add = Math.min(room, remaining);
+    t.basis += add;
+    remaining -= add;
+  }
+  if (remaining > 0) {
+    const host = tiers[ranked[0]!.i]!;
+    host.basis += remaining;
+  }
 }
 
 // Clamp a committed tier ledger to the balance it describes:
@@ -2790,6 +2825,54 @@ export type RothPlanInputs = {
   // strategy, so every candidate prices against the same
   // embedded premium.
   acaEmbeddedNetPremium?: number | null;
+  // HEALTH PREMIUM TERM (build v208): the household's health
+  // insurance premiums as ENTERED annual amounts (today's
+  // dollars, like the plan's other annual amounts) — the fix
+  // for the gap the 2026-11-03 engine check established: the
+  // march tracked the ACA premium credit but, outside the
+  // v135 embedded-premium swap, never charged a premium, and
+  // it never charged the Medicare BASE premiums (Part B
+  // standard + Part D base) at all — only the IRMAA surcharge
+  // above them. When ANY of the three fields below is entered
+  // (non-null), the term is ACTIVE: annualSpending is read as
+  // spending EXCLUDING health premiums, the v135 embedded
+  // reconciliation does not engage, and each retired year
+  // (age >= retirementAge; $0 before it — a working year with
+  // employer coverage charges no premium, the December
+  // reference case's rule) funds its ACTUAL health premium
+  // on top of its spending need:
+  // · Marketplace years: the year's gross premium is
+  //   healthPremiumAcaHousehold when BOTH spouses are on the
+  //   marketplace, healthPremiumAcaSingle when exactly one
+  //   is; a null applicable field falls back to the year's
+  //   benchmark (the plan's standing proxy for the enrolled
+  //   premium). The funded amount is the NET premium — gross
+  //   less the year's priced premium credit, the credit
+  //   capped at the gross premium (Form 8962's enrollment
+  //   cap, applied here because the entered premium IS the
+  //   enrollment premium) — iterated inside the settlement
+  //   exactly like the v135 reconciliation's credit, because
+  //   the credit depends on the year's MAGI and the MAGI on
+  //   the draws the need drives.
+  // · Medicare: healthPremiumMedicarePerPerson × the year's
+  //   persons on Medicare (the same count the IRMAA
+  //   surcharge charges on — the primary from 65, the spouse
+  //   from her ACA end age). This is the BASE premium only;
+  //   the IRMAA surcharge stays its own separate need, so no
+  //   dollar is charged twice. Null = no base premium
+  //   entered for Medicare years ($0 charged for that part).
+  // The year's gross and net premiums ride the year row
+  // (healthPremiumGross / healthPremiumNet), the funding
+  // ledger carries the net as its own need, and the plan
+  // score adds the lifetime GROSS premium beside the credit
+  // it already subtracts (see netCostBreakdown), so the
+  // score's net premium effect is the net premium itself.
+  // All three absent / null = the term never engages and
+  // every year prices bit-identically to before (the v135
+  // reconciliation exactly as it was).
+  healthPremiumAcaHousehold?: number | null;
+  healthPremiumAcaSingle?: number | null;
+  healthPremiumMedicarePerPerson?: number | null;
   inflationPct: number;
   stateRatePct: number;
   // State of residence (T3 build). Optional so every
@@ -3259,6 +3342,29 @@ export type RothYearDetail = {
   lossAllowance: number;
   lossCarryOutSt: number;
   lossCarryOutLt: number;
+  // The Washington-attributable parts of the year's
+  // carry-in and carry-out, by character (follow-up #4,
+  // engines review round 2; display only like the rest of
+  // this ledger block): the portions of lossCarryInSt /
+  // lossCarryInLt that entered the year attributed to
+  // Washington-allocated sales, and the portions of
+  // lossCarryOutSt / lossCarryOutLt that leave it still so
+  // attributed (the ledger's reconciled waCarryOut — the
+  // entering attribution less its pro-rata share of the
+  // year's gains-absorption and of the allowance actually
+  // used). Each is a portion of its character's total,
+  // never more. Before these fields the detail surfaced
+  // only the absorbed Washington part (lossWaAbsorbed
+  // above), so a consumer reconstructing the year — the
+  // Playground's saved-plan-year loader — could copy the
+  // federal carry-in but had no source for the Washington
+  // half and priced the year's excise on the gross gains.
+  // All $0 in every year of a plan with no
+  // Washington-attributable carryforward entered.
+  lossCarryInWaSt: number;
+  lossCarryInWaLt: number;
+  lossCarryOutWaSt: number;
+  lossCarryOutWaLt: number;
   taxExemptInterest: number;
   provisionalIncome: number;
   ssTaxable: number;
@@ -3349,7 +3455,12 @@ export type RothYearDetail = {
    (the year's final federal tax PLUS any pre-59½ withholding
    penalty — the penalty is paid to the IRS as part of the
    federal withholding and has no separate need column),
-   stateTax, irmaa (premiums paid this year).
+   stateTax, irmaa (Medicare premium surcharges paid this
+   year), healthPremium (build v208: the year's NET health
+   premium — marketplace net of its priced credit plus
+   Medicare base premiums — when the plan enters the health
+   premium term; spending then excludes it, so the two
+   never double-count).
    SOURCES are APPLIED amounts under one stated attribution
    waterfall, so the sources sum to the needs (the cash
    identity) by construction — with two explicit reconciling
@@ -3404,6 +3515,18 @@ export type RothYearFunding = {
   federalTax: number;
   stateTax: number;
   irmaa: number;
+  // Health premium (build v208): the year's NET health
+  // premium funded as its own need — the marketplace net
+  // premium (entered gross less the settlement's priced
+  // credit, capped at the gross) plus the Medicare base
+  // premium for the year's persons on Medicare. It is a
+  // NEED beside irmaa: `spending` above EXCLUDES it, so
+  // spending + healthPremium + federalTax + stateTax +
+  // irmaa is the year's total need and the cash identity
+  // (sources + spendShortfall + unpaidTax = needs) foots
+  // exactly as before. $0 in every year of a plan whose
+  // health premium term is not entered.
+  healthPremium: number;
   ss: number;
   rmd: number;
   otherIncome: number;
@@ -3514,6 +3637,18 @@ export type RothYear = {
   irmaaPaid: number;
   acaCreditKept: number;
   acaPriced: boolean;
+  // Health premium term (build v208): the year's GROSS
+  // health premium (the entered marketplace premium for the
+  // year's marketplace tier — or the benchmark fallback —
+  // plus the Medicare base premium for the year's persons
+  // on Medicare) and the year's NET health premium actually
+  // funded (gross less the settlement's priced premium
+  // credit, the credit capped at the marketplace gross;
+  // the Medicare part is never reduced). Both $0 in every
+  // year of a plan that does not enter the term, and in
+  // pre-retirement years of one that does.
+  healthPremiumGross: number;
+  healthPremiumNet: number;
   // Priced under 138% FPL: at that income, coverage routes to
   // Medicaid rather than a marketplace plan in most states — the
   // priced credit is flagged, not presented as a marketplace
@@ -3640,6 +3775,14 @@ export type RothPlanResult = {
   // same nominal basis as the other lifetime totals above.
   // Display only — no score or ranking uses it.
   lifetimeSsCollected: number;
+  // Lifetime health premiums (build v208): the sums of the
+  // years' healthPremiumGross / healthPremiumNet. The score
+  // adds the GROSS figure and subtracts the ACA credit it
+  // already carries, so its net premium effect is the NET
+  // figure. Both $0 for any plan that does not enter the
+  // health premium term.
+  lifetimeHealthPremiumGross: number;
+  lifetimeHealthPremiumNet: number;
   endingPretax: number;
   endingRoth: number;
   endingTaxable: number;
@@ -3909,6 +4052,32 @@ export function simulateRothPlan(
     Number.isFinite(inputs.acaEmbeddedNetPremium)
       ? Math.max(0, inputs.acaEmbeddedNetPremium)
       : null;
+  // HEALTH PREMIUM TERM (build v208): the entered annual
+  // amounts, clamped at $0 like every annual amount the march
+  // reads. The term is ACTIVE when any one is entered; while
+  // active the v135 embedded reconciliation never engages
+  // (the per-year premiumReconcile below is gated on
+  // !healthActive) — spending is read as excluding health
+  // premiums and the year's actual premium is funded on top.
+  const healthAcaHouseholdDollars =
+    inputs.healthPremiumAcaHousehold != null &&
+    Number.isFinite(inputs.healthPremiumAcaHousehold)
+      ? Math.max(0, inputs.healthPremiumAcaHousehold)
+      : null;
+  const healthAcaSingleDollars =
+    inputs.healthPremiumAcaSingle != null &&
+    Number.isFinite(inputs.healthPremiumAcaSingle)
+      ? Math.max(0, inputs.healthPremiumAcaSingle)
+      : null;
+  const healthMedicarePerPersonDollars =
+    inputs.healthPremiumMedicarePerPerson != null &&
+    Number.isFinite(inputs.healthPremiumMedicarePerPerson)
+      ? Math.max(0, inputs.healthPremiumMedicarePerPerson)
+      : null;
+  const healthActive =
+    healthAcaHouseholdDollars != null ||
+    healthAcaSingleDollars != null ||
+    healthMedicarePerPersonDollars != null;
   const growth = Math.max(0, 1 + inputs.expectedReturnPct / 100);
   const gainPct = Math.min(100, Math.max(0, 100 - inputs.taxableBasisPct)) / 100;
   // BASIS-DRIFT (entered basis % only): the taxable account
@@ -3921,8 +4090,11 @@ export function simulateRothPlan(
   // it pro-rata at the ratio then in force; every inflow of
   // after-tax money (the surplus sweep, a settlement credit)
   // raises it dollar-for-dollar; harvesting adds the harvested
-  // gain. Invariants: 0 ≤ basis $ ≤ balance at every step, and
-  // the basis share rises only via inflows or harvests — so
+  // gain. Invariant: basis $ ≥ 0 at every step (it may pass
+  // the balance when the pool is underwater or reinvested
+  // yield outruns the return — basis is dollars paid), and
+  // the basis share rises only via inflows, reinvested yield,
+  // or harvests — so
   // year-1 draws price exactly as the flat-% model did (the
   // starting ratio IS the entered %), and divergence emerges
   // only as growth and draws move the ratio. Gains harvesting
@@ -4025,6 +4197,8 @@ export function simulateRothPlan(
   let lifetimeAmt = 0;
   let lifetimeSsCollected = 0;
   let lifetimeUnpaidTax = 0;
+  let lifetimeHealthPremiumGross = 0;
+  let lifetimeHealthPremiumNet = 0;
   // Capital-loss carryforward ledger state (T4): the banked
   // loss entering the plan, by character. Each year nets it
   // against the year's own gains in the statutory order (see
@@ -4142,9 +4316,22 @@ export function simulateRothPlan(
     // search, and the marginal reprices all price through
     // this one transform, so they can never disagree about
     // the year's netting. In a year with no carry-in the
-    // transform is the identity — the returned fields are
-    // exactly the pre-T4 ones — which is what keeps a plan
-    // with no banked loss bit-identical.
+    // transform is the identity on the gain itself, with ONE
+    // addition (FOLLOW-UP #3, engines review follow-up,
+    // settled STAND): the year's own §1211(b) allowance on a
+    // net capital LOSS — the in-year figure the single-year
+    // pricer's gainsFieldsFor has always returned
+    // (min(cap, −grossGains) on a loss, $0 otherwise). Before
+    // this fix the march returned no allowance without an
+    // entering carryforward, so a loss-only taxable
+    // withdrawal (an underwater pool's sale, whose gain rate
+    // is negative) priced its negative ltcg with the
+    // allowance defaulted to $0 and overstated AGI, ACA
+    // MAGI, and tax by the unclaimed $3,000. The allowance
+    // is claimed here only — the year's carry-OUT ledger
+    // still runs only when a carry-in entered (ledFinal
+    // below): a no-carry-in year's unused loss beyond the
+    // allowance is not banked by this build.
     const carryInSt = lossCarrySt;
     const carryInLt = lossCarryLt;
     const carryInWaSt = lossCarryWaSt;
@@ -4153,7 +4340,15 @@ export function simulateRothPlan(
     const ledgerFields = (
       grossGains: number,
     ): { ltcg: number; capitalLossAllowance?: number; waGainsBase?: number } => {
-      if (!ledgerOn) return { ltcg: grossGains };
+      if (!ledgerOn) {
+        return {
+          ltcg: grossGains,
+          capitalLossAllowance: Math.min(
+            capitalLossAllowanceCap(effFilingStatus),
+            Math.max(0, -grossGains),
+          ),
+        };
+      }
       // A trial pricing reads only the netted result and
       // the CLAIMED allowance from the transform — never
       // its carry-out — so utilization is passed as
@@ -4345,7 +4540,29 @@ export function simulateRothPlan(
     // funded need to the credit the settlement actually
     // prices.
     const premiumReconcile =
-      premiumEmbeddedDollars != null && acaActive && benchmark != null;
+      !healthActive &&
+      premiumEmbeddedDollars != null &&
+      acaActive &&
+      benchmark != null;
+    // HEALTH PREMIUM TERM (build v208): this year's gross
+    // marketplace premium under the entered term — the
+    // household amount when both spouses are on the
+    // marketplace, the single amount when exactly one is, a
+    // null applicable amount falling back to the year's
+    // benchmark (null benchmark = no premium can be stated,
+    // $0). The Medicare part is computed with
+    // personsOnMedicare below. The term funds premiums only
+    // in retired years (year >= retirementYear is already
+    // the ACA scope; the charge itself is gated on the
+    // year's spending need existing — see settleRound).
+    const healthGrossAca = !healthActive
+      ? 0
+      : !acaActive
+        ? 0
+        : primaryOnAca && spouseOnAca
+          ? (healthAcaHouseholdDollars ?? benchmark ?? 0)
+          : (healthAcaSingleDollars ?? benchmark ?? 0);
+    const healthAcaThisYear = healthActive && acaActive && healthGrossAca > 0;
     const premiumInitialCredit = premiumReconcile
       ? Math.min(
           Math.max(0, (benchmark as number) - (premiumEmbeddedDollars as number)),
@@ -4774,6 +4991,15 @@ export function simulateRothPlan(
         : 0
       : (age >= 65 ? 1 : 0) +
         (spouseAge != null && spouseAge >= spouseAcaEndAge ? 1 : 0);
+    // HEALTH PREMIUM TERM (build v208): the year's Medicare
+    // base premium — the entered per-person amount × the
+    // persons on Medicare this year (the IRMAA count just
+    // above). $0 when the per-person amount is not entered.
+    const healthMedicarePremium =
+      healthMedicarePerPersonDollars != null
+        ? r2(healthMedicarePerPersonDollars * personsOnMedicare)
+        : 0;
+    const healthGrossYear = r2(healthGrossAca + healthMedicarePremium);
     let irmaaPaid = 0;
     let irmaaPaidTier: number | null = null;
     // The lookback entry for this premium year: the MAGI
@@ -4925,6 +5151,15 @@ export function simulateRothPlan(
       // can never make a year's need negative. Off (no
       // embedded premium separated, or no credit priced this
       // year) the need is the base need verbatim.
+      // HEALTH PREMIUM TERM (build v208): when the term is
+      // active instead, the need is the base need PLUS the
+      // year's net health premium at the assumed credit —
+      // the Medicare base premium in full, and the
+      // marketplace gross less the assumed credit (capped at
+      // the gross) — charged only in years with a spending
+      // need (retired years; a working year charges $0).
+      // spendNeedBase > 0 is that gate: it is annualSpending
+      // from the retirement-age year on, $0 before it.
       const spendNeed = premiumReconcile
         ? Math.max(
             0,
@@ -4934,7 +5169,18 @@ export function simulateRothPlan(
                 Math.max(0, (benchmark as number) - fbCreditIn),
             ),
           )
-        : spendNeedYear;
+        : healthActive && spendNeedBase > 0
+          ? r2(
+              spendNeedYear +
+                healthMedicarePremium +
+                (healthAcaThisYear
+                  ? Math.max(
+                      0,
+                      healthGrossAca - Math.min(fbCreditIn, healthGrossAca),
+                    )
+                  : 0),
+            )
+          : spendNeedYear;
       /* Cash in counts tax-exempt interest: it is cash the
          household receives (municipal-bond interest), just
          not taxable — so it funds spending exactly like the
@@ -5357,9 +5603,19 @@ export function simulateRothPlan(
       // channels' gains and spending draw, plus the assumed
       // feedback the round opened with. (In round 1 the
       // feedback is $0 and this is the pre-fix reprice.)
+      // FOLLOW-UP #3: the gate fires on a NONZERO gains total,
+      // not only a positive one — a loss-only taxable
+      // withdrawal (an underwater pool's sales realize a
+      // negative total) changes the year's tax too, through
+      // the §1211(b) allowance ledgerFields now returns, and
+      // skipping the reprice on a negative total left the
+      // round priced at its pre-draw figures (AGI and tax
+      // overstated by the unclaimed allowance). A $0 total
+      // still skips: the opening pricing already IS the
+      // round's pricing at $0 of draw income.
       const pricedGainsTotal = realizedGains + fbGainsIn;
       const pricedExtraTotal = extraDraw + fbPretaxIn;
-      if (pricedGainsTotal > 0 || pricedExtraTotal > 0) {
+      if (pricedGainsTotal !== 0 || pricedExtraTotal > 0) {
         const repriced = priceWith(pricedGainsTotal, pricedExtraTotal, conv);
         const delta = r2(
           repriced.federalTax + repriced.stateTax - (federalTax + stateTax),
@@ -5397,25 +5653,26 @@ export function simulateRothPlan(
       // inside the balance (the balance grows at the full
       // expected return, of which the yield is a component), so
       // no balance moves here; the basis ledger rises by the
-      // yield amount, dollar for dollar UP TO the balance cap.
+      // FULL yield amount, dollar for dollar, with NO balance
+      // cap — the single pool's basisIn adds it outright, and
+      // the tiers path adds the same total (reinvestYield-
+      // IntoTiers, lowest basis ratio first, uncapped). The basis is
+      // dollars paid for the reinvested shares: when the
+      // yields outrun the year's total return, or a tier
+      // stands at its basis, the true basis passes the
+      // balance rather than being discarded — capping it
+      // here invented gains on later draws (FOLLOW-UP #2).
       // The tiers path must NOT route this through basisIn /
-      // buyIntoTiers: that helper is for real after-tax inflows
-      // (the surplus sweep above, settlement credits), whose
-      // balance genuinely rises with the money — the yield
-      // arrives with no balance of its own, so routing it there
-      // minted a phantom inflow-tier balance every year, and
-      // the committed tier ledger drifted above the settled
-      // balance by roughly each year's yield, compounding
-      // (basis past 100% of balance once the yields outran the
-      // return, zeroing harvest room by bookkeeping). Instead
-      // the yield's basis fills the tiers' unrealized gain
-      // (reinvestYieldIntoTiers), exactly the single pool's
-      // dollar-for-dollar-up-to-the-cap treatment: when the
-      // yields outrun the year's total return, the basis share
-      // caps at 100% rather than pricing modeled capital losses
-      // on later draws. On the legacy (blank-basis) path
-      // basisIn is a no-op and the commit's own update adds
-      // the yield there.
+      // buyIntoTiers either: that helper is for real after-tax
+      // inflows (the surplus sweep above, settlement credits),
+      // whose balance genuinely rises with the money — the
+      // yield arrives with no balance of its own, so routing
+      // it there minted a phantom inflow-tier balance every
+      // year, and the committed tier ledger drifted above the
+      // settled balance by roughly each year's yield,
+      // compounding. On the legacy (blank-basis) path basisIn
+      // is a no-op and the commit's own update adds the yield
+      // there.
       if (yieldTotal > 0) {
         if (sTiers) {
           reinvestYieldIntoTiers(sTiers, yieldTotal);
@@ -5433,7 +5690,7 @@ export function simulateRothPlan(
       // (fbCreditIn) and re-settles until they agree. $0 in a
       // year the reconciliation does not engage.
       const createdFbCredit =
-        premiumReconcile && benchmark != null
+        (premiumReconcile || healthAcaThisYear) && benchmark != null
           ? acaCreditFor({
               magi: priced.acaMagi,
               householdSize,
@@ -5637,10 +5894,15 @@ export function simulateRothPlan(
     // driver, so each candidate it keeps is premium-consistent
     // in the same way.
     const settleYear = (additionalArg: number, pretaxDrawCapArg?: number) => {
-      if (!premiumReconcile) {
+      if (!premiumReconcile && !healthAcaThisYear) {
         return settleYearOnce(additionalArg, pretaxDrawCapArg, 0);
       }
-      let assumed = premiumInitialCredit;
+      // The health premium term (build v208) iterates the
+      // same credit fixed point, starting from a $0 assumed
+      // credit (its first settlement funds the full gross
+      // premium; the iteration then moves the funded net
+      // premium to the credit the settlement prices).
+      let assumed = premiumReconcile ? premiumInitialCredit : 0;
       let best: ReturnType<typeof settleYearOnce> | null = null;
       let bestCreditDiff = Infinity;
       const seenCredits = new Set<number>();
@@ -5665,7 +5927,12 @@ export function simulateRothPlan(
       // loop always runs at least one pass, so `best` is set;
       // the fallback only satisfies the type.
       const kept =
-        best ?? settleYearOnce(additionalArg, pretaxDrawCapArg, premiumInitialCredit);
+        best ??
+        settleYearOnce(
+          additionalArg,
+          pretaxDrawCapArg,
+          premiumReconcile ? premiumInitialCredit : 0,
+        );
       return { ...kept, settlementConverged: false };
     };
 
@@ -5812,6 +6079,57 @@ export function simulateRothPlan(
         settled = atZero;
       }
     }
+    // M-5 — GUARDRAIL CHECK FOR THE GROW-BACKS: both
+    // grow-backs below (the IRMAA sizer alignment and the
+    // cliff-cap grow-back) bisect on the switched-on
+    // ceilings only, so on a guardrail strategy they could
+    // grow the conversion straight past the marginal-rate
+    // guardrail the fill itself stopped at — on the sample
+    // household's cliff + 22% guardrail shape the 2035 fill
+    // stops at $16,300, yet the cliff grow-back landed the
+    // year at $65,252.42 (the cliff itself), pricing the
+    // guardrail and non-guardrail candidates identically
+    // (the phantom variant) and pricing the grown dollars
+    // at marginal rates above the 22% target. The check: a
+    // candidate is guardrail-respecting only when the $100
+    // step INTO its own total conversion, priced on the
+    // candidate's own settled base (priceWith over the
+    // candidate settlement's realized gains and pre-tax
+    // draw — the same repricing base the year's effective
+    // marginal rate is computed on), costs no more than
+    // the guardrail target: the step's increase in federal
+    // + state tax, which for a $100 step IS the effective
+    // marginal rate in percent, exactly fillConversion's
+    // step rule judged on the settled path the grown year
+    // actually prices on (a candidate priced from $0 up is
+    // not the year that settles — the settlement's gains
+    // feedback moves the crossing, which is why the check
+    // reads the candidate's own base, not the fill's). A
+    // partial step at the very bottom (total under $100)
+    // is judged on its pro-rated rate. With no guardrail
+    // (guardrailTargetPct null — every non-guardrail
+    // strategy) the check passes every candidate, so those
+    // years price bit-identically to before.
+    const guardrailStepOk = (
+      candidate: ReturnType<typeof settleYear>,
+      candidateTotal: number,
+    ): boolean => {
+      if (guardrailTargetPct == null) return true;
+      if (candidateTotal <= 0) return true;
+      const stepStart = Math.max(0, candidateTotal - 100);
+      const below = priceWith(
+        candidate.realizedGains,
+        candidate.extraDraw + candidate.feedbackPretax,
+        stepStart,
+      );
+      const stepRate =
+        ((candidate.federalTax +
+          candidate.stateTax -
+          (below.federalTax + below.stateTax)) *
+          100) /
+        (candidateTotal - stepStart);
+      return stepRate <= guardrailTargetPct + 0.005;
+    };
     // Round-7 R7-5 (item K-1) — IRMAA SIZER ALIGNMENT: the
     // compliance checker measures MAGI against the TOP of the
     // capped tier (irmaaTierUpTo), but the fill + shrink-only
@@ -5922,7 +6240,11 @@ export function simulateRothPlan(
         while (lo < hi) {
           const mid = Math.floor((lo + hi + 1) / 2);
           const candidate = settleYear(additional + mid / 100);
-          if (respectsCeilings(candidate.priced) && tierOk(candidate.priced)) {
+          if (
+            respectsCeilings(candidate.priced) &&
+            tierOk(candidate.priced) &&
+            guardrailStepOk(candidate, already + additional + mid / 100)
+          ) {
             lo = mid;
             bestAdd = additional + mid / 100;
             best = candidate;
@@ -6057,7 +6379,11 @@ export function simulateRothPlan(
     // binary search over integer cents finds the largest of
     // them — landing the capped year on the cliff to the
     // cent, credit intact, exactly the way the draw-cap
-    // search above lands a draw-filled year.
+    // search above lands a draw-filled year. M-5: on a
+    // guardrail strategy the search's feasibility predicate
+    // also carries guardrailStepOk, so the grown year never
+    // lands above the marginal-rate guardrail (see the
+    // helper above the IRMAA grow-back).
     if (
       yearCeilings?.acaCliffCap === true &&
       acaCliffDollars != null &&
@@ -6133,7 +6459,8 @@ export function simulateRothPlan(
           const candidate = settleYear(additional + mid / 100);
           if (
             candidate.priced.acaMagi <= (acaTargetDollars as number) + 0.005 &&
-            respectsCeilings(candidate.priced)
+            respectsCeilings(candidate.priced) &&
+            guardrailStepOk(candidate, already + additional + mid / 100)
           ) {
             lo = mid;
             bestAdd = additional + mid / 100;
@@ -6222,14 +6549,17 @@ export function simulateRothPlan(
     // is priced — it is the year's detail figure only.
     if (driftOn) {
       // With basis tiers, the kept settlement's tier copy IS
-      // the ledger: commit it — clamped to the settled balance
-      // as a ledger in its own right, not only through the
-      // scalar below: every tier's basis within its own
-      // balance and the tier balances summing to the settled
-      // taxable balance, so the growth step's re-derivation of
-      // the scalar from the tier sum can never resurrect a
-      // basis the scalar clamp had cut. The scalar basis then
-      // follows as the clamped ledger's total.
+      // the ledger: commit it — reconciled to the settled
+      // balance as a ledger in its own right, not only through
+      // the scalar below: the tier balances summing to the
+      // settled taxable balance and every tier's basis floored
+      // at $0 (never capped at its balance — a tier's basis is
+      // dollars paid and may exceed its balance when the tier
+      // is underwater or its reinvested yield outran its
+      // return), so the growth step's re-derivation of the
+      // scalar from the tier sum can never resurrect a basis
+      // the scalar clamp had cut. The scalar basis then
+      // follows as the reconciled ledger's total.
       if (tiersActive && settled.tierEnd) {
         tierState = settled.tierEnd.map((t) => ({ ...t }));
         clampTierLedgerToBalance(tierState, taxableBal);
@@ -6531,6 +6861,32 @@ export function simulateRothPlan(
     }
     const acaUnder138 = acaPriced && acaResult != null && acaResult.pctFpl < 138;
 
+    // HEALTH PREMIUM TERM (build v208): the year's funded
+    // health premium, read off the KEPT settlement exactly
+    // as the funding ledger's need was funded — the Medicare
+    // base premium in full plus the marketplace gross less
+    // the settlement's own created credit (capped at the
+    // gross), charged only in a year with a spending need.
+    // The reported acaCreditKept above (priced after any
+    // gain harvest) can differ from the settlement's credit
+    // by the harvest's credit effect alone — the same
+    // documented gap the v135 reconciliation carries.
+    const healthPremiumNetYear =
+      healthActive && spendNeedBase > 0
+        ? r2(
+            healthMedicarePremium +
+              (healthAcaThisYear
+                ? Math.max(
+                    0,
+                    healthGrossAca -
+                      Math.min(settled.createdFbCredit, healthGrossAca),
+                  )
+                : 0),
+          )
+        : 0;
+    const healthPremiumGrossYear =
+      healthActive && spendNeedBase > 0 ? healthGrossYear : 0;
+
     // YEAR FUNDING assembly (display only — see RothYearFunding
     // for the definitions): attribute the settled year's needs
     // to its funding flows under the stated waterfall, from the
@@ -6583,10 +6939,11 @@ export function simulateRothPlan(
       const rothDrawY =
         settled.fundSpendRoth + settled.fundTaxRoth + fundHarvestTaxRoth;
       return {
-        spending: r2(spendNeedY),
+        spending: r2(spendNeedY - healthPremiumNetYear),
         federalTax: r2(federalTax + penalty),
         stateTax: r2(stateTax),
         irmaa: r2(irmaaPaid),
+        healthPremium: r2(healthPremiumNetYear),
         ss: r2(ssApplied),
         rmd: r2(rmdApplied),
         otherIncome: r2(otherApplied),
@@ -6802,6 +7159,8 @@ export function simulateRothPlan(
     lifetimePenalty += penalty;
     lifetimeIrmaa += irmaaPaid;
     lifetimeAcaKept += acaCreditKept;
+    lifetimeHealthPremiumGross += healthPremiumGrossYear;
+    lifetimeHealthPremiumNet += healthPremiumNetYear;
     lifetimeEducationRefundable += priced.educationRefundable;
     // EDUCATION REFUND DEPOSIT (Build D): this year's
     // refundable credit is next year's deposit (the start-of-
@@ -7065,6 +7424,10 @@ export function simulateRothPlan(
       lossAllowance: ledFinal ? ledFinal.allowance : 0,
       lossCarryOutSt: ledFinal ? ledFinal.carryOut.st : 0,
       lossCarryOutLt: ledFinal ? ledFinal.carryOut.lt : 0,
+      lossCarryInWaSt: r2(carryInWaSt),
+      lossCarryInWaLt: r2(carryInWaLt),
+      lossCarryOutWaSt: ledFinal ? ledFinal.waCarryOut.st : 0,
+      lossCarryOutWaLt: ledFinal ? ledFinal.waCarryOut.lt : 0,
       taxExemptInterest: r2(inputs.taxExemptInterestAnnual),
       provisionalIncome: priced.provisionalIncome,
       ssTaxable: priced.ssTaxable,
@@ -7147,6 +7510,8 @@ export function simulateRothPlan(
       acaCreditKept: r2(acaCreditKept),
       acaPriced,
       acaUnder138,
+      healthPremiumGross: r2(healthPremiumGrossYear),
+      healthPremiumNet: r2(healthPremiumNetYear),
       pretaxEnd: r2(pretax),
       pretaxPrimaryEnd: r2(pretaxP),
       pretaxSpouseEnd: r2(pretaxS),
@@ -7198,6 +7563,8 @@ export function simulateRothPlan(
     lifetimeEducationRefundable: r2(lifetimeEducationRefundable),
     lifetimeAmt: r2(lifetimeAmt),
     lifetimeSsCollected: r2(lifetimeSsCollected),
+    lifetimeHealthPremiumGross: r2(lifetimeHealthPremiumGross),
+    lifetimeHealthPremiumNet: r2(lifetimeHealthPremiumNet),
     lifetimeUnpaidTax: r2(lifetimeUnpaidTax),
     endingPretax: r2(endingPretaxTotal),
     endingRoth: r2(roth),

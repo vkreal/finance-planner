@@ -26,6 +26,7 @@ pctField,
 sectionCls,
 SEED_BIRTH_YEAR_PRIMARY,
 SEED_BIRTH_YEAR_SPOUSE,
+SEED_INFLATION,
 SEED_SS_PRIMARY_CENTS,
 SEED_SS_START_AGE,
 type FilingStatus,
@@ -40,7 +41,7 @@ import { acaHouseholdSizeForYear, irmaaTierUpTo, simulateRothPlan } from "@space
 import { impliedYieldPctsFromTaxReturn, qualifiedDividendSharePctFromTaxReturn, taxReturnPrefillDollars } from "@space/server/taxReturnCore";
 import { lawForYear, TAX_LAW_YEARS } from "@space/server/taxLaw";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
-import { compareStrategyFromSaved, parsePlaygroundPaste, planInputsFromSaved, pricePlaygroundYear, projectPlaygroundYears, solvePlaygroundAcaCliffFill, solvePlaygroundBracketFill, type PlaygroundProjection, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
+import { compareStrategyFromSaved, parsePlaygroundPaste, planInputsFromSaved, PLAYGROUND_CASH_LEFT_BASIS, pricePlaygroundYear, projectPlaygroundYears, solvePlaygroundAcaCliffFill, solvePlaygroundBracketFill, type PlaygroundProjection, type PlaygroundYearInputs, type PlaygroundYearResult } from "@space/server/rothOptimizer";
 
 /* The Playground view — one standalone year priced from typed
    dials through the shared engine (pricePlaygroundYear in
@@ -55,10 +56,9 @@ import { compareStrategyFromSaved, parsePlaygroundPaste, planInputsFromSaved, pr
    readouts; "Start from my numbers" reads the Roth record
    (below) exactly as it did from inside the Roth view. */
 
-/* Income-stacking model — the ONE computation behind both the
-   Playground readout's full stacking chart and the sticky play
-   strip's mini bar, so the two can never draw different stacks
-   for the same priced year. Presentation ONLY: every amount is
+/* Income-stacking model — the ONE computation behind the
+   Playground readout's full stacking chart. Presentation
+   ONLY: every amount is
    read straight off the priced result (`pg`,
    pricePlaygroundYear's own fields) and the SAME law row the
    pricing used (lawForYear for the dialed year + filing status,
@@ -74,7 +74,10 @@ import { compareStrategyFromSaved, parsePlaygroundPaste, planInputsFromSaved, pr
    Deductions ← pg.deductions; ordinary taxable income ←
    pg.ordinaryTaxableIncome; total taxable income ←
    pg.taxableIncome; gains ← pg.ltcgPriced, split as
-   pg.qualifiedDividends + pg.stockGain; bracket tops/rates and
+   pg.qualifiedDividends + max(0, pg.ltcgNet), less the
+   §1211(b) capital-loss allowance (pg.capitalLossAllowance)
+   as a negative segment when one priced (S-9), so the drawn
+   stack foots to AGI; bracket tops/rates and
    the capital-gains thresholds ← law.brackets / law.rates /
    law.ltcgZeroTop / law.ltcg20Floor for the filing status.
    The track is the gross stack (AGI) laid over a taxable-income
@@ -92,9 +95,9 @@ const STACK_HATCH_STYLE = {
 /* Muted per-bracket colours for the stacking chart's bracket
    markers (10 / 12 / 22 / 24, in band order): each marker's
    dashed line, its top label, and its bottom-legend text all
-   share the one colour, in the full chart and in the play
-   strip's mini bar alike (the colour rides on the marker
-   objects buildStackModel returns). The ACA cliff keeps
+   share the one colour in the full chart (the colour rides
+   on the marker objects buildStackModel returns). The ACA
+   cliff keeps
    var(--warn); the 0% gains-end line and its label keep
    their own pink (#db2777 — build v114: recoloured off
    the qualified-dividends green #65a30d the gains segments
@@ -109,6 +112,11 @@ type StackSeg = {
   short?: string;
   amount: number;
   color: string;
+  /* Hatched segment (S-9): the §1211(b) allowance segment —
+     a negative amount drawn with the deductions hatch over
+     the stack's tail, in the bar and in the legend swatch
+     alike, marking income the stack does not keep. */
+  hatch?: boolean;
 };
 type StackSegPos = StackSeg & {
   leftPct: number;
@@ -326,6 +334,10 @@ function buildStackModel(
   // The §1211(b) capital-loss allowance reduces the net
   // stack (it is priced against ordinary income, after the
   // loss offsets gains), so the gross total foots to AGI.
+  // The drawn segments carry the same allowance as a
+  // negative segment (see gainsSegs below, S-9), so the
+  // rendered stack — bar and legend alike — foots to the
+  // same AGI instead of overstating it by the allowance.
   const grossTotal = grossOrd + gainsTotal - pg.capitalLossAllowance;
   const top24 = tops[3] ?? 0;
   // The taxable axis runs to the top of the highest bracket the
@@ -406,23 +418,50 @@ function buildStackModel(
     const widthPct = pct(Math.abs(s.amount));
     return { ...s, leftPct: pct(left), widthPct, wide: widthPct >= 9 };
   });
+  /* The gains stack decomposed from the priced result's own
+     components (S-9): the qualified dividends, the priced net
+     capital gain — max(0, pg.ltcgNet), NOT the typed sale gain
+     (pg.stockGain): an entering loss carryforward nets against
+     the sale before the stack prices and a harvested gain adds
+     to it, so the typed figure alone can overstate or
+     understate the priced part — and, when a net capital loss
+     priced one, the §1211(b) allowance as a NEGATIVE segment,
+     so the segments sum to gainsTotal − capitalLossAllowance
+     and the whole drawn stack foots to grossTotal (AGI),
+     exactly as the additive rows below the chart do. Before
+     S-9, a year whose sale lost money drew ONE segment
+     labelled "Long-term gains (net)" for the whole ltcgPriced:
+     on the settlement's loss-year example that read $15,000 of
+     "gains" where there were no gains at all (the $15,000 was
+     entirely qualified dividends; the sale lost $5,000), and
+     no segment carried the allowance, so the rendered stack
+     stood at $21,500 against an AGI of $18,500 — overstated
+     by the $3,000 allowance. Each segment is gated on its own
+     priced figure, so a no-loss year draws exactly the
+     segments it drew before. */
   const gainsSegs: StackSeg[] = [];
-  if (gainsTotal > 0 && pg.stockGain >= 0) {
-    if (pg.qualifiedDividends > 0) {
-      gainsSegs.push({ key: "qualdiv", label: "Qualified dividends", short: "Qual div", amount: pg.qualifiedDividends, color: "#84cc16" });
-    }
-    if (pg.stockGain > 0) {
-      gainsSegs.push({ key: "ltgain", label: "Long-term gain", short: "LT gain", amount: pg.stockGain, color: "#f97316" });
-    }
-  } else if (gainsTotal > 0) {
-    gainsSegs.push({ key: "ltgainnet", label: "Long-term gains (net)", short: "LT gains", amount: gainsTotal, color: "#f97316" });
+  if (pg.qualifiedDividends > 0) {
+    gainsSegs.push({ key: "qualdiv", label: "Qualified dividends", short: "Qual div", amount: pg.qualifiedDividends, color: "#84cc16" });
+  }
+  const netGainPart = Math.max(0, pg.ltcgNet);
+  if (netGainPart > 0) {
+    gainsSegs.push({ key: "ltgain", label: "Long-term gain", short: "LT gain", amount: netGainPart, color: "#f97316" });
+  }
+  if (pg.capitalLossAllowance > 0) {
+    gainsSegs.push({ key: "caplossallowance", label: "Capital-loss allowance (§1211(b))", short: "Loss allowance", amount: -pg.capitalLossAllowance, color: "#8a8378", hatch: true });
   }
   let gCum = grossOrd;
   const gainsPos: StackSegPos[] = gainsSegs.map((s) => {
     const start = gCum;
     gCum += s.amount;
+    // A negative segment (the §1211(b) allowance) draws over
+    // the tail it removes: its left edge is the LOWER of the
+    // two cumulative edges — the ordPos convention for
+    // negative amounts, applied to the gains stack. Positive
+    // segments are positioned exactly as before.
+    const left = Math.min(start, gCum);
     const widthPct = pct(Math.abs(s.amount));
-    return { ...s, leftPct: pct(Math.max(0, start)), widthPct, wide: widthPct >= 12 };
+    return { ...s, leftPct: pct(Math.max(0, left)), widthPct, wide: widthPct >= 12 };
   });
   // The legend lists EVERY segment with its full name and
   // amount, so no figure depends on an in-bar label fitting:
@@ -471,6 +510,55 @@ function fmtDollarsExact(dollars: number): string {
     maximumFractionDigits: 2,
   })}`;
   return neg ? `−${s}` : s;
+}
+
+/* Month / Year pills for the two spend readouts ("Cash left
+   after tax" and "Left after a year's spending"): ONE shared
+   persisted state (the "playground.spendPerMonth" fold-store
+   flag — see the hook in the Playground component), rendered
+   at both readout spots (the sticky play strip and the Tax
+   for the year card), so tapping either pill group switches
+   both readouts together. Display only: in Month mode each
+   readout shows its annual figure divided by 12 at cent
+   precision with a "/mo" suffix and its label / sub-line
+   names the month; the underlying priced figures, the dials,
+   and every stored figure are untouched. Mirrors the
+   Spending view's per-year / per-month pill styling. */
+function SpendPeriodPills({
+  perMonth,
+  onChange,
+}: {
+  perMonth: boolean;
+  onChange: (perMonth: boolean) => void;
+}) {
+  const pillCls = (active: boolean) =>
+    `px-2 py-1 text-xs font-medium ${active ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`;
+  return (
+    <div
+      role="group"
+      aria-label="Spend display period"
+      className="flex shrink-0 overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
+    >
+      <button
+        type="button"
+        aria-label="Show spend per month"
+        aria-pressed={perMonth}
+        onClick={() => onChange(true)}
+        className={pillCls(perMonth)}
+      >
+        Month
+      </button>
+      <button
+        type="button"
+        aria-label="Show spend per year"
+        aria-pressed={!perMonth}
+        onClick={() => onChange(false)}
+        className={pillCls(!perMonth)}
+      >
+        Year
+      </button>
+    </div>
+  );
 }
 
 /* Held fill target — a bracket top (its rate pct) or the ACA
@@ -548,6 +636,11 @@ const projTemplateToStored = (
   pretaxBalance: inp.pretaxBalance,
   pretaxBalanceSpouse: inp.pretaxBalanceSpouse ?? null,
   spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
+  // The reciprocal beneficiary fact (N-1): carried so a
+  // template captured from a prefilled year keeps the
+  // spouse's RMD table selection the dials priced with.
+  primarySoleBeneficiaryOfSpouse:
+    inp.primarySoleBeneficiaryOfSpouse ?? null,
   acaHouseholdSize: inp.acaHouseholdSize,
   acaBenchmarkAnnual: inp.acaBenchmarkAnnual,
   stateRatePct: inp.stateRatePct,
@@ -557,6 +650,7 @@ const projTemplateToStored = (
   itemizedCharitable: inp.itemizedCharitable ?? 0,
   itemizedOther: inp.itemizedOther ?? 0,
   educationStudents: inp.educationStudents ?? null,
+  inflationPct: inp.inflationPct ?? null,
 });
 const projTemplateFromStored = (
   s: PgProjTemplateStored,
@@ -1545,7 +1639,15 @@ export function Playground({
      65+ (a null override = follow the age) until the user
      toggles one. pgSoleBeneficiary is not a visible dial — it
      is carried from the plan by the prefill (default on) and
-     only steers the RMD's Joint Life rule. */
+     only steers the RMD's Joint Life rule.
+     pgPrimarySoleBeneficiaryOfSpouse is its reciprocal twin
+     (N-1): also not a visible dial — carried from the plan by
+     the prefill (and by the saved-plan-year loader, a paste,
+     and the remembered form) and steers only the SPOUSE's
+     RMD table. Tri-state like the record: null = not
+     established, so the spouse's RMD prices on the Uniform
+     table — the conservative reading, and the reading every
+     form remembered before N-1 reopens with. */
   const currentCalendarYear = new Date().getFullYear();
   const [pgYear, setPgYear] = useState(String(currentCalendarYear));
   const [pgFiling, setPgFiling] = useState<FilingStatus>("mfj");
@@ -1574,6 +1676,76 @@ export function Playground({
   const [pgPretaxSpouse, setPgPretaxSpouse] = useState("");
   const [pgAcaSize, setPgAcaSize] = useState("");
   const [pgBenchmark, setPgBenchmark] = useState("");
+  // Health premium dials (build v208): the year's entered
+  // marketplace premium and Medicare base premium per
+  // person — readouts only (net premium, cash left after
+  // health premiums); they never enter the year's tax.
+  const [pgHealthAca, setPgHealthAca] = useState("");
+  const [pgHealthMedicare, setPgHealthMedicare] = useState("");
+  // ACA reconciliation dials (S-1, engines review round 2):
+  // the advance premium credit actually taken during the
+  // year and the coverage-month reduction. buildPgInputs
+  // passes both (blank = $0) plus the marketplace health
+  // premium dial as the enrollment premium, so the year's
+  // cash left after tax is the year's FILING SETTLEMENT —
+  // the same figure the December view reports for the same
+  // year and facts. Before S-1 the Playground passed none
+  // of the facts, so its cash left skipped the settlement
+  // and disagreed with December by the whole credit.
+  const [pgAptcTaken, setPgAptcTaken] = useState("");
+  const [pgCoverageReduction, setPgCoverageReduction] = useState("");
+  // December-only pricing dials (S-2, engines review
+  // round 2): the entering capital-loss carryforward (the
+  // short-term and long-term amounts and each one's
+  // Washington-attributable portion), the RMD already
+  // received, and the dependent MAGI for ACA. The shared
+  // pricer has priced all three facts for the December
+  // console since their builds (v111 / the December fix /
+  // the §36B channel), but buildPgInputs never passed
+  // them, so a Playground year that had them priced
+  // without them: a banked loss never netted (tax and
+  // MAGI overstated by the absorbed amount), a paid RMD
+  // counted twice (once in the entered income, once as
+  // the pricer's added RMD), and a filing dependent's
+  // MAGI missing from the ACA household (a credit shown
+  // that the household is not owed). Blank = none / $0,
+  // exactly the December console's own readings.
+  const [pgCarryInSt, setPgCarryInSt] = useState("");
+  const [pgCarryInLt, setPgCarryInLt] = useState("");
+  const [pgCarryInStWa, setPgCarryInStWa] = useState("");
+  const [pgCarryInLtWa, setPgCarryInLtWa] = useState("");
+  const [pgRmdReceived, setPgRmdReceived] = useState("");
+  const [pgDependentMagi, setPgDependentMagi] = useState("");
+  // Cash and Roth funding dials (S-6, engines review
+  // round 2): money taken out of the cash sleeve and out
+  // of the Roth accounts to fund the year's spending.
+  // buildPgInputs passes both (blank = $0) and the pricer
+  // counts them as spendable funding in cash in — priced
+  // as their own source, never as income and never as a
+  // taxable sale — so a cash- or Roth-funded year prices
+  // its true verdict. Before S-6 the Playground had no
+  // dial for either, so such a year showed no funding for
+  // the money that actually paid its spending and read
+  // short by the whole draw. The saved-plan-year loader
+  // fills them from the march's funding ledger (its
+  // cashSpend and rothDraw rows).
+  const [pgCashDraw, setPgCashDraw] = useState("");
+  const [pgRothDraw, setPgRothDraw] = useState("");
+  // Reinvested-yield flag (S-3, engines review round 2):
+  // set ONLY by loading a year from the saved plan (or by a
+  // paste that carries it). The loaded year's interest and
+  // dividends are the plan march's yield, which the march
+  // reinvested — it counts $0 of funding there — while the
+  // loader's sales and draws are already march-sized, so
+  // buildPgInputs passes the flag and the pricer keeps the
+  // yield out of cash in (it still prices as income in
+  // full). Before S-3 the loaded year counted the yield as
+  // cash on top of those sales and draws and repriced with
+  // more cash left than the march funded, by the yield.
+  // Typing in any income dial clears it (the figures are
+  // then the user's own, received as cash), as do the
+  // blank-year, as-filed, prefill, and reset loads.
+  const [pgYieldReinvested, setPgYieldReinvested] = useState(false);
   /* ACA cliff buffer — the "Buffer below the ACA cliff"
      dial (ACA buffer guide build; build v71): how far
      under the 400%-of-FPL cliff the ACA target sits. The
@@ -1660,6 +1832,10 @@ export function Playground({
     { expenses: string; aotcEligible: boolean }[]
   >([]);
   const [pgSoleBeneficiary, setPgSoleBeneficiary] = useState(true);
+  const [
+    pgPrimarySoleBeneficiaryOfSpouse,
+    setPgPrimarySoleBeneficiaryOfSpouse,
+  ] = useState<boolean | null>(null);
   /* Hold-the-fill state — remembered with the rest of the
      form, like every other playground dial, so a held target
      is still held (and still solving) when the form reopens.
@@ -1959,6 +2135,20 @@ export function Playground({
   const [pasteOpen, setPasteOpen] = usePersistedFold(
     "playground.pasteInputs",
   );
+  /* Month / Year spend-display toggle (2026-11-03): ONE
+     persisted flag in the same generic fold store, shared by
+     BOTH spend readouts — "Cash left after tax" and "Left
+     after a year's spending" — in both places they render
+     (the sticky play strip and the Tax for the year card), so
+     the two readouts always switch together and the last
+     choice comes back after a reload. No entry (the store's
+     default) is Year, the display as it has always been; an
+     entry means the user last left it on Month. Display only:
+     Month mode divides the priced annual figures by 12 at
+     render time — nothing priced or stored ever changes. */
+  const [spendPerMonth, setSpendPerMonth] = usePersistedFold(
+    "playground.spendPerMonth",
+  );
   // The year chosen on the "A year from my saved plan" preset
   // card (a calendar year from the saved plan's priced years);
   // null until the priced years land, then the first year is
@@ -2049,6 +2239,19 @@ export function Playground({
     setPgPretaxSpouse(s.pretaxBalanceSpouse ?? "");
     setPgAcaSize(s.acaHouseholdSize);
     setPgBenchmark(s.acaBenchmark);
+    setPgHealthAca(s.healthPremiumAca ?? "");
+    setPgHealthMedicare(s.healthPremiumMedicare ?? "");
+    setPgAptcTaken(s.aptcTaken ?? "");
+    setPgCoverageReduction(s.acaCoverageReduction ?? "");
+    setPgCarryInSt(s.capitalLossCarryInSt ?? "");
+    setPgCarryInLt(s.capitalLossCarryInLt ?? "");
+    setPgCarryInStWa(s.capitalLossCarryInStWa ?? "");
+    setPgCarryInLtWa(s.capitalLossCarryInLtWa ?? "");
+    setPgRmdReceived(s.rmdAlreadyReceived ?? "");
+    setPgDependentMagi(s.dependentMagiForAca ?? "");
+    setPgCashDraw(s.cashDraw ?? "");
+    setPgRothDraw(s.rothDraw ?? "");
+    setPgYieldReinvested(s.yieldReinvested ?? false);
     setPgAcaBuffer(s.acaBuffer);
     setPgBenchmarkLoaded(s.benchmarkSource);
     setPgIncomeSources(s.incomeSources);
@@ -2060,6 +2263,9 @@ export function Playground({
     setPgItemizedOther(s.itemizedOther);
     setPgEduStudents(s.educationStudents);
     setPgSoleBeneficiary(s.soleBeneficiary);
+    setPgPrimarySoleBeneficiaryOfSpouse(
+      s.primarySoleBeneficiaryOfSpouse ?? null,
+    );
     setPgHoldOn(s.holdOn);
     setPgHeldTarget(s.heldTarget);
     setPgProjOpen(s.projOpen);
@@ -2126,6 +2332,19 @@ export function Playground({
     pretaxBalanceSpouse: pgPretaxSpouse,
     acaHouseholdSize: pgAcaSize,
     acaBenchmark: pgBenchmark,
+    healthPremiumAca: pgHealthAca,
+    healthPremiumMedicare: pgHealthMedicare,
+    aptcTaken: pgAptcTaken,
+    acaCoverageReduction: pgCoverageReduction,
+    capitalLossCarryInSt: pgCarryInSt,
+    capitalLossCarryInLt: pgCarryInLt,
+    capitalLossCarryInStWa: pgCarryInStWa,
+    capitalLossCarryInLtWa: pgCarryInLtWa,
+    rmdAlreadyReceived: pgRmdReceived,
+    dependentMagiForAca: pgDependentMagi,
+    cashDraw: pgCashDraw,
+    rothDraw: pgRothDraw,
+    yieldReinvested: pgYieldReinvested,
     acaBuffer: pgAcaBuffer,
     benchmarkSource: pgBenchmarkLoaded,
     incomeSources: pgIncomeSources,
@@ -2137,6 +2356,7 @@ export function Playground({
     itemizedOther: pgItemizedOther,
     educationStudents: pgEduStudents,
     soleBeneficiary: pgSoleBeneficiary,
+    primarySoleBeneficiaryOfSpouse: pgPrimarySoleBeneficiaryOfSpouse,
     holdOn: pgHoldOn,
     heldTarget: pgHeldTarget,
     projOpen: pgProjOpen,
@@ -2733,6 +2953,37 @@ export function Playground({
     setPgPretaxSpouse(moneyOrBlank(inp.pretaxBalanceSpouse ?? null));
     setPgAcaSize(inp.acaHouseholdSize != null ? String(inp.acaHouseholdSize) : "");
     setPgBenchmark(moneyOrBlank(inp.acaBenchmarkAnnual));
+    // The paste payload carries the health premium inputs
+    // (health premium build); an older paste carries neither
+    // and loads both blank — no premium priced, as before.
+    setPgHealthAca(moneyOrBlank(inp.healthPremiumAcaAnnual ?? null));
+    setPgHealthMedicare(moneyOrBlank(inp.healthPremiumMedicarePerPerson ?? null));
+    // The paste payload carries the ACA reconciliation facts
+    // (S-1); an older paste carries neither and loads both
+    // blank — $0 taken, no reduction, exactly as before. The
+    // enrollment premium rides the marketplace health
+    // premium dial set just above, as buildPgInputs reads it.
+    setPgAptcTaken(moneyOrBlank(inp.aptcTaken ?? null));
+    setPgCoverageReduction(moneyOrBlank(inp.acaCoverageReduction ?? null));
+    // The paste payload carries the December-only pricing
+    // facts (S-2); an older paste carries none of them and
+    // loads them all blank — no carry-in, no RMD received,
+    // no dependent, exactly as before.
+    setPgCarryInSt(moneyOrBlank(inp.capitalLossCarryInSt ?? null));
+    setPgCarryInLt(moneyOrBlank(inp.capitalLossCarryInLt ?? null));
+    setPgCarryInStWa(moneyOrBlank(inp.capitalLossCarryInStWa ?? null));
+    setPgCarryInLtWa(moneyOrBlank(inp.capitalLossCarryInLtWa ?? null));
+    setPgRmdReceived(moneyOrBlank(inp.rmdAlreadyReceived ?? null));
+    setPgDependentMagi(moneyOrBlank(inp.dependentMagiForAca ?? null));
+    // The paste payload carries the cash and Roth funding
+    // draws (S-6); an older paste carries neither and loads
+    // both blank — no funding counted, exactly as before.
+    setPgCashDraw(moneyOrBlank(inp.cashDraw ?? null));
+    setPgRothDraw(moneyOrBlank(inp.rothDraw ?? null));
+    // The paste payload carries the reinvested-yield fact
+    // (S-3); an older paste carries no such key and loads
+    // with it off — the yield counts as cash, as before.
+    setPgYieldReinvested(inp.yieldReinvested === true);
     // A paste-load is the user's own typed value, not a plan
     // prefill — clear the benchmark source record (no caption).
     setPgBenchmarkLoaded(null);
@@ -2746,6 +2997,13 @@ export function Playground({
     });
     setPgStateRate(String(inp.stateRatePct));
     setPgSoleBeneficiary(inp.spouseSoleBeneficiary);
+    // The paste payload carries the reciprocal beneficiary
+    // fact (N-1); an older paste carries no such key and
+    // loads with it unset — not established, so the
+    // spouse's RMD prices on the Uniform table, as before.
+    setPgPrimarySoleBeneficiaryOfSpouse(
+      inp.primarySoleBeneficiaryOfSpouse ?? null,
+    );
     // Cold-AI audit fix: the paste payload now carries the
     // state of residence and the education students, so a
     // replayed paste reprices the same state layer and the
@@ -2790,6 +3048,17 @@ export function Playground({
     setPgPretaxSpouse("");
     setPgAcaSize("");
     setPgBenchmark("");
+    setPgAptcTaken("");
+    setPgCoverageReduction("");
+    setPgCarryInSt("");
+    setPgCarryInLt("");
+    setPgCarryInStWa("");
+    setPgCarryInLtWa("");
+    setPgRmdReceived("");
+    setPgDependentMagi("");
+    setPgCashDraw("");
+    setPgRothDraw("");
+    setPgYieldReinvested(false);
     setPgAcaBuffer("5000");
     setPgBenchmarkLoaded(null);
     setPgIncomeSources({
@@ -2800,6 +3069,7 @@ export function Playground({
     setPgStateRate("0");
     setPgResidence("other");
     setPgSoleBeneficiary(true);
+    setPgPrimarySoleBeneficiaryOfSpouse(null);
     // Reset releases the hold.
     setPgHoldOn(false);
     setPgHeldTarget(null);
@@ -2849,6 +3119,19 @@ export function Playground({
       pretaxBalanceSpouse: "",
       acaHouseholdSize: "",
       acaBenchmark: "",
+      healthPremiumAca: "",
+      healthPremiumMedicare: "",
+      aptcTaken: "",
+      acaCoverageReduction: "",
+      capitalLossCarryInSt: "",
+      capitalLossCarryInLt: "",
+      capitalLossCarryInStWa: "",
+      capitalLossCarryInLtWa: "",
+      rmdAlreadyReceived: "",
+      dependentMagiForAca: "",
+      cashDraw: "",
+      rothDraw: "",
+      yieldReinvested: false,
       acaBuffer: "5000",
       benchmarkSource: null,
       incomeSources: {
@@ -2864,6 +3147,7 @@ export function Playground({
       itemizedOther: "",
       educationStudents: [],
       soleBeneficiary: true,
+      primarySoleBeneficiaryOfSpouse: null,
       holdOn: false,
       heldTarget: null,
       projOpen: false,
@@ -2975,8 +3259,72 @@ export function Playground({
       pretaxBalanceSpouse:
         pgFiling === "mfj" ? money0OrNull(pgPretaxSpouse) : null,
       spouseSoleBeneficiary: pgSoleBeneficiary,
+      // The reciprocal beneficiary fact (N-1): the fact the
+      // prefill carried from the plan record, passed so the
+      // spouse's RMD prices on the Joint table when the
+      // record establishes the primary as the spouse's sole
+      // beneficiary (and the primary is more than 10 years
+      // younger). Null / false = not established — the
+      // spouse's RMD prices on the Uniform table.
+      primarySoleBeneficiaryOfSpouse: pgPrimarySoleBeneficiaryOfSpouse,
       acaHouseholdSize: acaSize != null && acaSize > 0 ? acaSize : null,
       acaBenchmarkAnnual: money0OrNull(pgBenchmark),
+      // ACA reconciliation facts (S-1): ALWAYS supplied, so
+      // the pricer prices the year's filing settlement and
+      // this cash left agrees with the December view for the
+      // same year. The advance credit taken and the
+      // coverage-month reduction read blank as $0 (the
+      // December console's own defaults); the enrollment
+      // premium is the marketplace health premium dial above
+      // — the same fact (the premium of the plan actually
+      // enrolled in), blank = no cap, exactly as December
+      // reads it.
+      aptcTaken: money0(pgAptcTaken),
+      acaCoverageReduction: money0(pgCoverageReduction),
+      // December-only pricing facts (S-2): ALWAYS supplied,
+      // so the Playground prices them the way the December
+      // console does — the entering carryforward nets
+      // against the year's gains through the shared loss
+      // ledger, the RMD already received (already inside
+      // the entered income above) is netted from the RMD
+      // the pricer adds, and the dependent's MAGI joins
+      // the ACA household MAGI only. Blank reads $0 on all
+      // six — no carry-in, no RMD received, no dependent —
+      // which prices bit-identically to before S-2.
+      capitalLossCarryInSt: money0(pgCarryInSt),
+      capitalLossCarryInLt: money0(pgCarryInLt),
+      capitalLossCarryInStWa: money0(pgCarryInStWa),
+      capitalLossCarryInLtWa: money0(pgCarryInLtWa),
+      rmdAlreadyReceived: money0(pgRmdReceived),
+      dependentMagiForAca: money0(pgDependentMagi),
+      // Cash and Roth funding (S-6): ALWAYS supplied, so
+      // the pricer counts the year's cash-sleeve and Roth
+      // draws as spendable funding in cash in — their own
+      // source, never income and never a taxable sale.
+      // Blank reads $0 on both — no funding drawn — which
+      // prices bit-identically to before S-6.
+      cashDraw: money0(pgCashDraw),
+      rothDraw: money0(pgRothDraw),
+      // Reinvested yield (S-3): supplied exactly while the
+      // dials hold a loaded saved-plan year (the flag the
+      // loader set) — the pricer then keeps the year's
+      // interest + dividends (the march's reinvested yield)
+      // out of cash in, so the loaded year's cash left is
+      // the cash the march funded. Every other state of the
+      // form passes false and prices exactly as before.
+      yieldReinvested: pgYieldReinvested,
+      // Inflation (S-4): ALWAYS supplied — the saved plan's
+      // own rate (the Tax Plan's inflation field, resolved
+      // on the prefill source; the plan default 2.5 until a
+      // plan rate loads) — so a future year deflates its
+      // statute-fixed amounts exactly as the plan march
+      // deflates them and the two agree on taxable Social
+      // Security, tax, and NIIT. There is no Playground
+      // dial for it: inflation lives in its home record.
+      inflationPct: pgPrefillSource?.inflationPct ?? SEED_INFLATION,
+      acaEnrollmentPremiumAnnual: money0OrNull(pgHealthAca),
+      healthPremiumAcaAnnual: money0OrNull(pgHealthAca),
+      healthPremiumMedicarePerPerson: money0OrNull(pgHealthMedicare),
       stateRatePct: clamp0(parseNum(pgStateRate) ?? 0),
       residenceState: pgResidence,
       itemizedMortgageInterest: money0(pgItemizedMortgage),
@@ -3012,10 +3360,10 @@ export function Playground({
   }, [
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgConversion,
-    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
-    pgBenchmark, pgStateRate, pgResidence,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
+    pgBenchmark, pgHealthAca, pgHealthMedicare, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
-    pgSpendingCents,
+    pgSpendingCents, pgPrefillSource,
   ]);
 
   // Zero-conversion pricing of the same dials — the hold
@@ -3029,10 +3377,10 @@ export function Playground({
   }, [
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
-    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
-    pgBenchmark, pgStateRate, pgResidence,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
+    pgBenchmark, pgHealthAca, pgHealthMedicare, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
-    pgSpendingCents,
+    pgSpendingCents, pgPrefillSource,
   ]);
 
   // Bracket-fill chips: set the conversion dial to the exact
@@ -3154,8 +3502,8 @@ export function Playground({
     pgHoldOn, pgHeldTarget, pgAcaBuffer,
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
-    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgAcaSize,
-    pgBenchmark, pgStateRate, pgResidence,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
+    pgBenchmark, pgHealthAca, pgHealthMedicare, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
   ]);
 
@@ -3460,6 +3808,10 @@ export function Playground({
   const prefillPlayground = () => {
     if (!pgPrefillSource) return;
     pgForceWholesaleRef.current = true;
+    // A prefill is a standalone starting point, not the
+    // saved-plan-year loader: its income figures count as
+    // cash in, so the S-3 reinvested-yield flag clears.
+    setPgYieldReinvested(false);
     // Prefilling releases the hold.
     setPgHoldOn(false);
     setPgHeldTarget(null);
@@ -3608,6 +3960,15 @@ export function Playground({
       });
     }
     setPgSoleBeneficiary(pgPrefillSource.spouseSoleBeneficiary);
+    // The reciprocal beneficiary fact (N-1): the prefill
+    // carries it from the plan record too, so the spouse's
+    // RMD prices on the Joint table when the record
+    // establishes the primary as the spouse's sole
+    // beneficiary. Before N-1 this load set only the first
+    // fact and the spouse's RMD priced Uniform.
+    setPgPrimarySoleBeneficiaryOfSpouse(
+      pgPrefillSource.primarySoleBeneficiaryOfSpouse,
+    );
   };
 
   /* -------- Known starting points (preset cards) --------
@@ -3840,6 +4201,10 @@ export function Playground({
       return;
     }
     pgForceWholesaleRef.current = true;
+    // The filed figures are cash the household actually
+    // received — never the march's reinvested yield — so
+    // the S-3 flag clears on this load.
+    setPgYieldReinvested(false);
     // A partial load (above): when the year changes, the
     // re-derivation effect would resolve the lines this
     // preset did NOT load for the return year too — blanking
@@ -3930,6 +4295,17 @@ export function Playground({
     setPgPretaxSpouse("");
     setPgAcaSize("");
     setPgBenchmark("");
+    setPgAptcTaken("");
+    setPgCoverageReduction("");
+    setPgCarryInSt("");
+    setPgCarryInLt("");
+    setPgCarryInStWa("");
+    setPgCarryInLtWa("");
+    setPgRmdReceived("");
+    setPgDependentMagi("");
+    setPgCashDraw("");
+    setPgRothDraw("");
+    setPgYieldReinvested(false);
     setPgAcaBuffer("5000");
     setPgBenchmarkLoaded(null);
     setPgIncomeSources({
@@ -3945,6 +4321,7 @@ export function Playground({
     setPgItemizedOther("");
     setPgEduStudents([]);
     setPgSoleBeneficiary(true);
+    setPgPrimarySoleBeneficiaryOfSpouse(null);
     setPgHoldOn(false);
     setPgHeldTarget(null);
     setPgPresetNote(
@@ -3984,6 +4361,13 @@ export function Playground({
     setPgMedS(null);
     setPgInterest(fmtMoneyInput(y.detail.interestIncome));
     setPgOrdDiv(fmtMoneyInput(y.detail.dividendIncome));
+    // Reinvested yield (S-3): the year's interest and
+    // dividends are the march's yield, which the march
+    // reinvested (it counts $0 of funding there) — the flag
+    // keeps that yield out of cash in, so this loaded year
+    // does not count it as spendable cash on top of the
+    // march-sized sales and draws loaded below.
+    setPgYieldReinvested(true);
     // The qualified dial takes the plan's own qualified
     // share of the priced total (audit N-1 — see
     // pgPricedQualifiedDividends), not the total itself.
@@ -4039,6 +4423,57 @@ export function Playground({
         ? fmtMoneyInput(taxableSold - y.detail.drawGains)
         : "",
     );
+    /* Loss carryforward (follow-up #4, engines review
+       round 2): the year's entering banked losses are part
+       of the year's priced facts — the march netted them
+       against the year's gains and claimed the §1211(b)
+       allowance on the remainder — but the loader never
+       copied them, so a loaded year priced its gains gross
+       and its ordinary income without the allowance (on the
+       settlement's worked example: AGI and ACA MAGI $3,000
+       high, federal tax $360 high). The dials take the
+       detail's own ledger lines: the federal totals, and
+       each character's Washington-attributable portion from
+       the detail's Washington carry-in lines (added by this
+       build — before them the row surfaced only the part
+       the year's gains absorbed, so the Washington half had
+       no source and a Washington year's excise priced on
+       the gross gains). Blank when the year entered with
+       none, like the funding dials below. */
+    setPgCarryInSt(
+      y.detail.lossCarryInSt > 0
+        ? fmtMoneyInput(y.detail.lossCarryInSt)
+        : "",
+    );
+    setPgCarryInLt(
+      y.detail.lossCarryInLt > 0
+        ? fmtMoneyInput(y.detail.lossCarryInLt)
+        : "",
+    );
+    setPgCarryInStWa(
+      y.detail.lossCarryInWaSt > 0
+        ? fmtMoneyInput(y.detail.lossCarryInWaSt)
+        : "",
+    );
+    setPgCarryInLtWa(
+      y.detail.lossCarryInWaLt > 0
+        ? fmtMoneyInput(y.detail.lossCarryInWaLt)
+        : "",
+    );
+    /* Cash and Roth funding (S-6): the march's funding
+       ledger also names what the year drew from the cash
+       sleeve and from Roth — spendable funding the
+       Playground priced at $0 before S-6, so a loaded year
+       funded those ways read short by those amounts (the
+       gap the S-3 settlement named). The dials take the
+       ledger's own rows, so the loaded year's cash left is
+       the cash the march funded. */
+    setPgCashDraw(
+      y.funding.cashSpend > 0 ? fmtMoneyInput(y.funding.cashSpend) : "",
+    );
+    setPgRothDraw(
+      y.funding.rothDraw > 0 ? fmtMoneyInput(y.funding.rothDraw) : "",
+    );
     /* The split balances, not the combined one: the combined
        balance priced the spouse's share on the primary's RMD
        clock. The primary keeps the old always-set shape; the
@@ -4072,8 +4507,14 @@ export function Playground({
         })),
     );
     setPgSoleBeneficiary(inputs.spouseSoleBeneficiary);
+    // The reciprocal beneficiary fact (N-1): the plan's
+    // own inputs carry it, so a loaded year prices the
+    // spouse's RMD on the same table the march priced it.
+    setPgPrimarySoleBeneficiaryOfSpouse(
+      inputs.primarySoleBeneficiaryOfSpouse ?? null,
+    );
     setPgPresetNote(
-      `Loaded ${y.year} from your saved plan — interest ${fmtDollars(y.detail.interestIncome)}, dividends ${fmtDollars(y.detail.dividendIncome)}, pre-tax out ${fmtDollars(y.conversion + y.detail.extraPreTaxDraw)} (the conversion plus the year's extra draw — its draw for spending plus the pre-tax debit that paid that year's tax bill), priced by the plan before any dial changed. Your saved plan was not changed.`,
+      `Loaded ${y.year} from your saved plan — interest ${fmtDollars(y.detail.interestIncome)}, dividends ${fmtDollars(y.detail.dividendIncome)}, pre-tax out ${fmtDollars(y.conversion + y.detail.extraPreTaxDraw)} (the conversion plus the year's extra draw — its draw for spending plus the pre-tax debit that paid that year's tax bill), priced by the plan before any dial changed. The plan reinvested that year's interest and dividends, so they are priced as income but are not counted as cash in.${y.funding.cashSpend > 0 || y.funding.rothDraw > 0 ? ` The plan funded that year with ${[y.funding.cashSpend > 0 ? `${fmtDollars(y.funding.cashSpend)} from cash` : null, y.funding.rothDraw > 0 ? `${fmtDollars(y.funding.rothDraw)} from Roth` : null].filter((s) => s != null).join(" and ")} — loaded into the funding dials in Spending below, counted as cash in but never as income.` : ""}${y.detail.lossCarryInSt + y.detail.lossCarryInLt > 0 ? ` The year began with ${fmtDollars(y.detail.lossCarryInSt + y.detail.lossCarryInLt)} of banked capital losses still unused${y.detail.lossCarryInWaSt + y.detail.lossCarryInWaLt > 0 ? ` (${fmtDollars(y.detail.lossCarryInWaSt + y.detail.lossCarryInWaLt)} of it from Washington-allocated sales)` : ""} — loaded into the loss carry-in dials under Stock sale below, so the year's gains net against them and its capital-loss allowance prices the way the plan priced them.` : ""} Your saved plan was not changed.`,
     );
   };
 
@@ -4323,6 +4764,21 @@ export function Playground({
   const pgInterestDollars = Math.max(0, parseDollars(pgInterest) ?? 0);
   const pgOrdinaryDollars = Math.max(0, parseDollars(pgOrdDiv) ?? 0);
   const pgQualifiedDollars = Math.max(0, parseDollars(pgQualDiv) ?? 0);
+  /* The PRICED qualified figure (N-2, engines review round
+     2): the engine clamps the qualified part to the total
+     before pricing (min(qualified, ordinary) — audit S-8 +
+     S-11), so on an impossible pair the qualified part
+     prices AS the total and the excess is counted nowhere.
+     The income strip below shows THIS figure, not the raw
+     dial, so the strip names what the year actually prices
+     — before N-2 it printed the raw dial ($15,000 shown
+     against $10,000 priced on such a pair) and only the
+     dial note disclosed the clamp. On a possible pair the
+     two are identical. Display only; pricing is untouched. */
+  const pgQualifiedPricedDollars = Math.min(
+    pgQualifiedDollars,
+    pgOrdinaryDollars,
+  );
   const pgYearIncomeTotal = pgInterestDollars + pgOrdinaryDollars;
   const pgIncomeIsZero = pgYearIncomeTotal === 0;
   /* Income-dial source words (build v150): each dial's
@@ -4409,6 +4865,11 @@ export function Playground({
         ? prev
         : { ...prev, [key]: { kind: "typed" } },
     );
+    // A typed income figure is the user's own, received as
+    // cash — it is no longer the loaded plan year's
+    // reinvested yield, so the S-3 flag clears with the
+    // first income edit.
+    setPgYieldReinvested(false);
   };
   /* While Hold is engaged on the ACA cliff fill target, the
      card header's subline names the hold (2026-10-25), in
@@ -4452,7 +4913,17 @@ export function Playground({
      comparison prices, or "—" when none resolves. */
   const pgSpendingSummary = ((): string => {
     const cents = pgSpendingCents;
-    return cents != null ? `${fmtDollars(cents / 100)} per year` : "—";
+    const base = cents != null ? `${fmtDollars(cents / 100)} per year` : "—";
+    // Cash and Roth funding (S-6): the header names the
+    // funding drawn for the year beside the spending, the
+    // way the stock header names a sale.
+    const cash = Math.max(0, parseDollars(pgCashDraw) ?? 0);
+    const roth = Math.max(0, parseDollars(pgRothDraw) ?? 0);
+    const funding = [
+      cash > 0 ? `cash ${fmtDollars(cash)}` : null,
+      roth > 0 ? `Roth ${fmtDollars(roth)}` : null,
+    ].filter((s) => s != null);
+    return funding.length > 0 ? `${base} · funded by ${funding.join(" + ")}` : base;
   })();
   /* The Projection panel's header summary, same treatment:
      the template year it runs from, the projected age window
@@ -4552,39 +5023,59 @@ export function Playground({
               no new state, no storage, no actions, and no pricing
               of its own. It pins at the top of the Playground tab
               while the tab scrolls so the live figures stay in
-              view next to the dials. The mini bar renders
-              buildStackModel, the readout chart's own segment
-              computation, at a slim height, exactly as before.
-              The pinned figures are ONLY the three money outcomes:
+              view next to the dials. The pinned figures are
+              ONLY the three money outcomes:
               Cash left after tax (pg.cashLeftAfterTax — cash in
               minus the net tax bill, before any spending),
-              Spending (the Tax Plan record's annual spending,
-              pgAnnualSpendingCents — the record resolution the
-              Spending dial itself sources from, NOT the dial's
-              local draft, so a stale local figure can never show
-              here), and Left after a year's spending (cash left
-              minus that Tax Plan spending — display arithmetic
-              only, the same comparison the Tax-for-the-year card
-              carries, with the same colour rule: red when the
-              year falls short of spending, teal when it covers
-              it). The total federal tax, MAGI, taxable income,
-              bracket landing, ACA cliff room, buffer line, IRMAA,
+              Spending (pgSpendingCents — the one spending
+              resolution buildPgInputs prices: the Spending
+              dial's local figure while it parses, else the Tax
+              Plan record's figure the dial sources from), and
+              Left after a year's spending (cash left minus that
+              same spending — display arithmetic only, the same
+              comparison the Tax-for-the-year card carries, with
+              the same colour rule: red when the year falls short
+              of spending, teal when it covers it). Since S-7 the
+              strip reads the dial's resolution rather than the
+              record alone, so the strip and the card can never
+              show two different verdicts mid-edit. The total
+              federal tax, MAGI, taxable income, bracket landing,
+              ACA cliff room, buffer line, IRMAA,
               sale, and estimated ACA credit details are NOT shown
               here — they stay in the Tax-for-the-year card and
               the other readouts below, unchanged. It is the One
               year face's pinned answer, so it renders on that
               face only; the Projection face pins nothing — its
-              charts carry their own readouts. */}
+              charts carry their own readouts. The Month / Year
+              pills at the end of the strip switch the two spend
+              readouts (Cash left after tax, Left after
+              spending) between their annual figures and those
+              figures divided by 12 — the one persisted
+              spendPerMonth state the Tax-for-the-year card's
+              pills share, so both spots always agree. */}
           {pgFace === "year" && (() => {
             const pg = playgroundResult;
-            const stripYearNum =
-              parseIntField(pgYear) ?? new Date().getFullYear();
-            const model =
-              pg != null ? buildStackModel(pg, stripYearNum, pgFiling) : null;
+            // S-7 (engines review round 2): the strip reads
+            // the SAME spending resolution the priced result
+            // — and therefore the Tax-for-the-year card —
+            // reads: pgSpendingCents, the Spending dial's
+            // local figure while it parses to a positive
+            // amount, else the record's figure. buildPgInputs
+            // feeds exactly this value to the pricing as
+            // annualSpending, so while the dial is being
+            // edited the strip and the card price the same
+            // spending and their "Left after a year's
+            // spending" figures agree to the cent (the
+            // strip's is display arithmetic over the priced
+            // cash left; the card's is the engine's own
+            // r2 of the same subtraction). Before this fix
+            // the strip read the record (pgAnnualSpendingCents)
+            // while the card priced the dial, so mid-edit the
+            // two disagreed by the whole edit — opposite
+            // verdicts on the same screen until blur + save
+            // + refetch converged them.
             const stripSpendingDollars =
-              pgAnnualSpendingCents != null
-                ? pgAnnualSpendingCents / 100
-                : null;
+              pgSpendingCents != null ? pgSpendingCents / 100 : null;
             const stripLeftAfterSpending =
               pg != null && stripSpendingDollars != null
                 ? pg.cashLeftAfterTax - stripSpendingDollars
@@ -4595,107 +5086,37 @@ export function Playground({
                 style={{ top: "var(--twsa-safe-area-inset-top, 0px)" }}
                 aria-label="Play strip — live summary of the priced year"
               >
-                {model != null && pg != null ? (
-                  <div
-                    className="relative h-3.5 min-w-[7rem] flex-1 basis-40 overflow-hidden rounded-sm"
-                    role="img"
-                    aria-label={`Income stack in miniature: ${
-                      model.legendSegs.length > 0
-                        ? model.legendSegs
-                            .map((s) => `${s.label} ${fmtDollars(s.amount)}`)
-                            .join(", ")
-                        : "no income typed"
-                    }, less deductions ${fmtDollars(model.deductions)}`}
-                  >
-                    <div className="absolute inset-0" aria-hidden="true">
-                      {model.bands.map((b, i) => (
-                        <div
-                          key={b.rate}
-                          className="absolute top-0 bottom-0"
-                          style={{
-                            left: `${model.taxX(b.from)}%`,
-                            width: `${Math.max(0, model.taxX(b.to) - model.taxX(b.from))}%`,
-                            background:
-                              i % 2 === 0
-                                ? "rgba(128,128,128,0.07)"
-                                : "rgba(20,89,76,0.08)",
-                          }}
-                        />
-                      ))}
-                    </div>
-                    {model.gainsPos.map((s) => (
-                      <div
-                        key={s.key}
-                        className="absolute top-0 h-3.5"
-                        style={{
-                          left: `${s.leftPct}%`,
-                          width: `${s.widthPct}%`,
-                          background: s.color,
-                        }}
-                        aria-hidden="true"
-                      />
-                    ))}
-                    {model.ordPos.map((s) => (
-                      <div
-                        key={s.key}
-                        className="absolute top-0 h-3.5 border-r border-[var(--bg)]"
-                        style={{
-                          left: `${s.leftPct}%`,
-                          width: `${s.widthPct}%`,
-                          background: s.color,
-                        }}
-                        aria-hidden="true"
-                      />
-                    ))}
-                    {model.deductions > 0 && (
-                      <div
-                        className="pointer-events-none absolute top-0 h-3.5 border-r-2 border-dashed border-[var(--text)]"
-                        style={{
-                          left: 0,
-                          width: `${model.pct(model.deductions)}%`,
-                          ...model.hatchStyle,
-                        }}
-                        aria-hidden="true"
-                      />
-                    )}
-                    <div
-                      className="pointer-events-none absolute inset-0"
-                      aria-hidden="true"
-                    >
-                      {model.markers
-                        .filter((m) => m.inAxis)
-                        .map((m) => (
-                          <div
-                            key={m.rate}
-                            className="absolute top-0 bottom-0 border-l border-dashed"
-                            style={{
-                              left: `${model.taxX(m.to)}%`,
-                              borderColor: m.color,
-                            }}
-                          />
-                        ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    className="relative h-3.5 min-w-[7rem] flex-1 basis-40 overflow-hidden rounded-sm border border-[var(--border)]"
-                    role="img"
-                    aria-label="Income stack in miniature: nothing priced yet"
-                  >
-                    <div
-                      className="absolute inset-0"
-                      style={STACK_HATCH_STYLE}
-                      aria-hidden="true"
-                    />
-                  </div>
-                )}
                 <p className="tnum flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
                   <span>
                     Cash left after tax{" "}
                     <span className="font-bold text-[var(--accent)]">
-                      {fmtDollars(pg?.cashLeftAfterTax ?? 0)}
+                      {spendPerMonth
+                        ? `${fmtDollarsExact((pg?.cashLeftAfterTax ?? 0) / 12)}/mo`
+                        : fmtDollars(pg?.cashLeftAfterTax ?? 0)}
                     </span>
                   </span>
+                  {pg != null && pg.healthPremiumNet > 0 && (
+                    <span className="contents">
+                      <span aria-hidden="true" className="text-[var(--dim)]">
+                        ·
+                      </span>
+                      <span>
+                        Health premium (net){" "}
+                        <span className="font-bold">
+                          {fmtDollars(pg.healthPremiumNet)}
+                        </span>
+                      </span>
+                      <span aria-hidden="true" className="text-[var(--dim)]">
+                        ·
+                      </span>
+                      <span>
+                        Cash left after health premiums{" "}
+                        <span className="font-bold text-[var(--accent)]">
+                          {fmtDollars(pg.cashLeftAfterHealthPremium)}
+                        </span>
+                      </span>
+                    </span>
+                  )}
                   {stripSpendingDollars != null && (
                     <span className="contents">
                       <span aria-hidden="true" className="text-[var(--dim)]">
@@ -4715,16 +5136,23 @@ export function Playground({
                         ·
                       </span>
                       <span>
-                        Left after a year&rsquo;s spending{" "}
+                        Left after a {spendPerMonth ? "month" : "year"}
+                        &rsquo;s spending{" "}
                         <span
                           className={`font-bold ${stripLeftAfterSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
                         >
-                          {fmtDollars(stripLeftAfterSpending)}
+                          {spendPerMonth
+                            ? `${fmtDollarsExact(stripLeftAfterSpending / 12)}/mo`
+                            : fmtDollars(stripLeftAfterSpending)}
                         </span>
                       </span>
                     </span>
                   )}
                 </p>
+                <SpendPeriodPills
+                  perMonth={spendPerMonth}
+                  onChange={setSpendPerMonth}
+                />
               </div>
             );
           })()}
@@ -4781,13 +5209,18 @@ export function Playground({
               Ordinary dividends and Qualified dividends are
               seen without scrolling to the dials. Display only:
               it reads the dials exactly as priced (see
-              pgInterestDollars above) and writes nothing. */}
+              pgInterestDollars above) and writes nothing. The
+              Qualified figure is the PRICED one
+              (pgQualifiedPricedDollars — the dial clamped to
+              the total, as the engine prices it), so on an
+              impossible pair the strip shows the priced
+              figure, not the raw dial (N-2). */}
           <div
             aria-label={`${pgTaxYearNum} income summary`}
             className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2"
           >
             <p className="tnum text-sm font-medium text-[var(--text)]">
-              {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedDollars)}.
+              {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedPricedDollars)}.
             </p>
           </div>
           {/* $0 income warning — only when the year's income
@@ -5257,9 +5690,22 @@ export function Playground({
                   const dialedYear =
                     parseIntField(pgYear) ?? new Date().getFullYear();
                   const lawYear = lawForYear(dialedYear).year;
-                  return lawYear !== dialedYear
-                    ? `No ${dialedYear} law row in the app’s tax tables yet — priced under the ${lawYear} law row.`
-                    : "Priced under that year’s law row in the app’s tax tables.";
+                  if (lawYear === dialedYear) {
+                    return "Priced under that year’s law row in the app’s tax tables.";
+                  }
+                  // A year past the law table prices under the
+                  // newest row, with that row's fixed dollar
+                  // lines (the Social Security thresholds, the
+                  // NIIT line, the IRMAA lines) shrunk for
+                  // inflation at the plan's rate — the same
+                  // treatment the plan's own year-by-year
+                  // pricing uses (S-4).
+                  const rate =
+                    playgroundResult?.inflationPct ??
+                    pgPrefillSource?.inflationPct ??
+                    SEED_INFLATION;
+                  const rateText = String(Math.round(rate * 100) / 100);
+                  return `No ${dialedYear} law row in the app’s tax tables yet — priced under the ${lawYear} law row, with its fixed dollar lines shrunk for inflation at your plan’s ${rateText}% — the same treatment your plan’s own pricing uses.`;
                 })()}
               </p>
             </div>
@@ -5414,6 +5860,10 @@ export function Playground({
                 info: "What was in your spouse's traditional IRA / 401(k) on the prior Dec 31. The spouse's required minimum distribution is priced on the spouse's own age and divisor. Blank = no spouse balance, no spouse RMD.",
                 infoAlign: "right",
               })}
+            {moneyField("RMD already received this year", pgRmdReceived, setPgRmdReceived, {
+              hint: "The part of this year's RMD already paid — and already inside the income above. Blank = $0.",
+              info: "If part of this year's required minimum distribution has already been paid, it is already counted in the income you entered above (the December console's year-to-date income includes it the same way). Enter that part here and the playground subtracts it from the RMD the balances imply, so a paid RMD is never counted twice. Blank = none received yet.",
+            })}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="flex items-center text-sm text-[var(--dim)]">
@@ -5504,6 +5954,24 @@ export function Playground({
               info: pgIncomeInfo(pgIncomeSources.qualifiedDividends, "3a", "dividends", "Dividends that qualify for the lower tax rate — Form 1040 line 3a. This amount is part of the total ordinary dividends you entered above, not extra income on top of it: it is counted once, riding the lower 0% / 15% / 20% gains staircase instead of the ordinary rates."),
               onEdit: () => markPgIncomeTyped("qualifiedDividends"),
             })}
+            {moneyField("Short-term loss carried in", pgCarryInSt, setPgCarryInSt, {
+              hint: "Banked short-term capital losses from earlier years, still unused as this year begins. Blank = none.",
+              info: "A capital-loss carryforward is a net capital loss from an earlier year that wasn't used up — the unused part carries into this year. Enter the short-term amount still unused as this year begins: it nets against this year's gains, then up to $3,000 of what is left offsets ordinary income, and anything still unused carries into next year. Leave blank when there is none.",
+            })}
+            {moneyField("Long-term loss carried in", pgCarryInLt, setPgCarryInLt, {
+              hint: "Banked long-term capital losses from earlier years, still unused as this year begins. Blank = none.",
+              info: "The long-term companion to the short-term carry-in above: a net long-term capital loss from an earlier year that wasn't used up. It nets against this year's gains first — a $20,000 long-term carry-in against a $30,000 gain leaves a $10,000 gain priced, not $30,000. Leave blank when there is none.",
+              infoAlign: "right",
+            })}
+            {moneyField("Of the short-term loss, the Washington part", pgCarryInStWa, setPgCarryInStWa, {
+              hint: "Only the part of the short-term loss that came from sales allocated to Washington. Blank = none.",
+              info: "The Washington-allocated part of the short-term loss carried in: that part alone can reduce the Washington capital-gains tax base, and only when this year's gains actually absorb it. It is a portion of the short-term total above, never an amount on top of it.",
+            })}
+            {moneyField("Of the long-term loss, the Washington part", pgCarryInLtWa, setPgCarryInLtWa, {
+              hint: "The Washington-allocated part of the long-term loss above. Blank = none.",
+              info: "The Washington-allocated part of the long-term loss carried in: that part alone can reduce the Washington capital-gains tax base, and only when this year's gains actually absorb it. It is a portion of the long-term total above, never an amount on top of it.",
+              infoAlign: "right",
+            })}
           </div>
           {pgDividendPairNote && (
             <p className="mt-2 text-sm text-[var(--warn)]" role="note">
@@ -5531,6 +5999,26 @@ export function Playground({
                 </p>
               )}
             </div>
+            {moneyField("Health premium — marketplace / yr", pgHealthAca, setPgHealthAca, {
+              hint: "Your plan's gross premium. The readout nets the advance credit taken off it.",
+              info: "The premium of the plan you are actually enrolled in this year, before the credit. It also caps the year's final credit in the filing settlement below. The strip at the top shows the premium net of the advance credit you actually took — the rest of the final credit settles in the cash left after tax — and the cash left after paying it. It never changes the year's tax — it is a cost readout, like spending.",
+            })}
+            {moneyField("Health premium — Medicare, per person / yr", pgHealthMedicare, setPgHealthMedicare, {
+              hint: "Part B + Part D base, for each person on Medicare this year.",
+              info: "The Medicare base premium per person on Medicare this year: Part B standard plus a Part D base premium. The IRMAA surcharge is priced in the tax bill already and is not part of this amount.",
+            })}
+            {moneyField("Advance credit (APTC) already taken / yr", pgAptcTaken, setPgAptcTaken, {
+              hint: "Advance premium credit you actually received this year. Blank = $0.",
+              info: "The advance premium tax credit paid toward your premiums during the year (your Form 1095-A total). The cash left after tax settles it at filing: any credit still due is added, and any advance above the final credit is repaid — the same settlement the December view runs for the same year, so the two cash-left figures agree.",
+            })}
+            {moneyField("Coverage-month reduction / yr", pgCoverageReduction, setPgCoverageReduction, {
+              hint: "Credit lost for months someone wasn't eligible. Blank = $0.",
+              info: "The credit is monthly, not annual: a month in which a household member had an affordable employer offer, or was eligible for Medicare or CHIP, shrinks that month's credit whatever the annual income says. Enter the total reduction for any ineligible months — it lowers the final credit in the year's filing settlement.",
+            })}
+            {moneyField("Dependent MAGI for ACA", pgDependentMagi, setPgDependentMagi, {
+              hint: "A filing dependent's income — counts toward the ACA household MAGI only. Blank = $0.",
+              info: "Count a dependent's income toward household MAGI only when the dependent is required to file because their income meets the filing threshold — a return filed only to recover withholding does not count. The amount counts toward the ACA household MAGI only: it can shrink the credit or push the household over the cliff, but it is never added to your own taxable income and never changes the tax itself.",
+            })}
             {pgAcaHasHardCliff && (
               <div>
                 {moneyField("Buffer below the ACA cliff", pgAcaBuffer, setPgAcaBuffer, {
@@ -5661,6 +6149,7 @@ export function Playground({
           ))}
 
           {pgSectionCard("spending", "Spending", pgSpendingSummary, (
+          <>
           <div className="mt-2 max-w-xs">
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <label
@@ -5759,7 +6248,18 @@ export function Playground({
               </p>
             )}
           </div>
-          ))}
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {moneyField("Cash drawn for spending", pgCashDraw, setPgCashDraw, {
+              hint: "Money taken out of savings / the cash sleeve to pay this year's spending. Blank = $0.",
+              info: "Cash you take out of a savings account or the plan's cash sleeve to pay for this year. It is your own money coming back — no sale, no gain, no tax — so it counts as cash in for the year's verdict without counting as income. Leave blank when the year is funded other ways.",
+            })}
+            {moneyField("Roth drawn for spending", pgRothDraw, setPgRothDraw, {
+              hint: "Money taken out of your Roth accounts to pay this year's spending. Blank = $0.",
+              info: "Money you take out of your Roth IRA or Roth 401(k) to pay for this year. Roth money was already taxed on the way in, so a draw for spending is not taxed again and is not income — it counts as cash in for the year's verdict, like the plan's own funding ledger counts it. Leave blank when the year is funded other ways.",
+              infoAlign: "right",
+            })}
+          </div>
+          </>))}
 
             </>
           )}
@@ -6672,9 +7172,7 @@ export function Playground({
               );
               /* Income-stacking chart — presentation ONLY. The
                  segment model (segments, positions, bands,
-                 markers, hatch) comes from buildStackModel above
-                 — the same computation the sticky play strip's
-                 mini bar renders from, so the two always agree.
+                 markers, hatch) comes from buildStackModel above.
                  Every figure is read straight off the priced
                  result (`pg`, pricePlaygroundYear's own fields);
                  see buildStackModel's comment for the sourcing. */
@@ -7281,6 +7779,12 @@ export function Playground({
                                 left: `${s.leftPct}%`,
                                 width: `${s.widthPct}%`,
                                 background: s.color,
+                                /* S-9: a hatched segment (the
+                                   §1211(b) allowance) wears the
+                                   deductions hatch over its base
+                                   colour, marking the tail of the
+                                   stack the allowance removes. */
+                                ...(s.hatch ? hatchStyle : {}),
                               }}
                             >
                               {s.wide && (
@@ -7577,8 +8081,8 @@ export function Playground({
                           return (
                             <span key={s.key} className="inline-flex items-center gap-1.5">
                               <span
-                                className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-                                style={{ background: s.color }}
+                                className={`inline-block h-2.5 w-2.5 shrink-0 rounded-sm${s.hatch ? " border border-[var(--dim)]" : ""}`}
+                                style={s.hatch ? hatchStyle : { background: s.color }}
                                 aria-hidden="true"
                               />
                               {tap ? (
@@ -8017,7 +8521,19 @@ export function Playground({
                   </section>
 
                   <section className={sectionCls} aria-label="Tax for the year">
-                  <h3 className="text-sm font-semibold">Tax for the year</h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold">Tax for the year</h3>
+                    {/* Month / Year pills: the same persisted
+                        spendPerMonth state the sticky strip's
+                        pills write — they switch ONLY the two
+                        spend readouts below (Cash left after
+                        tax, Left after a year's spending); every
+                        other row in this card stays annual. */}
+                    <SpendPeriodPills
+                      perMonth={spendPerMonth}
+                      onChange={setSpendPerMonth}
+                    />
+                  </div>
                   <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
                     {stackRow(
                       "Federal tax on ordinary income",
@@ -8111,17 +8627,26 @@ export function Playground({
                         figures, align by the label's position)
                         names the cash in and the net tax bill as
                         priced, and carries the filing sentence
-                        only when the net bill is a refund. */}
+                        only when the net bill is a refund. In
+                        Month mode (the shared persisted
+                        spendPerMonth toggle) the value shows the
+                        same figure divided by 12 with a "/mo"
+                        suffix and the sub-line and ⓘ name the
+                        month instead of the year; the ⓘ's
+                        derivation figures stay annual, as
+                        priced. */}
                     {stackRow(
                       <>
                         Cash left after tax
                         <InfoNote
-                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — the total tax less any refundable education credit. The ACA premium credit is not subtracted here: the annual spending below already holds the net premium (the credit already taken off), so counting it again would overstate what's left. It's what's left to spend next year, before any spending.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — ${PLAYGROUND_CASH_LEFT_BASIS} It's what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
                           ariaLabel="About the cash left after tax"
                         />
                       </>,
-                      fmtDollars(pg.cashLeftAfterTax),
-                      "Cash in minus the net tax bill — what's left to spend next year, before any spending.",
+                      spendPerMonth
+                        ? `${fmtDollarsExact(pg.cashLeftAfterTax / 12)}/mo`
+                        : fmtDollars(pg.cashLeftAfterTax),
+                      `Cash in minus the net tax bill — what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.`,
                       true,
                     )}
                     {/* Left after a year's spending (contract
@@ -8142,26 +8667,35 @@ export function Playground({
                         income — so the ⓘ names the spending
                         and its source instead, and carries the
                         refund-timing sentence whenever the net
-                        bill is a refund. */}
+                        bill is a refund. In Month mode (the
+                        shared persisted spendPerMonth toggle)
+                        the label, value, and sub-line name the
+                        month — the value is the same figure
+                        divided by 12 with a "/mo" suffix — while
+                        the ⓘ keeps naming the annual figures it
+                        is derived from. */}
                     {pg.cashLeftVsSpending != null && pg.annualSpending != null && (
                       stackRow(
                         <>
-                          Left after a year&rsquo;s spending
+                          Left after a {spendPerMonth ? "month" : "year"}
+                          &rsquo;s spending
                           <InfoNote
                             text={`Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — the annual spending from the Tax Plan.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
-                            ariaLabel="About the amount left after a year's spending"
+                            ariaLabel={`About the amount left after a ${spendPerMonth ? "month" : "year"}'s spending`}
                           />
                         </>,
                         <span
                           className={`font-bold ${pg.cashLeftVsSpending < 0 ? "text-[var(--bad)]" : "text-[var(--accent)]"}`}
                         >
-                          {fmtDollars(pg.cashLeftVsSpending)}
+                          {spendPerMonth
+                            ? `${fmtDollarsExact(pg.cashLeftVsSpending / 12)}/mo`
+                            : fmtDollars(pg.cashLeftVsSpending)}
                         </span>,
                         pg.cashLeftVsSpending > 0
-                          ? "Enough for the year."
+                          ? `Enough for the ${spendPerMonth ? "month" : "year"}.`
                           : pg.cashLeftVsSpending < 0
-                            ? "Short of a year's spending."
-                            : "Exactly enough for the year.",
+                            ? `Short of a ${spendPerMonth ? "month" : "year"}'s spending.`
+                            : `Exactly enough for the ${spendPerMonth ? "month" : "year"}.`,
                       )
                     )}
                   </dl>
@@ -8370,6 +8904,28 @@ type PgPrefillSource = {
   taxReturnOrdinaryDividends: number | null;
   taxReturnYear: number | null;
   spouseSoleBeneficiary: boolean;
+  // The reciprocal beneficiary fact (N-1, engines review
+  // round 2): the primary is the sole beneficiary of the
+  // SPOUSE's pre-tax accounts — a SEPARATE fact from
+  // spouseSoleBeneficiary above (the spouse is the
+  // PRIMARY's sole beneficiary, selecting only the
+  // primary's RMD table). This fact alone selects the
+  // SPOUSE's RMD table. Tri-state like the saved record:
+  // null = not established (the spouse's RMD prices on
+  // the Uniform Lifetime Table). Before N-1 the prefill
+  // carried only the first fact, so a prefilled year
+  // priced the spouse's RMD on the Uniform table even
+  // when the record established reciprocity — wrong
+  // whenever the spouse is more than 10 years older.
+  primarySoleBeneficiaryOfSpouse: boolean | null;
+  // Inflation (S-4): the plan's inflation rate in percent —
+  // the rate buildPgInputs prices every year with, so the
+  // Playground's future years deflate their statute-fixed
+  // amounts exactly as the plan march deflates them.
+  // Inflation's home record is the Tax Plan, so the
+  // Playground carries no dial of its own for it; a plan
+  // with no rate stored resolves to the plan default.
+  inflationPct: number;
   // Projection defaults (projection build): the plan's
   // resolved expected return and its starting taxable / Roth
   // balances in dollars — the projection panel's blank dials
@@ -8531,6 +9087,10 @@ function pgPrefillSourceFrom(
     taxReturnOrdinaryDividends: taxReturnDollars.ordinaryDividends,
     taxReturnYear: data.taxReturn.taxReturnYear ?? null,
     spouseSoleBeneficiary: s ? (s.spouseSoleBeneficiary ?? true) : true,
+    primarySoleBeneficiaryOfSpouse: s
+      ? (s.primarySoleBeneficiaryOfSpouse ?? null)
+      : null,
+    inflationPct: s ? (s.inflationPct ?? SEED_INFLATION) : SEED_INFLATION,
     expectedReturnPct: expRet,
     taxableStart: taxablePoolCents / 100,
     rothStart: ((s ? s.rothCents : null) ?? snap?.rothCents ?? 0) / 100,

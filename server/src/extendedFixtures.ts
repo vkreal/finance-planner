@@ -175,6 +175,7 @@ CEILINGS_REPLACEMENT_SENTENCE,
 CONVERTED_ALREADY_DISTINCTION_SENTENCE,
 EDUCATION_CREDIT_SEMANTICS,
 GUARDRAILS_SEMANTICS,
+HEALTH_PREMIUM_SEMANTICS,
 LAW_YEAR_SEMANTICS,
 RESTORE_VALIDATION_SEMANTICS,
 PLAYGROUND_YEAR_SEMANTICS,
@@ -4873,6 +4874,32 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "api-health-premium-semantics-content",
+    kind: "apicontract",
+    note: "Health premium term (build v208): describeApi publishes HEALTH_PREMIUM_SEMANTICS verbatim (the handler returns this exact constant), and it must state the term's rules in as many words: the three entered saved amounts by their field names; activation by ANY one entered, with annualSpending then read as excluding health premiums and the ACA premium reconciliation not engaging; retired years only (a working year charges $0); the marketplace gross from the applicable entered amount with the benchmark fallback for a null one; the funded amount NET of the year's priced credit with the credit capped at the gross premium (Form 8962's enrollment cap) and iterated inside the year's settlement; the Medicare part per person on Medicare on the same count the IRMAA surcharge charges on, never reduced by a credit; the funding row carrying the net as its own need with spendingCents excluding it; the score adding the lifetime GROSS premium beside the credit so the net effect is the net premium; the single-year pricer's readouts including cashLeftAfterHealthPremium with the premium never entering tax, MAGI, or the net tax bill; all three blank pricing bit-identically to before; and amounts entered, never inferred. The behaviour itself is pinned by the tax suite's health-premium-* fixtures; this fixture pins only that the published text cannot silently lose the rules.",
+    expected: { phrasesFound: 12 },
+    actual: () => {
+      const phrases = [
+        "healthPremiumAcaHouseholdCents",
+        "healthPremiumAcaSingleCents",
+        "healthPremiumMedicarePerPersonCents",
+        "the term is ACTIVE",
+        "the ACA premium reconciliation above does not engage",
+        "a working year charges $0",
+        "the credit capped at the gross premium",
+        "iterated inside the year's settlement",
+        "the same count the IRMAA surcharge charges on",
+        "spendingCents excludes it and totalNeedCents includes it",
+        "cashLeftAfterHealthPremium",
+        "Amounts are entered, never inferred",
+      ];
+      return {
+        phrasesFound: phrases.filter((p) => HEALTH_PREMIUM_SEMANTICS.includes(p))
+          .length,
+      };
+    },
+  },
+  {
     id: "api-privacy-scrub-pins",
     kind: "apicontract",
     note: "Privacy scrub pins (pre-publication scrub): the seeded fresh-user defaults and the published specimens are SYNTHETIC sample values, pinned here so a real household figure can never quietly return as a seed constant or a contract specimen. The seed record must carry the generic defaults (birth years 1975 / 1985, Social Security $48,000/yr, protect-minimum $50,000, preserve pre-tax $250,000, heir rate 24%, ACA household 2 stepping down to 2), SCORE_IDENTITIES must carry the synthetic fixture-plan specimen (-21041257), and PROTECT_MIN_SEMANTICS must state its sample-plan sweep figures ($50,000 / $200,000).",
@@ -7264,6 +7291,7 @@ const uiCasCases: {
         pretaxBalance: 37028.73,
         pretaxBalanceSpouse: null,
         spouseSoleBeneficiary: true,
+        primarySoleBeneficiaryOfSpouse: null,
         acaHouseholdSize: null,
         acaBenchmarkAnnual: null,
         stateRatePct: 0,
@@ -7273,6 +7301,7 @@ const uiCasCases: {
         itemizedCharitable: 0,
         itemizedOther: 0,
         educationStudents: null,
+        inflationPct: null,
       };
       const res = applyRothUiWrite(raw, 0, (s) => {
         s.playground.projTemplate = template;

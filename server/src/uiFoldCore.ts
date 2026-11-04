@@ -4,6 +4,14 @@
    specific store: the per-month cash-out item lists ("Hide items /
    Show items"), the statement-import panels, the reserve settings
    fold, and the Net Worth Trend anchor note's "More" expander.
+   The Playground also keeps two section folds here, plus its
+   Month / Year spend-display toggle ("playground.spendPerMonth":
+   a stored entry means the spend readouts were left showing per
+   month; no entry is the per-year default). The Spending view's
+   target field keeps its per year / per month entry unit here
+   too ("spending.targetPerMonth": a stored entry means the
+   field was left showing per month; no entry is the per-year
+   default).
    Persisted server-side in settings under ONE JSON blob
    ("ui_fold_state_v1": a map of fold id -> true), following the
    explainer-state pattern (explainer_expanded_v1), so a fold the

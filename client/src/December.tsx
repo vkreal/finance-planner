@@ -226,14 +226,18 @@ function recordFactsOf(
     // (v111): the record's capitalLossCarryIn* Cents
     // converted to dollars, plus planFirstYear — the
     // record's execution year, the year that carry-in
-    // enters. Load resolution applies the carry-in when
-    // the December year is that year OR ANY LATER one
-    // (build v127, round-19 finding 3): the plan march
-    // applies it at its first year unconditionally, so a
-    // record saved in a prior year still carries its loss
-    // into the current year's December pricing. It does
-    // not apply to a year before the plan's first year.
-    // Null per field when the record does not answer.
+    // enters. Load resolution applies the carry-in only
+    // when the December year IS that year: the balance
+    // enters the plan's first year, and the plan march
+    // consumes it year by year, so a later December
+    // year's entering balance is the march's remainder —
+    // a figure the record does not carry (the build v127
+    // widening to every later year re-applied the full
+    // first-year balance and double-counted the consumed
+    // part; engines review round 2, finding M-3). It
+    // does not apply to a year before the plan's first
+    // year either. Null per field when the record does
+    // not answer.
     carryInCapitalLossSt:
       s?.capitalLossCarryInStCents != null
         ? s.capitalLossCarryInStCents / 100
@@ -262,6 +266,15 @@ function recordFactsOf(
     // entered basis %. A blank basis (no % and no tiers)
     // does not answer — the march's harvest is inert there
     // too. Null per field when the record does not answer.
+    // S-8 (engines review round 2): these facts state the
+    // pool AS IT STANDS when read — a CURRENT pool, already
+    // shrunk by any of the year's sales that have happened.
+    // The console's own harvestPoolAmount is a STARTING
+    // pool (the start of the year, before the year's
+    // sales), so load resolution converts these facts to
+    // the starting pool before supplying them
+    // (resolveDecemberStateAtLoad in decemberCore.ts);
+    // these facts themselves keep the current-pool meaning.
     harvestPoolAmount:
       s?.taxableCents != null
         ? s.taxableCents / 100
@@ -1014,6 +1027,13 @@ export function December() {
           // harvest section's facts (the toggle itself stays
           // off — preseeding facts never switches a strategy
           // on). Balance facts, so no first-year gate.
+          // S-8: a first-open console has no year-to-date
+          // sale entered yet, so the record's current pool
+          // preseeds as it stands and the field's
+          // start-of-year label governs it from there; a
+          // stored console's unentered facts instead resolve
+          // through the load resolution, which converts the
+          // record's current pool to the starting pool.
           harvestPoolAmount: (() => {
             const facts = recordFactsOf(rothQ.data, year);
             return facts.harvestPoolAmount != null
@@ -1725,7 +1745,7 @@ export function December() {
                       "Gain harvested into the 0% band",
                       <button
                         type="button"
-                        aria-label="Go to the Taxable pool available to sell field"
+                        aria-label="Go to the Taxable pool at the start of the year field"
                         className={decTapCls}
                         onClick={() => jumpToDecField("roth-December-harvest-pool")}
                       >
@@ -2501,7 +2521,11 @@ export function December() {
           is switched on, the console sizes the harvest the way the Tax Plan does:
           the largest gain that stays inside the 0% band, capped by the remaining
           pool&rsquo;s unrealized gain (the pool left after this year&rsquo;s sales,
-          less its basis). An entering capital-loss
+          less its basis). The pool below is the pool as it stood at the start of
+          the year, before this year&rsquo;s sales — the console nets the sales out
+          itself — and when the pool comes from your Tax Plan record, the
+          record&rsquo;s current pool is converted to that start-of-year pool by
+          adding this year&rsquo;s sales back. An entering capital-loss
           carryforward above absorbs harvested gains first, exactly as it absorbs
           any other gain.
         </p>
@@ -2518,11 +2542,11 @@ export function December() {
           </label>
         </div>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {moneyField("Taxable pool available to sell", form.harvestPoolAmount, (v) => {
+          {moneyField("Taxable pool at the start of the year", form.harvestPoolAmount, (v) => {
             setHarvestPoolAmountEdited(true);
             edit((f) => ({ ...f, harvestPoolAmount: v }));
           },
-          { idLabel: "December harvest pool", hint: "The whole taxable pool the harvest can sell from — taxable investments plus cash, the pool the Tax Plan draws on. Leave blank if it hasn’t been entered yet; enter 0 when there is no pool." },
+          { idLabel: "December harvest pool", hint: "The whole taxable pool the harvest can sell from — taxable investments plus cash, the pool the Tax Plan draws on — as it stood at the start of this year, BEFORE this year’s sales. The console subtracts this year’s sales itself to find what is left to harvest from, so enter the start-of-year pool, not today’s balance. Leave blank if it hasn’t been entered yet; enter 0 when there is no pool." },
           )}
           {pctField("Basis — % of the pool already taxed", form.harvestPoolBasisPct, (v) => {
             setHarvestPoolBasisPctEdited(true);

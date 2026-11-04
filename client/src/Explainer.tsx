@@ -19,7 +19,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
    stays inside the page at the header's right edge; a tip whose
    button sits near the page's LEFT edge passes align="start" so
    its bubble opens to the right instead of clipping off the
-   screen's left edge. */
+   screen's left edge; a tip whose button sits mid-row passes
+   align="center" so its bubble centres on the button. */
 export function ExplainerInfoTip({
   id,
   label,
@@ -32,8 +33,10 @@ export function ExplainerInfoTip({
   label: string;
   /** Which edge of the button the bubble hangs from: "end" (the
       default) right-aligns it under the button; "start"
-      left-aligns it, so the bubble extends to the right. */
-  align?: "start" | "end";
+      left-aligns it, so the bubble extends to the right;
+      "center" centres it on the button, for a button that sits
+      mid-row (neither edge alignment fits on a phone there). */
+  align?: "start" | "end" | "center";
   /** The section's full explainer text, rendered verbatim in the bubble. */
   children: ReactNode;
 }) {
@@ -106,7 +109,7 @@ export function ExplainerInfoTip({
         <span
           id={tipId}
           role="tooltip"
-          className={`absolute top-full z-40 mt-1.5 block w-80 max-w-[calc(100vw-2.5rem)] space-y-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm leading-relaxed font-normal whitespace-normal text-[var(--dim)] shadow-lg ${align === "start" ? "left-0" : "right-0"}`}
+          className={`absolute top-full z-40 mt-1.5 block w-80 max-w-[calc(100vw-2.5rem)] space-y-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm leading-relaxed font-normal whitespace-normal text-[var(--dim)] shadow-lg ${align === "start" ? "left-0" : align === "center" ? "left-1/2 -translate-x-1/2" : "right-0"}`}
         >
           {children}
         </span>

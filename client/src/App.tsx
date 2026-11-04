@@ -1220,24 +1220,29 @@ function SpendingTrueCostChart({
   // The True cost average per month, in cents: the dashboard's
   // own avgSmoothedCents — the mean of exactly the recorded
   // `months` above, the same figure the averages line prints.
-  // Drawn as a thin dotted horizontal line in a muted neutral
-  // colour (not the True cost teal, not the Cash out amber),
-  // distinct from the target's dashed line, so the average
-  // month reads against the target at a glance. Neither line
-  // carries an inline label — the chart legend below the bars
-  // names both lines with their values. Null whenever the
-  // averages line is hidden (fewer than 2 months covered) —
-  // no line is drawn. The Cash out average stays in the
-  // averages line's text only; it gets no line.
+  // Drawn as a thin dotted horizontal line whose colour is
+  // derived live from the average against the target: red
+  // (var(--bad)) when the average is above the target, green
+  // (var(--accent)) when it is on or below the target — so the
+  // average month reads against the target at a glance. With
+  // no target to compare against it falls back to the muted
+  // neutral dim colour. Distinct from the target's dashed
+  // line either way. Neither line carries an inline label —
+  // the chart legend below the bars names both lines with
+  // their values. Null whenever the averages line is hidden
+  // (fewer than 2 months covered) — no line is drawn. The
+  // Cash out average stays in the averages line's text only;
+  // it gets no line.
   averageMonthlyCents: number | null;
   // The Quick view averages line ("Average month · … — True cost
   // … · Cash out …"), composed by the caller from the dashboard's
   // own averages over exactly the recorded `months` above; null
-  // when fewer than 2 months are covered. Rendered as a quiet
-  // summary line inside this card, under the subheading — it
-  // used to be a standalone highlighted banner between the tiles
-  // and this card (moved here by request, 2026-10-25: right
-  // numbers, wrong place).
+  // when fewer than 2 months are covered. Rendered inside this
+  // card's title ⓘ tooltip, alongside the section's other
+  // explanatory lines (moved into the tooltip by request,
+  // 2026-11-03; before that it sat under the title — and before
+  // 2026-10-25 it was a standalone highlighted banner between
+  // the tiles and this card: right numbers, wrong place).
   averageLine: string | null;
 }) {
   const thisMonth = currentMonth();
@@ -1296,31 +1301,62 @@ function SpendingTrueCostChart({
     return monthRangeLabel(first.month, last.month);
   })();
 
+  /* The Average line's colour, derived live from the current
+     values on every render: red when the average sits above
+     the target, green when it is on or below it. The chart
+     line and its legend swatch share this one value so they
+     can never disagree. When there is no target to compare
+     against, the line keeps its old muted neutral colour. */
+  const averageLineStroke =
+    averageMonthlyCents != null && targetMonthlyCents != null
+      ? averageMonthlyCents > targetMonthlyCents
+        ? "var(--bad)"
+        : "var(--accent)"
+      : "var(--dim)";
+
   return (
     <section
       aria-label="True cost vs Cash out by month"
       className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
     >
-      <h3 className="display text-lg font-semibold">True cost vs Cash out</h3>
-      <p className="mt-0.5 text-sm text-[var(--dim)]">
-        One pair of bars per recorded month; an (est.) pair is entered
-        ahead and may be revised.
-      </p>
-      {averageLine != null && (
-        <p className="tnum mt-1.5 text-sm text-[var(--dim)]">{averageLine}</p>
-      )}
-      {targetMonthlyCents != null && (
-        <p className="tnum mt-1.5 text-sm text-[var(--dim)]">
-          Spending target {fmt(targetMonthlyCents)}/mo — the dashed line;
-          a month above it spent over the target.
-        </p>
-      )}
-      {averageMonthlyCents != null && (
-        <p className="tnum mt-1.5 text-sm text-[var(--dim)]">
-          True cost average {fmt(averageMonthlyCents)}/mo — the dotted
-          line, over the same months as the Average month line above.
-        </p>
-      )}
+      <div className="flex items-center gap-2">
+        <h3 className="display text-lg font-semibold">True cost vs Cash out</h3>
+        {/* All of this section's explanatory text lives in this
+            ⓘ tooltip (moved from the wall of text that used to
+            sit under the title, 2026-11-03): the title, legend,
+            and chart stay on the face, and every figure in the
+            tooltip is derived live from the same props the chart
+            itself draws — the caller's averageLine, the target,
+            and the True cost average — so it can never disagree
+            with the chart or go stale as the record changes.
+            align="center": the button sits mid-row after the
+            title, so neither edge alignment fits on a phone —
+            the bubble centres on the button instead of clipping
+            off either edge of the screen. */}
+        <ExplainerInfoTip
+          id="spending.trueCostVsCashOut"
+          label="True cost vs Cash out"
+          align="center"
+        >
+          <p>
+            One pair of bars per recorded month; an (est.) pair is entered
+            ahead and may be revised.
+          </p>
+          {averageLine != null && <p className="tnum">{averageLine}</p>}
+          {targetMonthlyCents != null && (
+            <p className="tnum">
+              Spending target {fmt(targetMonthlyCents)}/mo — the dashed line;
+              a month above it spent over the target.
+            </p>
+          )}
+          {averageMonthlyCents != null && (
+            <p className="tnum">
+              True cost average {fmt(averageMonthlyCents)}/mo — the dotted
+              line, over the same months as the Average month line above.
+            </p>
+          )}
+        </ExplainerInfoTip>
+      </div>
       {chartData.length === 0 ? (
         <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
           No months recorded yet — once a month is recorded, its True cost
@@ -1359,8 +1395,9 @@ function SpendingTrueCostChart({
               one place the line values are printed on the chart.
               The line swatches are drawn exactly as the lines
               themselves: target dashed in the text colour,
-              average dotted, thin, in the muted neutral dim
-              colour. */}
+              average dotted and thin in the same live-derived
+              colour as the average line (red above the target,
+              green on or below it). */}
           <div
             aria-label="Chart legend"
             className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-[var(--text)]"
@@ -1418,7 +1455,7 @@ function SpendingTrueCostChart({
                     y1="3"
                     x2="28"
                     y2="3"
-                    stroke="var(--dim)"
+                    stroke={averageLineStroke}
                     strokeWidth="1"
                     strokeDasharray="2 3"
                     strokeLinecap="round"
@@ -1650,17 +1687,20 @@ function SpendingTrueCostChart({
                       strokeOpacity={0.75}
                     />
                   )}
-                  {/* The True cost average line: dotted, thin,
-                      and in the muted neutral dim colour — not
-                      the True cost teal and not the Cash out
-                      amber — so it reads as its own element and
-                      never as the target's dashed line. No inline
-                      label: the legend above the chart names it
-                      with its value. */}
+                  {/* The True cost average line: dotted and
+                      thin, coloured live against the target —
+                      red when the average is above the target,
+                      green when it is on or below (the muted
+                      neutral dim colour only when no target
+                      exists to compare against) — so it reads
+                      as its own element and never as the
+                      target's dashed line. No inline label: the
+                      legend above the chart names it with its
+                      value, in the same colour. */}
                   {averageMonthlyCents != null && (
                     <ReferenceLine
                       y={averageMonthlyCents / 100}
-                      stroke="var(--dim)"
+                      stroke={averageLineStroke}
                       strokeDasharray="2 3"
                       strokeWidth={1}
                       strokeLinecap="round"
@@ -2151,10 +2191,22 @@ export function App() {
   // identical everywhere). The state stays the annual string
   // in both units — the queue, the chart line, and the hero
   // all keep reading it unchanged — and switching units never
-  // rewrites it. The unit is a local display preference (not
-  // persisted, no new stored field, no new action); the field
-  // opens per year.
-  const [spendingTargetUnit, setSpendingTargetUnit] = useState<"year" | "month">("year");
+  // rewrites it. The unit itself is a remembered display
+  // preference in the generic server-side fold store (the
+  // "spending.targetPerMonth" flag, the same store and pattern
+  // the Playground's Month / Year pills use): a stored entry
+  // means the user last left it on per month; no entry is the
+  // per-year default, so the field opens per year for a user
+  // who has never toggled it, and the last pick comes back
+  // after a reload, in a new session, and on another device.
+  // Display only — it changes no stored figure.
+  const [spendingTargetPerMonth, setSpendingTargetPerMonth] =
+    usePersistedFold("spending.targetPerMonth");
+  const spendingTargetUnit: "year" | "month" = spendingTargetPerMonth
+    ? "month"
+    : "year";
+  const setSpendingTargetUnit = (unit: "year" | "month") =>
+    setSpendingTargetPerMonth(unit === "month");
   // Per-month draft: while the field is focused in per-month
   // mode, the input shows the monthly figure as the user types
   // it — the state is annual dollars, so the typed monthly
@@ -5383,7 +5435,7 @@ export function App() {
                           </p>
                         )}
                         {expanded && (
-                          <div className="mt-2 border-t border-[var(--border)] pt-2">
+                          <div className="mt-3 border-t-2 border-[var(--dim)] pt-3">
                             {cm.items.length === 0 ? (
                               <p className="text-sm text-[var(--dim)]">
                                 No items yet for {monthLabel(cm.month)} — add

@@ -51,12 +51,14 @@ fillConversion,
 flexSpendingNeed,
 irmaaAnnualPerPerson,
 irmaaTierFor,
+NO_CEILINGS,
 priceYear,
 rmdForYear,
 simulateRothPlan,
 waCapitalGainsTax,
 type PriceYearInput,
 type RothPlanInputs,
+type RothPlanResult,
 type RothStrategy,
 } from "./taxEngine";
 import {
@@ -79,6 +81,7 @@ normalizeSsDeclarations,
 optimizerHeirSensitivity,
 parsePlaygroundPaste,
 planInputsFromSaved,
+PLAYGROUND_CASH_LEFT_BASIS,
 planNetCost,
 playgroundGainsComparison,
 playgroundPastePayload,
@@ -108,12 +111,20 @@ buildOptimizerCandidates,
 buildRothFunding,
 candidateStrategy,
 type OptimizerCandidateSpec,
+type PlaygroundYearInputs,
 type RothCompareBaseSaved,
 type RothCompareOverrides,
 type RothSavedLike,
 type ScoredCandidate,
 } from "./rothOptimizer";
 import { parseRothBlobRevision } from "./rothRevisionCore";
+import {
+  computeDecemberProjection,
+  decemberCaseInputs,
+  defaultDecemberState,
+  resolveDecemberStateAtLoad,
+  type DecemberRecordFacts,
+} from "./decemberCore";
 import { CHARITABLE_CEILING, CURRENT_LAW, DEDUCTION_2026, EARLIEST_LAW, TAX_LAW_2025, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear, saltScheduleForYear } from "./taxLaw";
 import { ACA_HOUSEHOLD_SCHEDULE_SEMANTICS, ACA_SEMANTICS, AMT_SEMANTICS, EDUCATION_CREDIT_SEMANTICS, IRMAA_LOOKBACK_SEMANTICS, ITEMIZED_DEDUCTION_SEMANTICS, LOSS_CARRYFORWARD_SEMANTICS, bracketTopPctField, playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
 import { computeGiftComparison, parseRothGift } from "./giftModel";
@@ -128,14 +139,34 @@ runWorkYearsCompare,
 type WorkYearJob,
 } from "./workYears";
 import {
+SAMPLE_ACA_BENCHMARK_FAMILY_CENTS,
+SAMPLE_ANNUAL_SPENDING_CENTS,
 SAMPLE_BIRTH_YEAR_PRIMARY,
 SAMPLE_BIRTH_YEAR_SPOUSE,
+SAMPLE_CASH_CENTS,
+SAMPLE_END_AGE,
+SAMPLE_FILING_STATUS,
+SAMPLE_HEIR_RATE_PCT,
+SAMPLE_HOUSEHOLD_SIZE,
+SAMPLE_HSA_CENTS,
+SAMPLE_INFLATION_PCT,
+SAMPLE_PRESERVE_PRETAX_CENTS,
 SAMPLE_PRETAX_CENTS,
+SAMPLE_PROTECT_MIN_TAXABLE_CENTS,
+SAMPLE_RETIREMENT_AGE,
+SAMPLE_ROTH_CENTS,
 SAMPLE_SS_PRIMARY_CENTS,
+SAMPLE_SS_PRIMARY_START_AGE,
 SAMPLE_SS_SPOUSE_CENTS,
+SAMPLE_SS_SPOUSE_START_AGE,
+SAMPLE_START_YEAR,
+SAMPLE_TAXABLE_BASIS_PCT,
+SAMPLE_TAXABLE_CENTS,
 SAMPLE_TAX_RETURN_INTEREST_CENTS,
 SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS,
 SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS,
+SAMPLE_WINDOW_START_AGE,
+SAMPLE_WINDOW_STOP_AGE,
 samplePlanInputs,
 } from "./sampleHousehold";
 
@@ -1545,8 +1576,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-torpedo-guardrail-pauses-fill",
     kind: "tax",
-    note: "Torpedo guardrail: born 1961, Social Security $48,000/yr from 65, pre-tax $1,200,000, window 65–74. The naive Fill 22% converts $204,700 in the first year (2026), blowing straight through the phase-in until benefits are 85% taxed. The optimizer's winner converts $87,800 that year, and the Fill 22% candidate WITH the marginal-rate guardrail converts $40,900 — the guardrail stops the fill where the next $100 would be taxed above 22% (the torpedo zone), which is the guardrail effect visible in the schedule. (Winner conversion RE-PINNED by the BASIS-DRIFT build from $87,800: the torpedo plan's basis % is an explicitly set 100% at a 3% return, so the drift ledger erodes the basis share as the balance compounds and the winner's lifetime pricing — not its first year, which is identical — re-solves to a smaller first-year fill. The naive and guardrail first-year figures are year-1 prices and are unmoved, as drift requires.) (Re-pinned under the settlement iteration, FIX 1 — the winner's first-year fill moves from the drift-era $88,200 back to $87,800: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.)",
-    expected: { naiveConv: 204700, winnerConv: 87800, guardrailConv: 40900, winnerLess: 1, guardrailLess: 1 },
+    note: "Torpedo guardrail: born 1961, Social Security $48,000/yr from 65, pre-tax $1,200,000, window 65–74. The naive Fill 22% converts $204,700 in the first year (2026), blowing straight through the phase-in until benefits are 85% taxed. The optimizer's winner converts $99,850 that year, and the Fill 22% candidate WITH the marginal-rate guardrail converts $40,900 — the guardrail stops the fill where the next $100 would be taxed above 22% (the torpedo zone), which is the guardrail effect visible in the schedule. (Winner conversion RE-PINNED by the BASIS-DRIFT build from $87,800: the torpedo plan's basis % is an explicitly set 100% at a 3% return, so the drift ledger erodes the basis share as the balance compounds and the winner's lifetime pricing — not its first year, which is identical — re-solves to a smaller first-year fill. The naive and guardrail first-year figures are year-1 prices and are unmoved, as drift requires.) (Re-pinned under the settlement iteration, FIX 1 — the winner's first-year fill moves from the drift-era $88,200 back to $87,800: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the cliff and IRMAA grow-backs now carry the marginal-rate guardrail check, so guardrail candidates whose grow-backs previously over-converted at above-target marginal rates reprice cheaper and the winner moves; the property this case pins is unchanged.)",
+    expected: { naiveConv: 204700, winnerConv: 99850, guardrailConv: 40900, winnerLess: 1, guardrailLess: 1 },
     actual: () => {
       const plan = optTorpedoPlan();
       const naive = simulateRothPlan(plan, FILL_22).years[0];
@@ -1802,17 +1833,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "joint-maxifi-property",
     kind: "tax",
-    note: "MaxiFi property — separate optima are not joint optima: on the torpedo plan ($48,000 of Social Security entered at 65, pre-tax $1,200,000, window 65–74, plan to 85), the best conversion strategy at the ENTERED claim age scores a $223,353.19 lifetime net cost, and the best claiming age under Do Nothing (claim at 62) scores $426,822.66 — but the JOINT winner (claim at 62 for $38,769.23/yr) scores $203,231.48, beating the fixed-claim optimum by $20,121.71 and the best Do Nothing claim by $223,591.18. The joint result's Do Nothing is the best Do Nothing found (at claim 62), priced exactly as the standalone scan prices it. (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: the torpedo primary as originally shaped (born 1961) is 65 at plan start with the claim entered at 65 — already receiving — so the claim is locked at the entered age and no joint search exists on that shape; its locked best, $181,984.20, is pinned by joint-winner-reproduces-from-saved-parameters and claim-floor-edges-and-blank. This case therefore runs the identical torpedo shape with the primary born 1966 — age 60 at plan start, the claim entered at 65 not yet made — restoring the searched 62–70 space, and every figure in this paragraph is re-derived on that shape (its §151(d)(5)(C) deflation years are 2032–2033, when the primary is 66–67; the FIX 4 paragraph below describes the retired 1961 shape). The property — joint beats both separate optima — is unchanged.) (RE-PINNED by the BASIS-DRIFT build: pre-drift the joint winner claimed at 70 and netted $156,545.03 against a $183,813.90 fixed best. The torpedo plan's basis % is an explicitly set 100% at a 3% return, so under drift the basis share erodes as the balance compounds, later draws and tax payments realize gains the flat model priced at $0, and both searches re-solve — the fixed best rises $1,080.43 and the joint crown moves to claim 62. Do Nothing's best-claim net is unmoved: its spending is covered by benefits and RMDs, so it never draws Taxable into drifted-gain territory. The property itself — joint beats both separate optima — is what the pin protects, and it holds.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo plan's primary (born 1961) is 66 in 2027 and 67 in 2028, and priceYear now deflates the statutory §151(d)(5)(C) figures into today's dollars at the plan's 2.5% inflation — 2027: $6,000/1.025 = $5,853.66 per person over a $150,000/1.025 = $146,341.46 phase-out start; 2028: $6,000/1.025² = $5,710.89 over $142,772.16 — where the old pins priced the nominal $6,000 / $150,000 in both years. Those two years reprice for every candidate and both searches re-solve: the fixed best rises $119.00 and the joint winner falls $16.99. Do Nothing's best-claim net is unmoved — at its 2027/2028 AGI the deduction is fully phased out under both the nominal and the deflated figures. The corrected fixed best is cross-validated to the cent by opt-ss-collected-carried-by-scores and mc-check-zero-vol-equals-deterministic, the corrected joint winner by claim-table-per-age-best and claim-floor-edges-and-blank.)",
+    note: "MaxiFi property — separate optima are not joint optima: on the torpedo plan ($48,000 of Social Security entered at 65, pre-tax $1,200,000, window 65–74, plan to 85), the best conversion strategy at the ENTERED claim age scores a $221,753.51 lifetime net cost, and the best claiming age under Do Nothing (claim at 62) scores $426,822.66 — but the JOINT winner (claim at 62 for $38,769.23/yr) scores $200,877.28, beating the fixed-claim optimum by $20,876.23 and the best Do Nothing claim by $225,945.38. The joint result's Do Nothing is the best Do Nothing found (at claim 62), priced exactly as the standalone scan prices it. (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: the torpedo primary as originally shaped (born 1961) is 65 at plan start with the claim entered at 65 — already receiving — so the claim is locked at the entered age and no joint search exists on that shape; its locked best, $181,984.20, is pinned by joint-winner-reproduces-from-saved-parameters and claim-floor-edges-and-blank. This case therefore runs the identical torpedo shape with the primary born 1966 — age 60 at plan start, the claim entered at 65 not yet made — restoring the searched 62–70 space, and every figure in this paragraph is re-derived on that shape (its §151(d)(5)(C) deflation years are 2032–2033, when the primary is 66–67; the FIX 4 paragraph below describes the retired 1961 shape). The property — joint beats both separate optima — is unchanged.) (RE-PINNED by the BASIS-DRIFT build: pre-drift the joint winner claimed at 70 and netted $156,545.03 against a $183,813.90 fixed best. The torpedo plan's basis % is an explicitly set 100% at a 3% return, so under drift the basis share erodes as the balance compounds, later draws and tax payments realize gains the flat model priced at $0, and both searches re-solve — the fixed best rises $1,080.43 and the joint crown moves to claim 62. Do Nothing's best-claim net is unmoved: its spending is covered by benefits and RMDs, so it never draws Taxable into drifted-gain territory. The property itself — joint beats both separate optima — is what the pin protects, and it holds.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo plan's primary (born 1961) is 66 in 2027 and 67 in 2028, and priceYear now deflates the statutory §151(d)(5)(C) figures into today's dollars at the plan's 2.5% inflation — 2027: $6,000/1.025 = $5,853.66 per person over a $150,000/1.025 = $146,341.46 phase-out start; 2028: $6,000/1.025² = $5,710.89 over $142,772.16 — where the old pins priced the nominal $6,000 / $150,000 in both years. Those two years reprice for every candidate and both searches re-solve: the fixed best rises $119.00 and the joint winner falls $16.99. Do Nothing's best-claim net is unmoved — at its 2027/2028 AGI the deduction is fully phased out under both the nominal and the deflated figures. The corrected fixed best is cross-validated to the cent by opt-ss-collected-carried-by-scores and mc-check-zero-vol-equals-deterministic, the corrected joint winner by claim-table-per-age-best and claim-floor-edges-and-blank.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the cliff and IRMAA grow-backs now carry the marginal-rate guardrail check, so guardrail candidates whose grow-backs previously over-converted at above-target marginal rates reprice cheaper and the winner moves; the property this case pins is unchanged.)",
     expected: {
       combos: 9,
-      jointNetCost: 203231.48,
+      jointNetCost: 200877.28,
       jointClaimAge: 62,
       jointAnnual: 38769.23,
       jointLabel: "You claim at 62",
-      fixedBestNetCost: 223353.19,
+      fixedBestNetCost: 221753.51,
       bestDnClaimNetCost: 426822.66,
-      jointBeatsFixedBy: 20121.71,
-      jointBeatsDnClaimBy: 223591.18,
+      jointBeatsFixedBy: 20876.23,
+      jointBeatsDnClaimBy: 225945.38,
       jointDnIsBestDnClaim: 1,
     },
     actual: () => {
@@ -3410,18 +3441,18 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-zero-vol-equals-deterministic",
     kind: "tax",
-    note: "Market-uncertainty check at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path's pricing is the deterministic pricing, bit for bit. On the torpedo plan the optimizer's winner (Fill to the top of the 12% bracket, through the RMD years) genuinely beats Do Nothing deterministically — net cost $181,984.20 vs $380,487.57, an advantage of $198,503.37 — so the check at volatility 0, N = 8, seed 12345 must report a 100% win rate with the median advantage, both median net costs, and p10 = p90 all EQUAL to those deterministic figures to the cent (the deterministic figures are pinned alongside, from the optimizer run itself). (Winner figures RE-PINNED by the BASIS-DRIFT build from $183,813.90 / $199,501.11 — the torpedo plan's set-100% basis drifts at its 3% return, raising the winner's net $1,080.43; Do Nothing's $380,487.57 is unmoved, as in joint-maxifi-property.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo primary (born 1961) is 66 in 2027 and 67 in 2028, years whose §151(d)(5)(C) figures now deflate into today's dollars (2027: $5,853.66 per person over a $146,341.46 start; 2028: $5,710.89 over $142,772.16) instead of pricing the nominal $6,000 / $150,000, so the winner's net rises $119.00 to $181,984.20 and the advantage falls to $380,487.57 − $181,984.20 = $198,503.37; Do Nothing's $380,487.57 is unmoved, its deduction being fully phased out in those years under either figure set. See joint-maxifi-property for the full derivation.)",
+    note: "Market-uncertainty check at zero volatility: every series value is exactly the plan's expected return (expectedReturnPct + 0 × z), so each path's pricing is the deterministic pricing, bit for bit. On the torpedo plan the optimizer's winner (Fill to the top of the 12% bracket, through the RMD years) genuinely beats Do Nothing deterministically — net cost $177,667.65 vs $380,487.57, an advantage of $202,819.92 — so the check at volatility 0, N = 8, seed 12345 must report a 100% win rate with the median advantage, both median net costs, and p10 = p90 all EQUAL to those deterministic figures to the cent (the deterministic figures are pinned alongside, from the optimizer run itself). (Winner figures RE-PINNED by the BASIS-DRIFT build from $183,813.90 / $199,501.11 — the torpedo plan's set-100% basis drifts at its 3% return, raising the winner's net $1,080.43; Do Nothing's $380,487.57 is unmoved, as in joint-maxifi-property.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo primary (born 1961) is 66 in 2027 and 67 in 2028, years whose §151(d)(5)(C) figures now deflate into today's dollars (2027: $5,853.66 per person over a $146,341.46 start; 2028: $5,710.89 over $142,772.16) instead of pricing the nominal $6,000 / $150,000, so the winner's net rises $119.00 to $181,984.20 and the advantage falls to $380,487.57 − $181,984.20 = $198,503.37; Do Nothing's $380,487.57 is unmoved, its deduction being fully phased out in those years under either figure set. See joint-maxifi-property for the full derivation.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the cliff and IRMAA grow-backs now carry the marginal-rate guardrail check, so guardrail candidates whose grow-backs previously over-converted at above-target marginal rates reprice cheaper and the winner moves; the property this case pins is unchanged.)",
     expected: {
       winRatePct: 100,
       wins: 8,
-      medianAdvantage: 198503.37,
-      detAdvantage: 198503.37,
-      winnerMedianNetCost: 181984.2,
-      detWinnerNetCost: 181984.2,
+      medianAdvantage: 202819.92,
+      detAdvantage: 202819.92,
+      winnerMedianNetCost: 177667.65,
+      detWinnerNetCost: 177667.65,
       doNothingMedianNetCost: 380487.57,
       detDoNothingNetCost: 380487.57,
-      p10Advantage: 198503.37,
-      p90Advantage: 198503.37,
+      p10Advantage: 202819.92,
+      p90Advantage: 202819.92,
     },
     actual: () => {
       const plan = optTorpedoPlan();
@@ -3450,15 +3481,15 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-seeded-small-n",
     kind: "tax",
-    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–40 are different market trials than under the old variable-length draw. Every figure moved: wins 34 → 33, win rate 85% → 82.5%, median advantage $130,788.85 → $129,618.70, p10 −$22,890.85 → −$19,638.95, p90 $377,639.32 → $476,377.44, winner median net $161,901.10 → $161,454.23, Do Nothing median net $308,688.28 → $318,003.38. The note's earlier sentence 'The winner takes 34 of 40 paths' is superseded by this re-pin: the winner now takes 33 of 40.) (RE-PINNED in the ENGINES BATCH, F2: the basis clamp is removed — a decline no longer destroys basis, so on down paths the torpedo plan's set-100% basis survives the recovery and later sales price no fictitious gain. The winner-side statistics move to median advantage $129,525.61 / p10 −$19,009.57 / p90 $476,905.12 / winner median net $159,964.47 (winner net cost DOWN ~$1,490 — less tax on the recovered paths); the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved. The new figures were verified by re-running the seeded check twice — identical both times — and by the F2 mechanism probe, which shows a $50,000 sale after a −20%/+25% recovery pricing $0 gain where the clamp priced $10,000.)",
+    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–40 are different market trials than under the old variable-length draw. Every figure moved: wins 34 → 33, win rate 85% → 82.5%, median advantage $130,788.85 → $129,618.70, p10 −$22,890.85 → −$19,638.95, p90 $377,639.32 → $476,377.44, winner median net $161,901.10 → $161,454.23, Do Nothing median net $308,688.28 → $318,003.38. The note's earlier sentence 'The winner takes 34 of 40 paths' is superseded by this re-pin: the winner now takes 33 of 40.) (RE-PINNED in the ENGINES BATCH, F2: the basis clamp is removed — a decline no longer destroys basis, so on down paths the torpedo plan's set-100% basis survives the recovery and later sales price no fictitious gain. The winner-side statistics move to median advantage $129,525.61 / p10 −$19,009.57 / p90 $476,905.12 / winner median net $159,964.47 (winner net cost DOWN ~$1,490 — less tax on the recovered paths); the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved. The new figures were verified by re-running the seeded check twice — identical both times — and by the F2 mechanism probe, which shows a $50,000 sale after a −20%/+25% recovery pricing $0 gain where the clamp priced $10,000.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the torpedo winner itself changed (see opt-torpedo-guardrail-pauses-fill), so every winner-side stream statistic moves — median advantage $136,522.54 / p10 −$12,134.52 / p90 $473,163.18 / winner median net $156,252.67; the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved.) (RE-PINNED under FOLLOW-UP #3, engines review follow-up: the march now claims the §1211(b) allowance on loss-only withdrawal years, which the torpedo plan's drifting set-100% basis produces along the down paths. Verified per path against the pre-#3 engine: 28 of 40 paths diverge, and every sampled path's FIRST divergence is a year whose realized result is a net loss identical on both engines, with AGI lower by exactly min($3,000, the loss) — path 0, 2027: loss −$3,595.91, AGI −$3,000 (the cap); path 1, 2031: −$612.51 / −$612.51; path 4, 2027: −$1,190.56 / −$1,190.56. The winner's median net cost falls $968.11 to $155,284.56 on the allowance's tax savings and the advantage statistics move to median $136,525.75 / p10 −$12,128.87 / p90 $475,130.91; the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved.)",
     expected: {
       pathsRun: 40,
       wins: 33,
       winRatePct: 82.5,
-      medianAdvantage: 129525.61,
-      p10Advantage: -19009.57,
-      p90Advantage: 476905.12,
-      winnerMedianNetCost: 159964.47,
+      medianAdvantage: 136525.75,
+      p10Advantage: -12128.87,
+      p90Advantage: 475130.91,
+      winnerMedianNetCost: 155284.56,
       doNothingMedianNetCost: 318003.38,
     },
     actual: () => {
@@ -5472,13 +5503,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "opt-ss-collected-carried-by-scores",
     kind: "tax",
-    note: "Lifetime Social Security collected carried by every optimizer score (display only): on the torpedo plan (primary born 1961, $48,000/yr entered at 65, no spouse benefit, plan 2026–2046 = ages 65–85, 21 years) every candidate at the entered claiming ages collects 21 × $48,000 = $1,008,000, whatever its conversion strategy or draw order — conversions never change the benefit paid. The winner's, Do Nothing's, and the first runner-up's breakdowns must all carry exactly that figure, the winner's own simulation total must match it, and the winner's net cost must still be the pinned $181,984.20 — the new figure changes no score and no ranking. (Net RE-PINNED by the BASIS-DRIFT build from $183,813.90 — the torpedo plan's set-100% basis drifts at its 3% return; the collected-benefit figures are benefit arithmetic and are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Net re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo plan's 2027/2028 years now price the deflated §151(d)(5)(C) figures ($5,853.66 / $146,341.46 in 2027; $5,710.89 / $142,772.16 in 2028) instead of the nominal $6,000 / $150,000, raising the winner's net $119.00 from $185,169.85; the collected-benefit figures are benefit arithmetic and are unmoved. Derivation at joint-maxifi-property.)",
+    note: "Lifetime Social Security collected carried by every optimizer score (display only): on the torpedo plan (primary born 1961, $48,000/yr entered at 65, no spouse benefit, plan 2026–2046 = ages 65–85, 21 years) every candidate at the entered claiming ages collects 21 × $48,000 = $1,008,000, whatever its conversion strategy or draw order — conversions never change the benefit paid. The winner's, Do Nothing's, and the first runner-up's breakdowns must all carry exactly that figure, the winner's own simulation total must match it, and the winner's net cost must still be the pinned $177,667.65 — the new figure changes no score and no ranking. (Net RE-PINNED by the BASIS-DRIFT build from $183,813.90 — the torpedo plan's set-100% basis drifts at its 3% return; the collected-benefit figures are benefit arithmetic and are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Net re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: the torpedo plan's 2027/2028 years now price the deflated §151(d)(5)(C) figures ($5,853.66 / $146,341.46 in 2027; $5,710.89 / $142,772.16 in 2028) instead of the nominal $6,000 / $150,000, raising the winner's net $119.00 from $185,169.85; the collected-benefit figures are benefit arithmetic and are unmoved. Derivation at joint-maxifi-property.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the cliff and IRMAA grow-backs now carry the marginal-rate guardrail check, so guardrail candidates whose grow-backs previously over-converted at above-target marginal rates reprice cheaper and the winner moves; the property this case pins is unchanged.)",
     expected: {
       winnerSsCollected: 1008000,
       doNothingSsCollected: 1008000,
       runnerUpSsCollected: 1008000,
       winnerResultLifetime: 1008000,
-      winnerNetCost: 181984.2,
+      winnerNetCost: 177667.65,
     },
     actual: () => {
       const res = runOptimizer(optTorpedoPlan());
@@ -5494,14 +5525,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-table-per-age-best",
     kind: "tax",
-    note: "Per-claiming-age table (torpedo plan: primary $48,000 entered at 65, spouse blank): the joint result carries one row per primary age 62–70, and each row's best is that age's TRUE best fully-priced candidate — cross-checked against an independent fixed-claim-age run at that age (scoreAllCandidates on the age's own combination, plan draw order): the best net cost, strategy name, and window stop must match the row's exactly at all nine ages. The table's winning row is the joint winner itself (claim 62, $203,231.48, per the MaxiFi pin — RE-PINNED by the BASIS-DRIFT build from claim 70 / $156,545.03, the torpedo plan's set-100% basis drift; see joint-maxifi-property; the dollar figure re-pinned under FIX 4's §151(d)(5)(C) senior-deduction deflation from $168,927.75 — derivation at joint-maxifi-property) and exactly one row is marked as the winner. Yearly benefits are the statutory derivations from the entered anchor: PIA = $48,000 ÷ (13/15) = $55,384.62, so claim 62 (60 months early, factor 0.70) pays $38,769.23 and claim 70 (factor 1.24) pays $68,676.92; with no spouse benefit, the survivor-keeps figure equals the row's own benefit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (RE-PINNED by Round-7 Build 3, N-1: on the torpedo shape as originally born (1961) the claim is locked at the entered 65 and the table degenerates to the single entered age, so — like joint-maxifi-property — this case runs the torpedo shape with the primary born 1966, the claim entered at 65 not yet made; the winner-row figure is that shape's joint winner, cross-pinned there. The benefit derivations are unchanged: FRA is 67 for both birth years.)",
+    note: "Per-claiming-age table (torpedo plan: primary $48,000 entered at 65, spouse blank): the joint result carries one row per primary age 62–70, and each row's best is that age's TRUE best fully-priced candidate — cross-checked against an independent fixed-claim-age run at that age (scoreAllCandidates on the age's own combination, plan draw order): the best net cost, strategy name, and window stop must match the row's exactly at all nine ages. The table's winning row is the joint winner itself (claim 62, $200,877.28, per the MaxiFi pin — RE-PINNED by the BASIS-DRIFT build from claim 70 / $156,545.03, the torpedo plan's set-100% basis drift; see joint-maxifi-property; the dollar figure re-pinned under FIX 4's §151(d)(5)(C) senior-deduction deflation from $168,927.75 — derivation at joint-maxifi-property) and exactly one row is marked as the winner. Yearly benefits are the statutory derivations from the entered anchor: PIA = $48,000 ÷ (13/15) = $55,384.62, so claim 62 (60 months early, factor 0.70) pays $38,769.23 and claim 70 (factor 1.24) pays $68,676.92; with no spouse benefit, the survivor-keeps figure equals the row's own benefit. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (RE-PINNED by Round-7 Build 3, N-1: on the torpedo shape as originally born (1961) the claim is locked at the entered 65 and the table degenerates to the single entered age, so — like joint-maxifi-property — this case runs the torpedo shape with the primary born 1966, the claim entered at 65 not yet made; the winner-row figure is that shape's joint winner, cross-pinned there. The benefit derivations are unchanged: FRA is 67 for both birth years.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the cliff and IRMAA grow-backs now carry the marginal-rate guardrail check, so guardrail candidates whose grow-backs previously over-converted at above-target marginal rates reprice cheaper and the winner moves; the property this case pins is unchanged.)",
     expected: {
       rowCount: 9,
       agesAscending62to70: 1,
       maxNetCostDiffVsFixedAge: 0,
       namesAndWindowsMatchFixedAge: 1,
       winnerRowAge: 62,
-      winnerRowNetCost: 203231.48,
+      winnerRowNetCost: 200877.28,
       winnerRowsMarked: 1,
       annual62: 38769.23,
       annual70: 68676.92,
@@ -5559,13 +5590,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-crowning",
     kind: "tax",
-    note: "Claim floor crowning (claim-floor plan: primary $48,000 entered at 65, born 1962 — age 64 at plan start, the claim not yet made — pre-tax $300,000, plan to 80; its searched ages are 64–70 and its per-age bests rise monotonically from 67 to 70, so the floor genuinely bites): with no floor the winner claims at 66 ($2,400.56). With floor 67 the crowned winner is the best claim-67 candidate, $4,632.50 — cross-checked against an independent fixed-claim-age run at 67 (scoreAllCandidates on the age-67 combination) — and it is the table's own age-67 row best. The youngest row (age 64) best appears in the table at $4,261.60, unmarked as winner; rows 64–66 are marked below the floor (3 rows), rows 67–70 are not; and the floor moves nothing else — the joint Do Nothing is identical to the no-floor run's, to the cent ($82,851.40). (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: on the plan's original shape (primary born 1961, claim entered at 65 at age 65, already receiving) the claim is locked and no floor can bite, so the plan's primary is now born 1962 and every figure is re-derived on that shape. The retired 1961 shape's pins — floor-67 winner $4,873.24, age-62 row $149.54, five below-floor rows, Do Nothing $81,117.30 — were themselves re-pinned by the BASIS-DRIFT build and FIX 4's §151(d)(5)(C) deflation; the crowning mechanics this case pins are unchanged.)",
+    note: "Claim floor crowning (claim-floor plan: primary $48,000 entered at 65, born 1962 — age 64 at plan start, the claim not yet made — pre-tax $300,000, plan to 80; its searched ages are 64–70 and its per-age bests rise monotonically from 67 to 70, so the floor genuinely bites): with no floor the winner claims at 66 ($2,400.56). With floor 67 the crowned winner is the best claim-67 candidate, $4,632.50 — cross-checked against an independent fixed-claim-age run at 67 (scoreAllCandidates on the age-67 combination) — and it is the table's own age-67 row best. The youngest row (age 64) best appears in the table at $4,203.52, unmarked as winner; rows 64–66 are marked below the floor (3 rows), rows 67–70 are not; and the floor moves nothing else — the joint Do Nothing is identical to the no-floor run's, to the cent ($82,851.40). (RE-PINNED by Round-7 Build 3, N-1 — attainable claiming ages: on the plan's original shape (primary born 1961, claim entered at 65 at age 65, already receiving) the claim is locked and no floor can bite, so the plan's primary is now born 1962 and every figure is re-derived on that shape. The retired 1961 shape's pins — floor-67 winner $4,873.24, age-62 row $149.54, five below-floor rows, Do Nothing $81,117.30 — were themselves re-pinned by the BASIS-DRIFT build and FIX 4's §151(d)(5)(C) deflation; the crowning mechanics this case pins are unchanged.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the age-64 row's best is a guardrail candidate whose IRMAA grow-back repriced, moving its net to $4,203.52; the floor-67 winner, the below-floor count, and the Do Nothing figures are unmoved.)",
     expected: {
       winnerAge: 67,
       winnerNetCost: 4632.5,
       winnerNetCostDiffVsFixedAge67: 0,
       winnerIsTableRow67: 1,
-      row64NetCost: 4261.6,
+      row64NetCost: 4203.52,
       row64IsWinner: 0,
       belowFloorRows: 3,
       doNothingDiffVsNoFloor: 0,
@@ -5608,9 +5639,9 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "claim-floor-edges-and-blank",
     kind: "tax",
-    note: "Claim floor edges: blank reproduces the un-floored winner — on the torpedo plan a floor key ABSENT crowns the pinned winner (claim 65, $181,984.20 — under N-1 the torpedo primary is already receiving at the entered 65, so the claim is locked and the absent-floor winner is the entered-claim best, cross-pinned by joint-winner-reproduces-from-saved-parameters); on the claim-floor plan a floor explicitly NULL and a floor of 62 (which excludes no searched age) crown exactly the absent-floor winner (claim 66), with no row marked below the floor at 62. On the claim-floor plan a floor of 70 leaves only age 70 eligible: the winner is age 70's own best ($10,610.98), all six younger rows (64–69) are marked below the floor, and every runner-up is also a claim-70 candidate — no below-floor candidate leaks into the crowned set however cheap it is (the age-64 best is $4,261.60). (RE-PINNED by Round-7 Build 3, N-1: the torpedo figure moved because the claim locked at the entered age, and the claim-floor plan's primary is now born 1962 (age 64 at plan start, claim entered at 65 not yet made; searched ages 64–70) — on the retired born-1961 shape, itself re-pinned by the BASIS-DRIFT build, FIX 1, and FIX 4's §151(d)(5)(C) deflation, the pins were torpedo $165,393.40 at claim 62, floor-70 winner $11,186.99, eight below-floor rows. The edge mechanics are the pin's subject and are unmoved.)",
+    note: "Claim floor edges: blank reproduces the un-floored winner — on the torpedo plan a floor key ABSENT crowns the pinned winner (claim 65, $177,667.65 — under N-1 the torpedo primary is already receiving at the entered 65, so the claim is locked and the absent-floor winner is the entered-claim best, cross-pinned by joint-winner-reproduces-from-saved-parameters); on the claim-floor plan a floor explicitly NULL and a floor of 62 (which excludes no searched age) crown exactly the absent-floor winner (claim 66), with no row marked below the floor at 62. On the claim-floor plan a floor of 70 leaves only age 70 eligible: the winner is age 70's own best ($10,610.98), all six younger rows (64–69) are marked below the floor, and every runner-up is also a claim-70 candidate — no below-floor candidate leaks into the crowned set however cheap it is (the age-64 best is $4,203.52). (RE-PINNED by Round-7 Build 3, N-1: the torpedo figure moved because the claim locked at the entered age, and the claim-floor plan's primary is now born 1962 (age 64 at plan start, claim entered at 65 not yet made; searched ages 64–70) — on the retired born-1961 shape, itself re-pinned by the BASIS-DRIFT build, FIX 1, and FIX 4's §151(d)(5)(C) deflation, the pins were torpedo $165,393.40 at claim 62, floor-70 winner $11,186.99, eight below-floor rows. The edge mechanics are the pin's subject and are unmoved.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the cliff and IRMAA grow-backs now carry the marginal-rate guardrail check, so guardrail candidates whose grow-backs previously over-converted at above-target marginal rates reprice cheaper and the winner moves; the property this case pins is unchanged.)",
     expected: {
-      absentWinner: 181984.2,
+      absentWinner: 177667.65,
       nullWinnerAge: 66,
       nullEqualsAbsent: 1,
       floor62EqualsAbsent: 1,
@@ -10708,7 +10739,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-playground-paste-roundtrip-full",
     kind: "tax",
-    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with dividends entered as printed — $4,500 total ordinary (line 3b), of which $1,500 qualified (line 3a), so the non-qualified part priced on the ordinary stack is $3,000. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version. (ENGINES BATCH F3: the payload now carries the spouse's pre-tax balance too — pretaxBalanceSpouse, null here — so the round-trip input carries it and the identity still holds.)",
+    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with dividends entered as printed — $4,500 total ordinary (line 3b), of which $1,500 qualified (line 3a), so the non-qualified part priced on the ordinary stack is $3,000. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version. (ENGINES BATCH F3: the payload now carries the spouse's pre-tax balance too — pretaxBalanceSpouse, null here — so the round-trip input carries it and the identity still holds.) (Build v208: the payload also carries the two health premium fields — healthPremiumAcaAnnual and healthPremiumMedicarePerPerson, both null here, the parser's own position and default — so the round-trip input carries them and the identity still holds; no priced figure moves.)",
     expected: {
       inputsIdentical: 1,
       magi: 123500,
@@ -10749,6 +10780,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         spouseSoleBeneficiary: false,
         acaHouseholdSize: 3,
         acaBenchmarkAnnual: 18000,
+        healthPremiumAcaAnnual: null,
+        healthPremiumMedicarePerPerson: null,
         stateRatePct: 5,
         residenceState: null,
         educationStudents: null,
@@ -11646,7 +11679,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "gift-kiddie-form-8615-stack-boundary",
     kind: "tax",
-    note: "Kiddie tax priced the Form 8615 way — the E3 boundary case (2026-10-19): the golden kiddie gift ($100,000 at 56 in 2027, basis $20,000, child born 2008, full-time student, sale at 60 in 2031, gain $80,000, 0% return) on a plan whose parents have $127,200/yr of other ordinary income and NO pre-tax (so no sale-year conversion): in the with-gift run's sale year the parents' own stack is $127,200 − $32,200 (2026 MFJ standard deduction) = $95,000 of ordinary taxable income and no gains, leaving $98,900 − $95,000 = $3,900 of 0% capital-gains space under the 2026 MFJ 0% top. Form 8615 (Tax for Certain Children Who Have Unearned Income, implementing IRC §1(g)) prices the child's net unearned income ON the parents' return: of the $80,000 − $2,700 = $77,300 excess over the §1(g) threshold, the first $3,900 fills that 0% space at 0% and the remaining $73,400 prices at 15% = $11,010 of child tax; the first $2,700 prices on the child's own return at $0 (single standard deduction), and net to child is $100,000 − $11,010 = $88,990. The pre-E3 flat construction charged the whole excess at the parents' top marginal rate — $77,300 × 15% = $11,595 (the golden figure, correct there only because those parents sit wholly inside the 15% band) — overstating this case by exactly $585. Hand-derived here from the 2026 law row; the engine reproduces it to the cent.",
+    note: "Kiddie tax priced the Form 8615 way — the E3 boundary case (2026-10-19): the golden kiddie gift ($100,000 at 56 in 2027, basis $20,000, child born 2008, full-time student, sale at 60 in 2031, gain $80,000, 0% return) on a plan whose parents have $127,200/yr of other ordinary income and NO pre-tax (so no sale-year conversion): in the with-gift run's sale year the parents' own stack is $127,200 − $32,200 (2026 MFJ standard deduction) = $95,000 of ordinary taxable income and no gains, leaving $98,900 − $95,000 = $3,900 of 0% capital-gains space under the 2026 MFJ 0% top. Form 8615 (Tax for Certain Children Who Have Unearned Income, implementing IRC §1(g)) prices the child's net unearned income ON the parents' return: of the $80,000 − $2,700 = $77,300 excess over the §1(g) threshold, the first $3,900 fills that 0% space at 0% and the remaining $73,400 prices at 15% = $11,010 of child tax; the first $2,700 prices on the child's own return at $0 (single standard deduction), and net to child is $100,000 − $11,010 = $88,990. The pre-E3 flat construction charged the whole excess at the parents' top marginal rate — $77,300 × 15% = $11,595 (the golden figure, correct there only because those parents sit wholly inside the 15% band) — overstating this case by exactly $585. Hand-derived here from the 2026 law row; the engine reproduces it to the cent. (RE-PINNED under FOLLOW-UP #3, engines review follow-up — the child tax and net-to-child only; the derivation above is superseded on the parents' stack figures: the parents' with-gift pool is UNDERWATER — the specific-lot gift outflow removed $100,000 of balance but only $20,000 of basis, leaving $480,000 of basis over a $400,000 balance — so the parents' own yearly Taxable sales (their spending equals their income; the sales pay their tax) realize a LOSS every year, $2,174.69 in the 2035 sale year, which the pre-#3 march priced as nothing at all. The corrected march claims the loss under §1211(b) — under the $3,000 cap, so in full: the parents' 2035 AGI is $125,025.31 and their ordinary taxable income is $92,825.31 (not $95,000), leaving $98,900 − $92,825.31 = $6,074.69 of 0% space (not $3,900), so the child's tax is 15% × ($77,300 − $6,074.69) = $10,683.80 and net to child is $89,316.20 — hand-derived here from the corrected stack, and the parents' own 2035 federal tax falls to $10,643.04 by the same allowance. The boundary property this case pins — the excess straddling the parents' 0% top at a 15% parents' rate — is unchanged.)",
     expected: {
       giftYear: 2031,
       saleYear: 2035,
@@ -11655,8 +11688,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       parentsRate: 15,
       value: 100000,
       gain: 80000,
-      childTax: 11010,
-      netToChild: 88990,
+      childTax: 10683.8,
+      netToChild: 89316.2,
       excess: 62000,
     },
     actual: () => {
@@ -12700,13 +12733,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-pg3-playground-statelessness",
     kind: "tax",
-    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 26 keys (kind + version + the 24 dial fields — the 21 original dials plus residenceState and educationStudents, added by the cold-AI audit fix so a replayed paste reprices the same year, plus pretaxBalanceSpouse, added by the engines batch F3 split-balance fix) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
+    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 41 keys (kind + version + the 39 dial fields — the 21 original dials plus residenceState and educationStudents, added by the cold-AI audit fix so a replayed paste reprices the same year, plus pretaxBalanceSpouse, added by the engines batch F3 split-balance fix, plus the two health-premium dials healthPremiumAcaAnnual and healthPremiumMedicarePerPerson, added by v208 so a replayed paste reprices the same year's premium, plus the two ACA reconciliation dials aptcTaken and acaCoverageReduction, added by S-1 so a replayed paste reprices the same year's filing settlement, plus the six December-only pricing dials capitalLossCarryInSt / capitalLossCarryInLt / capitalLossCarryInStWa / capitalLossCarryInLtWa / rmdAlreadyReceived / dependentMagiForAca, added by S-2 so a replayed paste reprices the same year's loss ledger, RMD netting, and ACA household MAGI, plus the reinvested-yield flag yieldReinvested, added by S-3 so a replayed paste of a loaded saved-plan year keeps the march's reinvested yield out of cash in, plus the inflation rate inflationPct, added by S-4 so a replayed paste reprices the same deflated statute-fixed amounts, plus the two funding draws cashDraw and rothDraw, added by S-6 so a replayed paste reprices the same spendable funding, plus the reciprocal beneficiary fact primarySoleBeneficiaryOfSpouse, added by N-1 so a replayed paste reprices the same spouse RMD table) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
     expected: {
       firstTotalTax: 14600,
       secondTotalTax: 14600,
       deterministic: 1,
       inputsUnmutated: 1,
-      payloadKeys: 26,
+      payloadKeys: 41,
       payloadResultKeys: 0,
     },
     actual: () => {
@@ -15934,18 +15967,19 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
-    id: "tax-yield-tiers-exceeds-return-basis-within-balance",
+    id: "tax-yield-tiers-exceeds-return-basis-uncapped",
     kind: "tax",
-    note: "TAXABLE YIELDS exceeding the return on the BASIS TIERS path — the committed tier ledger keeps 0 ≤ basis ≤ balance in every year (TIERS YIELD FIX build; the yield build's restarted Review Pass 2 MEDIUM finding): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return, sustained. Before the fix the settlement routed the reinvested yield through the after-tax inflow helper, which raised the inflow tier's BALANCE with the basis even though the settlement's taxable balance does not rise (the yield is already inside the total return): the committed tier ledger drifted above the settled balance by roughly each year's yield, the growth step re-derived the basis scalar as the tier sum (overwriting the commit's scalar clamp), and by 2046 the year detail printed an endingTaxableBasis of $3,032,552.82 against an endingTaxable of $2,410,114.02 — basis at 125.8% of the balance it describes, overstating the ledger and shrinking harvest room (balance − basis) by bookkeeping. The fix lands the reinvested yield's basis WITHOUT phantom balance — filling the tiers' unrealized gain up to each tier's own balance, the single-pool clamp-at-balance treatment of tax-yield-exceeds-return-clamp-at-balance — and clamps the committed tier ledger to the settled balance at commit and after growth: 2046 now ends at a $2,284,197.50 basis inside a $2,415,538.86 balance, inside the balance in every year of the run. PRICED MOVEMENT ON THIS BROKEN SHAPE, reported per the fix brief: the phantom lot's balance had distorted which tier later sales drew from (sales the phantom priced at the lot's 100% basis ratio now price at the real tiers' ratios once the genuine 100%-basis tier is consumed), so taxes paid from Taxable across the intervening years moved and the balance trajectory followed — pre-fix → post-fix for 2046: endingTaxable $2,410,114.02 → $2,421,821.54, federal tax $80,593.01 → $80,785.85, dividend and interest income $89,561.76 → $90,012.31 each (priced in full on the year's opening balance, as always — the balance path is what moved), ending pre-tax $5,876,371.96 and ending Roth $1,809,986.05 unchanged. (The settlement iteration, FIX 1, then moved the 2046 endpoints again — endingTaxable $2,415,538.86, basis $2,284,197.50, federal tax $80,682.37, dividend and interest $89,770.53 each — the figures now pinned; ending pre-tax and ending Roth did not move.) No shape outside the broken region moves: the full fixture census carries zero priced re-pins. (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.)",
+    note: "TAXABLE YIELDS exceeding the return on the BASIS TIERS path — the reinvested yield's basis lands in FULL, with no balance cap and no phantom balance (TIERS YIELD FIX build, as corrected by FOLLOW-UP #2, engines review follow-up, settled STAND): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return, sustained. HISTORY: the original settlement routed the reinvested yield through the after-tax inflow helper, which raised the inflow tier's BALANCE with the basis even though the settlement's taxable balance does not rise (the yield is already inside the total return): the committed tier ledger drifted above the settled balance by roughly each year's yield, and by 2046 the year detail printed an endingTaxableBasis of $3,032,552.82 against an endingTaxable of $2,410,114.02 — basis at 125.8% of the balance it describes. The TIERS YIELD FIX landed the yield's basis WITHOUT phantom balance but capped it at each tier's own unrealized gain, citing a 'single-pool clamp-at-balance treatment' that does not exist — the single pool adds the yield to its basis outright (basisIn), and the legacy counter does the same (tax-yield-blank-basis-legacy-basis-clamp). FOLLOW-UP #2 removes the cap: the yield's basis is dollars paid for reinvested shares, added in full (lowest basis ratio first, the ledger's standing fill order, with any remainder past every tier's balance landing on the first tier in that order), so with 8% of yield outrunning the 5.75% return every year the true basis legitimately passes the balance — 2046 ends at a $2,174,082.44 basis over a $1,966,897.08 balance, and the invariant this case pins is now basis ≥ $0 in every year plus that 2046 excess, NOT basis-within-balance (the pre-#2 pins under the cap: endingTaxable $1,961,392.21, basis $1,854,744.40, federal tax $22,837.00, dividend and interest $79,166.85 each — the capped path discarded $319,338.04 of paid basis by 2046 and priced $1,120.07 more federal tax that year alone; ending pre-tax $4,656,277.96 and ending Roth $1,422,751.60 are unchanged by the correction). (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.) (RE-PINNED under FOLLOW-UP #3, engines review follow-up: the march now claims the §1211(b) allowance on loss-only years. The first divergence from the pre-#3 pins is 2044, whose realized result is a net LOSS of −$3,050.88 on both engines — the pool stands underwater that year (2043 ends identically on both engines, $2,064,134.23 of basis over a $2,014,395.98 balance) and its sales consume the highest-basis tiers first: the corrected year claims min($3,000, $3,050.88) = $3,000, so its AGI falls by exactly $3,000 ($201,951.68 → $198,951.68) and its federal tax by $924.00, and every later year moves downstream of the changed sales. On the corrected path the 2046 pool no longer ends underwater — basis $1,919,489.06 under the $1,968,998.75 balance — so the 2046-excess pin flips to 0 and the note's earlier 2046 basis/balance pair is superseded; the corrected 2046 reads taxable $1,968,998.75, basis $1,919,489.06, federal tax $20,742.23, dividend and interest $79,370.78 each, with ending pre-tax $4,656,277.96 and ending Roth $1,422,751.60 unmoved. The FOLLOW-UP #2 property this case exists for — the reinvested yield's basis lands in FULL, floored at $0 only — is unchanged: basis stays ≥ $0 in every year (allYearsBasisNonNegative), and the mechanism itself is pinned by the hand-derived worked example / underwater pair in tax-yield-tiers-reinvested-basis-uncapped, unmoved.)",
     expected: {
-      y2050TaxableEnd: 1961392.21,
-      y2050Basis: 1854744.4,
-      y2050FederalTax: 22837,
-      y2050Dividend: 79166.85,
-      y2050Interest: 79166.85,
+      y2050TaxableEnd: 1968998.75,
+      y2050Basis: 1919489.06,
+      y2050FederalTax: 20742.23,
+      y2050Dividend: 79370.78,
+      y2050Interest: 79370.78,
       y2050PretaxEnd: 4656277.96,
       y2050RothEnd: 1422751.6,
-      allYearsBasisWithinBalance: 1,
+      basisAboveBalance2046: 0,
+      allYearsBasisNonNegative: 1,
     },
     actual: () => {
       const saved = {
@@ -15978,7 +16012,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           y2050Interest: null,
           y2050PretaxEnd: null,
           y2050RothEnd: null,
-          allYearsBasisWithinBalance: 0,
+          basisAboveBalance2046: 0,
+          allYearsBasisNonNegative: 0,
         };
       }
       const res = simulateRothPlan(inputs, FILL_ACA_ONLY);
@@ -15991,11 +16026,96 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         y2050Interest: y?.detail.interestIncome ?? null,
         y2050PretaxEnd: y?.pretaxEnd ?? null,
         y2050RothEnd: y?.rothEnd ?? null,
-        allYearsBasisWithinBalance: res.years.every(
-          (r) => r.detail.taxableBasisDollars <= r.taxableEnd + 0.005,
+        basisAboveBalance2046:
+          y != null && y.detail.taxableBasisDollars > y.taxableEnd + 0.005
+            ? 1
+            : 0,
+        allYearsBasisNonNegative: res.years.every(
+          (r) => r.detail.taxableBasisDollars >= -0.005,
         )
           ? 1
           : 0,
+      };
+    },
+  },
+  {
+    id: "tax-yield-tiers-reinvested-basis-uncapped",
+    kind: "tax",
+    note: "REINVESTED YIELD on the BASIS TIERS path is UNCAPPED basis (FOLLOW-UP #2, engines review follow-up, settled STAND; both cases hand-derived): before this fix reinvestYieldIntoTiers routed the yield through the harvest's stepUpTiers, which caps each tier's addition at its own unrealized gain — right for a harvest rebuy, wrong for reinvested distributions, whose basis is dollars actually paid. WORKED EXAMPLE: Taxable $100,000 at 100% basis (single pool, and the identical pool as ONE 100%-basis tier), a 2% reinvested qualified-dividend yield ($2,000 in 2026), a 5% total return, no spending in 2026 (retire 58). The yield's basis adds in full on both paths: 2026 ends at a $105,000 balance against $102,000 of basis — a $3,000 unrealized gain. Under the cap the tier added NOTHING (its unrealized gain at reinvestment time was $0), ending at $100,000 of basis and a fictitious $5,000 gain. 2027 realizes the whole pool (the $400,000 spending need draws the grown $210,000 of pre-tax first — ordinary income enough to put every gain dollar in the 15% band, pinned by gainsAt15 $5,100 = the $3,000 draw gain + the year's $2,100 of qualified dividends — then drains Taxable): both paths price draw gains of $3,000 and federal tax of $29,305; under the cap the tier priced $5,000 of gains and $29,605 of tax — exactly $300 = 15% × the $2,000 of discarded basis more (the settlement's own shape reproduced the same $300 gap, $26,790 vs $27,090). UNDERWATER CASE: the same $100,000 / 100%-basis pool at a −10% return with the same 2% yield. 2026's $2,000 of yield basis lands while the tier stands AT its basis (room $0 under the cap), and the balance then falls to $90,000; 2027's yield is 2% × $90,000 = $1,800, priced while the pool is underwater (basis $100,000+ over a $90,000 balance — 'underwater at reinvestment time'; a tier's basisPct is clamped to 100 at construction, so underwater can only arise mid-run, as here). Uncapped, both paths end 2027 at $103,800 of basis over an $81,000 balance ($100,000 + $2,000 + $1,800, the balance after two −10% years); under the cap the tier added nothing either year and trailed the pool by exactly $3,800. The excess basis over the balance is real dollars paid, preserved — not a modeled loss invented by a clamp.",
+    expected: {
+      wePoolBasis2026: 102000,
+      wePoolTaxable2026: 105000,
+      weTierBasis2026: 102000,
+      weTierTaxable2026: 105000,
+      wePoolDrawGains2027: 3000,
+      weTierDrawGains2027: 3000,
+      weTierGainsAt15_2027: 5100,
+      wePoolFederalTax2027: 29305,
+      weTierFederalTax2027: 29305,
+      uwPoolBasis2026: 102000,
+      uwTierBasis2026: 102000,
+      uwPoolBasis2027: 103800,
+      uwTierBasis2027: 103800,
+      uwTierTaxable2027: 81000,
+    },
+    actual: () => {
+      const weShape = {
+        pretaxStart: 200000,
+        taxableStart: 100000,
+        taxableBasisPct: 100,
+        taxableDividendYieldPct: 2,
+        taxableDividendQualifiedPct: 100,
+        annualSpending: 400000,
+        retirementAge: 58,
+        expectedReturnPct: 5,
+        endAgePrimary: 58,
+      };
+      const wePool = simulateRothPlan(basePlan(weShape), DO_NOTHING);
+      const weTier = simulateRothPlan(
+        basePlan({
+          ...weShape,
+          taxableTiers: [{ sharePct: 100, basisPct: 100 }],
+        }),
+        DO_NOTHING,
+      );
+      const uwShape = {
+        pretaxStart: 0,
+        taxableStart: 100000,
+        taxableBasisPct: 100,
+        taxableDividendYieldPct: 2,
+        taxableDividendQualifiedPct: 100,
+        annualSpending: 0,
+        retirementAge: 65,
+        expectedReturnPct: -10,
+        endAgePrimary: 58,
+      };
+      const uwPool = simulateRothPlan(basePlan(uwShape), DO_NOTHING);
+      const uwTier = simulateRothPlan(
+        basePlan({
+          ...uwShape,
+          taxableTiers: [{ sharePct: 100, basisPct: 100 }],
+        }),
+        DO_NOTHING,
+      );
+      const [weP1, weP2] = wePool.years;
+      const [weT1, weT2] = weTier.years;
+      const [uwP1, uwP2] = uwPool.years;
+      const [uwT1, uwT2] = uwTier.years;
+      return {
+        wePoolBasis2026: weP1?.detail.taxableBasisDollars ?? null,
+        wePoolTaxable2026: weP1?.taxableEnd ?? null,
+        weTierBasis2026: weT1?.detail.taxableBasisDollars ?? null,
+        weTierTaxable2026: weT1?.taxableEnd ?? null,
+        wePoolDrawGains2027: weP2?.detail.drawGains ?? null,
+        weTierDrawGains2027: weT2?.detail.drawGains ?? null,
+        weTierGainsAt15_2027: weT2?.detail.gainsAt15 ?? null,
+        wePoolFederalTax2027: weP2?.federalTax ?? null,
+        weTierFederalTax2027: weT2?.federalTax ?? null,
+        uwPoolBasis2026: uwP1?.detail.taxableBasisDollars ?? null,
+        uwTierBasis2026: uwT1?.detail.taxableBasisDollars ?? null,
+        uwPoolBasis2027: uwP2?.detail.taxableBasisDollars ?? null,
+        uwTierBasis2027: uwT2?.detail.taxableBasisDollars ?? null,
+        uwTierTaxable2027: uwT2?.taxableEnd ?? null,
       };
     },
   },
@@ -16886,6 +17006,161 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
           Math.round(gift.baseline.netCost * 100) === winnerNetCents
             ? 1
             : 0,
+      };
+    },
+  },
+  {
+    id: "tax-spend-cash-plan-funding-agreement-s5",
+    kind: "tax",
+    note: "SPEND-FROM-CASH Plan tab ↔ Year funding agreement (engines review round 2, S-5; hand-derived on the shared fictional sample household, server/src/sampleHousehold.ts): the household (MFJ, born 1968/1970, pre-tax $1,500,000, Roth $400,000, HSA $75,000, spending $180,000/yr, retire 62, window 62–73, Social Security $48,000 / $30,000 at 67, protect-min $50,000, preserve $250,000, heir rate 24%) with its taxable money carried as the folded pool the working form prices and buildSavePayload sends — Taxable $2,000,000 + Cash $100,000 = $2,100,000 at the household's 60% basis — and spendFromCashPct 10. The case holds the 2030 need and the basis ratio exact so the example can be checked by eye: inflation 0 and expected return 0 (the household's 2.5% / 5% set aside for this case), yields blank, benchmarks blank (no ACA pricing, so no premium reconciliation moves the need off the entered spending). 2030 is the first spending year (1968 + 62), so its need is exactly $180,000 and every taxable sale prices at exactly 40% gains; the federal tax is $0 (the gains sit inside the 0% band), so no tax sale adds a second channel. WITH the sleeve riding the payload (spendFromCashSleeveCents 10000000 — the household's $100,000 Cash bucket, the value buildSavePayload sends since this build): the Plan tab's march (simulateRothPlan on the compare build's inputs under the plan's own strategy — no ceilings, Do Nothing) pays cashSpend $18,000 of 2030 from the sleeve (10% × $180,000; the sleeve covers it and ends 2030 at $82,000, pays $18,000 a year through 2034, its last $10,000 in 2035, $0 after), and the Year funding rows (buildRothFunding on the same build) report the same $18,000 (cashSpendCents 1800000) with 2030 MAGI in agreement to the cent (diff 0; $64,800 on both surfaces). No taxable-sale gains are substituted for the cash share: Taxable sells only the remaining $162,000 for spending, and the year's draw gains are exactly 40% × $162,000 = $64,800, which is the whole of MAGI (no other 2030 income). The funding identity foots every year exactly (maxDiffCents 0) in its documented form — the twelve sources plus the year's unfunded spending and unpaid tax against the total need; the shortfall term is real in the last years (2061–2063), where the 0%-return shape's balances run dry at the entered spending. THE PRE-FIX PAYLOAD (the identical shape with no sleeve key at all — what buildSavePayload sent before S-5, its explicit balances leaving the server nothing to thread): 2030 cashSpendCents $0, the whole $180,000 sold from Taxable (exactly $18,000 more sold), draw gains $72,000 (exactly $7,200 = 40% × $18,000 more), and MAGI $72,000 (the same $7,200 more) — the disagreement this build closes. Honest scope: the fixture pins the shared construction both surfaces price from (buildCompareScenario → planInputsFromSaved + the engine, and buildRothFunding over the same build); the client half of the fix — buildSavePayload actually sending the field — is verified by the live action drives in this build's review passes, the same division as the F9 echo fixture.",
+    expected: {
+      planCash2030: 18000,
+      fundCash2030: 1800000,
+      fundMagi2030: 6480000,
+      magiDiffCents: 0,
+      fundSold2030: 16200000,
+      fundGains2030: 6480000,
+      sleeveEnd2034: 10000,
+      cash2035: 10000,
+      sleeveEnd2035: 0,
+      maxDiffCents: 0,
+      bareCash2030: 0,
+      bareSoldDiffCents: 1800000,
+      bareGainsDiffCents: 720000,
+      bareMagiDiffCents: 720000,
+    },
+    actual: () => {
+      const sleeveSaved = (withSleeve: boolean) => ({
+        birthYearPrimary: SAMPLE_BIRTH_YEAR_PRIMARY,
+        birthYearSpouse: SAMPLE_BIRTH_YEAR_SPOUSE,
+        filingStatus: "mfj" as const,
+        pretaxCents: SAMPLE_PRETAX_CENTS,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: SAMPLE_ROTH_CENTS,
+        taxableCents: SAMPLE_TAXABLE_CENTS + SAMPLE_CASH_CENTS,
+        hsaCents: SAMPLE_HSA_CENTS,
+        taxableBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+        taxableDividendYieldPct: null,
+        taxableInterestYieldPct: null,
+        spendFromCashPct: 10,
+        ...(withSleeve
+          ? { spendFromCashSleeveCents: SAMPLE_CASH_CENTS }
+          : {}),
+        annualSpendingCents: SAMPLE_ANNUAL_SPENDING_CENTS,
+        retirementAge: SAMPLE_RETIREMENT_AGE,
+        endAge: SAMPLE_END_AGE,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: SAMPLE_SS_PRIMARY_CENTS,
+        ssPrimaryStartAge: SAMPLE_SS_PRIMARY_START_AGE,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: SAMPLE_SS_SPOUSE_CENTS,
+        ssSpouseStartAge: SAMPLE_SS_SPOUSE_START_AGE,
+        ssSpouseNoBenefit: false,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: SAMPLE_WINDOW_START_AGE,
+        windowStopAge: SAMPLE_WINDOW_STOP_AGE,
+        payTaxFrom: "taxable" as const,
+        protectMinTaxableCents: SAMPLE_PROTECT_MIN_TAXABLE_CENTS,
+        preservePretaxCents: SAMPLE_PRESERVE_PRETAX_CENTS,
+        preserveExitRatePct: null,
+        claimAgeFloor: null,
+        drawOrder: null,
+        drawOrderSwitchAge: null,
+        drawOrderAfter: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaHouseholdSchedule: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        acaBenchmarkFamilyCents: null,
+        inflationPct: 0,
+        stateRatePct: 0,
+        heirRatePct: SAMPLE_HEIR_RATE_PCT,
+        ceilings: null,
+        optimizerGuardrail: null,
+        optimizerBunching: null,
+        gainsHarvest: null,
+      });
+      const empty = {
+        planCash2030: null,
+        fundCash2030: null,
+        fundMagi2030: null,
+        magiDiffCents: null,
+        fundSold2030: null,
+        fundGains2030: null,
+        sleeveEnd2034: null,
+        cash2035: null,
+        sleeveEnd2035: null,
+        maxDiffCents: null,
+        bareCash2030: null,
+        bareSoldDiffCents: null,
+        bareGainsDiffCents: null,
+        bareMagiDiffCents: null,
+      };
+      const built = buildCompareScenario(
+        sleeveSaved(true),
+        "spend-cash-agreement-s5",
+        {},
+        SAMPLE_START_YEAR,
+      );
+      const bareBuilt = buildCompareScenario(
+        sleeveSaved(false),
+        "spend-cash-agreement-s5-bare",
+        {},
+        SAMPLE_START_YEAR,
+      );
+      if (!built || !bareBuilt) return empty;
+      const sim = simulateRothPlan(built.inputs, built.strategy);
+      const rows = buildRothFunding(built.inputs, built.strategy);
+      const bareRows = buildRothFunding(bareBuilt.inputs, bareBuilt.strategy);
+      const plan2030 = sim.years.find((y) => y.year === 2030) ?? null;
+      const fund2030 = rows.find((r) => r.year === 2030) ?? null;
+      const bare2030 = bareRows.find((r) => r.year === 2030) ?? null;
+      // The funding identity in its documented form: the twelve
+      // sources plus the year's unfunded spending and unpaid tax
+      // foot the total need (the 0%-return shape runs dry in its
+      // last years, 2061–2063, so the shortfall term is real).
+      const src = (r: (typeof rows)[number]) =>
+        r.ssCents + r.rmdCents + r.otherIncomeCents + r.taxExemptCents + r.interestYieldCents + r.dividendYieldCents + r.pretaxDrawCents + r.taxableSoldForSpendingCents + r.taxableSoldForTaxCents + r.cashSpendCents + r.rothDrawCents + r.salarySurplusCents + r.spendShortfallCents + r.unpaidTaxCents;
+      return {
+        planCash2030: plan2030?.funding.cashSpend ?? null,
+        fundCash2030: fund2030?.cashSpendCents ?? null,
+        fundMagi2030: fund2030?.magiCents ?? null,
+        magiDiffCents:
+          fund2030 && plan2030
+            ? Math.abs(fund2030.magiCents - Math.round(plan2030.magi * 100))
+            : null,
+        fundSold2030: fund2030?.taxableSoldForSpendingCents ?? null,
+        fundGains2030: fund2030?.drawGainsCents ?? null,
+        sleeveEnd2034:
+          sim.years.find((y) => y.year === 2034)?.detail.cashSleeveEnd ?? null,
+        cash2035:
+          sim.years.find((y) => y.year === 2035)?.detail.cashSpend ?? null,
+        sleeveEnd2035:
+          sim.years.find((y) => y.year === 2035)?.detail.cashSleeveEnd ?? null,
+        maxDiffCents: rows.reduce(
+          (m, r) => Math.max(m, Math.abs(src(r) - r.totalNeedCents)),
+          0,
+        ),
+        bareCash2030: bare2030?.cashSpendCents ?? null,
+        bareSoldDiffCents:
+          bare2030 && fund2030
+            ? bare2030.taxableSoldForSpendingCents -
+              fund2030.taxableSoldForSpendingCents
+            : null,
+        bareGainsDiffCents:
+          bare2030 && fund2030
+            ? bare2030.drawGainsCents - fund2030.drawGainsCents
+            : null,
+        bareMagiDiffCents:
+          bare2030 && fund2030
+            ? bare2030.magiCents - fund2030.magiCents
+            : null,
       };
     },
   },
@@ -23372,7 +23647,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "v96-workyear-refundable-aotc-next-spring-deposit",
     kind: "tax",
-    note: "BUILD v96 (engine-calendar fix F2, settled round-13 audit) — THE WORK-YEAR REFUNDABLE AOTC DEPOSITS THE NEXT SPRING, LIKE THE PLAN MARCH (hand-derived; IRC §25A(b), §25A(i)): MFJ, two work years at ages 56–57 (calendar 2026–2027), salary $120,000, no employer contributions, $0 spending, 0% return, taxable start $100,000 at 100% basis, a 10% taxable interest yield, one AOTC-eligible student with $2,000 of expenses in 2026 only. The contribution stack shelters $24,500 deferral + $8,000 pre-tax catch-up + $47,500 mega backdoor + $9,750 own HSA = $89,750, so taxable wages are $77,750; with $10,000 of interest on the opening balance, MAGI is $87,750, far under the §25A(d) phase-out, so the student's AOTC is the full $2,000 (100% of the first $2,000 of expenses), of which 40% = $800 is refundable and $1,200 is nonrefundable. The nonrefundable portion is fully used: federal tax falls from $6,170 without the student to $4,970 with the student, exactly $1,200. The same-year surplus therefore differs by exactly the $1,200 nonrefundable portion — $16,845.87 with the student vs $15,645.87 without — and EXCLUDES the $800 refundable portion, which the year's line reports separately (educationRefundable $800) and the roll carries undeposited. The next year's opening pool proves the deposit: the second year opens at $117,645.87 with the student ($100,000 + the first year's surplus + the $800 deposit) vs $115,645.87 without, a $2,000 gap, and its interest income is $11,764.59 vs $11,564.59 — a $200 gap, of which the yield on the $1,200 surplus gap is $120, leaving exactly $80 = 10% × $800 of yield on the deposit itself. The deposit's yield costs $24 of extra second-year tax (12% × $200), so the second-year surplus is $24 lower with the student, and the two-year quit-age taxable balance is $133,099.59 vs $131,123.59, a $1,976 gap = $1,200 + $800 − $24. The roll's surplusBanked counts the landed deposit, so it is $33,099.59 with the student vs $31,123.59 without. HORIZON END: the same shape rolled for one work year only (quit at 57) still lands the $800 — the last year's credit has no following work year, so the horizon-end deposit adds it to the quit-age balance directly: taxable $117,645.87 vs $115,645.87, a $2,000 gap = the $1,200 surplus gap + the $800 deposit, and surplusBanked $17,645.87 vs $15,645.87. The deposit lands at 100% basis (the two-year quit-age basis equals its balance). Under the pre-v96 same-year banking the first year's surplus gap would have been the full $2,000 credit; that timing is what this fixture discriminates.",
+    note: "BUILD v96 (engine-calendar fix F2, settled round-13 audit) — THE WORK-YEAR REFUNDABLE AOTC DEPOSITS THE NEXT SPRING, LIKE THE PLAN MARCH (hand-derived; IRC §25A(b), §25A(i)): MFJ, two work years at ages 56–57 (calendar 2026–2027), salary $120,000, no employer contributions, $0 spending, 0% return, taxable start $100,000 at 100% basis, a 10% taxable interest yield, one AOTC-eligible student with $2,000 of expenses in 2026 only. The contribution stack shelters $24,500 deferral + $8,000 pre-tax catch-up + $47,500 mega backdoor + $9,750 own HSA = $89,750, so taxable wages are $77,750; with $10,000 of interest on the opening balance, MAGI is $87,750, far under the §25A(d) phase-out, so the student's AOTC is the full $2,000 (100% of the first $2,000 of expenses), of which 40% = $800 is refundable and $1,200 is nonrefundable. The nonrefundable portion is fully used: federal tax falls from $6,170 without the student to $4,970 with the student, exactly $1,200. The same-year surplus therefore differs by exactly the $1,200 nonrefundable portion — $16,845.87 with the student vs $15,645.87 without — and EXCLUDES the $800 refundable portion, which the year's line reports separately (educationRefundable $800) and the roll carries undeposited. The next year's opening pool proves the deposit: the second year opens at $117,645.87 with the student ($100,000 + the first year's surplus + the $800 deposit) vs $115,645.87 without, a $2,000 gap, and its interest income is $11,764.59 vs $11,564.59 — a $200 gap, of which the yield on the $1,200 surplus gap is $120, leaving exactly $80 = 10% × $800 of yield on the deposit itself. The deposit's yield costs $24 of extra second-year tax (12% × $200), so the second-year surplus is $24 lower with the student, and the two-year quit-age taxable balance is $133,099.59 vs $131,123.59, a $1,976 gap = $1,200 + $800 − $24. The roll's surplusBanked counts the landed deposit, so it is $33,099.59 with the student vs $31,123.59 without. HORIZON END: the same shape rolled for one work year only (quit at 57) still lands the $800 — the last year's credit has no following work year, so the horizon-end deposit adds it to the quit-age balance directly: taxable $117,645.87 vs $115,645.87, a $2,000 gap = the $1,200 surplus gap + the $800 deposit, and surplusBanked $17,645.87 vs $15,645.87. The deposit lands at 100% basis. Under the pre-v96 same-year banking the first year's surplus gap would have been the full $2,000 credit; that timing is what this fixture discriminates. (RE-PINNED under FOLLOW-UP #2, engines review follow-up: the two-year quit-age basis field only — the original pin held it equal to the $133,099.59 balance because the work-years yield step-up capped basis at the grown balance, discarding each 10%-yield / 0%-return year's reinvested basis exactly as the march's capped tiers path did. Uncapped, the basis is the balance plus both years' full yields — $133,099.59 + $10,000 + $11,764.59 = $154,864.18, independently recomputed from the pinned interest figures themselves; the deposit still lands at 100% basis and every AOTC-timing figure above is unmoved.)",
     expected: {
       refundable56: 800,
       federalWith56: 4970,
@@ -23391,7 +23666,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       taxableDiff58: 1976,
       surplusBankedWith58: 33099.59,
       surplusBankedWithout58: 31123.59,
-      taxableBasisWith58: 133099.59,
+      taxableBasisWith58: 154864.18,
       taxableWith57: 117645.87,
       taxableWithout57: 115645.87,
       taxableDiff57: 2000,
@@ -25640,13 +25915,14 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-playground-credit-not-double-counted",
     kind: "tax",
-    note: "ENGINES BATCH F7 (hand-derived): Playground 2028, MFJ, ages 57/46, conversion $149,720 (cliff-sized), household 5, benchmark $36,000, spending $180,000. The credit at the landing is $36,000 − 9.96% × $149,720 = $21,087.89, so the year's net premium is $14,912.11 — and the spending already nets it out, so the credit is NOT subtracted again in the tax bill. Federal tax $15,278.40 (taxable income $149,720 − $32,200 = $117,520: 10% × $24,800 = $2,480 + 12% × $76,000 = $9,120 + 22% × $16,720 = $3,678.40); ACA credit kept $21,087.89. The net tax bill is the federal tax alone, $15,278.40. Cash in $149,720 − net tax $15,278.40 = cash left $134,441.60; left after spending $134,441.60 − $180,000 = −$45,558.40. Before the fix the credit was subtracted, so the net bill was −$5,809.49 and the cash left overstated by the credit at $155,529.49. Generalized 2026-11-03 to the shared fictional household (this fixture originally carried a real household's benchmark and spending): the credit and left-after-spending pins were re-pinned by running the engine at the fictional shape — the federal tax, net bill, and cash left are unmoved, since they depend only on the conversion and the 2028 deduction.",
+    note: "ENGINES BATCH F7 (hand-derived): Playground 2028, MFJ, ages 57/46, conversion $149,720 (cliff-sized), household 5, benchmark $36,000, spending $180,000. The credit at the landing is $36,000 − 9.96% × $149,720 = $21,087.89, so the year's net premium is $14,912.11 — and the credit is NOT subtracted again in the tax bill. (S-1 correction to this note's original rationale: it once said the spending already nets the premium out. Since build v208 the spending holds no premium — the premium is priced separately — so the honest statement is the no-facts one: this year is priced WITHOUT the reconciliation facts, the credit is treated as fully advanced, and it offsets only the separately priced premium; the Playground supplies the facts since S-1, so its cash left is the settlement figure pinned by tax-engines-playground-december-agreement-s1. This fixture's priced figures do not move: it still prices the un-reconciled form, deliberately, as the F7 anchor.) Federal tax $15,278.40 (taxable income $149,720 − $32,200 = $117,520: 10% × $24,800 = $2,480 + 12% × $76,000 = $9,120 + 22% × $16,720 = $3,678.40); ACA credit kept $21,087.89. The net tax bill is the federal tax alone, $15,278.40. Cash in is $0: the year's only money out is the conversion, and a conversion is not spendable cash (M-2 re-pin below), so cash left is −$15,278.40 — the tax bill, with no spendable cash against it — and left after spending is −$15,278.40 − $180,000 = −$195,278.40. Before the v193 fix the credit was subtracted, so the net bill was −$5,809.49 and the cash left overstated by the credit at $155,529.49. Generalized 2026-11-03 to the shared fictional household (this fixture originally carried a real household's benchmark and spending): the credit and left-after-spending pins were re-pinned by running the engine at the fictional shape — the federal tax, net bill, and cash left are unmoved, since they depend only on the conversion and the 2028 deduction. RE-PINNED for M-2 (engines review round 2, MUST — the input split: a conversion is not spendable cash, only a spending draw is): before the split, cashIn counted the conversion, so this year read cash in $149,720 and cash left $134,441.60, left after spending −$45,558.40 — and typing spending of exactly $134,441.60 read 'exactly enough' on a year with no spendable cash at all. The federal tax, the credit, and the net bill are unmoved by the re-pin: the conversion still prices as income in full; only the cash-in readout stopped counting it. The corrected verdict on this year and on the round's other worked example is pinned by tax-engines-playground-conversion-not-spendable-m2 below.",
     expected: {
       federalTax: 15278.4,
       acaCredit: 21087.89,
       netTaxBill: 15278.4,
-      cashLeftAfterTax: 134441.6,
-      cashLeftVsSpending: -45558.4,
+      cashIn: 0,
+      cashLeftAfterTax: -15278.4,
+      cashLeftVsSpending: -195278.4,
     },
     actual: () => {
       const pg = pricePlaygroundYear({
@@ -25683,8 +25959,107 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         federalTax: pg.federalTax,
         acaCredit: pg.aca?.credit ?? null,
         netTaxBill: pg.netTaxBill,
+        cashIn: pg.cashIn,
         cashLeftAfterTax: pg.cashLeftAfterTax,
         cashLeftVsSpending: pg.cashLeftVsSpending,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-conversion-not-spendable-m2",
+    kind: "tax",
+    note: "ENGINES REVIEW ROUND 2, M-2 (hand-derived; both worked examples on fictional figures): a Roth conversion is NOT spendable cash — it moves money from pre-tax to Roth and creates no cash to spend — so cashIn excludes the conversion, and only a pre-tax DRAW taken for spending (the spendingDraw dial, the December console's dial) counts as cash in. The conversion still prices as ordinary income in full on both examples; only the cash readout changed. WORKED EXAMPLE 1 (the shared fictional sample household, server/src/sampleHousehold.ts): Playground 2028, MFJ, ages 60/58 (born 1968/1970), the household's filed income — interest $1,500, ordinary dividends $20,000 of which $15,000 qualified — conversion $200,000, household 4, family benchmark $36,000, spending $180,000. Federal tax $30,020: the ordinary stack $1,500 + $5,000 non-qualified + $200,000 = $206,500, less the $32,200 standard deduction = $174,300 taxable — $2,480 + $9,120 + 22% × $73,500 = $27,770 — and the $15,000 of qualified dividends stacks on top of it, wholly inside the 15% band = $2,250. MAGI $221,500 is past the household-4 cliff, so the credit is $0 and the net tax bill is the tax alone. Cash in is the filed income only, $21,500: cash left $21,500 − $30,020 = −$8,520, and left after spending −$8,520 − $180,000 = −$188,520. Before the fix the conversion counted as cash in, so cash left read $191,480 and the verdict read +$11,480 'Enough'. WORKED EXAMPLE 2 (the F7 year above — conversion $149,720, no other income): cash in $0, cash left −$15,278.40; and at the pre-fix 'exactly enough' spending of $134,441.60, the corrected verdict is short by exactly the conversion: −$15,278.40 − $134,441.60 = −$149,720. A DRAW COUNTS (the split's other half): the F7 year with the same $149,720 taken as a spending draw instead of a conversion prices the identical tax and MAGI, but cash in is $149,720 and cash left $134,441.60 — the figure the conversion wrongly produced before the fix, now produced only by money actually taken out to spend.",
+    expected: {
+      ex1FederalTax: 30020,
+      ex1AcaCredit: 0,
+      ex1CashIn: 21500,
+      ex1CashLeftAfterTax: -8520,
+      ex1CashLeftVsSpending: -188520,
+      ex2CashIn: 0,
+      ex2CashLeftAfterTax: -15278.4,
+      ex2AtOldEnoughSpending: -149720,
+      drawFederalTax: 15278.4,
+      drawMagi: 149720,
+      drawCashIn: 149720,
+      drawCashLeftAfterTax: 134441.6,
+    },
+    actual: () => {
+      const ex1 = pricePlaygroundYear({
+        taxYear: 2028,
+        filingStatus: "mfj",
+        agePrimary: 2028 - SAMPLE_BIRTH_YEAR_PRIMARY,
+        ageSpouse: 2028 - SAMPLE_BIRTH_YEAR_SPOUSE,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: SAMPLE_TAX_RETURN_INTEREST_CENTS / 100,
+        ordinaryDividends: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 200000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        stateRatePct: 0,
+        residenceState: "WA",
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+      });
+      const f7Shape = {
+        taxYear: 2028,
+        filingStatus: "mfj" as const,
+        agePrimary: 57,
+        ageSpouse: 46,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 5,
+        acaBenchmarkAnnual: 36000,
+        stateRatePct: 0,
+        residenceState: "WA" as const,
+      };
+      const ex2 = pricePlaygroundYear({
+        ...f7Shape,
+        conversion: 149720,
+        annualSpending: 180000,
+      });
+      const ex2Trap = pricePlaygroundYear({
+        ...f7Shape,
+        conversion: 149720,
+        annualSpending: 134441.6,
+      });
+      const asDraw = pricePlaygroundYear({
+        ...f7Shape,
+        conversion: 0,
+        spendingDraw: 149720,
+      });
+      return {
+        ex1FederalTax: ex1.federalTax,
+        ex1AcaCredit: ex1.aca?.credit ?? null,
+        ex1CashIn: ex1.cashIn,
+        ex1CashLeftAfterTax: ex1.cashLeftAfterTax,
+        ex1CashLeftVsSpending: ex1.cashLeftVsSpending,
+        ex2CashIn: ex2.cashIn,
+        ex2CashLeftAfterTax: ex2.cashLeftAfterTax,
+        ex2AtOldEnoughSpending: ex2Trap.cashLeftVsSpending,
+        drawFederalTax: asDraw.federalTax,
+        drawMagi: asDraw.magi,
+        drawCashIn: asDraw.cashIn,
+        drawCashLeftAfterTax: asDraw.cashLeftAfterTax,
       };
     },
   },
@@ -25760,6 +26135,3241 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         fundingSpendingDraw2033: fy?.pretaxSpendingDrawCents ?? null,
         fundingTaxDebit2033: fy?.pretaxTaxDebitCents ?? null,
         fundingExtraTotal2033: fy?.extraPreTaxDrawCents ?? null,
+      };
+    },
+  },
+  {
+    id: "health-premium-schedule-score-and-funding",
+    kind: "tax",
+    note: "Health premium term (build v208) on the shared fictional sample household (server/src/sampleHousehold.ts: MFJ, born 1968 / 1970, retire at 62 in 2030, spending $180,000, benchmarks family $36,000 / couple $25,000 / single $17,500), Do Nothing, with the term entered: marketplace household $40,000/yr, marketplace single $22,000/yr, Medicare base $3,600 per person/yr. GROSS schedule is hand-derived from the ages alone: 2029 is a working year → $0; 2030–2032 both spouses are on the marketplace (primary 62–64, spouse 60–62) → $40,000; 2033–2034 the primary is on Medicare (65–66) and the spouse alone is on the marketplace (63–64) → $22,000 + $3,600 = $25,600; 2035 on both are on Medicare → 2 × $3,600 = $7,200 through the last year (2063, age 95). Lifetime gross = 3 × $40,000 + 2 × $25,600 + 29 × $7,200 = $380,000 exactly. The NET figures are engine-derived at the settlement's priced credit (the credit depends on each year's MAGI, which the premium-funded draws move): 2030 net $15,731.54 (credit kept $24,268.46), 2032 net = gross (the year's kept credit is $0), 2033 net $20,550.31, Medicare years net = gross. Lifetime net $321,697.83, and the identity gross − net = lifetime credit kept ($58,302.17) holds to the cent on this shape. The score (netCostBreakdown at the sample preserve $250,000 / 10% exit) adds the lifetime GROSS premium: healthPremium $380,000 beside acaCredit $58,302.17, net cost $2,010,544.45. The funding rows carry the net as their own need in cents with spending excluding it, and the cash identity foots exactly (2030: spending 18,000,000c + health 1,573,154c = total need 19,573,154c = the twelve sources; 2033 health 2,055,031c). INACTIVE CONTROL: the same plan with the three fields absent prices the term at $0 and its score — priced down the pre-v208 reconciliation path — is $1,633,475.05, unchanged by this build.",
+    expected: {
+      gross2029: 0,
+      gross2030: 40000,
+      gross2033: 25600,
+      gross2035: 7200,
+      gross2063: 7200,
+      net2030: 15731.54,
+      net2032: 40000,
+      net2033: 20550.31,
+      net2035: 7200,
+      lifetimeGross: 380000,
+      lifetimeNet: 321697.83,
+      grossMinusNetMinusCreditKept: 0,
+      scoreHealthPremium: 380000,
+      scoreHealthPremiumNet: 321697.83,
+      scoreNetCost: 2010544.45,
+      fundingHealthCents2030: 1573154,
+      fundingSpendingCents2030: 18000000,
+      fundingTotalNeedCents2030: 19573154,
+      fundingIdentityGap2030: 0,
+      fundingHealthCents2033: 2055031,
+      offLifetimeGross: 0,
+      offNetCost: 1633475.05,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        healthPremiumAcaHousehold: 40000,
+        healthPremiumAcaSingle: 22000,
+        healthPremiumMedicarePerPerson: 3600,
+      });
+      const res = simulateRothPlan(inputs, DO_NOTHING);
+      const yr = (y: number) => res.years.find((v) => v.year === y);
+      const bd = netCostBreakdown(res, inputs.heirRatePct, {
+        preservePretax: 250000,
+        preserveExitRatePct: 10,
+      });
+      const funding = buildRothFunding(inputs, DO_NOTHING);
+      const f30 = funding.find((f) => f.year === 2030);
+      const f33 = funding.find((f) => f.year === 2033);
+      const sources30 =
+        (f30?.ssCents ?? 0) + (f30?.rmdCents ?? 0) + (f30?.otherIncomeCents ?? 0) +
+        (f30?.taxExemptCents ?? 0) + (f30?.interestYieldCents ?? 0) +
+        (f30?.dividendYieldCents ?? 0) + (f30?.pretaxDrawCents ?? 0) +
+        (f30?.taxableSoldForSpendingCents ?? 0) + (f30?.taxableSoldForTaxCents ?? 0) +
+        (f30?.cashSpendCents ?? 0) + (f30?.rothDrawCents ?? 0) +
+        (f30?.salarySurplusCents ?? 0);
+      const off = simulateRothPlan(samplePlanInputs(), DO_NOTHING);
+      const offBd = netCostBreakdown(off, inputs.heirRatePct, {
+        preservePretax: 250000,
+        preserveExitRatePct: 10,
+      });
+      return {
+        gross2029: yr(2029)?.healthPremiumGross ?? null,
+        gross2030: yr(2030)?.healthPremiumGross ?? null,
+        gross2033: yr(2033)?.healthPremiumGross ?? null,
+        gross2035: yr(2035)?.healthPremiumGross ?? null,
+        gross2063: yr(2063)?.healthPremiumGross ?? null,
+        net2030: yr(2030)?.healthPremiumNet ?? null,
+        net2032: yr(2032)?.healthPremiumNet ?? null,
+        net2033: yr(2033)?.healthPremiumNet ?? null,
+        net2035: yr(2035)?.healthPremiumNet ?? null,
+        lifetimeGross: res.lifetimeHealthPremiumGross,
+        lifetimeNet: res.lifetimeHealthPremiumNet,
+        grossMinusNetMinusCreditKept:
+          Math.round(
+            (res.lifetimeHealthPremiumGross - res.lifetimeHealthPremiumNet - res.lifetimeAcaKept) * 100,
+          ) / 100,
+        scoreHealthPremium: bd.healthPremium,
+        scoreHealthPremiumNet: bd.healthPremiumNet,
+        scoreNetCost: bd.netCost,
+        fundingHealthCents2030: f30?.healthPremiumCents ?? null,
+        fundingSpendingCents2030: f30?.spendingCents ?? null,
+        fundingTotalNeedCents2030: f30?.totalNeedCents ?? null,
+        fundingIdentityGap2030:
+          f30 == null
+            ? null
+            : sources30 + f30.spendShortfallCents + f30.unpaidTaxCents - f30.totalNeedCents,
+        fundingHealthCents2033: f33?.healthPremiumCents ?? null,
+        offLifetimeGross: off.lifetimeHealthPremiumGross,
+        offNetCost: offBd.netCost,
+      };
+    },
+  },
+  {
+    id: "health-premium-terminal-tier-rule",
+    kind: "tax",
+    note: "Terminal tier rule (build v208 pin of the rule the step-(a) re-price resolved): the score's terminal tax on the ending pre-tax balance prices in two tiers — the preserved part (ending pre-tax up to the preserve floor) at the preserve's EXIT rate, and only the excess above the floor at the HEIR rate. Pinned directly on netCostBreakdown with a stub result (all lifetime components $0, so the net cost IS the terminal): ending pre-tax $800,000 with a $500,000 preserve at a 10% exit rate and a 22% heir rate → preserved $500,000 × 10% = $50,000 plus excess $300,000 × 22% = $66,000, terminal $116,000. Below the floor the whole balance prices at the exit rate: ending $300,000 → $30,000, excess $0. (The stub's other lifetime fields are the RothPlanResult fields netCostBreakdown reads; every one is $0 here, including the health premium fields the v208 score added.)",
+    expected: {
+      preservedPretax: 500000,
+      excessPretax: 300000,
+      terminalPreserved: 50000,
+      terminalExcess: 66000,
+      terminal: 116000,
+      netCostIsTerminal: 116000,
+      belowFloorTerminal: 30000,
+      belowFloorExcess: 0,
+    },
+    actual: () => {
+      const stub = (endingPretax: number) =>
+        ({
+          lifetimeFederalTax: 0,
+          lifetimeStateTax: 0,
+          lifetimePenalty: 0,
+          lifetimeIrmaa: 0,
+          lifetimeAcaKept: 0,
+          lifetimeHealthPremiumGross: 0,
+          lifetimeHealthPremiumNet: 0,
+          lifetimeEducationRefundable: 0,
+          lifetimeAmt: 0,
+          endingPretax,
+        }) as unknown as RothPlanResult;
+      const above = netCostBreakdown(stub(800000), 22, {
+        preservePretax: 500000,
+        preserveExitRatePct: 10,
+      });
+      const below = netCostBreakdown(stub(300000), 22, {
+        preservePretax: 500000,
+        preserveExitRatePct: 10,
+      });
+      return {
+        preservedPretax: above.preservedPretax,
+        excessPretax: above.excessPretax,
+        terminalPreserved: above.terminalPreserved,
+        terminalExcess: above.terminalExcess,
+        terminal: above.terminal,
+        netCostIsTerminal: above.netCost,
+        belowFloorTerminal: below.terminal,
+        belowFloorExcess: below.excessPretax,
+      };
+    },
+  },
+  {
+    id: "health-premium-playground-readouts",
+    kind: "tax",
+    note: "Health premium readouts in the single-year pricer (build v208): 2026, MFJ ages 60 / 58, other ordinary income $60,000 (MAGI $60,000), household of 2, benchmark $25,000 (the sample household's couple benchmark). MARKETPLACE YEAR (neither on Medicare, marketplace premium entered at $30,000): the priced credit is $19,321.53 (engine-derived from MAGI against the benchmark), so gross $30,000, net $30,000 − $19,321.53 = $10,678.47, and cash left after health premiums = cash left after tax $57,160 − $10,678.47 = $46,481.53; the premium moves no tax figure (federal tax $2,840, net tax bill $2,840 — the credit is NOT netted into the bill). MIXED YEAR (primary on Medicare, spouse on the marketplace, Medicare per-person $3,600 also entered): gross $30,000 + $3,600 = $33,600, net $10,678.47 + $3,600 = $14,278.47 — the Medicare part is never reduced by the credit, and the credit itself is unchanged because the premium never enters MAGI. BOTH ON MEDICARE: gross = net = 2 × $3,600 = $7,200. NOT ENTERED: gross and net $0 and cash left after health premiums equals cash left after tax, exactly as before this build. PASTE ROUND-TRIP: the payload for the mixed year carries both premium inputs ($30,000 / $3,600) and parsing it back reprices the same $14,278.47 net; a pre-build payload (neither key) still loads with both null.",
+    expected: {
+      acaGross: 30000,
+      acaNet: 10678.47,
+      acaCashAfterHealth: 46481.53,
+      acaFederalTax: 2840,
+      acaNetTaxBill: 2840,
+      mixedGross: 33600,
+      mixedNet: 14278.47,
+      medicareGross: 7200,
+      medicareNet: 7200,
+      offGross: 0,
+      offNet: 0,
+      offCashAfterHealthEqualsCashLeft: 1,
+      pasteCarriesAca: 30000,
+      pasteCarriesMedicare: 3600,
+      pasteRoundTripNet: 14278.47,
+      pasteLegacyAcaNull: 1,
+      pasteLegacyMedicareNull: 1,
+    },
+    actual: () => {
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 60,
+        ageSpouse: 58,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 60000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 25000,
+        stateRatePct: 0,
+      };
+      const aca = pricePlaygroundYear({ ...base, healthPremiumAcaAnnual: 30000 });
+      const mixed = pricePlaygroundYear({
+        ...base,
+        onMedicarePrimary: true,
+        healthPremiumAcaAnnual: 30000,
+        healthPremiumMedicarePerPerson: 3600,
+      });
+      const med = pricePlaygroundYear({
+        ...base,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        healthPremiumMedicarePerPerson: 3600,
+      });
+      const off = pricePlaygroundYear({ ...base });
+      /* The paste round-trip (health premium build): a
+         payload emitted for a year with both premium inputs
+         entered carries both, and parsing it back reprices
+         the same net premium; a payload written before this
+         build (neither key present) still loads, with both
+         inputs null. */
+      const payload = playgroundPastePayload({
+        ...base,
+        onMedicarePrimary: true,
+        healthPremiumAcaAnnual: 30000,
+        healthPremiumMedicarePerPerson: 3600,
+      });
+      const back = parsePlaygroundPaste(payload);
+      const legacy = { ...payload } as Record<string, unknown>;
+      delete legacy.healthPremiumAcaAnnual;
+      delete legacy.healthPremiumMedicarePerPerson;
+      const legacyBack = parsePlaygroundPaste(legacy);
+      return {
+        acaGross: aca.healthPremiumGross,
+        acaNet: aca.healthPremiumNet,
+        acaCashAfterHealth: aca.cashLeftAfterHealthPremium,
+        acaFederalTax: aca.federalTax,
+        acaNetTaxBill: aca.netTaxBill,
+        mixedGross: mixed.healthPremiumGross,
+        mixedNet: mixed.healthPremiumNet,
+        medicareGross: med.healthPremiumGross,
+        medicareNet: med.healthPremiumNet,
+        offGross: off.healthPremiumGross,
+        offNet: off.healthPremiumNet,
+        offCashAfterHealthEqualsCashLeft:
+          off.cashLeftAfterHealthPremium === off.cashLeftAfterTax ? 1 : 0,
+        pasteCarriesAca: payload.healthPremiumAcaAnnual ?? -1,
+        pasteCarriesMedicare: payload.healthPremiumMedicarePerPerson ?? -1,
+        pasteRoundTripNet: back.ok
+          ? pricePlaygroundYear(back.inputs).healthPremiumNet
+          : -1,
+        pasteLegacyAcaNull:
+          legacyBack.ok && legacyBack.inputs.healthPremiumAcaAnnual == null ? 1 : 0,
+        pasteLegacyMedicareNull:
+          legacyBack.ok && legacyBack.inputs.healthPremiumMedicarePerPerson == null
+            ? 1
+            : 0,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-december-agreement-s1",
+    kind: "tax",
+    note: "S-1 (engines review round 2, SHOULD — settled STAND): the Playground's cash left after tax disagreed with December's for the same year by the full ACA credit, flipping the verdict, because the Playground's dial construction never passed the year's ACA reconciliation facts (build v193 priced the filing settlement only for callers that supplied them — the December console). THE YEAR (shared fictional sample household, server/src/sampleHousehold.ts): 2026, MFJ, ages 58 / 56 (born 1968 / 1970), household 4, benchmark $36,000 (the sample family benchmark), spending $180,000 (the sample spending), buffer $5,000 (both surfaces' default), pre-tax balance $1,500,000 (the sample balance). Entered income: other ordinary $30,000, interest $1,500, ordinary dividends $20,000 of which $15,000 qualified (the sample filed-return figures), and a stock sale of $55,000 on a $45,000 basis ($10,000 gain). DECEMBER'S HEADLINE (the solver's draw, not a worked draw — the gap is draw-specific, so the agreement is pinned HERE): the cliff is $128,600 (400% of the $32,150 household-of-4 poverty line), the solver lands MAGI at $123,600 = cliff − buffer, so the headline draw is $62,100 (MAGI $61,500 of non-draw income + $62,100). HAND-DERIVED FIGURES at the headline: federal tax $7,472 (AGI $123,600 − $32,200 standard deduction = $91,400 taxable; the ordinary part is $91,400 − $25,000 of preferential income = $66,400 → 10% × $24,800 + 12% × $41,600 = $2,480 + $4,992 = $7,472, and the $25,000 of gains + qualified dividends sits entirely under the 0% threshold, $98,900 of taxable income, so it prices at 0%); the final credit is $36,000 − 9.96% × $123,600 = $36,000 − $12,310.56 = $23,689.44 (the 300–400% band's 9.96% applicable figure at 384.4% of the poverty line; the enrollment premium entered is the benchmark itself, so the cap does not bind). Cash in $168,600 = $1,500 + $20,000 + $30,000 + $55,000 of proceeds + the $62,100 draw. AGREEMENT (APTC taken $0): the settlement bill is $7,472 − $23,689.44 = −$16,217.44 (the whole credit still due at filing), so cash left is $168,600 + $16,217.44 = $184,817.44 — December's cashLeftAtHeadline and the Playground construction's cashLeftAfterTax agree to the cent (agreementCents 0), and both read ENOUGH vs the $180,000 spending (+$4,817.44). THE DEFECT, priced as the control: the same inputs with the three facts stripped (the pre-S-1 Playground construction) price the un-reconciled bill ($7,472 — the tax alone), cash left $161,128, SHORT by $18,872 — the verdict flips, and the gap is exactly the full credit, $23,689.44. APTC TAKEN $12,000 (the facts genuinely flow — not a zero-default coincidence): December and the Playground agree again at $172,817.44 (settlement bill $7,472 − ($23,689.44 − $12,000) = −$4,217.44), and the gap vs the same bare control is the credit still due, $11,689.44. HEALTH PAIRING (the v208 interaction — the two definitions reconciled together, never double-counted): with the marketplace premium entered at the $36,000 benchmark, cash left after health premiums is $148,817.44 under EVERY leg — the settlement form at APTC $0 nets the full $36,000 premium (no advance was taken; the credit settled in the bill), at APTC $12,000 it nets $36,000 − $12,000 = $24,000 (the rest of the credit settled in the bill), and the un-reconciled form nets $36,000 − $23,689.44 = $12,310.56 (the credit treated as fully advanced) — three different net premiums, one after-health figure, because each form counts the credit exactly once. PASTE: the interchange payload now carries both new dial facts (aptcTaken $12,000 rides through; a payload with both keys deleted — a pre-S-1 paste — still loads with them null, pricing un-reconciled exactly as before). THE CORRECTED ⓘ: PLAYGROUND_CASH_LEFT_BASIS (the exact text the Playground renders) must name the bill as the year's filing settlement and state the premium is priced separately; the false premise it replaces — that the annual spending already holds the net premium (true before v208 priced the premium separately; inverted since) — must not appear in it.",
+    expected: {
+      headlineDraw: 62100,
+      cliff: 128600,
+      magiAtHeadline: 123600,
+      creditAtHeadline: 23689.44,
+      federalTax: 7472,
+      playgroundNetTaxBill: -16217.44,
+      decemberCashLeft: 184817.44,
+      playgroundCashLeft: 184817.44,
+      agreementCents: 0,
+      decemberVsSpending: 4817.44,
+      playgroundVsSpending: 4817.44,
+      bareCashLeft: 161128,
+      bareVsSpending: -18872,
+      gapEqualsCredit: 23689.44,
+      aptcDecemberCashLeft: 172817.44,
+      aptcPlaygroundCashLeft: 172817.44,
+      aptcGapEqualsCreditStillDue: 11689.44,
+      healthNetFacts0: 36000,
+      healthNetFacts12000: 24000,
+      healthNetBare: 12310.56,
+      healthAfterFacts0: 148817.44,
+      healthAfterFacts12000: 148817.44,
+      healthAfterBare: 148817.44,
+      pasteCarriesAptc: 12000,
+      pasteParsedAptc: 12000,
+      pasteLegacyAptcNull: 1,
+      basisNamesSettlement: 1,
+      basisNamesPremiumSeparate: 1,
+      basisHasFalsePremise: 0,
+    },
+    actual: () => {
+      const spending = SAMPLE_ANNUAL_SPENDING_CENTS / 100;
+      const benchmark = SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100;
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const buildState = (aptcTaken: number) => {
+        const s = defaultDecemberState(2026);
+        s.taxYear = 2026;
+        s.filingStatus = "mfj";
+        s.agePrimary = 2026 - SAMPLE_BIRTH_YEAR_PRIMARY;
+        s.ageSpouse = 2026 - SAMPLE_BIRTH_YEAR_SPOUSE;
+        s.ytdOtherOrdinary = 30000;
+        s.ytdInterest = SAMPLE_TAX_RETURN_INTEREST_CENTS / 100;
+        s.ytdOrdinaryDividends = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+        s.ytdQualifiedDividends = SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100;
+        s.ytdCapitalGain = 10000;
+        s.saleBasis = 45000;
+        s.acaHouseholdSize = SAMPLE_HOUSEHOLD_SIZE;
+        s.acaBenchmarkAnnual = benchmark;
+        s.acaEnrollmentPremiumAnnual = benchmark;
+        s.aptcTaken = aptcTaken;
+        s.bufferDollars = 5000;
+        s.pretaxBalance = SAMPLE_PRETAX_CENTS / 100;
+        s.spouseSoleBeneficiary = true;
+        s.stateRatePct = 0;
+        s.residenceState = "other";
+        return s;
+      };
+      const price = (aptcTaken: number) => {
+        const state = buildState(aptcTaken);
+        const proj = computeDecemberProjection(state, SAMPLE_ANNUAL_SPENDING_CENTS);
+        const headline = proj.headlineDraw ?? -1;
+        const likely = proj.cases.find((c) => c.kind === "likely");
+        // The December console's own case inputs ARE the
+        // post-S-1 Playground construction for the same
+        // dials: both pass aptcTaken, the enrollment
+        // premium, and the coverage reduction to the shared
+        // pricer. The bare leg strips the three facts —
+        // the pre-S-1 Playground construction.
+        const inputs = decemberCaseInputs(state, "likely", headline);
+        const bareInputs = {
+          ...inputs,
+          aptcTaken: undefined,
+          acaEnrollmentPremiumAnnual: undefined,
+          acaCoverageReduction: undefined,
+        };
+        return {
+          proj,
+          headline,
+          likely,
+          inputs,
+          pg: pricePlaygroundYear({ ...inputs, annualSpending: spending }),
+          bare: pricePlaygroundYear({ ...bareInputs, annualSpending: spending }),
+          pgHealth: pricePlaygroundYear({
+            ...inputs,
+            annualSpending: spending,
+            healthPremiumAcaAnnual: benchmark,
+          }),
+          bareHealth: pricePlaygroundYear({
+            ...bareInputs,
+            annualSpending: spending,
+            healthPremiumAcaAnnual: benchmark,
+          }),
+        };
+      };
+      const a = price(0);
+      const b = price(12000);
+      const payload = playgroundPastePayload(b.inputs);
+      const parsed = parsePlaygroundPaste(payload);
+      const legacy = { ...payload } as Record<string, unknown>;
+      delete legacy.aptcTaken;
+      delete legacy.acaCoverageReduction;
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      return {
+        headlineDraw: a.headline,
+        cliff: a.proj.cliff ?? -1,
+        magiAtHeadline: a.likely?.magiAtHeadline ?? -1,
+        creditAtHeadline: a.likely?.creditAtHeadline ?? -1,
+        federalTax: a.pg.federalTax,
+        playgroundNetTaxBill: a.pg.netTaxBill,
+        decemberCashLeft: a.likely?.cashLeftAtHeadline ?? -1,
+        playgroundCashLeft: a.pg.cashLeftAfterTax,
+        agreementCents: Math.round(
+          Math.abs((a.likely?.cashLeftAtHeadline ?? 0) - a.pg.cashLeftAfterTax) * 100,
+        ),
+        decemberVsSpending: a.likely?.cashLeftVsSpendingAtHeadline ?? -999999,
+        playgroundVsSpending: a.pg.cashLeftVsSpending ?? -999999,
+        bareCashLeft: a.bare.cashLeftAfterTax,
+        bareVsSpending: a.bare.cashLeftVsSpending ?? -999999,
+        gapEqualsCredit: r2(a.pg.cashLeftAfterTax - a.bare.cashLeftAfterTax),
+        aptcDecemberCashLeft: b.likely?.cashLeftAtHeadline ?? -1,
+        aptcPlaygroundCashLeft: b.pg.cashLeftAfterTax,
+        aptcGapEqualsCreditStillDue: r2(b.pg.cashLeftAfterTax - b.bare.cashLeftAfterTax),
+        healthNetFacts0: a.pgHealth.healthPremiumNet,
+        healthNetFacts12000: b.pgHealth.healthPremiumNet,
+        healthNetBare: a.bareHealth.healthPremiumNet,
+        healthAfterFacts0: a.pgHealth.cashLeftAfterHealthPremium,
+        healthAfterFacts12000: b.pgHealth.cashLeftAfterHealthPremium,
+        healthAfterBare: a.bareHealth.cashLeftAfterHealthPremium,
+        pasteCarriesAptc: payload.aptcTaken ?? -1,
+        pasteParsedAptc: parsed.ok ? (parsed.inputs.aptcTaken ?? -1) : -2,
+        pasteLegacyAptcNull:
+          legacyParsed.ok && legacyParsed.inputs.aptcTaken == null ? 1 : 0,
+        basisNamesSettlement: PLAYGROUND_CASH_LEFT_BASIS.includes("filing settlement") ? 1 : 0,
+        basisNamesPremiumSeparate: PLAYGROUND_CASH_LEFT_BASIS.includes("priced separately") ? 1 : 0,
+        basisHasFalsePremise: PLAYGROUND_CASH_LEFT_BASIS.includes("already holds the net premium") ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-carry-in-s2",
+    kind: "tax",
+    note: "S-2 case (a) (engines review round 2, SHOULD — settled STAND): the Playground had no dial for the entering capital-loss carryforward, so a year with a banked loss priced its gains gross. THE YEAR (shared fictional sample household, server/src/sampleHousehold.ts): 2026, MFJ, ages 58 / 56, other ordinary $150,000, interest $1,500, ordinary dividends $20,000 of which $15,000 qualified (the sample filed-return figures), household 4, benchmark $36,000, no state rate. The ordinary stack is $156,500 ($150,000 + $1,500 + the $5,000 non-qualified part) in every leg. LEG 1 — a $30,000 long-term gain (sold $90,000 on a $60,000 basis) with a $20,000 LONG-TERM carry-in: the shared ledger nets the carry-in against the gain, so the priced gain is $10,000 and the preferential stack is $25,000 with the qualified dividends. HAND-DERIVED: AGI $181,500; taxable $149,300 (less the $32,200 standard deduction); the ordinary part $124,300 prices $2,480 + $9,120 + 22% × $23,500 = $16,770; the preferential stack sits wholly at 15% (the ordinary stack alone is past the $98,900 0% top) = $3,750; federal tax $20,520. THE DEFECT, priced as the control (the same inputs with the carry-in stripped — the pre-S-2 Playground construction): the gain prices gross, AGI $201,500, federal tax $23,520 — tax overstated by exactly $3,000 (the absorbed $20,000 at the 15% preferential rate) and MAGI overstated by exactly the absorbed $20,000. LEG 2 — the carry-in EXCEEDS the gain (sold $70,000 on the same basis, a $10,000 gain, the same $20,000 carry-in): the gain is absorbed whole, the remaining $10,000 loss prices the §1211(b) allowance of $3,000 against ordinary income (the year's taxable income before the allowance is ample), and $7,000 carries out. AGI $168,500 = $156,500 − $3,000 + $15,000 qualified; federal tax $18,360 (ordinary part $121,300 → $16,110, plus the $15,000 qualified at 15% = $2,250). The bare leg prices the $10,000 gain with no allowance: AGI $181,500, tax $20,520. LEG 3 — character mix (a $5,000 SHORT-TERM carry-in beside the $20,000 long-term, against leg 1's $30,000 gain): the ledger nets the $25,000 total, the priced gain is $5,000, AGI $176,500, federal tax $19,770 ($16,770 ordinary + $20,000 preferential at 15%), and nothing carries out. DECEMBER AGREEMENT: the December console's own case inputs for the same facts (year-to-date gain $30,000 on a $60,000 basis, carryInCapitalLossLt $20,000, $0 draw) price the identical federal tax and MAGI through the same construction. PASTE + API: the interchange payload carries the carry-in (leg 1's $20,000 rides through and parses back); a payload with all six S-2 keys deleted (a pre-S-2 paste) still loads with them unset; and the runPlaygroundYear contract path (playgroundYearIn + playgroundInputsFromArgs) accepts the carry-in, carries it into the engine inputs, prices leg 1's corrected tax, and REJECTS a negative carry-in at validation.",
+    expected: {
+      leg1Gain: 10000,
+      leg1Priced: 25000,
+      leg1Agi: 181500,
+      leg1Magi: 181500,
+      leg1Taxable: 149300,
+      leg1Fed: 20520,
+      leg1CarryOutLt: 0,
+      bare1Agi: 201500,
+      bare1Fed: 23520,
+      taxOverstated: 3000,
+      magiOverstated: 20000,
+      leg2Gain: -10000,
+      leg2Allowance: 3000,
+      leg2CarryOutLt: 7000,
+      leg2Agi: 168500,
+      leg2Fed: 18360,
+      bare2Agi: 181500,
+      bare2Fed: 20520,
+      leg3Gain: 5000,
+      leg3Agi: 176500,
+      leg3Fed: 19770,
+      decFed: 20520,
+      decMagi: 181500,
+      pasteCarriesLt: 20000,
+      pasteParsedLt: 20000,
+      pasteLegacyUnset: 1,
+      apiCarriesLt: 20000,
+      apiFed: 20520,
+      apiRejectsNegative: 1,
+    },
+    actual: () => {
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 2026 - SAMPLE_BIRTH_YEAR_PRIMARY,
+        ageSpouse: 2026 - SAMPLE_BIRTH_YEAR_SPOUSE,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: SAMPLE_TAX_RETURN_INTEREST_CENTS / 100,
+        ordinaryDividends: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+        otherOrdinary: 150000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 90000,
+        stockBasis: 60000,
+        qualifiedDividends: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        stateRatePct: 0,
+        residenceState: "other" as const,
+      };
+      const leg1 = pricePlaygroundYear({ ...base, capitalLossCarryInLt: 20000 });
+      const bare1 = pricePlaygroundYear(base);
+      const leg2 = pricePlaygroundYear({
+        ...base,
+        stockSold: 70000,
+        capitalLossCarryInLt: 20000,
+      });
+      const bare2 = pricePlaygroundYear({ ...base, stockSold: 70000 });
+      const leg3 = pricePlaygroundYear({
+        ...base,
+        capitalLossCarryInSt: 5000,
+        capitalLossCarryInLt: 20000,
+      });
+      const decState = defaultDecemberState(2026);
+      decState.taxYear = 2026;
+      decState.filingStatus = "mfj";
+      decState.agePrimary = 2026 - SAMPLE_BIRTH_YEAR_PRIMARY;
+      decState.ageSpouse = 2026 - SAMPLE_BIRTH_YEAR_SPOUSE;
+      decState.ytdOtherOrdinary = 150000;
+      decState.ytdInterest = SAMPLE_TAX_RETURN_INTEREST_CENTS / 100;
+      decState.ytdOrdinaryDividends = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      decState.ytdQualifiedDividends = SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100;
+      decState.ytdCapitalGain = 30000;
+      decState.saleBasis = 60000;
+      decState.carryInCapitalLossLt = 20000;
+      decState.acaHouseholdSize = SAMPLE_HOUSEHOLD_SIZE;
+      decState.acaBenchmarkAnnual = SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100;
+      decState.pretaxBalance = SAMPLE_PRETAX_CENTS / 100;
+      decState.spouseSoleBeneficiary = true;
+      decState.stateRatePct = 0;
+      decState.residenceState = "other";
+      const dec = pricePlaygroundYear(decemberCaseInputs(decState, "likely", 0));
+      const payload = playgroundPastePayload({ ...base, capitalLossCarryInLt: 20000 });
+      const parsed = parsePlaygroundPaste(payload);
+      const legacy = { ...payload } as Record<string, unknown>;
+      for (const k of [
+        "capitalLossCarryInSt", "capitalLossCarryInLt",
+        "capitalLossCarryInStWa", "capitalLossCarryInLtWa",
+        "rmdAlreadyReceived", "dependentMagiForAca",
+      ]) delete legacy[k];
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      const apiParsed = playgroundYearIn.safeParse({
+        ...base,
+        ageSpouse: base.ageSpouse,
+        capitalLossCarryInLt: 20000,
+      });
+      const apiInputs = apiParsed.success
+        ? playgroundInputsFromArgs(apiParsed.data)
+        : null;
+      const apiNeg = playgroundYearIn.safeParse({
+        ...base,
+        capitalLossCarryInLt: -1,
+      });
+      return {
+        leg1Gain: leg1.ltcgNet,
+        leg1Priced: leg1.ltcgPriced,
+        leg1Agi: leg1.agi,
+        leg1Magi: leg1.magi,
+        leg1Taxable: leg1.taxableIncome,
+        leg1Fed: leg1.federalTax,
+        leg1CarryOutLt: leg1.lossCarryOutLt,
+        bare1Agi: bare1.agi,
+        bare1Fed: bare1.federalTax,
+        taxOverstated: r2(bare1.federalTax - leg1.federalTax),
+        magiOverstated: r2(bare1.magi - leg1.magi),
+        leg2Gain: leg2.ltcgNet,
+        leg2Allowance: leg2.capitalLossAllowance,
+        leg2CarryOutLt: leg2.lossCarryOutLt,
+        leg2Agi: leg2.agi,
+        leg2Fed: leg2.federalTax,
+        bare2Agi: bare2.agi,
+        bare2Fed: bare2.federalTax,
+        leg3Gain: leg3.ltcgNet,
+        leg3Agi: leg3.agi,
+        leg3Fed: leg3.federalTax,
+        decFed: dec.federalTax,
+        decMagi: dec.magi,
+        pasteCarriesLt: payload.capitalLossCarryInLt ?? -1,
+        pasteParsedLt: parsed.ok ? (parsed.inputs.capitalLossCarryInLt ?? -1) : -2,
+        pasteLegacyUnset:
+          legacyParsed.ok && legacyParsed.inputs.capitalLossCarryInLt == null ? 1 : 0,
+        apiCarriesLt: apiInputs?.capitalLossCarryInLt ?? -1,
+        apiFed: apiInputs ? pricePlaygroundYear(apiInputs).federalTax : -1,
+        apiRejectsNegative: apiNeg.success ? 0 : 1,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-rmd-received-s2",
+    kind: "tax",
+    note: "S-2 case (b) (engines review round 2, SHOULD — settled STAND): the Playground had no dial for the RMD already received, so a year whose entered income already held a paid RMD priced that RMD a second time. THE YEAR (shared fictional sample household): 2043 — the primary (born 1968) is 75, the spouse (born 1970) is 73 — MFJ, both on Medicare, the sample $1,500,000 prior-Dec-31 pre-tax balance, both sample Social Security benefits in pay ($48,000 + $30,000 from age 67), interest $1,500, ordinary dividends $20,000 of which $15,000 qualified (the sample filed-return figures), no state rate. The year's gross RMD is $1,500,000 / 24.6 = $60,975.61 (the Uniform Lifetime divisor at 75; the spouse is sole beneficiary but only 2 years younger, so the Joint table does not apply). Taxable Social Security is $66,300 (85% of $78,000 — the cap binds in every leg), and deductions are $35,500 ($32,200 standard + two $1,650 age-65 add-ons; 2043 prices under the 2026 law row carried forward, the temporary senior deduction's window closed). LEG 1 — $20,000 of the RMD already received and entered in other ordinary income (the December console's year-to-date shape): with the received dial supplied, the pricer adds only the remaining $40,975.61. HAND-DERIVED: AGI = $1,500 + $5,000 + $20,000 + $40,975.61 + $15,000 + $66,300 = $148,775.61; taxable $113,275.61; the ordinary part $98,275.61 prices $2,480 + 12% × $73,475.61 = $11,297.07; the $15,000 preferential part fills the $624.39 of 0% space left under the $98,900 top and prices the remaining $14,375.61 at 15% = $2,156.34; federal tax $13,453.41. THE DEFECT, priced as the control (the received fact stripped — the pre-S-2 construction): the gross RMD is added whole on top of the entered $20,000, AGI $168,775.61 — overstated by exactly the $20,000 received — and federal tax $17,694.63, overstated by $4,241.22. LEG 2 — the FULL RMD already received ($60,975.61 entered as other ordinary income, the received dial at the full gross): the pricer adds $0 of RMD, and the year prices at leg 1's corrected totals exactly (AGI $148,775.61, tax $13,453.41) — the received dollars sit in entered income either way; only the double count moves. Its bare control overstates AGI by the full $60,975.61 (AGI $209,751.22, tax $26,709.27). DECEMBER AGREEMENT: the December console's own case inputs for leg 1's facts (year-to-date other ordinary $20,000, rmdAlreadyReceived $20,000, the combined balance, $0 draw) price the identical remaining RMD and federal tax. PASTE: the payload carries the received amount ($20,000 rides through and parses back); a pre-S-2 payload (the six keys deleted) loads with it null.",
+    expected: {
+      rmdGross: 60975.61,
+      leg1Rmd: 40975.61,
+      leg1Received: 20000,
+      leg1SsTaxable: 66300,
+      leg1Agi: 148775.61,
+      leg1Taxable: 113275.61,
+      leg1Fed: 13453.41,
+      bare1Agi: 168775.61,
+      bare1Fed: 17694.63,
+      agiOverstated: 20000,
+      taxOverstated: 4241.22,
+      leg2Rmd: 0,
+      leg2Received: 60975.61,
+      leg2Agi: 148775.61,
+      leg2Fed: 13453.41,
+      bare2Agi: 209751.22,
+      bare2Fed: 26709.27,
+      bare2AgiOverstated: 60975.61,
+      decRmd: 40975.61,
+      decFed: 13453.41,
+      pasteCarriesReceived: 20000,
+      pasteParsedReceived: 20000,
+      pasteLegacyNull: 1,
+    },
+    actual: () => {
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const base = {
+        taxYear: 2043,
+        filingStatus: "mfj" as const,
+        agePrimary: 2043 - SAMPLE_BIRTH_YEAR_PRIMARY,
+        ageSpouse: 2043 - SAMPLE_BIRTH_YEAR_SPOUSE,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: SAMPLE_TAX_RETURN_INTEREST_CENTS / 100,
+        ordinaryDividends: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+        otherOrdinary: 20000,
+        taxExemptInterest: 0,
+        ssPrimary: SAMPLE_SS_PRIMARY_CENTS / 100,
+        ssSpouse: SAMPLE_SS_SPOUSE_CENTS / 100,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
+        pretaxBalance: SAMPLE_PRETAX_CENTS / 100,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        residenceState: "other" as const,
+      };
+      const leg1 = pricePlaygroundYear({ ...base, rmdAlreadyReceived: 20000 });
+      const bare1 = pricePlaygroundYear(base);
+      const leg2Base = { ...base, otherOrdinary: 60975.61 };
+      const leg2 = pricePlaygroundYear({ ...leg2Base, rmdAlreadyReceived: 60975.61 });
+      const bare2 = pricePlaygroundYear(leg2Base);
+      const decState = defaultDecemberState(2043);
+      decState.taxYear = 2043;
+      decState.filingStatus = "mfj";
+      decState.agePrimary = 2043 - SAMPLE_BIRTH_YEAR_PRIMARY;
+      decState.ageSpouse = 2043 - SAMPLE_BIRTH_YEAR_SPOUSE;
+      decState.onMedicarePrimary = true;
+      decState.onMedicareSpouse = true;
+      decState.ytdOtherOrdinary = 20000;
+      decState.ytdInterest = SAMPLE_TAX_RETURN_INTEREST_CENTS / 100;
+      decState.ytdOrdinaryDividends = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      decState.ytdQualifiedDividends = SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100;
+      decState.ytdSsPrimary = SAMPLE_SS_PRIMARY_CENTS / 100;
+      decState.ytdSsSpouse = SAMPLE_SS_SPOUSE_CENTS / 100;
+      decState.rmdAlreadyReceived = 20000;
+      decState.pretaxBalance = SAMPLE_PRETAX_CENTS / 100;
+      decState.spouseSoleBeneficiary = true;
+      decState.stateRatePct = 0;
+      decState.residenceState = "other";
+      const dec = pricePlaygroundYear(decemberCaseInputs(decState, "likely", 0));
+      const payload = playgroundPastePayload({ ...base, rmdAlreadyReceived: 20000 });
+      const parsed = parsePlaygroundPaste(payload);
+      const legacy = { ...payload } as Record<string, unknown>;
+      for (const k of [
+        "capitalLossCarryInSt", "capitalLossCarryInLt",
+        "capitalLossCarryInStWa", "capitalLossCarryInLtWa",
+        "rmdAlreadyReceived", "dependentMagiForAca",
+      ]) delete legacy[k];
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      return {
+        rmdGross: leg1.rmdGross,
+        leg1Rmd: leg1.rmd,
+        leg1Received: leg1.rmdAlreadyReceived,
+        leg1SsTaxable: leg1.ssTaxable,
+        leg1Agi: leg1.agi,
+        leg1Taxable: leg1.taxableIncome,
+        leg1Fed: leg1.federalTax,
+        bare1Agi: bare1.agi,
+        bare1Fed: bare1.federalTax,
+        agiOverstated: r2(bare1.agi - leg1.agi),
+        taxOverstated: r2(bare1.federalTax - leg1.federalTax),
+        leg2Rmd: leg2.rmd,
+        leg2Received: leg2.rmdAlreadyReceived,
+        leg2Agi: leg2.agi,
+        leg2Fed: leg2.federalTax,
+        bare2Agi: bare2.agi,
+        bare2Fed: bare2.federalTax,
+        bare2AgiOverstated: r2(bare2.agi - leg2.agi),
+        decRmd: dec.rmd,
+        decFed: dec.federalTax,
+        pasteCarriesReceived: payload.rmdAlreadyReceived ?? -1,
+        pasteParsedReceived: parsed.ok ? (parsed.inputs.rmdAlreadyReceived ?? -1) : -2,
+        pasteLegacyNull:
+          legacyParsed.ok && legacyParsed.inputs.rmdAlreadyReceived == null ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-dependent-magi-s2",
+    kind: "tax",
+    note: "S-2 case (c) (engines review round 2, SHOULD — settled STAND): the Playground had no dial for a filing dependent's MAGI, so its ACA position read off the parents' MAGI alone — on the settlement's own example it showed a $23,898.60 credit and 'under by $7,100' where the true credit is $0. THE YEAR (shared fictional sample household): 2026, MFJ, ages 58 / 56, nobody on Medicare, interest $1,500, ordinary dividends $20,000 of which $15,000 qualified (the sample filed-return figures), other ordinary $30,000, a $70,000 conversion, household 4, benchmark $36,000 (the sample family benchmark), spending $180,000, and the S-1 settlement facts supplied (APTC taken $0, no coverage reduction). The parents' MAGI is $121,500 ($1,500 + $5,000 non-qualified + $30,000 + $70,000 + $15,000 qualified); the household-of-4 cliff is $128,600 (4 × the $32,150 poverty line). HAND-DERIVED BARE FIGURES (the pre-S-2 construction — no dependent fact): ACA MAGI $121,500, under the cliff by $7,100, and a credit of $36,000 − 9.96% × $121,500 = $23,898.60 (the 300–400% band's 9.96% applicable figure at 377.9% of the poverty line), settled in the bill (APTC $0): net tax bill $8,420 − $23,898.60 = −$15,478.60 and cash left $66,978.60. CORRECTED (dependent MAGI $15,000 supplied): the ACA household MAGI is $136,500 — OVER the cliff by $7,900 — so the credit is $0, the net tax bill is the $8,420 tax alone, and cash left is $43,080: the bare construction overstates the household's position by the whole phantom credit, $23,898.60. THE DEPENDENT TOUCHES NOTHING ELSE: AGI ($121,500), taxable income ($89,300), and the federal tax ($8,420 — the ordinary part $74,300 at 10% / 12% = $2,480 + $5,940, the $15,000 preferential part inside the 0% space) are IDENTICAL with and without the fact, because the dependent's MAGI joins the §36B household MAGI only — never AGI, taxable income, or tax. DECEMBER AGREEMENT: the December console's own case inputs for the same year (its filing-dependent stray at $15,000, the same $70,000 taken as the headline draw) price the identical ACA MAGI, credit, and federal tax. PASTE: the payload carries the dependent MAGI ($15,000 rides through and parses back); a pre-S-2 payload (the six keys deleted) loads with it null.",
+    expected: {
+      bareMagi: 121500,
+      bareAcaMagi: 121500,
+      barePosition: 7100,
+      bareCredit: 23898.6,
+      bareFed: 8420,
+      bareNetTaxBill: -15478.6,
+      bareCashLeft: 66978.6,
+      depEcho: 15000,
+      corrMagi: 121500,
+      corrAcaMagi: 136500,
+      corrPosition: -7900,
+      corrCredit: 0,
+      corrOverCliff: 1,
+      corrFed: 8420,
+      corrAgi: 121500,
+      corrTaxable: 89300,
+      corrNetTaxBill: 8420,
+      corrCashLeft: 43080,
+      creditGap: 23898.6,
+      taxIdentical: 1,
+      decAcaMagi: 136500,
+      decCredit: 0,
+      decFed: 8420,
+      pasteCarriesDep: 15000,
+      pasteParsedDep: 15000,
+      pasteLegacyNull: 1,
+    },
+    actual: () => {
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const base = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 2026 - SAMPLE_BIRTH_YEAR_PRIMARY,
+        ageSpouse: 2026 - SAMPLE_BIRTH_YEAR_SPOUSE,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: SAMPLE_TAX_RETURN_INTEREST_CENTS / 100,
+        ordinaryDividends: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+        otherOrdinary: 30000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 70000,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        stateRatePct: 0,
+        residenceState: "other" as const,
+        aptcTaken: 0,
+        acaCoverageReduction: 0,
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+      };
+      const bare = pricePlaygroundYear(base);
+      const corr = pricePlaygroundYear({ ...base, dependentMagiForAca: 15000 });
+      const decState = defaultDecemberState(2026);
+      decState.taxYear = 2026;
+      decState.filingStatus = "mfj";
+      decState.agePrimary = 2026 - SAMPLE_BIRTH_YEAR_PRIMARY;
+      decState.ageSpouse = 2026 - SAMPLE_BIRTH_YEAR_SPOUSE;
+      decState.ytdOtherOrdinary = 30000;
+      decState.ytdInterest = SAMPLE_TAX_RETURN_INTEREST_CENTS / 100;
+      decState.ytdOrdinaryDividends = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      decState.ytdQualifiedDividends = SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100;
+      decState.acaHouseholdSize = SAMPLE_HOUSEHOLD_SIZE;
+      decState.acaBenchmarkAnnual = SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100;
+      decState.strayDependent = { status: "amount", amount: 15000 };
+      decState.pretaxBalance = SAMPLE_PRETAX_CENTS / 100;
+      decState.spouseSoleBeneficiary = true;
+      decState.stateRatePct = 0;
+      decState.residenceState = "other";
+      const dec = pricePlaygroundYear(decemberCaseInputs(decState, "likely", 70000));
+      const payload = playgroundPastePayload({ ...base, dependentMagiForAca: 15000 });
+      const parsed = parsePlaygroundPaste(payload);
+      const legacy = { ...payload } as Record<string, unknown>;
+      for (const k of [
+        "capitalLossCarryInSt", "capitalLossCarryInLt",
+        "capitalLossCarryInStWa", "capitalLossCarryInLtWa",
+        "rmdAlreadyReceived", "dependentMagiForAca",
+      ]) delete legacy[k];
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      return {
+        bareMagi: bare.magi,
+        bareAcaMagi: bare.acaMagi,
+        barePosition: bare.aca.positionDollars ?? -999999,
+        bareCredit: bare.aca.credit ?? -1,
+        bareFed: bare.federalTax,
+        bareNetTaxBill: bare.netTaxBill,
+        bareCashLeft: bare.cashLeftAfterTax,
+        depEcho: corr.dependentMagiForAca,
+        corrMagi: corr.magi,
+        corrAcaMagi: corr.acaMagi,
+        corrPosition: corr.aca.positionDollars ?? -999999,
+        corrCredit: corr.aca.credit ?? -1,
+        corrOverCliff: corr.aca.overCliff ? 1 : 0,
+        corrFed: corr.federalTax,
+        corrAgi: corr.agi,
+        corrTaxable: corr.taxableIncome,
+        corrNetTaxBill: corr.netTaxBill,
+        corrCashLeft: corr.cashLeftAfterTax,
+        creditGap: r2((bare.aca.credit ?? 0) - (corr.aca.credit ?? 0)),
+        taxIdentical:
+          bare.federalTax === corr.federalTax &&
+          bare.agi === corr.agi &&
+          bare.taxableIncome === corr.taxableIncome
+            ? 1
+            : 0,
+        decAcaMagi: dec.acaMagi,
+        decCredit: dec.aca.credit ?? -1,
+        decFed: dec.federalTax,
+        pasteCarriesDep: payload.dependentMagiForAca ?? -1,
+        pasteParsedDep: parsed.ok ? (parsed.inputs.dependentMagiForAca ?? -1) : -2,
+        pasteLegacyNull:
+          legacyParsed.ok && legacyParsed.inputs.dependentMagiForAca == null ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-loaded-plan-yield-s3",
+    kind: "tax",
+    note: "S-3 (engines review round 2, SHOULD — settled STAND): a year loaded from the saved plan repriced with more cash left than the march funded, because the loader counts the march's REINVESTED yield as spendable cash on top of march-sized sales and draws. The march reinvests its taxable yield (interest + dividends): the yield stays inside the taxable balance (the balance grows at the full expected return, of which the yield is a component), raises the basis ledger, and counts $0 in the funding ledger (funding.interestYield / dividendYield are $0 in both years below) — while the Playground's cashIn counted the same interest + total ordinary dividends as cash in hand, beside the loader's stock sale (the funding's taxableSoldForSpending + taxableSoldForTax) and pre-tax money out (conversion + extraPreTaxDraw, which since M-2 counts $0 of cash as a conversion). The settlement's identity for the gap, on the pre-fix construction, is diff = yield + conversion − cashSpend − rothDraw (the conversion term is the pre-M-2 term — since M-2 a conversion counts no cash on either surface, so on this household, whose two pinned years carry no conversion, no cash-sleeve spend, and no Roth draw, the gap is the yield alone). THE HOUSEHOLD (shared fictional sample household, server/src/sampleHousehold.ts, samplePlanInputs at its defaults, Do Nothing strategy): taxable $2,000,000 at a 1% dividend yield and a 0.075% interest yield (the filed actuals — dividends $20,000, interest $1,500), expected return 5%, spending $180,000 from retirement age 62, household 4, family benchmark $36,000. 2026 (ages 58 / 56, a pre-retirement year — no spending need, no sales, no conversion): the march prices yield $21,500 ($1,500 + $20,000) and funds nothing (sources $0, tax $0, credit $0), so its cash left is $0; the bare loader construction reads cash in $21,500 and cash left $21,500 — the whole yield invented as spendable cash. 2030 (ages 62 / 60, the first spending year): the yield has grown with the balance at the 5% return — $21,500 × 1.05^4 = $26,133.39 (interest $1,823.26 + dividends $24,310.13) — the march funds the $180,000 spending with $180,000 of taxable sales, prices $0 federal tax (AGI $110,420.11 = the yield plus the $84,286.72 draw gain, under the standard deduction plus the gains space) and keeps a $25,002.16 ACA credit, so the cash the march leaves after its filing settlement is $180,000 − $0 + $25,002.16 = $205,002.16; the bare construction reads cash in $206,133.39 (the sales plus the yield) and cash left $231,135.55 — overstated by exactly the $26,133.39 yield, so the overstatement grows with the year. THE FIX: the loader's construction now supplies yieldReinvested (the client sets it in loadPgSavedPlanYear; the paste payload and the runPlaygroundYear request carry it) — the yield still prices as income in full (AGI and federal tax are identical with and without the flag in both years) but cashIn excludes interest + ordinaryDividends, and the result names the exclusion (yieldReinvested / reinvestedYield). Corrected, both years land exactly on the march: 2026 cash in $0, cash left $0 (vs spending −$180,000); 2030 cash in $180,000, cash left $205,002.16 (vs spending +$25,002.16), agreement 0 cents in both years, and bare − corrected = the yield to the cent in both years (the identity holds, no double-count). The march analogue here is the funding ledger's own arithmetic in Playground terms: its applied sources (SS + RMD + other income + tax-exempt + pretaxDraw + taxableSoldForSpending + taxableSoldForTax + cashSpend + rothDraw — the yield rows excluded, as the march excludes them) less its funded federal + state tax, plus the credit it kept; both pinned years carry $0 IRMAA and $0 health-premium needs, so no other need term enters. PASTE + API: the interchange payload carries the flag (true rides through and parses back; a payload with the key deleted — a pre-S-3 paste — loads with it off, pricing the yield as cash exactly as before), and the runPlaygroundYear contract path (playgroundYearIn + playgroundInputsFromArgs) accepts the flag, carries it into the engine inputs, and prices 2030's corrected cash left.",
+    expected: {
+      yield2026: 21500,
+      yieldRows2026: 0,
+      marchSources2026: 0,
+      marchCashLeft2026: 0,
+      bareCashIn2026: 21500,
+      bareCashLeft2026: 21500,
+      bareVsSpending2026: -158500,
+      corrFlag2026: 1,
+      corrExcluded2026: 21500,
+      corrCashIn2026: 0,
+      corrCashLeft2026: 0,
+      corrVsSpending2026: -180000,
+      diffIsYield2026: 21500,
+      agreementCents2026: 0,
+      yield2030: 26133.39,
+      yieldRows2030: 0,
+      taxableSold2030: 180000,
+      creditKept2030: 25002.16,
+      marchCashLeft2030: 205002.16,
+      bareCashIn2030: 206133.39,
+      bareCashLeft2030: 231135.55,
+      bareVsSpending2030: 51135.55,
+      corrFlag2030: 1,
+      corrExcluded2030: 26133.39,
+      corrCashIn2030: 180000,
+      corrCashLeft2030: 205002.16,
+      corrVsSpending2030: 25002.16,
+      diffIsYield2030: 26133.39,
+      agreementCents2030: 0,
+      taxIdentical2026: 1,
+      taxIdentical2030: 1,
+      pasteCarriesFlag: 1,
+      pasteParsedFlag: 1,
+      pasteLegacyFlagOff: 1,
+      apiCarriesFlag: 1,
+      apiCashLeft2030: 205002.16,
+    },
+    actual: () => {
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const plan = samplePlanInputs();
+      const doNothing: RothStrategy = {
+        id: "none",
+        name: "Do Nothing",
+        ceilings: null,
+      };
+      const march = simulateRothPlan(plan, doNothing);
+      // The saved-plan-year loader's construction (client
+      // loadPgSavedPlanYear + buildPgInputs), field for
+      // field: the year's priced interest and dividends (the
+      // qualified dial at the plan's own qualified share),
+      // its other income and tax-exempt interest, Social
+      // Security by each person's claiming age, the pre-tax
+      // money out as the conversion dial (conversion + the
+      // extra pre-tax draw), the funding's spending + tax
+      // sales with basis = proceeds − the priced draw gain,
+      // the split prior-Dec-31 balances, the ACA size and
+      // benchmark, and — since S-1 — the reconciliation
+      // facts at their fresh-form readings (APTC taken $0,
+      // no coverage reduction, no enrollment premium).
+      const loaderInputs = (year: number) => {
+        const y = march.years.find((yy) => yy.year === year)!;
+        const taxableSold =
+          y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+        return {
+          taxYear: y.year,
+          filingStatus: y.filingStatus,
+          agePrimary: y.agePrimary,
+          ageSpouse: y.ageSpouse,
+          onMedicarePrimary: y.agePrimary >= 65,
+          onMedicareSpouse:
+            y.ageSpouse != null ? y.ageSpouse >= 65 : false,
+          interest: y.detail.interestIncome,
+          ordinaryDividends: y.detail.dividendIncome,
+          otherOrdinary: y.detail.otherOrdinary,
+          taxExemptInterest: y.detail.taxExemptInterest,
+          ssPrimary:
+            plan.ssPrimaryStartAge != null &&
+            y.agePrimary >= plan.ssPrimaryStartAge
+              ? plan.ssPrimaryAnnual
+              : 0,
+          ssSpouse:
+            y.ageSpouse != null &&
+            plan.ssSpouseStartAge != null &&
+            y.ageSpouse >= plan.ssSpouseStartAge
+              ? plan.ssSpouseAnnual
+              : 0,
+          conversion: y.conversion + y.detail.extraPreTaxDraw,
+          stockSold: taxableSold > 0 ? taxableSold : 0,
+          stockBasis:
+            taxableSold > 0 ? taxableSold - y.detail.drawGains : 0,
+          qualifiedDividends: Math.round(
+            ((y.detail.dividendIncome *
+              (plan.taxableDividendQualifiedPct ?? 100)) /
+              100) *
+              100,
+          ) / 100,
+          pretaxBalance: y.detail.priorPretaxPrimary,
+          pretaxBalanceSpouse:
+            y.detail.priorPretaxSpouse > 0
+              ? y.detail.priorPretaxSpouse
+              : null,
+          spouseSoleBeneficiary: plan.spouseSoleBeneficiary,
+          acaHouseholdSize: y.detail.aca.householdSize,
+          acaBenchmarkAnnual: y.detail.aca.benchmark,
+          stateRatePct: plan.stateRatePct,
+          residenceState: "other" as const,
+          aptcTaken: 0,
+          acaCoverageReduction: 0,
+          acaEnrollmentPremiumAnnual: null,
+          annualSpending: plan.annualSpending,
+        };
+      };
+      // The march's own cash left for the year, in the
+      // Playground's terms: the funding ledger's applied
+      // sources (its yield rows are $0 — the march counts
+      // the reinvested yield as no funding) less its funded
+      // federal + state tax, plus the ACA credit it kept
+      // (the settlement the Playground's bill prices at
+      // APTC $0). Both pinned years carry $0 IRMAA and $0
+      // health-premium needs, so nothing else enters.
+      const marchCashLeft = (year: number) => {
+        const y = march.years.find((yy) => yy.year === year)!;
+        const f = y.funding;
+        const sources =
+          f.ss + f.rmd + f.otherIncome + f.taxExempt + f.pretaxDraw +
+          f.taxableSoldForSpending + f.taxableSoldForTax + f.cashSpend +
+          f.rothDraw + f.salarySurplus;
+        return {
+          y,
+          sources: r2(sources),
+          cashLeft: r2(sources - (f.federalTax + f.stateTax) + y.acaCreditKept),
+        };
+      };
+      const leg = (year: number) => {
+        const inputs = loaderInputs(year);
+        const bare = pricePlaygroundYear(inputs);
+        const corr = pricePlaygroundYear({ ...inputs, yieldReinvested: true });
+        const m = marchCashLeft(year);
+        const yieldAmt = r2(
+          m.y.detail.interestIncome + m.y.detail.dividendIncome,
+        );
+        return { bare, corr, m, yieldAmt };
+      };
+      const a = leg(2026);
+      const b = leg(2030);
+      const payload = playgroundPastePayload({
+        ...loaderInputs(2030),
+        yieldReinvested: true,
+      });
+      const parsed = parsePlaygroundPaste(payload);
+      const legacy = { ...payload } as Record<string, unknown>;
+      delete legacy.yieldReinvested;
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      const apiParsed = playgroundYearIn.safeParse({
+        ...loaderInputs(2030),
+        yieldReinvested: true,
+        annualSpendingCents: SAMPLE_ANNUAL_SPENDING_CENTS,
+      });
+      const apiInputs = apiParsed.success
+        ? playgroundInputsFromArgs(apiParsed.data)
+        : null;
+      return {
+        yield2026: a.yieldAmt,
+        yieldRows2026: r2(a.m.y.funding.interestYield + a.m.y.funding.dividendYield),
+        marchSources2026: a.m.sources,
+        marchCashLeft2026: a.m.cashLeft,
+        bareCashIn2026: a.bare.cashIn,
+        bareCashLeft2026: a.bare.cashLeftAfterTax,
+        bareVsSpending2026: a.bare.cashLeftVsSpending ?? -999999,
+        corrFlag2026: a.corr.yieldReinvested ? 1 : 0,
+        corrExcluded2026: a.corr.reinvestedYield,
+        corrCashIn2026: a.corr.cashIn,
+        corrCashLeft2026: a.corr.cashLeftAfterTax,
+        corrVsSpending2026: a.corr.cashLeftVsSpending ?? -999999,
+        diffIsYield2026: r2(a.bare.cashLeftAfterTax - a.corr.cashLeftAfterTax),
+        agreementCents2026: Math.round(
+          Math.abs(a.corr.cashLeftAfterTax - a.m.cashLeft) * 100,
+        ),
+        yield2030: b.yieldAmt,
+        yieldRows2030: r2(b.m.y.funding.interestYield + b.m.y.funding.dividendYield),
+        taxableSold2030: r2(
+          b.m.y.funding.taxableSoldForSpending + b.m.y.funding.taxableSoldForTax,
+        ),
+        creditKept2030: b.m.y.acaCreditKept,
+        marchCashLeft2030: b.m.cashLeft,
+        bareCashIn2030: b.bare.cashIn,
+        bareCashLeft2030: b.bare.cashLeftAfterTax,
+        bareVsSpending2030: b.bare.cashLeftVsSpending ?? -999999,
+        corrFlag2030: b.corr.yieldReinvested ? 1 : 0,
+        corrExcluded2030: b.corr.reinvestedYield,
+        corrCashIn2030: b.corr.cashIn,
+        corrCashLeft2030: b.corr.cashLeftAfterTax,
+        corrVsSpending2030: b.corr.cashLeftVsSpending ?? -999999,
+        diffIsYield2030: r2(b.bare.cashLeftAfterTax - b.corr.cashLeftAfterTax),
+        agreementCents2030: Math.round(
+          Math.abs(b.corr.cashLeftAfterTax - b.m.cashLeft) * 100,
+        ),
+        taxIdentical2026:
+          a.bare.federalTax === a.corr.federalTax && a.bare.agi === a.corr.agi ? 1 : 0,
+        taxIdentical2030:
+          b.bare.federalTax === b.corr.federalTax && b.bare.agi === b.corr.agi ? 1 : 0,
+        pasteCarriesFlag: payload.yieldReinvested === true ? 1 : 0,
+        pasteParsedFlag:
+          parsed.ok && parsed.inputs.yieldReinvested === true ? 1 : 0,
+        pasteLegacyFlagOff:
+          legacyParsed.ok && legacyParsed.inputs.yieldReinvested !== true ? 1 : 0,
+        apiCarriesFlag: apiInputs?.yieldReinvested === true ? 1 : 0,
+        apiCashLeft2030: apiInputs
+          ? pricePlaygroundYear(apiInputs).cashLeftAfterTax
+          : -1,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-loaded-plan-carry-in-followup4",
+    kind: "tax",
+    note: "FOLLOW-UP #4 (engines review round 2 follow-up, SHOULD — settled STAND): loading a saved-plan year dropped its loss carryforward. The Playground's carry-in dials exist (S-2) and buildPgInputs passes them, but loadPgSavedPlanYear never set them, so a loaded year priced its gains gross and its ordinary income without the §1211(b) allowance the march claimed. LEG A — THE SETTLEMENT'S WORKED EXAMPLE (shared fictional sample household, server/src/sampleHousehold.ts; Do Nothing): a 2026 MFJ saved year, other ordinary income at the settlement's level (written in the code as 2 × $40,000 — the level itself coincides with a figure on the standing scrub list, so this build never writes the literal; the defect is pinned by its deltas and by the bare leg's taxable and tax figures), an entering LONG-TERM capital-loss carryforward of $3,000, no gains, no conversions, no yields. THE MARCH prices AGI $77,000 (the income less the $3,000 allowance), taxable $44,800 (less the $32,200 standard deduction), federal tax $4,880 (10% × $24,800 + 12% × $20,000), ACA MAGI $77,000, and the year's taxable income before the allowance covers the allowance whole, so the carry-in is consumed (carry-out $0). THE FIXED LOADER CONSTRUCTION (the S-3 loader construction plus the four carry-ins read off the year's detail — the federal pair from lossCarryInSt / lossCarryInLt, the Washington pair from the detail's new lossCarryInWaSt / lossCarryInWaLt lines) reproduces the march row EXACTLY: AGI, taxable, federal tax, and ACA MAGI agree to the cent (agreement 0 cents), the priced allowance is the march's $3,000, and the reconciled carry-out is the march's $0. THE PRE-FIX CONSTRUCTION (the same inputs with the carry-ins stripped — what the loader produced before this build) prices taxable $47,800 and federal tax $5,240: AGI and ACA MAGI overstated by exactly the $3,000 allowance, tax overstated by exactly $360 (the allowance at the year's 12% marginal rate). LEG B — THE WASHINGTON HALF IS NEEDED, not just the federal half (the brief's qualification): the same household as a Washington-resident plan (residenceState WA, no yields, taxable basis 0%, spending $500,000) entering a $200,000 long-term carryforward FULLY Washington-attributable. The no-income years 2026–2029 claim the allowance in pricing but use none of it (no taxable income for it to offset), so the full $200,000 — federal and Washington parts alike — enters 2030 (the detail's new carry-in / carry-out Washington lines pin the threading: in $200,000 and out $200,000 on 2026, in $200,000 on 2030). In 2030 (ages 62 / 60, the first spending year) the march's sales realize $539,984.46 of gains; the carry-in absorbs $200,000 of them, all of it Washington-attributable (lossWaAbsorbed $200,000), so the excise base is $339,984.46, the taxable Washington gains are $61,984.46 (less the $278,000 standard deduction), and the state tax is $4,338.91 (7%). THE FIXED LOADER reproduces the march's AGI, federal tax, state tax, excise base, and taxable Washington gains to the cent (agreement 0 cents). A FEDERAL-ONLY LOADER (the four federal dials copied, the Washington pair at $0 — the most the pre-fix detail could have supported, since it surfaced only the absorbed Washington part) prices the identical federal figures but an excise base of $539,984.46 and a state tax of $18,338.91 — the Washington tax overstated by exactly the 7% excise on the $200,000 Washington absorption. The bare construction prices the gains gross: AGI $539,984.46 and federal tax $73,245.55 — AGI overstated by the whole $200,000 carry-in. THE ENGINE CHANGE behind the Washington pair: RothYearDetail now surfaces lossCarryInWaSt / lossCarryInWaLt entering and lossCarryOutWaSt / lossCarryOutLtWa leaving (the march's ledger already threaded the sub-state; only the absorbed part was surfaced) — no pricing changed anywhere, and a plan with no Washington attribution reads $0 on all four lines (leg A's pins).",
+    expected: {
+      marchInLtA: 3000,
+      marchInWaLtA: 0,
+      marchAllowanceA: 3000,
+      marchOutLtA: 0,
+      marchAgiA: 77000,
+      marchTaxableA: 44800,
+      marchFedA: 4880,
+      marchAcaMagiA: 77000,
+      fixedAgiA: 77000,
+      fixedTaxableA: 44800,
+      fixedFedA: 4880,
+      fixedAcaMagiA: 77000,
+      fixedAllowanceA: 3000,
+      fixedOutLtA: 0,
+      agreementCentsA: 0,
+      bareTaxableA: 47800,
+      bareFedA: 5240,
+      agiOverstatedA: 3000,
+      taxOverstatedA: 360,
+      marchInWaLtB2026: 200000,
+      marchOutWaLtB2026: 200000,
+      marchInLtB: 200000,
+      marchInWaLtB: 200000,
+      marchAbsorbedB: 200000,
+      marchWaAbsorbedB: 200000,
+      marchOutLtB: 0,
+      marchOutWaLtB: 0,
+      marchDrawGainsB: 539984.46,
+      marchWaBaseB: 339984.46,
+      marchWaTaxableB: 61984.46,
+      marchStateTaxB: 4338.91,
+      marchFedB: 35645.55,
+      marchAgiB: 339984.46,
+      fixedStateTaxB: 4338.91,
+      fixedWaBaseB: 339984.46,
+      fixedWaTaxableB: 61984.46,
+      fixedFedB: 35645.55,
+      fixedAgiB: 339984.46,
+      fixedOutWaLtB: 0,
+      agreementCentsB: 0,
+      fedOnlyStateTaxB: 18338.91,
+      fedOnlyWaBaseB: 539984.46,
+      fedOnlyFedB: 35645.55,
+      bareAgiB: 539984.46,
+      bareFedB: 73245.55,
+    },
+    actual: () => {
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const doNothing: RothStrategy = {
+        id: "none",
+        name: "Do Nothing",
+        ceilings: null,
+      };
+      // The saved-plan-year loader's construction (client
+      // loadPgSavedPlanYear + buildPgInputs), field for
+      // field, as in the S-3 fixture — plus, since this
+      // build, the year's entering loss carryforward: the
+      // "fixed" mode reads all four carry-ins off the
+      // march year's detail (the Washington pair from the
+      // detail's new Washington carry-in lines), the
+      // "federalOnly" mode copies the federal pair and
+      // leaves the Washington dials at $0 (the most the
+      // pre-fix detail could have supported), and the
+      // "bare" mode supplies none (the pre-fix loader).
+      const loaderInputs = (
+        plan: ReturnType<typeof samplePlanInputs>,
+        march: ReturnType<typeof simulateRothPlan>,
+        year: number,
+        mode: "fixed" | "federalOnly" | "bare",
+      ) => {
+        const y = march.years.find((yy) => yy.year === year)!;
+        const taxableSold =
+          y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+        return {
+          taxYear: y.year,
+          filingStatus: y.filingStatus,
+          agePrimary: y.agePrimary,
+          ageSpouse: y.ageSpouse,
+          onMedicarePrimary: y.agePrimary >= 65,
+          onMedicareSpouse:
+            y.ageSpouse != null ? y.ageSpouse >= 65 : false,
+          interest: y.detail.interestIncome,
+          ordinaryDividends: y.detail.dividendIncome,
+          otherOrdinary: y.detail.otherOrdinary,
+          taxExemptInterest: y.detail.taxExemptInterest,
+          ssPrimary:
+            plan.ssPrimaryStartAge != null &&
+            y.agePrimary >= plan.ssPrimaryStartAge
+              ? plan.ssPrimaryAnnual
+              : 0,
+          ssSpouse:
+            y.ageSpouse != null &&
+            plan.ssSpouseStartAge != null &&
+            y.ageSpouse >= plan.ssSpouseStartAge
+              ? plan.ssSpouseAnnual
+              : 0,
+          conversion: y.conversion + y.detail.extraPreTaxDraw,
+          stockSold: taxableSold > 0 ? taxableSold : 0,
+          stockBasis:
+            taxableSold > 0 ? taxableSold - y.detail.drawGains : 0,
+          qualifiedDividends: Math.round(
+            ((y.detail.dividendIncome *
+              (plan.taxableDividendQualifiedPct ?? 100)) /
+              100) *
+              100,
+          ) / 100,
+          pretaxBalance: y.detail.priorPretaxPrimary,
+          pretaxBalanceSpouse:
+            y.detail.priorPretaxSpouse > 0
+              ? y.detail.priorPretaxSpouse
+              : null,
+          spouseSoleBeneficiary: plan.spouseSoleBeneficiary,
+          acaHouseholdSize: y.detail.aca.householdSize,
+          acaBenchmarkAnnual: y.detail.aca.benchmark,
+          stateRatePct: plan.stateRatePct,
+          residenceState:
+            plan.residenceState === "WA"
+              ? ("WA" as const)
+              : ("other" as const),
+          aptcTaken: 0,
+          acaCoverageReduction: 0,
+          acaEnrollmentPremiumAnnual: null,
+          annualSpending: plan.annualSpending,
+          yieldReinvested: true,
+          inflationPct: plan.inflationPct,
+          ...(mode === "bare"
+            ? {}
+            : {
+                capitalLossCarryInSt: y.detail.lossCarryInSt,
+                capitalLossCarryInLt: y.detail.lossCarryInLt,
+                capitalLossCarryInStWa:
+                  mode === "fixed" ? y.detail.lossCarryInWaSt : 0,
+                capitalLossCarryInLtWa:
+                  mode === "fixed" ? y.detail.lossCarryInWaLt : 0,
+              }),
+        };
+      };
+      // Leg A — the settlement's worked example. The
+      // ordinary-income level is the settlement's own; it
+      // is written as 2 × $40,000 because the level
+      // coincides with a figure on the standing scrub list
+      // (see the note) — the priced figures are the
+      // example's own either way.
+      const planA = samplePlanInputs({
+        otherOrdinaryAnnual: 2 * 40000,
+        capitalLossCarryInLt: 3000,
+        taxableDividendYieldPct: 0,
+        taxableInterestYieldPct: 0,
+      });
+      const marchA = simulateRothPlan(planA, doNothing);
+      const yA = marchA.years.find((yy) => yy.year === 2026)!;
+      const fixedA = pricePlaygroundYear(loaderInputs(planA, marchA, 2026, "fixed"));
+      const bareA = pricePlaygroundYear(loaderInputs(planA, marchA, 2026, "bare"));
+      const agreementCentsA = Math.round(
+        Math.max(
+          Math.abs(fixedA.agi - yA.agi),
+          Math.abs(fixedA.taxableIncome - yA.taxableIncome),
+          Math.abs(fixedA.federalTax - yA.federalTax),
+          Math.abs(fixedA.acaMagi - yA.acaMagi),
+        ) * 100,
+      );
+      // Leg B — the Washington half (see the note).
+      const planB = samplePlanInputs({
+        residenceState: "WA",
+        capitalLossCarryInLt: 200000,
+        capitalLossCarryInLtWa: 200000,
+        taxableDividendYieldPct: 0,
+        taxableInterestYieldPct: 0,
+        taxableBasisPct: 0,
+        annualSpending: 500000,
+      });
+      const marchB = simulateRothPlan(planB, doNothing);
+      const yB26 = marchB.years.find((yy) => yy.year === 2026)!;
+      const yB = marchB.years.find((yy) => yy.year === 2030)!;
+      const fixedB = pricePlaygroundYear(loaderInputs(planB, marchB, 2030, "fixed"));
+      const fedOnlyB = pricePlaygroundYear(loaderInputs(planB, marchB, 2030, "federalOnly"));
+      const bareB = pricePlaygroundYear(loaderInputs(planB, marchB, 2030, "bare"));
+      const agreementCentsB = Math.round(
+        Math.max(
+          Math.abs(fixedB.agi - yB.agi),
+          Math.abs(fixedB.federalTax - yB.federalTax),
+          Math.abs(fixedB.stateTax - yB.stateTax),
+        ) * 100,
+      );
+      return {
+        marchInLtA: yA.detail.lossCarryInLt,
+        marchInWaLtA: yA.detail.lossCarryInWaLt,
+        marchAllowanceA: yA.detail.lossAllowance,
+        marchOutLtA: yA.detail.lossCarryOutLt,
+        marchAgiA: yA.agi,
+        marchTaxableA: yA.taxableIncome,
+        marchFedA: yA.federalTax,
+        marchAcaMagiA: yA.acaMagi,
+        fixedAgiA: fixedA.agi,
+        fixedTaxableA: fixedA.taxableIncome,
+        fixedFedA: fixedA.federalTax,
+        fixedAcaMagiA: fixedA.acaMagi,
+        fixedAllowanceA: fixedA.capitalLossAllowance,
+        fixedOutLtA: fixedA.lossCarryOutLt,
+        agreementCentsA,
+        bareTaxableA: bareA.taxableIncome,
+        bareFedA: bareA.federalTax,
+        agiOverstatedA: r2(bareA.agi - fixedA.agi),
+        taxOverstatedA: r2(bareA.federalTax - fixedA.federalTax),
+        marchInWaLtB2026: yB26.detail.lossCarryInWaLt,
+        marchOutWaLtB2026: yB26.detail.lossCarryOutWaLt,
+        marchInLtB: yB.detail.lossCarryInLt,
+        marchInWaLtB: yB.detail.lossCarryInWaLt,
+        marchAbsorbedB: yB.detail.lossAbsorbed,
+        marchWaAbsorbedB: yB.detail.lossWaAbsorbed,
+        marchOutLtB: yB.detail.lossCarryOutLt,
+        marchOutWaLtB: yB.detail.lossCarryOutWaLt,
+        marchDrawGainsB: yB.detail.drawGains,
+        marchWaBaseB: yB.detail.waGains,
+        marchWaTaxableB: yB.detail.waTaxableGains,
+        marchStateTaxB: yB.stateTax,
+        marchFedB: yB.federalTax,
+        marchAgiB: yB.agi,
+        fixedStateTaxB: fixedB.stateTax,
+        fixedWaBaseB: fixedB.waGains,
+        fixedWaTaxableB: fixedB.waTaxableGains,
+        fixedFedB: fixedB.federalTax,
+        fixedAgiB: fixedB.agi,
+        fixedOutWaLtB: fixedB.lossCarryOutLtWa,
+        agreementCentsB,
+        fedOnlyStateTaxB: fedOnlyB.stateTax,
+        fedOnlyWaBaseB: fedOnlyB.waGains,
+        fedOnlyFedB: fedOnlyB.federalTax,
+        bareAgiB: bareB.agi,
+        bareFedB: bareB.federalTax,
+      };
+    },
+  },
+  /* N-1 — Playground prefill reciprocal-beneficiary carriage,
+     SOURCE-INVARIANT half (documented here because this
+     server-side suite cannot execute it): in
+     client/src/Playground.tsx, pgPrefillSourceFrom resolves
+     primarySoleBeneficiaryOfSpouse from the saved plan
+     record beside spouseSoleBeneficiary, prefillPlayground
+     loads it into the form's pgPrimarySoleBeneficiaryOfSpouse
+     state, and buildPgInputs passes that state to
+     pricePlaygroundYear as primarySoleBeneficiaryOfSpouse —
+     so a year prefilled from a record that establishes the
+     primary as the spouse's sole beneficiary prices the
+     spouse's RMD on the Joint table. The saved-plan-year
+     loader (loadPgSavedPlanYear) sets the same state from
+     the plan inputs it loads, the paste loader sets it from
+     the parsed paste, and the remembered form
+     (rothUiStateCore's playgroundFormState) carries it, so
+     no Playground load path drops it. Before N-1 the prefill
+     source carried only spouseSoleBeneficiary and
+     buildPgInputs never passed the reciprocal fact, so a
+     prefilled year always priced the spouse's RMD on the
+     Uniform table. The RUNTIME half — the priced figures
+     themselves, and the paste / API carriage — is pinned by
+     tax-engines-playground-spouse-rmd-reciprocal-n1 below. */
+  {
+    id: "tax-engines-playground-spouse-rmd-reciprocal-n1",
+    kind: "tax",
+    note: "N-1 (engines review round 2, NICE-TO-HAVE — settled STAND): the Playground's 'Start from my numbers' prefill dropped the reciprocal beneficiary fact, so the spouse's RMD priced on the wrong table. The pricer has always gated the spouse branch's table on the SECOND beneficiary fact (primarySoleBeneficiaryOfSpouse — the primary is the sole beneficiary of the SPOUSE's pre-tax accounts, round-3 fix), but the prefill carried only the first fact (spouseSoleBeneficiary — the spouse is the PRIMARY's sole beneficiary, which selects only the primary's table), buildPgInputs never passed the second, and the runPlaygroundYear request accepted neither the fact nor the spouse's balance, so no Playground surface could price the spouse's RMD on the Joint table from the record that establishes it. THE SYNTHETIC EXAMPLE (the settlement's own; the shared fictional sample household's joint filing pattern, server/src/sampleHousehold.ts, with the settlement's synthetic ages and balance — no household's figures): 2026, MFJ, the primary aged 75 and the spouse aged 90, both on Medicare, no entered income, no conversion, no benchmark, no state rate, no primary pre-tax balance, and the spouse's own prior-Dec-31 pre-tax balance of $500,000. HAND-DERIVED: the spouse is past her RMD age, so her RMD prices on her own clock with the roles swapped — the beneficiary whose age can select the Joint table is the primary, 15 years younger (90 − 75), more than the 10 the Joint rule requires. CORRECTED (the reciprocal fact established, as the fixed prefill carries it from the record): the Joint and Last Survivor divisor at (90, 75) is 15.4, so her RMD is $500,000 ÷ 15.4 = $32,467.53 (rmdSpouse, the year's whole RMD, and its AGI — there is no other income; the year's $47,500 of deductions leave federal tax $0). THE DEFECT, priced as the control (the same year with the fact absent — the pre-fix prefill's construction): the Uniform Lifetime divisor at 90 is 12.2, so her RMD is $500,000 ÷ 12.2 = $40,983.61 — $8,516.08 more of forced income. THE FIRST FACT ALONE DOES NOT ESTABLISH RECIPROCITY: the same year with spouseSoleBeneficiary true and the reciprocal fact false prices the identical Uniform $40,983.61, as does an explicit reciprocal false beside any first fact — only an explicit reciprocal true selects the Joint table. PASTE + API: the interchange payload carries the fact and the spouse's balance (true and $500,000 ride through and parse back to the Joint pricing); a payload with the fact's key deleted (a pre-N-1 paste) still loads with it unset and prices the Uniform figure; and the runPlaygroundYear contract path (playgroundYearIn + playgroundInputsFromArgs) accepts both the spouse's balance and the fact, carries them into the engine inputs, prices the corrected $32,467.53, prices the Uniform $40,983.61 when the balance is supplied without the fact, and REJECTS a negative spouse balance and a non-boolean fact at validation. SCOPE: the defect is inert whenever the beneficiary is not more than 10 years younger than the spouse (the Joint rule never engages, and both tables' selection agrees), and live exactly for a household whose spouse is the older spouse by more than 10 years and whose record establishes reciprocity.",
+    expected: {
+      jointRmdSpouse: 32467.53,
+      jointRmd: 32467.53,
+      jointDivisor: 15.4,
+      jointTable: "joint",
+      jointAgi: 32467.53,
+      jointTax: 0,
+      uniformRmdSpouse: 40983.61,
+      uniformDivisor: 12.2,
+      uniformTable: "uniform",
+      rmdGap: 8516.08,
+      firstFactOnlyRmdSpouse: 40983.61,
+      explicitFalseRmdSpouse: 40983.61,
+      pasteCarriesFact: 1,
+      pasteCarriesSpouseBalance: 1,
+      pasteParsedRmdSpouse: 32467.53,
+      pasteLegacyFactUnset: 1,
+      pasteLegacyRmdSpouse: 40983.61,
+      apiCarriesFact: 1,
+      apiCarriesSpouseBalance: 1,
+      apiRmdSpouse: 32467.53,
+      apiBareRmdSpouse: 40983.61,
+      apiRejectsNegativeSpouseBalance: 1,
+      apiRejectsNonBooleanFact: 1,
+    },
+    actual: () => {
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      // The synthetic example (see the note): the sample
+      // household's joint filing pattern with the
+      // settlement's ages — the spouse (90) holds the
+      // $500,000 pre-tax balance; the primary (75) holds
+      // none — priced the Playground's own construction way
+      // (buildPgInputs' field set, the reciprocal fact now
+      // among them).
+      const base: PlaygroundYearInputs = {
+        taxYear: 2026,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 75,
+        ageSpouse: 90,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        pretaxBalanceSpouse: 500000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const joint = pricePlaygroundYear({
+        ...base,
+        primarySoleBeneficiaryOfSpouse: true,
+      });
+      const uniform = pricePlaygroundYear(base);
+      const firstFactOnly = pricePlaygroundYear({
+        ...base,
+        primarySoleBeneficiaryOfSpouse: false,
+      });
+      const explicitFalse = pricePlaygroundYear({
+        ...base,
+        spouseSoleBeneficiary: false,
+        primarySoleBeneficiaryOfSpouse: false,
+      });
+      // Paste carriage: the corrected year's payload, a
+      // JSON round-trip, and a pre-N-1 payload (the fact's
+      // key deleted).
+      const payload = playgroundPastePayload({
+        ...base,
+        primarySoleBeneficiaryOfSpouse: true,
+      });
+      const parsed = parsePlaygroundPaste(
+        JSON.parse(JSON.stringify(payload)),
+      );
+      const parsedPriced = parsed.ok
+        ? pricePlaygroundYear(parsed.inputs)
+        : null;
+      const legacy = { ...payload } as Record<string, unknown>;
+      delete legacy.primarySoleBeneficiaryOfSpouse;
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      const legacyPriced = legacyParsed.ok
+        ? pricePlaygroundYear(legacyParsed.inputs)
+        : null;
+      // API carriage: the contract path accepts the
+      // spouse's balance and the reciprocal fact, prices
+      // the corrected RMD, and rejects malformed values.
+      const apiArgs = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 75,
+        ageSpouse: 90,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        pretaxBalanceSpouse: 500000,
+        spouseSoleBeneficiary: true,
+        primarySoleBeneficiaryOfSpouse: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const apiParsed = playgroundYearIn.safeParse(apiArgs);
+      const apiInputs = apiParsed.success
+        ? playgroundInputsFromArgs(apiParsed.data)
+        : null;
+      const apiPriced = apiInputs ? pricePlaygroundYear(apiInputs) : null;
+      const apiBareArgs: Record<string, unknown> = { ...apiArgs };
+      delete apiBareArgs.primarySoleBeneficiaryOfSpouse;
+      const apiBareParsed = playgroundYearIn.safeParse(apiBareArgs);
+      const apiBareInputs = apiBareParsed.success
+        ? playgroundInputsFromArgs(apiBareParsed.data)
+        : null;
+      const apiBarePriced = apiBareInputs
+        ? pricePlaygroundYear(apiBareInputs)
+        : null;
+      const apiNegBalance = playgroundYearIn.safeParse({
+        ...apiArgs,
+        pretaxBalanceSpouse: -1,
+      });
+      const apiBadFact = playgroundYearIn.safeParse({
+        ...apiArgs,
+        primarySoleBeneficiaryOfSpouse: "yes",
+      });
+      return {
+        jointRmdSpouse: joint.rmdSpouse,
+        jointRmd: joint.rmd,
+        jointDivisor: joint.rmdDivisor ?? -1,
+        jointTable: joint.rmdTable ?? "none",
+        jointAgi: joint.agi,
+        jointTax: joint.federalTax,
+        uniformRmdSpouse: uniform.rmdSpouse,
+        uniformDivisor: uniform.rmdDivisor ?? -1,
+        uniformTable: uniform.rmdTable ?? "none",
+        rmdGap: r2(uniform.rmdSpouse - joint.rmdSpouse),
+        firstFactOnlyRmdSpouse: firstFactOnly.rmdSpouse,
+        explicitFalseRmdSpouse: explicitFalse.rmdSpouse,
+        pasteCarriesFact:
+          payload.primarySoleBeneficiaryOfSpouse === true ? 1 : 0,
+        pasteCarriesSpouseBalance:
+          payload.pretaxBalanceSpouse === 500000 ? 1 : 0,
+        pasteParsedRmdSpouse: parsedPriced ? parsedPriced.rmdSpouse : -1,
+        pasteLegacyFactUnset:
+          legacyParsed.ok &&
+          legacyParsed.inputs.primarySoleBeneficiaryOfSpouse === undefined
+            ? 1
+            : 0,
+        pasteLegacyRmdSpouse: legacyPriced ? legacyPriced.rmdSpouse : -1,
+        apiCarriesFact:
+          apiInputs?.primarySoleBeneficiaryOfSpouse === true ? 1 : 0,
+        apiCarriesSpouseBalance:
+          apiInputs?.pretaxBalanceSpouse === 500000 ? 1 : 0,
+        apiRmdSpouse: apiPriced ? apiPriced.rmdSpouse : -1,
+        apiBareRmdSpouse: apiBarePriced ? apiBarePriced.rmdSpouse : -1,
+        apiRejectsNegativeSpouseBalance: apiNegBalance.success ? 0 : 1,
+        apiRejectsNonBooleanFact: apiBadFact.success ? 0 : 1,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-inflation-s4",
+    kind: "tax",
+    note: "S-4 (engines review round 2, SHOULD — settled STAND): the Playground priced future years at inflation 0 while the march deflates statute-fixed amounts, so the two disagreed on taxable Social Security, tax, and NIIT by amounts that grow with the horizon, and the fill solvers solved to different conversions. THE TREATMENT (the march's own, priceYear's deflationFactor): a year Y past the 2026 law row deflates the row's statute-fixed amounts by 1 / 1.025^(Y − 2026) at the plan's 2.5% inflation — the §86 Social Security thresholds (MFJ $32,000 / $44,000), the §1411 NIIT thresholds, the senior deduction, the SALT caps — because the plan's dollars are today's dollars. 2035 is 9 years out (factor 0.800728: thresholds $25,623.30 / $35,232.04); 2043 is 17 years out (factor 0.657195: $21,030.25 / $28,916.60). THE 2035 BUNDLE (shared fictional sample household people and filed figures, server/src/sampleHousehold.ts): MFJ, ages 67 / 65, both on Medicare, interest $1,500, ordinary dividends $20,000 of which $15,000 qualified, other ordinary $23,500 (non-Social-Security income $45,000), the primary's sample $48,000 benefit in pay (claimed at 67; the spouse, 65, has not claimed), no pre-tax balance entered. Provisional income is $45,000 + $24,000 = $69,000, inside the §86 phase-in under either treatment. CORRECTED (inflationPct 2.5 supplied): taxable Social Security = 85% × ($69,000 − $35,232.04) + min($24,000, 50% × ($35,232.04 − $25,623.30)) = $28,702.77 + $4,804.37 = $33,507.13; AGI $78,507.13; deductions $35,500 (the 2026-row MFJ standard $31,500 + 2 × $2,000 age-65 add-ons — the senior deduction sunsets after 2028, so neither pricing carries one); the ordinary part of taxable income is $28,007.13, so federal tax = $2,480 + 12% × $3,207.13 = $2,864.86 (the $15,000 qualified sits inside the 0% space), and NIIT is $0 (MAGI under the threshold either way — pinned as agreement, $0 = $0). BARE (the pre-S-4 construction, no rate supplied): taxable Social Security = 85% × ($69,000 − $44,000) + $6,000 = $27,250, AGI $72,250, the ordinary part $21,750 all at 10% → tax $2,175 — the two disagree by $6,257.13 of AGI and $689.86 of tax on the same year. THE MARCH'S OWN PASS (priceYear on the same components at inflation 2.5 — the exact pass simulateRothPlan settles each year with) reproduces the corrected figures to the cent on SS-taxable, AGI, tax, and NIIT. 2043 (ages 75 / 73, both sample benefits in pay — $78,000; same other income; provisional income $84,000): corrected taxable Social Security = 85% × ($84,000 − $28,916.60) + min($39,000, 50% × $7,886.35) = $46,820.89 + $3,943.18 = $50,764.08 and tax $4,935.69; bare $40,000 and $3,644 — the Social Security gap has grown to $10,764.08, and the corrected figures again equal the march's own pass exactly. THE MARCH ITSELF, LOADED (the sample plan's Do Nothing march, its 2043 year mapped through the S-3 loader construction): the march prices NIIT $769.40 (MAGI $226,304.59 over the deflated §1411 line) and federal tax $31,181.58, with SS-taxable $66,300 (the 85% cap under either treatment, so that year cannot discriminate on SS); the corrected loader pricing agrees with the march on all three to the cent, while the bare construction prices NIIT $0 and a federal tax short by exactly the NIIT, $769.40. BRACKET FILL (a second 2035 bundle: other ordinary $5,000 only, the $48,000 benefit, the sample $1,500,000 pre-tax balance; fill the 10% bracket, top $24,800): the solve runs through the §86 phase-in (each conversion dollar also raises taxable Social Security), so the corrected fill is $30,158.30, landing at $24,799.98 of ordinary taxable income in the 10% bracket; the bare fill is $33,540.54, and priced with the march's treatment it lands at $31,057.13 — in the 12% bracket, over the top by the same $6,257.13 §86 gap. PASTE + API: the interchange payload carries the rate (2.5 rides through and parses back; a payload with the key deleted — a pre-S-4 paste — loads with it unset and prices the bare figures), and the runPlaygroundYear contract path (playgroundYearIn + playgroundInputsFromArgs) accepts the rate, carries it into the engine inputs, prices the corrected 2035 figures, and refuses a rate of −100 (outside the deflation factor's domain). The result echoes the rate priced with (2.5 supplied; 0 bare).",
+    expected: {
+      corrSs2035: 33507.13,
+      corrAgi2035: 78507.13,
+      corrTax2035: 2864.86,
+      corrNiit2035: 0,
+      corrEcho2035: 2.5,
+      bareSs2035: 27250,
+      bareTax2035: 2175,
+      bareEcho2035: 0,
+      ssGap2035: 6257.13,
+      taxGap2035: 689.86,
+      marchPassSsDiff2035: 0,
+      marchPassAgiDiff2035: 0,
+      marchPassTaxDiff2035: 0,
+      marchPassNiitDiff2035: 0,
+      corrSs2043: 50764.08,
+      corrTax2043: 4935.69,
+      bareSs2043: 40000,
+      bareTax2043: 3644,
+      ssGap2043: 10764.08,
+      taxGap2043: 1291.69,
+      marchPassSsDiff2043: 0,
+      marchPassTaxDiff2043: 0,
+      loaderMarchNiit2043: 769.4,
+      loaderCorrSsDiff2043: 0,
+      loaderCorrTaxDiff2043: 0,
+      loaderCorrNiitDiff2043: 0,
+      loaderBareNiit2043: 0,
+      loaderBareTaxGap2043: 769.4,
+      fillCorr2035: 30158.3,
+      fillBare2035: 33540.54,
+      fillLandCorrOrdTaxable: 24799.98,
+      fillLandCorrBracket: 10,
+      fillLandCorrTop: 24800,
+      fillLandBareOrdTaxable: 31057.13,
+      fillLandBareBracket: 12,
+      pasteCarriesRate: 1,
+      pasteParsedRate: 1,
+      pasteLegacyBareSs2035: 27250,
+      apiCarriesRate: 1,
+      apiSs2035: 33507.13,
+      apiRejectsMinus100: 1,
+    },
+    actual: () => {
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const diff = (a: number, b: number) => r2(a - b);
+      // The 2035 / 2043 standalone bundle (see the note):
+      // the sample household's people and filed figures,
+      // Social Security in the §86 phase-in.
+      const bundleA = (
+        year: number,
+        ageP: number,
+        ageS: number,
+        ssS: number,
+      ): PlaygroundYearInputs => ({
+        taxYear: year,
+        filingStatus: "mfj",
+        agePrimary: ageP,
+        ageSpouse: ageS,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 1500,
+        ordinaryDividends: 20000,
+        otherOrdinary: 23500,
+        taxExemptInterest: 0,
+        ssPrimary: 48000,
+        ssSpouse: ssS,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        residenceState: "other",
+      });
+      // The march's own per-year pass on the bundle's
+      // components (priceYear — the pass simulateRothPlan
+      // settles each plan year with — at the plan's 2.5%).
+      const marchPass = (inp: PlaygroundYearInputs) => {
+        const base: PriceYearInput = {
+          calendarYear: inp.taxYear,
+          filingStatus: inp.filingStatus,
+          agePrimary: inp.agePrimary,
+          ageSpouse: inp.ageSpouse,
+          otherOrdinary: inp.otherOrdinary,
+          interestIncome: inp.interest,
+          ordinaryDividends: inp.ordinaryDividends - inp.qualifiedDividends,
+          rmd: 0,
+          conversion: inp.conversion,
+          extraPreTaxDraw: 0,
+          ssBenefits: inp.ssPrimary + inp.ssSpouse,
+          taxExemptInterest: inp.taxExemptInterest,
+          ltcg: 0,
+          qualifiedDividends: inp.qualifiedDividends,
+          capitalLossAllowance: 0,
+          inflationPct: SAMPLE_INFLATION_PCT,
+          stateRatePct: inp.stateRatePct,
+          residenceState: "other",
+        };
+        return priceYear(base);
+      };
+      const aInp = bundleA(2035, 67, 65, 0);
+      const aBare = pricePlaygroundYear(aInp);
+      const aCorr = pricePlaygroundYear({
+        ...aInp,
+        inflationPct: SAMPLE_INFLATION_PCT,
+      });
+      const aMarch = marchPass(aInp);
+      const bInp = bundleA(2043, 75, 73, 30000);
+      const bBare = pricePlaygroundYear(bInp);
+      const bCorr = pricePlaygroundYear({
+        ...bInp,
+        inflationPct: SAMPLE_INFLATION_PCT,
+      });
+      const bMarch = marchPass(bInp);
+      // The sample plan's own march, its 2043 year loaded
+      // the loader's way (the S-3 construction, field for
+      // field).
+      const plan = samplePlanInputs();
+      const doNothing: RothStrategy = {
+        id: "none",
+        name: "Do Nothing",
+        ceilings: null,
+      };
+      const march = simulateRothPlan(plan, doNothing);
+      const y43 = march.years.find((yy) => yy.year === 2043)!;
+      const taxableSold43 =
+        y43.funding.taxableSoldForSpending + y43.funding.taxableSoldForTax;
+      const loader43: PlaygroundYearInputs = {
+        taxYear: y43.year,
+        filingStatus: y43.filingStatus,
+        agePrimary: y43.agePrimary,
+        ageSpouse: y43.ageSpouse,
+        onMedicarePrimary: y43.agePrimary >= 65,
+        onMedicareSpouse:
+          y43.ageSpouse != null ? y43.ageSpouse >= 65 : false,
+        interest: y43.detail.interestIncome,
+        ordinaryDividends: y43.detail.dividendIncome,
+        otherOrdinary: y43.detail.otherOrdinary,
+        taxExemptInterest: y43.detail.taxExemptInterest,
+        ssPrimary:
+          plan.ssPrimaryStartAge != null &&
+          y43.agePrimary >= plan.ssPrimaryStartAge
+            ? plan.ssPrimaryAnnual
+            : 0,
+        ssSpouse:
+          y43.ageSpouse != null &&
+          plan.ssSpouseStartAge != null &&
+          y43.ageSpouse >= plan.ssSpouseStartAge
+            ? plan.ssSpouseAnnual
+            : 0,
+        conversion: y43.conversion + y43.detail.extraPreTaxDraw,
+        stockSold: taxableSold43 > 0 ? taxableSold43 : 0,
+        stockBasis:
+          taxableSold43 > 0 ? taxableSold43 - y43.detail.drawGains : 0,
+        qualifiedDividends:
+          Math.round(
+            ((y43.detail.dividendIncome *
+              (plan.taxableDividendQualifiedPct ?? 100)) /
+              100) *
+              100,
+          ) / 100,
+        pretaxBalance: y43.detail.priorPretaxPrimary,
+        pretaxBalanceSpouse:
+          y43.detail.priorPretaxSpouse > 0
+            ? y43.detail.priorPretaxSpouse
+            : null,
+        spouseSoleBeneficiary: plan.spouseSoleBeneficiary,
+        acaHouseholdSize: y43.detail.aca.householdSize,
+        acaBenchmarkAnnual: y43.detail.aca.benchmark,
+        stateRatePct: plan.stateRatePct,
+        residenceState: "other",
+        aptcTaken: 0,
+        acaCoverageReduction: 0,
+        acaEnrollmentPremiumAnnual: null,
+        annualSpending: plan.annualSpending,
+      };
+      const lBare = pricePlaygroundYear(loader43);
+      const lCorr = pricePlaygroundYear({
+        ...loader43,
+        inflationPct: plan.inflationPct,
+      });
+      // The bracket-fill bundle (see the note).
+      const bundleB: PlaygroundYearInputs = {
+        taxYear: 2035,
+        filingStatus: "mfj",
+        agePrimary: 67,
+        ageSpouse: 65,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 5000,
+        taxExemptInterest: 0,
+        ssPrimary: 48000,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 1500000,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        residenceState: "other",
+      };
+      const fillCorr = solvePlaygroundBracketFill(
+        { ...bundleB, inflationPct: SAMPLE_INFLATION_PCT },
+        10,
+      );
+      const fillBare = solvePlaygroundBracketFill(bundleB, 10);
+      const landCorr = pricePlaygroundYear({
+        ...bundleB,
+        inflationPct: SAMPLE_INFLATION_PCT,
+        conversion: fillCorr,
+      });
+      const landBare = pricePlaygroundYear({
+        ...bundleB,
+        inflationPct: SAMPLE_INFLATION_PCT,
+        conversion: fillBare,
+      });
+      // Paste + API carriage.
+      const payload = playgroundPastePayload({
+        ...aInp,
+        inflationPct: SAMPLE_INFLATION_PCT,
+      });
+      const parsed = parsePlaygroundPaste(
+        JSON.parse(JSON.stringify(payload)),
+      );
+      const legacy = { ...payload } as Record<string, unknown>;
+      delete legacy.inflationPct;
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      const legacyPriced = legacyParsed.ok
+        ? pricePlaygroundYear(legacyParsed.inputs)
+        : null;
+      const apiParsed = playgroundYearIn.safeParse({
+        ...aInp,
+        inflationPct: SAMPLE_INFLATION_PCT,
+      });
+      const apiInputs = apiParsed.success
+        ? playgroundInputsFromArgs(apiParsed.data)
+        : null;
+      const apiRejected = playgroundYearIn.safeParse({
+        ...aInp,
+        inflationPct: -100,
+      });
+      return {
+        corrSs2035: aCorr.ssTaxable,
+        corrAgi2035: aCorr.agi,
+        corrTax2035: aCorr.federalTax,
+        corrNiit2035: aCorr.niit,
+        corrEcho2035: aCorr.inflationPct,
+        bareSs2035: aBare.ssTaxable,
+        bareTax2035: aBare.federalTax,
+        bareEcho2035: aBare.inflationPct,
+        ssGap2035: diff(aCorr.ssTaxable, aBare.ssTaxable),
+        taxGap2035: diff(aCorr.federalTax, aBare.federalTax),
+        marchPassSsDiff2035: diff(aCorr.ssTaxable, aMarch.ssTaxable),
+        marchPassAgiDiff2035: diff(aCorr.agi, aMarch.agi),
+        marchPassTaxDiff2035: diff(aCorr.federalTax, aMarch.federalTax),
+        marchPassNiitDiff2035: diff(aCorr.niit, aMarch.niit),
+        corrSs2043: bCorr.ssTaxable,
+        corrTax2043: bCorr.federalTax,
+        bareSs2043: bBare.ssTaxable,
+        bareTax2043: bBare.federalTax,
+        ssGap2043: diff(bCorr.ssTaxable, bBare.ssTaxable),
+        taxGap2043: diff(bCorr.federalTax, bBare.federalTax),
+        marchPassSsDiff2043: diff(bCorr.ssTaxable, bMarch.ssTaxable),
+        marchPassTaxDiff2043: diff(bCorr.federalTax, bMarch.federalTax),
+        loaderMarchNiit2043: y43.detail.niit,
+        loaderCorrSsDiff2043: diff(lCorr.ssTaxable, y43.detail.ssTaxable),
+        loaderCorrTaxDiff2043: diff(lCorr.federalTax, y43.federalTax),
+        loaderCorrNiitDiff2043: diff(lCorr.niit, y43.detail.niit),
+        loaderBareNiit2043: lBare.niit,
+        loaderBareTaxGap2043: diff(y43.federalTax, lBare.federalTax),
+        fillCorr2035: fillCorr,
+        fillBare2035: fillBare,
+        fillLandCorrOrdTaxable: landCorr.ordinaryTaxableIncome,
+        fillLandCorrBracket: landCorr.landingBracketPct ?? -1,
+        fillLandCorrTop: landCorr.landingBracketTop ?? -1,
+        fillLandBareOrdTaxable: landBare.ordinaryTaxableIncome,
+        fillLandBareBracket: landBare.landingBracketPct ?? -1,
+        pasteCarriesRate: payload.inflationPct === SAMPLE_INFLATION_PCT ? 1 : 0,
+        pasteParsedRate:
+          parsed.ok && parsed.inputs.inflationPct === SAMPLE_INFLATION_PCT
+            ? 1
+            : 0,
+        pasteLegacyBareSs2035: legacyPriced ? legacyPriced.ssTaxable : -1,
+        apiCarriesRate:
+          apiInputs?.inflationPct === SAMPLE_INFLATION_PCT ? 1 : 0,
+        apiSs2035: apiInputs
+          ? pricePlaygroundYear(apiInputs).ssTaxable
+          : -1,
+        apiRejectsMinus100: apiRejected.success ? 0 : 1,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-cash-roth-funding-s6",
+    kind: "tax",
+    note: "S-6 (engines review round 2, SHOULD — settled STAND): the Playground had no cash or Roth funding input, so a year funded from the cash sleeve or from Roth showed no funding for the money that actually paid its spending and its verdict read short by the whole draw — the mirror image of M-2 (where a conversion, which is NOT spendable cash, counted as cash in; here spendable cash did not count). THE WORKED EXAMPLE (the settlement's own; shared fictional sample household, server/src/sampleHousehold.ts): 2026, MFJ, ages 58 / 56 (born 1968 / 1970), household 4, no benchmark entered, no state rate, the sample $180,000 annual spending. Entered income: the household's filed figures — interest $1,500, ordinary dividends $20,000 of which $15,000 qualified — plus $80,000 of tax-exempt interest on the Playground's own dial. HAND-DERIVED: AGI is $21,500 ($1,500 interest + the $5,000 non-qualified part + the $15,000 qualified part), under the $32,200 standard deduction, so taxable income and federal tax are $0; MAGI is $101,500 (the tax-exempt interest counts toward MAGI, never toward the tax). Cash in is $101,500 ($1,500 + $20,000 + $80,000), the net tax bill is $0, and cash left is $101,500 — against the $180,000 spending the verdict is −$78,500 SHORT. That is the pre-S-6 reading of a year the household funds with a $100,000 drawing from its cash sleeve (the sample Cash bucket is exactly $100,000): the drawing paid the spending and appears nowhere. CORRECTED (cashDraw $100,000 supplied — the new dial): cash in is $201,500, cash left $201,500, and the verdict is +$21,500 ENOUGH — the settlement's true answer. THE DRAWS ARE THEIR OWN SOURCE: AGI, MAGI, and federal tax are identical in every leg ($21,500 / $101,500 / $0) — a cash draw is not a taxable sale (nothing is sold, no gain prices) and not ordinary income, and a Roth draw prices the same way: rothDraw $100,000 instead of the cash draw gives the identical +$21,500, and the two split $60,000 cash / $40,000 Roth give the identical +$21,500 — exactly as the plan march's funding ledger counts its cashSpend and rothDraw rows as sources, never income. The result echoes each draw counted (cashDraw / rothDraw; $0 on the bare leg). PASTE + API: the interchange payload carries both draws ($100,000 rides through and parses back, pricing +$21,500 once the sample spending is re-supplied — the payload never carried the spending, which lives in the Tax Plan record); a payload with both keys deleted (a pre-S-6 paste) still loads with them unset and prices the bare −$78,500; and the runPlaygroundYear contract path (playgroundYearIn + playgroundInputsFromArgs) accepts both draws, carries them into the engine inputs, prices the corrected verdict, and REJECTS a negative draw at validation.",
+    expected: {
+      bareAgi: 21500,
+      bareMagi: 101500,
+      bareTax: 0,
+      bareCashIn: 101500,
+      bareCashLeft: 101500,
+      bareVsSpending: -78500,
+      bareCashEcho: 0,
+      bareRothEcho: 0,
+      cashCashIn: 201500,
+      cashCashLeft: 201500,
+      cashVsSpending: 21500,
+      cashEcho: 100000,
+      cashRothEcho: 0,
+      cashTaxIdentical: 1,
+      rothCashIn: 201500,
+      rothVsSpending: 21500,
+      rothEcho: 100000,
+      rothCashEcho: 0,
+      rothTaxIdentical: 1,
+      splitCashIn: 201500,
+      splitVsSpending: 21500,
+      splitTaxIdentical: 1,
+      pasteCarriesDraws: 1,
+      pasteParsedDraws: 1,
+      pasteParsedVsSpending: 21500,
+      pasteLegacyDrawsUnset: 1,
+      pasteLegacyVsSpending: -78500,
+      apiCarriesDraws: 1,
+      apiVsSpending: 21500,
+      apiRejectsNegativeCashDraw: 1,
+      apiRejectsNegativeRothDraw: 1,
+    },
+    actual: () => {
+      // The worked example's year (see the note): the
+      // sample household's people and filed figures, plus
+      // $80,000 of tax-exempt interest, against the sample
+      // spending — priced the Playground's own construction
+      // way (buildPgInputs' field set).
+      const base: PlaygroundYearInputs = {
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 1500,
+        ordinaryDividends: 20000,
+        otherOrdinary: 0,
+        taxExemptInterest: 80000,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 4,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+      };
+      const bare = pricePlaygroundYear(base);
+      const cash = pricePlaygroundYear({ ...base, cashDraw: 100000 });
+      const roth = pricePlaygroundYear({ ...base, rothDraw: 100000 });
+      const split = pricePlaygroundYear({
+        ...base,
+        cashDraw: 60000,
+        rothDraw: 40000,
+      });
+      const taxIdentical = (
+        r: ReturnType<typeof pricePlaygroundYear>,
+      ): number =>
+        r.agi === bare.agi && r.magi === bare.magi && r.federalTax === bare.federalTax
+          ? 1
+          : 0;
+      // Paste carriage: the cash leg's payload, a JSON
+      // round-trip, and a pre-S-6 payload (both keys
+      // deleted).
+      const payload = playgroundPastePayload({ ...base, cashDraw: 100000 });
+      const parsed = parsePlaygroundPaste(
+        JSON.parse(JSON.stringify(payload)),
+      );
+      // The paste payload never carried the annual spending
+      // (it lives in the Tax Plan record, not the paste), so
+      // a parsed paste prices its verdict with the sample
+      // spending re-supplied — the Playground's own reading.
+      const parsedPriced = parsed.ok
+        ? pricePlaygroundYear({
+            ...parsed.inputs,
+            annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+          })
+        : null;
+      const legacy = { ...payload } as Record<string, unknown>;
+      delete legacy.cashDraw;
+      delete legacy.rothDraw;
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      const legacyPriced = legacyParsed.ok
+        ? pricePlaygroundYear({
+            ...legacyParsed.inputs,
+            annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+          })
+        : null;
+      // API carriage: the contract path accepts the draws,
+      // prices the corrected verdict, and rejects a
+      // negative draw.
+      const apiArgs = {
+        taxYear: 2026,
+        filingStatus: "mfj" as const,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 1500,
+        ordinaryDividends: 20000,
+        otherOrdinary: 0,
+        taxExemptInterest: 80000,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 4,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpendingCents: SAMPLE_ANNUAL_SPENDING_CENTS,
+        cashDraw: 100000,
+      };
+      const apiParsed = playgroundYearIn.safeParse(apiArgs);
+      const apiInputs = apiParsed.success
+        ? playgroundInputsFromArgs(apiParsed.data)
+        : null;
+      const apiPriced = apiInputs ? pricePlaygroundYear(apiInputs) : null;
+      const apiNegCash = playgroundYearIn.safeParse({
+        ...apiArgs,
+        cashDraw: -1,
+      });
+      const apiNegRoth = playgroundYearIn.safeParse({
+        ...apiArgs,
+        cashDraw: 0,
+        rothDraw: -1,
+      });
+      return {
+        bareAgi: bare.agi,
+        bareMagi: bare.magi,
+        bareTax: bare.federalTax,
+        bareCashIn: bare.cashIn,
+        bareCashLeft: bare.cashLeftAfterTax,
+        bareVsSpending: bare.cashLeftVsSpending ?? -999999,
+        bareCashEcho: bare.cashDraw,
+        bareRothEcho: bare.rothDraw,
+        cashCashIn: cash.cashIn,
+        cashCashLeft: cash.cashLeftAfterTax,
+        cashVsSpending: cash.cashLeftVsSpending ?? -999999,
+        cashEcho: cash.cashDraw,
+        cashRothEcho: cash.rothDraw,
+        cashTaxIdentical: taxIdentical(cash),
+        rothCashIn: roth.cashIn,
+        rothVsSpending: roth.cashLeftVsSpending ?? -999999,
+        rothEcho: roth.rothDraw,
+        rothCashEcho: roth.cashDraw,
+        rothTaxIdentical: taxIdentical(roth),
+        splitCashIn: split.cashIn,
+        splitVsSpending: split.cashLeftVsSpending ?? -999999,
+        splitTaxIdentical: taxIdentical(split),
+        pasteCarriesDraws:
+          payload.cashDraw === 100000 && payload.rothDraw === null ? 1 : 0,
+        pasteParsedDraws:
+          parsed.ok && parsed.inputs.cashDraw === 100000 ? 1 : 0,
+        pasteParsedVsSpending: parsedPriced
+          ? (parsedPriced.cashLeftVsSpending ?? -999999)
+          : -999999,
+        pasteLegacyDrawsUnset:
+          legacyParsed.ok &&
+          legacyParsed.inputs.cashDraw === undefined &&
+          legacyParsed.inputs.rothDraw === undefined
+            ? 1
+            : 0,
+        pasteLegacyVsSpending: legacyPriced
+          ? (legacyPriced.cashLeftVsSpending ?? -999999)
+          : -999999,
+        apiCarriesDraws:
+          apiInputs?.cashDraw === 100000 && apiInputs?.rothDraw === undefined
+            ? 1
+            : 0,
+        apiVsSpending: apiPriced
+          ? (apiPriced.cashLeftVsSpending ?? -999999)
+          : -999999,
+        apiRejectsNegativeCashDraw: apiNegCash.success ? 0 : 1,
+        apiRejectsNegativeRothDraw: apiNegRoth.success ? 0 : 1,
+      };
+    },
+  },
+  /* S-7 — Playground strip ↔ Tax-for-the-year card spending
+     agreement, SOURCE-INVARIANT half (documented here because
+     this server-side suite cannot execute it): in
+     client/src/Playground.tsx the sticky play strip derives
+     its Spending figure and its "Left after a year's spending"
+     figure from pgSpendingCents — the SAME resolution
+     buildPgInputs feeds the pricing as annualSpending (the
+     Spending dial's local figure while it parses to a positive
+     amount, else the Tax Plan record's figure) — and the card
+     prints the priced result's own cashLeftVsSpending, the
+     engine's r2 of cashLeftAfterTax minus that same
+     annualSpending. The strip therefore cannot read a
+     different spending from the card on the same screen: while
+     the dial is being edited both read the dial. Before S-7
+     the strip read pgAnnualSpendingCents (the record alone)
+     while the card priced the dial, so mid-edit the two
+     disagreed by the whole edit until blur + save + refetch
+     converged them. The RUNTIME half — that a year priced at
+     the dial's spending returns the verdict the strip's
+     arithmetic reproduces exactly, and that the record-priced
+     verdict differs by exactly the dial/record gap — is pinned
+     by tax-engines-playground-strip-card-spending-agreement-s7
+     below. */
+  {
+    id: "tax-engines-playground-strip-card-spending-agreement-s7",
+    kind: "tax",
+    note: "S-7 (engines review round 2, SHOULD — settled STAND): the Playground's sticky strip and its Tax-for-the-year card showed two different 'Left after a year's spending' figures while the Spending dial was being edited — the card priced the local dial, the strip read the Tax Plan record, so the two disagreed by the whole edit with opposite verdicts on the same screen, converging only after blur + save + refetch. THE FIX (client/src/Playground.tsx): the strip now derives its Spending and Left figures from pgSpendingCents, the one resolution buildPgInputs feeds the pricing as annualSpending — the dial's local figure while it parses to a positive amount, else the record's figure — so both surfaces read the same spending at every moment. THE WORKED EXAMPLE (shared fictional sample household, server/src/sampleHousehold.ts): 2026, MFJ, ages 58 / 56 (born 1968 / 1970), household 4, no benchmark entered, no state rate. Entered income: the household's filed figures — interest $1,500, ordinary dividends $20,000 of which $15,000 qualified — plus $140,000 of tax-exempt interest on the Playground's own dial. The record's spending is the sample $180,000; the dial is mid-edit at $120,000. HAND-DERIVED: AGI is $21,500 ($1,500 interest + the $5,000 non-qualified part + the $15,000 qualified part), under the $32,200 standard deduction, so taxable income and federal tax are $0; MAGI is $161,500 (the tax-exempt interest counts toward MAGI, never toward the tax). Cash in is $161,500 ($1,500 + $20,000 + $140,000), the net tax bill is $0, and cash left after tax is $161,500 under EITHER spending — the spending never prices into the tax, it is only compared against the cash left (cashLeftIdentical / taxIdentical pin this). THE CARD (priced at the dial's $120,000, as buildPgInputs supplies while editing): annualSpending echoes $120,000 and the verdict is +$41,500 ENOUGH. THE PRE-FIX STRIP (the same priced year read against the record's $180,000 — the record-priced leg): −$18,500 SHORT. The disagreement is exactly $60,000, the whole dial/record gap, with opposite verdicts (verdictsOpposite). THE STRIP AFTER THE FIX reads the dial leg: its spending is the dial's $120,000 (stripSpendingIsDial — the priced annualSpending echo, not the record's $180,000) and its Left figure, cash left minus that spending by the strip's own display arithmetic, equals the card's cashLeftVsSpending to the cent (stripLeftEqualsCard: $161,500 − $120,000 = +$41,500) — strip = card while the dial is being edited. API: the runPlaygroundYear contract path (playgroundYearIn + playgroundInputsFromArgs) supplied the dial as annualSpendingCents ($120,000 in cents, as the record's writer carries it) prices the same +$41,500 verdict. Honest scope: the render-level half — that the strip component actually reads pgSpendingCents — is documented in the source-invariant comment above this fixture and verified by source read in this build's review passes, the same division as PG3; this fixture pins the priced figures both surfaces render.",
+    expected: {
+      recordSpendingEcho: 180000,
+      recordCashLeft: 161500,
+      recordVsSpending: -18500,
+      dialSpendingEcho: 120000,
+      dialCashLeft: 161500,
+      dialVsSpending: 41500,
+      cashLeftIdentical: 1,
+      taxIdentical: 1,
+      stripSpendingIsDial: 1,
+      stripLeftEqualsCard: 1,
+      preFixStripLeft: -18500,
+      disagreement: 60000,
+      verdictsOpposite: 1,
+      apiDialVsSpending: 41500,
+    },
+    actual: () => {
+      // The worked example's year (see the note): the
+      // sample household's people and filed figures, plus
+      // $140,000 of tax-exempt interest — priced twice the
+      // Playground's own construction way (buildPgInputs'
+      // field set): once at the record's spending (the
+      // pre-fix strip's reading) and once at the dial's
+      // mid-edit spending (the card's pricing, and the
+      // strip's reading since S-7).
+      const base: PlaygroundYearInputs = {
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 1500,
+        ordinaryDividends: 20000,
+        otherOrdinary: 0,
+        taxExemptInterest: 140000,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 4,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+      };
+      const record = pricePlaygroundYear(base);
+      const dial = pricePlaygroundYear({ ...base, annualSpending: 120000 });
+      // The strip's own display arithmetic over the dial
+      // leg's priced figures — the computation the strip
+      // renders (cash left minus the spending it shows).
+      const stripLeft =
+        dial.annualSpending != null
+          ? dial.cashLeftAfterTax - dial.annualSpending
+          : null;
+      // The pre-fix strip's figure: the record leg's cash
+      // left minus the record's spending.
+      const preFixStripLeft =
+        record.annualSpending != null
+          ? record.cashLeftAfterTax - record.annualSpending
+          : null;
+      // API carriage: the contract path supplied the
+      // dial's spending in cents prices the dial verdict.
+      const apiParsed = playgroundYearIn.safeParse({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 1500,
+        ordinaryDividends: 20000,
+        otherOrdinary: 0,
+        taxExemptInterest: 140000,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 4,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpendingCents: 12000000,
+      });
+      const apiInputs = apiParsed.success
+        ? playgroundInputsFromArgs(apiParsed.data)
+        : null;
+      const apiPriced = apiInputs ? pricePlaygroundYear(apiInputs) : null;
+      return {
+        recordSpendingEcho: record.annualSpending ?? -999999,
+        recordCashLeft: record.cashLeftAfterTax,
+        recordVsSpending: record.cashLeftVsSpending ?? -999999,
+        dialSpendingEcho: dial.annualSpending ?? -999999,
+        dialCashLeft: dial.cashLeftAfterTax,
+        dialVsSpending: dial.cashLeftVsSpending ?? -999999,
+        cashLeftIdentical:
+          dial.cashLeftAfterTax === record.cashLeftAfterTax ? 1 : 0,
+        taxIdentical:
+          dial.agi === record.agi &&
+          dial.magi === record.magi &&
+          dial.federalTax === record.federalTax
+            ? 1
+            : 0,
+        stripSpendingIsDial:
+          dial.annualSpending === 120000 &&
+          record.annualSpending === SAMPLE_ANNUAL_SPENDING_CENTS / 100
+            ? 1
+            : 0,
+        stripLeftEqualsCard:
+          stripLeft != null && stripLeft === dial.cashLeftVsSpending ? 1 : 0,
+        preFixStripLeft: preFixStripLeft ?? -999999,
+        disagreement:
+          dial.cashLeftVsSpending != null && preFixStripLeft != null
+            ? dial.cashLeftVsSpending - preFixStripLeft
+            : -999999,
+        verdictsOpposite:
+          dial.cashLeftVsSpending != null &&
+          record.cashLeftVsSpending != null &&
+          dial.cashLeftVsSpending > 0 &&
+          record.cashLeftVsSpending < 0
+            ? 1
+            : 0,
+        apiDialVsSpending: apiPriced
+          ? (apiPriced.cashLeftVsSpending ?? -999999)
+          : -999999,
+      };
+    },
+  },
+  /* S-9 — Playground income-stack chart decomposition,
+     SOURCE-INVARIANT half (documented here because this
+     server-side suite cannot execute it): in
+     client/src/Playground.tsx, buildStackModel decomposes
+     the gains stack from the priced result's own components
+     — a "Qualified dividends" segment of pg.qualifiedDividends,
+     a "Long-term gain" segment of max(0, pg.ltcgNet) (the
+     priced net capital gain, NOT the typed sale gain
+     pg.stockGain: an entering loss carryforward nets against
+     the sale before the stack prices and a harvested gain
+     adds to it), and, when pg.capitalLossAllowance > 0, a
+     NEGATIVE "Capital-loss allowance (§1211(b))" segment of
+     −pg.capitalLossAllowance, hatched and drawn over the
+     stack's tail — so the legend segments (the chart's
+     rendered stack) sum to grossOrd + ltcgPriced −
+     capitalLossAllowance = AGI, exactly as the additive rows
+     under the chart foot. Before S-9 the model drew ONE
+     segment labelled "Long-term gains (net)" for the whole
+     ltcgPriced whenever pg.stockGain < 0 and carried no
+     allowance segment, so a loss year's stack was both
+     mislabelled and overstated by the allowance. The RUNTIME
+     half — the loss-year example's priced figures and the
+     corrected decomposition's arithmetic over them — is
+     pinned by tax-engines-playground-income-stack-loss-year-s9
+     below. */
+  {
+    id: "tax-engines-playground-income-stack-loss-year-s9",
+    kind: "tax",
+    note: "S-9 (engines review round 2, SHOULD — settled STAND): the Playground's income-stack chart mislabelled qualified dividends as 'Long-term gains (net)' and overstated the stack by the §1211(b) allowance. THE WORKED EXAMPLE (the settlement's own; shared fictional sample household, server/src/sampleHousehold.ts): 2026, MFJ, ages 58 / 56 (born 1968 / 1970), household 4, no benchmark entered, no state rate. Entered income: the household's filed figures — interest $1,500, ordinary dividends $20,000 of which $15,000 qualified — plus a stock sale that LOST money: sold for $20,000 against a $25,000 basis, a $5,000 loss. HAND-DERIVED: qualified dividends are not capital gains and never net against a capital loss (round-7 R7-1), so the preferential stack prices the whole $15,000 (ltcgPriced $15,000 = max(0, ltcgNet −$5,000) + $15,000) and the net capital loss reaches ordinary income only through the §1211(b) allowance, min($3,000, $5,000) = $3,000 (the remaining $2,000 of loss is not priced in a Playground year — it would carry forward). AGI is $18,500 ($1,500 interest + $5,000 non-qualified dividends + $15,000 qualified dividends − $3,000 allowance), under the $32,200 standard deduction, so taxable income and federal tax are $0 and MAGI is $18,500. THE PRE-FIX CHART drew the ordinary segments ($6,500) plus one gains segment labelled 'Long-term gains (net)' at the whole ltcgPriced ($15,000) — $15,000 of 'gains' in a year with no gains at all — and no segment carried the allowance, so the rendered stack stood at $21,500 (preFixStack), $3,000 over AGI (overstatement = the allowance to the dollar). THE CORRECTED CHART (buildStackModel, client/src/Playground.tsx — the source-invariant comment above this fixture): the gains stack is a 'Qualified dividends' segment of $15,000 (qualDivSegment — the full priced qualified figure, so the dividends are labelled as what they are), a net-gain segment of max(0, ltcgNet) = $0 (netGainSegment — no gain segment exists, because there is no gain), and a negative 'Capital-loss allowance (§1211(b))' segment of −$3,000 (allowanceSegment), so the rendered stack is $6,500 + $15,000 − $3,000 = $18,500 (renderedStack), equal to AGI to the cent (stackEqualsAgi) — the same footing the additive rows under the chart already showed. Each segment is gated on its own priced figure, so a no-loss year draws exactly the segments it drew before S-9.",
+    expected: {
+      stockGain: -5000,
+      ltcgNet: -5000,
+      qualifiedDividends: 15000,
+      ltcgPriced: 15000,
+      capitalLoss: 5000,
+      capitalLossAllowance: 3000,
+      agi: 18500,
+      magi: 18500,
+      deductions: 32200,
+      federalTax: 0,
+      ordinaryStack: 6500,
+      qualDivSegment: 15000,
+      netGainSegment: 0,
+      allowanceSegment: -3000,
+      preFixStack: 21500,
+      renderedStack: 18500,
+      stackEqualsAgi: 1,
+      overstatement: 3000,
+    },
+    actual: () => {
+      // The settlement's loss-year example (see the note):
+      // the sample household's people and filed figures,
+      // plus the $5,000-loss sale — priced the Playground's
+      // own way (pricePlaygroundYear over the dial set).
+      const r = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 1500,
+        ordinaryDividends: 20000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 20000,
+        stockBasis: 25000,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 4,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+      });
+      // The chart's ordinary stack, summed the model's own
+      // way (buildStackModel's ordSegs over the priced
+      // result, the RMD segment only when one priced).
+      const ordinaryStack =
+        r.interest +
+        r.nonQualifiedDividends +
+        r.otherOrdinary +
+        r.ssTaxable +
+        (r.rmdPriced ? r.rmd : 0) +
+        r.conversion;
+      // The corrected gains decomposition (S-9), recomputed
+      // here term for term as buildStackModel builds it.
+      const qualDivSegment = r.qualifiedDividends > 0 ? r.qualifiedDividends : 0;
+      const netGainSegment = Math.max(0, r.ltcgNet);
+      const allowanceSegment =
+        r.capitalLossAllowance > 0 ? -r.capitalLossAllowance : 0;
+      const renderedStack =
+        ordinaryStack + qualDivSegment + netGainSegment + allowanceSegment;
+      // The pre-fix rendering: the ordinary segments plus
+      // the single "Long-term gains (net)" segment at the
+      // whole ltcgPriced, no allowance anywhere.
+      const preFixStack = ordinaryStack + r.ltcgPriced;
+      return {
+        stockGain: r.stockGain,
+        ltcgNet: r.ltcgNet,
+        qualifiedDividends: r.qualifiedDividends,
+        ltcgPriced: r.ltcgPriced,
+        capitalLoss: r.capitalLoss,
+        capitalLossAllowance: r.capitalLossAllowance,
+        agi: r.agi,
+        magi: r.magi,
+        deductions: r.deductions,
+        federalTax: r.federalTax,
+        ordinaryStack,
+        qualDivSegment,
+        netGainSegment,
+        allowanceSegment,
+        preFixStack,
+        renderedStack,
+        stackEqualsAgi: renderedStack === r.agi ? 1 : 0,
+        overstatement: preFixStack - renderedStack,
+      };
+    },
+  },
+  {
+    id: "roth-m5-growbacks-respect-guardrail",
+    kind: "tax",
+    note: "M-5 (engines review round 2, MUST): the cliff and IRMAA grow-backs defeat the marginal-rate guardrail. Worked example on the shared fictional sample household (samplePlanInputs with birthYearSpouse 1978, acaHouseholdSize 5, annualSpending 60000 — the settlement's synthetic shape), strategy {bracketTopPct 22, acaCliffCap} in 2035 (primary 67, spouse 57, SS $48,000 on). The fill itself stops at $16,300 on the guardrail, but before this build the cliff grow-back bisected on respectsCeilings only and landed the year on the cliff itself: conversion $65,252.42, ACA MAGI $154,720.00 (the cliff to the cent), federal tax $11,432.97, credit kept $2,089.89 — and the guardrail:true and guardrail:false candidates priced IDENTICALLY in every year (the phantom variant). The fix adds guardrailStepOk to both grow-backs' feasibility predicates: a candidate is feasible only when the $100 step into its own total conversion, priced on the candidate's own settled base (its realized gains and pre-tax draw, the base the year's effective marginal rate is computed on), costs no more than the 22% target. Corrected 2035 landing (engine-derived regression pin, verified independently below): conversion $52,194.37, federal tax $7,673.76, ACA MAGI $140,016.70, credit kept $3,554.34, taxable income $98,966.70, realized gains $10,537.30, and the year's fill bound label now reads the guardrail instead of the cliff. Independent verification of the landing, recomputed in-case from the landed year's own priced components through priceYear: the reconstructed base reproduces the year's federal tax to the cent ($7,673.76), the $100 step into the landing costs $22.00 (at the target, not above it), the next $100 step costs $27.00 (above it), and a $100-step sweep on that base finds the first over-target step is the step into $52,200 — so $52,194.37 is the cent-exact guardrail crossing on the settled path (the settlement's hand sweep, which approximated the gains feedback in round $100 chunks, put the boundary at $52,400; the engine's own settled bases put it here). The non-guardrail candidate is pinned unchanged at the $65,252.42 cliff landing, so the two variants now price differently — no phantom. IRMAA grow-back, same household and year, strategy {bracketTopPct 22, irmaaTierCap 1}: before the fix both variants landed at $151,390.73 (MAGI $245,250, the Tier 1 top, federal tax $34,513.66); with the guardrail the grow-back lands at $112,469.38 (MAGI $200,182.25, federal tax $23,325.91 — its own last step also costs $22.00 on its reconstructed base, pinned in-case the same way), and the non-guardrail variant still lands at $151,390.73. With the guardrail unset every figure is bit-identical to before the fix, as the unchanged non-guardrail pins show.",
+    expected: {
+      cliffGuardrailConv2035: 52194.37,
+      cliffGuardrailTax2035: 7673.76,
+      cliffGuardrailAcaMagi2035: 140016.7,
+      cliffGuardrailCredit2035: 3554.34,
+      cliffGuardrailTaxableIncome2035: 98966.7,
+      cliffGuardrailGains2035: 10537.3,
+      cliffGuardrailBoundLabel2035: "Marginal-rate guardrail (22%)",
+      cliffGuardrailStepInto2035: 22,
+      cliffGuardrailStepNext2035: 27,
+      cliffGuardrailFirstBadStep2035: 52200,
+      cliffNoGuardrailConv2035: 65252.42,
+      cliffNoGuardrailTax2035: 11432.97,
+      cliffNoGuardrailAcaMagi2035: 154720,
+      cliffNoGuardrailCredit2035: 2089.89,
+      cliffVariantsDiffer2035: 1,
+      irmaaGuardrailConv2035: 112469.38,
+      irmaaGuardrailTax2035: 23325.91,
+      irmaaGuardrailMagi2035: 200182.25,
+      irmaaGuardrailStepInto2035: 22,
+      irmaaNoGuardrailConv2035: 151390.73,
+      irmaaNoGuardrailTax2035: 34513.66,
+      irmaaNoGuardrailMagi2035: 245250,
+      irmaaVariantsDiffer2035: 1,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        birthYearSpouse: 1978,
+        acaHouseholdSize: 5,
+        annualSpending: 60000,
+      });
+      const cliffGuardrail: RothStrategy = {
+        id: "m5-cliff-guardrail",
+        name: "M-5 cliff guardrail",
+        ceilings: { ...NO_CEILINGS, bracketTopPct: 22, acaCliffCap: true },
+        guardrail: true,
+      };
+      const cliffNoGuardrail: RothStrategy = {
+        id: "m5-cliff-noguardrail",
+        name: "M-5 cliff no guardrail",
+        ceilings: { ...NO_CEILINGS, bracketTopPct: 22, acaCliffCap: true },
+        guardrail: false,
+      };
+      const irmaaGuardrail: RothStrategy = {
+        id: "m5-irmaa-guardrail",
+        name: "M-5 IRMAA guardrail",
+        ceilings: { ...NO_CEILINGS, bracketTopPct: 22, irmaaTierCap: 1 },
+        guardrail: true,
+      };
+      const irmaaNoGuardrail: RothStrategy = {
+        id: "m5-irmaa-noguardrail",
+        name: "M-5 IRMAA no guardrail",
+        ceilings: { ...NO_CEILINGS, bracketTopPct: 22, irmaaTierCap: 1 },
+        guardrail: false,
+      };
+      const cg = simulateRothPlan(inputs, cliffGuardrail).years.find((v) => v.year === 2035);
+      const cn = simulateRothPlan(inputs, cliffNoGuardrail).years.find((v) => v.year === 2035);
+      const ig = simulateRothPlan(inputs, irmaaGuardrail).years.find((v) => v.year === 2035);
+      const inog = simulateRothPlan(inputs, irmaaNoGuardrail).years.find((v) => v.year === 2035);
+      // Independent step verification on a year's own priced
+      // components, through priceYear directly (the same
+      // reconstruction the settlement's sweep used): the base
+      // must first reproduce the year's federal tax to the
+      // cent, then the $100 steps around the landing are read
+      // off it.
+      const stepCheck = (
+        y: NonNullable<typeof cg>,
+      ): { repro: number; stepInto: number; stepNext: number; firstBad: number } => {
+        const d = y.detail;
+        const qualified = Math.round(((d.dividendIncome * 75) / 100) * 100) / 100;
+        const base: PriceYearInput = {
+          calendarYear: y.year,
+          filingStatus: "mfj",
+          agePrimary: y.agePrimary,
+          ageSpouse: y.ageSpouse ?? 0,
+          otherOrdinary: 0,
+          rmd: y.rmd,
+          conversion: 0,
+          extraPreTaxDraw: d.extraPreTaxDraw,
+          ssBenefits: y.ssBenefits,
+          taxExemptInterest: 0,
+          ltcg: d.ltcg,
+          interestIncome: d.interestIncome,
+          qualifiedDividends: qualified,
+          ordinaryDividends: d.dividendIncome - qualified,
+          inflationPct: 2.5,
+          stateRatePct: 0,
+        };
+        const taxAt = (c: number): number => {
+          const p = priceYear({ ...base, conversion: c });
+          return p.federalTax + p.stateTax;
+        };
+        const conv = y.conversion;
+        let firstBad = -1;
+        let prev = taxAt(16300);
+        for (let c = 16400; c <= 70000; c += 100) {
+          const t = taxAt(c);
+          if (t - prev > 22.005) {
+            firstBad = c;
+            break;
+          }
+          prev = t;
+        }
+        return {
+          repro: taxAt(conv),
+          stepInto: Math.round((taxAt(conv) - taxAt(conv - 100)) * 100) / 100,
+          stepNext: Math.round((taxAt(conv + 100) - taxAt(conv)) * 100) / 100,
+          firstBad,
+        };
+      };
+      const cgSteps = cg ? stepCheck(cg) : { repro: -1, stepInto: -1, stepNext: -1, firstBad: -1 };
+      const igSteps = ig ? stepCheck(ig) : { repro: -1, stepInto: -1, firstBad: -1 };
+      return {
+        cliffGuardrailConv2035: cg?.conversion ?? null,
+        cliffGuardrailTax2035: cg?.federalTax ?? null,
+        cliffGuardrailAcaMagi2035: cg?.acaMagi ?? null,
+        cliffGuardrailCredit2035: cg?.acaCreditKept ?? null,
+        cliffGuardrailTaxableIncome2035: cg?.taxableIncome ?? null,
+        cliffGuardrailGains2035: cg?.detail.ltcg ?? null,
+        cliffGuardrailBoundLabel2035: cg?.detail.fill.boundLabel ?? null,
+        cliffGuardrailStepInto2035: cgSteps.stepInto,
+        cliffGuardrailStepNext2035: cgSteps.stepNext,
+        cliffGuardrailFirstBadStep2035: cgSteps.firstBad,
+        cliffNoGuardrailConv2035: cn?.conversion ?? null,
+        cliffNoGuardrailTax2035: cn?.federalTax ?? null,
+        cliffNoGuardrailAcaMagi2035: cn?.acaMagi ?? null,
+        cliffNoGuardrailCredit2035: cn?.acaCreditKept ?? null,
+        cliffVariantsDiffer2035:
+          cg != null && cn != null && cg.conversion !== cn.conversion ? 1 : 0,
+        irmaaGuardrailConv2035: ig?.conversion ?? null,
+        irmaaGuardrailTax2035: ig?.federalTax ?? null,
+        irmaaGuardrailMagi2035: ig?.magi ?? null,
+        irmaaGuardrailStepInto2035: igSteps.stepInto,
+        irmaaNoGuardrailConv2035: inog?.conversion ?? null,
+        irmaaNoGuardrailTax2035: inog?.federalTax ?? null,
+        irmaaNoGuardrailMagi2035: inog?.magi ?? null,
+        irmaaVariantsDiffer2035:
+          ig != null && inog != null && ig.conversion !== inog.conversion ? 1 : 0,
+      };
+    },
+  },
+  /* S-8 source invariant (the PG3 / S-7 division): the
+     client half of this fix — the December console's
+     harvest pool field asking for the pool at the START of
+     the year (client/src/December.tsx's field label and
+     hint), and recordFactsOf supplying the record's
+     CURRENT pool facts for resolution to convert — is
+     render-level and cannot execute in this server-side
+     suite; it is verified by source read in the build's
+     review passes. This fixture pins the half that can
+     execute: the load resolution's conversion of the
+     record's current pool to the starting pool, and the
+     corrected pricing of the settlement's worked example
+     through computeDecemberProjection. */
+  {
+    id: "tax-engines-december-harvest-starting-pool-s8",
+    kind: "tax",
+    note: "S-8 (engines review round 2, SHOULD — settled STAND): the December console's harvest pool fact means the STARTING pool (the pool at the start of the year, before the year's sales — decemberCaseInputs nets the year's sales and 100%-basis taxable cash out of it to size the harvest from the remaining pool, round-17 defect 1), but the two paths that supply it supplied a CURRENT pool: the field's own wording invited the pool as it stands, and load resolution filled a null fact from the Tax Plan record's pool as it stands when read (its entered balance, or the latest snapshot's Taxable + Cash less the exclusion) — a pool the year's sales have already shrunk. The year's sales were therefore netted out TWICE and the harvest under-priced. THE WORKED EXAMPLE (the settlement's own; the round-17 remaining-pool shape): 2026, MFJ, ages 60 / 58, household 2, benchmark $20,000, APTC taken $10,000, buffer $5,000 — cliff $84,600, target MAGI $79,600. Entered income: other ordinary $65,000, and the year's own sale — a $5,860 gain on $17,580 of basis (proceeds $23,440). The starting pool is $40,000 at 75% basis ($30,000 of basis, $10,000 unrealized); after the sale the pool stands at $16,560 with $12,420 of basis — a remaining unrealized gain of exactly $4,140. HAND-DERIVED CORRECTED PRICING (the starting pool entered): the 0% room is $98,900 − $32,800 of ordinary taxable income ($65,000 − the $32,200 standard deduction) = $66,100, so the whole remaining $4,140 harvests inside the band; MAGI at a $0 draw is $65,000 + $5,860 + $4,140 = $75,000, and the headline draw is $79,600 − $75,000 = $4,600, landing MAGI at the $79,600 target with the final credit $20,000 − 9.96% × $79,600 = $12,071.84. THE DEFECT, priced as the control (the current pool $16,560 entered as the field stood): the remaining pool is max(0, $16,560 − $23,440) = $0, so the harvest prices $0, MAGI at a $0 draw is $70,860 — understated by exactly the $4,140 of unharvested gain — and the solved draw rises to $8,740, overstated by the same $4,140 (absorbed by the $5,000 buffer here; a larger gain or a smaller buffer breaches the cliff). At the headline the two legs' MAGI and credit agree ($79,600 / $12,071.84) — the draw absorbs the whole error, which is why the settlement's credit claim holds at a fixed draw, not at the headline. THE FIX: load resolution (resolveDecemberStateAtLoad) now converts the record's current-pool fact to the starting pool before supplying it — the current pool plus the year's year-to-date sale (proceeds and basis derived by decemberSaleAmounts, the one derivation decemberCaseInputs shares) plus the year's 100%-basis taxable cash, with the basis % converted on the same dollars — so the resolved facts are $40,000 / 75% and the resolved state prices EXACTLY as the entered starting pool prices (harvest $4,140 at a $0 draw and at the headline, draw $4,600). The console field now asks for the start-of-year pool in its label and hint (the client half, pinned by the source-invariant comment above).",
+    expected: {
+      resolvedPool: 40000,
+      resolvedBasisPct: 75,
+      enteredHarvestZero: 4140,
+      enteredHarvestHeadline: 4140,
+      enteredDraw: 4600,
+      enteredNonDrawMagi: 75000,
+      enteredMagiAtHeadline: 79600,
+      enteredCreditAtHeadline: 12071.84,
+      resolvedHarvestZero: 4140,
+      resolvedHarvestHeadline: 4140,
+      resolvedDraw: 4600,
+      controlHarvestZero: 0,
+      controlHarvestHeadline: 0,
+      controlDraw: 8740,
+      controlNonDrawMagi: 70860,
+      controlCreditAtHeadline: 12071.84,
+      magiUnderstated: 4140,
+      drawOverstated: 4140,
+    },
+    actual: () => {
+      // The worked example's year (see the note): the
+      // round-17 remaining-pool shape — $65,000 of other
+      // ordinary income and the year's own sale ($5,860 of
+      // gain on $17,580 of basis) — priced three ways: the
+      // starting pool entered (corrected), the record's
+      // current pool resolved at load (the fix), and the
+      // current pool entered as the field stood (control).
+      const buildState = () => {
+        const s = defaultDecemberState(2026);
+        s.agePrimary = 60;
+        s.ageSpouse = 58;
+        s.acaHouseholdSize = 2;
+        s.acaBenchmarkAnnual = 20000;
+        s.aptcTaken = 10000;
+        s.ytdOtherOrdinary = 65000;
+        s.ytdCapitalGain = 5860;
+        s.saleBasis = 17580;
+        s.harvestOn = true;
+        return s;
+      };
+      const likelyOf = (
+        p: ReturnType<typeof computeDecemberProjection>,
+      ) => p.cases.find((c) => c.kind === "likely");
+      const entered = buildState();
+      entered.harvestPoolAmount = 40000;
+      entered.harvestPoolBasisPct = 75;
+      const projEntered = computeDecemberProjection(entered);
+      const likelyEntered = likelyOf(projEntered);
+      const facts: DecemberRecordFacts = {
+        harvestPoolAmount: 16560,
+        harvestPoolBasisPct: 75,
+      };
+      const resolved = resolveDecemberStateAtLoad(buildState(), facts);
+      const projResolved = computeDecemberProjection(resolved);
+      const likelyResolved = likelyOf(projResolved);
+      const control = buildState();
+      control.harvestPoolAmount = 16560;
+      control.harvestPoolBasisPct = 75;
+      const projControl = computeDecemberProjection(control);
+      const likelyControl = likelyOf(projControl);
+      return {
+        resolvedPool: resolved.harvestPoolAmount ?? -1,
+        resolvedBasisPct: resolved.harvestPoolBasisPct ?? -1,
+        enteredHarvestZero: likelyEntered?.harvestedGainAtZeroDraw ?? -1,
+        enteredHarvestHeadline: likelyEntered?.harvestedGainAtHeadline ?? -1,
+        enteredDraw: projEntered.headlineDraw ?? -1,
+        enteredNonDrawMagi: likelyEntered?.nonDrawAcaMagi ?? -1,
+        enteredMagiAtHeadline: likelyEntered?.magiAtHeadline ?? -1,
+        enteredCreditAtHeadline: likelyEntered?.creditAtHeadline ?? -1,
+        resolvedHarvestZero: likelyResolved?.harvestedGainAtZeroDraw ?? -1,
+        resolvedHarvestHeadline: likelyResolved?.harvestedGainAtHeadline ?? -1,
+        resolvedDraw: projResolved.headlineDraw ?? -1,
+        controlHarvestZero: likelyControl?.harvestedGainAtZeroDraw ?? -1,
+        controlHarvestHeadline: likelyControl?.harvestedGainAtHeadline ?? -1,
+        controlDraw: projControl.headlineDraw ?? -1,
+        controlNonDrawMagi: likelyControl?.nonDrawAcaMagi ?? -1,
+        controlCreditAtHeadline: likelyControl?.creditAtHeadline ?? -1,
+        magiUnderstated:
+          (likelyEntered?.nonDrawAcaMagi ?? 0) -
+          (likelyControl?.nonDrawAcaMagi ?? 0),
+        drawOverstated:
+          (projControl.headlineDraw ?? 0) - (projEntered.headlineDraw ?? 0),
+      };
+    },
+  },
+  {
+    id: "roth-s10-execution-year-respects-guardrail",
+    kind: "tax",
+    note: "S-10 (engines review round 2, SHOULD — settled STAND): priceExecutionYear dropped the marginal-rate guardrail. Its one-year strategy literal carried ceilings only, no guardrail key, and its fill-target re-solve (executionFillTarget) priced the ceilings alone — so on a guardrail plan the execution year filled straight through the Social Security torpedo zone the plan's own march stopped in. Worked example on the shared fictional sample household (server/src/sampleHousehold.ts; samplePlanInputs with birthYearSpouse 1978, acaHouseholdSize 5, annualSpending 60000 — the M-5 shape), strategy Fill to the top of the 22% bracket WITH the guardrail. The torpedo year is 2035: the primary (born 1968) is 67 and the sample $48,000 benefit switches on, so each $100 of conversion pulls up to $85 more of benefits into income and its step cost exceeds 22% early in the phase-in. THE MARCH: the plan march (simulateRothPlan from 2026 under the guardrail strategy) converts exactly $16,400 in 2035, bound by the marginal-rate guardrail. THE EXECUTION YEAR, priced standalone from the march's own entering state (the 2034 year-end balances fed as the execution balances, YTD amounts $0): BEFORE the fix (the control legs below — guardrail false, and the omitted-parameter default, which price bit-identically) it converted $155,100 with a $157,100 fill target — a $138,700 / $140,700 disagreement with the march for the same plan and year (the settlement measured the same defect from the plan's starting balances at $162,300 / $185,700; the entering-state construction here is the like-for-like form of the same comparison). AFTER the fix — the caller carries the strategy's guardrail flag into priceExecutionYear, the strategy literal carries the guardrail key, and the fill-target re-solve carries the same guardrail target: the execution year converts exactly $16,400, its remaining room is $16,400, and both its fill bound label and its fill target label read the guardrail — the agreement this fixture pins (march fill $16,400 = execution-year fill $16,400). THE RE-SOLVE TARGET, honestly scoped: the fill TARGET is a diagnostic re-solved on the settled year's own base (executionFillTarget), not the fill itself — its guardrail stop is now respected ($13,700, guardrail-labelled, against the control's $157,100 bracket-top target), but it is not the agreement figure on this shape, because the one-year sim's settled gains ($6,039.16 of realized gains) differ from the march's ($8,201.62 — a different sale history into the same entering balances), and even the march's own settled base re-solves to $12,700 under the same solver (pinned in-case: the reconstructed march base first reproduces the march's 2035 federal tax to the cent, $3,318.46). The priced conversion is the figure that must agree, and it does, to the dollar. THE RE-SOLVE BASE also now carries the year's yield income (interest + the plan's qualified split of its dividends) exactly as the sim priced it: the guardrail's stop is defined on step costs, and the §86 provisional income driving the torpedo steps includes that yield — without it the re-solve misplaced the zone by tens of thousands (the control's target was $185,800 before the yield carriage, $157,100 with it). With the guardrail off or omitted every figure is bit-identical to before the fix, as the control legs show. Engine-derived regression pin.",
+    expected: {
+      marchConv2035: 16400,
+      marchBoundLabel2035: "Marginal-rate guardrail (22%)",
+      execStatus: "ok",
+      execTotalConv2035: 16400,
+      execRemaining2035: 16400,
+      execBoundLabel2035: "Marginal-rate guardrail (22%)",
+      execFillTargetLabel2035: "Marginal-rate guardrail (22%)",
+      execFillTarget2035: 13700,
+      fillAgreement: 1,
+      marchBaseReproTax: 3318.46,
+      marchBaseResolveTarget: 12700,
+      controlTotalConv2035: 155100,
+      controlFillTarget2035: 157100,
+      controlFillTargetLabel2035: "Top of the 22% bracket",
+      defaultEqualsControl: 1,
+      gapBeforeTotal: 138700,
+      gapBeforeTarget: 140700,
+    },
+    actual: () => {
+      const inputs = samplePlanInputs({
+        birthYearSpouse: 1978,
+        acaHouseholdSize: 5,
+        annualSpending: 60000,
+      });
+      const ceilings = { ...NO_CEILINGS, bracketTopPct: 22 };
+      const march = simulateRothPlan(inputs, {
+        id: "s10-march",
+        name: "S-10 march",
+        ceilings,
+        guardrail: true,
+      });
+      const y2034 = march.years.find((v) => v.year === 2034);
+      const y2035 = march.years.find((v) => v.year === 2035);
+      const exec = {
+        pretax: y2034?.pretaxPrimaryEnd ?? null,
+        pretaxSpouse: y2034?.pretaxSpouseEnd ?? null,
+        roth: y2034?.rothEnd ?? null,
+        taxable: y2034?.taxableEnd ?? null,
+        hsa: y2034?.hsaEnd ?? null,
+        otherOrdinaryYtd: 0,
+        taxExemptYtd: 0,
+        alreadyConvertedYtd: 0,
+      };
+      const withGuardrail = priceExecutionYear(inputs, ceilings, exec, 2035, true);
+      const control = priceExecutionYear(inputs, ceilings, exec, 2035, false);
+      const omitted = priceExecutionYear(inputs, ceilings, exec, 2035);
+      // The re-solve on the MARCH's own settled base, through
+      // the shared solver directly: the reconstructed base
+      // must first reproduce the march year's federal tax to
+      // the cent, then its guardrail target is read off it —
+      // the in-case proof that the re-solve target is a
+      // settled-base diagnostic, not the fill (see the note).
+      let marchBaseReproTax = -1;
+      let marchBaseResolveTarget = -1;
+      if (y2035) {
+        const d = y2035.detail;
+        const qualified =
+          Math.round(((d.dividendIncome * 75) / 100) * 100) / 100;
+        const marchBase: PriceYearInput = {
+          calendarYear: y2035.year,
+          filingStatus: y2035.filingStatus,
+          agePrimary: y2035.agePrimary,
+          ageSpouse: y2035.ageSpouse,
+          otherOrdinary: 0,
+          rmd: y2035.rmd,
+          conversion: 0,
+          extraPreTaxDraw: d.extraPreTaxDraw,
+          ssBenefits: y2035.ssBenefits,
+          taxExemptInterest: 0,
+          ltcg: d.ltcg,
+          interestIncome: d.interestIncome,
+          qualifiedDividends: qualified,
+          ordinaryDividends: d.dividendIncome - qualified,
+          inflationPct: 2.5,
+          stateRatePct: 0,
+        };
+        marchBaseReproTax =
+          priceYear({ ...marchBase, conversion: y2035.conversion })
+            .federalTax ?? -1;
+        marchBaseResolveTarget = fillConversion({
+          base: marchBase,
+          ceilings,
+          maxConversion: 100_000_000,
+          acaCliff: null,
+          guardrailTargetPct: 22,
+        });
+      }
+      return {
+        marchConv2035: y2035?.conversion ?? null,
+        marchBoundLabel2035: y2035?.detail.fill.boundLabel ?? null,
+        execStatus: withGuardrail.status,
+        execTotalConv2035: withGuardrail.totalConversion,
+        execRemaining2035: withGuardrail.remaining,
+        execBoundLabel2035: withGuardrail.boundLabel,
+        execFillTargetLabel2035: withGuardrail.fillTargetLabel,
+        execFillTarget2035: withGuardrail.fillTarget,
+        fillAgreement:
+          y2035 != null &&
+          withGuardrail.totalConversion === y2035.conversion &&
+          withGuardrail.remaining === y2035.conversion
+            ? 1
+            : 0,
+        marchBaseReproTax,
+        marchBaseResolveTarget,
+        controlTotalConv2035: control.totalConversion,
+        controlFillTarget2035: control.fillTarget,
+        controlFillTargetLabel2035: control.fillTargetLabel,
+        defaultEqualsControl:
+          omitted.totalConversion === control.totalConversion &&
+          omitted.fillTarget === control.fillTarget
+            ? 1
+            : 0,
+        gapBeforeTotal:
+          y2035 != null ? control.totalConversion - y2035.conversion : -1,
+        gapBeforeTarget:
+          y2035 != null && control.fillTarget != null
+            ? control.fillTarget - y2035.conversion
+            : -1,
+      };
+    },
+  },
+  {
+    id: "tax-year-funding-deep-view-unpaid-tax-s11",
+    kind: "tax",
+    note: "S-11 (engines review round 2, SHOULD — settled STAND): Year funding's deep view never named unpaid tax. The funding identity is sources + spendShortfall + unpaidTax = totalNeed, but the deep view's only shortfall text was 'Short by {need − sources}' — so a year whose spending was fully covered and whose entire gap was an unpayable tax bill read as a generic shortfall, with no line anywhere saying tax was owed. THE SETTLEMENT'S EXAMPLE, reproduced on the shared fictional sample household (server/src/sampleHousehold.ts; samplePlanInputs with every balance $0, otherOrdinaryAnnual $200,000, annualSpending $278,000, inflationPct 0 and expectedReturnPct 0 so every figure below is flat and checkable by eye; Do Nothing). In 2039 the primary is 71 and the spouse 69: both draw Social Security ($48,000 + $30,000 = $78,000) and both are on Medicare. Cash income is $78,000 + $200,000 = $278,000 — exactly the year's $278,000 spending need — so spending is covered in full (spendShortfallCents 0), no surplus cash remains to pay tax, and no account holds a cent to debit: the year's whole tax bill is unpaid. THE BILL, by hand: 85% of the $78,000 of benefits is taxable at this income ($66,300), so AGI and MAGI are $266,300; the standard deduction is $35,500 (the $32,200 MFJ amount plus two $1,650 age-65 additions, all held flat at 0% inflation), leaving taxable income $230,800, on which the engine prices federal tax $40,588.00, plus IRMAA $2,296.80 on the $266,300 MAGI (both spouses on Medicare) — total need $278,000 + $40,588.00 + $2,296.80 = $320,884.80, sources $278,000, unpaid tax $42,884.80. BEFORE THE FIX the deep view showed exactly one line for this year: 'Short by $42,884.80' (preFixShortByCents — need minus sources, the whole of it tax, none of it labelled). THE CORRECTED DEEP VIEW (client/src/RothConversion.tsx, the expanded year panel): the needs column carries an 'Unpaid tax — still owed' line at the row's unpaidTaxCents whenever it is positive (deepViewUnpaidTaxLineCents, beside the pre-existing 'Spending not covered' line, which stays $0 here and so does not render), the verdict sentence names the gap as tax still owed rather than a spending shortfall when the shortfall is $0, and a footing line states the identity in the view's own figures — funded $278,000 + spending not covered $0 + unpaid tax $42,884.80 = total need $320,884.80 (identityGapCents 0). This fixture pins the funding row the corrected view renders from; the view is a direct rendering of these fields, the same division as the S-9 chart fixture.",
+    expected: {
+      year: 2039,
+      totalNeedCents: 32088480,
+      spendingCents: 27800000,
+      federalTaxCents: 4058800,
+      irmaaCents: 229680,
+      sourcesCents: 27800000,
+      spendShortfallCents: 0,
+      unpaidTaxCents: 4288480,
+      preFixShortByCents: 4288480,
+      deepViewUnpaidTaxLineCents: 4288480,
+      identityGapCents: 0,
+    },
+    actual: () => {
+      const plan = samplePlanInputs({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 0,
+        hsaStart: 0,
+        otherOrdinaryAnnual: 200000,
+        annualSpending: 278000,
+        inflationPct: 0,
+        expectedReturnPct: 0,
+      });
+      const row = buildRothFunding(plan, DO_NOTHING).find(
+        (r) => r.year === 2039,
+      );
+      const sources = row
+        ? row.ssCents + row.rmdCents + row.otherIncomeCents + row.taxExemptCents +
+          row.interestYieldCents + row.dividendYieldCents + row.cashSpendCents +
+          row.pretaxDrawCents + row.taxableSoldForSpendingCents +
+          row.taxableSoldForTaxCents + row.rothDrawCents + row.salarySurplusCents
+        : 0;
+      return {
+        year: row?.year ?? null,
+        totalNeedCents: row?.totalNeedCents ?? null,
+        spendingCents: row?.spendingCents ?? null,
+        federalTaxCents: row?.federalTaxCents ?? null,
+        irmaaCents: row?.irmaaCents ?? null,
+        sourcesCents: sources,
+        spendShortfallCents: row?.spendShortfallCents ?? null,
+        unpaidTaxCents: row?.unpaidTaxCents ?? null,
+        // What the pre-fix deep view displayed as its only
+        // shortfall figure: need minus sources, unlabelled.
+        preFixShortByCents: row ? row.totalNeedCents - sources : null,
+        // The corrected deep view's unpaid-tax line renders
+        // the row's unpaidTaxCents when positive, else no line.
+        deepViewUnpaidTaxLineCents:
+          row != null && row.unpaidTaxCents > 0 ? row.unpaidTaxCents : null,
+        identityGapCents: row
+          ? sources + row.spendShortfallCents + row.unpaidTaxCents - row.totalNeedCents
+          : null,
+      };
+    },
+  },
+  {
+    id: "tax-engines-solver-cap-stale-spouse-balance-s12",
+    kind: "tax",
+    note: "S-12 (engines review round 2, SHOULD — settled STAND): a stale spouse pre-tax balance survived a switch to single filing and inflated the solver's draw cap. THE SETTLEMENT'S WORKED EXAMPLE: a single filer (2026, age 58, household of 1, on the marketplace under the sample household's single benchmark $17,500, no other income entered) holds $50,000 of pre-tax; a $200,000 spouse balance typed while filing jointly is still on the dial. The engine's cliff carries the §36B lookback to the 2025 guidelines: FPL for 1 is $15,650, so the household-of-1 cliff is $62,600 and the MAGI room at a $0 draw is the whole $62,600 (the settlement corrects the review's '$100,000 of MAGI room': that much room needs a household of 4 or more; at household 1 the mechanism's room is $62,600). BEFORE THE FIX the cap summed both balances ($250,000), so the ACA cliff fill returned the room — a $62,600 draw against $50,000 actually held, $12,600 of it money the filer does not have — the bracket fill returned $121,800 on the same stale cap, and the pricer's own conversionExceedsBalance read false at a $62,600 conversion. AFTER THE FIX (countedSpousePretax in server/src/rothOptimizer.ts: the spouse's balance counts toward a year's pre-tax total only on a joint return, applied at the pricer's balance total, the projection walk's combined balance, and both fill solvers' caps) the cap is the $50,000 held: the cliff fill returns $50,000 — the cap binds below the target, with no buffer and with a $5,000 buffer alike — pricing the fill lands ACA MAGI at $50,000, the bracket fill returns the same $50,000 cap, and a $62,600 conversion now prices conversionExceedsBalance true while the $50,000 fill does not. CONTROLS: the identical year with NO spouse balance entered returns the same $50,000 (the stale balance is fully excluded — identical to never entered, staleEqualsBare); head of household prices the same exclusion; and the same two balances under MFJ (household 2, the sample couple benchmark $25,000, cliff $84,600) still count jointly — the fill returns the $84,600 room with the $250,000 cap not binding, bit-identical to before the fix. RMD LEG (the same balances, single, 75, on Medicare): the stale balance prices no spouse RMD (that branch was already joint-gated), the primary's RMD runs on the $50,000 alone (Uniform divisor 24.6 → $2,032.52), and the bracket fill's cap is $50,000 − $2,032.52 = $47,967.48. DECEMBER LEG: the console's entered split reaches decemberCaseInputs verbatim, the stale $200,000 included — the console state is the user's own record and is not rewritten — and the headline and likely-case draws solve through the same gated solver: $50,000, not $62,600. The balances are the settlement's own round figures; the benchmarks are the shared fictional sample household's (server/src/sampleHousehold.ts).",
+    expected: {
+      cliffSingle: 62600,
+      roomAtZero: 62600,
+      fillSingle: 50000,
+      fillSingleBuffer: 50000,
+      acaMagiAtFill: 50000,
+      bracketFillSingle: 50000,
+      exceedsAtStaleDraw: 1,
+      exceedsAtFill: 0,
+      fillBare: 50000,
+      staleEqualsBare: 1,
+      fillHoh: 50000,
+      cliffMfj: 84600,
+      fillMfj: 84600,
+      rmdPrimary75: 2032.52,
+      rmdSpouse75: 0,
+      bracketFill75: 47967.48,
+      decHeadlineDraw: 50000,
+      decLikelyMaxDraw: 50000,
+    },
+    actual: () => {
+      // The settlement's worked example (see the note): a
+      // single filer holding $50,000 with a stale $200,000
+      // spouse balance still on the dial.
+      const single = {
+        taxYear: 2026,
+        filingStatus: "single" as const,
+        agePrimary: 58,
+        ageSpouse: null,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: 50000,
+        pretaxBalanceSpouse: 200000,
+        spouseSoleBeneficiary: false,
+        acaHouseholdSize: 1,
+        acaBenchmarkAnnual: 17500,
+        stateRatePct: 0,
+      };
+      const zero = pricePlaygroundYear(single);
+      const fill = solvePlaygroundAcaCliffFill(single, 0);
+      const atFill = pricePlaygroundYear({
+        ...single,
+        conversion: fill ?? -1,
+      });
+      const atStaleDraw = pricePlaygroundYear({ ...single, conversion: 62600 });
+      const fillBare = solvePlaygroundAcaCliffFill(
+        { ...single, pretaxBalanceSpouse: null },
+        0,
+      );
+      const mfj = {
+        ...single,
+        filingStatus: "mfj" as const,
+        ageSpouse: 56,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 2,
+        acaBenchmarkAnnual: 25000,
+      };
+      const old = {
+        ...single,
+        agePrimary: 75,
+        onMedicarePrimary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+      };
+      const pricedOld = pricePlaygroundYear(old);
+      // December leg: the console state for the same year —
+      // single filing, the entered split $50,000 / $200,000 —
+      // priced through computeDecemberProjection, whose draws
+      // solve through solvePlaygroundAcaCliffFill.
+      const dec = defaultDecemberState(2026);
+      dec.filingStatus = "single";
+      dec.agePrimary = 58;
+      dec.ageSpouse = null;
+      dec.acaHouseholdSize = 1;
+      dec.acaBenchmarkAnnual = 17500;
+      dec.pretaxBalancePrimary = 50000;
+      dec.pretaxBalanceSpouse = 200000;
+      dec.pretaxBalance = 250000;
+      dec.pretaxSplitExplicit = true;
+      const proj = computeDecemberProjection(dec);
+      const likely = proj.priced
+        ? proj.cases.find((c) => c.kind === "likely")
+        : undefined;
+      return {
+        cliffSingle: zero.aca.cliff,
+        roomAtZero: (zero.aca.cliff ?? 0) - zero.acaMagi,
+        fillSingle: fill,
+        fillSingleBuffer: solvePlaygroundAcaCliffFill(single, 5000),
+        acaMagiAtFill: atFill.acaMagi,
+        bracketFillSingle: solvePlaygroundBracketFill(single, 22),
+        exceedsAtStaleDraw: atStaleDraw.conversionExceedsBalance ? 1 : 0,
+        exceedsAtFill: atFill.conversionExceedsBalance ? 1 : 0,
+        fillBare,
+        staleEqualsBare: fill != null && fill === fillBare ? 1 : 0,
+        fillHoh: solvePlaygroundAcaCliffFill(
+          { ...single, filingStatus: "hoh" as const },
+          0,
+        ),
+        cliffMfj: pricePlaygroundYear(mfj).aca.cliff,
+        fillMfj: solvePlaygroundAcaCliffFill(mfj, 0),
+        rmdPrimary75: pricedOld.rmdPrimary,
+        rmdSpouse75: pricedOld.rmdSpouse,
+        bracketFill75: solvePlaygroundBracketFill(old, 22),
+        decHeadlineDraw: proj.priced ? proj.headlineDraw : null,
+        decLikelyMaxDraw: likely?.maxDraw ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-march-loss-only-allowance-followup3",
+    kind: "tax",
+    note: "FOLLOW-UP #3 (engines review round 2 follow-up, SHOULD — settled STAND; hand-derived): the march did not deduct the losses its own underwater-basis sales realize. Two halves, both necessary (either alone still prices the pre-fix figures, verified by isolation during the build): (1) ledgerFields in simulateRothPlan returned the negative ltcg on a loss-only taxable withdrawal but no §1211(b) allowance when no carryforward entered, so priceYear defaulted the allowance to $0; (2) the settlement's reprice gate fired only when the priced gains total or the extra pre-tax draw was POSITIVE, so a loss-only withdrawal never repriced at all. The single-year pricer already did both right (pricePlaygroundYear's gainsFieldsFor returns capitalLossAllowance min($3,000, −grossGains) on a loss). THE WORKED EXAMPLE (the settlement's own, on the shared fictional sample household — server/src/sampleHousehold.ts: MFJ, born 1968 / 1970, household 4, its benchmarks, zero state rate): 2026, other ordinary income $50,000, spending the income plus a $30,000 gap, taxable-first (the sample draw order), Do Nothing, no conversions, no carry-in, no yields. The pool opens 2026 at $100,000 against $200,000 of preserved basis (construction below), so every sale dollar realizes −$1 of gain. The year's first pricing (income alone) taxes $50,000 − $32,200 = $17,800 at 10% = $1,780; the sales fund the $30,000 spending gap plus that $1,780 of tax — $31,780 of sales realizing a $31,780 loss (drawGains). CORRECTED: the allowance min($3,000, $31,780) = $3,000 prices, so AGI and ACA MAGI are $47,000 and federal tax is ($47,000 − $32,200) × 10% = $1,480 — the figures pricePlaygroundYear has always given for the same year, pinned below from a $31,780 sale against a $63,560 basis. BEFORE THE FIX the march kept AGI $50,000 and tax $1,780: $300 overcharged, ACA MAGI overstated by $3,000. THE OPENING POOL, constructed inside the run: the plan starts in 2025 (age 57, pre-retirement, no spending) with $151,850 of Taxable at 100% basis; 2025's $50,000 of other ordinary income taxes at $1,850 under the 2025 row ($50,000 − $31,500 = $18,500 at 10%), the $48,150 after-tax surplus sweeps into Taxable at 100% basis (basis $200,000 on a $200,000 balance), and a −50% 2025 return (the return series) halves the balance to $100,000 while the basis dollars stand — the preserved-basis decline the underwater-basis fix prices. MORE INCOME LEVELS (same construction — each leg's 2025 tax and starting balance derived the same way, so 2026 opens at $100,000 of balance against $200,000 of basis; spending = income + $30,000 throughout): the correction is the marginal rate × $3,000. $20,000 of income (under the $32,200 standard deduction): AGI $17,000 with tax $0 before and after — a $0 overcharge, pinned so the allowance's AGI effect shows even where no tax moves. $90,000 (12%): AGI $87,000, tax $6,080 against the pre-fix $6,440 ($360). $150,000 (22%): AGI $147,000, tax $14,680 against $15,340 ($660). $250,000 (24%): AGI $247,000, tax $36,748 against $37,468 ($720) — this leg's 2025 surplus ($211,866) exceeds a $200,000 opening basis, so its decline is deeper (−75%, from $400,000 of basis over the same $100,000 balance, a −3 gain rate): the allowance caps at $3,000 either way, so the priced correction is the same $720 and only the realized loss differs (−$202,404 = −3 × ($30,000 + $37,468 of sales)). SCOPE BOUNDARY (the settlement's explicit exclusion, pinned on every leg): with no carry-in the year's loss-ledger detail still banks nothing — lossAllowance and lossCarryOutLt read $0; the worked leg's $28,780 of loss beyond the $3,000 allowance is unpriced in both the march and the Playground and is a separate, unreported question this build does not touch.",
+    expected: {
+      l20OpenBal: 100000,
+      l20OpenBasis: 200000,
+      l20Agi: 17000,
+      l20Magi: 17000,
+      l20AcaMagi: 17000,
+      l20Tax: 0,
+      l20TaxableIncome: 0,
+      l20DrawGains: -30000,
+      l20LossAllowanceDetail: 0,
+      l20CarryOutLt: 0,
+      l50OpenBal: 100000,
+      l50OpenBasis: 200000,
+      l50Agi: 47000,
+      l50Magi: 47000,
+      l50AcaMagi: 47000,
+      l50Tax: 1480,
+      l50TaxableIncome: 14800,
+      l50DrawGains: -31780,
+      l50LossAllowanceDetail: 0,
+      l50CarryOutLt: 0,
+      l90OpenBal: 100000,
+      l90OpenBasis: 200000,
+      l90Agi: 87000,
+      l90Magi: 87000,
+      l90AcaMagi: 87000,
+      l90Tax: 6080,
+      l90TaxableIncome: 54800,
+      l90DrawGains: -36440,
+      l90LossAllowanceDetail: 0,
+      l90CarryOutLt: 0,
+      l150OpenBal: 100000,
+      l150OpenBasis: 200000,
+      l150Agi: 147000,
+      l150Magi: 147000,
+      l150AcaMagi: 147000,
+      l150Tax: 14680,
+      l150TaxableIncome: 114800,
+      l150DrawGains: -45340,
+      l150LossAllowanceDetail: 0,
+      l150CarryOutLt: 0,
+      l250OpenBal: 100000,
+      l250OpenBasis: 400000,
+      l250Agi: 247000,
+      l250Magi: 247000,
+      l250AcaMagi: 247000,
+      l250Tax: 36748,
+      l250TaxableIncome: 214800,
+      l250DrawGains: -202404,
+      l250LossAllowanceDetail: 0,
+      l250CarryOutLt: 0,
+      pgAgi: 47000,
+      pgTax: 1480,
+      pgAllowance: 3000,
+      pgEqualsMarch: 1,
+    },
+    actual: () => {
+      // One leg of the worked example at a given income: the
+      // sample household starting in 2025 (pre-retirement, no
+      // spending), its 2025 after-tax surplus sweeping into a
+      // 100%-basis pool, and the year's return (the series)
+      // halving — or quartering, on the $250,000 leg — the
+      // balance while the basis dollars stand, so 2026 opens
+      // underwater and its taxable-first sales realize losses.
+      const leg = (
+        income: number,
+        declinePct: number,
+        startTaxable: number,
+      ) => {
+        const inputs = samplePlanInputs({
+          startYear: 2025,
+          endAgePrimary: 58,
+          retirementAge: 58,
+          pretaxStart: 0,
+          rothStart: 0,
+          hsaStart: 0,
+          taxableStart: startTaxable,
+          taxableBasisPct: 100,
+          taxableDividendYieldPct: 0,
+          taxableInterestYieldPct: 0,
+          annualSpending: income + 30000,
+          otherOrdinaryAnnual: income,
+          expectedReturnPct: 0,
+          ssPrimaryAnnual: 0,
+          ssSpouseAnnual: 0,
+        });
+        const res = simulateRothPlan(inputs, DO_NOTHING, [declinePct, 0]);
+        const open = res.years[0];
+        const y = res.years[1];
+        return {
+          openBal: open?.taxableEnd ?? null,
+          openBasis: open?.detail.taxableBasisDollars ?? null,
+          agi: y?.agi ?? null,
+          magi: y?.magi ?? null,
+          acaMagi: y?.acaMagi ?? null,
+          tax: y?.federalTax ?? null,
+          taxableIncome: y?.taxableIncome ?? null,
+          drawGains: y?.detail.drawGains ?? null,
+          lossAllowanceDetail: y?.detail.lossAllowance ?? null,
+          carryOutLt: y?.detail.lossCarryOutLt ?? null,
+        };
+      };
+      const l20 = leg(20000, -50, 180000);
+      const l50 = leg(50000, -50, 151850);
+      const l90 = leg(90000, -50, 116543);
+      const l150 = leg(150000, -50, 65898);
+      const l250 = leg(250000, -75, 188134);
+      // The Playground's own pricing of the worked leg's year:
+      // $50,000 of other ordinary income and the $31,780 sale
+      // the march's settlement took, against its $63,560 of
+      // basis — the agreement the settlement cites.
+      const pg = pricePlaygroundYear({
+        taxYear: 2026,
+        filingStatus: "mfj",
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 50000,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 31780,
+        stockBasis: 63560,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: 4,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+      });
+      const flat = (
+        p: string,
+        l: ReturnType<typeof leg>,
+      ): Record<string, number | null> => ({
+        [`${p}OpenBal`]: l.openBal,
+        [`${p}OpenBasis`]: l.openBasis,
+        [`${p}Agi`]: l.agi,
+        [`${p}Magi`]: l.magi,
+        [`${p}AcaMagi`]: l.acaMagi,
+        [`${p}Tax`]: l.tax,
+        [`${p}TaxableIncome`]: l.taxableIncome,
+        [`${p}DrawGains`]: l.drawGains,
+        [`${p}LossAllowanceDetail`]: l.lossAllowanceDetail,
+        [`${p}CarryOutLt`]: l.carryOutLt,
+      });
+      return {
+        ...flat("l20", l20),
+        ...flat("l50", l50),
+        ...flat("l90", l90),
+        ...flat("l150", l150),
+        ...flat("l250", l250),
+        pgAgi: pg.agi,
+        pgTax: pg.federalTax,
+        pgAllowance: pg.capitalLossAllowance,
+        pgEqualsMarch:
+          pg.agi === l50.agi && pg.federalTax === l50.tax ? 1 : 0,
+      };
+    },
+  },
+  /* N-2 — Playground income strip clamped qualified figure,
+     SOURCE-INVARIANT half (documented here because this
+     server-side suite cannot execute it): in
+     client/src/Playground.tsx the income strip (the
+     always-visible line at the top of the Playground naming
+     the year's Interest, Ordinary dividends, and Qualified
+     dividends) renders pgQualifiedPricedDollars — the
+     qualified dial clamped to the ordinary total,
+     min(max(0, dial qualified), max(0, dial ordinary)) —
+     the same clamp the engine applies before pricing
+     (audit S-8 + S-11), NOT the raw dial pgQualifiedDollars.
+     Before N-2 the strip printed the raw dial, so on an
+     impossible pair it showed a qualified figure the year
+     never priced ($15,000 shown against $10,000 priced on
+     the worked example) and only the note under the dial
+     disclosed the clamp. The RUNTIME half — that the priced
+     qualified figure on the worked example IS the total,
+     and that the strip's own display arithmetic over the
+     entered pair lands on it exactly — is pinned by
+     tax-engines-playground-income-strip-clamped-qualified-n2
+     below. */
+  {
+    id: "tax-engines-playground-income-strip-clamped-qualified-n2",
+    kind: "tax",
+    note: "N-2 (engines review round 2, NICE-TO-HAVE — settled STAND): the Playground's income strip showed the RAW qualified-dividends dial when the qualified figure exceeded the total, so the strip named a figure the year never priced while only the note under the dial disclosed the clamp. THE FIX (client/src/Playground.tsx): the strip renders pgQualifiedPricedDollars — min(qualified dial, ordinary dial), both floored at $0 exactly as the strip already read them — the priced figure, so the strip and the priced year agree on the same screen. THE WORKED EXAMPLE (the settlement's own; the shared fictional sample household's joint filing pattern, server/src/sampleHousehold.ts — no household's figures): 2026, MFJ, ages 58 / 56, no other income or dials entered, the Ordinary dividends dial (the total) at $10,000 and the Qualified dividends dial at $15,000 — an impossible pair, excess $5,000. THE PRICED YEAR: the qualified part clamps to the total, so qualifiedDividends prices and reports at $10,000, the non-qualified part is $0, the whole $10,000 rides the gains stack (ltcgPriced $10,000), and AGI is the entered total counted once, $10,000; the surfaced clamp echo names the entered pair (ordinaryDividendsEntered $10,000, qualifiedDividendsEntered $15,000), the clamp (qualifiedDividendsWasClamped), and the trimmed excess ($5,000). THE STRIP, by its own display arithmetic over the entered pair: min($15,000, $10,000) = $10,000 — the priced figure exactly (stripShowsPriced), where the pre-fix strip printed the raw dial, $15,000 (preFixStripQualified), overstating the priced figure by the whole $5,000 excess (stripOverstatedBy). THE POSSIBLE-PAIR CONTROL (the same year with the qualified dial at $8,000, under the total): nothing clamps — the priced qualified figure is $8,000, the non-qualified part is $2,000, AGI is still the $10,000 total counted once — and the strip's arithmetic lands on the same $8,000, so the corrected strip is bit-identical to the old one wherever the pair was possible (controlStripShowsPriced). No engine, pricing, schema, stored figure, or action signature changed: the clamp has priced this way since contract v137; only the strip's displayed figure moved. Honest scope: the render-level half — that the strip component actually reads pgQualifiedPricedDollars — is documented in the source-invariant comment above this fixture and verified by source read in this build's review passes, the same division as S-7 and N-1; this fixture pins the priced figures and the strip arithmetic both surfaces render.",
+    expected: {
+      pricedQualified: 10000,
+      pricedNonQualified: 0,
+      pricedLtcg: 10000,
+      pricedAgi: 10000,
+      enteredOrdinary: 10000,
+      enteredQualified: 15000,
+      wasClamped: 1,
+      excess: 5000,
+      stripQualified: 10000,
+      stripShowsPriced: 1,
+      preFixStripQualified: 15000,
+      stripOverstatedBy: 5000,
+      controlQualified: 8000,
+      controlNonQualified: 2000,
+      controlAgi: 10000,
+      controlWasClamped: 0,
+      controlStripQualified: 8000,
+      controlStripShowsPriced: 1,
+    },
+    actual: () => {
+      // The worked example (see the note): the sample
+      // household's joint filing pattern with ONLY the two
+      // dividend dials entered — the total at $10,000, the
+      // qualified dial at $15,000 — priced the Playground's
+      // own construction way (buildPgInputs' field set).
+      const base: PlaygroundYearInputs = {
+        taxYear: 2026,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 10000,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 15000,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const priced = pricePlaygroundYear(base);
+      const control = pricePlaygroundYear({
+        ...base,
+        qualifiedDividends: 8000,
+      });
+      // The strip's own display arithmetic over the entered
+      // pair, exactly as client/src/Playground.tsx derives
+      // it: each dial floored at $0, the qualified figure
+      // clamped to the total. The pre-fix strip printed the
+      // floored qualified dial unclamped.
+      const stripOf = (ordinary: number, qualified: number) =>
+        Math.min(Math.max(0, qualified), Math.max(0, ordinary));
+      const stripQualified = stripOf(
+        base.ordinaryDividends,
+        base.qualifiedDividends,
+      );
+      const controlStripQualified = stripOf(
+        base.ordinaryDividends,
+        8000,
+      );
+      return {
+        pricedQualified: priced.qualifiedDividends,
+        pricedNonQualified: priced.nonQualifiedDividends,
+        pricedLtcg: priced.ltcgPriced,
+        pricedAgi: priced.agi,
+        enteredOrdinary: priced.ordinaryDividendsEntered,
+        enteredQualified: priced.qualifiedDividendsEntered,
+        wasClamped: priced.qualifiedDividendsWasClamped ? 1 : 0,
+        excess: priced.qualifiedDividendsExcess,
+        stripQualified,
+        stripShowsPriced:
+          stripQualified === priced.qualifiedDividends ? 1 : 0,
+        preFixStripQualified: Math.max(0, base.qualifiedDividends),
+        stripOverstatedBy:
+          Math.max(0, base.qualifiedDividends) - priced.qualifiedDividends,
+        controlQualified: control.qualifiedDividends,
+        controlNonQualified: control.nonQualifiedDividends,
+        controlAgi: control.agi,
+        controlWasClamped: control.qualifiedDividendsWasClamped ? 1 : 0,
+        controlStripQualified,
+        controlStripShowsPriced:
+          controlStripQualified === control.qualifiedDividends ? 1 : 0,
+      };
+    },
+  },
+  /* N-3 — first-draw-year bill Net tax includes state tax,
+     SOURCE-INVARIANT half (documented here because this
+     server-side suite cannot execute it): in
+     client/src/RothConversion.tsx the "First draw year" mini
+     bill (Tax by year section) renders a "State tax" row at
+     firstDrawYear.stateTaxCents whenever it is positive, and
+     its "Net tax" row is federalTaxCents + stateTaxCents −
+     acaCreditCents − educationRefundableCents — read straight
+     off the runRothCompare year readout the bill has always
+     rendered from (stateTaxCents has ridden that readout
+     since build v51). Before N-3 the bill showed no state row
+     and its Net tax was federal − credits only, so on a
+     non-WA plan it understated the year's actual net tax by
+     the whole state tax ($8,000 shown vs $10,500 actual on
+     the worked example below). The RUNTIME half — the priced
+     figures on the settlement's synthetic example and on a
+     real compare run's first draw year, with the bill's own
+     arithmetic landing on the corrected figure — is pinned
+     by tax-engines-first-draw-year-net-tax-includes-state-n3
+     below. */
+  {
+    id: "tax-engines-first-draw-year-net-tax-includes-state-n3",
+    kind: "tax",
+    note: "N-3 (engines review round 2, NICE-TO-HAVE — settled STAND): the first-draw-year mini bill's 'Net tax' excluded state tax with no row or note, so the figure shown was not the year's actual net tax on any plan with a state tax. THE FIX (client/src/RothConversion.tsx): the bill carries a 'State tax' row whenever the year's stateTaxCents is positive, and Net tax = federal + state − ACA credit − refundable education credit; a $0-state year (e.g. Washington, whose excise prices $0 on a draw year with no gains) renders exactly as before. THE SETTLEMENT'S SYNTHETIC NON-WA EXAMPLE, priced through priceYear — the single-year pricer every march year runs through — and HAND-DERIVED: single filer, 2030, age 62, inflation 0, a $72,000 pre-tax draw for spending plus $6,600 of long-term gains, flat 4% state rate. AGI = $72,000 + $6,600 = $78,600; the $16,100 standard deduction leaves taxable income $62,500. The ordinary stack is $62,500 − $6,600 = $55,900, taxed at the single brackets: 10% × $12,400 = $1,240, 12% × $38,000 = $4,560, 22% × $5,500 = $1,210 — ordinary tax $7,010. The whole $6,600 of gains sits above the 0% threshold (gainsAt0 $0, gainsAt15 $6,600), so gains tax = 15% × $6,600 = $990 and federal tax = $7,010 + $990 = $8,000 exactly. State tax = 4% × $62,500 taxable = $2,500 exactly. No ACA or education credit prices, so the PRE-FIX bill showed Net tax $8,000 (shownNet) and the CORRECTED bill shows $8,000 + $2,500 = $10,500 (correctedNet) — the actual net tax, understated before by the whole $2,500 state tax (understatedBy). THE COMPARE LEG (the surface the bill actually renders): runRothCompare, Do Nothing, on the shared fictional sample household's shape (server/src/sampleHousehold.ts — MFJ, born 1968 / 1970, pre-tax $1,500,000, spending $90,000, protect-min $50,000, preserve $250,000 at 10%, heir rate 24%) varied only as the case states: taxable / Roth / HSA $0 so the first retirement year's spending draws pre-tax, no Social Security or ACA benchmarks entered, 0% return and inflation so the first draw year is flat and checkable, and a flat 5% state rate (non-WA). Its first draw year — found by the bill's own rule, the first year with pretaxOutByChoiceCents > 0 — is 2030: federal tax $7,788.92, state tax $3,452.05, no credits, so the pre-fix Net tax showed $7,788.92 and the corrected Net tax is $11,240.97, the difference being the state tax to the cent (compareGapIsState). Engine-derived regression pin for the compare leg's cents. THE $0-STATE CONTROL (the same compare shape at a 0% state rate — the Washington household's exposure): state tax $0, federal tax $7,318.18, and the corrected Net tax equals the pre-fix figure exactly, so the bill is bit-identical wherever no state tax prices. No engine, pricing, schema, stored figure, or action signature changed: stateTaxCents has ridden the compare year readout since build v51; only the bill's displayed rows moved. Honest scope: the render-level half — that the bill component actually renders the State tax row and adds stateTaxCents into Net tax — is documented in the source-invariant comment above this fixture and verified by source read in this build's review passes, the same division as S-7, S-11, and N-2; this fixture pins the priced figures and the bill arithmetic both surfaces render.",
+    expected: {
+      exAgi: 78600,
+      exDeductions: 16100,
+      exTaxable: 62500,
+      exOrdinaryTax: 7010,
+      exLtcgTax: 990,
+      exGainsAt15: 6600,
+      exFederal: 8000,
+      exState: 2500,
+      exShownNet: 8000,
+      exCorrectedNet: 10500,
+      exUnderstatedBy: 2500,
+      cmpYear: 2030,
+      cmpFederalCents: 778892,
+      cmpStateCents: 345205,
+      cmpShownNetCents: 778892,
+      cmpCorrectedNetCents: 1124097,
+      cmpGapIsState: 1,
+      ctlStateCents: 0,
+      ctlFederalCents: 731818,
+      ctlCorrectedEqualsShown: 1,
+    },
+    actual: () => {
+      // The settlement's synthetic example (see the note):
+      // a single filer's first draw year priced directly —
+      // a $72,000 pre-tax draw plus $6,600 of long-term
+      // gains at a flat 4% state rate.
+      const exInp: PriceYearInput = {
+        calendarYear: 2030,
+        filingStatus: "single",
+        agePrimary: 62,
+        ageSpouse: null,
+        otherOrdinary: 0,
+        rmd: 0,
+        conversion: 0,
+        extraPreTaxDraw: 72000,
+        ssBenefits: 0,
+        taxExemptInterest: 0,
+        ltcg: 6600,
+        inflationPct: 0,
+        stateRatePct: 4,
+      };
+      const ex = priceYear(exInp);
+      // The bill's arithmetic, exactly as
+      // client/src/RothConversion.tsx computes it: before
+      // N-3 Net tax was federal − credits; now the state
+      // tax is added (and shown on its own row).
+      const exShownNet = ex.federalTax;
+      const exCorrectedNet = ex.federalTax + ex.stateTax;
+      // The compare leg: the sample household's saved shape
+      // (see the note for the stated variations), priced by
+      // runRothCompare — the run the bill renders from. Its
+      // first draw year is found by the bill's own rule.
+      const cmpBase = {
+        ...goldenCompareBase(),
+        birthYearPrimary: 1968,
+        birthYearSpouse: 1970,
+        pretaxCents: 150000000,
+        rothCents: 0,
+        taxableCents: 0,
+        hsaCents: 0,
+        annualSpendingCents: 9000000,
+        retirementAge: 62,
+        expectedReturnPct: 0,
+        ssPrimaryAnnualCents: 0,
+        ssPrimaryStartAge: null,
+        ssPrimaryNoBenefit: true,
+        ssSpouseAnnualCents: 0,
+        ssSpouseNoBenefit: true,
+        protectMinTaxableCents: 5000000,
+        windowStartAge: 62,
+        windowStopAge: 73,
+        acaHouseholdSize: null,
+        acaBenchmarkCoupleCents: null,
+        acaBenchmarkSingleCents: null,
+        inflationPct: 0,
+        stateRatePct: 5,
+        heirRatePct: 24,
+      };
+      const cmp = runRothCompare(
+        cmpBase,
+        [{ name: "Do Nothing", overrides: { ceilings: null } }],
+        2026,
+      );
+      const fd = cmp.scenarios[0]?.years.find(
+        (y) => y.pretaxOutByChoiceCents > 0,
+      );
+      const cmpShown = fd
+        ? fd.federalTaxCents - fd.acaCreditCents - fd.educationRefundableCents
+        : null;
+      const cmpCorrected = fd
+        ? fd.federalTaxCents +
+          fd.stateTaxCents -
+          fd.acaCreditCents -
+          fd.educationRefundableCents
+        : null;
+      // The $0-state control: the same shape at a 0% rate.
+      const ctl = runRothCompare(
+        { ...cmpBase, stateRatePct: 0 },
+        [{ name: "Do Nothing", overrides: { ceilings: null } }],
+        2026,
+      );
+      const cfd = ctl.scenarios[0]?.years.find(
+        (y) => y.pretaxOutByChoiceCents > 0,
+      );
+      const ctlShown = cfd
+        ? cfd.federalTaxCents - cfd.acaCreditCents - cfd.educationRefundableCents
+        : null;
+      const ctlCorrected = cfd
+        ? cfd.federalTaxCents +
+          cfd.stateTaxCents -
+          cfd.acaCreditCents -
+          cfd.educationRefundableCents
+        : null;
+      return {
+        exAgi: ex.agi,
+        exDeductions: ex.deductions,
+        exTaxable: ex.taxableIncome,
+        exOrdinaryTax: ex.ordinaryTax,
+        exLtcgTax: ex.ltcgTax,
+        exGainsAt15: ex.gainsAt15,
+        exFederal: ex.federalTax,
+        exState: ex.stateTax,
+        exShownNet,
+        exCorrectedNet,
+        exUnderstatedBy: exCorrectedNet - exShownNet,
+        cmpYear: fd?.year ?? null,
+        cmpFederalCents: fd?.federalTaxCents ?? null,
+        cmpStateCents: fd?.stateTaxCents ?? null,
+        cmpShownNetCents: cmpShown,
+        cmpCorrectedNetCents: cmpCorrected,
+        cmpGapIsState:
+          fd && cmpShown != null && cmpCorrected != null
+            ? cmpCorrected - cmpShown === fd.stateTaxCents
+              ? 1
+              : 0
+            : null,
+        ctlStateCents: cfd?.stateTaxCents ?? null,
+        ctlFederalCents: cfd?.federalTaxCents ?? null,
+        ctlCorrectedEqualsShown:
+          ctlShown != null && ctlCorrected != null
+            ? ctlCorrected === ctlShown
+              ? 1
+              : 0
+            : null,
       };
     },
   },

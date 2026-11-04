@@ -70,6 +70,15 @@ export const rothLabDials = z.object({
   acaBenchmarkFamilyCents: z.number().int().nullable(),
   acaBenchmarkCoupleCents: z.number().int().nullable(),
   acaBenchmarkSingleCents: z.number().int().nullable(),
+  // Health premium dials (build v208): the plan's three
+  // health premium fields as Lab overrides, in cents like
+  // the benchmark dials. A set dial replaces the plan's
+  // field at pricing time; a blob written before this
+  // build has none of these keys, parsing to null — no
+  // override.
+  healthPremiumAcaHouseholdCents: z.number().int().nullable(),
+  healthPremiumAcaSingleCents: z.number().int().nullable(),
+  healthPremiumMedicarePerPersonCents: z.number().int().nullable(),
   // The household-schedule dial (MULTI-STEP ACA HOUSEHOLD
   // SCHEDULE build): the whole schedule as one dial, replacing
   // the old size-after / step-year dial pair — a set dial
@@ -114,6 +123,9 @@ const blankLabDials = (): RothLabDials => ({
   acaBenchmarkFamilyCents: null,
   acaBenchmarkCoupleCents: null,
   acaBenchmarkSingleCents: null,
+  healthPremiumAcaHouseholdCents: null,
+  healthPremiumAcaSingleCents: null,
+  healthPremiumMedicarePerPersonCents: null,
   acaHouseholdSchedule: null,
   expectedReturnPct: null,
   inflationPct: null,
@@ -179,6 +191,14 @@ export const playgroundProjTemplateState = z.object({
      spouse RMD — the year prices exactly as before). */
   pretaxBalanceSpouse: z.number().nullable(),
   spouseSoleBeneficiary: z.boolean(),
+  /* The reciprocal beneficiary fact (N-1): the primary is
+     the sole beneficiary of the SPOUSE's pre-tax accounts
+     — the fact that selects the spouse's RMD table in the
+     template's years. Tri-state like the engine input:
+     null = not established (the spouse's RMD prices
+     Uniform). A blob written before this field existed
+     parses it null, exactly as before. */
+  primarySoleBeneficiaryOfSpouse: z.boolean().nullable(),
   acaHouseholdSize: z.number().nullable(),
   acaBenchmarkAnnual: z.number().nullable(),
   stateRatePct: z.number(),
@@ -190,6 +210,11 @@ export const playgroundProjTemplateState = z.object({
   educationStudents: z
     .array(z.object({ expenses: z.number(), aotcEligible: z.boolean() }))
     .nullable(),
+  /* The inflation rate the template's years price with
+     (S-4) — a blob written before this field existed
+     parses it null (no rate captured — the projected
+     years price undeflated, exactly as before). */
+  inflationPct: z.number().nullable(),
 });
 export type PlaygroundProjTemplateState = z.infer<
   typeof playgroundProjTemplateState
@@ -249,6 +274,53 @@ export const playgroundFormState = z.object({
   pretaxBalanceSpouse: z.string().max(64),
   acaHouseholdSize: z.string().max(12),
   acaBenchmark: z.string().max(64),
+  // Health premium dials (build v208): the single-year
+  // pricer's entered marketplace premium and Medicare base
+  // premium per person, as typed strings like every money
+  // dial here. A blob written before this build parses
+  // them blank ("" = not entered — the year prices exactly
+  // as before).
+  healthPremiumAca: z.string().max(64),
+  healthPremiumMedicare: z.string().max(64),
+  // ACA reconciliation dials (S-1, engines review round 2):
+  // the advance premium credit actually taken and the
+  // coverage-month reduction, as typed strings like every
+  // money dial here. A blob written before this build parses
+  // them blank ("" = $0 taken / no reduction — the
+  // Playground then prices the year's filing settlement at
+  // those facts, agreeing with the December console).
+  aptcTaken: z.string().max(64),
+  acaCoverageReduction: z.string().max(64),
+  // December-only pricing dials (S-2, engines review
+  // round 2): the entering capital-loss carryforward (the
+  // short-term and long-term amounts and each one's
+  // Washington-attributable portion), the RMD already
+  // received, and the dependent MAGI for ACA, as typed
+  // strings like every money dial here. A blob written
+  // before this build parses them blank ("" = none / $0 —
+  // the year prices exactly as before).
+  capitalLossCarryInSt: z.string().max(64),
+  capitalLossCarryInLt: z.string().max(64),
+  capitalLossCarryInStWa: z.string().max(64),
+  capitalLossCarryInLtWa: z.string().max(64),
+  rmdAlreadyReceived: z.string().max(64),
+  dependentMagiForAca: z.string().max(64),
+  // Cash and Roth funding dials (S-6, engines review
+  // round 2): the year's spendable funding drawn from the
+  // cash sleeve and from the Roth accounts, as typed
+  // strings like every money dial here. A blob written
+  // before this build parses them blank ("" = no funding
+  // drawn — the year prices exactly as before).
+  cashDraw: z.string().max(64),
+  rothDraw: z.string().max(64),
+  // Reinvested-yield flag (S-3, engines review round 2):
+  // true only while the dials hold a year loaded from the
+  // saved plan — its interest and dividends are the march's
+  // reinvested yield, priced as income but kept out of
+  // cash in. A blob written before this build parses it
+  // false (the yield counts as cash — the year prices
+  // exactly as before).
+  yieldReinvested: z.boolean(),
   // ACA cliff buffer (ACA buffer guide build): the Playground
   // One year face's "Buffer below the ACA cliff" guide dial,
   // as a typed string like every money dial here. It is a
@@ -307,6 +379,19 @@ export const playgroundFormState = z.object({
     )
     .max(12),
   soleBeneficiary: z.boolean(),
+  // The reciprocal beneficiary fact (N-1, engines review
+  // round 2): the primary is the sole beneficiary of the
+  // SPOUSE's pre-tax accounts — a SEPARATE fact from
+  // soleBeneficiary above (the spouse is the PRIMARY's
+  // sole beneficiary), carried from the plan record by
+  // the "Start from my numbers" prefill so the spouse's
+  // RMD prices on the Joint table when the record
+  // establishes it. Tri-state like the engine input:
+  // null = not established (a blob written before this
+  // field existed parses it null — the spouse's RMD
+  // prices on the Uniform Lifetime Table, exactly as
+  // every remembered form priced before this build).
+  primarySoleBeneficiaryOfSpouse: z.boolean().nullable(),
   holdOn: z.boolean(),
   heldTarget: z.union([z.number(), z.literal("aca")]).nullable(),
   // Projection controls (Playground projection build): the
@@ -401,6 +486,19 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     pretaxBalanceSpouse: "",
     acaHouseholdSize: "",
     acaBenchmark: "",
+    healthPremiumAca: "",
+    healthPremiumMedicare: "",
+    aptcTaken: "",
+    acaCoverageReduction: "",
+    capitalLossCarryInSt: "",
+    capitalLossCarryInLt: "",
+    capitalLossCarryInStWa: "",
+    capitalLossCarryInLtWa: "",
+    rmdAlreadyReceived: "",
+    dependentMagiForAca: "",
+    cashDraw: "",
+    rothDraw: "",
+    yieldReinvested: false,
     acaBuffer: "5000",
     benchmarkSource: null,
     incomeSources: {
@@ -416,6 +514,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     itemizedOther: "",
     educationStudents: [],
     soleBeneficiary: true,
+    primarySoleBeneficiaryOfSpouse: null,
     holdOn: false,
     heldTarget: null,
     projOpen: false,
@@ -517,6 +616,22 @@ function parsePgProjTemplate(
      before. It is deliberately NOT in the rejection check
      below. */
   const pretaxBalanceSpouse = numOrNull(t.pretaxBalanceSpouse);
+  /* The inflation rate (S-4) is lenient the same way:
+     absent (a template written before it existed) parses
+     as null — no rate captured, the projected years price
+     undeflated, exactly as before — and it is likewise
+     NOT in the rejection check below. */
+  const inflationPct = numOrNull(t.inflationPct);
+  /* The reciprocal beneficiary fact (N-1) is lenient the
+     same way: absent (a template written before it
+     existed) parses as null — not established, exactly
+     as before — a stored boolean stands, anything else
+     reads as null, and it is likewise NOT in the
+     rejection check below. */
+  const primarySoleBeneficiaryOfSpouse =
+    typeof t.primarySoleBeneficiaryOfSpouse === "boolean"
+      ? t.primarySoleBeneficiaryOfSpouse
+      : null;
   const acaHouseholdSize = numOrNull(t.acaHouseholdSize);
   const acaBenchmarkAnnual = numOrNull(t.acaBenchmarkAnnual);
   const stateRatePct = num(t.stateRatePct);
@@ -590,6 +705,7 @@ function parsePgProjTemplate(
     pretaxBalance,
     pretaxBalanceSpouse: pretaxBalanceSpouse ?? null,
     spouseSoleBeneficiary: t.spouseSoleBeneficiary as boolean,
+    primarySoleBeneficiaryOfSpouse,
     acaHouseholdSize,
     acaBenchmarkAnnual,
     stateRatePct,
@@ -599,6 +715,7 @@ function parsePgProjTemplate(
     itemizedCharitable,
     itemizedOther,
     educationStudents,
+    inflationPct: inflationPct ?? null,
   };
 }
 function parsePgOpenSections(
@@ -788,6 +905,9 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         acaBenchmarkFamilyCents: num(d.acaBenchmarkFamilyCents),
         acaBenchmarkCoupleCents: num(d.acaBenchmarkCoupleCents),
         acaBenchmarkSingleCents: num(d.acaBenchmarkSingleCents),
+        healthPremiumAcaHouseholdCents: num(d.healthPremiumAcaHouseholdCents),
+        healthPremiumAcaSingleCents: num(d.healthPremiumAcaSingleCents),
+        healthPremiumMedicarePerPersonCents: num(d.healthPremiumMedicarePerPersonCents),
         // The schedule dial, read leniently like every field
         // here: keep the well-formed entries of a stored array
         // (integer year 1900–2200, integer size 1–20), sorted
@@ -872,6 +992,20 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         pretaxBalanceSpouse: str(g.pretaxBalanceSpouse, ""),
         acaHouseholdSize: str(g.acaHouseholdSize, ""),
         acaBenchmark: str(g.acaBenchmark, ""),
+        healthPremiumAca: str(g.healthPremiumAca, ""),
+        healthPremiumMedicare: str(g.healthPremiumMedicare, ""),
+        aptcTaken: str(g.aptcTaken, ""),
+        acaCoverageReduction: str(g.acaCoverageReduction, ""),
+        capitalLossCarryInSt: str(g.capitalLossCarryInSt, ""),
+        capitalLossCarryInLt: str(g.capitalLossCarryInLt, ""),
+        capitalLossCarryInStWa: str(g.capitalLossCarryInStWa, ""),
+        capitalLossCarryInLtWa: str(g.capitalLossCarryInLtWa, ""),
+        rmdAlreadyReceived: str(g.rmdAlreadyReceived, ""),
+        dependentMagiForAca: str(g.dependentMagiForAca, ""),
+        cashDraw: str(g.cashDraw, ""),
+        rothDraw: str(g.rothDraw, ""),
+        yieldReinvested:
+          typeof g.yieldReinvested === "boolean" ? g.yieldReinvested : false,
         acaBuffer: str(g.acaBuffer, "5000"),
         benchmarkSource: parsePgBenchmarkSource(g.benchmarkSource),
         incomeSources: ((): PlaygroundFormState["incomeSources"] => {
@@ -914,6 +1048,14 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         })(),
         soleBeneficiary:
           typeof g.soleBeneficiary === "boolean" ? g.soleBeneficiary : true,
+        // The reciprocal beneficiary fact (N-1), read
+        // leniently like its sibling: a stored boolean
+        // stands; absent (a blob written before the field
+        // existed) or malformed reads as null — not
+        // established, the spouse's RMD prices Uniform.
+        primarySoleBeneficiaryOfSpouse: boolOrNull(
+          g.primarySoleBeneficiaryOfSpouse,
+        ),
         holdOn: typeof g.holdOn === "boolean" ? g.holdOn : false,
         projOpen: typeof g.projOpen === "boolean" ? g.projOpen : false,
         projHowOpen: typeof g.projHowOpen === "boolean" ? g.projHowOpen : false,

@@ -440,8 +440,8 @@ export function ficaTax(
    the roll, mirroring the retirement march's ledger semantics
    (taxEngine.ts: tier init, "highest-basis-ratio first" sale
    order, yield step-up): balances grow with the return and
-   basis dollars do not; the year's yield steps basis up into
-   unrealized gain; a positive surplus lands as 100%-basis
+   basis dollars do not; the year's yield steps basis up by
+   its full amount (no balance cap); a positive surplus lands as 100%-basis
    cash; a deficit sale consumes basis in sale order. The
    march's helpers are not exported, so the two small ones the
    roll needs are reimplemented here on the roll's own ledger
@@ -457,7 +457,9 @@ export type TaxableLedger = {
   // null = the single pool, whose basis dollars are `basis`.
   tiers: WorkTierLedger[] | null;
   // Total basis dollars (the single pool's basis, or the sum
-  // over tiers). Invariant: 0 ≤ basis ≤ balance at every step.
+  // over tiers). Invariant: basis ≥ 0; it may pass the balance
+  // when the pool is underwater or reinvested yield outruns
+  // the return — basis is dollars paid.
   basis: number;
   // Index of the cash tier — the FIRST tier entered at a
   // 100% basis — or −1 when there is none. A positive surplus
@@ -573,20 +575,28 @@ function sellFromLedgerTiers(tiers: WorkTierLedger[], amount: number): number {
 }
 
 // The yield step-up (the march's reinvestYieldIntoTiers /
-// single-pool basisIn cap): the year's yield cash is already
-// inside the balance (it is a component of the return), so no
-// balance moves — basis rises by the yield, filling
-// unrealized gain. Single pool: basis capped at the grown
-// balance. Tiers: lowest-basis-ratio first, capped at each
-// tier's own balance (the march's stepUpTiers).
+// single-pool basisIn): the year's yield cash is already
+// inside the balance (it is a component of the return), so
+// no balance moves — basis rises by the FULL yield, with no
+// balance cap on either path (FOLLOW-UP #2, engines review:
+// the old caps — the single pool's at the grown balance, the
+// tiers' stepUpTiers room at each tier's own unrealized
+// gain — discarded reinvested-yield basis that was actually
+// paid, inventing gains on later sales; the cap survives
+// only on the harvest rebuy, a different mechanic). Tiers:
+// the march's distribution — lowest basis ratio first, and
+// once every tier stands at its balance the remainder lands
+// on the first tier in that order, past its balance — so a
+// tier's basis may pass its balance when the tier is
+// underwater at reinvestment time.
 function stepUpLedgerForYield(
   ledger: TaxableLedger,
-  grownBalance: number,
+  _grownBalance: number,
   yieldTotal: number,
 ): void {
   if (yieldTotal <= 0) return;
   if (!ledger.tiers) {
-    ledger.basis = Math.min(Math.max(0, grownBalance), ledger.basis + yieldTotal);
+    ledger.basis = Math.max(0, ledger.basis + yieldTotal);
     return;
   }
   const ranked = ledger.tiers
@@ -600,6 +610,9 @@ function stepUpLedgerForYield(
     const add = Math.min(room, remaining);
     t.basis += add;
     remaining -= add;
+  }
+  if (remaining > 0 && ranked.length > 0) {
+    ledger.tiers[ranked[0]!.i]!.basis += remaining;
   }
   ledger.basis = ledger.tiers.reduce((s, t) => s + t.basis, 0);
 }
@@ -1633,7 +1646,7 @@ export function rollWorkYears(
     // with the balance carried in (the base the year's yields
     // price on); the balance then grows at the plan's return
     // while basis dollars do not move; the year's yield steps
-    // basis up into the grown balance's unrealized gain. The
+    // basis up by its full amount (no balance cap). The
     // yield total is computed here on the opening balance
     // with the same formula priceOneWorkYear prices it with,
     // so the ledger and the priced year agree. The yields it

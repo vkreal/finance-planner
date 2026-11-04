@@ -127,6 +127,13 @@ export type RothSeedInputs = {
   acaBenchmarkSingleCents: null;
   acaBenchmarkFamilyCents: null;
   acaSpouseEndAge: null;
+  // Health premium term (build v208): null in the seed =
+  // blank = not entered, like every optional pricing input
+  // the seed does not presume — the seed never invents a
+  // household's premiums.
+  healthPremiumAcaHouseholdCents: null;
+  healthPremiumAcaSingleCents: null;
+  healthPremiumMedicarePerPersonCents: null;
   inflationPct: number;
   stateRatePct: number;
   // State of residence (T3 build): null in the seed = no
@@ -231,6 +238,9 @@ export function seedRothInputs(derived: {
     acaBenchmarkSingleCents: null,
     acaBenchmarkFamilyCents: null,
     acaSpouseEndAge: null,
+    healthPremiumAcaHouseholdCents: null,
+    healthPremiumAcaSingleCents: null,
+    healthPremiumMedicarePerPersonCents: null,
     inflationPct: SEED_INFLATION,
     stateRatePct: 0,
     residenceState: null,

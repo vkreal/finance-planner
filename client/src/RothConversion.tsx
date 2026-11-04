@@ -53,6 +53,7 @@ type RothData,
 // server/src/taxLaw.ts. The client runs the same code the fixtures
 // pin, so what is priced here is what is tested there.
 import {
+acaEmbeddedNetPremiumFor,
 acaHouseholdSizeForYear,
 DEFAULT_DRAW_ORDER_KEY,
 DRAW_ORDER_OPTIONS,
@@ -82,9 +83,19 @@ import { ExplainerInfoTip } from "./Explainer";
 // only payload that carries the execution-year fields. PlanPayload
 // is the scenario / optimizer shape (rothInputFields alone):
 // execution fields are plan-record only and never travel with a
-// scenario or an optimizer request.
+// scenario or an optimizer request. The one addition is the
+// spend-from-cash sleeve size (audit S-5): a COMPUTE-ONLY
+// transient buildSavePayload derives from the snapshot on every
+// build, so the server pricing runs price the sleeve the local
+// plan pricing prices. It is not a saved field — no writer's
+// schema carries it, so the writers strip it at their boundary
+// and it is never stored; the two payload builders that face a
+// writer or the saved-shape comparison (buildInputsPayload,
+// currentPlanPayload) omit it explicitly as well.
 type SavePayload = Parameters<typeof api.saveRothInputs>[0];
-type PlanPayload = Parameters<typeof api.saveRothScenario>[0];
+type PlanPayload = Parameters<typeof api.saveRothScenario>[0] & {
+  spendFromCashSleeveCents?: number | null;
+};
 type OptData = ApiResponse<typeof api, "runRothOptimizer">;
 type OptScore = NonNullable<OptData["winner"]>;
 
@@ -756,6 +767,14 @@ export function RothConversion({
   const [benchSingle, setBenchSingle] = useState("");
   const [benchFamily, setBenchFamily] = useState("");
   const [acaSpouseEndAge, setAcaSpouseEndAge] = useState("");
+  // Health premium term (build v208): the household's entered
+  // annual premiums — marketplace (both on it / one on it)
+  // and the Medicare base premium per person. Blank = not
+  // entered; any one entered activates the term (spending is
+  // then read as excluding health premiums).
+  const [healthPremAcaHousehold, setHealthPremAcaHousehold] = useState("");
+  const [healthPremAcaSingle, setHealthPremAcaSingle] = useState("");
+  const [healthPremMedicarePerPerson, setHealthPremMedicarePerPerson] = useState("");
   const [inflation, setInflation] = useState(String(SEED_INFLATION));
   const [stateRate, setStateRate] = useState("0");
   // State of residence (T3 build): "WA" prices Washington's
@@ -922,6 +941,9 @@ export function RothConversion({
   const [labDialBenchFamily, setLabDialBenchFamily] = useState("");
   const [labDialBenchCouple, setLabDialBenchCouple] = useState("");
   const [labDialBenchSingle, setLabDialBenchSingle] = useState("");
+  const [labDialHealthHousehold, setLabDialHealthHousehold] = useState("");
+  const [labDialHealthSingle, setLabDialHealthSingle] = useState("");
+  const [labDialHealthMedicare, setLabDialHealthMedicare] = useState("");
   const [labDialAcaSteps, setLabDialAcaSteps] = useState<AcaStepRow[]>([]);
   const [labDialReturn, setLabDialReturn] = useState("");
   const [labDialInflation, setLabDialInflation] = useState("");
@@ -1304,6 +1326,9 @@ export function RothConversion({
     setLabDialBenchFamily(d.acaBenchmarkFamilyCents == null ? "" : fmtMoneyInput(d.acaBenchmarkFamilyCents / 100));
     setLabDialBenchCouple(d.acaBenchmarkCoupleCents == null ? "" : fmtMoneyInput(d.acaBenchmarkCoupleCents / 100));
     setLabDialBenchSingle(d.acaBenchmarkSingleCents == null ? "" : fmtMoneyInput(d.acaBenchmarkSingleCents / 100));
+    setLabDialHealthHousehold(d.healthPremiumAcaHouseholdCents == null ? "" : fmtMoneyInput(d.healthPremiumAcaHouseholdCents / 100));
+    setLabDialHealthSingle(d.healthPremiumAcaSingleCents == null ? "" : fmtMoneyInput(d.healthPremiumAcaSingleCents / 100));
+    setLabDialHealthMedicare(d.healthPremiumMedicarePerPersonCents == null ? "" : fmtMoneyInput(d.healthPremiumMedicarePerPersonCents / 100));
     setLabDialAcaSteps(acaStepRowsFrom(d.acaHouseholdSchedule));
     setLabDialReturn(d.expectedReturnPct == null ? "" : String(d.expectedReturnPct));
     setLabDialInflation(d.inflationPct == null ? "" : String(d.inflationPct));
@@ -1442,6 +1467,9 @@ export function RothConversion({
     acaBenchmarkSingleCents: number | null;
     acaBenchmarkFamilyCents?: number | null;
     acaSpouseEndAge?: number | null;
+    healthPremiumAcaHouseholdCents?: number | null;
+    healthPremiumAcaSingleCents?: number | null;
+    healthPremiumMedicarePerPersonCents?: number | null;
     inflationPct: number | null;
     stateRatePct: number | null;
     residenceState?: "WA" | "other" | null;
@@ -1573,6 +1601,9 @@ export function RothConversion({
     setBenchSingle(money(src.acaBenchmarkSingleCents));
     setBenchFamily(money(src.acaBenchmarkFamilyCents ?? null));
     setAcaSpouseEndAge(num(src.acaSpouseEndAge ?? null));
+    setHealthPremAcaHousehold(money(src.healthPremiumAcaHouseholdCents ?? null));
+    setHealthPremAcaSingle(money(src.healthPremiumAcaSingleCents ?? null));
+    setHealthPremMedicarePerPerson(money(src.healthPremiumMedicarePerPersonCents ?? null));
     setInflation(num(src.inflationPct));
     setStateRate(num(src.stateRatePct));
     setResidenceState(src.residenceState === "WA" ? "WA" : "other");
@@ -2441,6 +2472,28 @@ export function RothConversion({
       taxableDividendYieldPct: pct(divYieldPct),
       taxableInterestYieldPct: pct(intYieldPct),
       spendFromCashPct,
+      // Spend-from-cash sleeve (audit S-5): the sleeve size the
+      // local plan pricing derives for the same form state
+      // (planInputs' spendFromCashSleeveStart, here in cents) —
+      // the snapshot's Cash bucket less the exclusion, floored
+      // at $0, and $0 beside a typed taxable balance, mirroring
+      // the server's own threading in resolveArgsBalances term
+      // for term. This payload sends EFFECTIVE balances (an
+      // explicit taxableCents), so the server cannot thread the
+      // sleeve from the snapshot itself; carried here, every
+      // server pricing run built on this payload — the Strategy
+      // Lab, Year funding, the optimizer, the Monte Carlo check
+      // — prices the sleeve the Plan tab and the ending strip
+      // price, instead of $0. The engine caps it at the pool,
+      // and in tiers mode it derives the sleeve from the tiers
+      // and this value is inert.
+      spendFromCashSleeveCents: balanceOverrides.taxable
+        ? 0
+        : Math.max(
+            0,
+            (data?.snapshot?.cashCents ?? 0) -
+              Math.max(0, parseMoney(taxableExclude) ?? 0),
+          ),
       flexCutPct,
       flexFloorPct,
       annualSpendingCents: parseMoney(spending),
@@ -2497,6 +2550,9 @@ export function RothConversion({
         const n = parseIntField(acaSpouseEndAge);
         return n == null ? null : Math.min(80, Math.max(55, n));
       })(),
+      healthPremiumAcaHouseholdCents: parseMoney(healthPremAcaHousehold),
+      healthPremiumAcaSingleCents: parseMoney(healthPremAcaSingle),
+      healthPremiumMedicarePerPersonCents: parseMoney(healthPremMedicarePerPerson),
       inflationPct: parseNum(inflation),
       stateRatePct: pct(stateRate),
       residenceState,
@@ -2535,8 +2591,13 @@ export function RothConversion({
   // effective balances it was priced with.)
   const buildInputsPayload = (): SavePayload => {
     const eff = buildSavePayload();
+    // The spend-from-cash sleeve is a compute transient (see
+    // buildSavePayload): omitted here so the plan record's
+    // writer payload keeps exactly its saved shape — the sleeve
+    // is derived from the snapshot at pricing time, never saved.
+    const { spendFromCashSleeveCents: _sleeve, ...effSavedShape } = eff;
     return {
-      ...eff,
+      ...effSavedShape,
       pretaxCents: balanceOverrides.pretax ? eff.pretaxCents : null,
       pretaxSpouseCents: balanceOverrides.pretaxSpouse ? eff.pretaxSpouseCents : null,
       rothCents: balanceOverrides.roth ? eff.rothCents : null,
@@ -2845,6 +2906,7 @@ export function RothConversion({
     jobSalary, jobEmployer401k, jobEmployerHsa,
     drawOrder, drawOrderSwitchAge, drawOrderAfter,
     soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple, benchSingle, benchFamily,
+    healthPremAcaHousehold, healthPremAcaSingle, healthPremMedicarePerPerson,
     inflation, stateRate, residenceState, carryInSt, carryInLt, carryInStWa, carryInLtWa, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, ceilBracket, ceilIrmaa, ceilLtcg, ceilAca, ceilAcaFamilyOnly, magiCap, cliffBuffer,
     guardrailOn, bunchingOn, gainsHarvestOn,
     balanceOverrides,
@@ -3008,6 +3070,9 @@ export function RothConversion({
       benchFamily: labDialBenchFamily,
       benchCouple: labDialBenchCouple,
       benchSingle: labDialBenchSingle,
+      healthHousehold: labDialHealthHousehold,
+      healthSingle: labDialHealthSingle,
+      healthMedicare: labDialHealthMedicare,
       acaSteps: labDialAcaSteps,
       expReturn: labDialReturn,
       inflation: labDialInflation,
@@ -3050,6 +3115,9 @@ export function RothConversion({
       acaBenchmarkFamilyCents: parseMoney(raw.benchFamily),
       acaBenchmarkCoupleCents: parseMoney(raw.benchCouple),
       acaBenchmarkSingleCents: parseMoney(raw.benchSingle),
+      healthPremiumAcaHouseholdCents: parseMoney(raw.healthHousehold),
+      healthPremiumAcaSingleCents: parseMoney(raw.healthSingle),
+      healthPremiumMedicarePerPersonCents: parseMoney(raw.healthMedicare),
       acaHouseholdSchedule: acaStepsFromRows(raw.acaSteps),
       expectedReturnPct: parseNum(raw.expReturn),
       inflationPct: parseNum(raw.inflation),
@@ -3076,6 +3144,9 @@ export function RothConversion({
     "acaBenchmarkFamilyCents",
     "acaBenchmarkCoupleCents",
     "acaBenchmarkSingleCents",
+    "healthPremiumAcaHouseholdCents",
+    "healthPremiumAcaSingleCents",
+    "healthPremiumMedicarePerPersonCents",
     "acaHouseholdSchedule",
     "expectedReturnPct",
     "inflationPct",
@@ -3100,6 +3171,9 @@ export function RothConversion({
     setLabDialBenchFamily("");
     setLabDialBenchCouple("");
     setLabDialBenchSingle("");
+    setLabDialHealthHousehold("");
+    setLabDialHealthSingle("");
+    setLabDialHealthMedicare("");
     setLabDialAcaSteps([]);
     setLabDialReturn("");
     setLabDialInflation("");
@@ -3124,6 +3198,9 @@ export function RothConversion({
         acaBenchmarkFamilyCents: null,
         acaBenchmarkCoupleCents: null,
         acaBenchmarkSingleCents: null,
+        healthPremiumAcaHouseholdCents: null,
+        healthPremiumAcaSingleCents: null,
+        healthPremiumMedicarePerPersonCents: null,
         acaHouseholdSchedule: null,
         expectedReturnPct: null,
         inflationPct: null,
@@ -3391,8 +3468,16 @@ export function RothConversion({
      never make a matching strategy look different. */
   const currentPlanPayload = (): PlanPayload => {
     const eff = buildSavePayload();
+    // The spend-from-cash sleeve (a compute transient derived
+    // from the snapshot — see buildSavePayload) is omitted:
+    // like the plan-record-only values named above it is in
+    // neither payload, so it can never make a matching strategy
+    // look different. A scenario record carries no sleeve; the
+    // sleeve a loaded scenario prices with is the base payload's
+    // own, inherited through the compare merge.
+    const { spendFromCashSleeveCents: _sleeve, ...effSavedShape } = eff;
     return {
-      ...eff,
+      ...effSavedShape,
       pretaxCents: balanceOverrides.pretax ? eff.pretaxCents : null,
       pretaxSpouseCents: balanceOverrides.pretaxSpouse ? eff.pretaxSpouseCents : null,
       rothCents: balanceOverrides.roth ? eff.rothCents : null,
@@ -3506,6 +3591,9 @@ export function RothConversion({
         sc.acaSpouseEndAge == null
           ? null
           : Math.min(80, Math.max(55, sc.acaSpouseEndAge)),
+      healthPremiumAcaHouseholdCents: sc.healthPremiumAcaHouseholdCents ?? null,
+      healthPremiumAcaSingleCents: sc.healthPremiumAcaSingleCents ?? null,
+      healthPremiumMedicarePerPersonCents: sc.healthPremiumMedicarePerPersonCents ?? null,
       inflationPct: sc.inflationPct ?? null,
       stateRatePct: clampPct(sc.stateRatePct ?? null),
       residenceState:
@@ -3694,6 +3782,7 @@ export function RothConversion({
     labInit, labDialBasis, labDialSpending, labDialSsP, labDialSsS,
     labDialSurvivor, labDialSurvivorWho, labDialSurvivorYear,
     labDialAcaEndAge, labDialBenchFamily, labDialBenchCouple, labDialBenchSingle,
+    labDialHealthHousehold, labDialHealthSingle, labDialHealthMedicare,
     labDialAcaSteps, labDialReturn, labDialInflation,
     labDialHeir, labDialStateRate, labDialWinStart, labDialWinStop,
     labDialPreserve, labDialPretax, labDialTaxable, labDialRoth,
@@ -4150,7 +4239,7 @@ export function RothConversion({
       },
       taxableStartDollars,
     );
-    return {
+    const inputs: RothPlanInputs = {
       startYear,
       birthYearPrimary: byP,
       birthYearSpouse: byS,
@@ -4270,6 +4359,9 @@ export function RothConversion({
       acaBenchmarkSingle: parseDollars(benchSingle),
       acaBenchmarkFamily: parseDollars(benchFamily),
       acaSpouseEndAge: parseIntField(acaSpouseEndAge),
+      healthPremiumAcaHousehold: parseDollars(healthPremAcaHousehold),
+      healthPremiumAcaSingle: parseDollars(healthPremAcaSingle),
+      healthPremiumMedicarePerPerson: parseDollars(healthPremMedicarePerPerson),
       inflationPct: parseNum(inflation) ?? SEED_INFLATION,
       stateRatePct: parseNum(stateRate) ?? 0,
       residenceState,
@@ -4299,13 +4391,33 @@ export function RothConversion({
         data?.snapshot?.nonTaxableCents ?? null,
       ),
     };
+    // ACA premium reconciliation (engines review round 2,
+    // M-1): the net premium the entered annualSpending
+    // embeds, derived from these inputs by the engine's ONE
+    // derivation (acaEmbeddedNetPremiumFor) — the exact step
+    // planInputsFromSaved performs on every server pricing
+    // path. Without it the local march funded annualSpending
+    // verbatim while the server reconciled, so the Plan tab
+    // and the server disagreed on every non-cliff strategy
+    // (the cliff-fill shape happened to land identically).
+    // Null (no marketplace year with a benchmark) leaves the
+    // field unset and the march funds annualSpending
+    // verbatim, exactly as before. The health-premium fields
+    // above ride the same inputs: while any is entered the
+    // engine's health term is active and the reconciliation
+    // stays out of the way, on both paths alike.
+    const embeddedNetPremium = acaEmbeddedNetPremiumFor(inputs);
+    if (embeddedNetPremium != null) {
+      inputs.acaEmbeddedNetPremium = embeddedNetPremium;
+    }
+    return inputs;
   }, [
     init, startYear, birthYearP, birthYearS, filingStatus, pretax, pretaxSpouse,
     survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude,
     hsaBal, basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS,
     ssSAge, ssPrimaryNoBenefit, ssSpouseNoBenefit, otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom,
     protectMin, preservePretax, preserveExitRate, claimAgeFloor, drawOrder, drawOrderSwitchAge, drawOrderAfter, soleBeneficiary, primarySoleBeneficiaryOfSpouse, acaSize, acaSteps, collegeFromYear, collegeThroughYear, benchCouple,
-    benchSingle, benchFamily, acaSpouseEndAge, inflation, stateRate, residenceState, carryInSt, carryInLt, carryInStWa, carryInLtWa, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, balanceOverrides, data,
+    benchSingle, benchFamily, acaSpouseEndAge, healthPremAcaHousehold, healthPremAcaSingle, healthPremMedicarePerPerson, inflation, stateRate, residenceState, carryInSt, carryInLt, carryInStWa, carryInLtWa, itemizedMortgage, itemizedSalt, itemizedCharitable, itemizedOther, eduStudents, heirRate, balanceOverrides, data,
   ]);
 
   const ceilings: FillCeilings = useMemo(
@@ -4496,7 +4608,10 @@ export function RothConversion({
   // rothOptimizer.ts — the same code the accuracy fixtures pin),
   // with the plan's own inputs and saved ceilings, the panel's
   // balances (an unedited balance resolves to the plan's), and
-  // the year-to-date actuals. No tax math lives here.
+  // the year-to-date actuals. The saved strategy's marginal-rate
+  // guardrail flag rides along (S-10) — the same flag the main
+  // march's currentStrategy carries — so the execution year
+  // stops where the march stops. No tax math lives here.
   const executionResult = useMemo(() => {
     if (!planInputs) return null;
     return priceExecutionYear(
@@ -4515,9 +4630,10 @@ export function RothConversion({
         alreadyConvertedYtd: parseDollars(execAlready) ?? 0,
       },
       startYear,
+      guardrailOn ?? false,
     );
   }, [
-    planInputs, ceilings, anyCeiling, startYear,
+    planInputs, ceilings, anyCeiling, startYear, guardrailOn,
     execPretax, execPretaxSpouse, execRoth, execTaxable, execHsa,
     execOtherOrd, execTaxExempt, execAlready, execBalanceOverrides,
   ]);
@@ -4839,6 +4955,9 @@ export function RothConversion({
     benchSingle: moneyChanged(benchSingle, savedResolved?.acaBenchmarkSingleCents),
     benchFamily: moneyChanged(benchFamily, savedResolved?.acaBenchmarkFamilyCents),
     acaSpouseEndAge: intChanged(acaSpouseEndAge, savedResolved?.acaSpouseEndAge),
+    healthPremAcaHousehold: moneyChanged(healthPremAcaHousehold, savedResolved?.healthPremiumAcaHouseholdCents),
+    healthPremAcaSingle: moneyChanged(healthPremAcaSingle, savedResolved?.healthPremiumAcaSingleCents),
+    healthPremMedicarePerPerson: moneyChanged(healthPremMedicarePerPerson, savedResolved?.healthPremiumMedicarePerPersonCents),
     ceilBracket:
       savedResolved != null &&
       ceilBracket !==
@@ -5298,7 +5417,8 @@ export function RothConversion({
       savedTaxRow.stateTaxCents +
       savedTaxRow.penaltyCents +
       savedTaxRow.terminalCents -
-      savedTaxRow.educationRefundableCents;
+      savedTaxRow.educationRefundableCents +
+      savedTaxRow.healthPremiumCents;
     const remainderParts: string[] = [];
     if (savedTaxRow.stateTaxCents !== 0)
       remainderParts.push(`state tax ${fmtCents(savedTaxRow.stateTaxCents)}`);
@@ -5312,9 +5432,13 @@ export function RothConversion({
       remainderParts.push(
         `less the refundable education credit ${fmtCents(savedTaxRow.educationRefundableCents)}`,
       );
+    if (savedTaxRow.healthPremiumCents !== 0)
+      remainderParts.push(
+        `health premiums entered (gross — the ACA credits kept above offset them, so the score carries the net premium of ${fmtCents(savedTaxRow.healthPremiumNetCents)}) ${fmtCents(savedTaxRow.healthPremiumCents)}`,
+      );
     return remainderParts.length > 0
       ? `Net cost is federal tax + IRMAA − ACA credits kept, plus the rest of the score: ${remainderParts.join(", ")} — ${fmtCents(remainder)} in all. Priced from the saved record — edits not yet saved do not move these figures.`
-      : "For this plan, net cost is exactly federal tax + IRMAA − ACA credits kept — there is no state tax, penalty, ending pre-tax tax, or refundable education credit in the score. Priced from the saved record — edits not yet saved do not move these figures.";
+      : "For this plan, net cost is exactly federal tax + IRMAA − ACA credits kept — there is no state tax, penalty, ending pre-tax tax, health premium, or refundable education credit in the score. Priced from the saved record — edits not yet saved do not move these figures.";
   })();
 
   // Years where someone is on the ACA marketplace but no benchmark
@@ -8026,7 +8150,7 @@ export function RothConversion({
         </div>
       ))}
 
-      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "otherOrd", "taxExempt"])} changed` : ""), (
+      {rothSection("aca", "Taxes & ACA", acaSummary + (sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "healthPremAcaHousehold", "healthPremAcaSingle", "healthPremMedicarePerPerson", "otherOrd", "taxExempt"]) > 0 ? ` · ${sectionChangedCount(["acaSize", "acaSteps", "benchCouple", "benchSingle", "benchFamily", "acaSpouseEndAge", "healthPremAcaHousehold", "healthPremAcaSingle", "healthPremMedicarePerPerson", "otherOrd", "taxExempt"])} changed` : ""), (
         <>
           <p className="text-sm text-[var(--dim)]">
             From the retirement year, while anyone in the household is under 65, the household is priced as on the marketplace, and ACA MAGI sets the premium credit. Above 400% of the poverty line the credit is $0 — the whole year's credit is lost.
@@ -8113,6 +8237,22 @@ export function RothConversion({
                 hint: "Blank = 65.",
                 changed: changedFields.acaSpouseEndAge,
               })}
+            {moneyField("Health premium — marketplace, both on it / yr", healthPremAcaHousehold, setHealthPremAcaHousehold, {
+              info: "The premium you actually pay for marketplace coverage in the years you are both on it (your plan's gross premium, before the credit). Enter any one of the three health premium fields and the plan prices health premiums as their own need in every retired year: the marketplace part is funded net of the year's priced credit (the credit can never exceed the premium), the Medicare part per person on Medicare. Entering one also means your yearly spending above is read as spending WITHOUT health premiums in it. Leave all three blank and no premium is priced — the plan behaves exactly as before.",
+              hint: "Blank = not entered. Any one entered turns the health premium term on.",
+              changed: changedFields.healthPremAcaHousehold,
+            })}
+            {filingStatus !== "single" &&
+              moneyField("Health premium — marketplace, one on it / yr", healthPremAcaSingle, setHealthPremAcaSingle, {
+                info: "The premium for the years only one spouse is on the marketplace — for example after you turn 65 and your spouse stays on marketplace coverage until her own Medicare age. Blank (with the term on) = those years use the year's benchmark premium instead.",
+                hint: "For the spouse-only marketplace years. Blank = the benchmark is used for those years.",
+                changed: changedFields.healthPremAcaSingle,
+              })}
+            {moneyField("Health premium — Medicare, per person / yr", healthPremMedicarePerPerson, setHealthPremMedicarePerPerson, {
+              info: "The Medicare base premium per person on Medicare: Part B standard premium plus a Part D base premium, for a full year. The IRMAA surcharge is priced separately and is not part of this amount. Blank (with the term on) = Medicare years carry no base premium in the plan.",
+              hint: "Part B + Part D base, per person. The IRMAA surcharge prices separately.",
+              changed: changedFields.healthPremMedicarePerPerson,
+            })}
             {moneyField("Other ordinary income / yr", otherOrd, setOtherOrd, {
               changed: changedFields.otherOrd,
             })}
@@ -9128,7 +9268,9 @@ export function RothConversion({
             For the plan exactly as it stands — no scratch dials — what each
             priced year needed, and what funded it. Needs are the year&rsquo;s
             spending plus its federal tax, state tax, and Medicare (IRMAA)
-            premiums. Sources are the amounts actually applied to those needs:
+            premiums{yfResult?.ok && yfResult.years.some((y) => y.healthPremiumCents > 0)
+              ? ", plus the year's health premium — the entered marketplace premium net of its priced credit, and Medicare base premiums per person on Medicare"
+              : ""}. Sources are the amounts actually applied to those needs:
             income first, then the year&rsquo;s taxable yield, then draws from
             the accounts, so for every year the plan can fund, each
             row&rsquo;s sources add up to its total need.
@@ -9257,6 +9399,8 @@ export function RothConversion({
                     {needRow("Federal tax", r.federalTaxCents)}
                     {needRow("State tax", r.stateTaxCents)}
                     {needRow("Medicare premiums (IRMAA)", r.irmaaCents)}
+                    {r.healthPremiumCents > 0 &&
+                      needRow("Health premium (net of credit)", r.healthPremiumCents)}
                     <div className="flex items-baseline justify-between gap-3 border-t border-[var(--border)] py-1 font-medium">
                       <span>Total need</span>
                       <span className="tnum">{fmtCents(r.totalNeedCents)}</span>
@@ -9265,6 +9409,12 @@ export function RothConversion({
                       <div className="flex items-baseline justify-between gap-3 py-1 font-medium text-[var(--bad)]">
                         <span>Spending not covered</span>
                         <span className="tnum">{fmtCents(r.spendShortfallCents)}</span>
+                      </div>
+                    )}
+                    {r.unpaidTaxCents > 0 && (
+                      <div className="flex items-baseline justify-between gap-3 py-1 font-medium text-[var(--bad)]">
+                        <span>Unpaid tax — still owed</span>
+                        <span className="tnum">{fmtCents(r.unpaidTaxCents)}</span>
                       </div>
                     )}
                   </div>
@@ -9293,10 +9443,37 @@ export function RothConversion({
                     Funded in full — sources add up to the total need.
                   </p>
                 ) : (
-                  <p className="mt-2 text-sm text-[var(--bad)]" role="note">
-                    Short by {fmtCents(r.totalNeedCents - sourcesTotal)} — the
-                    plan&rsquo;s balances could not cover this year&rsquo;s needs.
-                  </p>
+                  <>
+                    <p className="mt-2 text-sm text-[var(--bad)]" role="note">
+                      Short by {fmtCents(r.totalNeedCents - sourcesTotal)} —{" "}
+                      {r.unpaidTaxCents > 0 && r.spendShortfallCents > 0 ? (
+                        <>
+                          the plan&rsquo;s balances could not cover{" "}
+                          {fmtCents(r.spendShortfallCents)} of this year&rsquo;s
+                          spending, and {fmtCents(r.unpaidTaxCents)} of its tax
+                          bill could not be paid and is still owed.
+                        </>
+                      ) : r.unpaidTaxCents > 0 ? (
+                        <>
+                          this year&rsquo;s spending was covered in full, but{" "}
+                          {fmtCents(r.unpaidTaxCents)} of its tax bill could not
+                          be paid — that part is tax still owed, not spending
+                          the plan fell short on.
+                        </>
+                      ) : (
+                        <>
+                          the plan&rsquo;s balances could not cover this
+                          year&rsquo;s needs.
+                        </>
+                      )}
+                    </p>
+                    <p className="mt-1 text-sm text-[var(--dim)]">
+                      The year foots as: funded {fmtCents(sourcesTotal)} +
+                      spending not covered {fmtCents(r.spendShortfallCents)} +
+                      unpaid tax {fmtCents(r.unpaidTaxCents)} = total need{" "}
+                      {fmtCents(r.totalNeedCents)}.
+                    </p>
+                  </>
                 )}
                 <h4 className="mt-4 border-b border-[var(--border)] pb-1 font-medium">
                   Income position
@@ -9671,7 +9848,7 @@ export function RothConversion({
                 Every year to age {PROOF_END_AGE} — funding split and ending balances
                 <InfoNote
                   ariaLabel="About the year-by-year funding table"
-                  text="One row per priced year. Spending is what the year needed for living costs; the funding columns are what actually paid the year's needs (spending plus its tax bill and Medicare premiums), in the engine's own ledger — so a year with no shortfall is funded in full by the columns shown."
+                  text="One row per priced year. Spending is what the year needed for living costs; the funding columns are what actually paid the year's needs (spending plus its tax bill and Medicare premiums — and, when health premiums are entered, the year's health premium, which the engine funds as part of the year's spending need), in the engine's own ledger — so a year with no shortfall is funded in full by the columns shown."
                 />
               </h3>
               <div className="mt-3 overflow-x-auto">
@@ -10543,7 +10720,10 @@ export function RothConversion({
             <strong>lifetime net cost</strong>, in today&rsquo;s dollars: lifetime
             federal and state tax, plus pre-59½ withholding penalties, plus lifetime
             IRMAA surcharges, minus the ACA premium credit kept (tracked per year,
-            never added to balances), plus a final tax on pre-tax money still standing
+            never added to balances)
+            {parseMoney(healthPremAcaHousehold) != null || parseMoney(healthPremAcaSingle) != null || parseMoney(healthPremMedicarePerPerson) != null
+              ? ", plus the lifetime health premiums you entered, counted gross — the credit subtracted above is what offsets them, so what the score really carries is the net premium"
+              : ""}, plus a final tax on pre-tax money still standing
             at the end age at your heir rate ({planInputs.heirRatePct}%)
             {reserveSet
               ? ` — except the preserved ${fmtDollars(optResult?.winner?.preservedPretax ?? planInputs.preservePretax ?? 0)}, valued at its ${reserveExitPct}% exit rate`
@@ -11803,6 +11983,8 @@ export function RothConversion({
                         {billRow("Adjusted gross income (AGI)", fmtCents(firstDrawYear.totalIncomeCents))}
                         {billRow("Taxable income", fmtCents(firstDrawYear.taxableIncomeCents))}
                         {billRow("Federal tax", fmtCents(firstDrawYear.federalTaxCents))}
+                        {firstDrawYear.stateTaxCents > 0 &&
+                          billRow("State tax", fmtCents(firstDrawYear.stateTaxCents))}
                         {firstDrawYear.acaCreditCents > 0 &&
                           billRow(
                             "ACA premium credit",
@@ -11816,7 +11998,8 @@ export function RothConversion({
                         {billRow(
                           "Net tax",
                           fmtCents(
-                            firstDrawYear.federalTaxCents -
+                            firstDrawYear.federalTaxCents +
+                              firstDrawYear.stateTaxCents -
                               firstDrawYear.acaCreditCents -
                               firstDrawYear.educationRefundableCents,
                           ),
@@ -12099,6 +12282,15 @@ export function RothConversion({
             })}
             {moneyField("ACA benchmark — one spouse / yr", labDialBenchSingle, setLabDialBenchSingle, {
               idLabel: "ACA benchmark — one spouse / yr — debate dial",
+            })}
+            {moneyField("Health premium — marketplace both / yr", labDialHealthHousehold, setLabDialHealthHousehold, {
+              idLabel: "Health premium — marketplace both / yr — debate dial",
+            })}
+            {moneyField("Health premium — marketplace one / yr", labDialHealthSingle, setLabDialHealthSingle, {
+              idLabel: "Health premium — marketplace one / yr — debate dial",
+            })}
+            {moneyField("Health premium — Medicare per person / yr", labDialHealthMedicare, setLabDialHealthMedicare, {
+              idLabel: "Health premium — Medicare per person / yr — debate dial",
             })}
             <div className="col-span-2 sm:col-span-3">
               <span className={labelCls}>Household schedule — debate dial</span>

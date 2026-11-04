@@ -220,6 +220,17 @@ export type NetCostBreakdown = {
   irmaa: number;
   // Lifetime ACA premium credit kept (subtracted).
   acaCredit: number;
+  // Lifetime health premiums (build v208): the GROSS
+  // premium the plan's health premium term charges (added
+  // — beside the credit above, which it offsets, so the
+  // identity's net premium effect is healthPremiumNet) and
+  // that NET figure itself (gross less the years' priced
+  // credits as funded; display). Both $0 for any plan that
+  // does not enter the term, and the identity then reduces
+  // to the pre-v208 formula bit for bit — including its
+  // known pre-v208 treatment of the credit.
+  healthPremium: number;
+  healthPremiumNet: number;
   // Lifetime refundable education credit (subtracted; T6):
   // the sum of the years' refundable American Opportunity
   // Credit portions. The NONrefundable education portions
@@ -274,6 +285,8 @@ export function netCostBreakdown(
   const penalty = r2(result.lifetimePenalty);
   const irmaa = r2(result.lifetimeIrmaa);
   const acaCredit = r2(result.lifetimeAcaKept);
+  const healthPremium = r2(result.lifetimeHealthPremiumGross ?? 0);
+  const healthPremiumNet = r2(result.lifetimeHealthPremiumNet ?? 0);
   const educationRefundable = r2(result.lifetimeEducationRefundable);
   const amt = r2(result.lifetimeAmt);
   // Split terminal pricing. With no reserve (floor absent /
@@ -292,6 +305,8 @@ export function netCostBreakdown(
     penalty,
     irmaa,
     acaCredit,
+    healthPremium,
+    healthPremiumNet,
     educationRefundable,
     amt,
     terminal,
@@ -299,7 +314,9 @@ export function netCostBreakdown(
     terminalPreserved,
     excessPretax,
     terminalExcess,
-    netCost: r2(tax + penalty + irmaa - acaCredit - educationRefundable + terminal),
+    netCost: r2(
+      tax + penalty + irmaa + healthPremium - acaCredit - educationRefundable + terminal,
+    ),
     ssCollected: r2(result.lifetimeSsCollected),
   };
 }
@@ -2383,6 +2400,17 @@ export type RothSavedLike = {
   // at 65 and her Medicare / IRMAA count starts at 65, exactly
   // as before.
   acaSpouseEndAge?: number | null;
+  // Health premium term (build v208). Optional: a saved
+  // record written before this build has none of these keys,
+  // which reads as blank = the term is not entered, so an
+  // untouched record prices bit-identically to before (the
+  // v135 embedded reconciliation exactly as it was). When
+  // any is entered, the engine funds the year's actual
+  // health premium on top of spending (see taxEngine's
+  // RothPlanInputs note).
+  healthPremiumAcaHouseholdCents?: number | null;
+  healthPremiumAcaSingleCents?: number | null;
+  healthPremiumMedicarePerPersonCents?: number | null;
   inflationPct: number | null;
   stateRatePct: number | null;
   // State of residence (T3 build). Optional: a saved record
@@ -2729,7 +2757,18 @@ function executionFillTarget(
   execInputs: RothPlanInputs,
   y: RothYear,
   ceilings: FillCeilings,
+  guardrail = false,
 ): { target: number; base: PriceYearInput; targetLabel: string | null } {
+  // The year's dividend split, exactly as the sim priced it
+  // (see the yield-income comment on the base below).
+  const qualifiedPct = Math.min(
+    100,
+    Math.max(0, plan.taxableDividendQualifiedPct ?? 100),
+  );
+  const qualifiedDividends =
+    Math.round(((y.detail.dividendIncome * qualifiedPct) / 100) * 100) / 100;
+  const ordinaryDividends =
+    Math.round((y.detail.dividendIncome - qualifiedDividends) * 100) / 100;
   const base: PriceYearInput = {
     calendarYear: y.year,
     filingStatus: y.filingStatus,
@@ -2742,6 +2781,23 @@ function executionFillTarget(
     ssBenefits: y.ssBenefits,
     taxExemptInterest: execInputs.taxExemptInterestAnnual,
     ...executionLedgerFields(plan, y),
+    // Taxable yield income (S-10): the re-solve prices the
+    // settled year, so its base carries the year's interest
+    // and dividend income exactly as the sim priced them —
+    // the sim's own split of the year's dividend total by the
+    // plan's qualified share (qualified on the gains stack,
+    // the remainder on the ordinary stack). The guardrail's
+    // stop is defined on consecutive steps' tax cost, and the
+    // §86 provisional income that drives the torpedo steps
+    // includes this yield income: a base without it places
+    // the torpedo zone thousands of dollars too late (on the
+    // sample household's torpedo year the re-solve named a
+    // $31,500 target against the march's $16,400 fill). A
+    // year with no yield income carries $0s here and prices
+    // bit-identically to before.
+    interestIncome: y.detail.interestIncome,
+    qualifiedDividends,
+    ordinaryDividends,
     inflationPct: plan.inflationPct,
     stateRatePct: plan.stateRatePct,
     residenceState: plan.residenceState ?? null,
@@ -2763,11 +2819,23 @@ function executionFillTarget(
       (e) => e.year === y.year,
     ),
   };
+  // Marginal-rate guardrail (S-10): the re-solve carries the
+  // same guardrail target the march's own fill carries — the
+  // strategy's bracket ceiling rate, when the guardrail is on
+  // and a bracket ceiling exists (the exact rule
+  // simulateRothPlan applies per year) — so the fill target
+  // stops where the march stopped. Before S-10 this solver
+  // priced the ceilings alone and named a target far past the
+  // guardrail stop (on the torpedo year, a $185,800 target
+  // against the march's $16,400 fill).
+  const guardrailTargetPct =
+    guardrail && ceilings.bracketTopPct != null ? ceilings.bracketTopPct : null;
   const target = fillConversion({
     base,
     ceilings,
     maxConversion: 100_000_000,
     acaCliff: y.detail.aca.active ? y.detail.aca.cliff : null,
+    guardrailTargetPct,
   });
   let targetLabel: string | null = null;
   // The preserve-reserve cap is a balance floor, not a priced
@@ -2788,6 +2856,23 @@ function executionFillTarget(
     );
     targetLabel = bound?.label ?? ceilingCaps[0]?.label ?? null;
   }
+  // When the guardrail is what stopped the fill — the
+  // ceilings-alone solver would have gone further — the
+  // guardrail names the target, in the march's own words for
+  // the same stop (the priced year's fill bound label). When
+  // a ceiling binds first (the two targets agree), the
+  // ceiling's label above stands.
+  if (guardrailTargetPct != null) {
+    const ceilingOnlyTarget = fillConversion({
+      base,
+      ceilings,
+      maxConversion: 100_000_000,
+      acaCliff: y.detail.aca.active ? y.detail.aca.cliff : null,
+    });
+    if (target < ceilingOnlyTarget - 0.005) {
+      targetLabel = `Marginal-rate guardrail (${guardrailTargetPct}%)`;
+    }
+  }
   return { target, base, targetLabel };
 }
 
@@ -2796,6 +2881,18 @@ export function priceExecutionYear(
   ceilings: FillCeilings | null,
   exec: ExecutionYearDollars,
   currentYear: number,
+  // Marginal-rate guardrail (S-10, engines review round 2):
+  // the saved strategy's guardrail flag, carried by the caller
+  // exactly as it carries the ceilings. Optional — absent /
+  // false prices bit-identically to before S-10 (every
+  // pre-existing caller). Before S-10 the parameter did not
+  // exist and the one-year strategy literal below carried
+  // ceilings only, so a guardrail plan's execution year filled
+  // straight through the Social Security torpedo zone the
+  // march stopped in — on the sample household's torpedo year
+  // the execution year priced a $155,100 conversion and a
+  // $185,800 fill target where the march filled $16,400.
+  guardrail = false,
 ): ExecutionYearResult {
   const age = currentYear - plan.birthYearPrimary;
   const execInputs: RothPlanInputs = {
@@ -2834,6 +2931,13 @@ export function priceExecutionYear(
     id: "execution-year",
     name: "This year",
     ceilings: eraCeilings,
+    // S-10: the guardrail rides the strategy literal, so the
+    // one-year march prices with the same marginal-rate stop
+    // as the plan's own march (its fill, its ceiling
+    // convergence, and its cliff / IRMAA grow-backs all read
+    // the strategy's guardrail through the one
+    // guardrailTargetPct derivation in simulateRothPlan).
+    guardrail,
   });
   const y = result.years[0] ?? null;
   const base: ExecutionYearResult = {
@@ -2857,7 +2961,7 @@ export function priceExecutionYear(
   if (eraCeilings == null || !ceilingsActive(eraCeilings)) {
     return { ...base, status: "no-ceiling" };
   }
-  const fill = executionFillTarget(plan, execInputs, y, eraCeilings);
+  const fill = executionFillTarget(plan, execInputs, y, eraCeilings, guardrail);
   base.fillTarget = fill.target;
   base.fillTargetLabel = fill.targetLabel;
   // When the preserve reserve is what stopped the priced
@@ -2954,9 +3058,13 @@ export function priceExecutionYear(
    Conventions: the conversion is stacked LAST in the ordinary
    stack (after other ordinary income, the RMD, and taxable
    Social Security) for the bracket-landing readout; the year is
-   priced at inflation 0, i.e. the named year's own law row in
-   that year's dollars (for a year past the law table, the
-   current-law row, undeflated); the pre-tax balance, when
+   priced under the named year's own law row (for a year past
+   the law table, the current-law row), with the law row's
+   statute-fixed dollar amounts deflated at the inflation rate
+   the caller supplies (the inflationPct input — the plan's own
+   rate, so a future year prices exactly as the plan march
+   prices it; absent, the amounts stand undeflated, the
+   pre-S-4 pricing); the pre-tax balance, when
    entered, is the combined prior-Dec-31 balance and the RMD
    runs on the primary's clock (rmdForYear — the Joint Life
    table when the spouse is sole beneficiary and more than 10
@@ -2985,7 +3093,106 @@ export type PlaygroundYearInputs = {
   taxExemptInterest: number;
   ssPrimary: number;
   ssSpouse: number; // joint returns only
-  conversion: number; // the typed Roth conversion for the year
+  // The typed Roth conversion for the year. A conversion is
+  // priced as ordinary income exactly like any pre-tax money
+  // out, but it is NOT spendable cash: it moves money from
+  // pre-tax to Roth and creates no cash to spend, so it never
+  // enters cashIn (M-2 split, engines review round 2 — before
+  // the split it did, and a big enough conversion flipped the
+  // "enough for the year" verdict by itself). A pre-tax amount
+  // taken out FOR SPENDING rides the separate spendingDraw
+  // dial below: same tax pricing, but spendable cash.
+  conversion: number;
+  // A pre-tax DRAW taken for spending (M-2 split; supplied
+  // by the December console and by the Playground projection
+  // in draw mode — absent / 0 on every other caller, and the
+  // year then prices bit-identically to before): priced
+  // through the SAME pre-tax money-out stack as the conversion
+  // (priceYear's conversion dial receives conversion +
+  // spendingDraw — a distribution for spending is taxed
+  // identically to a conversion dollar-for-dollar in a single
+  // year), but UNLIKE a conversion it IS spendable cash, so it
+  // is the money-out term cashIn counts. The two solvers vary
+  // the conversion dial alone, with any draw held fixed.
+  spendingDraw?: number;
+  // Cash and Roth funding draws (S-6, engines review round
+  // 2; supplied by the Playground's own dials and by the
+  // saved-plan-year loader from the march's funding ledger —
+  // absent / 0 on every other caller, and the year then
+  // prices bit-identically to before): money taken out of
+  // the CASH sleeve (cashDraw) and out of the ROTH accounts
+  // (rothDraw) to fund the year's spending. Each is priced
+  // as its OWN source: a cash draw is the household's own
+  // cash coming back — no sale, no gain, no income — and a
+  // Roth draw is a distribution of already-taxed money,
+  // which the single-year pricer treats as tax-free funding
+  // exactly as the plan march's funding ledger does (its
+  // rothDraw row is a source, never income). NEITHER enters
+  // the tax pricing at all — not AGI, not MAGI, not the ACA
+  // or IRMAA bases, not the gains stack — so a year funded
+  // from cash or Roth prices the same tax as the same year
+  // funded any other way; the draws enter ONLY cashIn, as
+  // spendable funding, beside the spending draw. Before S-6
+  // the Playground had no dial for either, so a cash- or
+  // Roth-funded year showed no funding for the money that
+  // actually paid its spending and its verdict read short
+  // by the whole draw (the mirror image of M-2: a $100,000
+  // cash drawing read −$78,500 "Short" against $180,000 of
+  // spending where the true answer is +$21,500 "Enough" —
+  // pinned by the tax suite's
+  // tax-engines-playground-cash-roth-funding-s6 fixture).
+  cashDraw?: number;
+  rothDraw?: number;
+  // Reinvested yield (S-3, engines review round 2; supplied
+  // ONLY by the saved-plan-year loader — absent / false on
+  // every other caller, and the year then prices
+  // bit-identically to before): the year's interest and
+  // ordinary dividends are the plan march's taxable yield,
+  // which the march REINVESTED — it stays inside the taxable
+  // balance (the balance grows at the full expected return,
+  // of which the yield is a component) and counts $0 of
+  // funding in the march's funding ledger. The yield still
+  // prices as income in full (AGI, MAGI, tax, credit are
+  // exactly as without the flag); only the cash-in readout
+  // changes: the reinvested yield is NOT spendable cash, so
+  // cashIn excludes interest + ordinaryDividends. Before
+  // this flag the loader's construction counted the same
+  // yield as cash ON TOP of the march-sized sales and draws
+  // that funded the year — the yield was spent twice, and a
+  // loaded year repriced with more cash left than the march
+  // funded, by the yield (plus the pre-M-2 conversion term,
+  // and less any cash-sleeve or Roth funding the Playground
+  // has no dial for: diff = yield + conversion − cashSpend
+  // − rothDraw on the settlement's identity).
+  yieldReinvested?: boolean;
+  // Inflation (S-4, engines review round 2; optional —
+  // absent / null on every pre-existing caller, and the
+  // year then prices bit-identically to before): the
+  // annual inflation rate, in percent, at which the
+  // year's statute-fixed dollar amounts are deflated —
+  // the SAME rate the plan march prices with (the saved
+  // record's inflationPct, planInputsFromSaved's 2.5
+  // default), handed to the shared priceYear pass and to
+  // the IRMAA tier helpers exactly as the march hands it,
+  // so a future year prices its §86 Social Security
+  // thresholds, §1411 NIIT thresholds, senior-deduction
+  // amount, SALT caps, and IRMAA lines at their deflated
+  // values and agrees with the march on taxable Social
+  // Security, tax, and NIIT — and the cliff / bracket
+  // fill solvers, which price through this same function,
+  // solve to the march's conversions. Before S-4 the
+  // pricer hard-coded 0, so a future year priced those
+  // amounts at their undeflated law-row values and
+  // disagreed with the march by amounts that grow with
+  // the horizon. The Playground supplies the saved plan's
+  // rate — inflation's home record is the Tax Plan, so
+  // there is deliberately no second Playground dial for
+  // it — falling back to the plan default 2.5 when no
+  // plan rate is stored. A rate at or below −100% is
+  // outside the deflation factor's domain and reads as
+  // unset (the request and paste validators reject it
+  // before it can reach here).
+  inflationPct?: number | null;
   stockSold: number;
   stockBasis: number;
   // Qualified dividends, exactly as printed on the Form 1040
@@ -3028,17 +3235,36 @@ export type PlaygroundYearInputs = {
   //   Absent / null / false = NOT established → the
   //   spouse's RMD prices on the Uniform Lifetime Table
   //   (the conservative direction — Uniform gives the
-  //   larger RMD).
+  //   larger RMD). Carriage (N-1, engines review round 2):
+  //   the Playground's "Start from my numbers" prefill now
+  //   carries this fact from the saved plan record into
+  //   the Playground's pricing (before N-1 the prefill
+  //   carried only spouseSoleBeneficiary, so a prefilled
+  //   year priced the spouse's RMD on the Uniform table
+  //   even when the record established reciprocity); the
+  //   remembered form, the paste payload, and the
+  //   runPlaygroundYear request carry it the same way.
   // · rmdAlreadyReceived: the part of this year's computed
   //   RMD the household has ALREADY received (and already
   //   counted in its entered income). The RMD income the
   //   pricer adds is the gross RMD net of this amount,
   //   floored at $0, so a paid RMD is never counted twice.
+  //   Supplied by the December console and, since S-2
+  //   (engines review round 2), by the Playground's own
+  //   dial — before S-2 the Playground passed none, so a
+  //   year whose entered income already held a paid RMD
+  //   priced that RMD twice.
   // · dependentMagiForAca: a filing dependent's MAGI that
   //   belongs in the §36B household MAGI (Form 8962 line 2b)
   //   ONLY. It is added to the ACA MAGI the credit / cliff
   //   step reads — never to AGI, taxable income, federal or
-  //   state tax, or the IRMAA MAGI.
+  //   state tax, or the IRMAA MAGI. Supplied by the
+  //   December console (its filing-dependent stray) and,
+  //   since S-2, by the Playground's own dial — before S-2
+  //   the Playground passed none, so a year with a filing
+  //   dependent priced its ACA position on the parents'
+  //   MAGI alone and could show a credit (and an under-the-
+  //   cliff position) the household is not owed.
   pretaxBalanceSpouse?: number | null;
   rmdAlreadyReceived?: number | null;
   dependentMagiForAca?: number | null;
@@ -3084,9 +3310,11 @@ export type PlaygroundYearInputs = {
   // load with it absent (no students), exactly as before.
   educationStudents?: EducationStudent[] | null;
   // Capital-loss carryforward entering the year (contract
-  // v111, round-17 fix F1+F2; December console only —
-  // absent / 0 on every Playground caller, and the year
-  // then prices bit-identically to before): the banked
+  // v111, round-17 fix F1+F2; supplied by the December
+  // console and, since S-2 (engines review round 2), by
+  // the Playground's own dials — absent / 0 when neither
+  // supplies them, and the year then prices bit-identically
+  // to before): the banked
   // short-term and long-term losses from prior years, in
   // dollars, stated as positive amounts, plus the
   // Washington-attributable portion of each (a portion of
@@ -3129,9 +3357,11 @@ export type PlaygroundYearInputs = {
   harvestPoolAmount?: number | null;
   harvestPoolBasisPct?: number | null;
   // ACA reconciliation facts (build v193, re-audit round 3
-  // SHOULD-4; December console only — absent on every
-  // Playground caller, and the year then prices bit-
-  // identically to before): the facts of the year's FILING
+  // SHOULD-4; supplied by the December console AND, since
+  // S-1 (engines review round 2), by the Playground, whose
+  // dials carry the same three facts — a year priced
+  // without them prices bit-identically to before): the
+  // facts of the year's FILING
   // SETTLEMENT — the advance premium credit actually taken
   // during the year (aptcTaken), the premium of the plan
   // actually enrolled in (acaEnrollmentPremiumAnnual, when
@@ -3158,10 +3388,19 @@ export type PlaygroundYearInputs = {
   // model's treatment, in which the household pays the
   // NET premium and the credit never settles in cash — and
   // netTaxBill is the total tax less the refundable
-  // education credit exactly as before (the F7 rule: the
-  // spending the cash left is compared against already
-  // holds the net premium, so netting the credit there
-  // would double-count it). When the facts are present but
+  // education credit exactly as before. The annual spending
+  // the cash left is compared against does NOT hold the
+  // premium in either form: since build v208 the health
+  // premium is priced separately, in the cash left after
+  // health premiums readout, so the credit counts once —
+  // in the settlement when the facts are supplied, in the
+  // net premium readout when they are not — and never
+  // twice. (The earlier F7 wording claimed the spending
+  // already held the net premium; v208 inverted that
+  // premise, which is what let the Playground's
+  // un-reconciled cash left disagree with December's
+  // settlement figure by the whole credit — S-1.) When
+  // the facts are present but
   // the settlement cannot price — the credit genuinely
   // unpriced, or a pre-2026 year whose APTC taken exceeds
   // the effective final credit (the capped-repayment
@@ -3172,6 +3411,25 @@ export type PlaygroundYearInputs = {
   aptcTaken?: number | null;
   acaEnrollmentPremiumAnnual?: number | null;
   acaCoverageReduction?: number | null;
+  // Health premium term (build v208; optional — absent /
+  // null on every pre-existing caller, December included,
+  // and the year then prices bit-identically to before):
+  // the year's GROSS marketplace premium of the plan
+  // actually enrolled in (healthPremiumAcaAnnual — read
+  // only when someone is not on Medicare this year) and
+  // the Medicare BASE premium per person on Medicare
+  // (healthPremiumMedicarePerPerson — Part B standard +
+  // Part D base, excluding the IRMAA surcharge, which the
+  // irmaa block prices separately for premiumYear + 2).
+  // The pricer reports the year's gross and NET health
+  // premium (net = the marketplace gross less the year's
+  // priced credit capped at that gross, plus the Medicare
+  // base in full) and cashLeftAfterHealthPremium =
+  // cashLeftAfterTax − the net premium. The premium never
+  // enters the tax, the MAGI, or netTaxBill: it is a cash
+  // cost of the year, reported beside them.
+  healthPremiumAcaAnnual?: number | null;
+  healthPremiumMedicarePerPerson?: number | null;
   // Annual spending (build v126, "enough for the year"):
   // the year's annual spending in dollars, for the
   // cash-left-vs-spending comparison ONLY — it never enters
@@ -3405,9 +3663,19 @@ export type PlaygroundYearResult = {
   // line 3b, its qualified part included, counted once),
   // other ordinary income, tax-exempt interest, the FULL
   // Social Security benefits (not just the taxable part),
-  // the year's RMD cash, the pre-tax money out, and the gross
-  // proceeds of any stock sale (its return-of-basis part
-  // included — it is cash in hand, not income). The RMD cash
+  // the year's RMD cash, a pre-tax SPENDING DRAW when one
+  // rides the spendingDraw dial (the December console's
+  // draw), the CASH and ROTH funding draws when they ride
+  // the cashDraw / rothDraw dials (S-6 — spendable funding
+  // priced as its own source: no sale, no gain, no income),
+  // and the gross proceeds of any stock sale (its
+  // return-of-basis part included — it is cash in hand, not
+  // income). A Roth CONVERSION is never in it (M-2 split,
+  // engines review round 2): a conversion moves money from
+  // pre-tax to Roth — it creates no cash to spend — so
+  // counting it overstated the cash left by the whole
+  // conversion and could flip the "enough for the year"
+  // verdict on a year with no spendable cash at all. The RMD cash
   // is counted ONCE (build v127, round-19 finding 2):
   // the part already received sits inside other ordinary
   // income — the input contract states it is already
@@ -3426,12 +3694,15 @@ export type PlaygroundYearResult = {
   // same year on, so the two surfaces' cash left cannot
   // disagree. When no facts are supplied it is totalTax
   // less the refundable education credit alone: the ACA
-  // premium credit is NOT subtracted then, because the
-  // annual spending the cash left is compared against
-  // already holds the NET premium (gross benchmark less
-  // the credit), so subtracting the credit there would
-  // double-count it and overstate the cash left by the
-  // credit. (The plan score identity's own netting still
+  // premium credit is NOT subtracted then — it is treated
+  // as fully advanced, and it offsets only the separately
+  // priced health premium (build v208: the annual spending
+  // the cash left is compared against does NOT hold the
+  // premium; the premium is priced in the cash left after
+  // health premiums readout). The Playground supplies the
+  // facts since S-1, so its cash left is the settlement
+  // form; a caller that supplies none gets the plan-model
+  // form. (The plan score identity's own netting still
   // credits both beside the tax — that is the march's
   // lifetime score, not this single-year cash readout.)
   // When the facts are supplied but the settlement cannot
@@ -3441,9 +3712,63 @@ export type PlaygroundYearResult = {
   // is cashIn minus netTaxBill — BEFORE any spending: what
   // the year leaves in hand once its tax is settled. Pure
   // readouts of the same pricing; no priced figure moves.
+  // ONE exception to the cashIn definition above (S-3):
+  // when the caller supplies yieldReinvested (the
+  // saved-plan-year loader — the year's interest and
+  // dividends are the plan march's yield, which the march
+  // reinvested and counted as $0 of funding), cashIn
+  // EXCLUDES interest and the total ordinary dividends:
+  // that yield is not spendable cash on top of the
+  // march-sized sales and draws the loader also loads, and
+  // counting it spent the same yield twice.
   netTaxBill: number;
   cashIn: number;
   cashLeftAfterTax: number;
+  // Reinvested yield (S-3): the yieldReinvested input echoed,
+  // and the amount it kept out of cashIn — interest + the
+  // TOTAL ordinary dividends when the flag was supplied, $0
+  // otherwise. The yield still priced as income in full
+  // (interest / ordinaryDividends / agi above are untouched);
+  // these two fields only name what the cash readout did.
+  yieldReinvested: boolean;
+  reinvestedYield: number;
+  // Cash and Roth funding draws (S-6): the cashDraw /
+  // rothDraw inputs echoed — the spendable funding each
+  // draw added to cashIn ($0 when the caller supplied
+  // none). The draws priced as their own source: they are
+  // in cashIn and in NO income, gain, MAGI, or tax figure
+  // above.
+  cashDraw: number;
+  rothDraw: number;
+  // Inflation priced with (S-4): the inflationPct input
+  // resolved — the rate the year's statute-fixed amounts
+  // were deflated by, echoed so a consumer can see which
+  // treatment priced the year. 0 when the caller supplied
+  // none (the pre-S-4 pricing).
+  inflationPct: number;
+  // Health premium term (build v208): the year's GROSS
+  // health premium (the entered marketplace premium when
+  // someone is not on Medicare, plus the entered Medicare
+  // base premium × the persons on Medicare this year) and
+  // the NET premium, and the cash left after BOTH tax and
+  // the net premium. The marketplace part of the net is the
+  // gross less the credit cash actually received toward the
+  // premium: when the year's filing settlement prices
+  // (S-1 — the reconciliation facts supplied and the
+  // settlement priced), that is the advance credit taken —
+  // the rest of the final credit settles inside the net
+  // tax bill, so the credit counts exactly once across the
+  // two readouts; when no settlement prices, the credit is
+  // treated as fully advanced and the marketplace part is
+  // the gross less the year's priced credit, capped at
+  // that part (an unpriced credit — no benchmark entered —
+  // leaves the marketplace part in full). The Medicare part
+  // always counts in full. All three are $0 /
+  // cashLeftAfterTax itself when no premium input was
+  // supplied, so a year priced without them is bit-identical.
+  healthPremiumGross: number;
+  healthPremiumNet: number;
+  cashLeftAfterHealthPremium: number;
   // Annual spending for the "enough for the year" comparison
   // (build v126): the annualSpending input echoed in
   // dollars — null when no spending was given — and the
@@ -3469,7 +3794,8 @@ export type PlaygroundYearResult = {
   // conversion (two engine pricings).
   conversionFederalCost: number;
   conversionTotalCost: number; // the same difference, state tax included
-  // Watch-out: the typed conversion exceeds the pre-tax balance
+  // Watch-out: the typed pre-tax money out (the conversion
+  // plus any spending draw) exceeds the pre-tax balance
   // left after the priced RMD (only when a balance was entered).
   conversionExceedsBalance: boolean;
   // ACA: applies when at least one person is NOT on Medicare.
@@ -3593,12 +3919,93 @@ export type PlaygroundGainsFlags = {
   irmaaFlag: PlaygroundIrmaaGainsFlag | null;
 };
 
+/* The Playground's "Cash left after tax" justification text
+   (S-1, engines review round 2): the exact words the
+   Playground's ⓘ renders after its cash-in and net-bill
+   figures, exported so the client renders this constant
+   verbatim and the accuracy fixtures pin its substance —
+   the filing-settlement definition of the bill, and the
+   build v208 premium treatment (the premium is NOT in the
+   annual spending; it is priced separately), which is what
+   makes the settlement form the honest one. The earlier
+   text claimed the spending already held the net premium;
+   v208 inverted that premise, and the Playground's cash
+   left disagreed with December's by the whole credit until
+   S-1 supplied the reconciliation facts. */
+export const PLAYGROUND_CASH_LEFT_BASIS =
+  "the net tax bill is the year's filing settlement — the total tax, less the premium credit still due at filing, plus any advance credit taken above the final credit to repay, less any refundable education credit. The health premium is not in the annual spending: since the premium build it is priced separately, in the cash left after health premiums — so the credit counts once, here in the settlement, and the premium counts once, in its own readout.";
+
+/* S-12 (engines review round 2, settled STAND): the spouse's
+   pre-tax balance is the SPOUSE's money — it counts toward a
+   year's pre-tax total only on a joint return. A balance typed
+   while filing jointly goes stale when the filing switches to
+   single or head of household: the spouse dial keeps its value
+   in the form state, but none of it is the filer's to draw.
+   Before this gate, every total of the pair in this module —
+   the pricer's balance total (and with it the
+   conversionExceedsBalance check), the projection walk's
+   combined balance, and both fill solvers' draw caps — summed
+   the stale balance in, so a single filer holding $50,000 with
+   a stale $200,000 spouse balance was capped at $250,000 and
+   the ACA cliff fill solved a $62,600 draw (the whole
+   household-of-1 cliff room) against money the filer does not
+   hold. The gate lives here, in the shared pricing module, so
+   every caller prices the exclusion identically — the
+   Playground's fill chips, the December console (whose
+   headline and per-case draws solve through
+   solvePlaygroundAcaCliffFill on inputs that carry the
+   console's entered split verbatim), and any future caller.
+   An MFJ year is untouched: the spouse's balance counts in
+   full, exactly as before. (The spouse's RMD branch below was
+   already joint-gated; the totals were the leak.) */
+function countedSpousePretax(inp: {
+  filingStatus: FilingStatus;
+  pretaxBalanceSpouse?: number | null;
+}): number | null {
+  return inp.filingStatus === "mfj"
+    ? (inp.pretaxBalanceSpouse ?? null)
+    : null;
+}
+
 export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearResult {
   const fs = inp.filingStatus;
   const joint = fs === "mfj";
   const ageSpouse = joint ? inp.ageSpouse : null;
   const law = lawForYear(inp.taxYear);
+  // The inflation the year prices with (S-4): the caller's
+  // rate when it is a usable one (finite and above −100% —
+  // the deflation factor 1 / (1 + p/100)^n needs p > −100),
+  // else 0, the pre-S-4 pricing — bit-identical for every
+  // caller that supplies nothing (the December console
+  // included; its year is the current year, whose deflation
+  // factor is 1 at any rate). This one resolved rate feeds
+  // the priceYear pass below and every IRMAA tier call in
+  // this pricing, exactly as the plan march feeds its own
+  // rate to the same helpers.
+  const inflationPct =
+    inp.inflationPct != null &&
+    Number.isFinite(inp.inflationPct) &&
+    inp.inflationPct > -100
+      ? inp.inflationPct
+      : 0;
   const ssBenefits = r2(inp.ssPrimary + (joint ? inp.ssSpouse : 0));
+  // The year's pre-tax money out, split by purpose (M-2,
+  // engines review round 2): the conversion (money moved to
+  // Roth — NOT spendable cash) and the spending draw (money
+  // taken out to spend — spendable cash). The TAX pricing
+  // cannot tell them apart and must not: both are ordinary
+  // income dollar-for-dollar, so priceYear's conversion dial
+  // below receives the SUM. Only the cash-in readout separates
+  // them — it counts the draw and never the conversion.
+  const spendingDraw = Math.max(0, inp.spendingDraw ?? 0);
+  const moneyOut = r2(inp.conversion + spendingDraw);
+  // Cash and Roth funding draws (S-6, engines review round
+  // 2): spendable funding priced as its own source — the
+  // draws never enter the tax pricing below (no stack reads
+  // them); they join cashIn only, at the readout. Absent
+  // reads $0, bit-identical to before.
+  const cashDraw = Math.max(0, inp.cashDraw ?? 0);
+  const rothDraw = Math.max(0, inp.rothDraw ?? 0);
   // Dividends are entered exactly as printed on the Form
   // 1040: ordinaryDividends is the line 3b TOTAL, which
   // already includes the line 3a qualified part. Count them
@@ -3724,11 +4131,20 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // income, so pricing it again would count it twice. The
   // balance caps keep using the GROSS RMD: the received
   // part has left the accounts too.
-  const hasSpouseBalance = inp.pretaxBalanceSpouse != null;
+  // S-12: only a JOINT year's spouse balance counts toward
+  // the total (countedSpousePretax) — on a single or head-of-
+  // household return a spouse balance still on the dial is
+  // stale and prices as not entered: no spouse RMD (the branch
+  // below was already joint-gated), no addition to the total
+  // the conversion is checked against, and — when the primary
+  // balance is also unentered — no balance at all (rmdPriced
+  // reads false, as a year with nothing entered does).
+  const spouseBalanceCounted = countedSpousePretax(inp);
+  const hasSpouseBalance = spouseBalanceCounted != null;
   const totalPretaxBalance =
     inp.pretaxBalance == null && !hasSpouseBalance
       ? null
-      : r2((inp.pretaxBalance ?? 0) + (inp.pretaxBalanceSpouse ?? 0));
+      : r2((inp.pretaxBalance ?? 0) + (spouseBalanceCounted ?? 0));
   let rmdPrimary = 0;
   let rmdSpouse = 0;
   let rmdDivisor: number | null = null;
@@ -3804,7 +4220,12 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // of the entered line 3b total computed above.
     ordinaryDividends: nonQualifiedDividends,
     rmd,
-    conversion: inp.conversion,
+    // The TOTAL pre-tax money out (conversion + spending
+    // draw, the M-2 split above): priceYear's one money-out
+    // dial prices the sum, so the year's tax, MAGI, and
+    // credit are exactly what either dial alone would price
+    // at the same total.
+    conversion: moneyOut,
     extraPreTaxDraw: 0,
     ssBenefits,
     taxExemptInterest: inp.taxExemptInterest,
@@ -3823,7 +4244,11 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     ...(waGainsBase != null ? { waGainsBase } : {}),
     qualifiedDividends,
     capitalLossAllowance,
-    inflationPct: 0,
+    // The caller's inflation (S-4): priceYear deflates the
+    // law row's statute-fixed amounts by the years between
+    // the priced year and the law row at this rate — the
+    // march's own treatment, so the two agree.
+    inflationPct,
     stateRatePct: inp.stateRatePct,
     residenceState: inp.residenceState ?? null,
     // Itemized deductions (T5): the typed components price
@@ -3925,7 +4350,13 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   const prefTyped = r2(ltcgNet + qualifiedDividends);
 
   const priced = priceYear(base);
-  const pricedZero = priceYear({ ...base, conversion: 0 });
+  // The no-CONVERSION price: the money-out dial keeps only
+  // the spending draw, if one rides (M-2 split) — so the
+  // conversion's own cost below is the tax the conversion
+  // alone adds on top of the same year with the same draw
+  // still taken. With no draw entered this is exactly the
+  // pre-split $0-conversion price.
+  const pricedZero = priceYear({ ...base, conversion: spendingDraw });
 
   // Loss-ledger year-end reconciliation (build v111):
   // the carry-out is fixed ONCE, against the priced year's
@@ -4084,9 +4515,9 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   const personsOnMedicare =
     (inp.agePrimary + 2 >= 65 ? 1 : 0) +
     (joint && ageSpouse != null && ageSpouse + 2 >= 65 ? 1 : 0);
-  const tier = irmaaTierFor(priced.magi, fs, premiumLaw, premiumYear, 0);
+  const tier = irmaaTierFor(priced.magi, fs, premiumLaw, premiumYear, inflationPct);
   const annualPerPerson = irmaaAnnualPerPerson(tier, premiumLaw);
-  const nextTierRaw = irmaaTierUpTo(tier, fs, premiumLaw, premiumYear, 0);
+  const nextTierRaw = irmaaTierUpTo(tier, fs, premiumLaw, premiumYear, inflationPct);
   const irmaa: PlaygroundYearResult["irmaa"] = {
     applies: personsOnMedicare > 0,
     personsOnMedicare,
@@ -4218,11 +4649,11 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     fs,
     premiumLaw,
     premiumYear,
-    0,
+    inflationPct,
   );
   if (hasGainsTyped && personsOnMedicare > 0 && tier !== withoutTier) {
     const lowerTier = Math.min(tier, withoutTier);
-    const lineRaw = irmaaTierUpTo(lowerTier, fs, premiumLaw, premiumYear, 0);
+    const lineRaw = irmaaTierUpTo(lowerTier, fs, premiumLaw, premiumYear, inflationPct);
     const line = Number.isFinite(lineRaw) ? lineRaw : null;
     if (tier > withoutTier) {
       irmaaFlag = {
@@ -4295,20 +4726,25 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // build v116): the year's cash in (see the field's
   // note on PlaygroundYearResult) less its net tax bill.
   // The bill has two forms (build v193, re-audit round 3
-  // SHOULD-4). UN-RECONCILED (the default — no
-  // reconciliation facts supplied): the total tax, less
-  // the refundable education credit. The ACA premium
-  // credit is NOT subtracted here: the annual spending
-  // the cash left is compared against already holds the
-  // NET premium (gross benchmark less the credit), so
-  // subtracting the credit again would double-count it
-  // and overstate the cash left by the credit. The credit
-  // is still priced and shown in the year's ACA section —
-  // it just does not enter the cash left, because the
-  // premium it pays is already netted out of the spending.
+  // SHOULD-4). UN-RECONCILED (no reconciliation facts
+  // supplied — the plan model's form, and the form every
+  // Playground year priced before S-1): the total tax,
+  // less the refundable education credit. The ACA premium
+  // credit is NOT subtracted here: it is treated as fully
+  // advanced against the year's premiums, and it enters
+  // only the health premium readout below, which nets it
+  // off the separately priced premium. The annual spending
+  // the cash left is compared against does NOT hold the
+  // premium (build v208 prices the premium separately), so
+  // an un-reconciled cash left is the year's cash before
+  // its filing settlement — it understates the settlement
+  // figure by the credit still due (or overstates it by
+  // any excess advance), which is exactly the gap S-1
+  // closed by having the Playground supply the facts.
   // SETTLEMENT (the caller supplied the year's
   // reconciliation facts — aptcTaken present, as the
-  // December console's assembly always supplies): the
+  // December console's assembly always supplies and the
+  // Playground's dial construction supplies since S-1): the
   // bill is the year's filing settlement, derived from
   // this same pricing exactly as the December layer
   // derives it — the final allowable credit (the priced
@@ -4332,9 +4768,48 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // When the facts are supplied but the settlement
   // cannot price, the bill falls back to the un-reconciled
   // form; the December layer shows no cash left then.
+  // The money-out term is the SPENDING DRAW only (M-2,
+  // engines review round 2): before the split, cashIn
+  // counted inp.conversion, so a conversion — money moved
+  // from pre-tax to Roth, never cash in hand — inflated the
+  // cash left by its full amount and the "enough for the
+  // year" verdict flipped on conversion size alone (a
+  // $200,000 conversion read $11,480 to the good against
+  // $180,000 of spending on a year whose true cash left was
+  // −$8,520). A draw taken for spending IS cash in hand, so
+  // the December console's draw rides the spendingDraw dial
+  // and counts here exactly as it did when it rode the
+  // conversion dial — December's cash left is unchanged.
+  // The reinvested-yield exclusion (S-3, engines review
+  // round 2): when the caller supplies yieldReinvested (the
+  // saved-plan-year loader), the year's interest + total
+  // ordinary dividends are the plan march's yield — the
+  // march reinvested that yield (it stays in the balance
+  // and counts $0 of funding), and the loader's sales and
+  // draws are already march-sized, so counting the yield
+  // as cash here spent it a second time and a loaded year
+  // repriced with more cash left than the march funded.
+  // The yield still prices as income in full above (AGI,
+  // MAGI, tax, credit untouched); only this readout keeps
+  // it out. Absent / false, the term is $0 and the readout
+  // is bit-identical to before.
+  // The cash and Roth funding draws (S-6, engines review
+  // round 2) are the mirror image: cash the year DID have
+  // that no term above counted. A draw from the cash
+  // sleeve or from Roth funded the year's spending exactly
+  // as a taxable sale or a pre-tax draw does, but it is
+  // neither — no gain rides it and no income stack takes
+  // it — so before S-6 a year funded that way read its
+  // verdict short by the whole draw. The two draws count
+  // here, dollar for dollar, and in no priced figure.
+  const yieldReinvested = inp.yieldReinvested === true;
+  const reinvestedYield = yieldReinvested
+    ? r2(inp.interest + inp.ordinaryDividends)
+    : 0;
   const cashIn = r2(
     inp.interest +
-      inp.ordinaryDividends +
+      inp.ordinaryDividends -
+      reinvestedYield +
       inp.otherOrdinary +
       inp.taxExemptInterest +
       ssBenefits +
@@ -4346,11 +4821,21 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
       // extra term overstated cash-in by the received
       // amount.
       rmd +
-      inp.conversion +
+      spendingDraw +
+      // Cash and Roth funding draws (S-6): the year's
+      // spendable funding from the cash sleeve and the
+      // Roth accounts — cash in hand, priced as their own
+      // source (never income, never a taxable sale), so
+      // they count here and nowhere else in the pricing.
+      cashDraw +
+      rothDraw +
       inp.stockSold,
   );
   const totalTaxBill = r2(priced.federalTax + priced.stateTax);
   let netTaxBill = r2(totalTaxBill - priced.educationRefundable);
+  // Whether the settlement below actually priced — the
+  // health premium pairing further down keys on it (S-1).
+  let settlementPriced = false;
   if (inp.aptcTaken != null) {
     // The filing settlement, on this pricing's own
     // figures — the same derivation the December layer
@@ -4400,9 +4885,52 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
           excessAptcRepayment -
           priced.educationRefundable,
       );
+      settlementPriced = true;
     }
   }
   const cashLeftAfterTax = r2(cashIn - netTaxBill);
+  // HEALTH PREMIUM TERM (build v208): the year's health
+  // premium from the entered amounts — the marketplace
+  // gross counts only when someone is not on Medicare
+  // (aca.applies), the Medicare base counts per person on
+  // Medicare THIS year (the onMedicare flags, not the
+  // IRMAA premium-year count). The net marketplace part is
+  // the gross less the credit cash received toward the
+  // premium (see healthCreditTowardPremium below): the
+  // advance credit taken when the filing settlement priced
+  // (S-1), otherwise the priced credit capped at the
+  // gross; an unpriced credit (null — no benchmark) leaves
+  // the gross whole. Readouts only: no priced figure moves.
+  const healthGrossAcaPg =
+    inp.healthPremiumAcaAnnual != null && aca.applies
+      ? Math.max(0, inp.healthPremiumAcaAnnual)
+      : 0;
+  const healthMedicarePersonsPg =
+    (inp.onMedicarePrimary ? 1 : 0) +
+    (joint && inp.onMedicareSpouse ? 1 : 0);
+  const healthGrossMedicarePg =
+    inp.healthPremiumMedicarePerPerson != null
+      ? r2(Math.max(0, inp.healthPremiumMedicarePerPerson) * healthMedicarePersonsPg)
+      : 0;
+  const healthPremiumGross = r2(healthGrossAcaPg + healthGrossMedicarePg);
+  // The credit cash netted off the marketplace gross: the
+  // advance credit actually taken when the settlement
+  // above priced (S-1 — the remainder of the final credit
+  // already settled inside netTaxBill, so netting the full
+  // priced credit here as well would count it twice and
+  // the after-health readout would fall by the credit
+  // still due); otherwise the priced credit capped at the
+  // gross (the fully-advanced treatment), exactly as before.
+  const healthCreditTowardPremium = settlementPriced
+    ? Math.max(0, inp.aptcTaken ?? 0)
+    : Math.min(aca.credit ?? 0, healthGrossAcaPg);
+  const healthPremiumNet = r2(
+    healthGrossMedicarePg +
+      (healthGrossAcaPg > 0
+        ? Math.max(0, healthGrossAcaPg - healthCreditTowardPremium)
+        : 0),
+  );
+  const cashLeftAfterHealthPremium = r2(cashLeftAfterTax - healthPremiumNet);
   // "Enough for the year" (build v126): cash left after
   // tax minus the annual spending — a pure readout, the
   // spending never entering the tax above. Null when no
@@ -4495,6 +5023,14 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     netTaxBill,
     cashIn,
     cashLeftAfterTax,
+    yieldReinvested,
+    reinvestedYield,
+    cashDraw,
+    rothDraw,
+    inflationPct,
+    healthPremiumGross,
+    healthPremiumNet,
+    cashLeftAfterHealthPremium,
     annualSpending,
     cashLeftVsSpending,
     landingBracketPct,
@@ -4507,7 +5043,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     ),
     conversionExceedsBalance:
       totalPretaxBalance != null &&
-      inp.conversion > totalPretaxBalance - rmdGross + 0.005,
+      moneyOut > totalPretaxBalance - rmdGross + 0.005,
     aca,
     irmaa,
     gainsFlags,
@@ -4708,10 +5244,15 @@ export function projectPlaygroundYears(
      per-year inputs below null the spouse balance out so the
      pricer never counts it twice (once inside the combined
      balance, once on its own clock). */
+  // S-12: the combined balance counts the spouse's balance
+  // only on a joint template (countedSpousePretax) — a stale
+  // spouse balance on a single / head-of-household template is
+  // not the filer's money and never enters the walk.
+  const countedSpouse = countedSpousePretax(template);
   const combinedPretaxBalance =
-    template.pretaxBalance == null && template.pretaxBalanceSpouse == null
+    template.pretaxBalance == null && countedSpouse == null
       ? null
-      : (template.pretaxBalance ?? 0) + (template.pretaxBalanceSpouse ?? 0);
+      : (template.pretaxBalance ?? 0) + (countedSpouse ?? 0);
   // The projection's start age (see the header comment):
   // an earlier from-age moves the WALK's start (the entered
   // starting balances are that first year's balances); a
@@ -4861,7 +5402,17 @@ export function projectPlaygroundYears(
       onMedicareSpouse: ageSpouse != null && ageSpouse >= 65,
       ssPrimary,
       ssSpouse,
-      conversion: moneyOut,
+      // The walk's money out rides the dial its kind names
+      // (M-2 split): a conversion on the conversion dial —
+      // not spendable cash, so the year's cash-in / cash-left
+      // readouts exclude it — and a draw on the spendingDraw
+      // dial, where it counts as cash in hand. The priced tax
+      // is identical either way (the pricer prices the two
+      // dials' sum as the year's pre-tax money out), and the
+      // walk's own balance math below reads moneyOut itself,
+      // never the dials, so no balance moves.
+      conversion: opts.moneyOutKind === "conversion" ? moneyOut : 0,
+      spendingDraw: opts.moneyOutKind === "draw" ? moneyOut : 0,
       stockSold: stockSoldEffective,
       stockBasis: stockBasisEffective,
       pretaxBalance: pretax,
@@ -4978,10 +5529,15 @@ export function solvePlaygroundBracketFill(
   // does not reach the top, the cap is the answer — the
   // bracket simply can't be filled from this balance.
   let capCents: number | null = null;
+  // S-12: the cap totals only the balance the filer holds —
+  // the spouse's balance counts on a joint return alone
+  // (countedSpousePretax), so a stale spouse balance left on
+  // the dial by a switch to single filing cannot raise it.
+  const countedSpouse = countedSpousePretax(inp);
   const typedTotalBalance =
-    inp.pretaxBalance == null && inp.pretaxBalanceSpouse == null
+    inp.pretaxBalance == null && countedSpouse == null
       ? null
-      : (inp.pretaxBalance ?? 0) + (inp.pretaxBalanceSpouse ?? 0);
+      : (inp.pretaxBalance ?? 0) + (countedSpouse ?? 0);
   if (typedTotalBalance != null) {
     capCents = Math.max(0, Math.round((typedTotalBalance - zero.rmdGross) * 100));
     if (!pastTop(capCents / 100)) return r2(capCents / 100);
@@ -5069,10 +5625,17 @@ export function solvePlaygroundAcaCliffFill(
   // balance (the RMD comes out first). If even the cap does
   // not reach the target, the cap is the answer.
   let capCents: number | null = null;
+  // S-12: the cap totals only the balance the filer holds —
+  // the spouse's balance counts on a joint return alone
+  // (countedSpousePretax), so a stale spouse balance left on
+  // the dial by a switch to single filing cannot raise it.
+  // This is the December headline's solver too: the console's
+  // entered split reaches it verbatim, stale balance included.
+  const countedSpouse = countedSpousePretax(inp);
   const typedTotalBalance =
-    inp.pretaxBalance == null && inp.pretaxBalanceSpouse == null
+    inp.pretaxBalance == null && countedSpouse == null
       ? null
-      : (inp.pretaxBalance ?? 0) + (inp.pretaxBalanceSpouse ?? 0);
+      : (inp.pretaxBalance ?? 0) + (countedSpouse ?? 0);
   if (typedTotalBalance != null) {
     capCents = Math.max(0, Math.round((typedTotalBalance - zero.rmdGross) * 100));
     if (!pastTarget(capCents / 100)) return r2(capCents / 100);
@@ -5123,15 +5686,75 @@ export function solvePlaygroundAcaCliffFill(
    tag the shape so a loader can refuse anything else plainly. */
 export type PlaygroundPastePayload = Omit<
   PlaygroundYearInputs,
-  "residenceState" | "educationStudents"
+  | "residenceState"
+  | "educationStudents"
+  | "spendingDraw"
+  | "capitalLossCarryInSt"
+  | "capitalLossCarryInLt"
+  | "capitalLossCarryInStWa"
+  | "capitalLossCarryInLtWa"
+  | "rmdAlreadyReceived"
+  | "dependentMagiForAca"
+  | "cashDraw"
+  | "rothDraw"
+  | "pretaxBalanceSpouse"
+  | "primarySoleBeneficiaryOfSpouse"
 > & {
   kind: "playground-year";
   version: 1;
+  // The spouse's pre-tax balance: always present in a
+  // payload this builder emits (null when no spouse
+  // balance was entered), so a replay prices the same
+  // spouse RMD the copied year priced. (The engine inputs
+  // type it as an optional nullable; the payload carries
+  // it always-present nullable, like every other unset
+  // dial here.)
+  pretaxBalanceSpouse: number | null;
   // Always present in a payload this builder emits (null when
   // unset), so a replay prices the same state layer and the
   // same credits the copied year priced.
   residenceState: "WA" | "other" | null;
   educationStudents: EducationStudent[] | null;
+  // The entering capital-loss carryforward (S-2): always
+  // present in a payload this builder emits (null when
+  // unset), so a replay prices the same loss ledger the
+  // copied year priced. (The engine inputs type these four
+  // as optional numbers; the payload carries them nullable,
+  // like every other unset dial here.)
+  capitalLossCarryInSt: number | null;
+  capitalLossCarryInLt: number | null;
+  capitalLossCarryInStWa: number | null;
+  capitalLossCarryInLtWa: number | null;
+  // The RMD already received and the dependent MAGI (S-2):
+  // the same always-present, null-when-unset spelling.
+  rmdAlreadyReceived: number | null;
+  dependentMagiForAca: number | null;
+  // The reinvested-yield fact (S-3): always present in a
+  // payload this builder emits (false when unset), so a
+  // replayed paste of a loaded saved-plan year keeps the
+  // yield out of cash in exactly as the loader priced it.
+  yieldReinvested: boolean;
+  // The inflation rate (S-4): always present in a payload
+  // this builder emits (null when unset), so a replay
+  // prices the same deflated statute-fixed amounts the
+  // copied year priced.
+  inflationPct: number | null;
+  // The cash and Roth funding draws (S-6): always present
+  // in a payload this builder emits (null when unset), so
+  // a replay prices the same spendable funding the copied
+  // year priced. (The engine inputs type these two as
+  // optional numbers; the payload carries them nullable,
+  // like every other unset dial here.)
+  cashDraw: number | null;
+  rothDraw: number | null;
+  // The reciprocal beneficiary fact (N-1, engines review
+  // round 2): always present in a payload this builder
+  // emits (null when unset), so a replay prices the same
+  // spouse RMD table the copied year priced. (The engine
+  // inputs type this fact as an optional boolean-or-null;
+  // the payload carries it always-present nullable, like
+  // every other unset fact here.)
+  primarySoleBeneficiaryOfSpouse: boolean | null;
 };
 
 export const PLAYGROUND_PASTE_FIELDS = [
@@ -5153,12 +5776,43 @@ export const PLAYGROUND_PASTE_FIELDS = [
   "qualifiedDividends",
   "pretaxBalance",
   "pretaxBalanceSpouse",
+  "primarySoleBeneficiaryOfSpouse",
   "spouseSoleBeneficiary",
   "acaHouseholdSize",
   "acaBenchmarkAnnual",
+  "aptcTaken",
+  "acaCoverageReduction",
+  "healthPremiumAcaAnnual",
+  "healthPremiumMedicarePerPerson",
   "stateRatePct",
   "residenceState",
   "educationStudents",
+  /* The December-only pricing facts (S-2): the entering
+     capital-loss carryforward (four dials), the RMD
+     already received, and the dependent MAGI for ACA —
+     carried so a replayed paste reprices the same year
+     the Playground's dials price. */
+  "capitalLossCarryInSt",
+  "capitalLossCarryInLt",
+  "capitalLossCarryInStWa",
+  "capitalLossCarryInLtWa",
+  "rmdAlreadyReceived",
+  "dependentMagiForAca",
+  /* The reinvested-yield fact (S-3): carried so a replayed
+     paste of a loaded saved-plan year reprices the same
+     cash left the loader priced (the yield kept out of
+     cash in). */
+  "yieldReinvested",
+  /* The inflation rate (S-4): carried so a replayed paste
+     reprices the same deflated statute-fixed amounts the
+     copied year priced. */
+  "inflationPct",
+  /* The cash and Roth funding draws (S-6): carried so a
+     replayed paste reprices the same spendable funding
+     the copied year priced (the draws in cash in, never
+     in the tax). */
+  "cashDraw",
+  "rothDraw",
 ] as const;
 
 /* The paste fields a payload written before the cold-AI
@@ -5175,6 +5829,49 @@ export const PLAYGROUND_PASTE_OPTIONAL_FIELDS = [
      loads with it absent — no spouse balance, no spouse
      RMD, exactly as before. */
   "pretaxBalanceSpouse",
+  /* The health premium inputs (health premium build): a
+     paste written before they existed carries neither key
+     and loads with both absent — no premium priced, exactly
+     as before. */
+  "healthPremiumAcaAnnual",
+  "healthPremiumMedicarePerPerson",
+  /* The ACA reconciliation facts (S-1): a paste written
+     before they existed carries neither key and loads with
+     both absent — no filing settlement priced, exactly as
+     before. */
+  "aptcTaken",
+  "acaCoverageReduction",
+  /* The December-only pricing facts (S-2): a paste written
+     before they existed carries none of the six keys and
+     loads with them all absent — no carry-in netted, no
+     RMD netted, no dependent MAGI added, exactly as
+     before. */
+  "capitalLossCarryInSt",
+  "capitalLossCarryInLt",
+  "capitalLossCarryInStWa",
+  "capitalLossCarryInLtWa",
+  "rmdAlreadyReceived",
+  "dependentMagiForAca",
+  /* The reinvested-yield fact (S-3): a paste written before
+     it existed carries no such key and loads with it absent
+     — the yield counts as cash in, exactly as before. */
+  "yieldReinvested",
+  /* The inflation rate (S-4): a paste written before it
+     existed carries no such key and loads with it absent —
+     statute-fixed amounts undeflated, exactly as before. */
+  "inflationPct",
+  /* The cash and Roth funding draws (S-6): a paste written
+     before they existed carries neither key and loads with
+     both absent — no cash or Roth funding counted, exactly
+     as before. */
+  "cashDraw",
+  "rothDraw",
+  /* The reciprocal beneficiary fact (N-1): a paste written
+     before it was carried carries no such key and loads
+     with it absent — not established, so the spouse's RMD
+     prices on the Uniform Lifetime Table, exactly as
+     before. */
+  "primarySoleBeneficiaryOfSpouse",
 ] as const;
 
 export function playgroundPastePayload(
@@ -5201,9 +5898,25 @@ export function playgroundPastePayload(
     qualifiedDividends: inp.qualifiedDividends,
     pretaxBalance: inp.pretaxBalance,
     pretaxBalanceSpouse: inp.pretaxBalanceSpouse ?? null,
+    primarySoleBeneficiaryOfSpouse:
+      inp.primarySoleBeneficiaryOfSpouse ?? null,
     spouseSoleBeneficiary: inp.spouseSoleBeneficiary,
     acaHouseholdSize: inp.acaHouseholdSize,
     acaBenchmarkAnnual: inp.acaBenchmarkAnnual,
+    aptcTaken: inp.aptcTaken ?? null,
+    acaCoverageReduction: inp.acaCoverageReduction ?? null,
+    healthPremiumAcaAnnual: inp.healthPremiumAcaAnnual ?? null,
+    healthPremiumMedicarePerPerson: inp.healthPremiumMedicarePerPerson ?? null,
+    capitalLossCarryInSt: inp.capitalLossCarryInSt ?? null,
+    capitalLossCarryInLt: inp.capitalLossCarryInLt ?? null,
+    capitalLossCarryInStWa: inp.capitalLossCarryInStWa ?? null,
+    capitalLossCarryInLtWa: inp.capitalLossCarryInLtWa ?? null,
+    rmdAlreadyReceived: inp.rmdAlreadyReceived ?? null,
+    dependentMagiForAca: inp.dependentMagiForAca ?? null,
+    yieldReinvested: inp.yieldReinvested === true,
+    inflationPct: inp.inflationPct ?? null,
+    cashDraw: inp.cashDraw ?? null,
+    rothDraw: inp.rothDraw ?? null,
     stateRatePct: inp.stateRatePct,
     residenceState: inp.residenceState ?? null,
     educationStudents: inp.educationStudents
@@ -5284,6 +5997,22 @@ export function parsePlaygroundPaste(
   if (typeof r.spouseSoleBeneficiary !== "boolean") {
     return fail("That paste’s sole-beneficiary flag is not a yes/no value — nothing was loaded.");
   }
+  /* The reciprocal beneficiary fact is optional (N-1): a
+     paste written before the payload carried it has no
+     such key and loads with it absent — not established,
+     so the spouse's RMD prices on the Uniform Lifetime
+     Table, exactly as before; a present value must be a
+     yes/no value or null (unset). */
+  let primarySoleBeneficiaryOfSpouse: boolean | null = null;
+  if (
+    r.primarySoleBeneficiaryOfSpouse !== null &&
+    r.primarySoleBeneficiaryOfSpouse !== undefined
+  ) {
+    if (typeof r.primarySoleBeneficiaryOfSpouse !== "boolean") {
+      return fail("That paste’s reciprocal-beneficiary flag is not a yes/no value — nothing was loaded.");
+    }
+    primarySoleBeneficiaryOfSpouse = r.primarySoleBeneficiaryOfSpouse;
+  }
   const interest = money("interest");
   const ordinaryDividends = money("ordinaryDividends");
   const otherOrdinary = money("otherOrdinary", true);
@@ -5336,6 +6065,124 @@ export function parsePlaygroundPaste(
       return fail("That paste’s benchmark premium is not a valid dollar figure — nothing was loaded.");
     }
     acaBenchmarkAnnual = n;
+  }
+  /* The ACA reconciliation facts are optional (S-1): a paste
+     written before they existed carries neither key and
+     loads with both absent — no filing settlement priced,
+     exactly as before; absent or null parses as null, and a
+     value must be a valid non-negative dollar figure. */
+  let aptcTaken: number | null = null;
+  if (r.aptcTaken !== null && r.aptcTaken !== undefined) {
+    const n = num(r.aptcTaken);
+    if (n == null || n < 0) {
+      return fail("That paste’s advance credit taken is not a valid dollar figure — nothing was loaded.");
+    }
+    aptcTaken = n;
+  }
+  let acaCoverageReduction: number | null = null;
+  if (r.acaCoverageReduction !== null && r.acaCoverageReduction !== undefined) {
+    const n = num(r.acaCoverageReduction);
+    if (n == null || n < 0) {
+      return fail("That paste’s coverage-month reduction is not a valid dollar figure — nothing was loaded.");
+    }
+    acaCoverageReduction = n;
+  }
+  /* The December-only pricing facts are optional (S-2): a
+     paste written before they existed carries none of the
+     six keys and loads with them all absent — no carry-in
+     netted, no RMD netted, no dependent MAGI added, exactly
+     as before; absent or null parses as unset, and a value
+     must be a valid non-negative dollar figure. The four
+     carry-ins return as undefined when unset (their engine
+     input spelling); the RMD received and the dependent
+     MAGI return as null (theirs). */
+  const optMoney = (
+    k: string,
+    label: string,
+  ): { ok: true; value: number | null } | { ok: false; error: string } => {
+    if (r[k] === null || r[k] === undefined) return { ok: true, value: null };
+    const n = num(r[k]);
+    if (n == null || n < 0) {
+      return {
+        ok: false,
+        error: `That paste’s ${label} is not a valid dollar figure — nothing was loaded.`,
+      };
+    }
+    return { ok: true, value: n };
+  };
+  const carryInStP = optMoney("capitalLossCarryInSt", "short-term loss carried in");
+  if (!carryInStP.ok) return carryInStP;
+  const carryInLtP = optMoney("capitalLossCarryInLt", "long-term loss carried in");
+  if (!carryInLtP.ok) return carryInLtP;
+  const carryInStWaP = optMoney("capitalLossCarryInStWa", "Washington part of the short-term loss carried in");
+  if (!carryInStWaP.ok) return carryInStWaP;
+  const carryInLtWaP = optMoney("capitalLossCarryInLtWa", "Washington part of the long-term loss carried in");
+  if (!carryInLtWaP.ok) return carryInLtWaP;
+  const rmdReceivedP = optMoney("rmdAlreadyReceived", "RMD already received");
+  if (!rmdReceivedP.ok) return rmdReceivedP;
+  const dependentMagiP = optMoney("dependentMagiForAca", "dependent MAGI");
+  if (!dependentMagiP.ok) return dependentMagiP;
+  /* The cash and Roth funding draws are optional (S-6): a
+     paste written before they existed carries neither key
+     and loads with both absent — no funding counted,
+     exactly as before; absent or null parses as unset, and
+     a value must be a valid non-negative dollar figure.
+     Like the S-2 facts they return as undefined when unset
+     (their engine input spelling). */
+  const cashDrawP = optMoney("cashDraw", "cash drawn for spending");
+  if (!cashDrawP.ok) return cashDrawP;
+  const rothDrawP = optMoney("rothDraw", "Roth drawn for spending");
+  if (!rothDrawP.ok) return rothDrawP;
+  /* The reinvested-yield fact is optional (S-3): a paste
+     written before it existed carries no such key and loads
+     with it absent — the yield counts as cash in, exactly
+     as before; a present value must be a yes/no value. */
+  let yieldReinvested = false;
+  if (r.yieldReinvested !== null && r.yieldReinvested !== undefined) {
+    if (typeof r.yieldReinvested !== "boolean") {
+      return fail("That paste’s reinvested-yield flag is not a yes/no value — nothing was loaded.");
+    }
+    yieldReinvested = r.yieldReinvested;
+  }
+  /* The inflation rate is optional (S-4): a paste written
+     before it existed carries no such key and loads with
+     it absent — statute-fixed amounts undeflated, exactly
+     as before; absent or null parses as unset, and a value
+     must be a finite percent above −100 (the deflation
+     factor's domain). Like the S-2 / S-3 facts it returns
+     as undefined when unset, so the round-trip identity
+     holds. */
+  let inflationPct: number | undefined;
+  if (r.inflationPct !== null && r.inflationPct !== undefined) {
+    const n = num(r.inflationPct);
+    if (n == null || n <= -100) {
+      return fail("That paste’s inflation rate is not a valid percent — nothing was loaded.");
+    }
+    inflationPct = n;
+  }
+  /* The health premium inputs are optional (a paste written
+     before the health premium build carries neither key):
+     absent or null parses as null — no premium priced,
+     exactly as before; a value must be a valid non-negative
+     dollar figure. */
+  let healthPremiumAcaAnnual: number | null = null;
+  if (r.healthPremiumAcaAnnual !== null && r.healthPremiumAcaAnnual !== undefined) {
+    const n = num(r.healthPremiumAcaAnnual);
+    if (n == null || n < 0) {
+      return fail("That paste’s marketplace premium is not a valid dollar figure — nothing was loaded.");
+    }
+    healthPremiumAcaAnnual = n;
+  }
+  let healthPremiumMedicarePerPerson: number | null = null;
+  if (
+    r.healthPremiumMedicarePerPerson !== null &&
+    r.healthPremiumMedicarePerPerson !== undefined
+  ) {
+    const n = num(r.healthPremiumMedicarePerPerson);
+    if (n == null || n < 0) {
+      return fail("That paste’s Medicare premium is not a valid dollar figure — nothing was loaded.");
+    }
+    healthPremiumMedicarePerPerson = n;
   }
   const stateRatePct = num(r.stateRatePct);
   if (stateRatePct == null || stateRatePct < 0 || stateRatePct > 100) {
@@ -5405,6 +6252,52 @@ export function parsePlaygroundPaste(
       spouseSoleBeneficiary: r.spouseSoleBeneficiary,
       acaHouseholdSize,
       acaBenchmarkAnnual,
+      /* The optional money facts (the S-1 settlement pair and
+         the S-2 December-only facts) spell "unset" as undefined
+         in the parsed inputs, never null: a JSON round-trip
+         drops undefined keys, so a paste of a year where the
+         fact was never entered parses back to inputs identical
+         to the ones that produced it — the identity the
+         round-trip fixtures pin. The engine reads absent,
+         undefined, and null identically for every one of them. */
+      aptcTaken: aptcTaken ?? undefined,
+      acaCoverageReduction: acaCoverageReduction ?? undefined,
+      healthPremiumAcaAnnual,
+      healthPremiumMedicarePerPerson,
+      capitalLossCarryInSt: carryInStP.value ?? undefined,
+      capitalLossCarryInLt: carryInLtP.value ?? undefined,
+      capitalLossCarryInStWa: carryInStWaP.value ?? undefined,
+      capitalLossCarryInLtWa: carryInLtWaP.value ?? undefined,
+      rmdAlreadyReceived: rmdReceivedP.value ?? undefined,
+      dependentMagiForAca: dependentMagiP.value ?? undefined,
+      /* The cash and Roth funding draws (S-6) join the same
+         spelling: unset is undefined in the parsed inputs,
+         never null, so a paste of a year with no funding
+         entered parses back to inputs identical to the ones
+         that produced it. */
+      cashDraw: cashDrawP.value ?? undefined,
+      rothDraw: rothDrawP.value ?? undefined,
+      /* The reciprocal beneficiary fact (N-1) joins the
+         same spelling: unset is undefined in the parsed
+         inputs, never null, so a paste of a year where the
+         fact was never established parses back to inputs
+         identical to the ones that produced it; the engine
+         reads absent, undefined, and null identically. */
+      primarySoleBeneficiaryOfSpouse:
+        primarySoleBeneficiaryOfSpouse ?? undefined,
+      /* The reinvested-yield flag (S-3) joins the same
+         spelling: "off" is undefined in the parsed inputs,
+         so a paste of a year where the flag was never set
+         parses back to inputs identical to the ones that
+         produced it; the engine reads absent and false
+         identically. */
+      yieldReinvested: yieldReinvested ? true : undefined,
+      /* The inflation rate (S-4) joins the same spelling:
+         unset is undefined in the parsed inputs, never
+         null, so a paste of a year priced without a rate
+         parses back to inputs identical to the ones that
+         produced it. */
+      inflationPct,
       stateRatePct,
       residenceState,
       educationStudents,
@@ -5591,6 +6484,13 @@ export type RothFundingRow = {
   federalTaxCents: number;
   stateTaxCents: number;
   irmaaCents: number;
+  // Health premium (build v208): the year's NET health
+  // premium as its own need (the engine's
+  // RothYearFunding.healthPremium). spendingCents EXCLUDES
+  // it, and totalNeedCents includes it, so the cash
+  // identity foots exactly as before. $0 in every year of
+  // a plan that does not enter the health premium term.
+  healthPremiumCents: number;
   totalNeedCents: number;
   // Sources (integer cents, applied amounts — see the
   // RothYearFunding waterfall).
@@ -5755,6 +6655,7 @@ export function buildRothFunding(
       federalTaxCents: cents(f.federalTax),
       stateTaxCents: cents(f.stateTax),
       irmaaCents: cents(f.irmaa),
+      healthPremiumCents: cents(f.healthPremium),
       totalNeedCents: 0,
       ssCents: cents(f.ss),
       rmdCents: cents(f.rmd),
@@ -5809,7 +6710,11 @@ export function buildRothFunding(
       amtOwedCents: cents(y.detail.amtOwed),
     };
     row.totalNeedCents =
-      row.spendingCents + row.federalTaxCents + row.stateTaxCents + row.irmaaCents;
+      row.spendingCents +
+      row.federalTaxCents +
+      row.stateTaxCents +
+      row.irmaaCents +
+      row.healthPremiumCents;
     const sourceKeys = [
       "ssCents",
       "rmdCents",
@@ -5994,6 +6899,24 @@ export function planInputsFromSaved(
     // Spouse ACA end age passthrough: absent / null = blank =
     // the engine's 65 default, bit-identical to before.
     acaSpouseEndAge: saved.acaSpouseEndAge ?? null,
+    // Health premium term passthrough (build v208): absent /
+    // null cents on all three = blank = the term is not
+    // entered and the plan prices bit-identically to before.
+    // Every pricing path builds its engine inputs from this
+    // one construction or spreads it, so the entered amounts
+    // reach every path exactly as entered.
+    healthPremiumAcaHousehold:
+      saved.healthPremiumAcaHouseholdCents == null
+        ? null
+        : saved.healthPremiumAcaHouseholdCents / 100,
+    healthPremiumAcaSingle:
+      saved.healthPremiumAcaSingleCents == null
+        ? null
+        : saved.healthPremiumAcaSingleCents / 100,
+    healthPremiumMedicarePerPerson:
+      saved.healthPremiumMedicarePerPersonCents == null
+        ? null
+        : saved.healthPremiumMedicarePerPersonCents / 100,
     inflationPct: saved.inflationPct ?? 2.5,
     stateRatePct: saved.stateRatePct ?? 0,
     // Residence passthrough (T3): absent / null / "other" =
@@ -6442,6 +7365,11 @@ export type RothCompareScenarioYear = {
   // tax — carried separately so a bill display never folds
   // them into a tax line).
   irmaaCents: number;
+  // Health premium (build v208): the year's NET health
+  // premium funded (the engine's RothYear.healthPremiumNet).
+  // $0 in every year of a plan that does not enter the
+  // health premium term.
+  healthPremiumCents: number;
   conversionCents: number;
   pretaxOutByChoiceCents: number;
   // The S-10 split of the year's total priced pre-tax draw
@@ -6475,6 +7403,13 @@ export type RothCompareScenarioResult = {
   penaltyCents: number;
   irmaaCents: number;
   acaCreditCents: number;
+  // Lifetime health premiums (build v208): the GROSS
+  // premium the score identity adds beside acaCreditCents,
+  // and the NET premium (gross less the funded credits) for
+  // display. 0 for any scenario that does not enter the
+  // health premium term.
+  healthPremiumCents: number;
+  healthPremiumNetCents: number;
   // Lifetime refundable education credit (T6): the sum of
   // the scenario's years' refundable AOTC portions — the
   // component the net-cost identity subtracts beside
@@ -6592,6 +7527,7 @@ export function runRothCompare(
         acaCreditCents: toCents(y.acaCreditKept),
         educationRefundableCents: toCents(y.educationRefundable),
         irmaaCents: toCents(y.irmaaPaid),
+        healthPremiumCents: toCents(y.healthPremiumNet),
         conversionCents: toCents(y.conversion),
         // Audit S-10: the spending draw ALONE
         // (detail.pretaxSpendingDraw), never
@@ -6613,6 +7549,8 @@ export function runRothCompare(
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),
       acaCreditCents: toCents(cost.acaCredit),
+      healthPremiumCents: toCents(cost.healthPremium),
+      healthPremiumNetCents: toCents(cost.healthPremiumNet),
       educationRefundableCents: toCents(cost.educationRefundable),
       amtCents: toCents(cost.amt),
       terminalCents: toCents(cost.terminal),
@@ -6642,6 +7580,8 @@ export function runRothCompare(
       penaltyCents: p.penaltyCents,
       irmaaCents: p.irmaaCents,
       acaCreditCents: p.acaCreditCents,
+      healthPremiumCents: p.healthPremiumCents,
+      healthPremiumNetCents: p.healthPremiumNetCents,
       educationRefundableCents: p.educationRefundableCents,
       amtCents: p.amtCents,
       terminalCents: p.terminalCents,
