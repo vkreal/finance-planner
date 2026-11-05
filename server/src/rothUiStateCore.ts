@@ -181,6 +181,13 @@ export const playgroundProjTemplateState = z.object({
   ssPrimary: z.number(),
   ssSpouse: z.number(),
   conversion: z.number(),
+  /* The pre-tax draw for spending the template year
+     carries (R3-M1) — the projection walk overrides each
+     year's draw from its money-out kind, so this only
+     round-trips the captured dial; a blob written before
+     this field existed parses it 0 (no draw — the years
+     price exactly as before). */
+  spendingDraw: z.number(),
   stockSold: z.number(),
   stockBasis: z.number(),
   qualifiedDividends: z.number(),
@@ -262,6 +269,13 @@ export const playgroundFormState = z.object({
   ssPrimary: z.string().max(64),
   ssSpouse: z.string().max(64),
   conversion: z.string().max(64),
+  /* The pre-tax draw for spending (R3-M1, engines review
+     round 3): the draw half of the money-out split, as a
+     typed string like every money dial here. A blob
+     written before this build parses it blank ("" = no
+     draw — the year's money out all on the conversion
+     dial, exactly as before). */
+  spendingDraw: z.string().max(64),
   stockSold: z.string().max(64),
   stockBasis: z.string().max(64),
   qualifiedDividends: z.string().max(64),
@@ -479,6 +493,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     ssPrimary: "",
     ssSpouse: "",
     conversion: "",
+    spendingDraw: "",
     stockSold: "",
     stockBasis: "",
     qualifiedDividends: "",
@@ -606,6 +621,11 @@ function parsePgProjTemplate(
   const ssPrimary = num(t.ssPrimary);
   const ssSpouse = num(t.ssSpouse);
   const conversion = num(t.conversion);
+  /* The spending draw (R3-M1) is lenient like the spouse
+     balance above: absent (a template written before it
+     existed) parses as 0 — no draw captured — and it is
+     deliberately NOT in the rejection check below. */
+  const spendingDraw = num(t.spendingDraw) ?? 0;
   const stockSold = num(t.stockSold);
   const stockBasis = num(t.stockBasis);
   const qualifiedDividends = num(t.qualifiedDividends);
@@ -699,6 +719,7 @@ function parsePgProjTemplate(
     ssPrimary,
     ssSpouse,
     conversion,
+    spendingDraw,
     stockSold,
     stockBasis,
     qualifiedDividends,
@@ -985,6 +1006,7 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         ssPrimary: str(g.ssPrimary, ""),
         ssSpouse: str(g.ssSpouse, ""),
         conversion: str(g.conversion, ""),
+        spendingDraw: str(g.spendingDraw, ""),
         stockSold: str(g.stockSold, ""),
         stockBasis: str(g.stockBasis, ""),
         qualifiedDividends: str(g.qualifiedDividends, ""),

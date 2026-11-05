@@ -17,6 +17,7 @@ import {
 ceilChipActiveCls,
 ceilChipCls,
 ChangedMark,
+DEFAULT_HEIR_RATE_PCT,
 FILING_LABELS,
 fmtCents,
 fmtCompactDollars,
@@ -4335,7 +4336,7 @@ export function RothConversion({
       payTaxFrom,
       protectMinTaxable: parseDollars(protectMin) ?? 0,
       preservePretax: parseDollars(preservePretax) ?? 0,
-      preserveExitRatePct: parseNum(preserveExitRate) ?? (parseNum(heirRate) ?? SEED_HEIR_RATE),
+      preserveExitRatePct: parseNum(preserveExitRate) ?? (parseNum(heirRate) ?? DEFAULT_HEIR_RATE_PCT),
       claimAgeFloor: (() => {
         const n = parseIntField(claimAgeFloor);
         return n == null ? null : Math.min(70, Math.max(62, n));
@@ -4379,7 +4380,7 @@ export function RothConversion({
           expenses: s.expensesCents / 100,
           aotcEligible: s.aotcEligible,
         })) ?? null,
-      heirRatePct: parseNum(heirRate) ?? SEED_HEIR_RATE,
+      heirRatePct: parseNum(heirRate) ?? DEFAULT_HEIR_RATE_PCT,
       // Display-layer only: gates the college-years watch-out.
       // The priced taxable balance (Cash included when following
       // Net Worth) plus — only while following — the snapshot's

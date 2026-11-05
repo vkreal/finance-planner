@@ -44,6 +44,23 @@ export const SEED_SS_START_AGE = 67;
 export const SEED_PROTECT_MIN_CENTS = 5_000_000; // $50,000
 export const SEED_PRESERVE_PRETAX_CENTS = 25_000_000; // $250,000 pre-tax reserve — the factory default a fresh / reset plan starts with
 export const SEED_HEIR_RATE = 24;
+// The rate a BLANK heir rate resolves to in BOTH plan-input
+// builders (R3-S1): the client's local builder
+// (RothConversion.tsx) and the server's planInputsFromSaved
+// (rothOptimizer.ts) each fall back to THIS one constant when
+// the heir rate is blank / null, and the blank preserved-
+// balance exit rate inherits the same resolution (a blank
+// exit rate first falls back to the resolved heir rate). The
+// two builders previously disagreed — the local one fell back
+// to the seed (SEED_HEIR_RATE) while the server fell back to
+// a hard-coded literal — so the same blank plan priced its
+// terminal cost at two different rates depending on which
+// side priced it. This default is deliberately distinct from
+// SEED_HEIR_RATE: the seed is the EXPLICIT value a fresh /
+// reset record starts with (never blank, so it never passes
+// through this fallback), while this constant governs only
+// the blank case.
+export const DEFAULT_HEIR_RATE_PCT = 22;
 export const SEED_INFLATION = 2.5;
 export const SEED_END_AGE = 95;
 export const SEED_RETIREMENT_AGE_FALLBACK = 57;

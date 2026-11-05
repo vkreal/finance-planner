@@ -2643,6 +2643,11 @@ export function App() {
   const [actionMsg, setActionMsg] = useState("");
   const [confirmMonthlyVersionId, setConfirmMonthlyVersionId] = useState<number | null>(null);
   const [confirmYearlyVersionId, setConfirmYearlyVersionId] = useState<number | null>(null);
+  // Month (YYYY-MM) whose cash-out ✕ is showing its delete
+  // confirmation; null = no confirmation open. Tapping ✕ only
+  // opens this — the delete itself runs from the confirmation's
+  // Delete button, so one stray tap can't remove a month.
+  const [confirmDeleteSummaryMonth, setConfirmDeleteSummaryMonth] = useState<string | null>(null);
   const [versionDeleteError, setVersionDeleteError] = useState("");
   const [recordingYearlyId, setRecordingYearlyId] = useState<number | null>(null);
 
@@ -5415,13 +5420,42 @@ export function App() {
                                 <button type="button" aria-label={`Edit cash out for ${monthLabel(cm.month)}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openSummaryForm(cm.month, cm.enteredCashOutCents ?? undefined)}>
                                   Edit
                                 </button>
-                                <button type="button" aria-label={`Delete cash out for ${monthLabel(cm.month)}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteSummary.mutate(cm.month)}>
-                                  ✕
-                                </button>
+                                {confirmDeleteSummaryMonth !== cm.month && (
+                                  <button type="button" aria-label={`Delete cash out for ${monthLabel(cm.month)}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteSummaryMonth(cm.month)}>
+                                    ✕
+                                  </button>
+                                )}
                               </>
                             )}
                           </div>
                         </div>
+                        {confirmDeleteSummaryMonth === cm.month && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="text-sm text-[var(--bad)]">
+                              Delete {monthLabel(cm.month)}?
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`Confirm delete cash out for ${monthLabel(cm.month)}`}
+                              className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                              disabled={deleteSummary.isPending}
+                              onClick={() => {
+                                deleteSummary.mutate(cm.month);
+                                setConfirmDeleteSummaryMonth(null);
+                              }}
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Cancel delete cash out for ${monthLabel(cm.month)}`}
+                              className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                              onClick={() => setConfirmDeleteSummaryMonth(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
                         {cm.itemsCount > 0 && (
                           <p className="mt-0.5 text-xs text-[var(--dim)]">
                             from {cm.itemsCount} item{cm.itemsCount === 1 ? "" : "s"}

@@ -2867,6 +2867,17 @@ export type RothPlanInputs = {
   // score adds the lifetime GROSS premium beside the credit
   // it already subtracts (see netCostBreakdown), so the
   // score's net premium effect is the net premium itself.
+  // That identity holds because the RETAINED credit is
+  // capped at the same gross marketplace premium (R3-M2,
+  // engines review round 3): acaCreditKept — the year
+  // readout, the lifetime total, and the score's credit —
+  // is the benchmark-based credit capped at the year's
+  // entered marketplace premium, exactly the cap the
+  // funding above and the single-year filing settlement
+  // already applied, so no surface credits a benefit
+  // beyond the premium paid. A plan that does not enter
+  // the term has no enrollment premium to cap against and
+  // keeps the benchmark-based credit exactly as before.
   // All three absent / null = the term never engages and
   // every year prices bit-identically to before (the v135
   // reconciliation exactly as it was).
@@ -3635,6 +3646,13 @@ export type RothYear = {
   effectiveMarginalPct: number | null; // on the conversion; null when no conversion
   irmaaTierSet: number;
   irmaaPaid: number;
+  // The year's ACA premium credit kept: the benchmark-based
+  // credit priced on the year's final ACA MAGI, capped at
+  // the year's entered marketplace premium when the health
+  // premium term prices one (R3-M2 — the enrollment cap the
+  // year's funding and the single-year filing settlement
+  // already applied; see the assignment in simulateRothPlan).
+  // Uncapped when no premium is entered for the year.
   acaCreditKept: number;
   acaPriced: boolean;
   // Health premium term (build v208): the year's GROSS
@@ -3779,7 +3797,11 @@ export type RothPlanResult = {
   // years' healthPremiumGross / healthPremiumNet. The score
   // adds the GROSS figure and subtracts the ACA credit it
   // already carries, so its net premium effect is the NET
-  // figure. Both $0 for any plan that does not enter the
+  // figure — the carried credit (lifetimeAcaKept) is each
+  // year's credit capped at that year's entered marketplace
+  // premium (R3-M2), so gross − credit = net year by year
+  // up to the documented harvest gap on the funded net.
+  // Both $0 for any plan that does not enter the
   // health premium term.
   lifetimeHealthPremiumGross: number;
   lifetimeHealthPremiumNet: number;
@@ -6840,6 +6862,24 @@ export function simulateRothPlan(
     // reconciliation in settleRound / settleYear); this final
     // figure, priced after any gain harvest, is the year's
     // reported credit and the one the plan score credits.
+    // ENROLLMENT-PREMIUM CAP (R3-M2, engines review round 3):
+    // when the health premium term prices this year's
+    // marketplace premium (healthAcaThisYear), the retained
+    // credit is capped at that gross premium — Form 8962's
+    // lesser-of, the same cap the funding below applies to
+    // the settlement's credit and the single-year pricer's
+    // filing settlement applies to its final credit. Before
+    // this cap the funding netted the capped credit while
+    // this retained figure stayed the uncapped benchmark-
+    // based credit, so the score (lifetime GROSS premium
+    // minus this credit) invented a benefit beyond the
+    // premium paid whenever the entered plan cost less than
+    // the benchmark credit. The cap keys on the MARKETPLACE
+    // gross alone (healthGrossAca — the entered tier amount,
+    // or the benchmark fallback, against which the credit
+    // can never exceed anyway), never on the Medicare part.
+    // With the term inactive there is no entered enrollment
+    // premium and the figure is bit-identical to before.
     let acaCreditKept = 0;
     let acaPriced = false;
     let acaResult: AcaCreditResult | null = null;
@@ -6856,7 +6896,9 @@ export function simulateRothPlan(
         // (see acaTableFor in taxLaw.ts).
         projected: true,
       });
-      acaCreditKept = acaResult.credit;
+      acaCreditKept = healthAcaThisYear
+        ? Math.min(acaResult.credit, healthGrossAca)
+        : acaResult.credit;
       acaPriced = true;
     }
     const acaUnder138 = acaPriced && acaResult != null && acaResult.pctFpl < 138;
@@ -6870,7 +6912,10 @@ export function simulateRothPlan(
     // The reported acaCreditKept above (priced after any
     // gain harvest) can differ from the settlement's credit
     // by the harvest's credit effect alone — the same
-    // documented gap the v135 reconciliation carries.
+    // documented gap the v135 reconciliation carries. Both
+    // figures are capped at the same marketplace gross
+    // (R3-M2), so the gap is the harvest effect alone, never
+    // the enrollment cap.
     const healthPremiumNetYear =
       healthActive && spendNeedBase > 0
         ? r2(

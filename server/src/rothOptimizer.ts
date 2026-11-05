@@ -103,6 +103,7 @@ import {
   impliedYieldPctsFromTaxReturn,
   type RothTaxReturnStored,
 } from "./taxReturnCore";
+import { DEFAULT_HEIR_RATE_PCT } from "./rothSeed";
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -225,10 +226,14 @@ export type NetCostBreakdown = {
   // — beside the credit above, which it offsets, so the
   // identity's net premium effect is healthPremiumNet) and
   // that NET figure itself (gross less the years' priced
-  // credits as funded; display). Both $0 for any plan that
-  // does not enter the term, and the identity then reduces
-  // to the pre-v208 formula bit for bit — including its
-  // known pre-v208 treatment of the credit.
+  // credits as funded; display). The credit above is each
+  // year's credit KEPT — capped at that year's entered
+  // marketplace premium in the engine (R3-M2), so the
+  // identity's premium-minus-credit is the net premium and
+  // never a benefit beyond the premium paid. Both $0 for
+  // any plan that does not enter the term, and the identity
+  // then reduces to the pre-v208 formula bit for bit —
+  // including its known pre-v208 treatment of the credit.
   healthPremium: number;
   healthPremiumNet: number;
   // Lifetime refundable education credit (subtracted; T6):
@@ -3740,6 +3745,17 @@ export type PlaygroundYearResult = {
   // above.
   cashDraw: number;
   rothDraw: number;
+  // Pre-tax spending draw (R3-M1, engines review round 3):
+  // the spendingDraw input echoed — the part of the year's
+  // pre-tax money out that was taken FOR SPENDING and so
+  // counted in cashIn ($0 when the caller supplied none).
+  // The conversion above is the other part: income in full,
+  // never cash in. Before R3-M1 the result carried no such
+  // echo, and the Playground's form had no draw dial at
+  // all — its one money-out dial fed the conversion alone,
+  // so a draw priced through the form read as a conversion
+  // and its cash left fell by the whole draw.
+  spendingDraw: number;
   // Inflation priced with (S-4): the inflationPct input
   // resolved — the rate the year's statute-fixed amounts
   // were deflated by, echoed so a consumer can see which
@@ -3772,12 +3788,23 @@ export type PlaygroundYearResult = {
   // Annual spending for the "enough for the year" comparison
   // (build v126): the annualSpending input echoed in
   // dollars — null when no spending was given — and the
-  // comparison itself: cashLeftAfterTax minus that spending.
-  // Positive = enough for the year, negative = short of a
-  // year's spending. Pure readouts of the same pricing (the
+  // comparison itself: cashLeftAfterHealthPremium minus
+  // that spending (R3-M3: the spending the comparison is
+  // against EXCLUDES health premiums — build v208 reads
+  // annualSpending that way — so the cash it is compared
+  // against must be the cash left after the year's net
+  // health premium, not the cash left after tax alone;
+  // before R3-M3 the comparison subtracted the spending
+  // from cashLeftAfterTax and overstated the verdict by
+  // the whole net premium whenever one priced). Positive
+  // = enough for the year, negative = short of a year's
+  // spending. Pure readouts of the same pricing (the
   // spending never enters the tax); null exactly when no
   // spending was given, so a year priced without one is
-  // bit-identical.
+  // bit-identical. When no premium prices, the net premium
+  // is $0 and cashLeftAfterHealthPremium IS
+  // cashLeftAfterTax, so the comparison is bit-identical
+  // to before R3-M3 on every such year.
   annualSpending: number | null;
   cashLeftVsSpending: number | null;
   // Bracket landing for the conversion (stacked last): the
@@ -4931,13 +4958,21 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
         : 0),
   );
   const cashLeftAfterHealthPremium = r2(cashLeftAfterTax - healthPremiumNet);
-  // "Enough for the year" (build v126): cash left after
-  // tax minus the annual spending — a pure readout, the
-  // spending never entering the tax above. Null when no
-  // spending was given.
+  // "Enough for the year" (build v126; R3-M3): cash left
+  // after HEALTH PREMIUMS minus the annual spending — a
+  // pure readout, the spending never entering the tax
+  // above. The spending excludes health premiums (build
+  // v208), so it is compared against the cash left after
+  // the net premium: comparing it against cashLeftAfterTax
+  // alone (the pre-R3-M3 form) left the premium uncharged
+  // in the verdict and overstated it by healthPremiumNet
+  // whenever a premium priced. Null when no spending was
+  // given.
   const annualSpending = inp.annualSpending ?? null;
   const cashLeftVsSpending =
-    annualSpending == null ? null : r2(cashLeftAfterTax - annualSpending);
+    annualSpending == null
+      ? null
+      : r2(cashLeftAfterHealthPremium - annualSpending);
 
   return {
     interest: inp.interest,
@@ -5027,6 +5062,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     reinvestedYield,
     cashDraw,
     rothDraw,
+    spendingDraw,
     inflationPct,
     healthPremiumGross,
     healthPremiumNet,
@@ -5089,8 +5125,9 @@ export function playgroundSaleAfterTax(
      age and the entered yearly amount from that age on (a
      null claiming age keeps the template amount every year);
    · the RMD is priced by the pricer off the year's starting
-     (prior Dec 31) pre-tax balance, exactly as the template
-     year prices it;
+     (prior Dec 31) pre-tax balances — EACH owner's balance
+     on that owner's own clock when the template carries the
+     split (R3-S2), exactly as the template year prices it;
    · the ACA household size steps down at the step-down year
      when one is set, and ACA ends on its own once everyone
      is on Medicare (the pricer's own applicability rule);
@@ -5124,9 +5161,12 @@ export function playgroundSaleAfterTax(
    left after the year's RMD when a balance is in play.
 
    Balances evolve beside the pricing — presentation-grade
-   bookkeeping, not a second tax model. Each year: the
-   pre-tax balance is drawn down by the year's RMD and the
-   money out; the taxable balance by the year's stock sale
+   bookkeeping, not a second tax model. Each year: each
+   owner's pre-tax balance is drawn down by that owner's
+   own RMD and that owner's share of the money out (the
+   money out drains the primary's post-RMD balance first,
+   the spouse's second — the plan march's allocation,
+   R3-S2); the taxable balance by the year's stock sale
    (a sale larger than the balance sells what is there, its
    basis scaled by the same fraction, so the priced gain
    ratio is the template's); in "conversion" mode the money
@@ -5236,23 +5276,89 @@ export function projectPlaygroundYears(
 ): PlaygroundProjection {
   const joint = template.filingStatus === "mfj";
   const birthYearPrimary = template.taxYear - template.agePrimary;
-  /* The walk's starting pre-tax balance is the COMBINED
-     balance (primary + spouse): the walk tracks one balance
-     and prices its RMD on the primary's clock, exactly as
-     before the split-balance build — the split lives in the
-     single-year pricing, not in this simplified walk. The
-     per-year inputs below null the spouse balance out so the
-     pricer never counts it twice (once inside the combined
-     balance, once on its own clock). */
-  // S-12: the combined balance counts the spouse's balance
-  // only on a joint template (countedSpousePretax) — a stale
-  // spouse balance on a single / head-of-household template is
-  // not the filer's money and never enters the walk.
+  const birthYearSpouse =
+    joint && template.ageSpouse != null
+      ? template.taxYear - template.ageSpouse
+      : null;
+  /* R3-S2 (engines review round 3, SHOULD — settled STAND):
+     the walk tracks BOTH owners' pre-tax balances apart and
+     prices each owner's RMD on that owner's OWN clock,
+     exactly as pricePlaygroundYear prices a split year —
+     the primary's RMD through rmdForYear on the primary's
+     balance (Joint Life when the spouse is the primary's
+     sole beneficiary and more than 10 years younger), the
+     spouse's through rmdForYear with the roles swapped on
+     the spouse's balance (Joint Life only when the primary
+     is the SPOUSE's sole beneficiary —
+     primarySoleBeneficiaryOfSpouse — and more than 10 years
+     younger). Before R3-S2 the walk combined the balances,
+     priced one RMD on the primary's clock, and nulled the
+     spouse balance in the per-year inputs, so a spouse
+     below RMD age (or on a different divisor) was charged
+     the primary's RMD on money that owed none — the
+     settlement's worked example invented a whole second
+     RMD that way. The walk's money out still caps against
+     the COMBINED post-RMD balance (the pricer's own cap is
+     on the total) and the floor still guards the combined
+     balance; the money out itself drains the PRIMARY's
+     post-RMD balance first and the spouse's second — the
+     plan march's own allocation (simulateRothPlan takes
+     conversions and pre-tax draws primary-first) — and each
+     owner's remainder then grows on its own, so the next
+     year's two RMDs price off the two walked balances.
+     startBalances / endBalances keep reporting the COMBINED
+     pre-tax total (the chart's one pre-tax line); the split
+     lives in the per-year inputs each year was priced with,
+     which is what loading a projected year reads. */
+  // S-12: the spouse's balance counts only on a joint
+  // template (countedSpousePretax) — a stale spouse balance
+  // on a single / head-of-household template is not the
+  // filer's money and never enters the walk.
   const countedSpouse = countedSpousePretax(template);
-  const combinedPretaxBalance =
-    template.pretaxBalance == null && countedSpouse == null
-      ? null
-      : (template.pretaxBalance ?? 0) + (countedSpouse ?? 0);
+  const primaryEntered = template.pretaxBalance != null;
+  const spouseEntered = countedSpouse != null;
+  const hasPretax = primaryEntered || spouseEntered;
+  let pretaxPrimary: number | null = template.pretaxBalance ?? null;
+  let pretaxSpouse: number | null = countedSpouse;
+  let pretaxCombined: number | null = hasPretax
+    ? r2((pretaxPrimary ?? 0) + (pretaxSpouse ?? 0))
+    : null;
+  // Both owners' gross RMDs on a pair of starting balances
+  // at a pair of ages — the same two rmdForYear calls
+  // pricePlaygroundYear makes on the same facts, so the
+  // figure the draw mode and the caps use is the figure the
+  // pricing produces. Gross: an amount already received is
+  // part of the RMD that has left the accounts too (the
+  // pricer's own balance-cap rule), so the walk's balance
+  // math below reads these gross figures, never the priced
+  // result's net-of-received RMD.
+  const rmdsFor = (
+    pBal: number | null,
+    sBal: number | null,
+    ageP: number,
+    ageS: number | null,
+  ): { primary: number; spouse: number; total: number } => {
+    if (!hasPretax) return { primary: 0, spouse: 0, total: 0 };
+    const rp = rmdForYear({
+      priorDec31PreTax: pBal ?? 0,
+      agePrimary: ageP,
+      ageSpouse: ageS,
+      birthYearPrimary,
+      spouseSoleBeneficiary: template.spouseSoleBeneficiary,
+    }).rmd;
+    const rs =
+      joint && ageS != null && birthYearSpouse != null
+        ? rmdForYear({
+            priorDec31PreTax: sBal ?? 0,
+            agePrimary: ageS,
+            ageSpouse: ageP,
+            birthYearPrimary: birthYearSpouse,
+            spouseSoleBeneficiary:
+              template.primarySoleBeneficiaryOfSpouse === true,
+          }).rmd
+        : 0;
+    return { primary: rp, spouse: rs, total: r2(rp + rs) };
+  };
   // The projection's start age (see the header comment):
   // an earlier from-age moves the WALK's start (the entered
   // starting balances are that first year's balances); a
@@ -5306,17 +5412,12 @@ export function projectPlaygroundYears(
           walkStartSpouseAge,
         )
       : 0) +
-    (combinedPretaxBalance != null
-      ? rmdForYear({
-          priorDec31PreTax: combinedPretaxBalance,
-          agePrimary: walkStartAge,
-          ageSpouse: walkStartSpouseAge,
-          birthYearPrimary,
-          spouseSoleBeneficiary: template.spouseSoleBeneficiary,
-        }).rmd
-      : 0);
+    // The first walked year's RMD arrival is the SUM of the
+    // two owners' own RMDs (R3-S2), not one RMD priced on
+    // the combined balance at the primary's divisor.
+    rmdsFor(pretaxPrimary, pretaxSpouse, walkStartAge, walkStartSpouseAge)
+      .total;
   const growth = 1 + opts.returnPct / 100;
-  let pretax: number | null = combinedPretaxBalance;
   let taxable: number | null = opts.startTaxable;
   let roth = opts.startRoth;
   const years: PlaygroundProjectionYear[] = [];
@@ -5344,20 +5445,17 @@ export function projectPlaygroundYears(
           ageSpouse,
         )
       : 0;
-    // The year's RMD on the starting balance — the engine's
-    // own rmdForYear, the same call pricePlaygroundYear makes
-    // with this balance, so the figure the draw mode and the
-    // caps use is the figure the pricing produces.
-    const rmdThis =
-      pretax != null
-        ? rmdForYear({
-            priorDec31PreTax: pretax,
-            agePrimary: age,
-            ageSpouse,
-            birthYearPrimary,
-            spouseSoleBeneficiary: template.spouseSoleBeneficiary,
-          }).rmd
-        : 0;
+    // The year's RMDs on the starting balances — each
+    // owner's own rmdForYear call, the same two calls
+    // pricePlaygroundYear makes on these balances, so the
+    // figure the draw mode and the caps use is the figure
+    // the pricing produces (R3-S2: their SUM replaces the
+    // one combined-balance RMD on the primary's clock).
+    const rmds = rmdsFor(pretaxPrimary, pretaxSpouse, age, ageSpouse);
+    const rmdThis = rmds.total;
+    const afterRmdPrimary = Math.max(0, (pretaxPrimary ?? 0) - rmds.primary);
+    const afterRmdSpouse = Math.max(0, (pretaxSpouse ?? 0) - rmds.spouse);
+    const afterRmd = afterRmdPrimary + afterRmdSpouse;
     let moneyOut = Math.max(0, template.conversion);
     if (opts.stopKind === "age" && opts.stopAge != null && age > opts.stopAge) {
       moneyOut = 0;
@@ -5366,14 +5464,19 @@ export function projectPlaygroundYears(
       const arrival = ssPrimary + ssSpouse + rmdThis;
       moneyOut = Math.max(0, moneyOut - Math.max(0, arrival - baselineArrival));
     }
-    if (pretax != null && moneyOut > 0) {
-      const afterRmd = Math.max(0, pretax - rmdThis);
+    if (hasPretax && moneyOut > 0) {
       moneyOut = Math.min(moneyOut, afterRmd);
       if (opts.stopKind === "floor" && opts.stopFloor != null) {
         moneyOut = Math.min(moneyOut, Math.max(0, afterRmd - opts.stopFloor));
       }
     }
     moneyOut = r2(moneyOut);
+    // The money out drains the primary's post-RMD balance
+    // first, the spouse's second (the plan march's
+    // allocation, above) — the split decides which owner's
+    // balance the NEXT year's RMD prices off.
+    const fromPrimary = r2(Math.min(moneyOut, afterRmdPrimary));
+    const fromSpouse = r2(moneyOut - fromPrimary);
     // The year's sale: capped at the tracked taxable balance
     // when one was entered, its basis scaled by the same
     // fraction so the gain ratio is the template's.
@@ -5415,24 +5518,40 @@ export function projectPlaygroundYears(
       spendingDraw: opts.moneyOutKind === "draw" ? moneyOut : 0,
       stockSold: stockSoldEffective,
       stockBasis: stockBasisEffective,
-      pretaxBalance: pretax,
-      /* The walk's balance is already the combined total —
-         the spouse balance is nulled here so the pricer
-         does not count it a second time. */
-      pretaxBalanceSpouse: null,
+      /* R3-S2: each owner's starting balance rides its OWN
+         field, so the pricer prices the two RMDs on the two
+         clocks — never a combined balance on the primary's
+         clock with the spouse's nulled. A side the template
+         never entered stays null, exactly as the single-year
+         view prices it. */
+      pretaxBalance: pretaxPrimary,
+      pretaxBalanceSpouse: pretaxSpouse,
       acaHouseholdSize: householdSize,
       acaConvention: "newest",
     };
     const result = pricePlaygroundYear(inputs);
     const startBalances: PlaygroundProjectionBalances = {
-      pretax,
+      pretax: pretaxCombined,
       taxable,
       roth,
     };
+    // Each owner's balance falls by that owner's own gross
+    // RMD and that owner's share of the money out, then
+    // grows — the combined end is the sum of the two walked
+    // ends (each rounded as the plan march rounds its
+    // per-owner ends). With no spouse balance entered the
+    // spouse side is $0 throughout and this is the pre-R3-S2
+    // combined walk term for term.
+    const endPrimaryNum = hasPretax
+      ? r2(Math.max(0, (pretaxPrimary ?? 0) - rmds.primary - fromPrimary) * growth)
+      : null;
+    const endSpouseNum = hasPretax
+      ? r2(Math.max(0, (pretaxSpouse ?? 0) - rmds.spouse - fromSpouse) * growth)
+      : null;
     const endPretax =
-      pretax == null
+      endPrimaryNum == null || endSpouseNum == null
         ? null
-        : r2(Math.max(0, pretax - result.rmd - moneyOut) * growth);
+        : r2(endPrimaryNum + endSpouseNum);
     const endTaxable =
       taxable == null
         ? null
@@ -5452,7 +5571,12 @@ export function projectPlaygroundYears(
       startBalances,
       endBalances: { pretax: endPretax, taxable: endTaxable, roth: endRoth },
     });
-    pretax = endPretax;
+    // A side the template never entered stays unentered
+    // (null) for the whole walk; an entered side walks its
+    // own numeric end forward.
+    pretaxPrimary = primaryEntered ? endPrimaryNum : null;
+    pretaxSpouse = spouseEntered ? endSpouseNum : null;
+    pretaxCombined = endPretax;
     taxable = endTaxable;
     roth = endRoth;
   }
@@ -5466,7 +5590,7 @@ export function projectPlaygroundYears(
       : years;
   return {
     years: shownYears,
-    endBalances: { pretax, taxable, roth },
+    endBalances: { pretax: pretaxCombined, taxable, roth },
   };
 }
 
@@ -5747,6 +5871,16 @@ export type PlaygroundPastePayload = Omit<
   // like every other unset dial here.)
   cashDraw: number | null;
   rothDraw: number | null;
+  // The pre-tax spending draw (R3-M1, engines review
+  // round 3): always present in a payload this builder
+  // emits (null when unset), so a replay prices the same
+  // spendable money out the copied year priced — before
+  // R3-M1 the payload omitted the draw entirely (the
+  // form had no draw dial), so a pasted draw year lost
+  // the draw's cash-in whole. (The engine inputs type it
+  // as an optional number; the payload carries it
+  // nullable, like every other unset dial here.)
+  spendingDraw: number | null;
   // The reciprocal beneficiary fact (N-1, engines review
   // round 2): always present in a payload this builder
   // emits (null when unset), so a replay prices the same
@@ -5813,6 +5947,11 @@ export const PLAYGROUND_PASTE_FIELDS = [
      in the tax). */
   "cashDraw",
   "rothDraw",
+  /* The pre-tax spending draw (R3-M1): carried so a
+     replayed paste reprices the same money-out split the
+     copied year priced — the draw in cash in beside its
+     income pricing, the conversion as income alone. */
+  "spendingDraw",
 ] as const;
 
 /* The paste fields a payload written before the cold-AI
@@ -5866,6 +6005,11 @@ export const PLAYGROUND_PASTE_OPTIONAL_FIELDS = [
      as before. */
   "cashDraw",
   "rothDraw",
+  /* The pre-tax spending draw (R3-M1): a paste written
+     before it was carried carries no such key and loads
+     with it absent — no draw counted, the year's money
+     out all on the conversion dial, exactly as before. */
+  "spendingDraw",
   /* The reciprocal beneficiary fact (N-1): a paste written
      before it was carried carries no such key and loads
      with it absent — not established, so the spouse's RMD
@@ -5917,6 +6061,7 @@ export function playgroundPastePayload(
     inflationPct: inp.inflationPct ?? null,
     cashDraw: inp.cashDraw ?? null,
     rothDraw: inp.rothDraw ?? null,
+    spendingDraw: inp.spendingDraw ?? null,
     stateRatePct: inp.stateRatePct,
     residenceState: inp.residenceState ?? null,
     educationStudents: inp.educationStudents
@@ -6133,6 +6278,15 @@ export function parsePlaygroundPaste(
   if (!cashDrawP.ok) return cashDrawP;
   const rothDrawP = optMoney("rothDraw", "Roth drawn for spending");
   if (!rothDrawP.ok) return rothDrawP;
+  /* The pre-tax spending draw is optional the same way
+     (R3-M1): a paste written before the payload carried
+     it has no such key and loads with it absent — no draw
+     counted, exactly as before; absent or null parses as
+     unset, and a value must be a valid non-negative
+     dollar figure. Like the S-6 draws it returns as
+     undefined when unset (its engine input spelling). */
+  const spendingDrawP = optMoney("spendingDraw", "pre-tax draw for spending");
+  if (!spendingDrawP.ok) return spendingDrawP;
   /* The reinvested-yield fact is optional (S-3): a paste
      written before it existed carries no such key and loads
      with it absent — the yield counts as cash in, exactly
@@ -6277,6 +6431,12 @@ export function parsePlaygroundPaste(
          that produced it. */
       cashDraw: cashDrawP.value ?? undefined,
       rothDraw: rothDrawP.value ?? undefined,
+      /* The pre-tax spending draw (R3-M1) joins the same
+         spelling: unset is undefined in the parsed inputs,
+         never null, so a paste of a year with no draw
+         entered parses back to inputs identical to the
+         ones that produced it. */
+      spendingDraw: spendingDrawP.value ?? undefined,
       /* The reciprocal beneficiary fact (N-1) joins the
          same spelling: unset is undefined in the parsed
          inputs, never null, so a paste of a year where the
@@ -6860,7 +7020,7 @@ export function planInputsFromSaved(
     // floor (engine field 0); absent / null exit rate = the
     // heir rate (today's single-rate terminal pricing).
     preservePretax: dollars(saved.preservePretaxCents ?? null),
-    preserveExitRatePct: saved.preserveExitRatePct ?? saved.heirRatePct ?? 22,
+    preserveExitRatePct: saved.preserveExitRatePct ?? saved.heirRatePct ?? DEFAULT_HEIR_RATE_PCT,
     // Claim floor passthrough: absent / null = no floor. The
     // engine never reads the field; only the joint search's
     // crowning does.
@@ -6964,7 +7124,7 @@ export function planInputsFromSaved(
             expenses: s.expensesCents / 100,
             aotcEligible: s.aotcEligible === true,
           })),
-    heirRatePct: saved.heirRatePct ?? 22,
+    heirRatePct: saved.heirRatePct ?? DEFAULT_HEIR_RATE_PCT,
     // Transient display-layer passthrough (cents → dollars):
     // gates only the college watch-out's emission. Absent / null
     // leaves the engine field unset (unknown → never suppress).

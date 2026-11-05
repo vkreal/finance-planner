@@ -7285,6 +7285,7 @@ const uiCasCases: {
         ssPrimary: 48000,
         ssSpouse: 0,
         conversion: 35330.16,
+        spendingDraw: 0,
         stockSold: 0,
         stockBasis: 0,
         qualifiedDividends: 9000,

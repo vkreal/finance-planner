@@ -98,6 +98,7 @@ export const FILING_LABELS: Record<FilingStatus, string> = {
 // server's resetRothPlanner action so a fresh open and a reset
 // can never diverge. Re-exported here for existing importers.
 export {
+  DEFAULT_HEIR_RATE_PCT,
   SEED_BIRTH_YEAR_PRIMARY,
   SEED_BIRTH_YEAR_SPOUSE,
   SEED_HEIR_RATE,
