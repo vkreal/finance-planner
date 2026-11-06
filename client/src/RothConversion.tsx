@@ -11553,22 +11553,42 @@ export function RothConversion({
           no new pricing happens here). Segment sourcing, bottom to
           top, every figure read straight off the year's own priced
           row: Interest ← detail.interestIncome; Dividend yield
-          income ← detail.dividendIncome (the year's priced
-          dividend yield income — the total distribution, priced
-          split between the stacks by the qualified share, not
-          the filed return's total); Other ordinary income ←
-          detail.otherOrdinary; Taxable Social Security ←
-          detail.ssTaxable; RMD ← rmd (the table's RMD column);
-          Pre-tax money out ← conversion (the table's Conversion
-          column); Pre-tax draw (spending + tax debit) ←
-          detail.extraPreTaxDraw (the year's total priced
-          pre-tax draw: its draw for spending plus the pre-tax
-          debit that paid its tax bill — only the spending draw
-          is money out by choice); Long-term gains ← detail.ltcg;
-          Tax-exempt interest ← detail.taxExemptInterest; and, only
-          in a year the capital-loss ledger prices one, the
-          capital-loss allowance as a negative top segment
-          (−detail.lossAllowance). With that last segment the stack
+          income (non-qualified part) ← detail.dividendIncome −
+          detail.qualifiedDividends (the year's priced dividend
+          yield income — the total distribution less its qualified
+          part, which rides the gains stack below, so the total is
+          counted once, not the filed return's total); Other
+          ordinary income ← detail.otherOrdinary; Taxable Social
+          Security ← detail.ssTaxable; RMD ← rmd (the table's RMD
+          column); Pre-tax money out ← conversion (the table's
+          Conversion column); Pre-tax draw (spending + tax debit) ←
+          detail.extraPreTaxDraw (the year's total priced pre-tax
+          draw: its draw for spending plus the pre-tax debit that
+          paid its tax bill — only the spending draw is money out by
+          choice); then the preferential stack, decomposed from the
+          priced result exactly as the Playground's single-year
+          stack decomposes it (round-2 S-9 there, P-S9 here):
+          Qualified dividends ← detail.qualifiedDividends;
+          Long-term gain ← max(0, detail.ltcgNet) — the priced NET
+          long-term result, NOT gross detail.ltcg: an entering
+          loss carryforward nets against the year's realized gains
+          before the stack prices, so the gross figure overstates
+          the priced gain by whatever the carryforward absorbed;
+          Tax-exempt interest ← detail.taxExemptInterest; and the
+          §1211(b) capital-loss allowance as a hatched negative top
+          segment (−detail.capitalLossAllowance — the allowance
+          the year PRICED: the loss ledger's figure when a
+          carryforward entered, and min(cap, −gross gains) on a
+          no-carry-in loss year, where detail.lossAllowance reads
+          $0 because no ledger ran). Before P-S9 the gains segment
+          read gross detail.ltcg and the allowance segment read
+          −detail.lossAllowance, so the bars did not foot: a year
+          whose carryforward absorbed all its gains stood its
+          whole gross gain above the MAGI line, and a
+          no-carry-in loss year sat below it by the priced
+          allowance less the loss (the settlement's worked
+          examples: $8,000 over with a carry-in, $7,000 under
+          without one). With the priced decomposition the stack
           foots to the year's MAGI: the pieces sum to AGI and the
           tax-exempt interest completes MAGI, exactly as priceYear
           composes them. The line across the top is the table's MAGI
@@ -11590,17 +11610,26 @@ export function RothConversion({
         // charts stay in sync. The ACA cliff line, the 0%
         // gains-end marker, and the line-chart strokes are not
         // income segments and keep their own colors.
+        // The §1211(b) allowance segment's hatch (P-S9): the
+        // same overlay the Playground's stacking chart draws
+        // its negative allowance segment with, so the segment
+        // reads as a subtraction in both charts.
+        const allowanceHatchStyle = {
+          backgroundImage:
+            "repeating-linear-gradient(45deg, rgba(255,255,255,0.5) 0 5px, rgba(0,0,0,0.22) 5px 10px)",
+        } as const;
         const segDefs = [
-          { key: "interest", label: "Interest", color: "#3b82f6", amount: (y: RothYear) => y.detail.interestIncome },
-          { key: "qualdiv", label: "Dividend yield income", color: "#84cc16", amount: (y: RothYear) => y.detail.dividendIncome },
-          { key: "other", label: "Other ordinary income", color: "#f59e0b", amount: (y: RothYear) => y.detail.otherOrdinary },
-          { key: "ss", label: "Taxable Social Security", color: "#ef4444", amount: (y: RothYear) => y.detail.ssTaxable },
-          { key: "rmd", label: "RMD", color: "#8b5cf6", amount: (y: RothYear) => y.rmd },
-          { key: "conv", label: "Pre-tax money out", color: "#0f766e", amount: (y: RothYear) => y.conversion },
-          { key: "extra", label: "Pre-tax draw (spending + tax debit)", color: "#2dd4bf", amount: (y: RothYear) => y.detail.extraPreTaxDraw },
-          { key: "gains", label: "Long-term gains", color: "#f97316", amount: (y: RothYear) => y.detail.ltcg },
-          { key: "taxexempt", label: "Tax-exempt interest", color: "#cbd5e1", amount: (y: RothYear) => y.detail.taxExemptInterest },
-          { key: "lossallow", label: "Capital-loss allowance", color: "#64748b", amount: (y: RothYear) => -y.detail.lossAllowance },
+          { key: "interest", label: "Interest", color: "#3b82f6", hatch: false, amount: (y: RothYear) => y.detail.interestIncome },
+          { key: "orddiv", label: "Dividend yield income (non-qualified part)", color: "#06b6d4", hatch: false, amount: (y: RothYear) => y.detail.dividendIncome - y.detail.qualifiedDividends },
+          { key: "other", label: "Other ordinary income", color: "#f59e0b", hatch: false, amount: (y: RothYear) => y.detail.otherOrdinary },
+          { key: "ss", label: "Taxable Social Security", color: "#ef4444", hatch: false, amount: (y: RothYear) => y.detail.ssTaxable },
+          { key: "rmd", label: "RMD", color: "#8b5cf6", hatch: false, amount: (y: RothYear) => y.rmd },
+          { key: "conv", label: "Pre-tax money out", color: "#0f766e", hatch: false, amount: (y: RothYear) => y.conversion },
+          { key: "extra", label: "Pre-tax draw (spending + tax debit)", color: "#2dd4bf", hatch: false, amount: (y: RothYear) => y.detail.extraPreTaxDraw },
+          { key: "qualdiv", label: "Qualified dividends", color: "#84cc16", hatch: false, amount: (y: RothYear) => y.detail.qualifiedDividends },
+          { key: "gains", label: "Long-term gain", color: "#f97316", hatch: false, amount: (y: RothYear) => Math.max(0, y.detail.ltcgNet) },
+          { key: "taxexempt", label: "Tax-exempt interest", color: "#cbd5e1", hatch: false, amount: (y: RothYear) => y.detail.taxExemptInterest },
+          { key: "lossallow", label: "Capital-loss allowance (§1211(b))", color: "#64748b", hatch: true, amount: (y: RothYear) => -y.detail.capitalLossAllowance },
         ] as const;
         const stackTotal = (y: RothYear): number =>
           segDefs.reduce((a, d) => a + d.amount(y), 0);
@@ -11695,6 +11724,7 @@ export function RothConversion({
                             bottom: `${(Math.min(s.start, s.start + s.amount) / yMax) * 100}%`,
                             height: `${(Math.abs(s.amount) / yMax) * 100}%`,
                             background: s.color,
+                            ...(s.hatch ? allowanceHatchStyle : {}),
                           }}
                         />
                       ))}
@@ -11753,7 +11783,10 @@ export function RothConversion({
                 <span key={d.key} className="inline-flex items-center gap-1.5">
                   <span
                     className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-                    style={{ background: d.color }}
+                    style={{
+                      background: d.color,
+                      ...(d.hatch ? allowanceHatchStyle : {}),
+                    }}
                     aria-hidden="true"
                   />
                   {d.label}
@@ -11984,6 +12017,8 @@ export function RothConversion({
                         {billRow("Adjusted gross income (AGI)", fmtCents(firstDrawYear.totalIncomeCents))}
                         {billRow("Taxable income", fmtCents(firstDrawYear.taxableIncomeCents))}
                         {billRow("Federal tax", fmtCents(firstDrawYear.federalTaxCents))}
+                        {firstDrawYear.penaltyCents > 0 &&
+                          billRow("Pre-59½ penalty", fmtCents(firstDrawYear.penaltyCents))}
                         {firstDrawYear.stateTaxCents > 0 &&
                           billRow("State tax", fmtCents(firstDrawYear.stateTaxCents))}
                         {firstDrawYear.acaCreditCents > 0 &&
@@ -12000,6 +12035,7 @@ export function RothConversion({
                           "Net tax",
                           fmtCents(
                             firstDrawYear.federalTaxCents +
+                              firstDrawYear.penaltyCents +
                               firstDrawYear.stateTaxCents -
                               firstDrawYear.acaCreditCents -
                               firstDrawYear.educationRefundableCents,
@@ -12146,7 +12182,11 @@ export function RothConversion({
             non-taxable part of Social Security); IRMAA and the MAGI-based fill
             ceilings (the MAGI cap and the IRMAA tier lines) use
             MAGI — the bracket-top and 0%-capital-gains ceilings limit taxable
-            income, not MAGI.
+            income, not MAGI. The Federal tax column excludes any pre-59½
+            withholding penalty for the year (select the year to see it in
+            that year&rsquo;s math); the funding table&rsquo;s Federal tax
+            includes the penalty, because it is paid as part of the federal
+            withholding.
           </p>
               {acaUnder138Years.length > 0 && (
                 <p className={hintCls}>

@@ -3198,6 +3198,30 @@ export type RothYearDetail = {
   pretaxSpendingDraw: number;
   pretaxTaxDebit: number;
   ltcg: number;
+  // The PRICED long-term result and §1211(b) allowance
+  // (display only, like everything in this detail; P-S9,
+  // parity audit): ltcg above is the year's GROSS realized
+  // gains (draws + injected + harvested), but pricing routes
+  // the year through the loss ledger — an entering
+  // carryforward nets against the gross first, and a net
+  // capital loss prices an allowance against ordinary
+  // income — so the figures that actually compose the year's
+  // AGI are these two: ltcgNet is the ledger's net result
+  // (the gross figure itself when no carryforward entered —
+  // the ledger transform is the identity there), and
+  // capitalLossAllowance is the allowance the year priced in
+  // EVERY case: the ledger's allowance when a carryforward
+  // entered (the same figure lossAllowance below carries),
+  // and min(cap, −gross) on a no-carry-in loss year, where
+  // lossAllowance reads $0 because no ledger ran. A consumer
+  // decomposing the year's income (the Tax Plan income-stack
+  // chart) must read THESE, exactly as the single-year
+  // pricer's result carries ltcgNet / capitalLossAllowance:
+  // max(0, ltcgNet) + qualifiedDividends −
+  // capitalLossAllowance is the gains-side contribution
+  // priceYear priced into AGI.
+  ltcgNet: number;
+  capitalLossAllowance: number;
   // Taxable yield income priced this year (TAXABLE YIELDS):
   // the dividend yield × the year's starting taxable balance
   // (the TOTAL distribution — priced split between the stacks
@@ -3208,9 +3232,13 @@ export type RothYearDetail = {
   // same balance, priced on the ordinary stack. Display lines
   // like everything in this detail — the priced totals above
   // already include them (in agi / magi / acaMagi and in the
-  // tax stacks).
+  // tax stacks). qualifiedDividends is the qualified part of
+  // dividendIncome (the part priced on the gains stack), so
+  // the non-qualified part is dividendIncome −
+  // qualifiedDividends, exactly the pricer's own split.
   dividendIncome: number;
   interestIncome: number;
+  qualifiedDividends: number;
   // Spend-from-cash (display only, like everything in this
   // detail): the part of the year's spending need the cash
   // sleeve paid, and the sleeve's balance at year end ($0 in
@@ -7412,8 +7440,32 @@ export function simulateRothPlan(
       // harvested gain. With the two yield lines below, the
       // detail's income pieces still sum exactly to AGI.
       ltcg: r2(realizedGains + injectedLtcg + gainsHarvested),
+      // The priced netting of that same gross total (P-S9;
+      // see the RothYearDetail note): the year-end ledger's
+      // net result when a carryforward entered — the
+      // transform every pricing of the year routed through —
+      // and the gross total itself when none did (the
+      // transform is the identity there). The priced
+      // allowance likewise: the ledger's when it ran, else
+      // the no-carry-in branch of the same transform,
+      // min(cap, −gross) on a loss year and $0 otherwise —
+      // the figure priceYear subtracted in the year's AGI
+      // either way.
+      ltcgNet: ledFinal
+        ? ledFinal.netResult
+        : r2(realizedGains + injectedLtcg + gainsHarvested),
+      capitalLossAllowance: ledFinal
+        ? ledFinal.allowance
+        : Math.min(
+            capitalLossAllowanceCap(effFilingStatus),
+            Math.max(
+              0,
+              -(realizedGains + injectedLtcg + gainsHarvested),
+            ),
+          ),
       dividendIncome: r2(dividendIncome),
       interestIncome: r2(interestIncome),
+      qualifiedDividends: qualifiedDividendIncome,
       cashSpend: r2(settled.cashSpend),
       cashSleeveEnd: r2(spendCashPct > 0 ? sleeveDollars : 0),
       spendingBase: r2(spendNeedBase),

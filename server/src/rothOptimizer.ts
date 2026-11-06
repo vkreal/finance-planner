@@ -3296,9 +3296,16 @@ export type PlaygroundYearInputs = {
   // typed taxYear's law-row cap). The charitable component
   // is the one charitable input — on a Washington year it
   // is also the donations figure the RCW 82.87.080
-  // deduction prices from. Deliberately NOT part of the
-  // paste payload, like residenceState: old pastes keep
-  // loading and price exactly as before.
+  // deduction prices from. Part of the paste payload
+  // (P-M2, parity audit): a paste carries all four
+  // components so replaying the paste reprices the same
+  // deduction; pastes written before they were included
+  // carry none of the four keys and load with them absent
+  // (the standard side), exactly as before. (An earlier
+  // note here claimed the opposite by analogy to
+  // residenceState; the analogy was false — residenceState
+  // IS carried — and the parity audit's M2 finding settled
+  // it: the exclusion was a silent drop, not a contract.)
   itemizedMortgageInterest?: number;
   itemizedSaltPaid?: number;
   itemizedCharitable?: number;
@@ -3340,8 +3347,10 @@ export type PlaygroundYearInputs = {
   capitalLossCarryInLt?: number;
   capitalLossCarryInStWa?: number;
   capitalLossCarryInLtWa?: number;
-  // Gain harvest (build v113, round-17 fix F3; December
-  // console only — absent / null on every Playground caller,
+  // Gain harvest (build v113, round-17 fix F3; supplied
+  // by the December console and, since P-S3 (parity
+  // audit), by the runPlaygroundYear request and the
+  // paste payload — absent / null on every other caller,
   // and the year then prices bit-identically to before): the
   // taxable pool available to sell and its basis, the two
   // facts the plan march's harvest sizes itself from
@@ -5420,6 +5429,85 @@ export function projectPlaygroundYears(
   const growth = 1 + opts.returnPct / 100;
   let taxable: number | null = opts.startTaxable;
   let roth = opts.startRoth;
+  /* P-S4 (parity audit, SHOULD — settled STAND in
+     substance): four of the facts the per-year spread
+     below repeats from the template are not levels the
+     walk is defined to repeat — they are one-year or
+     ledger facts, and repeating them made every
+     projected year internally inconsistent:
+     (b) the entering capital-loss carryforward is a
+     LEDGER balance: each projected year now enters with
+     the PRIOR year's reconciled carry-out (the result's
+     lossCarryOut* — federal short / long and their
+     Washington-attributable portions), exactly as the
+     plan march chains its ledger year to year. Before,
+     the walk re-fed the template's carry-in whole into
+     every year, so a banked loss sheltered the same
+     gains again and again and never ran down.
+     (c) the cash / Roth funding draws are one-year
+     funding facts: the template's own draws price in
+     the walk's FIRST year exactly as the single-year
+     pricer prices the template year; from the second
+     year on, the cash draw is $0 (the walk tracks no
+     cash balance that could fund a repeat) and the
+     Roth draw repeats only up to the tracked Roth
+     balance, which every year's draw — the first
+     year's included — depletes in the endRoth math
+     below. Before, both draws repeated whole forever:
+     spendable funding no balance paid for.
+     (d) the Medicare flags can carry a user OVERRIDE:
+     the form's tri-state checkboxes resolve into the
+     template's booleans, so a template flag that
+     DISAGREES with the age rule at the template's own
+     age is an explicit answer (on Medicare before 65,
+     or not on Medicare at 65+) and is carried through
+     the walk; a flag that AGREES with the rule is the
+     follow-age default, and the walk keeps pricing
+     each year by that year's own age, exactly as
+     before. Before, the walk re-derived both flags
+     from age every year, so an override never reached
+     a projected year.
+     Sub-case (a) of the same finding — rmdAlreadyReceived
+     netting every year's RMD — needed no change here:
+     its income half cancels against the repeated
+     other-ordinary the received amount sits inside (the
+     input contract: the received amount is already
+     counted in the entered income), so a projected
+     year's RMD income is its gross RMD, not the gross
+     less the received amount a second time; and its
+     balance half is already closed above — the walk's
+     balance math reads the GROSS per-owner RMDs
+     (rmdsFor), never the priced result's net-of-
+     received RMD, so the pre-tax balance depletes by
+     result.rmdGross. (At the audit's anchor the walk
+     still subtracted the net result.rmd; the R3-S2
+     per-owner rewrite is what closed it.) Pinned by
+     the tax suite's
+     tax-engines-playground-projection-one-year-facts-ps4
+     fixture. */
+  let carryInSt = Math.max(0, template.capitalLossCarryInSt ?? 0);
+  let carryInLt = Math.max(0, template.capitalLossCarryInLt ?? 0);
+  let carryInStWa = Math.max(0, template.capitalLossCarryInStWa ?? 0);
+  let carryInLtWa = Math.max(0, template.capitalLossCarryInLtWa ?? 0);
+  const templateCashDraw = Math.max(0, template.cashDraw ?? 0);
+  const templateRothDraw = Math.max(0, template.rothDraw ?? 0);
+  // A template Medicare flag is an override exactly
+  // when it disagrees with the age rule at the
+  // template's own age; otherwise it is the follow-age
+  // default and no override is carried (null).
+  const medicareOverrideFor = (
+    flag: boolean,
+    ageAtTemplate: number | null,
+  ): boolean | null =>
+    ageAtTemplate != null && flag !== (ageAtTemplate >= 65) ? flag : null;
+  const medicareOverridePrimary = medicareOverrideFor(
+    template.onMedicarePrimary,
+    template.agePrimary,
+  );
+  const medicareOverrideSpouse = joint
+    ? medicareOverrideFor(template.onMedicareSpouse, template.ageSpouse)
+    : null;
+  let firstWalkYear = true;
   const years: PlaygroundProjectionYear[] = [];
   const toAge = Math.max(
     template.agePrimary,
@@ -5456,7 +5544,28 @@ export function projectPlaygroundYears(
     const afterRmdPrimary = Math.max(0, (pretaxPrimary ?? 0) - rmds.primary);
     const afterRmdSpouse = Math.max(0, (pretaxSpouse ?? 0) - rmds.spouse);
     const afterRmd = afterRmdPrimary + afterRmdSpouse;
-    let moneyOut = Math.max(0, template.conversion);
+    // The year's money out starts from the template's
+    // TOTAL pre-tax money out — the conversion and the
+    // spending draw together (P-M4, parity audit MUST):
+    // since the M-2 split, the money out a year carries
+    // is the two dials' sum (the pricer's own moneyOut,
+    // and the form's "Pre-tax money out" figure), so a
+    // template whose amount rides the draw dial alone —
+    // a draw year captured as the projection's template —
+    // projected $0 of money out when the base read the
+    // conversion dial alone: the draw never entered the
+    // walk, and every projected year priced without it.
+    // The moneyOutKind below decides which ONE dial the
+    // total rides in each projected year; the stop rules,
+    // the replace mode, and the balance caps then apply
+    // to that total exactly as they applied to the
+    // conversion alone, and a template carrying its money
+    // out on the conversion dial alone (every pre-P-M4
+    // template) walks bit-identically to before.
+    let moneyOut = Math.max(
+      0,
+      template.conversion + Math.max(0, template.spendingDraw ?? 0),
+    );
     if (opts.stopKind === "age" && opts.stopAge != null && age > opts.stopAge) {
       moneyOut = 0;
     }
@@ -5496,13 +5605,30 @@ export function projectPlaygroundYears(
             opts.acaHouseholdSchedule,
             calendarYear,
           );
+    // P-S4(c) (see the state block above the loop): the
+    // template's funding draws price whole in the walk's
+    // first year; from the second year on, the cash draw
+    // is $0 and the Roth draw is capped at the Roth
+    // balance the walk tracks into the year.
+    const cashDrawEffective = firstWalkYear ? templateCashDraw : 0;
+    const rothDrawEffective = firstWalkYear
+      ? templateRothDraw
+      : Math.min(templateRothDraw, Math.max(0, roth));
     const inputs: PlaygroundYearInputs = {
       ...template,
       taxYear: calendarYear,
       agePrimary: age,
       ageSpouse,
-      onMedicarePrimary: age >= 65,
-      onMedicareSpouse: ageSpouse != null && ageSpouse >= 65,
+      // P-S4(d): a carried Medicare override (the
+      // template flag that disagreed with the age rule
+      // at the template's age) wins over the year's age
+      // rule; with no override the year's own age rule
+      // prices, exactly as before.
+      onMedicarePrimary: medicareOverridePrimary ?? age >= 65,
+      onMedicareSpouse:
+        ageSpouse == null
+          ? false
+          : (medicareOverrideSpouse ?? ageSpouse >= 65),
       ssPrimary,
       ssSpouse,
       // The walk's money out rides the dial its kind names
@@ -5528,6 +5654,19 @@ export function projectPlaygroundYears(
       pretaxBalanceSpouse: pretaxSpouse,
       acaHouseholdSize: householdSize,
       acaConvention: "newest",
+      // P-S4(b): the year's entering carryforward is
+      // the chained ledger state (the template's own
+      // carry-in in the first walked year, the prior
+      // year's reconciled carry-out after that), never
+      // the template's spread repeated.
+      capitalLossCarryInSt: carryInSt,
+      capitalLossCarryInLt: carryInLt,
+      capitalLossCarryInStWa: carryInStWa,
+      capitalLossCarryInLtWa: carryInLtWa,
+      // P-S4(c): the year's effective funding draws
+      // (see cashDrawEffective above).
+      cashDraw: cashDrawEffective,
+      rothDraw: rothDrawEffective,
     };
     const result = pricePlaygroundYear(inputs);
     const startBalances: PlaygroundProjectionBalances = {
@@ -5556,8 +5695,18 @@ export function projectPlaygroundYears(
       taxable == null
         ? null
         : r2(Math.max(0, taxable - stockSoldEffective) * growth);
+    // P-S4(c): the year's Roth draw LEAVES the tracked
+    // Roth balance like every other drawdown — before,
+    // the balance grew by the conversion alone and the
+    // draw was never subtracted, so the same Roth
+    // dollars funded every projected year.
     const endRoth = r2(
-      (roth + (opts.moneyOutKind === "conversion" ? moneyOut : 0)) * growth,
+      Math.max(
+        0,
+        roth +
+          (opts.moneyOutKind === "conversion" ? moneyOut : 0) -
+          rothDrawEffective,
+      ) * growth,
     );
     years.push({
       calendarYear,
@@ -5579,6 +5728,14 @@ export function projectPlaygroundYears(
     pretaxCombined = endPretax;
     taxable = endTaxable;
     roth = endRoth;
+    // P-S4(b): the next walked year enters with THIS
+    // year's reconciled carry-out — the loss ledger
+    // chains through the projection.
+    carryInSt = result.lossCarryOutSt;
+    carryInLt = result.lossCarryOutLt;
+    carryInStWa = result.lossCarryOutStWa;
+    carryInLtWa = result.lossCarryOutLtWa;
+    firstWalkYear = false;
   }
   // A later from-age only slices the shown years (the walk
   // above still ran from the template / walk-start year, so
@@ -5823,6 +5980,13 @@ export type PlaygroundPastePayload = Omit<
   | "rothDraw"
   | "pretaxBalanceSpouse"
   | "primarySoleBeneficiaryOfSpouse"
+  | "acaEnrollmentPremiumAnnual"
+  | "itemizedMortgageInterest"
+  | "itemizedSaltPaid"
+  | "itemizedCharitable"
+  | "itemizedOther"
+  | "harvestPoolAmount"
+  | "harvestPoolBasisPct"
 > & {
   kind: "playground-year";
   version: 1;
@@ -5889,6 +6053,61 @@ export type PlaygroundPastePayload = Omit<
   // the payload carries it always-present nullable, like
   // every other unset fact here.)
   primarySoleBeneficiaryOfSpouse: boolean | null;
+  // The itemized deduction components (P-M2, parity audit):
+  // always present in a payload this builder emits (null
+  // when unset), so a replay prices the same greater-of
+  // deduction the copied year priced — before P-M2 the
+  // payload omitted all four, so a pasted itemized year
+  // silently repriced on the standard deduction. (The
+  // engine inputs type these four as optional numbers;
+  // the payload carries them nullable, like every other
+  // unset dial here.)
+  itemizedMortgageInterest: number | null;
+  itemizedSaltPaid: number | null;
+  itemizedCharitable: number | null;
+  itemizedOther: number | null;
+  // The enrollment premium (P-M3, parity audit): always
+  // present in a payload this builder emits (null when
+  // unset), so a replay prices the same capped filing
+  // settlement the copied year priced — before P-M3 the
+  // payload carried the premium's health twin
+  // (healthPremiumAcaAnnual, which prices the premium
+  // readout) but never this fact, and the settlement cap
+  // keys off this fact alone, so a pasted year repriced
+  // with the uncapped benchmark credit. (The engine
+  // inputs type it as an optional nullable; the payload
+  // carries it always-present nullable, like every other
+  // unset dial here.)
+  acaEnrollmentPremiumAnnual: number | null;
+  // The annual spending (P-S2, parity audit): always
+  // present in a payload this builder emits (null when
+  // the priced year carried no spending), so a replay
+  // prices the same "enough for the year" comparison the
+  // copied year priced — before P-S2 the payload omitted
+  // it, so a pasted year carried no spending and the
+  // comparison fell back to the live record's figure,
+  // repricing (or losing) the verdict against a figure
+  // the copied year never priced with. (The engine inputs
+  // type it as an optional nullable; the payload carries
+  // it always-present nullable, like every other unset
+  // dial here.)
+  annualSpending: number | null;
+  // The gain-harvest facts (P-S3, parity audit): always
+  // present in a payload this builder emits (null when
+  // unset), so a replay prices the same harvest the
+  // copied year priced — before P-S3 the facts sat in
+  // this payload's type (they survive the Omit above
+  // from the engine inputs) but in neither the field
+  // list nor the builder, and the parser refused them
+  // as unknown fields, so a harvest year could not
+  // round-trip and a hand-built paste carrying the
+  // facts was refused outright. (The engine inputs type
+  // the pair as optional nullables; the payload carries
+  // them always-present nullable, like every other
+  // unset dial here. The pricer sizes a harvest only
+  // when BOTH are present.)
+  harvestPoolAmount: number | null;
+  harvestPoolBasisPct: number | null;
 };
 
 export const PLAYGROUND_PASTE_FIELDS = [
@@ -5916,6 +6135,7 @@ export const PLAYGROUND_PASTE_FIELDS = [
   "acaBenchmarkAnnual",
   "aptcTaken",
   "acaCoverageReduction",
+  "acaEnrollmentPremiumAnnual",
   "healthPremiumAcaAnnual",
   "healthPremiumMedicarePerPerson",
   "stateRatePct",
@@ -5952,6 +6172,26 @@ export const PLAYGROUND_PASTE_FIELDS = [
      copied year priced — the draw in cash in beside its
      income pricing, the conversion as income alone. */
   "spendingDraw",
+  /* The itemized deduction components (P-M2): carried so
+     a replayed paste reprices the same greater-of
+     deduction the copied year priced, instead of falling
+     back to the standard deduction. */
+  "itemizedMortgageInterest",
+  "itemizedSaltPaid",
+  "itemizedCharitable",
+  "itemizedOther",
+  /* The annual spending (P-S2): carried so a replayed
+     paste prices the same "enough for the year"
+     comparison the copied year priced, instead of
+     falling back to the live record's spending. */
+  "annualSpending",
+  /* The gain-harvest facts (P-S3): carried so a
+     replayed paste reprices the same harvest the
+     copied year priced, instead of silently pricing
+     no harvest — the pair the December console
+     supplies its harvest with. */
+  "harvestPoolAmount",
+  "harvestPoolBasisPct",
 ] as const;
 
 /* The paste fields a payload written before the cold-AI
@@ -6016,6 +6256,31 @@ export const PLAYGROUND_PASTE_OPTIONAL_FIELDS = [
      prices on the Uniform Lifetime Table, exactly as
      before. */
   "primarySoleBeneficiaryOfSpouse",
+  /* The itemized deduction components (P-M2): a paste
+     written before they were carried carries none of the
+     four keys and loads with them all absent — no itemized
+     amounts entered, so the year prices on the standard
+     side, exactly as before. */
+  "itemizedMortgageInterest",
+  "itemizedSaltPaid",
+  "itemizedCharitable",
+  "itemizedOther",
+  /* The enrollment premium (P-M3): a paste written before
+     it was carried carries no such key and loads with it
+     absent — no cap on the settlement credit, exactly as
+     before. */
+  "acaEnrollmentPremiumAnnual",
+  /* The annual spending (P-S2): a paste written before
+     it was carried carries no such key and loads with it
+     absent — no spending carried, so the loader resolves
+     the comparison's spending exactly as before. */
+  "annualSpending",
+  /* The gain-harvest facts (P-S3): a paste written
+     before they were carried carries neither key and
+     loads with both absent — no harvest priced, exactly
+     as before. */
+  "harvestPoolAmount",
+  "harvestPoolBasisPct",
 ] as const;
 
 export function playgroundPastePayload(
@@ -6049,6 +6314,8 @@ export function playgroundPastePayload(
     acaBenchmarkAnnual: inp.acaBenchmarkAnnual,
     aptcTaken: inp.aptcTaken ?? null,
     acaCoverageReduction: inp.acaCoverageReduction ?? null,
+    acaEnrollmentPremiumAnnual: inp.acaEnrollmentPremiumAnnual ?? null,
+    annualSpending: inp.annualSpending ?? null,
     healthPremiumAcaAnnual: inp.healthPremiumAcaAnnual ?? null,
     healthPremiumMedicarePerPerson: inp.healthPremiumMedicarePerPerson ?? null,
     capitalLossCarryInSt: inp.capitalLossCarryInSt ?? null,
@@ -6062,6 +6329,12 @@ export function playgroundPastePayload(
     cashDraw: inp.cashDraw ?? null,
     rothDraw: inp.rothDraw ?? null,
     spendingDraw: inp.spendingDraw ?? null,
+    itemizedMortgageInterest: inp.itemizedMortgageInterest ?? null,
+    itemizedSaltPaid: inp.itemizedSaltPaid ?? null,
+    itemizedCharitable: inp.itemizedCharitable ?? null,
+    itemizedOther: inp.itemizedOther ?? null,
+    harvestPoolAmount: inp.harvestPoolAmount ?? null,
+    harvestPoolBasisPct: inp.harvestPoolBasisPct ?? null,
     stateRatePct: inp.stateRatePct,
     residenceState: inp.residenceState ?? null,
     educationStudents: inp.educationStudents
@@ -6232,6 +6505,25 @@ export function parsePlaygroundPaste(
     }
     acaCoverageReduction = n;
   }
+  /* The enrollment premium is optional the same way
+     (P-M3): a paste written before the payload carried
+     it has no such key and loads with it absent — no cap
+     on the settlement credit, exactly as before; absent
+     or null parses as unset, and a value must be a valid
+     non-negative dollar figure. Like its S-1 siblings it
+     returns as undefined when unset (its engine input
+     spelling). */
+  let acaEnrollmentPremiumAnnual: number | null = null;
+  if (
+    r.acaEnrollmentPremiumAnnual !== null &&
+    r.acaEnrollmentPremiumAnnual !== undefined
+  ) {
+    const n = num(r.acaEnrollmentPremiumAnnual);
+    if (n == null || n < 0) {
+      return fail("That paste’s enrollment premium is not a valid dollar figure — nothing was loaded.");
+    }
+    acaEnrollmentPremiumAnnual = n;
+  }
   /* The December-only pricing facts are optional (S-2): a
      paste written before they existed carries none of the
      six keys and loads with them all absent — no carry-in
@@ -6287,6 +6579,63 @@ export function parsePlaygroundPaste(
      undefined when unset (its engine input spelling). */
   const spendingDrawP = optMoney("spendingDraw", "pre-tax draw for spending");
   if (!spendingDrawP.ok) return spendingDrawP;
+  /* The itemized deduction components are optional the
+     same way (P-M2): a paste written before the payload
+     carried them has none of the four keys and loads with
+     them all absent — no itemized amounts entered, so the
+     year prices on the standard side, exactly as before;
+     absent or null parses as unset, and a value must be a
+     valid non-negative dollar figure. Like the S-2 facts
+     they return as undefined when unset (their engine
+     input spelling). */
+  const itemizedMortgageP = optMoney(
+    "itemizedMortgageInterest",
+    "mortgage interest",
+  );
+  if (!itemizedMortgageP.ok) return itemizedMortgageP;
+  const itemizedSaltP = optMoney("itemizedSaltPaid", "state and local taxes paid");
+  if (!itemizedSaltP.ok) return itemizedSaltP;
+  const itemizedCharitableP = optMoney(
+    "itemizedCharitable",
+    "charitable contributions",
+  );
+  if (!itemizedCharitableP.ok) return itemizedCharitableP;
+  const itemizedOtherP = optMoney("itemizedOther", "other itemized deductions");
+  if (!itemizedOtherP.ok) return itemizedOtherP;
+  /* The annual spending is optional the same way (P-S2):
+     a paste written before the payload carried it has no
+     such key and loads with it absent — no spending
+     carried, so the loader resolves the comparison's
+     spending exactly as before; absent or null parses as
+     unset, and a value must be a valid non-negative
+     dollar figure. Like the S-2 facts it returns as
+     undefined when unset (its engine input spelling). */
+  const annualSpendingP = optMoney("annualSpending", "annual spending");
+  if (!annualSpendingP.ok) return annualSpendingP;
+  /* The gain-harvest facts are optional the same way
+     (P-S3): a paste written before the payload carried
+     them has neither key and loads with both absent —
+     no harvest priced, exactly as before; absent or
+     null parses as unset, the pool must be a valid
+     non-negative dollar figure, and the basis must be
+     a percent within 0–100 (the December console's own
+     bounds on the same facts; the pricer clamps what
+     reaches it, but a paste states the fact, so an
+     out-of-range percent refuses the whole paste like
+     any other invalid field). Like the S-2 facts they
+     return as undefined when unset (their engine input
+     spelling) — the pricer sizes a harvest only when
+     BOTH return present. */
+  const harvestPoolP = optMoney("harvestPoolAmount", "harvest pool");
+  if (!harvestPoolP.ok) return harvestPoolP;
+  let harvestPoolBasisPct: number | undefined;
+  if (r.harvestPoolBasisPct !== null && r.harvestPoolBasisPct !== undefined) {
+    const n = num(r.harvestPoolBasisPct);
+    if (n == null || n < 0 || n > 100) {
+      return fail("That paste’s harvest basis is not a valid percent — nothing was loaded.");
+    }
+    harvestPoolBasisPct = n;
+  }
   /* The reinvested-yield fact is optional (S-3): a paste
      written before it existed carries no such key and loads
      with it absent — the yield counts as cash in, exactly
@@ -6406,8 +6755,8 @@ export function parsePlaygroundPaste(
       spouseSoleBeneficiary: r.spouseSoleBeneficiary,
       acaHouseholdSize,
       acaBenchmarkAnnual,
-      /* The optional money facts (the S-1 settlement pair and
-         the S-2 December-only facts) spell "unset" as undefined
+      /* The optional money facts (the S-1 settlement facts
+         and the S-2 December-only facts) spell "unset" as undefined
          in the parsed inputs, never null: a JSON round-trip
          drops undefined keys, so a paste of a year where the
          fact was never entered parses back to inputs identical
@@ -6416,6 +6765,7 @@ export function parsePlaygroundPaste(
          undefined, and null identically for every one of them. */
       aptcTaken: aptcTaken ?? undefined,
       acaCoverageReduction: acaCoverageReduction ?? undefined,
+      acaEnrollmentPremiumAnnual: acaEnrollmentPremiumAnnual ?? undefined,
       healthPremiumAcaAnnual,
       healthPremiumMedicarePerPerson,
       capitalLossCarryInSt: carryInStP.value ?? undefined,
@@ -6437,6 +6787,33 @@ export function parsePlaygroundPaste(
          entered parses back to inputs identical to the
          ones that produced it. */
       spendingDraw: spendingDrawP.value ?? undefined,
+      /* The itemized deduction components (P-M2) join the
+         same spelling: unset is undefined in the parsed
+         inputs, never null, so a paste of a year with no
+         itemized amounts entered parses back to inputs
+         identical to the ones that produced it. */
+      itemizedMortgageInterest: itemizedMortgageP.value ?? undefined,
+      itemizedSaltPaid: itemizedSaltP.value ?? undefined,
+      itemizedCharitable: itemizedCharitableP.value ?? undefined,
+      itemizedOther: itemizedOtherP.value ?? undefined,
+      /* The annual spending (P-S2) joins the same
+         spelling: unset is undefined in the parsed inputs,
+         never null, so a paste of a year priced with no
+         spending parses back to inputs identical to the
+         ones that produced it; a carried figure returns
+         whole, so the parsed inputs price the same
+         "enough for the year" verdict the copied year
+         priced. */
+      annualSpending: annualSpendingP.value ?? undefined,
+      /* The gain-harvest facts (P-S3) join the same
+         spelling: unset is undefined in the parsed
+         inputs, never null, so a paste of a year priced
+         with no harvest parses back to inputs identical
+         to the ones that produced it; a carried pair
+         returns whole, so the parsed inputs size the
+         same harvest the copied year priced. */
+      harvestPoolAmount: harvestPoolP.value ?? undefined,
+      harvestPoolBasisPct,
       /* The reciprocal beneficiary fact (N-1) joins the
          same spelling: unset is undefined in the parsed
          inputs, never null, so a paste of a year where the
@@ -7404,6 +7781,40 @@ export function buildCompareScenario(
       ) * 100,
     );
   }
+  /* COMPARE SLEEVE REVISIT (parity audit S6): the base's
+     spendFromCashSleeveCents is a snapshot-derived transient —
+     resolveArgsBalances threads it (snapshot Cash less the
+     exclusion, floored at $0) ONLY when the plan's taxable
+     balance follows the snapshot, and the Tax Plan save path
+     writes $0 beside a typed taxable balance (buildSavePayload
+     in RothConversion.tsx). A scenario whose overrides give an
+     explicit taxableCents therefore prices a pool with no
+     snapshot context, and the sleeve its own balance implies
+     is $0 — but the merge above inherits the base's threaded
+     sleeve verbatim, so the scenario would spend the BASE
+     pool's cash sleeve out of its own pool (on the settlement's
+     worked example it priced a $45,000 first-year cash share
+     and never realized the $18,000 of gain the direct pricing
+     realizes, ~$2,700 of federal tax low). Revisit the sleeve
+     here, the way the yield fallback is re-derived below: an
+     explicit taxableCents override (an explicit null included —
+     it prices the pool at $0, where no sleeve can spend)
+     resets the merged sleeve to $0, unless the scenario's own
+     overrides supply a sleeve — a passable transient, used
+     exactly as supplied and never overwritten, the same rule
+     the fallback re-derivation gives a scenario-supplied
+     fallback. A scenario that leaves taxableCents untouched
+     keeps the base's sleeve bit-identically: its pool IS the
+     base's pool, so the threaded sleeve is its own. Tiers mode
+     is unaffected either way —
+     deriveSpendFromCashSleeveStartDollars derives the sleeve
+     from the 100%-basis tier and ignores this transient. */
+  if (
+    overrides.taxableCents !== undefined &&
+    overrides.spendFromCashSleeveCents === undefined
+  ) {
+    merged.spendFromCashSleeveCents = 0;
+  }
   /* COMPARE FALLBACK RE-DERIVATION (contract v140, re-audit
      SHOULD S-2): the blank-yield fallback threaded onto the
      base was derived over the BASE plan's resolved taxable
@@ -7509,6 +7920,21 @@ export type RothCompareScenarioYear = {
   ageSpouse: number | null;
   federalTaxCents: number;
   stateTaxCents: number;
+  // The year's pre-59½ withholding penalty (P-S11, parity
+  // audit): the march's own per-year penalty (RothYear
+  // .penalty) — 10% of the tax withheld from a conversion
+  // before the conversion owner turned 59½, grossed up.
+  // $0 in every year that prices no penalty. It is NOT
+  // inside federalTaxCents above: the funding rows fold it
+  // into their federalTaxCents (the penalty is paid as part
+  // of the federal withholding), so a per-year tax bill
+  // built from these readouts must add penaltyCents beside
+  // federalTaxCents to agree with the funding rows — the
+  // scenario result has always carried the penalty as a
+  // lifetime total (penaltyCents on the scenario), and the
+  // per-year readouts now sum to it. Display only, exactly
+  // like the other readouts on this type.
+  penaltyCents: number;
   // The year's adjusted gross income (AGI).
   totalIncomeCents: number;
   taxableIncomeCents: number;
@@ -7682,6 +8108,7 @@ export function runRothCompare(
         ageSpouse: y.ageSpouse,
         federalTaxCents: toCents(y.federalTax),
         stateTaxCents: toCents(y.stateTax),
+        penaltyCents: toCents(y.penalty),
         totalIncomeCents: toCents(y.agi),
         taxableIncomeCents: toCents(y.taxableIncome),
         acaCreditCents: toCents(y.acaCreditKept),

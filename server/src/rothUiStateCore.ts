@@ -167,6 +167,23 @@ const blankLabDials = (): RothLabDials => ({
    A blob written before this field existed parses it null —
    no snapshot yet — and the view captures one when the panel
    next opens. */
+/* P-S8 (parity audit, SHOULD): the snapshot carries the FULL
+   PlaygroundYearInputs the projection runs from — every fact
+   buildPgInputs supplies — including the December-era facts
+   an earlier shape dropped on save (the ACA settlement
+   facts, the health premiums, the loss carry-ins, the RMD
+   already received, the dependent MAGI, the funding draws,
+   the reinvested-yield flag, the annual spending, and the
+   harvest pair), so a template restored after a reload
+   reprices the projection identically. Each such field is
+   read leniently by parsePgProjTemplate below: a blob
+   written before it was carried parses it at its no-fact
+   value (null / 0 / false — each the pricer's absent
+   reading), so an older stored template still loads and
+   prices exactly as the lossy restore priced it, and the
+   view's is-current check (comparing through the full
+   mapping, projTemplateCore.ts) reads it not-current
+   against the live dials until the panel next captures. */
 export const playgroundProjTemplateState = z.object({
   taxYear: z.number().int(),
   filingStatus: z.enum(["mfj", "single", "hoh"]),
@@ -208,6 +225,50 @@ export const playgroundProjTemplateState = z.object({
   primarySoleBeneficiaryOfSpouse: z.boolean().nullable(),
   acaHouseholdSize: z.number().nullable(),
   acaBenchmarkAnnual: z.number().nullable(),
+  /* The ACA filing-settlement facts (P-S8): the advance
+     credit taken and the coverage-month reduction (each
+     null when the stored template carries no settlement
+     fact — the pre-P-S8 spelling), and the enrollment
+     premium the settlement caps the final credit at (null
+     = no cap). */
+  aptcTaken: z.number().nullable(),
+  acaCoverageReduction: z.number().nullable(),
+  acaEnrollmentPremiumAnnual: z.number().nullable(),
+  /* The health premium facts (P-S8): the marketplace
+     gross premium and the per-person Medicare base
+     premium the after-health readout prices from, each
+     null when none was entered. */
+  healthPremiumAcaAnnual: z.number().nullable(),
+  healthPremiumMedicarePerPerson: z.number().nullable(),
+  /* The loss carry-ins (P-S8): the federal short / long
+     pair and each character's Washington-attributable
+     portion — the projection walk's entering ledger. */
+  capitalLossCarryInSt: z.number(),
+  capitalLossCarryInLt: z.number(),
+  capitalLossCarryInStWa: z.number(),
+  capitalLossCarryInLtWa: z.number(),
+  /* The RMD already received and the dependent's MAGI
+     (P-S8), each null when not supplied. */
+  rmdAlreadyReceived: z.number().nullable(),
+  dependentMagiForAca: z.number().nullable(),
+  /* The cash / Roth funding draws (P-S8): the template
+     year's spendable funding from the cash sleeve and
+     the Roth accounts. */
+  cashDraw: z.number(),
+  rothDraw: z.number(),
+  /* The reinvested-yield flag (P-S8): the template year's
+     yield stays inside the taxable balance and counts
+     $0 of cash in. */
+  yieldReinvested: z.boolean(),
+  /* The annual spending (P-S8): the figure each projected
+     year's "enough for the year" verdict runs against,
+     null when the template year carried none. */
+  annualSpending: z.number().nullable(),
+  /* The gain-harvest pair (P-S8): the taxable pool
+     available to sell and its blended basis percent;
+     either null prices no harvest. */
+  harvestPoolAmount: z.number().nullable(),
+  harvestPoolBasisPct: z.number().nullable(),
   stateRatePct: z.number(),
   residenceState: z.enum(["WA", "other"]),
   itemizedMortgageInterest: z.number(),
@@ -654,6 +715,38 @@ function parsePgProjTemplate(
       : null;
   const acaHouseholdSize = numOrNull(t.acaHouseholdSize);
   const acaBenchmarkAnnual = numOrNull(t.acaBenchmarkAnnual);
+  /* The P-S8 facts are lenient like the spending draw
+     above: a template written before they were carried
+     parses each at its no-fact value — the settlement
+     facts, the health premiums, the RMD received, the
+     dependent MAGI, the annual spending, and the harvest
+     pair as null (no settlement, no premium, no verdict,
+     no harvest priced), the carry-ins and funding draws
+     as 0, the reinvested-yield flag as false — every one
+     the pricer's absent reading, so an older stored
+     template loads and prices exactly as the lossy
+     restore priced it. None is in the rejection check
+     below. */
+  const aptcTaken = numOrNull(t.aptcTaken) ?? null;
+  const acaCoverageReduction = numOrNull(t.acaCoverageReduction) ?? null;
+  const acaEnrollmentPremiumAnnual =
+    numOrNull(t.acaEnrollmentPremiumAnnual) ?? null;
+  const healthPremiumAcaAnnual = numOrNull(t.healthPremiumAcaAnnual) ?? null;
+  const healthPremiumMedicarePerPerson =
+    numOrNull(t.healthPremiumMedicarePerPerson) ?? null;
+  const capitalLossCarryInSt = num(t.capitalLossCarryInSt) ?? 0;
+  const capitalLossCarryInLt = num(t.capitalLossCarryInLt) ?? 0;
+  const capitalLossCarryInStWa = num(t.capitalLossCarryInStWa) ?? 0;
+  const capitalLossCarryInLtWa = num(t.capitalLossCarryInLtWa) ?? 0;
+  const rmdAlreadyReceived = numOrNull(t.rmdAlreadyReceived) ?? null;
+  const dependentMagiForAca = numOrNull(t.dependentMagiForAca) ?? null;
+  const cashDraw = num(t.cashDraw) ?? 0;
+  const rothDraw = num(t.rothDraw) ?? 0;
+  const yieldReinvested =
+    typeof t.yieldReinvested === "boolean" ? t.yieldReinvested : false;
+  const annualSpending = numOrNull(t.annualSpending) ?? null;
+  const harvestPoolAmount = numOrNull(t.harvestPoolAmount) ?? null;
+  const harvestPoolBasisPct = numOrNull(t.harvestPoolBasisPct) ?? null;
   const stateRatePct = num(t.stateRatePct);
   const itemizedMortgageInterest = num(t.itemizedMortgageInterest);
   const itemizedSaltPaid = num(t.itemizedSaltPaid);
@@ -729,6 +822,23 @@ function parsePgProjTemplate(
     primarySoleBeneficiaryOfSpouse,
     acaHouseholdSize,
     acaBenchmarkAnnual,
+    aptcTaken,
+    acaCoverageReduction,
+    acaEnrollmentPremiumAnnual,
+    healthPremiumAcaAnnual,
+    healthPremiumMedicarePerPerson,
+    capitalLossCarryInSt,
+    capitalLossCarryInLt,
+    capitalLossCarryInStWa,
+    capitalLossCarryInLtWa,
+    rmdAlreadyReceived,
+    dependentMagiForAca,
+    cashDraw,
+    rothDraw,
+    yieldReinvested,
+    annualSpending,
+    harvestPoolAmount,
+    harvestPoolBasisPct,
     stateRatePct,
     residenceState: t.residenceState as "WA" | "other",
     itemizedMortgageInterest,

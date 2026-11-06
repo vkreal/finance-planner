@@ -7263,7 +7263,7 @@ const uiCasCases: {
   },
   {
     id: "ui-proj-template-persists",
-    note: "The projTemplate field (projection click fix): a legacy blob without the key parses projTemplate null (no snapshot — the view captures one when the panel opens); a write storing a template snapshot round-trips it field-for-field through applyRothUiWrite and parse; an unrelated field write preserves it; and a malformed snapshot (a required figure missing) reads leniently as null rather than half-loading and mis-basing the projection. The snapshot is what the projection chart runs from, so losing or mangling it on save would re-base the chart — the exact shrink this field exists to prevent.",
+    note: "The projTemplate field (projection click fix; full carriage P-S8, parity audit): a legacy blob without the key parses projTemplate null (no snapshot — the view captures one when the panel opens); a write storing a template snapshot round-trips it field-for-field through applyRothUiWrite and parse; an unrelated field write preserves it; and a malformed snapshot (a required figure missing) reads leniently as null rather than half-loading and mis-basing the projection. The snapshot is what the projection chart runs from, so losing or mangling it on save would re-base the chart — the exact shrink this field exists to prevent. P-S8: the stored snapshot carries the FULL engine-input set (the settlement facts, health premiums, carry-ins, RMD received, dependent MAGI, funding draws, reinvested-yield flag, annual spending, and harvest pair beside the base dials), and a snapshot written in the pre-P-S8 shape (none of those keys) parses with each of them at its no-fact value — the settlement facts, premiums, RMD received, dependent MAGI, spending, and harvest pair null, the carry-ins and draws 0, the flag false — so the older stored template still loads and prices exactly as the lossy restore priced it.",
     run: () => {
       const failures: string[] = [];
       const legacyObj = JSON.parse(legacyUiRaw()) as Record<string, unknown>;
@@ -7295,6 +7295,23 @@ const uiCasCases: {
         primarySoleBeneficiaryOfSpouse: null,
         acaHouseholdSize: null,
         acaBenchmarkAnnual: null,
+        aptcTaken: 12000,
+        acaCoverageReduction: 1000,
+        acaEnrollmentPremiumAnnual: 25000 - 1000,
+        healthPremiumAcaAnnual: 25000,
+        healthPremiumMedicarePerPerson: 5000,
+        capitalLossCarryInSt: 30000,
+        capitalLossCarryInLt: 5000,
+        capitalLossCarryInStWa: 10000,
+        capitalLossCarryInLtWa: 2500,
+        rmdAlreadyReceived: 8000,
+        dependentMagiForAca: 6000,
+        cashDraw: 20000,
+        rothDraw: 10000,
+        yieldReinvested: true,
+        annualSpending: 180000,
+        harvestPoolAmount: 2000000,
+        harvestPoolBasisPct: 60,
         stateRatePct: 0,
         residenceState: "other" as const,
         itemizedMortgageInterest: 0,
@@ -7335,6 +7352,69 @@ const uiCasCases: {
       mp.projTemplate = mt;
       if (parseRothUiState(JSON.stringify(malformed)).playground.projTemplate !== null)
         failures.push("malformed snapshot (conversion missing): expected projTemplate null");
+      // The pre-P-S8 stored shape (P-S8): the same snapshot
+      // with every fact the full carriage added deleted —
+      // it must still load (the base dials are all present)
+      // with each added fact at its no-fact value, pricing
+      // exactly as the lossy restore priced it.
+      const legacyShape = JSON.parse(res.raw) as Record<string, unknown>;
+      const lp = legacyShape.playground as Record<string, unknown>;
+      const lt = { ...(lp.projTemplate as Record<string, unknown>) };
+      for (const k of [
+        "aptcTaken",
+        "acaCoverageReduction",
+        "acaEnrollmentPremiumAnnual",
+        "healthPremiumAcaAnnual",
+        "healthPremiumMedicarePerPerson",
+        "capitalLossCarryInSt",
+        "capitalLossCarryInLt",
+        "capitalLossCarryInStWa",
+        "capitalLossCarryInLtWa",
+        "rmdAlreadyReceived",
+        "dependentMagiForAca",
+        "cashDraw",
+        "rothDraw",
+        "yieldReinvested",
+        "annualSpending",
+        "harvestPoolAmount",
+        "harvestPoolBasisPct",
+      ]) {
+        delete lt[k];
+      }
+      lp.projTemplate = lt;
+      const legacyParsed = parseRothUiState(JSON.stringify(legacyShape)).playground
+        .projTemplate;
+      if (legacyParsed === null) {
+        failures.push("pre-P-S8 shape: expected the snapshot to still load");
+      } else {
+        const noFact: Record<string, unknown> = {
+          aptcTaken: null,
+          acaCoverageReduction: null,
+          acaEnrollmentPremiumAnnual: null,
+          healthPremiumAcaAnnual: null,
+          healthPremiumMedicarePerPerson: null,
+          capitalLossCarryInSt: 0,
+          capitalLossCarryInLt: 0,
+          capitalLossCarryInStWa: 0,
+          capitalLossCarryInLtWa: 0,
+          rmdAlreadyReceived: null,
+          dependentMagiForAca: null,
+          cashDraw: 0,
+          rothDraw: 0,
+          yieldReinvested: false,
+          annualSpending: null,
+          harvestPoolAmount: null,
+          harvestPoolBasisPct: null,
+        };
+        for (const [k, v] of Object.entries(noFact)) {
+          if ((legacyParsed as Record<string, unknown>)[k] !== v)
+            failures.push(
+              `pre-P-S8 shape: expected ${k} at its no-fact value ${JSON.stringify(v)}, got ${JSON.stringify((legacyParsed as Record<string, unknown>)[k])}`,
+            );
+        }
+        if (legacyParsed.conversion !== template.conversion)
+          failures.push("pre-P-S8 shape: the base dials must survive intact");
+      }
       return failures;
     },
   },
