@@ -33,6 +33,20 @@
    through these functions, the stored parse, and the
    projection walk).
 
+   The ONE PlaygroundYearInputs fact the mapping deliberately
+   does NOT carry is irmaaPayableAnnual (internal review
+   round 3 SHOULD-2): the IRMAA surcharge payable in the
+   ONE priced year. The walk strips it from every walked
+   year's inputs (see projectPlaygroundYears) because a
+   walked year has its own payable IRMAA — its MAGI two
+   years prior — which no single entered amount can state,
+   so carrying it into the template would charge the same
+   surcharge in years whose MAGIs price different ones.
+   The stored template therefore never holds it, and the
+   is-current check (which compares through this mapping
+   on both sides) does not see a typed IRMAA as making
+   the template stale.
+
    The two shapes differ only in the optional-field spellings
    buildPgInputs leaves open: a fact the engine input spells
    "absent" (undefined) is stored as its explicit no-fact

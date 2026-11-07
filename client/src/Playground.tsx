@@ -1740,6 +1740,18 @@ export function Playground({
   // health premiums); they never enter the year's tax.
   const [pgHealthAca, setPgHealthAca] = useState("");
   const [pgHealthMedicare, setPgHealthMedicare] = useState("");
+  // IRMAA surcharge payable THIS year (internal review
+  // round 3 SHOULD-2): the surcharge actually payable in
+  // the priced year, in dollars for the whole household —
+  // the figure on the household's Medicare premium notice,
+  // or the plan march's own IRMAA for that year. Charged
+  // beside the base premium in the cash left after health
+  // premiums — never in the tax bill. Blank = no payable
+  // IRMAA charged, exactly as before. This is NOT the
+  // forward irmaa readout (the surcharge this year's MAGI
+  // will cause in premiumYear): that figure is never
+  // charged into this year's cash left.
+  const [pgIrmaaPayable, setPgIrmaaPayable] = useState("");
   // ACA reconciliation dials (S-1, engines review round 2):
   // the advance premium credit actually taken during the
   // year and the coverage-month reduction. buildPgInputs
@@ -2300,6 +2312,7 @@ export function Playground({
     setPgBenchmark(s.acaBenchmark);
     setPgHealthAca(s.healthPremiumAca ?? "");
     setPgHealthMedicare(s.healthPremiumMedicare ?? "");
+    setPgIrmaaPayable(s.irmaaPayable ?? "");
     setPgAptcTaken(s.aptcTaken ?? "");
     setPgCoverageReduction(s.acaCoverageReduction ?? "");
     setPgCarryInSt(s.capitalLossCarryInSt ?? "");
@@ -2401,6 +2414,7 @@ export function Playground({
     acaBenchmark: pgBenchmark,
     healthPremiumAca: pgHealthAca,
     healthPremiumMedicare: pgHealthMedicare,
+    irmaaPayable: pgIrmaaPayable,
     aptcTaken: pgAptcTaken,
     acaCoverageReduction: pgCoverageReduction,
     capitalLossCarryInSt: pgCarryInSt,
@@ -3031,6 +3045,11 @@ export function Playground({
     // and loads both blank — no premium priced, as before.
     setPgHealthAca(moneyOrBlank(inp.healthPremiumAcaAnnual ?? null));
     setPgHealthMedicare(moneyOrBlank(inp.healthPremiumMedicarePerPerson ?? null));
+    // The paste payload carries the IRMAA surcharge payable
+    // this year (internal review round 3 SHOULD-2); an older
+    // paste carries no such key and loads it blank — no
+    // payable IRMAA charged, as before.
+    setPgIrmaaPayable(moneyOrBlank(inp.irmaaPayableAnnual ?? null));
     // The paste payload carries the ACA reconciliation facts
     // (S-1); an older paste carries neither and loads both
     // blank — $0 taken, no reduction, exactly as before. The
@@ -3159,6 +3178,10 @@ export function Playground({
     setPgPretaxSpouse("");
     setPgAcaSize("");
     setPgBenchmark("");
+    // IRMAA payable this year (internal review round 3
+    // SHOULD-2): Reset clears it like every other money
+    // dial — the fresh snapshot below stores it blank.
+    setPgIrmaaPayable("");
     setPgAptcTaken("");
     setPgCoverageReduction("");
     setPgCarryInSt("");
@@ -3237,6 +3260,7 @@ export function Playground({
       acaBenchmark: "",
       healthPremiumAca: "",
       healthPremiumMedicare: "",
+      irmaaPayable: "",
       aptcTaken: "",
       acaCoverageReduction: "",
       capitalLossCarryInSt: "",
@@ -3451,6 +3475,7 @@ export function Playground({
       acaEnrollmentPremiumAnnual: money0OrNull(pgHealthAca),
       healthPremiumAcaAnnual: money0OrNull(pgHealthAca),
       healthPremiumMedicarePerPerson: money0OrNull(pgHealthMedicare),
+      irmaaPayableAnnual: money0OrNull(pgIrmaaPayable),
       stateRatePct: clamp0(parseNum(pgStateRate) ?? 0),
       residenceState: pgResidence,
       itemizedMortgageInterest: money0(pgItemizedMortgage),
@@ -3500,7 +3525,7 @@ export function Playground({
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgConversion, pgSpendingDraw,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
-    pgBenchmark, pgHealthAca, pgHealthMedicare, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
+    pgBenchmark, pgHealthAca, pgHealthMedicare, pgIrmaaPayable, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
     pgSpendingCents, pgPastedSpending, pgPastedHarvest, pgPrefillSource,
   ]);
@@ -3517,7 +3542,7 @@ export function Playground({
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgSpendingDraw,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
-    pgBenchmark, pgHealthAca, pgHealthMedicare, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
+    pgBenchmark, pgHealthAca, pgHealthMedicare, pgIrmaaPayable, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
     pgSpendingCents, pgPastedSpending, pgPastedHarvest, pgPrefillSource,
   ]);
@@ -3642,7 +3667,7 @@ export function Playground({
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgSpendingDraw,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
-    pgBenchmark, pgHealthAca, pgHealthMedicare, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
+    pgBenchmark, pgHealthAca, pgHealthMedicare, pgIrmaaPayable, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
   ]);
 
@@ -3933,6 +3958,11 @@ export function Playground({
     setPgHealthMedicare(
       moneyOrBlank(inp.healthPremiumMedicarePerPerson ?? null),
     );
+    // Loading a walked year clears the IRMAA dial (internal
+    // review round 3 SHOULD-2): the walk prices no payable
+    // IRMAA — each walked year has its own — so a loaded
+    // walked year must not carry the single year's amount.
+    setPgIrmaaPayable(moneyOrBlank(inp.irmaaPayableAnnual ?? null));
     setPgAptcTaken(moneyOrBlank(inp.aptcTaken ?? null));
     setPgCoverageReduction(moneyOrBlank(inp.acaCoverageReduction ?? null));
     // The benchmark dial no longer holds a prefill pick —
@@ -4317,6 +4347,16 @@ export function Playground({
         ? fmtMoneyInput(pgPrefillSource.healthPremiumMedicarePerPerson)
         : "",
     );
+    // The IRMAA surcharge payable this year (internal review
+    // round 3 SHOULD-2) is deliberately NOT prefilled: the
+    // march year's IRMAA is the surcharge the march prices
+    // for that year, but the dial states the surcharge
+    // actually payable — the figure on the Medicare premium
+    // notice — and the prefill does not presume the two
+    // agree. The user enters it from the Tax Plan view's
+    // funding rows, or leaves it blank. (The saved-year
+    // loader likewise carries no IRMAA fact.)
+    setPgIrmaaPayable("");
     // Education students (T6): the plan's entered students
     // for the chosen tax year become this year's rows — the
     // plan's other years' entries are not this year's.
@@ -4718,6 +4758,10 @@ export function Playground({
     setPgPretaxSpouse("");
     setPgAcaSize("");
     setPgBenchmark("");
+    // IRMAA payable this year (internal review round 3
+    // SHOULD-2): a blank year zeroes it with the other
+    // single-year dials.
+    setPgIrmaaPayable("");
     setPgAptcTaken("");
     setPgCoverageReduction("");
     setPgCarryInSt("");
@@ -5610,17 +5654,41 @@ export function Playground({
                         : fmtDollars(pg?.cashLeftAfterTax ?? 0)}
                     </span>
                   </span>
-                  {pg != null && pg.healthPremiumNet > 0 && (
+                  {pg != null && (pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0) && (
                     <span className="contents">
-                      <span aria-hidden="true" className="text-[var(--dim)]">
-                        ·
-                      </span>
-                      <span>
-                        Health premium (net){" "}
-                        <span className="font-bold">
-                          {fmtDollars(pg.healthPremiumNet)}
+                      {pg.healthPremiumNet > 0 && (
+                        <span className="contents">
+                          <span aria-hidden="true" className="text-[var(--dim)]">
+                            ·
+                          </span>
+                          <span>
+                            Health premium (net){" "}
+                            <span className="font-bold">
+                              {fmtDollars(pg.healthPremiumNet)}
+                            </span>
+                          </span>
                         </span>
-                      </span>
+                      )}
+                      {/* IRMAA payable this year (internal review
+                          round 3 SHOULD-2): the surcharge actually
+                          payable in the priced year, beside the net
+                          premium — the block opens whenever either
+                          prices, so a year with a $0 net premium
+                          but a payable IRMAA still shows the cash
+                          left after health premiums it reduces. */}
+                      {pg.irmaaPayableAnnual > 0 && (
+                        <span className="contents">
+                          <span aria-hidden="true" className="text-[var(--dim)]">
+                            ·
+                          </span>
+                          <span>
+                            IRMAA payable{" "}
+                            <span className="font-bold">
+                              {fmtDollars(pg.irmaaPayableAnnual)}
+                            </span>
+                          </span>
+                        </span>
+                      )}
                       <span aria-hidden="true" className="text-[var(--dim)]">
                         ·
                       </span>
@@ -6524,7 +6592,11 @@ export function Playground({
             })}
             {moneyField("Health premium — Medicare, per person / yr", pgHealthMedicare, setPgHealthMedicare, {
               hint: "Part B + Part D base, for each person on Medicare this year.",
-              info: "The Medicare base premium per person on Medicare this year: Part B standard plus a Part D base premium. The IRMAA surcharge is priced in the tax bill already and is not part of this amount.",
+              info: "The Medicare base premium per person on Medicare this year: Part B standard plus a Part D base premium. The IRMAA surcharge is NOT part of this amount — it is priced nowhere until you enter it in the IRMAA surcharge dial below; the IRMAA readout in the strip is the surcharge this year's income will cause in two years' time, not this year's surcharge.",
+            })}
+            {moneyField("IRMAA surcharge payable this year / yr", pgIrmaaPayable, setPgIrmaaPayable, {
+              hint: "The surcharge you actually pay this year, for the whole household. Blank = $0.",
+              info: "The Medicare IRMAA surcharge actually payable THIS year — the figure on your Medicare premium notice, or the plan march's own IRMAA for this year. It is charged beside the base premium in the cash left after health premiums, so the 'enough for the year' verdict counts it. It is NOT the IRMAA readout in the strip: that is the surcharge this year's income will cause in two years' time. The projection walk prices no payable IRMAA — each walked year has its own.",
             })}
             {moneyField("Advance credit (APTC) already taken / yr", pgAptcTaken, setPgAptcTaken, {
               hint: "Advance premium credit you actually received this year. Blank = $0.",
@@ -9290,7 +9362,16 @@ export function Playground({
                         comparison; before R3-M3 the comparison
                         ran off the cash left after tax alone and
                         overstated the verdict by the whole net
-                        premium whenever one priced. The spending
+                        premium whenever one priced. The IRMAA
+                        surcharge payable this year (internal
+                        review round 3 SHOULD-2) is charged
+                        beside the premium in the same cash left
+                        after health premiums, and the ⓘ names
+                        it in the derivation whenever it prices
+                        — a year with a $0 net premium but a
+                        payable IRMAA takes the premium-charged
+                        branch too, since the comparison still
+                        runs off the reduced cash left. The spending
                         is the Tax Plan record's annual spending
                         (the Retirement calculator's default when
                         the record has none), now editable in this
@@ -9306,7 +9387,8 @@ export function Playground({
                         comparison is driven by spending, not
                         income — so the ⓘ names the spending and
                         its source instead (and, when a premium
-                        prices, the premium-charged derivation),
+                        or a payable IRMAA prices, the
+                        premium-charged derivation),
                         and carries the refund-timing sentence
                         whenever the net bill is a refund. In
                         Month mode (the shared persisted
@@ -9321,7 +9403,7 @@ export function Playground({
                           Left after a {spendPerMonth ? "month" : "year"}
                           &rsquo;s spending
                           <InfoNote
-                            text={pg.healthPremiumNet > 0 ? `Cash left after health premiums ${fmtDollars(pg.cashLeftAfterHealthPremium)} — cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus the net health premium ${fmtDollars(pg.healthPremiumNet)} — minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}, which excludes health premiums.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}` : `Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                            text={pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0 ? `Cash left after health premiums ${fmtDollars(pg.cashLeftAfterHealthPremium)} — cash left after tax ${fmtDollars(pg.cashLeftAfterTax)}${pg.healthPremiumNet > 0 ? ` minus the net health premium ${fmtDollars(pg.healthPremiumNet)}` : ""}${pg.irmaaPayableAnnual > 0 ? ` minus the IRMAA payable this year ${fmtDollars(pg.irmaaPayableAnnual)}` : ""} — minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}, which excludes health premiums.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}` : `Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
                             ariaLabel={`About the amount left after a ${spendPerMonth ? "month" : "year"}'s spending`}
                           />
                         </>,

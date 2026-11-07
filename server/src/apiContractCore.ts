@@ -346,6 +346,21 @@ export const playgroundYearIn = z.object({
   // other money dial here.
   healthPremiumAcaAnnual: z.number().finite().min(0).nullable().optional(),
   healthPremiumMedicarePerPerson: z.number().finite().min(0).nullable().optional(),
+  // IRMAA surcharge payable THIS year (internal review
+  // round 3 SHOULD-2): OPTIONAL so payloads from before
+  // this build keep validating — absent prices the year
+  // exactly as before (no payable IRMAA charged). The
+  // surcharge actually payable in the priced year, in
+  // dollars for the whole household — the figure on the
+  // household's Medicare premium notice, or the plan
+  // march's own IRMAA for that year; negative amounts fail
+  // validation like every other money dial here. The pricer
+  // charges it beside the base premium in the cash left
+  // after health premiums — never in netTaxBill — and the
+  // forward irmaa readout (the surcharge this year's MAGI
+  // will cause in premiumYear) is a different figure,
+  // never to be confused with this one.
+  irmaaPayableAnnual: z.number().finite().min(0).nullable().optional(),
   // December-only pricing facts (S-2, engines review
   // round 2): OPTIONAL so payloads from before this build
   // keep validating — absent prices the year exactly as
@@ -501,6 +516,7 @@ export function playgroundInputsFromArgs(
     // absent = no premium priced, exactly as before.
     healthPremiumAcaAnnual: args.healthPremiumAcaAnnual ?? null,
     healthPremiumMedicarePerPerson: args.healthPremiumMedicarePerPerson ?? null,
+    irmaaPayableAnnual: args.irmaaPayableAnnual ?? null,
     // December-only pricing facts (S-2): carried verbatim;
     // absent = no carry-in netted, no RMD netted, no
     // dependent MAGI added, exactly as before.

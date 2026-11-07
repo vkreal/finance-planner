@@ -9,6 +9,7 @@ import {
   decideRothBlobWrite,
   parseRothBlobRevision,
 } from "./rothRevisionCore";
+import { SAMPLE_PRETAX_CENTS } from "./sampleHousehold";
 
 /* ---------------- December projection console ----------------
    A December year-end projection for a household managing MAGI
@@ -1153,6 +1154,49 @@ function resolveYearDependentOverlays(
       out = { ...out, ...carryPatch };
     }
   }
+  // Pre-tax balances (internal review round 3, SHOULD-1): the Tax
+  // Plan record's balances are the plan's STARTING balances, so
+  // they resolve into the console only when the console's tax year
+  // IS the plan's first year — the same first-year gate as the
+  // carry-in above. A later December year's prior-Dec-31 balance
+  // is the march's ending balance after the intervening years,
+  // which the record does not carry; resolving the starting
+  // balance there priced the RMD on a balance from years earlier
+  // (in the settlement's worked example a 2043 console priced
+  // its RMD on the starting balance, understating it by more
+  // than half). For a later year the fields stay unanswered
+  // unless the user enters the true prior-year-end balance in
+  // the console. It does NOT resolve for a year before the
+  // plan's first year either (the balances had not entered the
+  // plan yet). Per field: a null console value (no input yet)
+  // resolves from the record fact; any entered console value —
+  // including an explicit $0 — always wins and is never
+  // overwritten. Like every resolution here this is an overlay
+  // for display and pricing only: a save persists the STORED
+  // values for fields the user has not edited in this console
+  // (decemberStateForSave's balances flag). The split
+  // allocation below still governs whenever the console holds a
+  // saved combined total: it runs after this overlay and
+  // overwrites the split from that total, so a stored console's
+  // own figure is never displaced by the record's proportions.
+  if (facts.planFirstYear != null && out.taxYear === facts.planFirstYear) {
+    const balancePatch: Partial<DecemberState> = {};
+    if (
+      out.pretaxBalancePrimary == null &&
+      facts.pretaxBalancePrimary != null
+    ) {
+      balancePatch.pretaxBalancePrimary = facts.pretaxBalancePrimary;
+    }
+    if (
+      out.pretaxBalanceSpouse == null &&
+      facts.pretaxBalanceSpouse != null
+    ) {
+      balancePatch.pretaxBalanceSpouse = facts.pretaxBalanceSpouse;
+    }
+    if (Object.keys(balancePatch).length > 0) {
+      out = { ...out, ...balancePatch };
+    }
+  }
   return out;
 }
 
@@ -1347,11 +1391,18 @@ export function resolveDecemberStateAtLoad(
    user HAS edited is never touched, so an explicit
    console answer survives a year change exactly as it
    survives a reload. Year-INDEPENDENT overlays (the
-   beneficiary fact, the balance split, the harvest pool
-   facts) are not touched here at all: they do not depend
-   on the year, and re-running the full load resolution
-   would wrongly revive a fact the user deliberately
-   cleared. Pure, so the fixtures pin it. */
+   beneficiary fact, the harvest pool facts) are not
+   touched here at all: they do not depend on the year,
+   and re-running the full load resolution would wrongly
+   revive a fact the user deliberately cleared. The
+   balance split is the one exception, in one direction
+   only (internal review round 3, SHOULD-1): the record's
+   starting balance answers only the plan's first year,
+   so an unedited balance that IS the record's starting
+   balance clears when the year moves past the first year
+   — while a balance that differs from the record's facts
+   is the console's own answer and is never touched. Pure,
+   so the fixtures pin it. */
 export function reresolveDecemberStateForYear(
   display: DecemberState,
   stored: DecemberStoredProvenance,
@@ -1361,6 +1412,7 @@ export function reresolveDecemberStateForYear(
     carryInStWa: boolean;
     carryInLtWa: boolean;
     education: boolean;
+    balances: boolean;
   },
   facts: DecemberRecordFacts,
 ): DecemberState {
@@ -1380,7 +1432,56 @@ export function reresolveDecemberStateForYear(
   if (!edited.education) {
     reset.educationStudents = stored.educationStudents;
   }
-  return resolveYearDependentOverlays({ ...display, ...reset }, facts);
+  if (!edited.balances) {
+    // A saved split restores like every other unedited field.
+    // No saved split (null) leaves the display exactly as it
+    // is: the display split is then either blank or
+    // load-derived from the console's own saved combined total,
+    // and neither is the record's answer to touch.
+    if (
+      stored.pretaxBalancePrimary != null ||
+      stored.pretaxBalanceSpouse != null
+    ) {
+      reset.pretaxBalancePrimary = stored.pretaxBalancePrimary;
+      reset.pretaxBalanceSpouse = stored.pretaxBalanceSpouse;
+    }
+  }
+  const merged = { ...display, ...reset };
+  if (
+    !edited.balances &&
+    facts.planFirstYear != null &&
+    merged.taxYear !== facts.planFirstYear
+  ) {
+    // The record's pre-tax balances are the plan's STARTING
+    // balances: they answer the console only for the plan's
+    // first year. A balance that IS the record's starting
+    // balance is the first-open preseed, not the console's own
+    // answer — carrying it into a later year prices the RMD on
+    // a balance from years earlier (internal review round 3,
+    // SHOULD-1). Clear it so the new year prices no RMD on the
+    // stale figure; the fields read blank (not entered) and the
+    // user enters the true prior-Dec-31 balance. A balance that
+    // differs from the record's facts is the console's own answer
+    // and is never touched — including a balance the user
+    // entered for the old year. (The one collision: a stored
+    // balance the user entered in an earlier session that
+    // happens to equal the record's starting balance to the
+    // cent also clears — it is stale for the new year
+    // regardless, and the user re-enters the true figure.)
+    if (
+      merged.pretaxBalancePrimary != null &&
+      merged.pretaxBalancePrimary === facts.pretaxBalancePrimary
+    ) {
+      merged.pretaxBalancePrimary = null;
+    }
+    if (
+      merged.pretaxBalanceSpouse != null &&
+      merged.pretaxBalanceSpouse === facts.pretaxBalanceSpouse
+    ) {
+      merged.pretaxBalanceSpouse = null;
+    }
+  }
+  return resolveYearDependentOverlays(merged, facts);
 }
 
 /* The provenance a save must preserve for fields the
@@ -6360,12 +6461,14 @@ export function runDecemberFixtures(): {
       carryInStWa: boolean;
       carryInLtWa: boolean;
       education: boolean;
+      balances: boolean;
     } = {
       carryInSt: false,
       carryInLt: false,
       carryInStWa: false,
       carryInLtWa: false,
       education: false,
+      balances: false,
     };
     const display2026 = resolveDecemberStateAtLoad(fresh, facts2026);
     exact(fail, "2026 resolves the LT carry-in", display2026.carryInCapitalLossLt, 10000);
@@ -6486,6 +6589,164 @@ export function runDecemberFixtures(): {
     ) {
       fail("a year change must not revive a deliberately cleared harvest fact");
     }
+  });
+
+  run("dec-record-balances-first-year-only", (fail) => {
+    // (Internal review round 3, SHOULD-1 — settled STAND):
+    // the December console's first-open preseed copied the Tax
+    // Plan record's pre-tax balances — the plan's STARTING
+    // balances — into the console's prior-Dec-31 balance fields
+    // for whatever tax year the console was set to, and the
+    // year-change re-resolution never touched them, so a future
+    // RMD-age year priced its RMD on a balance from years
+    // earlier. THE WORKED EXAMPLE (settlement, engine-run on
+    // the shared fictional sample household): primary born
+    // 1968, the pre-tax starting balance all the primary's;
+    // choose tax year 2043 in a fresh console. Preseeded
+    // prior-Dec-31 balance: the starting balance → console
+    // RMD = starting balance / 24.6 (Uniform divisor at 75).
+    // True Dec-31-2042 balance per the march (Do Nothing):
+    // the march's 2042 pretaxEnd → true 2043 RMD = that
+    // balance / 24.6. The console understated the RMD by the
+    // difference — more than half the true RMD — so the
+    // cliff-sized headline draw could overshoot by that much
+    // and forfeit the year's credit while the console reported
+    // the year safely under it. THE FIX: the record's balances
+    // answer the console only for the plan's first year (the
+    // record's execution year) — the same first-year gate as
+    // the carry-in. The load overlay resolves them for the
+    // first year and for no other; the year-change
+    // re-resolution clears an unedited balance that IS the
+    // record's starting balance when the year moves past the
+    // first year, and the overlay re-fills it when the year
+    // moves back. THE NUMBERS (sample household; the starting
+    // balance is the sample constant, never a literal): stale
+    // RMD 60,975.61, true RMD 139,757.21 on the march's
+    // Dec-31-2042 balance 3,438,027.48 — understatement
+    // 78,781.60. The fixture pins the console's behavior
+    // (the stale RMD, the post-fix blank pricing no RMD) and
+    // the gate; the march figures are the reference magnitude
+    // the fix protects, re-verified by the gate probe.
+    const P = SAMPLE_PRETAX_CENTS / 100;
+    const facts: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      pretaxBalancePrimary: P,
+      pretaxBalanceSpouse: null,
+    };
+    const none = {
+      carryInSt: false,
+      carryInLt: false,
+      carryInStWa: false,
+      carryInLtWa: false,
+      education: false,
+      balances: false,
+    };
+    // LOAD: the first year resolves the record's balances; any
+    // other year does not.
+    const load2026 = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), pretaxBalancePrimary: null, pretaxBalanceSpouse: null },
+      facts,
+    );
+    exact(fail, "2026 resolves the primary balance", load2026.pretaxBalancePrimary, P);
+    if (load2026.pretaxBalanceSpouse !== null) {
+      fail("2026 must leave the spouse balance unanswered (the record carries none)");
+    }
+    const load2043 = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), taxYear: 2043, pretaxBalancePrimary: null, pretaxBalanceSpouse: null },
+      facts,
+    );
+    if (load2043.pretaxBalancePrimary !== null || load2043.pretaxBalanceSpouse !== null) {
+      fail("a later year must not resolve the record's starting balances");
+    }
+    const load2025 = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), taxYear: 2025, pretaxBalancePrimary: null, pretaxBalanceSpouse: null },
+      facts,
+    );
+    if (load2025.pretaxBalancePrimary !== null) {
+      fail("a year before the plan's first year must not resolve the balances");
+    }
+    // An entered value always wins — including an explicit $0.
+    const enteredZero = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), pretaxBalancePrimary: 0 },
+      facts,
+    );
+    exact(fail, "entered $0 wins over the record balance", enteredZero.pretaxBalancePrimary, 0);
+    const enteredHalf = resolveDecemberStateAtLoad(
+      { ...defaultDecemberState(2026), pretaxBalancePrimary: P / 2 },
+      facts,
+    );
+    exact(fail, "entered balance wins", enteredHalf.pretaxBalancePrimary, P / 2);
+    // YEAR CHANGE: a preseeded 2026 console switching to 2043
+    // clears the record's starting balances; switching back to
+    // 2026 re-fills them through the overlay.
+    const display2026 = {
+      ...defaultDecemberState(2026),
+      pretaxBalancePrimary: P,
+      pretaxBalanceSpouse: null,
+    };
+    const storedPreseeded = decemberStoredProvenanceOf(display2026);
+    const to2043 = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2043 },
+      storedPreseeded,
+      none,
+      facts,
+    );
+    if (to2043.pretaxBalancePrimary !== null || to2043.pretaxBalanceSpouse !== null) {
+      fail("switching past the plan's first year must clear the preseeded starting balances");
+    }
+    const back2026 = reresolveDecemberStateForYear(
+      { ...to2043, taxYear: 2026 },
+      decemberStoredProvenanceOf({ ...defaultDecemberState(2026), taxYear: 2043 }),
+      none,
+      facts,
+    );
+    exact(fail, "switching back to the first year re-fills the balances", back2026.pretaxBalancePrimary, P);
+    // A balance the user EDITED survives the year change
+    // untouched.
+    const edited = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2043, pretaxBalancePrimary: P / 2 },
+      storedPreseeded,
+      { ...none, balances: true },
+      facts,
+    );
+    exact(fail, "an edited balance survives the year change", edited.pretaxBalancePrimary, P / 2);
+    // A stored balance that DIFFERS from the record's facts is
+    // the console's own answer and survives too.
+    const ownStored = decemberStoredProvenanceOf({
+      ...defaultDecemberState(2026),
+      pretaxBalancePrimary: P / 2,
+    });
+    const own = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2043, pretaxBalancePrimary: P / 2 },
+      ownStored,
+      none,
+      facts,
+    );
+    exact(fail, "the console's own stored balance survives", own.pretaxBalancePrimary, P / 2);
+    // RMD PRICING (primary 75 in 2043, Uniform divisor 24.6,
+    // spouse sole beneficiary so the primary's own clock
+    // applies): on the stale preseeded balance the console
+    // priced RMD = starting balance / 24.6; post-fix the blank
+    // balance prices no RMD — the field reads unanswered and
+    // the user enters the true prior-year-end balance.
+    const staleState = {
+      ...defaultDecemberState(2026),
+      taxYear: 2043,
+      agePrimary: 75,
+      ageSpouse: 73,
+      onMedicarePrimary: true,
+      onMedicareSpouse: true,
+      spouseSoleBeneficiary: true,
+      pretaxBalancePrimary: P,
+      pretaxBalanceSpouse: null,
+    };
+    const stalePg = pricePlaygroundYear(decemberCaseInputs(staleState, "likely", 0));
+    exact(fail, "stale RMD on the starting balance", stalePg.rmdPrimary, 60975.61);
+    exact(fail, "stale RMD divisor at 75", stalePg.rmdDivisor, 24.6);
+    const blankPg = pricePlaygroundYear(
+      decemberCaseInputs({ ...staleState, pretaxBalancePrimary: null }, "likely", 0),
+    );
+    exact(fail, "blank balance prices no RMD", blankPg.rmdPrimary, 0);
   });
 
   /* ---- Build v112 fixtures: character splits on the

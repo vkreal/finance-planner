@@ -357,6 +357,14 @@ export const playgroundFormState = z.object({
   // as before).
   healthPremiumAca: z.string().max(64),
   healthPremiumMedicare: z.string().max(64),
+  // IRMAA surcharge payable this year (internal review
+  // round 3 SHOULD-2): the single-year pricer's entered
+  // payable IRMAA for the whole household, as a typed
+  // string like every money dial here. A blob written
+  // before this build parses it blank ("" = not entered
+  // — no payable IRMAA charged, the year prices exactly
+  // as before).
+  irmaaPayable: z.string().max(64),
   // ACA reconciliation dials (S-1, engines review round 2):
   // the advance premium credit actually taken and the
   // coverage-month reduction, as typed strings like every
@@ -564,6 +572,7 @@ function defaultPlaygroundFormState(): PlaygroundFormState {
     acaBenchmark: "",
     healthPremiumAca: "",
     healthPremiumMedicare: "",
+    irmaaPayable: "",
     aptcTaken: "",
     acaCoverageReduction: "",
     capitalLossCarryInSt: "",
@@ -1126,6 +1135,7 @@ export function parseRothUiState(raw: string | undefined): RothUiState {
         acaBenchmark: str(g.acaBenchmark, ""),
         healthPremiumAca: str(g.healthPremiumAca, ""),
         healthPremiumMedicare: str(g.healthPremiumMedicare, ""),
+        irmaaPayable: str(g.irmaaPayable, ""),
         aptcTaken: str(g.aptcTaken, ""),
         acaCoverageReduction: str(g.acaCoverageReduction, ""),
         capitalLossCarryInSt: str(g.capitalLossCarryInSt, ""),

@@ -114,6 +114,7 @@ buildRothFunding,
 candidateStrategy,
 type OptimizerCandidateSpec,
 type PlaygroundYearInputs,
+type PlaygroundYearResult,
 type RothCompareBaseSaved,
 type RothCompareOverrides,
 type RothSavedLike,
@@ -10749,7 +10750,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "ea-playground-paste-roundtrip-full",
     kind: "tax",
-    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with dividends entered as printed — $4,500 total ordinary (line 3b), of which $1,500 qualified (line 3a), so the non-qualified part priced on the ordinary stack is $3,000. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version. (ENGINES BATCH F3: the payload now carries the spouse's pre-tax balance too — pretaxBalanceSpouse, null here — so the round-trip input carries it and the identity still holds.) (Build v208: the payload also carries the two health premium fields — healthPremiumAcaAnnual and healthPremiumMedicarePerPerson, both null here, the parser's own position and default — so the round-trip input carries them and the identity still holds; no priced figure moves.)",
+    note: "Engine access, Playground paste round-trip with EVERY field non-default: head-of-household filing, both Medicare flags true, state rate 5%, a pre-tax balance entered ($800,000), tax-exempt interest $2,500, Social Security $30,000, an ACA household size (3) and benchmark ($18,000) entered, and a stock sale ($40,000 sold, $15,000 basis) with dividends entered as printed — $4,500 total ordinary (line 3b), of which $1,500 qualified (line 3a), so the non-qualified part priced on the ordinary stack is $3,000. The canonical payload (playgroundPastePayload) survives a JSON round-trip through parsePlaygroundPaste with the parsed inputs IDENTICAL to the originals, and pricing the parsed inputs through pricePlaygroundYear — the exact function the runPlaygroundYear action calls — reproduces the direct call on the same inputs EXACTLY (every diff 0): MAGI $123,500 (AGI $121,000 + the $2,500 of tax-exempt interest), ACA MAGI $128,000 (the untaxed $4,500 of benefits added back), federal tax $11,257.20, state tax $4,578.00 (5% of the $91,560 taxable income), total $15,835.20, IRMAA Tier 1. The ACA credit is null in BOTH pricings: with the primary on Medicare and head-of-household filing there is nobody on the marketplace, so no credit is priced even though a household size and benchmark were entered. Two more malformed pastes are refused whole with the plain error: an unknown extra key, and a wrong payload version. (ENGINES BATCH F3: the payload now carries the spouse's pre-tax balance too — pretaxBalanceSpouse, null here — so the round-trip input carries it and the identity still holds.) (Build v208: the payload also carries the two health premium fields — healthPremiumAcaAnnual and healthPremiumMedicarePerPerson, both null here, the parser's own position and default — so the round-trip input carries them and the identity still holds; no priced figure moves.) (Internal review round 3 SHOULD-2: the payload also carries the IRMAA surcharge payable this year — irmaaPayableAnnual, null here, the parser's own position and default — so the round-trip input carries it and the identity still holds; no priced figure moves.)",
     expected: {
       inputsIdentical: 1,
       magi: 123500,
@@ -10792,6 +10793,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         acaBenchmarkAnnual: 18000,
         healthPremiumAcaAnnual: null,
         healthPremiumMedicarePerPerson: null,
+        irmaaPayableAnnual: null,
         stateRatePct: 5,
         residenceState: null,
         educationStudents: null,
@@ -12743,13 +12745,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mt-pg3-playground-statelessness",
     kind: "tax",
-    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 48 keys (kind + version + the 46 dial fields — the 21 original dials plus residenceState and educationStudents, added by the cold-AI audit fix so a replayed paste reprices the same year, plus pretaxBalanceSpouse, added by the engines batch F3 split-balance fix, plus the two health-premium dials healthPremiumAcaAnnual and healthPremiumMedicarePerPerson, added by v208 so a replayed paste reprices the same year's premium, plus the two ACA reconciliation dials aptcTaken and acaCoverageReduction, added by S-1 so a replayed paste reprices the same year's filing settlement, plus the six December-only pricing dials capitalLossCarryInSt / capitalLossCarryInLt / capitalLossCarryInStWa / capitalLossCarryInLtWa / rmdAlreadyReceived / dependentMagiForAca, added by S-2 so a replayed paste reprices the same year's loss ledger, RMD netting, and ACA household MAGI, plus the reinvested-yield flag yieldReinvested, added by S-3 so a replayed paste of a loaded saved-plan year keeps the march's reinvested yield out of cash in, plus the inflation rate inflationPct, added by S-4 so a replayed paste reprices the same deflated statute-fixed amounts, plus the two funding draws cashDraw and rothDraw, added by S-6 so a replayed paste reprices the same spendable funding, plus the reciprocal beneficiary fact primarySoleBeneficiaryOfSpouse, added by N-1 so a replayed paste reprices the same spouse RMD table, plus the pre-tax spending draw spendingDraw, added by R3-M1 so a replayed paste reprices the same money-out split — the draw in cash in beside its income pricing, the conversion as income alone, plus the four itemized deduction components itemizedMortgageInterest / itemizedSaltPaid / itemizedCharitable / itemizedOther, added by P-M2 so a replayed paste reprices the same greater-of deduction, plus the enrollment premium acaEnrollmentPremiumAnnual, added by P-M3 so a replayed paste reprices the same capped filing-settlement credit, plus the annual spending annualSpending, added by P-S2 so a replayed paste reprices the same 'enough for the year' verdict) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
+    note: "Playground pin PG3 / MT-PG3, runtime half (engine-derived 2026-10-15): the Playground's pricing path is a pure function — pricing the same typed dials twice returns identical figures (federal tax $14,600, MAGI $153,000 on the worked-example dial set) and the inputs object is byte-identical after pricing (nothing written back). The interchange payload (playgroundPastePayload) carries parameters only: 51 keys (kind + version + the 49 dial fields — the 21 original dials plus residenceState and educationStudents, added by the cold-AI audit fix so a replayed paste reprices the same year, plus pretaxBalanceSpouse, added by the engines batch F3 split-balance fix, plus the two health-premium dials healthPremiumAcaAnnual and healthPremiumMedicarePerPerson, added by v208 so a replayed paste reprices the same year's premium, plus the two ACA reconciliation dials aptcTaken and acaCoverageReduction, added by S-1 so a replayed paste reprices the same year's filing settlement, plus the six December-only pricing dials capitalLossCarryInSt / capitalLossCarryInLt / capitalLossCarryInStWa / capitalLossCarryInLtWa / rmdAlreadyReceived / dependentMagiForAca, added by S-2 so a replayed paste reprices the same year's loss ledger, RMD netting, and ACA household MAGI, plus the reinvested-yield flag yieldReinvested, added by S-3 so a replayed paste of a loaded saved-plan year keeps the march's reinvested yield out of cash in, plus the inflation rate inflationPct, added by S-4 so a replayed paste reprices the same deflated statute-fixed amounts, plus the two funding draws cashDraw and rothDraw, added by S-6 so a replayed paste reprices the same spendable funding, plus the reciprocal beneficiary fact primarySoleBeneficiaryOfSpouse, added by N-1 so a replayed paste reprices the same spouse RMD table, plus the pre-tax spending draw spendingDraw, added by R3-M1 so a replayed paste reprices the same money-out split — the draw in cash in beside its income pricing, the conversion as income alone, plus the four itemized deduction components itemizedMortgageInterest / itemizedSaltPaid / itemizedCharitable / itemizedOther, added by P-M2 so a replayed paste reprices the same greater-of deduction, plus the enrollment premium acaEnrollmentPremiumAnnual, added by P-M3 so a replayed paste reprices the same capped filing-settlement credit, plus the annual spending annualSpending, added by P-S2 so a replayed paste reprices the same 'enough for the year' verdict, plus the two gain-harvest facts harvestPoolAmount / harvestPoolBasisPct, added by P-S3 so a replayed paste reprices the same harvest, plus the IRMAA surcharge payable this year irmaaPayableAnnual, added by internal review round 3 SHOULD-2 so a replayed paste reprices the same cash left after health premiums) and zero result/storage keys — there is no field a save could smuggle a result through. The render-level half of the invariant is documented in the source-invariant comment above this fixture.",
     expected: {
       firstTotalTax: 14600,
       secondTotalTax: 14600,
       deterministic: 1,
       inputsUnmutated: 1,
-      payloadKeys: 50,
+      payloadKeys: 51,
       payloadResultKeys: 0,
     },
     actual: () => {
@@ -32135,6 +32137,335 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         identityGapCents: row
           ? sources + row.spendShortfallCents + row.unpaidTaxCents - row.totalNeedCents
           : null,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-irmaa-payable-should2",
+    kind: "tax",
+    note: "SHOULD-2 (internal review round 3, SHOULD — settled STAND): the single-year pricer reported the IRMAA this year's MAGI will cause in two years' time (the forward irmaa block: premiumYear = taxYear + 2) but never priced the IRMAA surcharge actually payable IN the priced year — which depends on the MAGI from two years prior, a figure no input carried — so in a Medicare year the cash-left chain charged the Medicare base premium and silently omitted the surcharge on the same premium, and the 'enough for the year' verdict overstated by the whole payable amount. THE FIX (server/src/rothOptimizer.ts): a new optional input irmaaPayableAnnual — the surcharge actually payable in the priced year, in dollars for the whole household, taken from the household's Medicare premium notice or the plan march's own IRMAA for that year — charged beside the base premium in cashLeftAfterHealthPremium, never in netTaxBill (so the December console's cash left, which derives from cashLeftAfterTax, is untouched). Blank = no payable IRMAA charged, exactly as before. THE WORKED EXAMPLE (the settlement's shape, the S-11 shape on the shared fictional sample household in server/src/sampleHousehold.ts): 2039, MFJ, ages 71/69, both on Medicare, Social Security at the household's anchors, other ordinary income ten times the household's filed ordinary dividends, annual spending that income plus the benefits, base premium $0 to isolate the gap. HAND-DERIVED: 85% of the $78,000 of benefits is taxable ($66,300), so AGI and MAGI are $266,300; the standard deduction is $35,500 ($32,200 MFJ plus two $1,650 age-65 additions), leaving taxable income $230,800, on which the engine prices federal tax $40,588; cash in is $278,000, the net tax bill $40,588, cash left after tax $237,412, and — with no payable IRMAA entered — cash left after health premiums $237,412 and left after spending −$40,588, bit-identical to before the fix. The march's own IRMAA for 2039 (the S-11 plan's funding row) entered as the payable amount charges exactly that amount: cash left after health premiums $235,115.20, left after spending −$42,884.80, and the net tax bill unchanged at $40,588 — the charge is in the health-premium step, not the tax bill. THE COINCIDENCE (do not wire the forward block in): the forward irmaa block reads premiumYear 2041, tier 1, $1,148.40 per person, $2,296.80 for the household — the SAME $2,296.80 as the payable amount, because the tier-1 per-person amount happens to be $1,148.40 in both years' tables. That is the 2041 surcharge on 2039's MAGI, not the 2039 surcharge: the other-amount leg enters one-tenth of the filed ordinary dividends ($2,000) and charges exactly $2,000, and the base-premium leg (one-quarter of the filed ordinary dividends per person, $5,000, two on Medicare: net premium $10,000) stacks the premium and the payable IRMAA to $225,115.20 — both falsify charging the forward block's figure. THE WALK: the projection walk prices no payable IRMAA — a walked year has its own payable amount, which no single entered amount can state — so a template carrying the amount and one without it walk bit-identically, and every walked year charges $0. THE FORM: the Playground form carries the new dial (with the Medicare base dial's info corrected — it used to claim the surcharge was priced in the tax bill already, which was false for the priced year); the stored template deliberately does not carry the fact (see projTemplateCore), the 'Start from my numbers' prefill does not auto-carry the march year's IRMAA into the dial, and the December console is unchanged. API: the contract path (playgroundYearIn + playgroundInputsFromArgs) carries the fact verbatim and prices it; absent, it prices none; a negative amount fails validation. PASTE: the payload carries the fact; a JSON round-trip parses back with it and repricing the parsed inputs reproduces the charged cash left exactly; a hand-built paste carrying the fact on the bare year's payload (the paste the old parser refused outright) now loads and prices it; a payload with the key deleted (a pre-SHOULD-2 paste) still loads with it unset and prices none, exactly as before; and a negative amount refuses the whole paste.",
+    expected: {
+      marchIrmaaCents: 229680,
+      blankMagi: 266300,
+      blankFederalTax: 40588,
+      blankNetTaxBill: 40588,
+      blankCashLeftAfterTax: 237412,
+      blankHealthPremiumNet: 0,
+      blankIrmaaPayable: 0,
+      blankCashLeftAfterHealthPremium: 237412,
+      blankCashLeftVsSpending: -40588,
+      forwardPremiumYear: 2041,
+      forwardAnnualHousehold: 229680 / 100,
+      payableEqualsMarch: 1,
+      withIrmaaPayable: 229680 / 100,
+      withIrmaaNetTaxBill: 40588,
+      withIrmaaCashLeftAfterHealthPremium: 237412 - 229680 / 100,
+      withIrmaaCashLeftVsSpending: -40588 - 229680 / 100,
+      otherAmountCharged:
+        SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 / 10,
+      otherAmountCashLeftAfterHealthPremium:
+        237412 - SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 / 10,
+      otherAmountCashLeftVsSpending:
+        -40588 - SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 / 10,
+      basePremiumNet:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 / 4) * 2,
+      basePremiumCashLeftAfterHealthPremium:
+        237412 -
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 / 4) * 2 -
+        229680 / 100,
+      basePremiumCashLeftVsSpending:
+        -40588 -
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 / 4) * 2 -
+        229680 / 100,
+      walkIdentical: 1,
+      walkIrmaaCharged: 0,
+      apiCarriesIrmaa: 1,
+      apiPricedCashLeftAfterHealthPremium: 237412 - 229680 / 100,
+      apiAbsentCashLeftAfterHealthPremium: 237412,
+      apiRejectsNegative: 1,
+      pasteCarries: 1,
+      pasteParsedOk: 1,
+      pastePricedCashLeftAfterHealthPremium: 237412 - 229680 / 100,
+      handAddedOk: 1,
+      handAddedCashLeftAfterHealthPremium: 237412 - 229680 / 100,
+      legacyParsedOk: 1,
+      legacyIrmaaUnset: 1,
+      legacyCashLeftAfterHealthPremium: 237412,
+      pasteRejectsNegative: 1,
+    },
+    actual: () => {
+      // The settlement's worked-example shape (see the
+      // note): the S-11 shape — every figure built from
+      // the sample household's filed ordinary dividends
+      // and its Social Security anchors, never a
+      // household figure of its own.
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      const SS =
+        (SAMPLE_SS_PRIMARY_CENTS + SAMPLE_SS_SPOUSE_CENTS) / 100;
+      const base: PlaygroundYearInputs = {
+        taxYear: 2039,
+        filingStatus: "mfj",
+        agePrimary: 71,
+        ageSpouse: 69,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: ORD * 10,
+        taxExemptInterest: 0,
+        ssPrimary: SAMPLE_SS_PRIMARY_CENTS / 100,
+        ssSpouse: SAMPLE_SS_SPOUSE_CENTS / 100,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpending: ORD * 10 + SS,
+        healthPremiumMedicarePerPerson: 0,
+      };
+      const blank = pricePlaygroundYear(base);
+      // The payable amount is the march's own IRMAA for
+      // 2039, derived in-case from the S-11 plan's
+      // funding row — never a literal.
+      const marchPlan = samplePlanInputs({
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 0,
+        hsaStart: 0,
+        otherOrdinaryAnnual: ORD * 10,
+        annualSpending: ORD * 10 + SS,
+        inflationPct: 0,
+        expectedReturnPct: 0,
+      });
+      const marchRow = buildRothFunding(marchPlan, DO_NOTHING).find(
+        (r) => r.year === 2039,
+      );
+      const marchIrmaaCents = marchRow?.irmaaCents ?? null;
+      const marchIrmaa =
+        marchIrmaaCents == null ? null : marchIrmaaCents / 100;
+      const withIrmaa = pricePlaygroundYear({
+        ...base,
+        irmaaPayableAnnual: marchIrmaa ?? 0,
+      });
+      // The other-amount leg: one-tenth of the filed
+      // ordinary dividends — a figure the forward block
+      // never prices — charges exactly itself.
+      const other = pricePlaygroundYear({
+        ...base,
+        irmaaPayableAnnual: ORD / 10,
+      });
+      // The base-premium leg: one-quarter of the filed
+      // ordinary dividends per person, two on Medicare.
+      const basePremium = pricePlaygroundYear({
+        ...base,
+        healthPremiumMedicarePerPerson: ORD / 4,
+        irmaaPayableAnnual: marchIrmaa ?? 0,
+      });
+      // The walk leg: a template carrying the amount and
+      // one without it must walk bit-identically, and
+      // every walked year charges $0 of payable IRMAA.
+      const walkTemplate = {
+        ...base,
+        healthPremiumMedicarePerPerson: null,
+      };
+      const walkOpts = {
+        ssPrimaryClaimAge: SAMPLE_SS_PRIMARY_START_AGE,
+        ssSpouseClaimAge: SAMPLE_SS_SPOUSE_START_AGE,
+        ssPrimaryAnnual: SAMPLE_SS_PRIMARY_CENTS / 100,
+        ssSpouseAnnual: SAMPLE_SS_SPOUSE_CENTS / 100,
+        acaHouseholdSchedule: null,
+        startTaxable: 0,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const walkWith = projectPlaygroundYears(
+        { ...walkTemplate, irmaaPayableAnnual: marchIrmaa ?? 0 },
+        { ...walkOpts, toAge: 72 },
+      );
+      const walkWithout = projectPlaygroundYears(walkTemplate, {
+        ...walkOpts,
+        toAge: 72,
+      });
+      const pickWalkYear = (y: {
+        agePrimary: number;
+        result: PlaygroundYearResult;
+      }) => ({
+        agePrimary: y.agePrimary,
+        irmaaPayableAnnual: y.result.irmaaPayableAnnual,
+        cashLeftAfterHealthPremium: y.result.cashLeftAfterHealthPremium,
+        cashLeftVsSpending: y.result.cashLeftVsSpending,
+        magi: y.result.magi,
+      });
+      const walkWithPicked = walkWith.years.map(pickWalkYear);
+      const walkWithoutPicked = walkWithout.years.map(pickWalkYear);
+      // API carriage: the contract path carries the fact
+      // verbatim and prices it; absent, it prices none;
+      // a negative amount fails validation.
+      const apiBase = {
+        taxYear: 2039,
+        filingStatus: "mfj" as const,
+        agePrimary: 71,
+        ageSpouse: 69,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: ORD * 10,
+        taxExemptInterest: 0,
+        ssPrimary: SAMPLE_SS_PRIMARY_CENTS / 100,
+        ssSpouse: SAMPLE_SS_SPOUSE_CENTS / 100,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+        annualSpending: ORD * 10 + SS,
+        healthPremiumMedicarePerPerson: 0,
+      };
+      const apiParsed = playgroundYearIn.safeParse({
+        ...apiBase,
+        irmaaPayableAnnual: marchIrmaa ?? 0,
+      });
+      const apiInputs = apiParsed.success
+        ? playgroundInputsFromArgs(apiParsed.data)
+        : null;
+      const apiPriced = apiInputs
+        ? pricePlaygroundYear(apiInputs)
+        : null;
+      const apiAbsentParsed = playgroundYearIn.safeParse(apiBase);
+      const apiAbsentInputs = apiAbsentParsed.success
+        ? playgroundInputsFromArgs(apiAbsentParsed.data)
+        : null;
+      const apiAbsentPriced = apiAbsentInputs
+        ? pricePlaygroundYear(apiAbsentInputs)
+        : null;
+      // Paste carriage: the priced year's payload, a JSON
+      // round-trip, a hand-built paste carrying the fact
+      // on the bare year's payload (the paste the old
+      // parser refused outright), a pre-SHOULD-2 payload
+      // (the key deleted), and a negative refusal.
+      const payload = playgroundPastePayload({
+        ...base,
+        irmaaPayableAnnual: marchIrmaa ?? 0,
+      });
+      const parsed = parsePlaygroundPaste(
+        JSON.parse(JSON.stringify(payload)),
+      );
+      const parsedPriced = parsed.ok
+        ? pricePlaygroundYear(parsed.inputs)
+        : null;
+      const handPayload = playgroundPastePayload(base) as unknown as Record<
+        string,
+        unknown
+      >;
+      handPayload.irmaaPayableAnnual = marchIrmaa ?? 0;
+      const handParsed = parsePlaygroundPaste(handPayload);
+      const handPriced = handParsed.ok
+        ? pricePlaygroundYear(handParsed.inputs)
+        : null;
+      const legacy = { ...payload } as Record<string, unknown>;
+      delete legacy.irmaaPayableAnnual;
+      const legacyParsed = parsePlaygroundPaste(legacy);
+      const legacyPriced = legacyParsed.ok
+        ? pricePlaygroundYear(legacyParsed.inputs)
+        : null;
+      const negPaste = parsePlaygroundPaste({
+        ...payload,
+        irmaaPayableAnnual: -5,
+      });
+      return {
+        marchIrmaaCents,
+        blankMagi: blank.magi,
+        blankFederalTax: blank.federalTax,
+        blankNetTaxBill: blank.netTaxBill,
+        blankCashLeftAfterTax: blank.cashLeftAfterTax,
+        blankHealthPremiumNet: blank.healthPremiumNet,
+        blankIrmaaPayable: blank.irmaaPayableAnnual,
+        blankCashLeftAfterHealthPremium: blank.cashLeftAfterHealthPremium,
+        blankCashLeftVsSpending: blank.cashLeftVsSpending,
+        forwardPremiumYear: blank.irmaa?.premiumYear ?? null,
+        forwardAnnualHousehold: blank.irmaa?.annualHousehold ?? null,
+        payableEqualsMarch:
+          marchIrmaa != null &&
+          withIrmaa.irmaaPayableAnnual === marchIrmaa
+            ? 1
+            : 0,
+        withIrmaaPayable: withIrmaa.irmaaPayableAnnual,
+        withIrmaaNetTaxBill: withIrmaa.netTaxBill,
+        withIrmaaCashLeftAfterHealthPremium:
+          withIrmaa.cashLeftAfterHealthPremium,
+        withIrmaaCashLeftVsSpending: withIrmaa.cashLeftVsSpending,
+        otherAmountCharged: other.irmaaPayableAnnual,
+        otherAmountCashLeftAfterHealthPremium:
+          other.cashLeftAfterHealthPremium,
+        otherAmountCashLeftVsSpending: other.cashLeftVsSpending,
+        basePremiumNet: basePremium.healthPremiumNet,
+        basePremiumCashLeftAfterHealthPremium:
+          basePremium.cashLeftAfterHealthPremium,
+        basePremiumCashLeftVsSpending: basePremium.cashLeftVsSpending,
+        walkIdentical:
+          JSON.stringify(walkWithPicked) ===
+          JSON.stringify(walkWithoutPicked)
+            ? 1
+            : 0,
+        walkIrmaaCharged:
+          walkWith.years.reduce(
+            (s, y) => s + y.result.irmaaPayableAnnual,
+            0,
+          ) +
+          walkWithout.years.reduce(
+            (s, y) => s + y.result.irmaaPayableAnnual,
+            0,
+          ),
+        apiCarriesIrmaa:
+          apiInputs?.irmaaPayableAnnual === marchIrmaa ? 1 : 0,
+        apiPricedCashLeftAfterHealthPremium: apiPriced
+          ? apiPriced.cashLeftAfterHealthPremium
+          : -999999,
+        apiAbsentCashLeftAfterHealthPremium: apiAbsentPriced
+          ? apiAbsentPriced.cashLeftAfterHealthPremium
+          : -999999,
+        apiRejectsNegative: playgroundYearIn.safeParse({
+          ...apiBase,
+          irmaaPayableAnnual: -1,
+        }).success
+          ? 0
+          : 1,
+        pasteCarries:
+          (payload as unknown as Record<string, unknown>)
+            .irmaaPayableAnnual === marchIrmaa
+            ? 1
+            : 0,
+        pasteParsedOk: parsed.ok ? 1 : 0,
+        pastePricedCashLeftAfterHealthPremium: parsedPriced
+          ? parsedPriced.cashLeftAfterHealthPremium
+          : -999999,
+        handAddedOk: handParsed.ok ? 1 : 0,
+        handAddedCashLeftAfterHealthPremium: handPriced
+          ? handPriced.cashLeftAfterHealthPremium
+          : -999999,
+        legacyParsedOk: legacyParsed.ok ? 1 : 0,
+        legacyIrmaaUnset:
+          legacyParsed.ok && legacyParsed.inputs.irmaaPayableAnnual == null
+            ? 1
+            : 0,
+        legacyCashLeftAfterHealthPremium: legacyPriced
+          ? legacyPriced.cashLeftAfterHealthPremium
+          : -999999,
+        pasteRejectsNegative: negPaste.ok ? 0 : 1,
       };
     },
   },

@@ -959,14 +959,28 @@ export function December() {
           // the Uniform table.
           primarySoleBeneficiaryOfSpouse:
             s.primarySoleBeneficiaryOfSpouse ?? initial.primarySoleBeneficiaryOfSpouse,
-          pretaxBalancePrimary:
-            primaryPretaxCents != null
-              ? fmtMoneyInput(primaryPretaxCents / 100)
-              : initial.pretaxBalancePrimary,
-          pretaxBalanceSpouse:
-            spousePretaxCents != null
-              ? fmtMoneyInput(spousePretaxCents / 100)
-              : initial.pretaxBalanceSpouse,
+          // Pre-tax balances (internal review round 3,
+          // SHOULD-1): the record's balances are the plan's
+          // STARTING balances, so they preseed ONLY when the
+          // December year is the plan's first year (the
+          // record's execution year) — the same gate as the
+          // carry-in below. In any other year the fields keep
+          // their blank (no input yet) default: the record
+          // does not carry the prior-year-end balance for a
+          // later year, and filling the starting balance there
+          // prices the RMD on a balance from years earlier.
+          ...(rothQ.data.execution?.executionYear === year
+            ? {
+                pretaxBalancePrimary:
+                  primaryPretaxCents != null
+                    ? fmtMoneyInput(primaryPretaxCents / 100)
+                    : initial.pretaxBalancePrimary,
+                pretaxBalanceSpouse:
+                  spousePretaxCents != null
+                    ? fmtMoneyInput(spousePretaxCents / 100)
+                    : initial.pretaxBalanceSpouse,
+              }
+            : {}),
           itemizedMortgageInterest:
             s.itemizedMortgageInterestCents != null
               ? fmtMoneyInput(s.itemizedMortgageInterestCents / 100)
@@ -2116,6 +2130,7 @@ export function December() {
                   carryInStWa: carryInStWaEdited,
                   carryInLtWa: carryInLtWaEdited,
                   education: educationEdited,
+                  balances: balancesEdited,
                 },
                 recordFactsOf(rothQ.data, year),
               );
@@ -2150,6 +2165,49 @@ export function December() {
                   expenses: moneyStr(x.expenses),
                   aotcEligible: x.aotcEligible,
                 }));
+              }
+              if (!balancesEdited) {
+                next.pretaxBalancePrimary =
+                  decemberNullableMoneyFormValue(
+                    reresolved.pretaxBalancePrimary,
+                  );
+                next.pretaxBalanceSpouse =
+                  decemberNullableMoneyFormValue(
+                    reresolved.pretaxBalanceSpouse,
+                  );
+                // The year gate can clear a record-preseeded
+                // balance (internal review round 3, SHOULD-1):
+                // the stored provenance must follow the cleared
+                // display, or the next save would persist the
+                // stale starting balance and the reload would
+                // revive it. Only a cleared (null) or
+                // unchanged-from-stored value is written back —
+                // a load-derived split (which differs from
+                // stored) and an overlay re-fill (which the
+                // save must not own) stay the console's own
+                // saved answer and are never promoted into
+                // provenance here.
+                const stored = storedProvenanceRef.current;
+                if (
+                  reresolved.pretaxBalancePrimary == null ||
+                  reresolved.pretaxBalancePrimary ===
+                    stored.pretaxBalancePrimary
+                ) {
+                  storedProvenanceRef.current = {
+                    ...stored,
+                    pretaxBalancePrimary: reresolved.pretaxBalancePrimary,
+                  };
+                }
+                if (
+                  reresolved.pretaxBalanceSpouse == null ||
+                  reresolved.pretaxBalanceSpouse ===
+                    stored.pretaxBalanceSpouse
+                ) {
+                  storedProvenanceRef.current = {
+                    ...storedProvenanceRef.current,
+                    pretaxBalanceSpouse: reresolved.pretaxBalanceSpouse,
+                  };
+                }
               }
               return next;
             });

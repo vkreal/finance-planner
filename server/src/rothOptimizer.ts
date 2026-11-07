@@ -3457,6 +3457,37 @@ export type PlaygroundYearInputs = {
   // cost of the year, reported beside them.
   healthPremiumAcaAnnual?: number | null;
   healthPremiumMedicarePerPerson?: number | null;
+  // IRMAA surcharge payable THIS year (internal review
+  // round 3 SHOULD-2; optional — absent / null on every
+  // pre-existing caller, and the year then prices
+  // bit-identically to before): the Medicare Income-Related
+  // Monthly Adjustment Amount actually payable in the
+  // priced year, in dollars for the whole household — the
+  // figure on the household's Medicare premium notice, or
+  // the plan march's own IRMAA for that year. The forward
+  // irmaa block prices the surcharge this year's MAGI will
+  // cause in premiumYear (taxYear + 2); this input prices
+  // the surcharge this year PAYS, which depends on the
+  // MAGI from two years prior and no input carried before
+  // this build — so a Medicare year charged the base
+  // premium in cashLeftAfterHealthPremium and silently
+  // omitted the surcharge on the same premium, and the
+  // "enough for the year" verdict overstated by the whole
+  // payable amount. The amount is charged beside the base
+  // premium in cashLeftAfterHealthPremium — never in
+  // netTaxBill, so the December console's cash left (which
+  // derives from cashLeftAfterTax) is untouched and its
+  // premium-free verdict stays consistent. Blank = no
+  // payable IRMAA charged, exactly as before; a negative
+  // amount is floored at $0 by the pricer (the request
+  // validator rejects it before it can reach here).
+  // Single-year only: the projection walk prices no
+  // payable IRMAA (see projectPlaygroundYears) and the
+  // stored projection template does not carry this fact
+  // (see projTemplateCore) — a walked year has its own
+  // payable IRMAA, which no single entered amount can
+  // state.
+  irmaaPayableAnnual?: number | null;
   // Annual spending (build v126, "enough for the year"):
   // the year's annual spending in dollars, for the
   // cash-left-vs-spending comparison ONLY — it never enters
@@ -3809,6 +3840,18 @@ export type PlaygroundYearResult = {
   // supplied, so a year priced without them is bit-identical.
   healthPremiumGross: number;
   healthPremiumNet: number;
+  // IRMAA surcharge payable this year (internal review
+  // round 3 SHOULD-2): the irmaaPayableAnnual input as
+  // charged — floored at $0, $0 when none was entered.
+  // It is the surcharge actually payable IN the priced
+  // year, beside the forward irmaa block's surcharge for
+  // premiumYear (taxYear + 2) — the two are different
+  // figures and must never be confused: the forward
+  // block's annualHousehold can coincide with this
+  // amount (the tier-1 per-person amount is the same in
+  // both years' tables in the worked example) without
+  // being the same surcharge.
+  irmaaPayableAnnual: number;
   cashLeftAfterHealthPremium: number;
   // Annual spending for the "enough for the year" comparison
   // (build v126): the annualSpending input echoed in
@@ -5021,7 +5064,21 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
         ? Math.max(0, healthGrossAcaPg - healthCreditTowardPremium)
         : 0),
   );
-  const cashLeftAfterHealthPremium = r2(cashLeftAfterTax - healthPremiumNet);
+  // IRMAA surcharge payable THIS year (internal review round 3
+  // SHOULD-2): the entered irmaaPayableAnnual, floored at $0 —
+  // $0 when none was entered, so a year priced without it is
+  // bit-identical. Charged beside the base premium in the cash
+  // left after health premiums — never in netTaxBill, so the
+  // December console's cash left (which derives from
+  // cashLeftAfterTax) is untouched. This is NOT the forward
+  // irmaa block's figure: that block prices the surcharge this
+  // year's MAGI will cause in premiumYear (taxYear + 2), and
+  // its annualHousehold can coincide with this amount without
+  // being the same surcharge.
+  const irmaaPayableAnnual = r2(Math.max(0, inp.irmaaPayableAnnual ?? 0));
+  const cashLeftAfterHealthPremium = r2(
+    cashLeftAfterTax - healthPremiumNet - irmaaPayableAnnual,
+  );
   // "Enough for the year" (build v126; R3-M3): cash left
   // after HEALTH PREMIUMS minus the annual spending — a
   // pure readout, the spending never entering the tax
@@ -5130,6 +5187,7 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     inflationPct,
     healthPremiumGross,
     healthPremiumNet,
+    irmaaPayableAnnual,
     cashLeftAfterHealthPremium,
     annualSpending,
     cashLeftVsSpending,
@@ -5817,6 +5875,20 @@ export function projectPlaygroundYears(
       // sale out of the pool it is handed.
       harvestPoolAmount: harvestPoolBalance,
       harvestPoolBasisPct: harvestBasisPctEffective,
+      // IRMAA payable this year (internal review round 3
+      // SHOULD-2): the walk prices NONE, whatever the
+      // template carries — the entered amount states the
+      // surcharge payable in the ONE priced year, and a
+      // walked year has its own payable IRMAA (its MAGI
+      // two years prior), which no single entered amount
+      // can state. Carrying the template's amount into
+      // every walked year would charge the same surcharge
+      // in years whose MAGIs price different ones. The
+      // stored template does not carry this fact either
+      // (see projTemplateCore), so a restored template
+      // arrives without it; this strip covers a template
+      // captured in-memory from the dials.
+      irmaaPayableAnnual: undefined,
     };
     const result = pricePlaygroundYear(inputs);
     const startBalances: PlaygroundProjectionBalances = {
@@ -6311,6 +6383,12 @@ export const PLAYGROUND_PASTE_FIELDS = [
   "acaEnrollmentPremiumAnnual",
   "healthPremiumAcaAnnual",
   "healthPremiumMedicarePerPerson",
+  /* The IRMAA surcharge payable this year (internal review
+     round 3 SHOULD-2): carried so a replayed paste
+     reprices the same cash left after health premiums the
+     copied year priced — the payable surcharge beside the
+     base premium — instead of silently pricing none. */
+  "irmaaPayableAnnual",
   "stateRatePct",
   "residenceState",
   "educationStudents",
@@ -6387,6 +6465,11 @@ export const PLAYGROUND_PASTE_OPTIONAL_FIELDS = [
      as before. */
   "healthPremiumAcaAnnual",
   "healthPremiumMedicarePerPerson",
+  /* The IRMAA surcharge payable this year (internal review
+     round 3 SHOULD-2): a paste written before it was
+     carried carries no such key and loads with it absent
+     — no payable IRMAA charged, exactly as before. */
+  "irmaaPayableAnnual",
   /* The ACA reconciliation facts (S-1): a paste written
      before they existed carries neither key and loads with
      both absent — no filing settlement priced, exactly as
@@ -6491,6 +6574,7 @@ export function playgroundPastePayload(
     annualSpending: inp.annualSpending ?? null,
     healthPremiumAcaAnnual: inp.healthPremiumAcaAnnual ?? null,
     healthPremiumMedicarePerPerson: inp.healthPremiumMedicarePerPerson ?? null,
+    irmaaPayableAnnual: inp.irmaaPayableAnnual ?? null,
     capitalLossCarryInSt: inp.capitalLossCarryInSt ?? null,
     capitalLossCarryInLt: inp.capitalLossCarryInLt ?? null,
     capitalLossCarryInStWa: inp.capitalLossCarryInStWa ?? null,
@@ -6860,6 +6944,23 @@ export function parsePlaygroundPaste(
     }
     healthPremiumMedicarePerPerson = n;
   }
+  /* The IRMAA surcharge payable this year is optional
+     (internal review round 3 SHOULD-2): a paste written
+     before it was carried carries no such key and loads
+     with it absent — no payable IRMAA charged, exactly as
+     before; absent or null parses as null, and a value must
+     be a valid non-negative dollar figure. */
+  let irmaaPayableAnnual: number | null = null;
+  if (
+    r.irmaaPayableAnnual !== null &&
+    r.irmaaPayableAnnual !== undefined
+  ) {
+    const n = num(r.irmaaPayableAnnual);
+    if (n == null || n < 0) {
+      return fail("That paste’s IRMAA surcharge is not a valid dollar figure — nothing was loaded.");
+    }
+    irmaaPayableAnnual = n;
+  }
   const stateRatePct = num(r.stateRatePct);
   if (stateRatePct == null || stateRatePct < 0 || stateRatePct > 100) {
     return fail("That paste’s state rate is not a valid percent — nothing was loaded.");
@@ -6941,6 +7042,7 @@ export function parsePlaygroundPaste(
       acaEnrollmentPremiumAnnual: acaEnrollmentPremiumAnnual ?? undefined,
       healthPremiumAcaAnnual,
       healthPremiumMedicarePerPerson,
+      irmaaPayableAnnual,
       capitalLossCarryInSt: carryInStP.value ?? undefined,
       capitalLossCarryInLt: carryInLtP.value ?? undefined,
       capitalLossCarryInStWa: carryInStWaP.value ?? undefined,
