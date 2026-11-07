@@ -3490,16 +3490,16 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "mc-check-seeded-small-n",
     kind: "tax",
-    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–40 are different market trials than under the old variable-length draw. Every figure moved: wins 34 → 33, win rate 85% → 82.5%, median advantage $130,788.85 → $129,618.70, p10 −$22,890.85 → −$19,638.95, p90 $377,639.32 → $476,377.44, winner median net $161,901.10 → $161,454.23, Do Nothing median net $308,688.28 → $318,003.38. The note's earlier sentence 'The winner takes 34 of 40 paths' is superseded by this re-pin: the winner now takes 33 of 40.) (RE-PINNED in the ENGINES BATCH, F2: the basis clamp is removed — a decline no longer destroys basis, so on down paths the torpedo plan's set-100% basis survives the recovery and later sales price no fictitious gain. The winner-side statistics move to median advantage $129,525.61 / p10 −$19,009.57 / p90 $476,905.12 / winner median net $159,964.47 (winner net cost DOWN ~$1,490 — less tax on the recovered paths); the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved. The new figures were verified by re-running the seeded check twice — identical both times — and by the F2 mechanism probe, which shows a $50,000 sale after a −20%/+25% recovery pricing $0 gain where the clamp priced $10,000.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the torpedo winner itself changed (see opt-torpedo-guardrail-pauses-fill), so every winner-side stream statistic moves — median advantage $136,522.54 / p10 −$12,134.52 / p90 $473,163.18 / winner median net $156,252.67; the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved.) (RE-PINNED under FOLLOW-UP #3, engines review follow-up: the march now claims the §1211(b) allowance on loss-only withdrawal years, which the torpedo plan's drifting set-100% basis produces along the down paths. Verified per path against the pre-#3 engine: 28 of 40 paths diverge, and every sampled path's FIRST divergence is a year whose realized result is a net loss identical on both engines, with AGI lower by exactly min($3,000, the loss) — path 0, 2027: loss −$3,595.91, AGI −$3,000 (the cap); path 1, 2031: −$612.51 / −$612.51; path 4, 2027: −$1,190.56 / −$1,190.56. The winner's median net cost falls $968.11 to $155,284.56 on the allowance's tax savings and the advantage statistics move to median $136,525.75 / p10 −$12,128.87 / p90 $475,130.91; the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved.)",
+    note: "Market-uncertainty check, seeded small run: the torpedo plan at volatility 15, N = 40, seed 12345. The figures pinned here are the outputs of the ONE fixed draw stream (mulberry32 seeded 12345 × 7919 + 17, Box–Muller normals, returns = 3% + 15 × z) — deterministic by construction, so the same inputs reproduce them exactly on every run; the stream itself is cross-validated by the zero-volatility identity case (mc-check-zero-vol-equals-deterministic) and the pairing case (mc-check-paired-paths). The winner takes 34 of 40 paths; the 10th-percentile advantage is negative — on the worst paths the varied returns erase the win. (Winner-side figures RE-PINNED by the BASIS-DRIFT build from median advantage $130,521.16 / p10 −$24,697.28 / p90 $377,168.71 / winner median net $163,585.19: the torpedo plan's set-100% basis drifts along every return path — down years also clamp the basis at the shrunken balance — while Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under FIX 4 — §151(d)(5)(C) senior-deduction deflation: every path's 2027 (age 66) and 2028 (age 67) years reprice with the deflated §151(d)(5)(C) figures — $5,853.66 / $146,341.46 in 2027, $5,710.89 / $142,772.16 in 2028, in place of the nominal $6,000 / $150,000 (derivation at joint-maxifi-property) — moving the winner-side stream statistics to median advantage $130,788.85 / p10 −$25,144.07 / p90 $377,639.32 / winner median net $161,901.10, from $127,109.72 / −$25,098.74 / $372,788.92 / $167,778.44. Do Nothing's median net $308,688.28 and the 34-of-40 win count are unmoved.) (RE-PINNED in v110, round-16 F2: the check now draws the fixed 160-shock stride per path and prices from the horizon prefix — the stats run's discipline — so paths 2–40 are different market trials than under the old variable-length draw. Every figure moved: wins 34 → 33, win rate 85% → 82.5%, median advantage $130,788.85 → $129,618.70, p10 −$22,890.85 → −$19,638.95, p90 $377,639.32 → $476,377.44, winner median net $161,901.10 → $161,454.23, Do Nothing median net $308,688.28 → $318,003.38. The note's earlier sentence 'The winner takes 34 of 40 paths' is superseded by this re-pin: the winner now takes 33 of 40.) (RE-PINNED in the ENGINES BATCH, F2: the basis clamp is removed — a decline no longer destroys basis, so on down paths the torpedo plan's set-100% basis survives the recovery and later sales price no fictitious gain. The winner-side statistics move to median advantage $129,525.61 / p10 −$19,009.57 / p90 $476,905.12 / winner median net $159,964.47 (winner net cost DOWN ~$1,490 — less tax on the recovered paths); the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved. The new figures were verified by re-running the seeded check twice — identical both times — and by the F2 mechanism probe, which shows a $50,000 sale after a −20%/+25% recovery pricing $0 gain where the clamp priced $10,000.) (Re-pinned under M-5 — the grow-backs respect the guardrail: the torpedo winner itself changed (see opt-torpedo-guardrail-pauses-fill), so every winner-side stream statistic moves — median advantage $136,522.54 / p10 −$12,134.52 / p90 $473,163.18 / winner median net $156,252.67; the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved.) (RE-PINNED under FOLLOW-UP #3, engines review follow-up: the march now claims the §1211(b) allowance on loss-only withdrawal years, which the torpedo plan's drifting set-100% basis produces along the down paths. Verified per path against the pre-#3 engine: 28 of 40 paths diverge, and every sampled path's FIRST divergence is a year whose realized result is a net loss identical on both engines, with AGI lower by exactly min($3,000, the loss) — path 0, 2027: loss −$3,595.91, AGI −$3,000 (the cap); path 1, 2031: −$612.51 / −$612.51; path 4, 2027: −$1,190.56 / −$1,190.56. The winner's median net cost falls $968.11 to $155,284.56 on the allowance's tax savings and the advantage statistics move to median $136,525.75 / p10 −$12,128.87 / p90 $475,130.91; the 33-of-40 win count and Do Nothing's median net $318,003.38 are unmoved.) (RE-PINNED under SHOULD-1, internal review round 1: the march now banks a newly realized loss's carry-out, so down-path years shelter later gains. The winner-side statistics move — median net cost falls $3,292.77 to $151,991.79, p10 advantage falls $1,416.46 to −$13,545.33 — and Do Nothing's median net cost falls $1,539.74 to $316,463.64, its taxable-first draws banking carry-outs on the same down paths; the win count (33 of 40), win rate, median advantage, and p90 advantage are unmoved. The new figures are the deterministic outputs of the same fixed draw stream, verified by re-running the seeded check twice with identical results.)",
     expected: {
       pathsRun: 40,
       wins: 33,
       winRatePct: 82.5,
       medianAdvantage: 136525.75,
-      p10Advantage: -12128.87,
+      p10Advantage: -13545.33,
       p90Advantage: 475130.91,
-      winnerMedianNetCost: 155284.56,
-      doNothingMedianNetCost: 318003.38,
+      winnerMedianNetCost: 151991.79,
+      doNothingMedianNetCost: 316463.64,
     },
     actual: () => {
       const plan = optTorpedoPlan();
@@ -15978,13 +15978,13 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-yield-tiers-exceeds-return-basis-uncapped",
     kind: "tax",
-    note: "TAXABLE YIELDS exceeding the return on the BASIS TIERS path — the reinvested yield's basis lands in FULL, with no balance cap and no phantom balance (TIERS YIELD FIX build, as corrected by FOLLOW-UP #2, engines review follow-up, settled STAND): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return, sustained. HISTORY: the original settlement routed the reinvested yield through the after-tax inflow helper, which raised the inflow tier's BALANCE with the basis even though the settlement's taxable balance does not rise (the yield is already inside the total return): the committed tier ledger drifted above the settled balance by roughly each year's yield, and by 2046 the year detail printed an endingTaxableBasis of $3,032,552.82 against an endingTaxable of $2,410,114.02 — basis at 125.8% of the balance it describes. The TIERS YIELD FIX landed the yield's basis WITHOUT phantom balance but capped it at each tier's own unrealized gain, citing a 'single-pool clamp-at-balance treatment' that does not exist — the single pool adds the yield to its basis outright (basisIn), and the legacy counter does the same (tax-yield-blank-basis-legacy-basis-clamp). FOLLOW-UP #2 removes the cap: the yield's basis is dollars paid for reinvested shares, added in full (lowest basis ratio first, the ledger's standing fill order, with any remainder past every tier's balance landing on the first tier in that order), so with 8% of yield outrunning the 5.75% return every year the true basis legitimately passes the balance — 2046 ends at a $2,174,082.44 basis over a $1,966,897.08 balance, and the invariant this case pins is now basis ≥ $0 in every year plus that 2046 excess, NOT basis-within-balance (the pre-#2 pins under the cap: endingTaxable $1,961,392.21, basis $1,854,744.40, federal tax $22,837.00, dividend and interest $79,166.85 each — the capped path discarded $319,338.04 of paid basis by 2046 and priced $1,120.07 more federal tax that year alone; ending pre-tax $4,656,277.96 and ending Roth $1,422,751.60 are unchanged by the correction). (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.) (RE-PINNED under FOLLOW-UP #3, engines review follow-up: the march now claims the §1211(b) allowance on loss-only years. The first divergence from the pre-#3 pins is 2044, whose realized result is a net LOSS of −$3,050.88 on both engines — the pool stands underwater that year (2043 ends identically on both engines, $2,064,134.23 of basis over a $2,014,395.98 balance) and its sales consume the highest-basis tiers first: the corrected year claims min($3,000, $3,050.88) = $3,000, so its AGI falls by exactly $3,000 ($201,951.68 → $198,951.68) and its federal tax by $924.00, and every later year moves downstream of the changed sales. On the corrected path the 2046 pool no longer ends underwater — basis $1,919,489.06 under the $1,968,998.75 balance — so the 2046-excess pin flips to 0 and the note's earlier 2046 basis/balance pair is superseded; the corrected 2046 reads taxable $1,968,998.75, basis $1,919,489.06, federal tax $20,742.23, dividend and interest $79,370.78 each, with ending pre-tax $4,656,277.96 and ending Roth $1,422,751.60 unmoved. The FOLLOW-UP #2 property this case exists for — the reinvested yield's basis lands in FULL, floored at $0 only — is unchanged: basis stays ≥ $0 in every year (allYearsBasisNonNegative), and the mechanism itself is pinned by the hand-derived worked example / underwater pair in tax-yield-tiers-reinvested-basis-uncapped, unmoved.)",
+    note: "TAXABLE YIELDS exceeding the return on the BASIS TIERS path — the reinvested yield's basis lands in FULL, with no balance cap and no phantom balance (TIERS YIELD FIX build, as corrected by FOLLOW-UP #2, engines review follow-up, settled STAND): the sample shape at retire 57 (the entered benchmarks — couple $24,000, family $32,000 — claim 67, pre-tax first capped at the cliff) carrying its two basis tiers (8.333333333333334% at 100% basis, 91.66666666666667% at 45.45454545454545%) plus a 4% dividend yield and a 4% interest yield — 8% of yield against the 5.75% expected return, sustained. HISTORY: the original settlement routed the reinvested yield through the after-tax inflow helper, which raised the inflow tier's BALANCE with the basis even though the settlement's taxable balance does not rise (the yield is already inside the total return): the committed tier ledger drifted above the settled balance by roughly each year's yield, and by 2046 the year detail printed an endingTaxableBasis of $3,032,552.82 against an endingTaxable of $2,410,114.02 — basis at 125.8% of the balance it describes. The TIERS YIELD FIX landed the yield's basis WITHOUT phantom balance but capped it at each tier's own unrealized gain, citing a 'single-pool clamp-at-balance treatment' that does not exist — the single pool adds the yield to its basis outright (basisIn), and the legacy counter does the same (tax-yield-blank-basis-legacy-basis-clamp). FOLLOW-UP #2 removes the cap: the yield's basis is dollars paid for reinvested shares, added in full (lowest basis ratio first, the ledger's standing fill order, with any remainder past every tier's balance landing on the first tier in that order), so with 8% of yield outrunning the 5.75% return every year the true basis legitimately passes the balance — 2046 ends at a $2,174,082.44 basis over a $1,966,897.08 balance, and the invariant this case pins is now basis ≥ $0 in every year plus that 2046 excess, NOT basis-within-balance (the pre-#2 pins under the cap: endingTaxable $1,961,392.21, basis $1,854,744.40, federal tax $22,837.00, dividend and interest $79,166.85 each — the capped path discarded $319,338.04 of paid basis by 2046 and priced $1,120.07 more federal tax that year alone; ending pre-tax $4,656,277.96 and ending Roth $1,422,751.60 are unchanged by the correction). (Re-pinned under the settlement iteration, FIX 1: tax-channel debits now price the income they create — Taxable-sale gains and pre-tax amounts — in the year they occur, so every year of this shape re-prices and downstream figures move; the property this case pins is unchanged.) (Re-pinned under build v135 — ACA premium reconciliation: this shape's saved plan carries marketplace benchmarks, so the saved-plan conversion now separates the net premium embedded in its spending and the march funds each marketplace year's own priced net premium; figures downstream of the funded spending move by the accumulated adjustments, and the property this case pins is unchanged.) (RE-PINNED under FOLLOW-UP #3, engines review follow-up: the march now claims the §1211(b) allowance on loss-only years. The first divergence from the pre-#3 pins is 2044, whose realized result is a net LOSS of −$3,050.88 on both engines — the pool stands underwater that year (2043 ends identically on both engines, $2,064,134.23 of basis over a $2,014,395.98 balance) and its sales consume the highest-basis tiers first: the corrected year claims min($3,000, $3,050.88) = $3,000, so its AGI falls by exactly $3,000 ($201,951.68 → $198,951.68) and its federal tax by $924.00, and every later year moves downstream of the changed sales. On the corrected path the 2046 pool no longer ends underwater — basis $1,919,489.06 under the $1,968,998.75 balance — so the 2046-excess pin flips to 0 and the note's earlier 2046 basis/balance pair is superseded; the corrected 2046 reads taxable $1,968,998.75, basis $1,919,489.06, federal tax $20,742.23, dividend and interest $79,370.78 each, with ending pre-tax $4,656,277.96 and ending Roth $1,422,751.60 unmoved. (RE-PINNED under SHOULD-1, internal review round 1: the march now banks a newly realized loss's carry-out. The 2044 loss's $50.88 remainder — the loss less the $3,000 allowance, which the FOLLOW-UP #3 pins already claimed — now carries out of 2044 (lossCarryOutLt $50.88, pre-fix $0), enters 2045 and nets against that year's gains (ltcgNet $3,800.79 against gross $3,851.67), and the downstream path drifts: the corrected 2046 reads taxable $1,969,009.30, basis $1,919,499.31, federal tax $20,742.44, dividend and interest $79,371.19 each, with ending pre-tax and ending Roth unmoved and the 2046-excess pin still 0 (basis still under the balance). The FOLLOW-UP #2 property — the reinvested yield's basis lands in FULL, floored at $0 only — is unchanged: basis stays ≥ $0 in every year.) The FOLLOW-UP #2 property this case exists for — the reinvested yield's basis lands in FULL, floored at $0 only — is unchanged: basis stays ≥ $0 in every year (allYearsBasisNonNegative), and the mechanism itself is pinned by the hand-derived worked example / underwater pair in tax-yield-tiers-reinvested-basis-uncapped, unmoved.)",
     expected: {
-      y2050TaxableEnd: 1968998.75,
-      y2050Basis: 1919489.06,
-      y2050FederalTax: 20742.23,
-      y2050Dividend: 79370.78,
-      y2050Interest: 79370.78,
+      y2050TaxableEnd: 1969009.3,
+      y2050Basis: 1919499.31,
+      y2050FederalTax: 20742.44,
+      y2050Dividend: 79371.19,
+      y2050Interest: 79371.19,
       y2050PretaxEnd: 4656277.96,
       y2050RothEnd: 1422751.6,
       basisAboveBalance2046: 0,
@@ -31960,18 +31960,18 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-year-funding-deep-view-unpaid-tax-s11",
     kind: "tax",
-    note: "S-11 (engines review round 2, SHOULD — settled STAND): Year funding's deep view never named unpaid tax. The funding identity is sources + spendShortfall + unpaidTax = totalNeed, but the deep view's only shortfall text was 'Short by {need − sources}' — so a year whose spending was fully covered and whose entire gap was an unpayable tax bill read as a generic shortfall, with no line anywhere saying tax was owed. THE SETTLEMENT'S EXAMPLE, reproduced on the shared fictional sample household (server/src/sampleHousehold.ts; samplePlanInputs with every balance $0, otherOrdinaryAnnual $200,000, annualSpending $278,000, inflationPct 0 and expectedReturnPct 0 so every figure below is flat and checkable by eye; Do Nothing). In 2039 the primary is 71 and the spouse 69: both draw Social Security ($48,000 + $30,000 = $78,000) and both are on Medicare. Cash income is $78,000 + $200,000 = $278,000 — exactly the year's $278,000 spending need — so spending is covered in full (spendShortfallCents 0), no surplus cash remains to pay tax, and no account holds a cent to debit: the year's whole tax bill is unpaid. THE BILL, by hand: 85% of the $78,000 of benefits is taxable at this income ($66,300), so AGI and MAGI are $266,300; the standard deduction is $35,500 (the $32,200 MFJ amount plus two $1,650 age-65 additions, all held flat at 0% inflation), leaving taxable income $230,800, on which the engine prices federal tax $40,588.00, plus IRMAA $2,296.80 on the $266,300 MAGI (both spouses on Medicare) — total need $278,000 + $40,588.00 + $2,296.80 = $320,884.80, sources $278,000, unpaid tax $42,884.80. BEFORE THE FIX the deep view showed exactly one line for this year: 'Short by $42,884.80' (preFixShortByCents — need minus sources, the whole of it tax, none of it labelled). THE CORRECTED DEEP VIEW (client/src/RothConversion.tsx, the expanded year panel): the needs column carries an 'Unpaid tax — still owed' line at the row's unpaidTaxCents whenever it is positive (deepViewUnpaidTaxLineCents, beside the pre-existing 'Spending not covered' line, which stays $0 here and so does not render), the verdict sentence names the gap as tax still owed rather than a spending shortfall when the shortfall is $0, and a footing line states the identity in the view's own figures — funded $278,000 + spending not covered $0 + unpaid tax $42,884.80 = total need $320,884.80 (identityGapCents 0). This fixture pins the funding row the corrected view renders from; the view is a direct rendering of these fields, the same division as the S-9 chart fixture.",
+    note: "S-11 (engines review round 2, SHOULD — settled STAND): Year funding's deep view never named unpaid tax. The funding identity is sources + spendShortfall + unpaidTax = totalNeed, but the deep view's only shortfall text was 'Short by {need − sources}' — so a year whose spending was fully covered and whose entire gap was an unpayable tax bill read as a generic shortfall, with no line anywhere saying tax was owed. THE SETTLEMENT'S EXAMPLE, reproduced on the shared fictional sample household (server/src/sampleHousehold.ts; samplePlanInputs with every balance $0, otherOrdinaryAnnual $200,000, annualSpending $278,000, inflationPct 0 and expectedReturnPct 0 so every figure below is flat and checkable by eye; Do Nothing). In 2039 the primary is 71 and the spouse 69: both draw Social Security ($48,000 + $30,000 = $78,000) and both are on Medicare. Cash income is $78,000 + $200,000 = $278,000 — exactly the year's $278,000 spending need — so spending is covered in full (spendShortfallCents 0), no surplus cash remains to pay tax, and no account holds a cent to debit: the year's whole tax bill is unpaid. THE BILL, by hand: 85% of the $78,000 of benefits is taxable at this income ($66,300), so AGI and MAGI are $266,300; the standard deduction is $35,500 (the $32,200 MFJ amount plus two $1,650 age-65 additions, all held flat at 0% inflation), leaving taxable income $230,800, on which the engine prices federal tax $40,588.00, plus IRMAA $2,296.80 on the $266,300 MAGI (both spouses on Medicare) — total need $278,000 + $40,588.00 + $2,296.80 = $320,884.80, sources $278,000, unpaid tax $42,884.80. BEFORE THE FIX the deep view showed exactly one line for this year: 'Short by $42,884.80' (preFixShortByCents — need minus sources, the whole of it tax, none of it labelled). THE CORRECTED DEEP VIEW (client/src/RothConversion.tsx, the expanded year panel): the needs column carries an 'Unpaid tax — still owed' line at the row's unpaidTaxCents whenever it is positive (deepViewUnpaidTaxLineCents, beside the pre-existing 'Spending not covered' line, which stays $0 here and so does not render), the verdict sentence names the gap as tax still owed rather than a spending shortfall when the shortfall is $0, and a footing line states the identity in the view's own figures — funded $278,000 + spending not covered $0 + unpaid tax $42,884.80 = total need $320,884.80 (identityGapCents 0). This fixture pins the funding row the corrected view renders from; the view is a direct rendering of these fields, the same division as the S-9 chart fixture. (RE-PINNED under SHOULD-1, internal review round 1: the march now banks a newly realized loss's carry-out. This plan's pre-retirement years sweep the after-tax income into Taxable while the sample retirement age is 62, and the dividend yield's basis lands in full against a 0% return, so the pool stands underwater when spending starts in 2030; the 2031 loss year banks a $37.72 remainder, the carry-out accumulates through the loss years to $17,416.79 by 2037, and the carry-in then claims the $3,000 allowance in each of 2038–2043 — so 2039's taxable income falls by $3,000 and its federal tax by $720.00 (24% × $3,000), from $40,588.00 to $39,868.00, the total need to $320,164.80, and the unpaid tax to $42,164.80. The funding row inherits the march year's tax, so the total need, the unpaid tax, the pre-fix shortfall, and the deep-view unpaid-tax line all fall by the same $720.00; IRMAA, spending, sources, the zero spending shortfall, and the footing identity are unchanged.)",
     expected: {
       year: 2039,
-      totalNeedCents: 32088480,
+      totalNeedCents: 32016480,
       spendingCents: 27800000,
-      federalTaxCents: 4058800,
+      federalTaxCents: 3986800,
       irmaaCents: 229680,
       sourcesCents: 27800000,
       spendShortfallCents: 0,
-      unpaidTaxCents: 4288480,
-      preFixShortByCents: 4288480,
-      deepViewUnpaidTaxLineCents: 4288480,
+      unpaidTaxCents: 4216480,
+      preFixShortByCents: 4216480,
+      deepViewUnpaidTaxLineCents: 4216480,
       identityGapCents: 0,
     },
     actual: () => {
@@ -32141,7 +32141,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-march-loss-only-allowance-followup3",
     kind: "tax",
-    note: "FOLLOW-UP #3 (engines review round 2 follow-up, SHOULD — settled STAND; hand-derived): the march did not deduct the losses its own underwater-basis sales realize. Two halves, both necessary (either alone still prices the pre-fix figures, verified by isolation during the build): (1) ledgerFields in simulateRothPlan returned the negative ltcg on a loss-only taxable withdrawal but no §1211(b) allowance when no carryforward entered, so priceYear defaulted the allowance to $0; (2) the settlement's reprice gate fired only when the priced gains total or the extra pre-tax draw was POSITIVE, so a loss-only withdrawal never repriced at all. The single-year pricer already did both right (pricePlaygroundYear's gainsFieldsFor returns capitalLossAllowance min($3,000, −grossGains) on a loss). THE WORKED EXAMPLE (the settlement's own, on the shared fictional sample household — server/src/sampleHousehold.ts: MFJ, born 1968 / 1970, household 4, its benchmarks, zero state rate): 2026, other ordinary income $50,000, spending the income plus a $30,000 gap, taxable-first (the sample draw order), Do Nothing, no conversions, no carry-in, no yields. The pool opens 2026 at $100,000 against $200,000 of preserved basis (construction below), so every sale dollar realizes −$1 of gain. The year's first pricing (income alone) taxes $50,000 − $32,200 = $17,800 at 10% = $1,780; the sales fund the $30,000 spending gap plus that $1,780 of tax — $31,780 of sales realizing a $31,780 loss (drawGains). CORRECTED: the allowance min($3,000, $31,780) = $3,000 prices, so AGI and ACA MAGI are $47,000 and federal tax is ($47,000 − $32,200) × 10% = $1,480 — the figures pricePlaygroundYear has always given for the same year, pinned below from a $31,780 sale against a $63,560 basis. BEFORE THE FIX the march kept AGI $50,000 and tax $1,780: $300 overcharged, ACA MAGI overstated by $3,000. THE OPENING POOL, constructed inside the run: the plan starts in 2025 (age 57, pre-retirement, no spending) with $151,850 of Taxable at 100% basis; 2025's $50,000 of other ordinary income taxes at $1,850 under the 2025 row ($50,000 − $31,500 = $18,500 at 10%), the $48,150 after-tax surplus sweeps into Taxable at 100% basis (basis $200,000 on a $200,000 balance), and a −50% 2025 return (the return series) halves the balance to $100,000 while the basis dollars stand — the preserved-basis decline the underwater-basis fix prices. MORE INCOME LEVELS (same construction — each leg's 2025 tax and starting balance derived the same way, so 2026 opens at $100,000 of balance against $200,000 of basis; spending = income + $30,000 throughout): the correction is the marginal rate × $3,000. $20,000 of income (under the $32,200 standard deduction): AGI $17,000 with tax $0 before and after — a $0 overcharge, pinned so the allowance's AGI effect shows even where no tax moves. $90,000 (12%): AGI $87,000, tax $6,080 against the pre-fix $6,440 ($360). $150,000 (22%): AGI $147,000, tax $14,680 against $15,340 ($660). $250,000 (24%): AGI $247,000, tax $36,748 against $37,468 ($720) — this leg's 2025 surplus ($211,866) exceeds a $200,000 opening basis, so its decline is deeper (−75%, from $400,000 of basis over the same $100,000 balance, a −3 gain rate): the allowance caps at $3,000 either way, so the priced correction is the same $720 and only the realized loss differs (−$202,404 = −3 × ($30,000 + $37,468 of sales)). SCOPE BOUNDARY (the settlement's explicit exclusion, pinned on every leg): with no carry-in the year's loss-ledger detail still banks nothing — lossAllowance and lossCarryOutLt read $0; the worked leg's $28,780 of loss beyond the $3,000 allowance is unpriced in both the march and the Playground and is a separate, unreported question this build does not touch.",
+    note: "FOLLOW-UP #3 (engines review round 2 follow-up, SHOULD — settled STAND; hand-derived): the march did not deduct the losses its own underwater-basis sales realize. Two halves, both necessary (either alone still prices the pre-fix figures, verified by isolation during the build): (1) ledgerFields in simulateRothPlan returned the negative ltcg on a loss-only taxable withdrawal but no §1211(b) allowance when no carryforward entered, so priceYear defaulted the allowance to $0; (2) the settlement's reprice gate fired only when the priced gains total or the extra pre-tax draw was POSITIVE, so a loss-only withdrawal never repriced at all. The single-year pricer already did both right (pricePlaygroundYear's gainsFieldsFor returns capitalLossAllowance min($3,000, −grossGains) on a loss). THE WORKED EXAMPLE (the settlement's own, on the shared fictional sample household — server/src/sampleHousehold.ts: MFJ, born 1968 / 1970, household 4, its benchmarks, zero state rate): 2026, other ordinary income $50,000, spending the income plus a $30,000 gap, taxable-first (the sample draw order), Do Nothing, no conversions, no carry-in, no yields. The pool opens 2026 at $100,000 against $200,000 of preserved basis (construction below), so every sale dollar realizes −$1 of gain. The year's first pricing (income alone) taxes $50,000 − $32,200 = $17,800 at 10% = $1,780; the sales fund the $30,000 spending gap plus that $1,780 of tax — $31,780 of sales realizing a $31,780 loss (drawGains). CORRECTED: the allowance min($3,000, $31,780) = $3,000 prices, so AGI and ACA MAGI are $47,000 and federal tax is ($47,000 − $32,200) × 10% = $1,480 — the figures pricePlaygroundYear has always given for the same year, pinned below from a $31,780 sale against a $63,560 basis. BEFORE THE FIX the march kept AGI $50,000 and tax $1,780: $300 overcharged, ACA MAGI overstated by $3,000. THE OPENING POOL, constructed inside the run: the plan starts in 2025 (age 57, pre-retirement, no spending) with $151,850 of Taxable at 100% basis; 2025's $50,000 of other ordinary income taxes at $1,850 under the 2025 row ($50,000 − $31,500 = $18,500 at 10%), the $48,150 after-tax surplus sweeps into Taxable at 100% basis (basis $200,000 on a $200,000 balance), and a −50% 2025 return (the return series) halves the balance to $100,000 while the basis dollars stand — the preserved-basis decline the underwater-basis fix prices. MORE INCOME LEVELS (same construction — each leg's 2025 tax and starting balance derived the same way, so 2026 opens at $100,000 of balance against $200,000 of basis; spending = income + $30,000 throughout): the correction is the marginal rate × $3,000. $20,000 of income (under the $32,200 standard deduction): AGI $17,000 with tax $0 before and after — a $0 overcharge, pinned so the allowance's AGI effect shows even where no tax moves. $90,000 (12%): AGI $87,000, tax $6,080 against the pre-fix $6,440 ($360). $150,000 (22%): AGI $147,000, tax $14,680 against $15,340 ($660). $250,000 (24%): AGI $247,000, tax $36,748 against $37,468 ($720) — this leg's 2025 surplus ($211,866) exceeds a $200,000 opening basis, so its decline is deeper (−75%, from $400,000 of basis over the same $100,000 balance, a −3 gain rate): the allowance caps at $3,000 either way, so the priced correction is the same $720 and only the realized loss differs (−$202,404 = −3 × ($30,000 + $37,468 of sales)). SCOPE BOUNDARY (the settlement's explicit exclusion, pinned on every leg): with no carry-in the year's loss-ledger detail still banks nothing — lossAllowance and lossCarryOutLt read $0; the worked leg's $28,780 of loss beyond the $3,000 allowance is unpriced in both the march and the Playground and is a separate, unreported question this build does not touch. (RE-PINNED under SHOULD-1, internal review round 1: the march now runs the year-end ledger when the year's own total gains are a net loss, so this scope boundary is gone — the march banks the remainder as lossCarryOutLt (the single-year pricer has banked it since R1), lossAllowance reads the $3,000 ledger allowance on every leg, and lossCarryOutLt banks the loss less the allowance used: the worked leg's $28,780, the $20,000 leg's whole $30,000 (its taxable income before the allowance is $0, so none of the allowance is used), the $90,000 leg's $33,440, the $150,000 leg's $42,340, and the $250,000 leg's $199,404. The priced figures — AGI, MAGI, tax, taxable income, draw gains — are unchanged on every leg: the allowance was already priced through the no-carry-in branch, and the ledger's trial transform at a zero carry-in is that computation term for term.)",
     expected: {
       l20OpenBal: 100000,
       l20OpenBasis: 200000,
@@ -32151,8 +32151,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       l20Tax: 0,
       l20TaxableIncome: 0,
       l20DrawGains: -30000,
-      l20LossAllowanceDetail: 0,
-      l20CarryOutLt: 0,
+      l20LossAllowanceDetail: 3000,
+      l20CarryOutLt: 30000,
       l50OpenBal: 100000,
       l50OpenBasis: 200000,
       l50Agi: 47000,
@@ -32161,8 +32161,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       l50Tax: 1480,
       l50TaxableIncome: 14800,
       l50DrawGains: -31780,
-      l50LossAllowanceDetail: 0,
-      l50CarryOutLt: 0,
+      l50LossAllowanceDetail: 3000,
+      l50CarryOutLt: 28780,
       l90OpenBal: 100000,
       l90OpenBasis: 200000,
       l90Agi: 87000,
@@ -32171,8 +32171,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       l90Tax: 6080,
       l90TaxableIncome: 54800,
       l90DrawGains: -36440,
-      l90LossAllowanceDetail: 0,
-      l90CarryOutLt: 0,
+      l90LossAllowanceDetail: 3000,
+      l90CarryOutLt: 33440,
       l150OpenBal: 100000,
       l150OpenBasis: 200000,
       l150Agi: 147000,
@@ -32181,8 +32181,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       l150Tax: 14680,
       l150TaxableIncome: 114800,
       l150DrawGains: -45340,
-      l150LossAllowanceDetail: 0,
-      l150CarryOutLt: 0,
+      l150LossAllowanceDetail: 3000,
+      l150CarryOutLt: 42340,
       l250OpenBal: 100000,
       l250OpenBasis: 400000,
       l250Agi: 247000,
@@ -32191,8 +32191,8 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       l250Tax: 36748,
       l250TaxableIncome: 214800,
       l250DrawGains: -202404,
-      l250LossAllowanceDetail: 0,
-      l250CarryOutLt: 0,
+      l250LossAllowanceDetail: 3000,
+      l250CarryOutLt: 199404,
       pgAgi: 47000,
       pgTax: 1480,
       pgAllowance: 3000,
@@ -34299,7 +34299,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-tax-plan-income-stack-ps9",
     kind: "tax",
-    note: "P-S9 (parity audit, SHOULD — settled STAND): the Tax Plan income-stack chart read GROSS detail.ltcg for its gains segment and −detail.lossAllowance for its allowance segment, so its bars did not foot to MAGI — the same defect the Playground single-year stack fixed in round-2 S-9, never applied here. detail.ltcg is gross realized gains (draws + injected + harvested), while pricing routes every year through the loss ledger (ledgerFields / applyLossLedger), which nets an entering carryforward against the gross and prices a §1211(b) allowance on a net loss; and detail.lossAllowance is the ledger's allowance only when a carryforward entered ($0 otherwise, even when the year's own loss priced an allowance — the FOLLOW-UP #3 transform). THE FIX: RothYearDetail now surfaces the priced decomposition — ltcgNet (the ledger's net result; the gross figure itself when no carryforward entered), capitalLossAllowance (the allowance the year priced in every case: the ledger's when it ran, min(cap, −gross) on a no-carry-in loss year), and qualifiedDividends (the qualified part of the year's dividend yield income) — display-only fields, no pricing changed; and the chart's segDefs decompose the preferential stack from them (non-qualified dividends on the ordinary stack; qualified dividends, max(0, ltcgNet), and the hatched −capitalLossAllowance on top), exactly the round-2 S-9 pattern. THE WORKED EXAMPLES are the settlement's own, on the shared fictional sample household (server/src/sampleHousehold.ts), every figure the filed ordinary dividends (D), the filed qualified dividends (Q), the filed interest (I), or arithmetic on them. EXAMPLE A (carry-in absorbs the gains): a one-year 2026 plan (retire 58, no other balances, no yields, no Social Security) spending exactly D, drawn from the sample taxable pool at its sample 60% basis, so the year's gross gains are D − D×60% (the draw less its basis part); a long-term carryforward of D enters. The ledger nets LT first: net result = gross − D (a net loss), the allowance is the $3,000 cap, the gains absorb the whole gross (lossAbsorbed = the gross), and nothing of the allowance is USED (the year has no taxable income before it — its only income was the absorbed gains), so the loss that carries out is the entering D less the absorbed gross, with none of it consumed by the allowance — the settlement's carry-out qualification made concrete (its $9,000 variant needs taxable income before the allowance of at least the cap, which this year has not got); the overstatement below does not depend on it. PRICED gains-side: max(0, net) − allowance = −$3,000, and AGI = MAGI = −$3,000. THE PRE-FIX CHART summed gross − ledger allowance = the gross − $3,000, topping the MAGI line by exactly the gross gains (aPreFixOverBy = the gross). THE FIXED CHART sums to MAGI exactly. EXAMPLE B (no-carry-in loss year): the underwater construction of tax-march-loss-only-allowance-followup3 at its D-income leg — the plan starts in 2025 with $180,000 of Taxable at 100% basis, the year's D of other ordinary income is untaxed (under the 2025 standard deduction), its after-tax surplus sweeps the pool to a $200,000 basis over a $200,000 balance, and a −50% return (the return series) halves the balance to $100,000 while the basis stands, so 2026 opens underwater at a −1 gain rate; 2026 spending is the income plus half of D, tax is $0 at every pricing (AGI stays under the standard deduction), so the year's sales are exactly half of D and realize a loss of half of D (drawGains). No carryforward entered, so the ledger detail reads $0 (lossAllowance, the scope boundary FOLLOW-UP #3 pinned) — but the year PRICED an allowance of min($3,000, the loss) = $3,000 through the transform's no-carry-in branch, and the new capitalLossAllowance surfaces it: AGI = MAGI = D − $3,000. THE PRE-FIX CHART summed other income + gross loss − $0 = MAGI − $7,000 (the loss beyond the allowance: half of D − $3,000), sitting below the MAGI line by exactly that. THE FIXED CHART sums to MAGI exactly. CONTROL LEG (the plain sample household's first year, 2026, pre-retirement, yields at the sample rates, no draws and no carryforward): dividendIncome = D, qualifiedDividends = Q, the non-qualified part D − Q, interest I, no gains and no allowance — the fixed stack and the pre-fix stack are the SAME sum (the total distribution counted once either way) and both foot to MAGI = I + D, pinning that the decomposition moves nothing in a year with nothing to net. The stack sums in `actual` replicate the chart's segDefs arithmetic term for term over the detail (the source-invariant comment above this fixture documents the render half).",
+    note: "P-S9 (parity audit, SHOULD — settled STAND): the Tax Plan income-stack chart read GROSS detail.ltcg for its gains segment and −detail.lossAllowance for its allowance segment, so its bars did not foot to MAGI — the same defect the Playground single-year stack fixed in round-2 S-9, never applied here. detail.ltcg is gross realized gains (draws + injected + harvested), while pricing routes every year through the loss ledger (ledgerFields / applyLossLedger), which nets an entering carryforward against the gross and prices a §1211(b) allowance on a net loss; and detail.lossAllowance is the ledger's allowance only when a carryforward entered ($0 otherwise, even when the year's own loss priced an allowance — the FOLLOW-UP #3 transform). THE FIX: RothYearDetail now surfaces the priced decomposition — ltcgNet (the ledger's net result; the gross figure itself when no carryforward entered), capitalLossAllowance (the allowance the year priced in every case: the ledger's when it ran, min(cap, −gross) on a no-carry-in loss year), and qualifiedDividends (the qualified part of the year's dividend yield income) — display-only fields, no pricing changed; and the chart's segDefs decompose the preferential stack from them (non-qualified dividends on the ordinary stack; qualified dividends, max(0, ltcgNet), and the hatched −capitalLossAllowance on top), exactly the round-2 S-9 pattern. THE WORKED EXAMPLES are the settlement's own, on the shared fictional sample household (server/src/sampleHousehold.ts), every figure the filed ordinary dividends (D), the filed qualified dividends (Q), the filed interest (I), or arithmetic on them. EXAMPLE A (carry-in absorbs the gains): a one-year 2026 plan (retire 58, no other balances, no yields, no Social Security) spending exactly D, drawn from the sample taxable pool at its sample 60% basis, so the year's gross gains are D − D×60% (the draw less its basis part); a long-term carryforward of D enters. The ledger nets LT first: net result = gross − D (a net loss), the allowance is the $3,000 cap, the gains absorb the whole gross (lossAbsorbed = the gross), and nothing of the allowance is USED (the year has no taxable income before it — its only income was the absorbed gains), so the loss that carries out is the entering D less the absorbed gross, with none of it consumed by the allowance — the settlement's carry-out qualification made concrete (its $9,000 variant needs taxable income before the allowance of at least the cap, which this year has not got); the overstatement below does not depend on it. PRICED gains-side: max(0, net) − allowance = −$3,000, and AGI = MAGI = −$3,000. THE PRE-FIX CHART summed gross − ledger allowance = the gross − $3,000, topping the MAGI line by exactly the gross gains (aPreFixOverBy = the gross). THE FIXED CHART sums to MAGI exactly. EXAMPLE B (no-carry-in loss year): the underwater construction of tax-march-loss-only-allowance-followup3 at its D-income leg — the plan starts in 2025 with $180,000 of Taxable at 100% basis, the year's D of other ordinary income is untaxed (under the 2025 standard deduction), its after-tax surplus sweeps the pool to a $200,000 basis over a $200,000 balance, and a −50% return (the return series) halves the balance to $100,000 while the basis stands, so 2026 opens underwater at a −1 gain rate; 2026 spending is the income plus half of D, tax is $0 at every pricing (AGI stays under the standard deduction), so the year's sales are exactly half of D and realize a loss of half of D (drawGains). No carryforward entered, so the ledger detail reads $0 (lossAllowance, the scope boundary FOLLOW-UP #3 pinned) — but the year PRICED an allowance of min($3,000, the loss) = $3,000 through the transform's no-carry-in branch, and the new capitalLossAllowance surfaces it: AGI = MAGI = D − $3,000. (RE-PINNED under SHOULD-1, internal review round 1: the march now runs the year-end ledger when the year's own total gains are a net loss, so the ledger detail reads the $3,000 allowance here — bLossAllowDetail — and the pre-fix chart's arithmetic over that detail now shows the allowance too, so its understatement is the whole loss half of D (bPreFixBelowBy), not half of D less $3,000. The fixed chart still foots to MAGI exactly, and the priced figures — gross, net, capped allowance, AGI, MAGI, stack — are unchanged.) THE PRE-FIX CHART summed other income + gross loss − $0 = MAGI − $7,000 (the loss beyond the allowance: half of D − $3,000), sitting below the MAGI line by exactly that. THE FIXED CHART sums to MAGI exactly. CONTROL LEG (the plain sample household's first year, 2026, pre-retirement, yields at the sample rates, no draws and no carryforward): dividendIncome = D, qualifiedDividends = Q, the non-qualified part D − Q, interest I, no gains and no allowance — the fixed stack and the pre-fix stack are the SAME sum (the total distribution counted once either way) and both foot to MAGI = I + D, pinning that the decomposition moves nothing in a year with nothing to net. The stack sums in `actual` replicate the chart's segDefs arithmetic term for term over the detail (the source-invariant comment above this fixture documents the render half).",
     expected: {
       aGross:
         SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 -
@@ -34337,7 +34337,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       bGross: -(SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
       bLtcgNet: -(SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
       bCapAllow: 3000,
-      bLossAllowDetail: 0,
+      bLossAllowDetail: 3000,
       bDrawGains: -(SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
       bAgi: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 - 3000,
       bMagi: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 - 3000,
@@ -34345,9 +34345,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       bStackFoots: 1,
       bPreFixStack:
         SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100 -
-        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 -
+        3000,
       bPreFixBelowBy:
-        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 - 3000,
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
       cDivInc: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
       cQualDiv: SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
       cNonQual:
@@ -35700,6 +35701,166 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         belowKept: below.y?.acaCreditKept ?? null,
         aboveKept: above.y?.acaCreditKept ?? null,
         medOnlyKept: medOnly.y?.acaCreditKept ?? null,
+      };
+    },
+  },
+  {
+    id: "tax-engines-plan-march-new-loss-carryforward-should1",
+    kind: "tax",
+    note: "SHOULD-1 (internal review round 1, SHOULD — settled STAND): R1's fix never reached the plan march. pricePlaygroundYear banks a newly realized loss since R1, but simulateRothPlan's year-end reconciliation (ledFinal) ran only when a carryforward entered, so a march year whose own draws realized a net capital loss — with no carry-in — priced its §1211(b) allowance in-year but reported a $0 carry-out, and the next year entered with $0. THE FIX (taxEngine.ts, simulateRothPlan): ledFinal also runs when the year's own total gains (draws' realized gains + injected sale gain + harvested gain) are a net loss, so the year-end reconciliation banks the remainder exactly as the pricer does. The condition sits at the ledFinal computation itself, where the final gross is known — NOT on the ledgerOn gate above it, where the year's gross does not exist yet (realizedGains is assigned after settleYear runs); only the ledFinal site needs it, since at a zero carry-in the trial transform is the in-year computation term for term, so the loss year's own pricing is unchanged. applyLossLedger's stale header (gross 'never negative there') now names the underwater-draw path. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): taxable at the sample balance and sample basis percent, spending at the sample annual amount, MFJ at the sample ages 58 / 56, no Social Security, no dividends/interest, no conversions, no harvest facts, no entering carry-ins, return series [−60, 0, 0] for 2026–2028, end age 60. HAND-DERIVED: year 1 (2026) opens at the sample taxable balance with the sample basis percent, so the ratio is the basis percent and the draw gain rate is one less it; the year's spending draw realizes the spending times that rate as a gain; taxable income is the gain less the 2026 MFJ standard deduction, all long-term gain below the 0% top, so federal tax is $0; the draw retires basis pro-rata, the balance ends at the opening balance less the draw, and the −60% year halves the balance while the basis dollars stand — the pool is underwater at a ratio of the ending basis over the ending balance. Year 2 (2027) draws at one less that ratio, a negative rate, realizing a loss of the spending times the rate's distance below one; the allowance is the $3,000 cap, taxable income before the allowance is $0, so under the worksheet's utilization rule none of the allowance is used and the WHOLE loss carries out as long-term. Year 3 (2028) enters with that carry-in; its own draw realizes the same loss, the ledger nets the carry-in against it, so the net result is twice the year's loss, the allowance is again $3,000, and the cumulative carry-out is twice the single-year loss. PRE-FIX: year 2's carry-out read $0, year 3 entered with $0 and dropped another loss — every carry pin below fails on the pre-fix engine by exactly the carried loss, while the loss years' own priced figures (draw gains, allowance, MAGI, tax, balances) are identical before and after. CONTROL: the same plan with no return series (constant 0% return) never goes underwater — every year realizes the year-1 gain and banks nothing — bit-identical before and after.",
+    expected: {
+      y1Gain:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+        100,
+      y1FedTax: 0,
+      y1Magi:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+        100,
+      y1Taxable:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+          100 -
+        32200,
+      y1EndTaxable:
+        (((SAMPLE_TAXABLE_CENTS / 100) -
+          (SAMPLE_ANNUAL_SPENDING_CENTS / 100)) *
+          40) /
+        100,
+      y1EndBasis:
+        ((SAMPLE_TAXABLE_CENTS / 100) * SAMPLE_TAXABLE_BASIS_PCT -
+          (SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+            SAMPLE_TAXABLE_BASIS_PCT) /
+        100,
+      y1LossAllowance: 0,
+      y1OutLt: 0,
+      y2DrawGains:
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * (1 - 1.5),
+      y2LtcgNet:
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * (1 - 1.5),
+      y2CapAllowance: 3000,
+      y2LossAllowance: 3000,
+      y2OutLt: (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * 0.5,
+      y2OutSt: 0,
+      y2InLt: 0,
+      y2Magi: -3000,
+      y2FedTax: 0,
+      y2EndTaxable:
+        (((SAMPLE_TAXABLE_CENTS / 100) -
+          (SAMPLE_ANNUAL_SPENDING_CENTS / 100)) *
+          40) /
+          100 -
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100),
+      y2EndBasis:
+        ((SAMPLE_TAXABLE_CENTS / 100) * SAMPLE_TAXABLE_BASIS_PCT -
+          (SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+            SAMPLE_TAXABLE_BASIS_PCT) /
+          100 -
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * 1.5,
+      y3DrawGains:
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * (1 - 1.5),
+      y3LtcgNet:
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * (1 - 1.5) * 2,
+      y3CapAllowance: 3000,
+      y3LossAllowance: 3000,
+      y3InLt: (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * 0.5,
+      y3OutLt: (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * 0.5 * 2,
+      y3OutSt: 0,
+      y3Magi: -3000,
+      y3FedTax: 0,
+      y3EndTaxable:
+        (((SAMPLE_TAXABLE_CENTS / 100) -
+          (SAMPLE_ANNUAL_SPENDING_CENTS / 100)) *
+          40) /
+          100 -
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * 2,
+      y3EndBasis:
+        ((SAMPLE_TAXABLE_CENTS / 100) * SAMPLE_TAXABLE_BASIS_PCT -
+          (SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+            SAMPLE_TAXABLE_BASIS_PCT) /
+          100 -
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * 1.5 * 2,
+      cGain1:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+        100,
+      cGain2:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+        100,
+      cGain3:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+        100,
+      cOutLt1: 0,
+      cOutLt2: 0,
+      cOutLt3: 0,
+      cInLt2: 0,
+      cInLt3: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: SAMPLE_BIRTH_YEAR_PRIMARY,
+        birthYearSpouse: SAMPLE_BIRTH_YEAR_SPOUSE,
+        endAgePrimary: 60,
+        retirementAge: 58,
+        pretaxStart: 0,
+        taxableStart: SAMPLE_TAXABLE_CENTS / 100,
+        taxableBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        windowStartAge: 58,
+        windowStopAge: 74,
+        heirRatePct: SAMPLE_HEIR_RATE_PCT,
+      });
+      const march = simulateRothPlan(plan, DO_NOTHING, [-60, 0, 0]);
+      const control = simulateRothPlan(plan, DO_NOTHING);
+      const y1 = march.years.find((y) => y.agePrimary === 58)!;
+      const y2 = march.years.find((y) => y.agePrimary === 59)!;
+      const y3 = march.years.find((y) => y.agePrimary === 60)!;
+      const c1 = control.years.find((y) => y.agePrimary === 58)!;
+      const c2 = control.years.find((y) => y.agePrimary === 59)!;
+      const c3 = control.years.find((y) => y.agePrimary === 60)!;
+      return {
+        y1Gain: y1.detail.drawGains,
+        y1FedTax: y1.federalTax,
+        y1Magi: y1.magi,
+        y1Taxable: y1.taxableIncome,
+        y1EndTaxable: y1.taxableEnd,
+        y1EndBasis: y1.detail.taxableBasisDollars,
+        y1LossAllowance: y1.detail.lossAllowance,
+        y1OutLt: y1.detail.lossCarryOutLt,
+        y2DrawGains: y2.detail.drawGains,
+        y2LtcgNet: y2.detail.ltcgNet,
+        y2CapAllowance: y2.detail.capitalLossAllowance,
+        y2LossAllowance: y2.detail.lossAllowance,
+        y2OutLt: y2.detail.lossCarryOutLt,
+        y2OutSt: y2.detail.lossCarryOutSt,
+        y2InLt: y2.detail.lossCarryInLt,
+        y2Magi: y2.magi,
+        y2FedTax: y2.federalTax,
+        y2EndTaxable: y2.taxableEnd,
+        y2EndBasis: y2.detail.taxableBasisDollars,
+        y3DrawGains: y3.detail.drawGains,
+        y3LtcgNet: y3.detail.ltcgNet,
+        y3CapAllowance: y3.detail.capitalLossAllowance,
+        y3LossAllowance: y3.detail.lossAllowance,
+        y3InLt: y3.detail.lossCarryInLt,
+        y3OutLt: y3.detail.lossCarryOutLt,
+        y3OutSt: y3.detail.lossCarryOutSt,
+        y3Magi: y3.magi,
+        y3FedTax: y3.federalTax,
+        y3EndTaxable: y3.taxableEnd,
+        y3EndBasis: y3.detail.taxableBasisDollars,
+        cGain1: c1.detail.drawGains,
+        cGain2: c2.detail.drawGains,
+        cGain3: c3.detail.drawGains,
+        cOutLt1: c1.detail.lossCarryOutLt,
+        cOutLt2: c2.detail.lossCarryOutLt,
+        cOutLt3: c3.detail.lossCarryOutLt,
+        cInLt2: c2.detail.lossCarryInLt,
+        cInLt3: c3.detail.lossCarryInLt,
       };
     },
   },

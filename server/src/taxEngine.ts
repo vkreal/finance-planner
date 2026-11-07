@@ -795,9 +795,12 @@ export function applyLossLedger(
   // The year's own net long-term capital result from capital
   // transactions (gains positive). In the plan march this is
   // the year's gross realized gains (draws + any injected
-  // sale gain + harvested gains) — never negative there (the
-  // basis invariant prices draws at a gain rate in [0, 1]),
-  // but the transform is stated for any signed value.
+  // sale gain + harvested gains) — negative when the year's
+  // draws realize a loss, which the underwater-draw path
+  // produces (a negative-return year shrinks the taxable
+  // balance while its basis dollars stand, so the next
+  // year's draws price at a negative gain rate); the
+  // transform is stated for any signed value.
   ownLongTermResult: number,
   filingStatus: FilingStatus,
   // The year's taxable income computed WITHOUT the §1211(b)
@@ -3213,7 +3216,9 @@ export type RothYearDetail = {
   // EVERY case: the ledger's allowance when a carryforward
   // entered (the same figure lossAllowance below carries),
   // and min(cap, −gross) on a no-carry-in loss year, where
-  // lossAllowance reads $0 because no ledger ran. A consumer
+  // lossAllowance likewise carries the ledger's allowance
+  // since the year-end reconciliation runs on the year's
+  // own net loss too (SHOULD-1, internal review round 1). A consumer
   // decomposing the year's income (the Tax Plan income-stack
   // chart) must read THESE, exactly as the single-year
   // pricer's result carries ltcgNet / capitalLossAllowance:
@@ -4379,9 +4384,11 @@ export function simulateRothPlan(
     // allowance defaulted to $0 and overstated AGI, ACA
     // MAGI, and tax by the unclaimed $3,000. The allowance
     // is claimed here only — the year's carry-OUT ledger
-    // still runs only when a carry-in entered (ledFinal
-    // below): a no-carry-in year's unused loss beyond the
-    // allowance is not banked by this build.
+    // (ledFinal below) runs when a carry-in entered OR the
+    // year's own total gains are a net loss (SHOULD-1,
+    // internal review round 1): a no-carry-in year's unused
+    // loss beyond the allowance is banked, reconciled once
+    // against the year's final taxable income.
     const carryInSt = lossCarrySt;
     const carryInLt = lossCarryLt;
     const carryInWaSt = lossCarryWaSt;
@@ -6879,15 +6886,28 @@ export function simulateRothPlan(
     // (the Capital Loss Carryover Worksheet's limit) — the
     // claimed allowance itself, and so the year's AGI and
     // tax, are exactly as priced either way.
-    const ledFinal = ledgerOn
-      ? applyLossLedger(
-          { st: carryInSt, lt: carryInLt },
-          realizedGains + injectedLtcg + gainsHarvested,
-          effFilingStatus,
-          priced.taxableIncomeBeforeLossAllowance,
-          { st: carryInWaSt, lt: carryInWaLt },
-        )
-      : null;
+    // (SHOULD-1, internal review round 1 — the march's half of R1):
+    // the year-end reconciliation also runs when the year's own
+    // total gains are a net loss, even with no carry-in entered,
+    // so a newly realized loss banks its reconciled carry-out
+    // instead of dropping it. The condition belongs HERE, where
+    // the final gross is known — not on the ledgerOn gate above,
+    // where the year's gross does not exist yet (realizedGains
+    // is assigned after settleYear runs). At a zero carry-in the
+    // transform is the in-year computation term for term, so the
+    // loss year's own pricing is unchanged; only its reported
+    // carry-out (and the next year's carry-in) newly appear.
+    const grossGains = realizedGains + injectedLtcg + gainsHarvested;
+    const ledFinal =
+      ledgerOn || grossGains < 0
+        ? applyLossLedger(
+            { st: carryInSt, lt: carryInLt },
+            grossGains,
+            effFilingStatus,
+            priced.taxableIncomeBeforeLossAllowance,
+            { st: carryInWaSt, lt: carryInWaLt },
+          )
+        : null;
     if (ledFinal) {
       lossCarrySt = ledFinal.carryOut.st;
       lossCarryLt = ledFinal.carryOut.lt;
