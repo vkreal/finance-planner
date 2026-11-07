@@ -90,6 +90,7 @@ pricePlanYearDetail,
 resolvePlanBalances,
 playgroundSaleAfterTax,
 priceExecutionYear,
+executionFillTarget,
 pricePlaygroundYear,
 projectPlaygroundYears,
 rothMcReturnSeries,
@@ -24273,6 +24274,127 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-engines-workyears-new-loss-carryforward-r2s1",
+    kind: "tax",
+    note: "ROUND-2 SHOULD-1 (internal review round 2, SHOULD — settled STAND): THE WORK-YEARS ENGINE NEVER GOT THE R1 / SHOULD-1 FIX. priceOneWorkYear ran the shared loss ledger only when an entering carryforward was positive, and the single-pool sale capped the gain rate at $0, so a work year whose own deficit sale realized a net capital loss — with no carry-in — priced no §1211(b) allowance and banked no carry-out, and the roll handed the retirement march a $0 entering carry-in. THE FIX (server/src/workYears.ts): the year-end ledger now runs when the year's own total gains are a net loss even with no entering carryforward (the march's SHOULD-1 condition, at the year-end computation where the gross is known, not on the gate); the trial transform returns the year's own allowance on a loss even with no carry-in (the march's FOLLOW-UP #3 shape), so the loss prices into AGI and tax during the settlement iterations; and the single-pool sale cap is removed, so a deficit sale realizes its loss at the true ratio and retires basis pro-rata at that ratio (the tiers path already realized losses — it only dropped the allowance and carry-out). THE WORKED EXAMPLE is the settlement's own, hand-built on the v100 gains-leg template (MFJ, b.1971/b.1982, one work year 2026 at age 55, salary $100,000, employer 401(k) $5,000, spending $100,000, expectedReturnPct 0, inflationPct 0, Taxable $200,000 at 100% basis, interest yield 4%, dividend yield 4% all non-qualified, no carry-in, no SS/RMDs/other income). HAND-DERIVED: the contribution stack shelters $84,750 (deferral $24,500 + pre-tax catch-up $8,000 + mega $42,500 + own HSA $9,750), taxable wages are $57,750, FICA is $6,904.13 (wages $90,250); yield total $16,000 ($8,000 interest + $8,000 dividends) steps the basis to $216,000, ratio 1.08, ordinary income $73,750. The deficit sale draws $95,784.13 at the fixed point (take-home with tax $4,130), realizing $95,784.13 × (1 − 1.08) = −$7,662.73; the allowance is the $3,000 cap, AGI/MAGI $70,750, taxable income $38,550, tax 10% × $24,800 + 12% × $13,750 = $4,130.00; utilization base $41,550 > $3,000 so the full allowance is used and the carry-out is $7,662.73 − $3,000 = $4,662.73 long-term, handed to the march by the roll. At-quit Taxable $200,000 − $95,784.13 = $104,215.87; at-quit basis $216,000 − $95,784.13 × 1.08 = $112,553.14, ratio 1.08. PRE-FIX (single-pool): the capped sale realized $0, tax $4,490.00, AGI/MAGI $73,750, carry-out $0, drawn $96,144.13, at-quit Taxable $103,855.87, basis $119,855.87 (ratio 1.154) — every pin below fails on the pre-fix engine. PRE-FIX (tiers): the uncapped tiers sale DID realize the loss (−$7,691.53 at the old drawn amount) but the allowance and carry-out still read $0. TIERS LEG: one tier, 100% share at 100% basis — post-fix it prices identically to the single pool (same fixed point, same carry-out), proving the cap removal and the ledger fix agree across both paths. CONTROL: the same shape with 0% yields never goes underwater — the sale realizes $0, tax $2,570.00, at-quit Taxable $105,775.87 — bit-identical before and after.",
+    expected: {
+      sFederal: 4130,
+      sMagi: 70750,
+      sTaxableWages: 57750,
+      sInterest: 8000,
+      sDividends: 8000,
+      sLtcg: -7662.73,
+      sNetResult: -7662.73,
+      sAllowance: 3000,
+      sAllowanceUsed: 3000,
+      sCarryOutLt: 4662.73,
+      sCarryOutSt: 0,
+      sSurplus: -95784.13,
+      sShortfall: 0,
+      sTaxableAtQuit: 104215.87,
+      sBasisAtQuit: 112553.14,
+      sRolledLt: 4662.73,
+      sRolledSt: 0,
+      tFederal: 4130,
+      tMagi: 70750,
+      tLtcg: -7662.73,
+      tNetResult: -7662.73,
+      tAllowance: 3000,
+      tAllowanceUsed: 3000,
+      tCarryOutLt: 4662.73,
+      tCarryOutSt: 0,
+      tSurplus: -95784.13,
+      tTaxableAtQuit: 104215.87,
+      tBasisAtQuit: 112553.14,
+      tRolledLt: 4662.73,
+      cFederal: 2570,
+      cMagi: 57750,
+      cLtcg: 0,
+      cAllowance: 0,
+      cCarryOutLt: 0,
+      cSurplus: -94224.13,
+      cTaxableAtQuit: 105775.87,
+      cBasisAtQuit: 105775.87,
+      cRolledLt: 0,
+    },
+    actual: () => {
+      const shape = {
+        startYear: 2026,
+        birthYearPrimary: 1971,
+        birthYearSpouse: 1982,
+        filingStatus: "mfj" as const,
+        annualSpending: 100000,
+        retirementAge: 55,
+        windowStartAge: 55,
+        expectedReturnPct: 0,
+        inflationPct: 0,
+        pretaxStart: 0,
+        rothStart: 0,
+        taxableStart: 200000,
+        taxableBasisPct: 100,
+        taxableInterestYieldPct: 4,
+        taxableDividendYieldPct: 4,
+        taxableDividendQualifiedPct: 0,
+        hsaStart: 0,
+      };
+      const job: WorkYearJob = { salary: 100000, employer401k: 5000, employerHsa: 0 };
+      const single = rollWorkYears(basePlan(shape), job, 56);
+      const tiers = rollWorkYears(
+        basePlan({ ...shape, taxableTiers: [{ sharePct: 100, basisPct: 100 }] }),
+        job,
+        56,
+      );
+      const control = rollWorkYears(
+        basePlan({ ...shape, taxableInterestYieldPct: 0, taxableDividendYieldPct: 0 }),
+        job,
+        56,
+      );
+      const s = single.lines[0];
+      const t = tiers.lines[0];
+      const c = control.lines[0];
+      return {
+        sFederal: s?.federalTax ?? null,
+        sMagi: s?.magi ?? null,
+        sTaxableWages: s?.taxableWages ?? null,
+        sInterest: s?.interestIncome ?? null,
+        sDividends: s?.dividendIncome ?? null,
+        sLtcg: s?.ltcg ?? null,
+        sNetResult: s?.netCapitalResult ?? null,
+        sAllowance: s?.capitalLossAllowance ?? null,
+        sAllowanceUsed: s?.capitalLossAllowanceUsed ?? null,
+        sCarryOutLt: s?.capitalLossCarryOutLt ?? null,
+        sCarryOutSt: s?.capitalLossCarryOutSt ?? null,
+        sSurplus: s?.surplus ?? null,
+        sShortfall: s?.shortfall ?? null,
+        sTaxableAtQuit: single.balances.taxable,
+        sBasisAtQuit: single.balances.taxableBasis,
+        sRolledLt: single.rolledInputs.capitalLossCarryInLt ?? null,
+        sRolledSt: single.rolledInputs.capitalLossCarryInSt ?? null,
+        tFederal: t?.federalTax ?? null,
+        tMagi: t?.magi ?? null,
+        tLtcg: t?.ltcg ?? null,
+        tNetResult: t?.netCapitalResult ?? null,
+        tAllowance: t?.capitalLossAllowance ?? null,
+        tAllowanceUsed: t?.capitalLossAllowanceUsed ?? null,
+        tCarryOutLt: t?.capitalLossCarryOutLt ?? null,
+        tCarryOutSt: t?.capitalLossCarryOutSt ?? null,
+        tSurplus: t?.surplus ?? null,
+        tTaxableAtQuit: tiers.balances.taxable,
+        tBasisAtQuit: tiers.balances.taxableBasis,
+        tRolledLt: tiers.rolledInputs.capitalLossCarryInLt ?? null,
+        cFederal: c?.federalTax ?? null,
+        cMagi: c?.magi ?? null,
+        cLtcg: c?.ltcg ?? null,
+        cAllowance: c?.capitalLossAllowance ?? null,
+        cCarryOutLt: c?.capitalLossCarryOutLt ?? null,
+        cSurplus: c?.surplus ?? null,
+        cTaxableAtQuit: control.balances.taxable,
+        cBasisAtQuit: control.balances.taxableBasis,
+        cRolledLt: control.rolledInputs.capitalLossCarryInLt ?? null,
+      };
+    },
+  },
+  {
     id: "v101-wa-allocated-carryforward-acceptance",
     kind: "tax",
     note: "BUILD v101 (round-14 fix F4, settled pricing-parity audit) — THE SETTLEMENT'S ACCEPTANCE EXAMPLE, HAND-DERIVED (RCW 82.87.040(3) and the RCW 82.87.020(1) definitional chain; the 2026 Washington row: $278,000 standard deduction, 7% up to $1,000,000 of taxable gains and 9.9% above it): a WA plan (2026, MFJ) realizes $1,300,000 of long-term gains in one year — the whole $2,600,000 taxable account at 50% basis drawn for spending, so the gross gains are exactly $1,300,000 whatever the year's tax settlement draws from the $2,000,000 pre-tax balance — against a $100,000 entering long-term carryforward stated FULLY Washington-attributable (capitalLossCarryInLtWa = the whole $100,000). Federally the gains absorb the whole carryforward (absorbed $100,000, no allowance, nothing carries out) and price at $1,200,000. BEFORE this fix the engine overrode the Washington base with the gross gains: $1,300,000 − $278,000 = $1,022,000 of taxable Washington gains → 7% × $1,000,000 + 9.9% × $22,000 = $72,178.00 of excise — the corrected error, an overstatement of $7,638.00. AFTER the fix the base is the gross gains minus the Washington-attributable absorbed part: $1,300,000 − $100,000 = $1,200,000, taxable Washington gains $1,200,000 − $278,000 = $922,000, excise 7% × $922,000 = $64,540.00. A 5% flat rate is also entered and is ignored, as in every Washington case (the excise replaces it).",
@@ -31744,7 +31866,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-december-harvest-starting-pool-s8",
     kind: "tax",
-    note: "S-8 (engines review round 2, SHOULD — settled STAND): the December console's harvest pool fact means the STARTING pool (the pool at the start of the year, before the year's sales — decemberCaseInputs nets the year's sales and 100%-basis taxable cash out of it to size the harvest from the remaining pool, round-17 defect 1), but the two paths that supply it supplied a CURRENT pool: the field's own wording invited the pool as it stands, and load resolution filled a null fact from the Tax Plan record's pool as it stands when read (its entered balance, or the latest snapshot's Taxable + Cash less the exclusion) — a pool the year's sales have already shrunk. The year's sales were therefore netted out TWICE and the harvest under-priced. THE WORKED EXAMPLE (the settlement's own; the round-17 remaining-pool shape): 2026, MFJ, ages 60 / 58, household 2, benchmark $20,000, APTC taken $10,000, buffer $5,000 — cliff $84,600, target MAGI $79,600. Entered income: other ordinary $65,000, and the year's own sale — a $5,860 gain on $17,580 of basis (proceeds $23,440). The starting pool is $40,000 at 75% basis ($30,000 of basis, $10,000 unrealized); after the sale the pool stands at $16,560 with $12,420 of basis — a remaining unrealized gain of exactly $4,140. HAND-DERIVED CORRECTED PRICING (the starting pool entered): the 0% room is $98,900 − $32,800 of ordinary taxable income ($65,000 − the $32,200 standard deduction) = $66,100, so the whole remaining $4,140 harvests inside the band; MAGI at a $0 draw is $65,000 + $5,860 + $4,140 = $75,000, and the headline draw is $79,600 − $75,000 = $4,600, landing MAGI at the $79,600 target with the final credit $20,000 − 9.96% × $79,600 = $12,071.84. THE DEFECT, priced as the control (the current pool $16,560 entered as the field stood): the remaining pool is max(0, $16,560 − $23,440) = $0, so the harvest prices $0, MAGI at a $0 draw is $70,860 — understated by exactly the $4,140 of unharvested gain — and the solved draw rises to $8,740, overstated by the same $4,140 (absorbed by the $5,000 buffer here; a larger gain or a smaller buffer breaches the cliff). At the headline the two legs' MAGI and credit agree ($79,600 / $12,071.84) — the draw absorbs the whole error, which is why the settlement's credit claim holds at a fixed draw, not at the headline. THE FIX: load resolution (resolveDecemberStateAtLoad) now converts the record's current-pool fact to the starting pool before supplying it — the current pool plus the year's year-to-date sale (proceeds and basis derived by decemberSaleAmounts, the one derivation decemberCaseInputs shares) plus the year's 100%-basis taxable cash, with the basis % converted on the same dollars — so the resolved facts are $40,000 / 75% and the resolved state prices EXACTLY as the entered starting pool prices (harvest $4,140 at a $0 draw and at the headline, draw $4,600). The console field now asks for the start-of-year pool in its label and hint (the client half, pinned by the source-invariant comment above).",
+    note: "S-8 (engines review round 2, SHOULD — settled STAND): the December console's harvest pool fact means the STARTING pool (the pool at the start of the year, before the year's sales — the shared pricer nets the year's sales out of it to size the harvest from the remaining pool; SHOULD-3 moved the netting from decemberCaseInputs into pricePlaygroundYear, round-17 defect 1), but the two paths that supply it supplied a CURRENT pool: the field's own wording invited the pool as it stands, and load resolution filled a null fact from the Tax Plan record's pool as it stands when read (its entered balance, or the latest snapshot's Taxable + Cash less the exclusion) — a pool the year's sales have already shrunk. The year's sales were therefore netted out TWICE and the harvest under-priced. THE WORKED EXAMPLE (the settlement's own; the round-17 remaining-pool shape): 2026, MFJ, ages 60 / 58, household 2, benchmark $20,000, APTC taken $10,000, buffer $5,000 — cliff $84,600, target MAGI $79,600. Entered income: other ordinary $65,000, and the year's own sale — a $5,860 gain on $17,580 of basis (proceeds $23,440). The starting pool is $40,000 at 75% basis ($30,000 of basis, $10,000 unrealized); after the sale the pool stands at $16,560 with $12,420 of basis — a remaining unrealized gain of exactly $4,140. HAND-DERIVED CORRECTED PRICING (the starting pool entered): the 0% room is $98,900 − $32,800 of ordinary taxable income ($65,000 − the $32,200 standard deduction) = $66,100, so the whole remaining $4,140 harvests inside the band; MAGI at a $0 draw is $65,000 + $5,860 + $4,140 = $75,000, and the headline draw is $79,600 − $75,000 = $4,600, landing MAGI at the $79,600 target with the final credit $20,000 − 9.96% × $79,600 = $12,071.84. THE DEFECT, priced as the control (the current pool $16,560 entered as the field stood): the remaining pool is max(0, $16,560 − $23,440) = $0, so the harvest prices $0, MAGI at a $0 draw is $70,860 — understated by exactly the $4,140 of unharvested gain — and the solved draw rises to $8,740, overstated by the same $4,140 (absorbed by the $5,000 buffer here; a larger gain or a smaller buffer breaches the cliff). At the headline the two legs' MAGI and credit agree ($79,600 / $12,071.84) — the draw absorbs the whole error, which is why the settlement's credit claim holds at a fixed draw, not at the headline. THE FIX: load resolution (resolveDecemberStateAtLoad) now converts the record's current-pool fact to the starting pool before supplying it — the current pool plus the year's year-to-date sale (proceeds and basis derived by decemberSaleAmounts, the one derivation decemberCaseInputs passes to the pricer) plus the year's 100%-basis taxable cash, with the basis % converted on the same dollars — so the resolved facts are $40,000 / 75% and the resolved state prices EXACTLY as the entered starting pool prices (harvest $4,140 at a $0 draw and at the headline, draw $4,600). The console field now asks for the start-of-year pool in its label and hint (the client half, pinned by the source-invariant comment above).",
     expected: {
       resolvedPool: 40000,
       resolvedBasisPct: 75,
@@ -34994,7 +35116,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-playground-gains-priced-subtext-ps12",
     kind: "tax",
-    note: "P-S12 (parity audit, SHOULD — settled STAND): the Playground's 'Long-term gains priced' additive row showed the priced figure (ltcgPriced = max(0, ltcgNet) + qualifiedDividends) but its sub-text decomposed the TYPED sale gain (stockGain = stockSold − stockBasis, gross and pre-ledger) plus the qualified dividends, so the sentence did not add to the value beside it whenever an entering loss carryforward netted against the sale, a priced harvest added to it, or a losing sale floored the priced part at zero — the same defect the round-2 S-9 comment in the same file already forbids for the drawn stack's gain segment. THE FIX (client only; no engine, pricing, or result field changed — the result already carried every figure): the sub-text composes from the priced pieces, the net gain part max(0, ltcgNet) plus the qualified dividends, naming a priced harvest inside the net figure when one priced. THE WORKED EXAMPLES are the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): every figure is the filed ordinary dividends (D), the filed qualified dividends (Q), or arithmetic on them. The year throughout: the start year, joint filing at the sample ages, the filed dividends entered whole as both the ordinary total and its qualified part (so the non-qualified part is zero and no other income rides), no balances, no Social Security, no state rate. The sale realizes a gain of half of D (sold D against a basis of half of D). LEG A — CARRY-IN ABSORBS: a long-term carry-in of a fifth of D enters; the ledger nets it against the sale, so the priced net is the gain less the carry-in, the row value is that net plus Q, the fixed sub-text sums to the row exactly, and the pre-fix sub-text (the typed gain plus Q) overshoots the row by exactly the absorbed carry-in. LEG B — HARVEST ADDS: the same sale with harvest facts whose pool — sized in-case so its unrealized gain at the sample basis percent is exactly a third of Q — caps the harvest at that third; the harvest sizes whole (the year's gains sit far under the zero-percent band's top, so every harvested dollar fits), the priced net is the typed gain plus the harvest, the row is that net plus Q, the fixed sub-text sums to it, and the pre-fix sub-text undershoots by exactly the harvest. LEG C — LOSING SALE: the sale is half of D against a basis of Q, realizing a loss of a third of Q; qualified dividends are not capital gains and never net against it (round-7 R7-1), so the priced net is the whole loss, the priced gain part floors at zero, the row is Q alone, the fixed sub-text sums to it, and the pre-fix sub-text undershoots by exactly the loss. CONTROL LEG — NOTHING NETS: leg A's sale with no carry-in and no harvest prices its typed gain whole, so the fixed and pre-fix sub-texts are the same sum and both foot to the row — the decomposition moves nothing in a year with nothing to net. The sub-text sums in `actual` replicate the client's composition term for term over the pricer's result (the source-invariant comment above this fixture documents the render half).",
+    note: "P-S12 (parity audit, SHOULD — settled STAND): the Playground's 'Long-term gains priced' additive row showed the priced figure (ltcgPriced = max(0, ltcgNet) + qualifiedDividends) but its sub-text decomposed the TYPED sale gain (stockGain = stockSold − stockBasis, gross and pre-ledger) plus the qualified dividends, so the sentence did not add to the value beside it whenever an entering loss carryforward netted against the sale, a priced harvest added to it, or a losing sale floored the priced part at zero — the same defect the round-2 S-9 comment in the same file already forbids for the drawn stack's gain segment. THE FIX (client only; no engine, pricing, or result field changed — the result already carried every figure): the sub-text composes from the priced pieces, the net gain part max(0, ltcgNet) plus the qualified dividends, naming a priced harvest inside the net figure when one priced. THE WORKED EXAMPLES are the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): every figure is the filed ordinary dividends (D), the filed qualified dividends (Q), or arithmetic on them. The year throughout: the start year, joint filing at the sample ages, the filed dividends entered whole as both the ordinary total and its qualified part (so the non-qualified part is zero and no other income rides), no balances, no Social Security, no state rate. The sale realizes a gain of half of D (sold D against a basis of half of D). LEG A — CARRY-IN ABSORBS: a long-term carry-in of a fifth of D enters; the ledger nets it against the sale, so the priced net is the gain less the carry-in, the row value is that net plus Q, the fixed sub-text sums to the row exactly, and the pre-fix sub-text (the typed gain plus Q) overshoots the row by exactly the absorbed carry-in. LEG B — HARVEST ADDS (SHOULD-3 re-pin: the sale consumes the pool, so no harvest prices): the same sale with harvest facts whose pool — sized in-case so its unrealized gain at the sample basis percent is exactly a third of Q — would have capped the harvest at that third before SHOULD-3; under netting the sale consumes the whole pool, so the harvest is $0, the priced net is the typed gain alone, the row is that net plus Q, the fixed sub-text still sums to it, and the pre-fix sub-text now agrees with the row too (its shortfall is $0) — the leg still pins the footing, on a harvest of $0. LEG C — LOSING SALE: the sale is half of D against a basis of Q, realizing a loss of a third of Q; qualified dividends are not capital gains and never net against it (round-7 R7-1), so the priced net is the whole loss, the priced gain part floors at zero, the row is Q alone, the fixed sub-text sums to it, and the pre-fix sub-text undershoots by exactly the loss. CONTROL LEG — NOTHING NETS: leg A's sale with no carry-in and no harvest prices its typed gain whole, so the fixed and pre-fix sub-texts are the same sum and both foot to the row — the decomposition moves nothing in a year with nothing to net. The sub-text sums in `actual` replicate the client's composition term for term over the pricer's result (the source-invariant comment above this fixture documents the render half).",
     expected: {
       aStockGain:
         (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
@@ -35017,22 +35139,17 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 +
         SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
       aPreFixOffBy: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 5,
-      bHarvested: (SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100) / 3,
-      bLtcgNet:
-        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 +
-        (SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100) / 3,
-      bGainPart:
-        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 +
-        (SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100) / 3,
+      bHarvested: 0,
+      bLtcgNet: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      bGainPart: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
       bRow:
         (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 +
-        (SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100) / 3 +
         SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
       bSubTextFoots: 1,
       bPreFixSubText:
         (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 +
         SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
-      bPreFixOffBy: (SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100) / 3,
+      bPreFixOffBy: 0,
       cStockGain:
         (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 -
         SAMPLE_TAX_RETURN_QUALIFIED_DIVIDENDS_CENTS / 100,
@@ -35470,7 +35587,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-playground-projection-harvest-step-up-r2",
     kind: "tax",
-    note: "R2 (parity re-review, SHOULD — settled STAND): repeated gain harvesting in the Playground projection ignored the basis step-up from the prior year. The walk re-spread the template's harvest facts (harvestPoolAmount, harvestPoolBasisPct) into every projected year and updated only the taxable balance after sales, so each year re-sized its harvest from the ORIGINAL unrealized gain — a harvest sells and immediately repurchases, so the balance rightly does not fall, but the repurchased shares carry a basis stepped up by the gain realized, and nothing carried that step-up forward (the plan march has always stepped its own basis up after a harvest). THE FIX (rothOptimizer.ts, projectPlaygroundYears): the walk carries the harvest pool's basis dollars forward beside the balances, separately from the taxable balance — each year's harvest basis percent is re-derived from the carried basis, and each year's priced harvestedGain steps the carried basis up for the next year; the pool amount itself still repeats as the template states it, and a template with either harvest fact absent walks exactly as before. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): a two-year MFJ projection at the sample ages 58 / 56, ACA household of the sample size, the sample family benchmark, no Social Security, no conversions, no regular stock sales, 0% return; annual other ordinary income of two and a half times the filed ordinary dividends, and a harvest pool of five times the filed ordinary dividends at the sample basis percent, so the pool's unrealized gain is twice the filed dividends. HAND-DERIVED: the 0% long-term-gains room — the year's law-row top for MFJ less the ordinary taxable income (the income less the standard deduction) — far exceeds the pool's unrealized gain in year 1, so the whole gain harvests genuinely: year 1 harvested gain is the whole unrealized gain, its MAGI the income plus the gain, its walked credit the benchmark less the first year's table percentage at that MAGI (the 250–300% FPL band, interpolated), and the pool's basis steps up to the whole pool — the taxable balance ends the year UNCHANGED at the pool, because a harvest's proceeds are reinvested, not spent. Year 2 therefore enters with a basis percent of 100 (pinned on year 2's own inputs): the remaining unrealized gain is $0, so its harvested gain is $0, its MAGI is the income alone, and its credit is the benchmark less the second year's table percentage at that MAGI (the 150–200% FPL band, interpolated). THE PRE-FIX FORM (year 2's own inputs priced in-case with the template's basis percent re-fed whole): the fictitious gain harvests again — MAGI back at the year-1 figure and the credit lower by the pinned shortfall. PARTIAL LEG (the same pool with other ordinary income of six times the filed dividends, walked three years): the 0% room — read from the law row in-case — is now SMALLER than the pool's unrealized gain, so year 1 harvests only the room; the basis percent year 2 enters with rises by exactly the harvested share of the pool, year 2 harvests the same room again out of the gain that remains, and year 3 enters with the basis stepped up by both years' harvests and harvests the room a third time — the step-up carries proportionally, not just when a harvest exhausts the gain. NO-FACTS CONTROL: the worked-example template with the harvest pair absent prices no harvest in either year and year 2's basis fact stays absent — a template that never carried the facts walks exactly as before.",
+    note: "R2 (parity re-review, SHOULD — settled STAND): repeated gain harvesting in the Playground projection ignored the basis step-up from the prior year. The walk re-spread the template's harvest facts (harvestPoolAmount, harvestPoolBasisPct) into every projected year and updated only the taxable balance after sales, so each year re-sized its harvest from the ORIGINAL unrealized gain — a harvest sells and immediately repurchases, so the balance rightly does not fall, but the repurchased shares carry a basis stepped up by the gain realized, and nothing carried that step-up forward (the plan march has always stepped its own basis up after a harvest). THE FIX (rothOptimizer.ts, projectPlaygroundYears): the walk carries the harvest pool's basis dollars forward beside the balances, separately from the taxable balance — each year's harvest basis percent is re-derived from the carried basis, and each year's priced harvestedGain steps the carried basis up for the next year; the pool amount itself now carries forward too, reduced by each year's sales (SHOULD-3) — with no sales, as in this example, it still repeats as the template states it — and a template with either harvest fact absent walks exactly as before. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): a two-year MFJ projection at the sample ages 58 / 56, ACA household of the sample size, the sample family benchmark, no Social Security, no conversions, no regular stock sales, 0% return; annual other ordinary income of two and a half times the filed ordinary dividends, and a harvest pool of five times the filed ordinary dividends at the sample basis percent, so the pool's unrealized gain is twice the filed dividends. HAND-DERIVED: the 0% long-term-gains room — the year's law-row top for MFJ less the ordinary taxable income (the income less the standard deduction) — far exceeds the pool's unrealized gain in year 1, so the whole gain harvests genuinely: year 1 harvested gain is the whole unrealized gain, its MAGI the income plus the gain, its walked credit the benchmark less the first year's table percentage at that MAGI (the 250–300% FPL band, interpolated), and the pool's basis steps up to the whole pool — the taxable balance ends the year UNCHANGED at the pool, because a harvest's proceeds are reinvested, not spent. Year 2 therefore enters with a basis percent of 100 (pinned on year 2's own inputs): the remaining unrealized gain is $0, so its harvested gain is $0, its MAGI is the income alone, and its credit is the benchmark less the second year's table percentage at that MAGI (the 150–200% FPL band, interpolated). THE PRE-FIX FORM (year 2's own inputs priced in-case with the template's basis percent re-fed whole): the fictitious gain harvests again — MAGI back at the year-1 figure and the credit lower by the pinned shortfall. PARTIAL LEG (the same pool with other ordinary income of six times the filed dividends, walked three years): the 0% room — read from the law row in-case — is now SMALLER than the pool's unrealized gain, so year 1 harvests only the room; the basis percent year 2 enters with rises by exactly the harvested share of the pool, year 2 harvests the same room again out of the gain that remains, and year 3 enters with the basis stepped up by both years' harvests and harvests the room a third time — the step-up carries proportionally, not just when a harvest exhausts the gain. NO-FACTS CONTROL: the worked-example template with the harvest pair absent prices no harvest in either year and year 2's basis fact stays absent — a template that never carried the facts walks exactly as before.",
     expected: {
       y1BasisPct: SAMPLE_TAXABLE_BASIS_PCT,
       y1Harvested:
@@ -35612,6 +35729,123 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         bareY1Harvested: b1.result.harvestedGain,
         bareY2Harvested: b2.result.harvestedGain,
         bareY2BasisAbsent: b2.inputs.harvestPoolBasisPct == null ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-harvest-nets-sale-should3",
+    kind: "tax",
+    note: "SHOULD-3 (internal review round 2, SHOULD — settled STAND): the Playground pricer sized the gain harvest from the STARTING pool with no subtraction of the year's own typed sale, and the projection walk repeated the defect — the template's harvest pool amount rode the spread untouched into every year, the carried basis dollars stepped up by harvested gains only and were never reduced by the year's sales, and the repeated sale's basis came from the template alone — so the harvest re-priced gains the sale had already realized, year after year. The documented rule says otherwise (the v113 build note: the harvest is 'capped by the remaining pool's unrealized gain (the pool less this year's taxable sales and 100%-basis taxable cash, less its basis dollars)'), December's S-8 states the pool fact as 'the STARTING pool — the pool at the start of the year, before the year's sales', and the plan march agrees (it caps its harvest by the post-settlement balance less its basis dollars). THE FIX (rothOptimizer.ts): the pricer nets the year's typed sale — proceeds and retired basis — out of the pool before sizing the harvest, and floors the basis percent at 0 only (the walk carries an underwater pool's ratio above 100, and capping it would understate the retired basis on a partial sale); the walk carries the harvest pool's BALANCE forward beside its basis dollars (reduced by each year's sale, grown by the return, like the tracked taxable balance), passes each year's CURRENT pool and ratio to the pricer, derives the repeated sale's basis from the tracked ratio, and retires that basis from the carried dollars after the year. DECEMBER (the double-netting hazard): December pre-netted the starting pool into the remaining pool in decemberCaseInputs, and the pricer would now net the sale again, so December passes the STARTING pool straight through and the pricer does the one netting — the S-8 fixture's entered, resolved, and control legs pin December's harvest unchanged. THE WORKED EXAMPLES are the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): the start year, joint filing at the sample ages, household of the sample size, the sample family benchmark, no Social Security, no conversions, no yields, no carry-in; other ordinary income of 4.4 times the filed ordinary dividends, a typed sale of 2.5 times the filed dividends against a basis of 1.5 times them (a gain of the filed dividends), and a harvest pool of five times the filed dividends at the sample basis percent. LEG (a) — SINGLE YEAR: the remaining unrealized gain after the sale is exactly the filed dividends, so the harvest is the filed dividends whole, MAGI is the income plus the sale gain plus the harvest, and the credit is the benchmark less the start year's table percentage at that MAGI (the top band's final percentage). Pre-fix the harvest was the whole 0% room instead — a larger figure — MAGI higher by the difference, and the credit $0 (over the cliff). The federal tax is the same both ways. LEGS (b)/(c) — TWO-YEAR WALK, 0% return: year 1 prices as leg (a) and ends with the taxable balance at two and a half times the filed dividends; year 2 therefore enters with a pool of two and a half times the filed dividends at a ratio of exactly 100 — the sale's basis is the whole sale, its gain $0, the remaining unrealized gain $0, so no harvest prices, MAGI is the income alone, and the taxable balance ends at $0. CORRECTION TO THE SETTLEMENT'S (b)/(c) PREMISE, recorded here so the fixture is not misread against it: the settlement's year-2 figures (a $53,100 basis, a $3,100 sale loss) assumed year 1 harvested the pre-fix room figure; under the fix year 1 harvests only the remaining gain, so year 2 enters at a ratio of 100 with a $50,000 basis, not underwater — the figures pinned here are the true post-fix ones, and the pre-fix year-2 figures (a $16,900 phantom harvest, MAGI overstated by $36,900, the sale at the template's $20,000 gain) are the defect, stated in this note only. P-S5 SPLIT SHIFT: the P-S5 harvest leg's second walked year now prices its sale at the pool's ratio instead of the template's basis, so $220.60 of its priced gain moves from the typed sale into the harvest — its total priced gain, AGI, and MAGI are bit-identical, only the split moves.",
+    expected: {
+      aHarvested: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+      aMagi:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 6.4,
+      aCredit:
+        SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100 -
+        0.0996 *
+          ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 6.4),
+      aFederalTax: 6200,
+      y1Harvested: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+      y1Magi:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 6.4,
+      y1Credit:
+        SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100 -
+        0.0996 *
+          ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 6.4),
+      y1SaleBasis:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 1.5,
+      y1EndTaxable:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 2.5,
+      y1InputsPool:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 5,
+      y1InputsPct: SAMPLE_TAXABLE_BASIS_PCT,
+      y1InputsStockBasis:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 1.5,
+      y2Harvested: 0,
+      y2Magi:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 4.4,
+      y2StockGain: 0,
+      y2SaleBasis:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 2.5,
+      y2EndTaxable: 0,
+      y2InputsPool:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 2.5,
+      y2InputsPct: 100,
+      y2InputsStockBasis:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 2.5,
+      y2Credit:
+        SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100 -
+        0.0918 *
+          ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 4.4),
+    },
+    actual: () => {
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      const template: PlaygroundYearInputs = {
+        taxYear: SAMPLE_START_YEAR,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: ORD * 4.4,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: ORD * 2.5,
+        stockBasis: ORD * 1.5,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        stateRatePct: 0,
+        harvestPoolAmount: ORD * 5,
+        harvestPoolBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+      };
+      const a = pricePlaygroundYear(template);
+      const opts = {
+        ssPrimaryClaimAge: SAMPLE_SS_PRIMARY_START_AGE,
+        ssSpouseClaimAge: SAMPLE_SS_SPOUSE_START_AGE,
+        ssPrimaryAnnual: SAMPLE_SS_PRIMARY_CENTS / 100,
+        ssSpouseAnnual: SAMPLE_SS_SPOUSE_CENTS / 100,
+        acaHouseholdSchedule: null,
+        startTaxable: ORD * 5,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const walk = projectPlaygroundYears(template, { ...opts, toAge: 59 });
+      const y1 = walk.years.find((y) => y.agePrimary === 58)!;
+      const y2 = walk.years.find((y) => y.agePrimary === 59)!;
+      return {
+        aHarvested: a.harvestedGain,
+        aMagi: a.magi,
+        aCredit: a.aca.credit,
+        aFederalTax: a.federalTax,
+        y1Harvested: y1.result.harvestedGain,
+        y1Magi: y1.result.magi,
+        y1Credit: y1.result.aca.credit,
+        y1SaleBasis: y1.stockBasisEffective,
+        y1EndTaxable: y1.endBalances.taxable,
+        y1InputsPool: y1.inputs.harvestPoolAmount ?? null,
+        y1InputsPct: y1.inputs.harvestPoolBasisPct ?? null,
+        y1InputsStockBasis: y1.inputs.stockBasis,
+        y2Harvested: y2.result.harvestedGain,
+        y2Magi: y2.result.magi,
+        y2StockGain: y2.result.stockGain,
+        y2SaleBasis: y2.stockBasisEffective,
+        y2EndTaxable: y2.endBalances.taxable,
+        y2InputsPool: y2.inputs.harvestPoolAmount ?? null,
+        y2InputsPct: y2.inputs.harvestPoolBasisPct ?? null,
+        y2InputsStockBasis: y2.inputs.stockBasis,
+        y2Credit: y2.result.aca.credit,
       };
     },
   },
@@ -35861,6 +36095,91 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         cOutLt3: c3.detail.lossCarryOutLt,
         cInLt2: c2.detail.lossCarryInLt,
         cInLt3: c3.detail.lossCarryInLt,
+      };
+    },
+  },
+  {
+    id: "tax-engines-execution-fill-target-loss-allowance-should2",
+    kind: "tax",
+    note: "SHOULD-2 (internal review round 2, SHOULD — settled STAND): the execution re-solve dropped the priced allowance on a no-carry-in loss year. executionLedgerFields (rothOptimizer.ts) returns the loss-ledger fields for a reconstructed one-year base; its early return, taken when no carryforward entered, returned only the gross gains with no allowance key, and priceYear defaults a missing allowance to $0 — so the re-solve priced the year's AGI / MAGI / taxable income the allowance too high, and the fill target solved against those measures came out the allowance too small under any binding ceiling. Both call sites share it: executionFillTarget (the fill target) and the overshoot attribution's at-zero pricing (rothOptimizer.ts:3016) — the same measure error rides the at-zero pricing, so an overshoot's cause can be misattributed. THE FIX: the early return now carries the year's own priced allowance (detail.capitalLossAllowance — the ledger's when it ran, else min(cap, −gross) on a loss year and $0 otherwise), so the re-solve's base prices the same AGI / MAGI / taxable income the march prices for that year; the stale comment above the helper now states the corrected rule. THE WORKED EXAMPLE reuses the SHOULD-1 fixture's year-2 march year as y (same plan construction, same varied-return series, no carry-in): gross a loss of half the sample annual spending, priced allowance the statutory cap, march MAGI negative the allowance. The fill target is solved under a MAGI cap of $0 — the binding ceiling that shows the shortfall dollar for dollar: POST-FIX the target is the allowance and the re-solve base prices MAGI at negative the allowance, exactly the march's figure; PRE-FIX (verified by the baseline probe on the tree as received, which priced the pre-fix base at MAGI $0 and the fill target at $0) the target was $0 and the base priced MAGI $0 — a full allowance short on both. CONTROLS, bit-identical before and after: the carry-in leg (the same year-2 shape re-solved under a plan carrying a $10,000 long-term carry-in, so the ledger branch — untouched by this build — nets the carry-in against the year's loss: net result the loss less the carry-in, allowance the statutory cap, target the allowance under the same MAGI cap) and the year-1 gain-year leg (allowance $0, priced figures unchanged; the base now explicitly carries allowance $0). THE EXPORT SEAM: executionFillTarget is newly exported so the fixture can drive the re-solve directly on the march year — the fixture calls the exported solver, not a private helper. THE OVERSHOOT ATTRIBUTION, honestly scoped: it spreads the same executionLedgerFields helper (same one-line fix, same base shape), so the fill-target pin covers its mechanism; a direct end-to-end attribution pin through priceExecutionYear is impossible because the one-year sim can never produce a no-carry-in loss year — the entering basis is capped at the balance (taxEngine.ts, scalar and tiers alike), so its gross can never go negative — verified by probe (the exec-year sim from the year-1-end entering state prices a gain year with allowance $0).",
+    expected: {
+      y2BaseLtcg:
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * (1 - 1.5),
+      y2BaseAllow: 3000,
+      y2AtZeroMagi: -3000,
+      y2AtZeroTaxable: 0,
+      y2Target: 3000,
+      y2TargetLabel: null,
+      y2MarchMagi: -3000,
+      carryBaseLtcg:
+        (SAMPLE_ANNUAL_SPENDING_CENTS / 100) * (1 - 1.5) - 10000,
+      carryBaseAllow: 3000,
+      carryAtZeroMagi: -3000,
+      carryTarget: 3000,
+      y1BaseAllow: 0,
+      y1BaseLtcg:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+        100,
+      y1AtZeroMagi:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+        100,
+      y1AtZeroTaxable:
+        ((SAMPLE_ANNUAL_SPENDING_CENTS / 100) *
+          (100 - SAMPLE_TAXABLE_BASIS_PCT)) /
+          100 -
+        32200,
+      y1Target: 0,
+    },
+    actual: () => {
+      const plan = basePlan({
+        birthYearPrimary: SAMPLE_BIRTH_YEAR_PRIMARY,
+        birthYearSpouse: SAMPLE_BIRTH_YEAR_SPOUSE,
+        endAgePrimary: 60,
+        retirementAge: 58,
+        pretaxStart: 0,
+        taxableStart: SAMPLE_TAXABLE_CENTS / 100,
+        taxableBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+        annualSpending: SAMPLE_ANNUAL_SPENDING_CENTS / 100,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        windowStartAge: 58,
+        windowStopAge: 74,
+        heirRatePct: SAMPLE_HEIR_RATE_PCT,
+      });
+      const march = simulateRothPlan(plan, DO_NOTHING, [-60, 0, 0]);
+      const y1 = march.years.find((y) => y.agePrimary === 58)!;
+      const y2 = march.years.find((y) => y.agePrimary === 59)!;
+      const ceilingsMagi0 = { ...NO_CEILINGS, magiCap: 0 };
+      const fill2 = executionFillTarget(plan, plan, y2, ceilingsMagi0);
+      const planCarry = { ...plan, capitalLossCarryInLt: 10000 };
+      const fillCarry = executionFillTarget(
+        planCarry,
+        planCarry,
+        y2,
+        ceilingsMagi0,
+      );
+      const fill1 = executionFillTarget(plan, plan, y1, ceilingsMagi0);
+      const atZero2 = priceYear({ ...fill2.base, conversion: 0 });
+      const atZeroCarry = priceYear({ ...fillCarry.base, conversion: 0 });
+      const atZero1 = priceYear({ ...fill1.base, conversion: 0 });
+      return {
+        y2BaseLtcg: fill2.base.ltcg,
+        y2BaseAllow: fill2.base.capitalLossAllowance ?? null,
+        y2AtZeroMagi: atZero2.magi,
+        y2AtZeroTaxable: atZero2.taxableIncome,
+        y2Target: fill2.target,
+        y2TargetLabel: fill2.targetLabel,
+        y2MarchMagi: y2.magi,
+        carryBaseLtcg: fillCarry.base.ltcg,
+        carryBaseAllow: fillCarry.base.capitalLossAllowance ?? null,
+        carryAtZeroMagi: atZeroCarry.magi,
+        carryTarget: fillCarry.target,
+        y1BaseAllow: fill1.base.capitalLossAllowance ?? null,
+        y1BaseLtcg: fill1.base.ltcg,
+        y1AtZeroMagi: atZero1.magi,
+        y1AtZeroTaxable: atZero1.taxableIncome,
+        y1Target: fill1.target,
       };
     },
   },

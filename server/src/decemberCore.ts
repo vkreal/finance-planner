@@ -160,12 +160,14 @@ export const decemberState = z.object({
   // blended % carries the sizing). The pool fact is the
   // STARTING pool — the pool as it stood at the start of
   // this year, before the year's own taxable sales:
-  // decemberCaseInputs nets the year's sales and its
-  // 100%-basis taxable cash out of it to size the harvest
-  // from what remains (round-17 defect 1). S-8 (engines
-  // review round 2): the Tax Plan record's pool fact is a
-  // CURRENT pool (the pool as it stands when read — after
-  // the year's sales have already shrunk it), so load
+  // the shared pricer nets the year's sales out of it to
+  // size the harvest from what remains (round-17 defect 1;
+  // SHOULD-3 moved the netting from decemberCaseInputs
+  // into pricePlaygroundYear, so the starting pool passes
+  // straight through). S-8 (engines review round 2): the
+  // Tax Plan record's pool fact is a CURRENT pool (the pool
+  // as it stands when read — after the year's sales have
+  // already shrunk it), so load
   // resolution CONVERTS the record fact to the starting
   // pool, adding the year's year-to-date sale and taxable
   // cash back, before it fills a null console fact (see
@@ -948,7 +950,7 @@ export type DecemberRecordFacts = {
   // year's sales that have happened — while the console's
   // own harvestPoolAmount is a STARTING pool (the pool at
   // the start of the year, before the year's sales, which
-  // decemberCaseInputs then nets the year's sales out of).
+  // the shared pricer then nets the year's sales out of).
   // Load resolution converts the record facts to the
   // starting pool before supplying them (see
   // resolveDecemberStateAtLoad); these fields themselves
@@ -991,13 +993,13 @@ export function snapshotFollowPrimaryCents(
    without one the gain alone rides as proceeds (and a
    loss rides the basis side), so proceeds − basisDollars
    is the net gain in every branch. ONE derivation, shared
-   by decemberCaseInputs (which nets the year's whole
-   capital result out of the harvest's starting pool) and
-   by load resolution (which adds the year's year-to-date
-   sale back into the record's current pool to supply that
-   starting pool) — the two must never derive the sale
-   differently, or the conversion would not invert the
-   netting. */
+   by decemberCaseInputs (which passes the year's whole
+   capital result to the pricer, which nets it out of the
+   harvest's starting pool) and by load resolution (which
+   adds the year's year-to-date sale back into the
+   record's current pool to supply that starting pool) —
+   the two must never derive the sale differently, or the
+   conversion would not invert the netting. */
 export function decemberSaleAmounts(
   gain: number,
   basis: number | null,
@@ -1191,37 +1193,36 @@ export function resolveDecemberStateAtLoad(
   // (decemberStateForSave's per-field harvest flags).
   // S-8 (engines review round 2): the record fact is a
   // CURRENT pool (see DecemberRecordFacts), but the
-  // console fact it fills is a STARTING pool —
-  // decemberCaseInputs nets the year's taxable sales and
-  // 100%-basis taxable cash OUT of the console fact to
-  // size the harvest from the remaining pool, so filling
-  // it with the current pool nets the year's sales out a
-  // SECOND time and understates the harvestable gain (in
-  // the settlement's worked example the double netting
-  // left a $0 remaining pool: harvest $0 instead of
-  // $4,140, MAGI understated by the same $4,140, and the
-  // solved draw overstated by it). The resolution
-  // therefore supplies the STARTING pool: the record's
-  // current pool plus the year's year-to-date sale
-  // (proceeds and basis, derived by decemberSaleAmounts
-  // exactly as decemberCaseInputs derives them) plus the
-  // year's 100%-basis taxable cash — the same outflows
-  // decemberCaseInputs will net back out — and converts
-  // the basis % on the same dollars (the record's basis
-  // dollars, plus the basis the year's sale used, plus
-  // the taxable cash, over the starting pool), so the
-  // remaining pool the harvest sizes from is the record's
-  // own current pool at its own basis, to the cent. The
-  // add-back uses the YEAR-TO-DATE sale only: the
-  // still-to-come distributions and checklist amounts
-  // decemberCaseInputs also nets have not left the pool
-  // yet, so they are not in the record's current pool to
-  // add back — a resolved starting pool behaves exactly
-  // like a user-entered one. When the record answers the
-  // basis but not the pool, its % cannot be converted
-  // (the basis dollars are unknown) and resolves as
-  // entered; a console-entered pool beside a record basis
-  // converts the % against that entered pool.
+  // console fact it fills is a STARTING pool — the shared
+  // pricer nets the year's taxable sales OUT of the
+  // console fact to size the harvest from the remaining
+  // pool, so filling it with the current pool nets the
+  // year's sales out a SECOND time and understates the
+  // harvestable gain (in the settlement's worked example
+  // the double netting left a $0 remaining pool: harvest
+  // $0 instead of $4,140, MAGI understated by the same
+  // $4,140, and the solved draw overstated by it). The
+  // resolution therefore supplies the STARTING pool: the
+  // record's current pool plus the year's year-to-date
+  // sale (proceeds and basis, derived by
+  // decemberSaleAmounts exactly as decemberCaseInputs
+  // derives them) plus the year's 100%-basis taxable cash
+  // — the same outflows the shared pricer will net back
+  // out — and converts the basis % on the same dollars
+  // (the record's basis dollars, plus the basis the
+  // year's sale used, plus the taxable cash, over the
+  // starting pool), so the remaining pool the harvest
+  // sizes from is the record's own current pool at its own
+  // basis, to the cent. The add-back uses the YEAR-TO-DATE
+  // sale only: the still-to-come distributions and
+  // checklist amounts the pricer also nets have not left
+  // the pool yet, so they are not in the record's current
+  // pool to add back — a resolved starting pool behaves
+  // exactly like a user-entered one. When the record
+  // answers the basis but not the pool, its % cannot be
+  // converted (the basis dollars are unknown) and resolves
+  // as entered; a console-entered pool beside a record
+  // basis converts the % against that entered pool.
   {
     const sale = decemberSaleAmounts(out.ytdCapitalGain, out.saleBasis);
     const fundedBack = Math.max(0, out.taxableFunded ?? 0);
@@ -1823,27 +1824,25 @@ export function decemberCaseInputs(
   // conversion inverts, S-8).
   const { proceeds: saleProceeds, basisDollars: saleBasisDollars } =
     decemberSaleAmounts(totalGain, state.saleBasis);
-  // The harvest's remaining pool (round-17 defect 1): the
-  // plan march harvests AFTER the year's draws and
-  // conversions have settled, capped by the REMAINING
-  // balance's unrealized gain — so the December harvest
-  // must size from the pool left after this year's taxable
-  // sales, not the starting pool: passing the starting pool
-  // harvests gains the year's sales already realized. The
-  // sales that sell it down are the priced sale above plus
-  // the 100%-basis taxable cash (build v125) — the
-  // pre-tax draw never touches the taxable pool, and the
-  // tax bill settles at filing, not from taxable during
-  // the year. The remaining unrealized gain is exact
-  // whether or not the sale basis was entered: (pool −
-  // proceeds) − (basis − basis used) = available gain −
-  // the year's net gain, and saleProceeds −
-  // saleBasisDollars is that net gain in every branch
-  // above — so a gain-only sale still leaves exactly the
-  // right cap. A depleted pool (or a pool whose basis
-  // covers it) prices a $0 harvest, and a $0 pool / 100%
-  // basis still prices as a fact, never as unpriced.
-  const harvestRemaining = ((): {
+  // The harvest's starting pool (round-17 defect 1, as
+  // re-homed by SHOULD-3): the console's pool fact is the
+  // STARTING pool — the pool at the start of the year,
+  // before the year's sales — and the SHARED pricer
+  // (pricePlaygroundYear) nets this year's typed sale
+  // (and its retired basis) out of it to size the harvest
+  // from the remaining pool, exactly as the plan march
+  // caps its harvest by the post-settlement balance less
+  // its basis dollars. December therefore passes the
+  // starting facts straight through: pre-netting them here
+  // AND netting in the pricer would net the year's sales
+  // twice and understate the harvest. The 100%-basis
+  // taxable cash needs no netting either way — it cancels
+  // in the available gain (it leaves both the pool and its
+  // basis by the same dollars), and the pricer never sells
+  // taxable holdings for cash, so there is no 100%-basis
+  // cash sale to net there. A $0 pool / 100% basis still
+  // prices as a fact, never as unpriced.
+  const harvestStarting = ((): {
     pool: number | undefined;
     basisPct: number | undefined;
   } => {
@@ -1853,19 +1852,7 @@ export function decemberCaseInputs(
     if (pool == null || basisPct == null) {
       return { pool: undefined, basisPct: undefined };
     }
-    const poolStart = Math.max(0, pool);
-    const basisStart =
-      (Math.min(100, Math.max(0, basisPct)) / 100) * poolStart;
-    const taxableFunded = Math.max(0, state.taxableFunded ?? 0);
-    const poolLeft = Math.max(0, poolStart - saleProceeds - taxableFunded);
-    const basisLeft = Math.max(
-      0,
-      basisStart - saleBasisDollars - taxableFunded,
-    );
-    return {
-      pool: poolLeft,
-      basisPct: poolLeft > 0 ? (basisLeft / poolLeft) * 100 : 0,
-    };
+    return { pool: Math.max(0, pool), basisPct: Math.max(0, basisPct) };
   })();
   // The dividend pairs' qualified parts (audit S-8, settled):
   // qualified dividends are a SUBSET of their ordinary total,
@@ -1992,27 +1979,28 @@ export function decemberCaseInputs(
     capitalLossCarryInStWa: state.carryInCapitalLossStWa ?? undefined,
     capitalLossCarryInLtWa: state.carryInCapitalLossLtWa ?? undefined,
     // Gain harvest (v113, remaining pool round-17 defect
-    // 1): the console's pool facts ride the pricer's own
-    // harvest dials ONLY while the harvest toggle is on, so
-    // the pricer sizes the harvest inside every pricing of
-    // the year — the zero-draw pricings, the headline
-    // pricing, and every trial pricing inside the cliff
-    // solver — and the solved December draw is sized WITH
-    // the harvest included (the draw shrinks by the
-    // harvested gain when the cliff target binds). The
-    // dials carry the REMAINING pool and basis (the
-    // starting facts less this year's taxable sales and
-    // 100%-basis taxable cash, computed above) — the march
-    // harvests from the pool left after the year's draws,
-    // never from the starting pool. Toggle off passes the
+    // 1, netting re-homed by SHOULD-3): the console's pool
+    // facts ride the pricer's own harvest dials ONLY while
+    // the harvest toggle is on, so the pricer sizes the
+    // harvest inside every pricing of the year — the
+    // zero-draw pricings, the headline pricing, and every
+    // trial pricing inside the cliff solver — and the
+    // solved December draw is sized WITH the harvest
+    // included (the draw shrinks by the harvested gain
+    // when the cliff target binds). The dials carry the
+    // STARTING pool and basis — the shared pricer nets
+    // this year's taxable sales (and their retired basis)
+    // out of them to size the harvest from the remaining
+    // pool, exactly as the plan march caps its harvest by
+    // the post-settlement balance. Toggle off passes the
     // dials absent, so the year prices bit-identically to
     // before. Toggle on with a fact still null passes that
     // dial absent too — the pricer then sizes no harvest,
     // and computeDecemberProjection carries the
     // gain-harvest-unpriced qualification on every case
     // instead of letting the $0 read as a priced answer.
-    harvestPoolAmount: harvestRemaining.pool,
-    harvestPoolBasisPct: harvestRemaining.basisPct,
+    harvestPoolAmount: harvestStarting.pool,
+    harvestPoolBasisPct: harvestStarting.basisPct,
     // ACA reconciliation facts (build v193, re-audit
     // round 3 SHOULD-4): the console's settlement facts
     // ride the pricer's own reconciliation dials, so the
@@ -7375,7 +7363,7 @@ export function runDecemberFixtures(): {
     // CURRENT pool, so resolution converts it to the
     // STARTING pool the console fact means, adding back
     // the year's year-to-date sale and its 100%-basis
-    // taxable cash (the outflows decemberCaseInputs nets
+    // taxable cash (the outflows the shared pricer nets
     // back out). The settlement's worked example: the
     // year's sale realized a $5,860 gain on $17,580 of
     // basis (proceeds $23,440), leaving a $16,560 current

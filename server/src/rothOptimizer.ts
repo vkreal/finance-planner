@@ -2722,7 +2722,13 @@ export type ExecutionYearResult = {
 // netted through the same ledger transform the march
 // priced with, and the re-solve prices the year the sim
 // priced. No banked loss → the base keeps its gross ltcg
-// and carries no allowance, bit-identical to before.
+// and carries the year's own priced allowance
+// (detail.capitalLossAllowance — min(cap, −gross) on a
+// loss year, $0 otherwise), so the re-solve prices the
+// same AGI / MAGI / taxable income the march priced for
+// that year. (Round 2 SHOULD-2: the early return below
+// used to carry no allowance at all, so a no-carry-in
+// loss year re-solved $3,000 too high.)
 // Build v101: the Washington base here is the same
 // figure the march priced — the gross gains minus the
 // Washington-attributable absorbed part the shared
@@ -2733,7 +2739,11 @@ function executionLedgerFields(
 ): { ltcg: number; capitalLossAllowance?: number; waGainsBase?: number } {
   const st = Math.max(0, plan.capitalLossCarryInSt ?? 0);
   const lt = Math.max(0, plan.capitalLossCarryInLt ?? 0);
-  if (st <= 0 && lt <= 0) return { ltcg: y.detail.ltcg };
+  if (st <= 0 && lt <= 0)
+    return {
+      ltcg: y.detail.ltcg,
+      capitalLossAllowance: y.detail.capitalLossAllowance,
+    };
   // Only the netted result and the CLAIMED allowance are
   // read here — never the carry-out (the one-year sim that
   // priced this year reconciled its own carry-out against
@@ -2757,7 +2767,7 @@ function executionLedgerFields(
   };
 }
 
-function executionFillTarget(
+export function executionFillTarget(
   plan: RothPlanInputs,
   execInputs: RothPlanInputs,
   y: RothYear,
@@ -4328,13 +4338,16 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // caller supplies the pool / basis facts, size the year's
   // harvest EXACTLY as the plan march sizes its own
   // (simulateRothPlan's harvestOn block): the available
-  // unrealized gain is the pool less its basis dollars, and
-  // the harvest is the largest amount of it — searched to
-  // the cent — whose addition to the year's gross gains
-  // leaves the gains priced at 15% and at 20% unchanged,
-  // i.e. every harvested dollar lands inside the 0%
-  // capital-gains band. The march ALSO caps its search by
-  // the strategy's own ceilings (a bracket top, an IRMAA
+  // unrealized gain is the pool less its basis dollars —
+  // LESS this year's typed sale and the basis it retired
+  // (SHOULD-3): the pool left after the sale, matching
+  // the march's post-settlement cap — and the harvest is
+  // the largest amount of it — searched to the cent —
+  // whose addition to the year's gross gains leaves the
+  // gains priced at 15% and at 20% unchanged, i.e. every
+  // harvested dollar lands inside the 0% capital-gains
+  // band. The march ALSO caps its search by the
+  // strategy's own ceilings (a bracket top, an IRMAA
   // tier cap, a custom MAGI cap, and the ACA cliff cap);
   // the single-year pricer carries no strategy ceilings —
   // its one ceiling, the ACA cliff, is the cliff solver's
@@ -4354,9 +4367,23 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   const harvestPool = inp.harvestPoolAmount ?? null;
   const harvestBasisPct = inp.harvestPoolBasisPct ?? null;
   if (harvestPool != null && harvestBasisPct != null) {
+    // SHOULD-3: the harvest sizes from the pool LEFT
+    // after this year's typed sale — the pool less the
+    // sale's proceeds, less the basis the sale retired —
+    // never from the starting pool, which would harvest
+    // gains the sale already realized. The basis percent
+    // is floored at 0 only, never capped at 100: the walk
+    // carries an underwater pool's basis as a ratio above
+    // 100, and capping it would understate the retired
+    // basis on a partial sale from such a pool.
     const pool = Math.max(0, harvestPool);
-    const basisPctClamped = Math.min(100, Math.max(0, harvestBasisPct));
-    const availableGain = Math.max(0, pool - (basisPctClamped / 100) * pool);
+    const basisPct = Math.max(0, harvestBasisPct);
+    const basisDollars = (basisPct / 100) * pool;
+    const saleProceeds = Math.max(0, inp.stockSold);
+    const saleBasis = Math.max(0, inp.stockBasis);
+    const poolLeft = Math.max(0, pool - saleProceeds);
+    const basisLeft = Math.max(0, basisDollars - saleBasis);
+    const availableGain = Math.max(0, poolLeft - basisLeft);
     if (availableGain > 0) {
       const settled = priceYear(base);
       const settledAt15 = settled.gainsAt15;
@@ -5536,12 +5563,21 @@ export function projectPlaygroundYears(
      basis percent is re-derived from the carried basis
      (the template's own percent in the first walked
      year), and each year's priced harvestedGain steps
-     the carried basis up for the next year. The pool
-     amount itself still repeats as the template states
-     it — a harvest never changes it — and with either
-     harvest fact absent the state stays null and every
-     year prices exactly as before. Pinned by the tax
-     suite's
+     the carried basis up for the next year. SHOULD-3
+     carries the pool's BALANCE forward too — the
+     template's pool amount in the first walked year,
+     reduced by each year's sale and grown by the
+     return, exactly like the tracked taxable balance —
+     so each year's harvest sizes from the pool that
+     remains, not the template's starting pool restated
+     every year, and each year's repeated sale retires
+     basis at the pool's own tracked ratio. The balance
+     is separate from the tracked taxable balance
+     because the pool need not equal the walk's starting
+     taxable balance (or any taxable balance at all).
+     With either harvest fact absent the state stays null
+     and every year prices exactly as before. Pinned by
+     the tax suite's
      tax-engines-playground-projection-harvest-step-up-r2
      fixture. */
   const harvestPoolAmount =
@@ -5555,6 +5591,7 @@ export function projectPlaygroundYears(
             harvestPoolAmount,
         )
       : null;
+  let harvestPoolBalance: number | null = harvestPoolAmount;
   const templateCashDraw = Math.max(0, template.cashDraw ?? 0);
   const templateRothDraw = Math.max(0, template.rothDraw ?? 0);
   // A template Medicare flag is an override exactly
@@ -5663,6 +5700,26 @@ export function projectPlaygroundYears(
         template.stockBasis * (stockSoldEffective / template.stockSold),
       );
     }
+    // SHOULD-3: when harvest facts are carried, the
+    // repeated sale's basis is the pool's own tracked
+    // ratio — the sale retires basis at the pool's basis
+    // dollars over its balance — not the template's typed
+    // basis, which goes stale the first year a harvest
+    // steps the basis up (the settlement's year-2 leg:
+    // the sale priced at the template's +$20,000 gain
+    // against a pool whose true remaining gain was zero).
+    // With no harvest facts, or an empty pool, the
+    // template basis above stands.
+    if (
+      harvestBasisDollars != null &&
+      harvestPoolBalance != null &&
+      harvestPoolBalance > 0 &&
+      stockSoldEffective > 0
+    ) {
+      stockBasisEffective = r2(
+        (stockSoldEffective * harvestBasisDollars) / harvestPoolBalance,
+      );
+    }
     const householdSize =
       template.acaHouseholdSize == null
         ? null
@@ -5680,19 +5737,22 @@ export function projectPlaygroundYears(
     const rothDrawEffective = firstWalkYear
       ? templateRothDraw
       : Math.min(templateRothDraw, Math.max(0, roth));
-    // R2 (see the state block above the loop): the year's
-    // harvest basis percent is re-derived from the basis
-    // dollars the walk carries — the template's percent
-    // in the first walked year, stepped up by every
-    // prior walked year's harvest after that. With no
-    // harvest facts the template's own value rides
-    // through untouched.
+    // R2 (see the state block above the loop) as
+    // extended by SHOULD-3: the year's harvest basis
+    // percent is the CURRENT pool's ratio — the carried
+    // basis dollars over the carried pool balance,
+    // uncapped, so an underwater pool's ratio above 100
+    // rides through to the pricer, whose netting
+    // reconstructs the true basis dollars from it (the
+    // pricer floors the percent at 0 only). The first
+    // walked year this is the template's own percent.
+    // With no harvest facts the template's own value
+    // rides through untouched.
     const harvestBasisPctEffective =
       harvestBasisDollars != null &&
-      harvestPoolAmount != null &&
-      harvestPoolAmount > 0
-        ? (100 * Math.min(harvestBasisDollars, harvestPoolAmount)) /
-          harvestPoolAmount
+      harvestPoolBalance != null &&
+      harvestPoolBalance > 0
+        ? (100 * harvestBasisDollars) / harvestPoolBalance
         : template.harvestPoolBasisPct;
     const inputs: PlaygroundYearInputs = {
       ...template,
@@ -5747,11 +5807,15 @@ export function projectPlaygroundYears(
       // (see cashDrawEffective above).
       cashDraw: cashDrawEffective,
       rothDraw: rothDrawEffective,
-      // R2: the year's harvest basis percent, re-derived
-      // from the carried stepped-up basis dollars (see
-      // harvestBasisPctEffective above); the pool amount
-      // itself rides the spread untouched — a harvest
-      // sells and repurchases, so the pool never falls.
+      // SHOULD-3: the year's harvest pool is the CARRIED
+      // balance — the template's pool in the first walked
+      // year, reduced by each prior year's sale — and its
+      // basis percent is the carried ratio (see
+      // harvestBasisPctEffective above). A harvest sells
+      // and repurchases, so it never changes the balance;
+      // the year's SALE does, and the pricer nets that
+      // sale out of the pool it is handed.
+      harvestPoolAmount: harvestPoolBalance,
       harvestPoolBasisPct: harvestBasisPctEffective,
     };
     const result = pricePlaygroundYear(inputs);
@@ -5821,12 +5885,28 @@ export function projectPlaygroundYears(
     carryInLt = result.lossCarryOutLt;
     carryInStWa = result.lossCarryOutStWa;
     carryInLtWa = result.lossCarryOutLtWa;
-    // R2: this year's harvest steps the pool's carried
-    // basis up by the gain it realized — the repurchased
-    // shares now carry that much more basis, so the next
-    // walked year can only harvest the gain that remains.
+    // R2, as extended by SHOULD-3: the year's sale
+    // retires basis at the priced sale basis, the
+    // harvest steps it back up by the gain it realized,
+    // and the pool balance falls by the sale — grown by
+    // the year's return beside the tracked taxable
+    // balance — so the next year opens on the pool that
+    // remains, at its true ratio. The basis floors at $0
+    // (a sale retires no more basis than the pool
+    // carries) and, being fixed dollars, does not grow
+    // with the return the way the balance does.
     if (harvestBasisDollars != null) {
-      harvestBasisDollars = r2(harvestBasisDollars + result.harvestedGain);
+      harvestBasisDollars = r2(
+        Math.max(
+          0,
+          harvestBasisDollars - stockBasisEffective + result.harvestedGain,
+        ),
+      );
+    }
+    if (harvestPoolBalance != null) {
+      harvestPoolBalance = r2(
+        Math.max(0, harvestPoolBalance - stockSoldEffective) * growth,
+      );
     }
     firstWalkYear = false;
   }

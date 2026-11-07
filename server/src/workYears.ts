@@ -154,6 +154,7 @@
 
 import {
   applyLossLedger,
+  capitalLossAllowanceCap,
   deflationFactor,
   priceYear,
   rmdForYear,
@@ -512,7 +513,14 @@ function gainOnLedgerSale(
   const sold = Math.min(Math.max(0, drawn), Math.max(0, grownBalance));
   if (sold <= 0 || grownBalance <= 0) return 0;
   if (!ledger.tiers) {
-    const basis = Math.min(Math.max(0, ledger.basis), grownBalance);
+    // No cap on the basis (round-2 SHOULD-1): an underwater
+    // pool's ratio passes 1, so a deficit sale realizes its
+    // loss at the true ratio — the march's drawGainRate is
+    // likewise uncapped (taxEngine.ts:5211). Capping the
+    // basis at the grown balance floored the gain rate at 0
+    // and retired basis at the capped ratio, leaving the
+    // pool more underwater than the sale truly left it.
+    const basis = Math.max(0, ledger.basis);
     return sold * (1 - basis / grownBalance);
   }
   const clone = ledger.tiers.map((t) => ({ ...t }));
@@ -532,7 +540,12 @@ function consumeLedgerSale(
   if (sold <= 0) return 0;
   let gain: number;
   if (!ledger.tiers) {
-    const basis = Math.min(Math.max(0, ledger.basis), grownBalance);
+    // Uncapped basis (round-2 SHOULD-1, as in
+    // gainOnLedgerSale above): the sale realizes its loss
+    // at the true ratio and retires basis pro-rata at that
+    // ratio, so the remaining pool's ratio is unchanged by
+    // the sale.
+    const basis = Math.max(0, ledger.basis);
     gain = sold * (1 - basis / grownBalance);
     ledger.basis =
       sold >= grownBalance ? 0 : Math.max(0, ledger.basis - sold * (basis / grownBalance));
@@ -1111,9 +1124,12 @@ export function priceOneWorkYear(
   // final pricing below, against that pricing's taxable
   // income before the allowance, exactly as the march's
   // ledFinal reconciliation does. In a year with no
-  // carry-in the transform is the identity — the returned
-  // fields are exactly the pre-v100 ones — which is what
-  // keeps a plan with no banked loss bit-identical.
+  // carry-in and no loss the transform is the identity —
+  // the returned fields are exactly the pre-v100 ones —
+  // which is what keeps a plan with no banked loss
+  // bit-identical; on a loss year it returns the year's
+  // own allowance (the march's FOLLOW-UP #3 shape, below),
+  // so the loss prices into AGI and tax.
   const lossCarryInSt = Math.max(
     0,
     lossCtx?.st ?? plan.capitalLossCarryInSt ?? 0,
@@ -1142,7 +1158,22 @@ export function priceOneWorkYear(
     capitalLossAllowance?: number;
     waGainsBase?: number;
   } => {
-    if (!lossLedgerOn) return { ltcg: grossGains };
+    if (!lossLedgerOn) {
+      // (Round-2 SHOULD-1, the march's FOLLOW-UP #3 shape):
+      // the year's own §1211(b) allowance on a net capital
+      // loss — min(cap, −grossGains) — rides alongside the
+      // gross even with no carry-in entered, so a loss year
+      // prices its allowance into AGI and tax exactly as
+      // the march does. On a gain year this is $0 and the
+      // transform stays the identity.
+      return {
+        ltcg: grossGains,
+        capitalLossAllowance: Math.min(
+          capitalLossAllowanceCap(plan.filingStatus),
+          Math.max(0, -grossGains),
+        ),
+      };
+    }
     const led = applyLossLedger(
       { st: lossCarryInSt, lt: lossCarryInLt },
       grossGains,
@@ -1196,9 +1227,11 @@ export function priceOneWorkYear(
     // allowance riding alongside it and the Washington
     // excise base at the gross gains minus the
     // Washington-attributable absorbed part (build v101).
-    // With no carry-in
+    // With no carry-in and no loss
     // these are exactly the pre-v100 fields (ltcg = the
-    // gross gain, no allowance, no base override).
+    // gross gain, no allowance, no base override); on a
+    // loss year the year's own allowance rides alongside
+    // (round-2 SHOULD-1).
     ltcg: lf.ltcg,
     capitalLossAllowance: lf.capitalLossAllowance,
     waGainsBase: lf.waGainsBase,
@@ -1337,15 +1370,27 @@ export function priceOneWorkYear(
   // taxable income, and a year with no taxable income
   // before the allowance uses none of it, so the whole
   // loss carries out.
-  const ledFinal = lossLedgerOn
-    ? applyLossLedger(
-        { st: lossCarryInSt, lt: lossCarryInLt },
-        ltcg,
-        plan.filingStatus,
-        priced.taxableIncomeBeforeLossAllowance,
-        { st: lossCarryInWaSt, lt: lossCarryInWaLt },
-      )
-    : null;
+  // (Round-2 SHOULD-1, the march's SHOULD-1 shape): the
+  // year-end reconciliation also runs when the year's own
+  // total gains are a net loss, even with no carry-in
+  // entered, so a newly realized loss banks its reconciled
+  // carry-out instead of dropping it. The condition
+  // belongs HERE, where the final gross is known — not on
+  // the lossLedgerOn gate above, where the year's gross
+  // does not exist yet. At a zero carry-in the transform
+  // is the in-year computation term for term, so the loss
+  // year's own pricing is unchanged; only its reported
+  // carry-out (and the next year's carry-in) newly appear.
+  const ledFinal =
+    lossLedgerOn || ltcg < 0
+      ? applyLossLedger(
+          { st: lossCarryInSt, lt: lossCarryInLt },
+          ltcg,
+          plan.filingStatus,
+          priced.taxableIncomeBeforeLossAllowance,
+          { st: lossCarryInWaSt, lt: lossCarryInWaLt },
+        )
+      : null;
   return {
     age,
     calendarYear,
@@ -1372,9 +1417,11 @@ export function priceOneWorkYear(
     rmdTablePrimary: rmdPrimaryRes.table,
     rmdTableSpouse: rmdSpouseRes.table,
     ltcg: r2(ltcg),
-    // The year's loss-ledger outcome (build v100): with
-    // no carry-in, the net result is the gross gain itself
-    // and every ledger figure is $0.
+    // The year's loss-ledger outcome (build v100; round-2
+    // SHOULD-1): with no carry-in and no loss, the net
+    // result is the gross gain itself and every ledger
+    // figure is $0; on a loss year the ledger runs and
+    // banks the remainder.
     capitalLossCarryInSt: r2(lossCarryInSt),
     capitalLossCarryInLt: r2(lossCarryInLt),
     netCapitalResult: ledFinal ? ledFinal.netResult : r2(ltcg),
