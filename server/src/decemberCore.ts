@@ -2120,7 +2120,10 @@ export type DecemberCaseResult = {
   // reconciled ledger result (pricePlaygroundYear's
   // lossCarryOut*), no new loss math here. The Wa fields
   // are the Washington-attributable portions of the same
-  // carry-out. All $0 when no carry-in was entered.
+  // carry-out. All $0 when no carry-in was entered and
+  // the year's own result is not a net loss (R1: a newly
+  // realized loss carries its own reconciled carry-out
+  // even with no carry-in entered).
   lossCarryOutStAtHeadline: number;
   lossCarryOutLtAtHeadline: number;
   lossCarryOutStWaAtHeadline: number;

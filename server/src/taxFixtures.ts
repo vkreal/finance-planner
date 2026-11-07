@@ -35333,6 +35333,376 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       };
     },
   },
+  {
+    id: "tax-engines-playground-projection-new-loss-carryforward-r1",
+    kind: "tax",
+    note: "R1 (parity re-review, MUST — settled STAND): a newly realized capital loss vanished from the projection carryforward. pricePlaygroundYear ran the shared loss ledger only when an entering carryforward was positive, so a year whose own typed sale realized a net loss — with no carry-in entered — priced its §1211(b) allowance in-year but reported a $0 carry-out, and the projection's P-S4 chain faithfully carried that $0 into the next year, which then priced with no allowance at all. THE FIX (rothOptimizer.ts, pricePlaygroundYear): the ledger also runs when the year's own typed result is a net loss (the harvested gain is never negative, so the year's total result is negative only when the typed result already is); with a zero carry-in the ledger's trial transform is the in-year computation term for term, so the loss year's own pricing is unchanged — only its reconciled carry-out, fixed once against the year's final taxable income before the allowance, is newly reported, and the chain carries it forward. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): MFJ at the sample ages 58 / 56, ACA household of the sample size, the sample family benchmark, no Social Security, no conversions, 0% return; other ordinary income is the second walked year's ACA cliff plus $1 (the cliff is four times the guideline-year FPL for the sample household size, read from the law table in-case); the starting taxable balance and the typed sale are each half the filed ordinary dividends, the sale's basis the filed ordinary dividends whole — a long-term loss of half the filed dividends. HAND-DERIVED: year 1 (2026) realizes the loss, claims the $3,000 allowance (taxable income before the allowance is far above the cap, so the whole allowance is used), and carries out the loss less the allowance; its ACA MAGI is the other income less the allowance. The walked first year prices its cliff off the newest guideline row (the projection's one sanctioned convention difference), so its cliff is the same figure as year 2's and it prices a credit at the first year's table's flat 300–400% band percentage — identical before and after the fix, like every figure in year 1. The sale exhausts the taxable balance, so year 2's repeated sale scales to $0 — but the chained carry-in (year 1's carry-out, pinned on year 2's own inputs) still claims its $3,000 allowance: year 2 MAGI is the other income less the allowance, UNDER the second year's cliff by the allowance less $1, and the credit is the benchmark less the year's flat applicable percentage (the 300–400% FPL band of the second year's table) times that MAGI; the year's ending carryforward is the entering one less the used allowance. PRE-FIX year 2 entered with $0, claimed no allowance, and its MAGI sat $1 OVER the cliff with a $0 credit — the whole credit lost to the dropped carryforward. SINGLE-YEAR LEG: the template year priced alone (the statutory lookback — the December console's surface) reports the same carry-out, and under the lookback its cliff is four times the PRIOR guideline year's FPL and its credit is $0, over that cliff either way — the readout consequence December carries. UTILIZATION LEG: the same loss year with NO other income claims the allowance in AGI but uses none of it (no taxable income before the allowance), so the WHOLE loss carries out — the reconciliation against final taxable income, not the claimed allowance, fixes the carry-out. GAIN CONTROL: the same template with a basis of a quarter of the filed dividends realizes a gain instead — no allowance, no carry-out; a gain year with no carry-in prices exactly as before.",
+    expected: {
+      y1Allowance: 3000,
+      y1OutLt:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 - 3000,
+      y1OutSt: 0,
+      y1Magi:
+        4 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR) + 1 - 3000,
+      y1Cliff: 4 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR),
+      y1Credit: 23151.5,
+      y1Sold: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      y1EndTaxable: 0,
+      y2InLt:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 - 3000,
+      y2InSt: 0,
+      y2Sold: 0,
+      y2Allowance: 3000,
+      y2Magi:
+        4 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR) + 1 - 3000,
+      y2Cliff: 4 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR),
+      y2Credit: 22816.1,
+      y2OutLt:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 - 6000,
+      singleAllowance: 3000,
+      singleOutLt:
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2 - 3000,
+      singleMagi:
+        4 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR) + 1 - 3000,
+      singleCliff: 4 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR - 1),
+      singleCredit: 0,
+      bareAllowance: 3000,
+      bareOutLt: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      gainAllowance: 0,
+      gainOutLt: 0,
+      gainOutSt: 0,
+    },
+    actual: () => {
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      // The second walked year's cliff (four times the
+      // guideline FPL for the sample household size); the
+      // other ordinary income sits $1 over it, so the
+      // dropped-carryforward form of year 2 breaches the
+      // cliff by exactly $1 and the fixed form clears it
+      // by the $3,000 allowance less that $1.
+      const CLIFF_Y2 = 4 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR);
+      const base: PlaygroundYearInputs = {
+        taxYear: SAMPLE_START_YEAR,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const template: PlaygroundYearInputs = {
+        ...base,
+        otherOrdinary: CLIFF_Y2 + 1,
+        stockSold: ORD / 2,
+        stockBasis: ORD,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+      };
+      const opts = {
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSchedule: null,
+        startTaxable: ORD / 2,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const proj = projectPlaygroundYears(template, { ...opts, toAge: 59 });
+      const y1 = proj.years.find((y) => y.agePrimary === 58)!;
+      const y2 = proj.years.find((y) => y.agePrimary === 59)!;
+      const single = pricePlaygroundYear(template);
+      const bare = pricePlaygroundYear({ ...template, otherOrdinary: 0 });
+      const gain = pricePlaygroundYear({
+        ...template,
+        stockBasis: ORD / 4,
+      });
+      return {
+        y1Allowance: y1.result.capitalLossAllowance,
+        y1OutLt: y1.result.lossCarryOutLt,
+        y1OutSt: y1.result.lossCarryOutSt,
+        y1Magi: y1.result.acaMagi,
+        y1Cliff: y1.result.aca.cliff,
+        y1Credit: y1.result.aca.credit,
+        y1Sold: y1.stockSoldEffective,
+        y1EndTaxable: y1.endBalances.taxable,
+        y2InLt: y2.inputs.capitalLossCarryInLt ?? null,
+        y2InSt: y2.inputs.capitalLossCarryInSt ?? null,
+        y2Sold: y2.stockSoldEffective,
+        y2Allowance: y2.result.capitalLossAllowance,
+        y2Magi: y2.result.acaMagi,
+        y2Cliff: y2.result.aca.cliff,
+        y2Credit: y2.result.aca.credit,
+        y2OutLt: y2.result.lossCarryOutLt,
+        singleAllowance: single.capitalLossAllowance,
+        singleOutLt: single.lossCarryOutLt,
+        singleMagi: single.acaMagi,
+        singleCliff: single.aca.cliff,
+        singleCredit: single.aca.credit,
+        bareAllowance: bare.capitalLossAllowance,
+        bareOutLt: bare.lossCarryOutLt,
+        gainAllowance: gain.capitalLossAllowance,
+        gainOutLt: gain.lossCarryOutLt,
+        gainOutSt: gain.lossCarryOutSt,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-projection-harvest-step-up-r2",
+    kind: "tax",
+    note: "R2 (parity re-review, SHOULD — settled STAND): repeated gain harvesting in the Playground projection ignored the basis step-up from the prior year. The walk re-spread the template's harvest facts (harvestPoolAmount, harvestPoolBasisPct) into every projected year and updated only the taxable balance after sales, so each year re-sized its harvest from the ORIGINAL unrealized gain — a harvest sells and immediately repurchases, so the balance rightly does not fall, but the repurchased shares carry a basis stepped up by the gain realized, and nothing carried that step-up forward (the plan march has always stepped its own basis up after a harvest). THE FIX (rothOptimizer.ts, projectPlaygroundYears): the walk carries the harvest pool's basis dollars forward beside the balances, separately from the taxable balance — each year's harvest basis percent is re-derived from the carried basis, and each year's priced harvestedGain steps the carried basis up for the next year; the pool amount itself still repeats as the template states it, and a template with either harvest fact absent walks exactly as before. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): a two-year MFJ projection at the sample ages 58 / 56, ACA household of the sample size, the sample family benchmark, no Social Security, no conversions, no regular stock sales, 0% return; annual other ordinary income of two and a half times the filed ordinary dividends, and a harvest pool of five times the filed ordinary dividends at the sample basis percent, so the pool's unrealized gain is twice the filed dividends. HAND-DERIVED: the 0% long-term-gains room — the year's law-row top for MFJ less the ordinary taxable income (the income less the standard deduction) — far exceeds the pool's unrealized gain in year 1, so the whole gain harvests genuinely: year 1 harvested gain is the whole unrealized gain, its MAGI the income plus the gain, its walked credit the benchmark less the first year's table percentage at that MAGI (the 250–300% FPL band, interpolated), and the pool's basis steps up to the whole pool — the taxable balance ends the year UNCHANGED at the pool, because a harvest's proceeds are reinvested, not spent. Year 2 therefore enters with a basis percent of 100 (pinned on year 2's own inputs): the remaining unrealized gain is $0, so its harvested gain is $0, its MAGI is the income alone, and its credit is the benchmark less the second year's table percentage at that MAGI (the 150–200% FPL band, interpolated). THE PRE-FIX FORM (year 2's own inputs priced in-case with the template's basis percent re-fed whole): the fictitious gain harvests again — MAGI back at the year-1 figure and the credit lower by the pinned shortfall. PARTIAL LEG (the same pool with other ordinary income of six times the filed dividends, walked three years): the 0% room — read from the law row in-case — is now SMALLER than the pool's unrealized gain, so year 1 harvests only the room; the basis percent year 2 enters with rises by exactly the harvested share of the pool, year 2 harvests the same room again out of the gain that remains, and year 3 enters with the basis stepped up by both years' harvests and harvests the room a third time — the step-up carries proportionally, not just when a harvest exhausts the gain. NO-FACTS CONTROL: the worked-example template with the harvest pair absent prices no harvest in either year and year 2's basis fact stays absent — a template that never carried the facts walks exactly as before.",
+    expected: {
+      y1BasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+      y1Harvested:
+        5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) -
+        (SAMPLE_TAXABLE_BASIS_PCT / 100) *
+          (5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100)),
+      y1Magi: 4.5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100),
+      y1Credit: 27782.18,
+      y1EndTaxable: 5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100),
+      y2BasisPct: 100,
+      y2Harvested: 0,
+      y2Magi: 2.5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100),
+      y2Credit: 33812.42,
+      y2EndTaxable: 5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100),
+      prefixHarvested:
+        5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) -
+        (SAMPLE_TAXABLE_BASIS_PCT / 100) *
+          (5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100)),
+      prefixMagi: 4.5 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100),
+      prefixCredit: 27567.82,
+      creditShortfall: 6244.6,
+      p1Harvested:
+        lawForYear(SAMPLE_START_YEAR).ltcgZeroTop.mfj -
+        (6 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) -
+          lawForYear(SAMPLE_START_YEAR).standardDeduction.mfj),
+      p2BasisPct: 71.1,
+      p2Harvested:
+        lawForYear(SAMPLE_START_YEAR).ltcgZeroTop.mfj -
+        (6 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) -
+          lawForYear(SAMPLE_START_YEAR).standardDeduction.mfj),
+      p3BasisPct: 82.2,
+      p3Harvested:
+        lawForYear(SAMPLE_START_YEAR).ltcgZeroTop.mfj -
+        (6 * (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) -
+          lawForYear(SAMPLE_START_YEAR).standardDeduction.mfj),
+      bareY1Harvested: 0,
+      bareY2Harvested: 0,
+      bareY2BasisAbsent: 1,
+    },
+    actual: () => {
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      const POOL = 5 * ORD;
+      const base: PlaygroundYearInputs = {
+        taxYear: SAMPLE_START_YEAR,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const template: PlaygroundYearInputs = {
+        ...base,
+        otherOrdinary: 2.5 * ORD,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        harvestPoolAmount: POOL,
+        harvestPoolBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+      };
+      const opts = {
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSchedule: null,
+        startTaxable: POOL,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const proj = projectPlaygroundYears(template, { ...opts, toAge: 59 });
+      const y1 = proj.years.find((y) => y.agePrimary === 58)!;
+      const y2 = proj.years.find((y) => y.agePrimary === 59)!;
+      // The pre-fix form: year 2's own walked inputs with
+      // the template's basis percent re-fed whole — the
+      // repeat the step-up replaces.
+      const prefix = pricePlaygroundYear({
+        ...y2.inputs,
+        harvestPoolBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+      });
+      const partial = projectPlaygroundYears(
+        { ...template, otherOrdinary: 6 * ORD },
+        { ...opts, toAge: 60 },
+      );
+      const p1 = partial.years.find((y) => y.agePrimary === 58)!;
+      const p2 = partial.years.find((y) => y.agePrimary === 59)!;
+      const p3 = partial.years.find((y) => y.agePrimary === 60)!;
+      const bare = projectPlaygroundYears(
+        {
+          ...template,
+          harvestPoolAmount: null,
+          harvestPoolBasisPct: null,
+        },
+        { ...opts, toAge: 59 },
+      );
+      const b1 = bare.years.find((y) => y.agePrimary === 58)!;
+      const b2 = bare.years.find((y) => y.agePrimary === 59)!;
+      return {
+        y1BasisPct: y1.inputs.harvestPoolBasisPct ?? null,
+        y1Harvested: y1.result.harvestedGain,
+        y1Magi: y1.result.acaMagi,
+        y1Credit: y1.result.aca.credit,
+        y1EndTaxable: y1.endBalances.taxable,
+        y2BasisPct: y2.inputs.harvestPoolBasisPct ?? null,
+        y2Harvested: y2.result.harvestedGain,
+        y2Magi: y2.result.acaMagi,
+        y2Credit: y2.result.aca.credit,
+        y2EndTaxable: y2.endBalances.taxable,
+        prefixHarvested: prefix.harvestedGain,
+        prefixMagi: prefix.acaMagi,
+        prefixCredit: prefix.aca.credit,
+        creditShortfall:
+          Math.round(
+            ((y2.result.aca.credit ?? 0) - (prefix.aca.credit ?? 0)) * 100,
+          ) / 100,
+        p1Harvested: p1.result.harvestedGain,
+        p2BasisPct: p2.inputs.harvestPoolBasisPct ?? null,
+        p2Harvested: p2.result.harvestedGain,
+        p3BasisPct: p3.inputs.harvestPoolBasisPct ?? null,
+        p3Harvested: p3.result.harvestedGain,
+        bareY1Harvested: b1.result.harvestedGain,
+        bareY2Harvested: b2.result.harvestedGain,
+        bareY2BasisAbsent: b2.inputs.harvestPoolBasisPct == null ? 1 : 0,
+      };
+    },
+  },
+  {
+    id: "tax-engines-plan-march-zero-premium-credit-cap-r3",
+    kind: "tax",
+    note: "R3 (parity re-review, SHOULD — settled STAND): an explicitly entered $0 marketplace premium permitted a phantom ACA credit in the plan score. An explicit zero counts as an entered premium field and activates the health premium term, but the retained credit was capped at the enrolled premium only when the applicable gross was positive (the cap keyed on healthAcaThisYear, which requires gross > 0), so a year whose applicable premium was explicitly $0 fell into the uncapped branch and kept the whole benchmark credit against a $0 premium — the score subtracted a credit no premium ever offset. THE FIX (taxEngine.ts, simulateRothPlan): the retained-credit cap now keys on the term being active for an ACA-covered person (healthAcaCapThisYear), including a gross of exactly $0, where the cap keeps $0. The funded net premium and the settlement's credit feedback keep the narrower gate — at a $0 gross the net premium is $0 under either condition — and a null applicable amount still falls back to the benchmark, against which the credit can never exceed, so no other shape moves. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): a retired joint-filing household of the sample size in the sample start year (both spouses under 65, retired from the start year, one priced year, no balances, no spending, no Social Security, no conversions), its ACA MAGI set by other ordinary income alone at exactly twice the guideline-year FPL for the sample household size (read from the law table in-case) — exactly 200% FPL. HAND-DERIVED: at exactly 200% FPL the start year's applicable-percentage table takes the 200–250% band's initial percentage (band edges are lower-inclusive), so the expected contribution is that percentage of MAGI and the benchmark credit is the sample family benchmark less that contribution — the figure pinned as benchmarkCredit and re-derived in-case through the engine's own credit function. EXPLICIT-ZERO LEG (the marketplace household premium entered as exactly $0): the year's retained credit, the lifetime kept credit, and the score's credit are all $0, the year's gross and net marketplace premiums are $0, and the score's net cost sits above the blank leg's by exactly the whole benchmark credit — the phantom benefit removed, nothing else moved. BLANK LEG (no premium field entered): the term never engages and the year keeps the whole benchmark credit, exactly as before — the known, deliberate blank-premium gap, unchanged by this fix. POSITIVE LEGS: a premium entered at the sample couple benchmark (below the credit) caps the kept credit at the premium itself; a premium entered at the family benchmark (above the credit) keeps the whole credit — the cap binds only below the credit, as before. MEDICARE-ONLY CONTROL: the term activated by the Medicare per-person amount alone, with nobody on Medicare this year and both marketplace amounts blank, prices the applicable gross off the benchmark fallback, so the kept credit is the whole benchmark credit, bit-identical to the blank leg — the widened cap gate moves nothing when the applicable amount was never entered.",
+    expected: {
+      magi: 2 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR - 1),
+      pctFpl: 200,
+      applicablePct: 6.6,
+      benchmark: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+      benchmarkCredit: 31756.2,
+      zeroKept: 0,
+      zeroLifetimeKept: 0,
+      zeroScoreCredit: 0,
+      zeroScorePremium: 0,
+      zeroGrossPremium: 0,
+      zeroNetPremium: 0,
+      blankKept: 31756.2,
+      blankLifetimeKept: 31756.2,
+      blankScoreCredit: 31756.2,
+      netCostDiff: 31756.2,
+      belowKept: SAMPLE_ACA_BENCHMARK_COUPLE_CENTS / 100,
+      aboveKept: 31756.2,
+      medOnlyKept: 31756.2,
+    },
+    actual: () => {
+      const MAGI = 2 * fplFor(SAMPLE_HOUSEHOLD_SIZE, SAMPLE_START_YEAR - 1);
+      const base: Partial<RothPlanInputs> = {
+        retirementAge: SAMPLE_START_YEAR - SAMPLE_BIRTH_YEAR_PRIMARY,
+        endAgePrimary: SAMPLE_START_YEAR - SAMPLE_BIRTH_YEAR_PRIMARY,
+        pretaxStart: 0,
+        taxableStart: 0,
+        rothStart: 0,
+        hsaStart: 0,
+        annualSpending: 0,
+        otherOrdinaryAnnual: MAGI,
+        ssPrimaryAnnual: 0,
+        ssSpouseAnnual: 0,
+      };
+      const leg = (over: Partial<RothPlanInputs>) => {
+        const inputs = samplePlanInputs({ ...base, ...over });
+        const res = simulateRothPlan(inputs, DO_NOTHING);
+        const bd = netCostBreakdown(res, inputs.heirRatePct, {
+          preservePretax: SAMPLE_PRESERVE_PRETAX_CENTS / 100,
+          preserveExitRatePct: 10,
+        });
+        return { res, bd, y: res.years[0] };
+      };
+      const blank = leg({});
+      const zero = leg({ healthPremiumAcaHousehold: 0 });
+      const below = leg({
+        healthPremiumAcaHousehold: SAMPLE_ACA_BENCHMARK_COUPLE_CENTS / 100,
+      });
+      const above = leg({
+        healthPremiumAcaHousehold: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+      });
+      const medOnly = leg({
+        healthPremiumMedicarePerPerson:
+          (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 5,
+      });
+      const raw = acaCreditFor({
+        magi: MAGI,
+        householdSize: SAMPLE_HOUSEHOLD_SIZE,
+        coverageYear: SAMPLE_START_YEAR,
+        benchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        projected: true,
+      });
+      return {
+        magi: zero.y?.acaMagi ?? null,
+        pctFpl: zero.y?.detail.aca.pctFpl ?? null,
+        applicablePct: zero.y?.detail.aca.applicablePct ?? null,
+        benchmark: zero.y?.detail.aca.benchmark ?? null,
+        benchmarkCredit: raw.credit,
+        zeroKept: zero.y?.acaCreditKept ?? null,
+        zeroLifetimeKept: zero.res.lifetimeAcaKept,
+        zeroScoreCredit: zero.bd.acaCredit,
+        zeroScorePremium: zero.bd.healthPremium,
+        zeroGrossPremium: zero.y?.healthPremiumGross ?? null,
+        zeroNetPremium: zero.y?.healthPremiumNet ?? null,
+        blankKept: blank.y?.acaCreditKept ?? null,
+        blankLifetimeKept: blank.res.lifetimeAcaKept,
+        blankScoreCredit: blank.bd.acaCredit,
+        netCostDiff:
+          Math.round((zero.bd.netCost - blank.bd.netCost) * 100) / 100,
+        belowKept: below.y?.acaCreditKept ?? null,
+        aboveKept: above.y?.acaCreditKept ?? null,
+        medOnlyKept: medOnly.y?.acaCreditKept ?? null,
+      };
+    },
+  },
 ];
 
 const DO_NOTHING: RothStrategy = { id: "none", name: "Do Nothing", ceilings: null };

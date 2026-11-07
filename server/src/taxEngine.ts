@@ -4613,6 +4613,25 @@ export function simulateRothPlan(
           ? (healthAcaHouseholdDollars ?? benchmark ?? 0)
           : (healthAcaSingleDollars ?? benchmark ?? 0);
     const healthAcaThisYear = healthActive && acaActive && healthGrossAca > 0;
+    // ENROLLMENT-PREMIUM CAP SCOPE (R3, parity re-review):
+    // the retained-credit cap below keys on this wider
+    // condition — the term active for an ACA-covered person
+    // — NOT on healthAcaThisYear. An explicitly entered $0
+    // premium is an entered premium: it activates the term
+    // (healthActive) and the applicable gross is $0, so the
+    // year's retained credit is capped at $0. Gating the cap
+    // on healthGrossAca > 0 let that year fall into the
+    // uncapped branch and keep the whole benchmark credit
+    // against a $0 premium — a phantom credit in the score.
+    // The other healthAcaThisYear uses (the funded net
+    // premium, the settlement's credit feedback) are
+    // unaffected by a $0 gross either way — the net premium
+    // at a $0 gross is $0 under both conditions — so they
+    // keep the narrower gate. When the applicable amount is
+    // null the gross falls back to the benchmark, against
+    // which the credit can never exceed anyway, so this
+    // wider gate moves nothing but the explicit-zero case.
+    const healthAcaCapThisYear = healthActive && acaActive;
     const premiumInitialCredit = premiumReconcile
       ? Math.min(
           Math.max(0, (benchmark as number) - (premiumEmbeddedDollars as number)),
@@ -6890,9 +6909,12 @@ export function simulateRothPlan(
     // reconciliation in settleRound / settleYear); this final
     // figure, priced after any gain harvest, is the year's
     // reported credit and the one the plan score credits.
-    // ENROLLMENT-PREMIUM CAP (R3-M2, engines review round 3):
-    // when the health premium term prices this year's
-    // marketplace premium (healthAcaThisYear), the retained
+    // ENROLLMENT-PREMIUM CAP (R3-M2, engines review round 3;
+    // scope widened by R3, parity re-review): when the
+    // health premium term is active for an ACA-covered
+    // person (healthAcaCapThisYear — including the year
+    // whose applicable entered premium is explicitly $0,
+    // whose retained credit is therefore $0), the retained
     // credit is capped at that gross premium — Form 8962's
     // lesser-of, the same cap the funding below applies to
     // the settlement's credit and the single-year pricer's
@@ -6924,7 +6946,7 @@ export function simulateRothPlan(
         // (see acaTableFor in taxLaw.ts).
         projected: true,
       });
-      acaCreditKept = healthAcaThisYear
+      acaCreditKept = healthAcaCapThisYear
         ? Math.min(acaResult.credit, healthGrossAca)
         : acaResult.credit;
       acaPriced = true;

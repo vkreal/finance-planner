@@ -3341,8 +3341,11 @@ export type PlaygroundYearInputs = {
   // federal and Washington bases can differ — the F2
   // defect was one signed gain serving both), and the
   // result carries the reconciled carry-out. With no
-  // carry-in the ledger never runs and the in-year-only
-  // pricing below is untouched.
+  // carry-in (and no net loss of the year's own — R1) the
+  // ledger never runs and the in-year-only pricing below
+  // is untouched; with no carry-in but a newly realized
+  // net loss, the ledger runs on the loss alone and the
+  // result carries the carry-out that loss generates.
   capitalLossCarryInSt?: number;
   capitalLossCarryInLt?: number;
   capitalLossCarryInStWa?: number;
@@ -3570,9 +3573,12 @@ export type PlaygroundYearResult = {
   // taxable income before the allowance — the plan march's
   // year-end reconciliation pattern. The Washington fields
   // are the Washington-attributable portions of the same
-  // carry-out. All four are $0 whenever no carry-in was
-  // entered (the ledger did not run — a Playground year
-  // keeps no cross-year state, exactly as before).
+  // carry-out. All four are $0 whenever the ledger did not
+  // run — no carry-in entered and the year's own result
+  // not a loss. Since R1 (parity re-review) the ledger
+  // also runs on a newly realized loss alone, so a year
+  // with no carry-in entered still reports the carry-out
+  // its own net loss generates.
   lossCarryOutSt: number;
   lossCarryOutLt: number;
   lossCarryOutStWa: number;
@@ -4093,19 +4099,35 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // absorbed) with utilization UNBOUNDED, and the carry-out
   // is reconciled once, after priceYear, against the priced
   // year's taxable income before the allowance (the plan's
-  // year-end pattern). When no carry-in is entered the
-  // ledger never runs and every figure below is the
+  // year-end pattern). When no carry-in is entered (and,
+  // since R1 below, the year's own result is not a loss)
+  // the ledger never runs and every figure below is the
   // pre-v111 in-year computation, term for term.
+  // R1 (parity re-review, MUST): the ledger ALSO runs when
+  // the year's own typed result is itself a net loss, even
+  // with no carry-in entered — a newly realized loss is a
+  // carryforward the year generates, not only one it can
+  // inherit. With a zero carry-in the ledger's trial
+  // transform is the identity term for term (net result =
+  // the gross result, allowance = the in-year §1211(b)
+  // figure, Washington absorbed part $0), so the year's own
+  // pricing is unchanged; only the year-end reconciliation
+  // below gains a figure — the new loss's carry-out,
+  // reconciled against the final taxable income exactly as
+  // an inherited carry-in's is. (The harvested gain sized
+  // below is never negative, so the year's total result can
+  // be negative only when the typed result already is —
+  // the gate reads the typed result alone.)
   const carryInSt = Math.max(0, inp.capitalLossCarryInSt ?? 0);
   const carryInLt = Math.max(0, inp.capitalLossCarryInLt ?? 0);
   const carryInStWa = Math.max(0, inp.capitalLossCarryInStWa ?? 0);
   const carryInLtWa = Math.max(0, inp.capitalLossCarryInLtWa ?? 0);
-  const lossLedgerOn = carryInSt > 0 || carryInLt > 0;
+  const lossLedgerOn = carryInSt > 0 || carryInLt > 0 || stockGain < 0;
   // The priceYear gains fields for a GROSS capital result
   // (the typed stock gain, plus any harvested gain when the
-  // harvest below sizes one): with a carry-in entered, the
+  // harvest below sizes one): with the ledger on, the
   // shared ledger's transform at that gross total — the
-  // plan march's ledgerFields, term for term; without one,
+  // plan march's ledgerFields, term for term; without it,
   // the identity (the gross result prices as-is, the
   // allowance is the in-year §1211(b) figure). The harvest
   // search and the final pricing both read this one
@@ -4274,8 +4296,11 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
     // prices on its own base — the gross gains minus the
     // Washington-attributable absorbed part — so the two
     // bases can differ; with no carry-in ltcgNet IS the
-    // typed stock gain and no waGainsBase is passed, so
-    // the excise prices on ltcg exactly as before.
+    // typed stock gain — and when the ledger runs on a
+    // newly realized loss alone (R1) the waGainsBase
+    // passed is that same figure (nothing Washington-
+    // attributable was absorbed), so the excise prices
+    // on ltcg exactly as before either way.
     ltcg: ltcgNet,
     ...(waGainsBase != null ? { waGainsBase } : {}),
     qualifiedDividends,
@@ -4400,9 +4425,12 @@ export function pricePlaygroundYear(inp: PlaygroundYearInputs): PlaygroundYearRe
   // march's ledFinal pattern — so only the part of the
   // claimed allowance that actually offset taxable income
   // is consumed from the carryforward. All four figures
-  // stay $0 when no carry-in was entered (the ledger never
-  // ran; the trial pricing's unbounded-utilization result
-  // above is never surfaced as a carry-out).
+  // stay $0 when the ledger never ran — no carry-in entered
+  // AND the year's own result not a loss (R1: a year whose
+  // own result IS a loss reconciles its newly realized
+  // carry-out here even with no carry-in entered; the trial
+  // pricing's unbounded-utilization result above is never
+  // surfaced as a carry-out either way).
   let lossCarryOutSt = 0;
   let lossCarryOutLt = 0;
   let lossCarryOutStWa = 0;
@@ -5489,6 +5517,44 @@ export function projectPlaygroundYears(
   let carryInLt = Math.max(0, template.capitalLossCarryInLt ?? 0);
   let carryInStWa = Math.max(0, template.capitalLossCarryInStWa ?? 0);
   let carryInLtWa = Math.max(0, template.capitalLossCarryInLtWa ?? 0);
+  /* R2 (parity re-review, SHOULD — settled STAND): the
+     gain-harvest pair is a ledger fact of the opposite
+     kind. A harvest sells shares and immediately
+     repurchases them, so the pool's BALANCE does not
+     fall — the endTaxable math below is right to leave
+     it alone — but the repurchased shares carry a basis
+     stepped up by the gain the harvest realized, exactly
+     as the plan march steps its own basis up after a
+     harvest (stepUpTiers / taxableBasisDollars +=
+     gainsHarvested in taxEngine.ts). Before R2 the walk
+     re-spread the template's pool and basis percent into
+     every year untouched, so each projected year
+     re-sized its harvest from the ORIGINAL unrealized
+     gain and harvested the same gain again and again.
+     The walk now carries the pool's basis DOLLARS
+     forward beside the balances: each year's harvest
+     basis percent is re-derived from the carried basis
+     (the template's own percent in the first walked
+     year), and each year's priced harvestedGain steps
+     the carried basis up for the next year. The pool
+     amount itself still repeats as the template states
+     it — a harvest never changes it — and with either
+     harvest fact absent the state stays null and every
+     year prices exactly as before. Pinned by the tax
+     suite's
+     tax-engines-playground-projection-harvest-step-up-r2
+     fixture. */
+  const harvestPoolAmount =
+    template.harvestPoolAmount != null
+      ? Math.max(0, template.harvestPoolAmount)
+      : null;
+  let harvestBasisDollars: number | null =
+    harvestPoolAmount != null && template.harvestPoolBasisPct != null
+      ? r2(
+          (Math.min(100, Math.max(0, template.harvestPoolBasisPct)) / 100) *
+            harvestPoolAmount,
+        )
+      : null;
   const templateCashDraw = Math.max(0, template.cashDraw ?? 0);
   const templateRothDraw = Math.max(0, template.rothDraw ?? 0);
   // A template Medicare flag is an override exactly
@@ -5614,6 +5680,20 @@ export function projectPlaygroundYears(
     const rothDrawEffective = firstWalkYear
       ? templateRothDraw
       : Math.min(templateRothDraw, Math.max(0, roth));
+    // R2 (see the state block above the loop): the year's
+    // harvest basis percent is re-derived from the basis
+    // dollars the walk carries — the template's percent
+    // in the first walked year, stepped up by every
+    // prior walked year's harvest after that. With no
+    // harvest facts the template's own value rides
+    // through untouched.
+    const harvestBasisPctEffective =
+      harvestBasisDollars != null &&
+      harvestPoolAmount != null &&
+      harvestPoolAmount > 0
+        ? (100 * Math.min(harvestBasisDollars, harvestPoolAmount)) /
+          harvestPoolAmount
+        : template.harvestPoolBasisPct;
     const inputs: PlaygroundYearInputs = {
       ...template,
       taxYear: calendarYear,
@@ -5667,6 +5747,12 @@ export function projectPlaygroundYears(
       // (see cashDrawEffective above).
       cashDraw: cashDrawEffective,
       rothDraw: rothDrawEffective,
+      // R2: the year's harvest basis percent, re-derived
+      // from the carried stepped-up basis dollars (see
+      // harvestBasisPctEffective above); the pool amount
+      // itself rides the spread untouched — a harvest
+      // sells and repurchases, so the pool never falls.
+      harvestPoolBasisPct: harvestBasisPctEffective,
     };
     const result = pricePlaygroundYear(inputs);
     const startBalances: PlaygroundProjectionBalances = {
@@ -5735,6 +5821,13 @@ export function projectPlaygroundYears(
     carryInLt = result.lossCarryOutLt;
     carryInStWa = result.lossCarryOutStWa;
     carryInLtWa = result.lossCarryOutLtWa;
+    // R2: this year's harvest steps the pool's carried
+    // basis up by the gain it realized — the repurchased
+    // shares now carry that much more basis, so the next
+    // walked year can only harvest the gain that remains.
+    if (harvestBasisDollars != null) {
+      harvestBasisDollars = r2(harvestBasisDollars + result.harvestedGain);
+    }
     firstWalkYear = false;
   }
   // A later from-age only slices the shown years (the walk
