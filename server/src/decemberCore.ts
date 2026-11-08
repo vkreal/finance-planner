@@ -124,9 +124,11 @@ export const decemberState = z.object({
   // cash left counts only the gains until it is entered);
   // $0 = explicitly no basis (a zero-basis sale). A blob
   // written before this field existed parses a missing key
-  // as null and prices exactly as before this build. A
-  // plain console answer (no Tax Plan record resolution,
-  // no provenance flag): it saves as displayed.
+  // as null and prices exactly as before this build. One of
+  // the year-to-date group (internal review round 6,
+  // SHOULD-2): a typed figure saves as displayed with the
+  // group's edited flag, and an unedited group saves
+  // stamp-aware, like a carry-in.
   saleBasis: z.number().finite().min(0).nullable(),
   // Capital-loss carryforward ENTERING this year (contract
   // v111, round-17 fix F1+F2): the banked short-term and
@@ -208,8 +210,10 @@ export const decemberState = z.object({
   // blob written before this field existed parses a missing
   // key as null and prices exactly as before this build.
   // NULLABLE: null = no input yet, $0 = explicitly none.
-  // A plain console answer (no Tax Plan record resolution,
-  // no provenance flag): it saves as displayed.
+  // One of the year-to-date group (internal review round 6,
+  // SHOULD-2): a typed figure saves as displayed with the
+  // group's edited flag, and an unedited group saves
+  // stamp-aware, like a carry-in.
   taxableFunded: z.number().finite().min(0).nullable(),
   ytdSsPrimary: z.number().finite().min(0),
   ytdSsSpouse: z.number().finite().min(0),
@@ -1200,6 +1204,61 @@ function resolveYearDependentOverlays(
   return out;
 }
 
+/* The harvest starting-pool derivation (S-8), shared by
+   load resolution (resolveDecemberStateAtLoad below) and
+   year-change re-resolution (reresolveDecemberStateForYear),
+   so the two can never disagree about what a year resolves
+   to: the record's CURRENT pool plus the year's year-to-date
+   sale (proceeds and basis, derived by decemberSaleAmounts
+   exactly as decemberCaseInputs derives them) plus the
+   year's 100%-basis taxable cash — the same outflows the
+   shared pricer will net back out — with the basis %
+   converted on the same dollars (the record's basis dollars,
+   plus the basis the year's sale used, plus the taxable cash,
+   over the starting pool). The derivation reads the YTD
+   figures off the state it is given, so it answers for the
+   year those figures belong to: load passes the loaded
+   year's figures, and a year change passes the new year's
+   (reset or restored) figures. `deriveHarvestBasisPct` takes
+   the pool to convert against — the display pool when the
+   console owns one (a console-entered pool beside a record
+   basis converts the % against that entered pool), the
+   derived starting pool otherwise — and returns the record
+   basis unchanged when there is no current pool to convert
+   from. Both return null when the record does not answer
+   the fact they derive. */
+function deriveHarvestStartingPool(
+  state: DecemberState,
+  facts: DecemberRecordFacts,
+): number | null {
+  const sale = decemberSaleAmounts(state.ytdCapitalGain, state.saleBasis);
+  const fundedBack = Math.max(0, state.taxableFunded ?? 0);
+  const currentPool = facts.harvestPoolAmount ?? null;
+  return currentPool != null
+    ? r2(currentPool + sale.proceeds + fundedBack)
+    : null;
+}
+
+function deriveHarvestBasisPct(
+  state: DecemberState,
+  facts: DecemberRecordFacts,
+  startPool: number | null,
+): number | null {
+  if (facts.harvestPoolBasisPct == null) return null;
+  const currentPool = facts.harvestPoolAmount ?? null;
+  if (currentPool != null && startPool != null && startPool > 0) {
+    const sale = decemberSaleAmounts(state.ytdCapitalGain, state.saleBasis);
+    const fundedBack = Math.max(0, state.taxableFunded ?? 0);
+    const startBasis = r2(
+      (facts.harvestPoolBasisPct / 100) * currentPool +
+        sale.basisDollars +
+        fundedBack,
+    );
+    return Math.min(100, Math.max(0, r2((startBasis / startPool) * 100)));
+  }
+  return facts.harvestPoolBasisPct;
+}
+
 export function resolveDecemberStateAtLoad(
   state: DecemberState,
   record: boolean | null | undefined | DecemberRecordFacts,
@@ -1266,33 +1325,22 @@ export function resolveDecemberStateAtLoad(
   // answers the basis but not the pool, its % cannot be
   // converted (the basis dollars are unknown) and resolves
   // as entered; a console-entered pool beside a record
-  // basis converts the % against that entered pool.
+  // basis converts the % against that entered pool. The
+  // derivation itself lives in deriveHarvestStartingPool /
+  // deriveHarvestBasisPct above, shared with the year-change
+  // re-resolution so a flip answers exactly as a fresh load
+  // would.
   {
-    const sale = decemberSaleAmounts(out.ytdCapitalGain, out.saleBasis);
-    const fundedBack = Math.max(0, out.taxableFunded ?? 0);
-    const currentPool = facts.harvestPoolAmount ?? null;
-    const startingPool =
-      currentPool != null
-        ? r2(currentPool + sale.proceeds + fundedBack)
-        : null;
+    const startingPool = deriveHarvestStartingPool(out, facts);
     const harvestPatch: Partial<DecemberState> = {};
     if (out.harvestPoolAmount == null && startingPool != null) {
       harvestPatch.harvestPoolAmount = startingPool;
     }
     if (out.harvestPoolBasisPct == null && facts.harvestPoolBasisPct != null) {
       const startPool = out.harvestPoolAmount ?? startingPool;
-      if (currentPool != null && startPool != null && startPool > 0) {
-        const startBasis = r2(
-          (facts.harvestPoolBasisPct / 100) * currentPool +
-            sale.basisDollars +
-            fundedBack,
-        );
-        harvestPatch.harvestPoolBasisPct = Math.min(
-          100,
-          Math.max(0, r2((startBasis / startPool) * 100)),
-        );
-      } else {
-        harvestPatch.harvestPoolBasisPct = facts.harvestPoolBasisPct;
+      const derivedBasis = deriveHarvestBasisPct(out, facts, startPool);
+      if (derivedBasis != null) {
+        harvestPatch.harvestPoolBasisPct = derivedBasis;
       }
     }
     if (Object.keys(harvestPatch).length > 0) {
@@ -1390,11 +1438,20 @@ export function resolveDecemberStateAtLoad(
    year's students replace the old year's. A field the
    user HAS edited is never touched, so an explicit
    console answer survives a year change exactly as it
-   survives a reload. Year-INDEPENDENT overlays (the
-   beneficiary fact, the harvest pool facts) are not
-   touched here at all: they do not depend on the year,
-   and re-running the full load resolution would wrongly
-   revive a fact the user deliberately cleared. The
+   survives a reload. The beneficiary fact is the one
+   year-independent overlay that is not touched here at
+   all: it does not depend on the year, and re-running
+   the full load resolution would wrongly revive a fact
+   the user deliberately cleared. The year-to-date
+   figures ARE year-dependent (internal review round 6,
+   SHOULD-2): they are the displayed year's facts, so an
+   unedited group resets to the new year's answer — blank,
+   since no record source carries them — and the harvest
+   starting pool (and basis %) re-derives from the reset
+   figures when overlay-derived, exactly as a fresh load
+   would; a user-entered or previously saved non-null pool
+   stays, consistent with the load resolution's "a non-null
+   pool always wins" rule. The
    balance split is the one exception, in one direction
    only (internal review round 3, SHOULD-1): the record's
    starting balance answers only the plan's first year,
@@ -1413,6 +1470,18 @@ export function reresolveDecemberStateForYear(
     carryInLtWa: boolean;
     education: boolean;
     balances: boolean;
+    // Year-to-date group (internal review round 6,
+    // SHOULD-2): whether the user has edited any of the
+    // six year-to-date figures in this console since
+    // hydration. Optional for older callers, which never
+    // edited them — absent reads as unedited.
+    ytd?: boolean;
+    // Harvest facts (round-17 defect 3, per field):
+    // whether the user has edited the pool amount or the
+    // basis % in this console. Optional for older callers;
+    // absent reads as unedited.
+    harvestPoolAmount?: boolean;
+    harvestPoolBasisPct?: boolean;
   },
   facts: DecemberRecordFacts,
 ): DecemberState {
@@ -1461,6 +1530,35 @@ export function reresolveDecemberStateForYear(
       ? stored.educationStudents
       : null;
   }
+  if (!edited.ytd) {
+    // Year-to-date figures (internal review round 6,
+    // SHOULD-2): the six figures are the displayed year's
+    // facts, so an unedited group follows the stamp exactly
+    // like a carry-in — restored from stored provenance
+    // when the stamp IS the display year, blanked when it
+    // is not. Blank is the new year's answer: no record
+    // source carries year-to-date figures, so the new year
+    // starts unanswered until the user types them (the
+    // numbers blank to $0, the two nullable figures to
+    // null). The other year-to-date lines — other ordinary
+    // income, tax-exempt interest, Social Security — are
+    // not in this group and keep persisting across a flip,
+    // as before. The handler resets the group's edited flag
+    // on the flip (round-6 SHOULD-1's shape), so a group
+    // typed for the old year never survives into the new
+    // one; the flush before that reset saves the typed
+    // figures under the old year's stamp first.
+    reset.ytdInterest = storedForYear ? stored.ytdInterest : 0;
+    reset.ytdOrdinaryDividends = storedForYear
+      ? stored.ytdOrdinaryDividends
+      : 0;
+    reset.ytdQualifiedDividends = storedForYear
+      ? stored.ytdQualifiedDividends
+      : 0;
+    reset.ytdCapitalGain = storedForYear ? stored.ytdCapitalGain : 0;
+    reset.saleBasis = storedForYear ? stored.saleBasis : null;
+    reset.taxableFunded = storedForYear ? stored.taxableFunded : null;
+  }
   if (!edited.balances) {
     // A saved split restores like every other unedited field.
     // No saved split (null) leaves the display exactly as it
@@ -1508,6 +1606,50 @@ export function reresolveDecemberStateForYear(
       merged.pretaxBalanceSpouse === facts.pretaxBalanceSpouse
     ) {
       merged.pretaxBalanceSpouse = null;
+    }
+  }
+  // The harvest starting pool re-derives for the new year
+  // (internal review round 6, SHOULD-2): the load
+  // resolution derives it from the record's current pool
+  // plus the year's year-to-date sale and taxable cash, so
+  // a pool derived for the old year is stale for the new
+  // one — the old year's sale left the pool before the new
+  // year began. The re-derivation runs on the merged
+  // state, so it reads the reset (or restored) year-to-date
+  // figures above, through the same shared derivation the
+  // load resolution uses — a flip answers exactly as a
+  // fresh load would. It runs ONLY when the pool is
+  // overlay-derived AND currently shown: a stored non-null
+  // pool is the console's own answer and stays, a pool the
+  // user edited in this console stays too (per fact, like
+  // the save's harvest flags), and a pool that is blank
+  // stays blank — a deliberately cleared fact is never
+  // revived by a year change (pinned by
+  // dec-reresolve-year-change), so the re-derivation
+  // re-derives what is shown and never fills what is not.
+  // The basis % follows the same per-fact rule,
+  // converting against the re-derived (or kept) pool.
+  if (
+    stored.harvestPoolAmount == null &&
+    !edited.harvestPoolAmount &&
+    merged.harvestPoolAmount != null
+  ) {
+    const startingPool = deriveHarvestStartingPool(merged, facts);
+    if (startingPool != null) {
+      merged.harvestPoolAmount = startingPool;
+    }
+  }
+  if (
+    stored.harvestPoolBasisPct == null &&
+    !edited.harvestPoolBasisPct &&
+    merged.harvestPoolBasisPct != null &&
+    facts.harvestPoolBasisPct != null
+  ) {
+    const startPool =
+      merged.harvestPoolAmount ?? deriveHarvestStartingPool(merged, facts);
+    const derivedBasis = deriveHarvestBasisPct(merged, facts, startPool);
+    if (derivedBasis != null) {
+      merged.harvestPoolBasisPct = derivedBasis;
     }
   }
   return resolveYearDependentOverlays(merged, facts);
@@ -1568,6 +1710,24 @@ export type DecemberStoredProvenance = {
   // and always saves as displayed.
   harvestPoolAmount: number | null;
   harvestPoolBasisPct: number | null;
+  // Year-to-date figures (internal review round 6,
+  // SHOULD-2): the stored blob's own six figures (the
+  // numbers blank to $0, the two nullable figures to null
+  // when unanswered), preserved through saves the same way
+  // the carry-ins are — stamp-aware (decemberStateForSave
+  // below), so a flip-back before any save at the new year
+  // restores the old year's figures from here, and an edit
+  // at the new year never carries the old year's figures
+  // into the new year's stamp. The other year-to-date
+  // lines (other ordinary income, tax-exempt interest,
+  // Social Security) are not provenance: they are plain
+  // console answers and always save as displayed.
+  ytdInterest: number;
+  ytdOrdinaryDividends: number;
+  ytdQualifiedDividends: number;
+  ytdCapitalGain: number;
+  saleBasis: number | null;
+  taxableFunded: number | null;
 };
 
 export function decemberStoredProvenanceOf(
@@ -1591,6 +1751,12 @@ export function decemberStoredProvenanceOf(
     carryInCapitalLossLtWa: state.carryInCapitalLossLtWa,
     harvestPoolAmount: state.harvestPoolAmount,
     harvestPoolBasisPct: state.harvestPoolBasisPct,
+    ytdInterest: state.ytdInterest,
+    ytdOrdinaryDividends: state.ytdOrdinaryDividends,
+    ytdQualifiedDividends: state.ytdQualifiedDividends,
+    ytdCapitalGain: state.ytdCapitalGain,
+    saleBasis: state.saleBasis,
+    taxableFunded: state.taxableFunded,
   };
 }
 
@@ -1641,6 +1807,14 @@ export function decemberStateForSave(
     // pool amount and the basis % save independently.
     harvestPoolAmount?: boolean;
     harvestPoolBasisPct?: boolean;
+    // Year-to-date group flag (internal review round 6,
+    // SHOULD-2): whether the user has edited any of the
+    // six year-to-date figures in this console since
+    // hydration. One flag for the group: the figures are
+    // one year's facts together, so editing any of them
+    // saves the group as displayed; an unedited group
+    // saves stamp-aware, like a carry-in.
+    ytd?: boolean;
   },
 ): DecemberState {
   // The carry-ins and the education students are
@@ -1666,13 +1840,52 @@ export function decemberStateForSave(
   // for a non-first year. The stamp-aware save closes
   // both directions at the root: no stale-year value is
   // saved under the wrong year, and nothing is destroyed
-  // on switch-back. The harvest pool is deliberately NOT
-  // year-gated here (round 5 noted it uncounted, with no
-  // wrong pricing demonstrated), and neither are the
-  // balances below.
+  // on switch-back. The year-to-date figures follow the
+  // same stamp-aware rule (internal review round 6,
+  // SHOULD-2): an unedited group persists its STORED values
+  // only into its stamped year, and blank ($0 for the
+  // numbers, null for the two nullable figures) otherwise —
+  // never the display value, which on a mismatch is either
+  // blank already (cleared by the year-change re-resolution)
+  // or the old year's figures the flip must not re-stamp.
+  // The harvest pool is deliberately NOT year-gated here:
+  // a stored non-null pool is the console's own answer and
+  // persists as stored in any year, and an overlay-derived
+  // pool is re-derived at the year change, not at the save
+  // — and neither are the balances below.
   const storedForDisplayYear = stored.taxYear === display.taxYear;
   return {
     ...display,
+    ytdInterest: edited.ytd
+      ? display.ytdInterest
+      : storedForDisplayYear
+        ? stored.ytdInterest
+        : 0,
+    ytdOrdinaryDividends: edited.ytd
+      ? display.ytdOrdinaryDividends
+      : storedForDisplayYear
+        ? stored.ytdOrdinaryDividends
+        : 0,
+    ytdQualifiedDividends: edited.ytd
+      ? display.ytdQualifiedDividends
+      : storedForDisplayYear
+        ? stored.ytdQualifiedDividends
+        : 0,
+    ytdCapitalGain: edited.ytd
+      ? display.ytdCapitalGain
+      : storedForDisplayYear
+        ? stored.ytdCapitalGain
+        : 0,
+    saleBasis: edited.ytd
+      ? display.saleBasis
+      : storedForDisplayYear
+        ? stored.saleBasis
+        : null,
+    taxableFunded: edited.ytd
+      ? display.taxableFunded
+      : storedForDisplayYear
+        ? stored.taxableFunded
+        : null,
     educationStudents: edited.education
       ? display.educationStudents
       : storedForDisplayYear
@@ -7542,6 +7755,305 @@ export function runDecemberFixtures(): {
     exact(fail, "the right draw keeps the benchmark credit", trueAtRightDraw.aca.credit, 23350.8);
   });
 
+  run("dec-harvest-pool-switchback-ytd", (fail) => {
+    // (Internal review round 6, SHOULD-2 — settled STAND):
+    // the load resolution derives the harvest STARTING pool
+    // from the record's current pool plus the year's
+    // year-to-date sale and taxable cash (the settled S-8
+    // derivation — year-specific add-backs), but the
+    // year-change re-resolution never touched the pool at
+    // all, documenting it as year-independent. A fresh load
+    // at the new year and a flip into it from the old year
+    // therefore showed DIFFERENT starting pools for the same
+    // year and the same record, and the flipped year priced
+    // its harvest from the old year's pool. THE FIX (the
+    // settlement's close, with the year-to-date entanglement
+    // decided): the year-to-date figures ARE year-stamped
+    // facts — the S-8 derivation's "year-to-date sale only"
+    // and the pricer's netting of "the year's taxable sales"
+    // both assume the form's figures belong to the displayed
+    // year. So on a year change, as one mechanism: the
+    // year-to-date figure group (interest, ordinary
+    // dividends, qualified dividends, capital gain, sale
+    // basis, taxable funded cash) resets to the new year's
+    // answer — blank, since no record source carries them,
+    // until the user types them — and the harvest starting
+    // pool (and basis %) re-derives from the reset figures
+    // when overlay-derived (stored pool null), exactly as a
+    // fresh load would. A user-entered or previously saved
+    // non-null pool stays, consistent with the load
+    // resolution's "a non-null pool always wins" rule, and a
+    // deliberately cleared pool is never revived. The save
+    // preserves the year-to-date figures stamp-aware (the
+    // carry-in pattern, one edited flag for the group), so a
+    // flip-back before any save at the new year restores the
+    // old year's figures from stored provenance. This
+    // fixture pins the round trip through the console's own
+    // paths (save + re-resolution + save + load) — the flag
+    // reset itself is client code; this fixture models it
+    // by passing all-false flags to the re-resolution on the
+    // flip, exactly as the handler now does. ON THE "EDIT
+    // AT 2028" LEG, read carefully: the leg asserts on the
+    // PAYLOAD the edit builds (no re-stamp — it carries
+    // blank figures, never the old year's) and does NOT
+    // adopt that payload as the new stored provenance
+    // before the flip-back. A landed save at 2028 re-stamps
+    // the blob to 2028 with blank figures — the round-5 NULL
+    // rule, pinned by the existing fixture's mismatch legs
+    // — so no round trip, typed or loaded, can restore
+    // after a landed save at the new year. The guarantee,
+    // exactly as for the loaded path, is the round trip
+    // with no intervening save at the new year; the edit
+    // leg pins the no-re-stamp property instead. THE WORKED
+    // EXAMPLE (the settlement's, engine-run): a record
+    // current pool of $50,000 at 60% basis, with a 2027
+    // year-to-date sale of $20,000 proceeds ($10,000 gain,
+    // $10,000 basis). The 2027 load derives a $70,000
+    // starting pool at 57.14%; a fresh 2028 load (2028 sale
+    // $0) derives $50,000 at 60%. With the harvest on and
+    // the 0% band non-binding, the flipped 2028 harvested
+    // $30,002 against the fresh $20,000 — MAGI overstated
+    // by the same amount, the draw sized too small by it.
+    const none = {
+      carryInSt: false,
+      carryInLt: false,
+      carryInStWa: false,
+      carryInLtWa: false,
+      education: false,
+      balances: false,
+    };
+    const noEdit = { beneficiary: false, balances: false };
+    const facts: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      harvestPoolAmount: 50000,
+      harvestPoolBasisPct: 60,
+    };
+    // TYPE the 2027 year-to-date figures and AUTOSAVE: the
+    // edited branch takes the display group, so the blob
+    // stamps 2027 and holds the figures.
+    const storedNull2027 = decemberStoredProvenanceOf(
+      defaultDecemberState(2027),
+    );
+    const display2027Typed = {
+      ...defaultDecemberState(2027),
+      ytdInterest: 1500,
+      ytdOrdinaryDividends: 20000,
+      ytdQualifiedDividends: 15000,
+      ytdCapitalGain: 10000,
+      saleBasis: 10000,
+      taxableFunded: 0,
+    };
+    const saved2027 = decemberStateForSave(display2027Typed, storedNull2027, {
+      ...noEdit,
+      ytd: true,
+    });
+    exact(fail, "the typed 2027 save stamps 2027", decemberStoredProvenanceOf(saved2027).taxYear, 2027);
+    exact(fail, "the typed 2027 save holds the interest", saved2027.ytdInterest, 1500);
+    exact(fail, "the typed 2027 save holds the ordinary dividends", saved2027.ytdOrdinaryDividends, 20000);
+    exact(fail, "the typed 2027 save holds the qualified dividends", saved2027.ytdQualifiedDividends, 15000);
+    exact(fail, "the typed 2027 save holds the capital gain", saved2027.ytdCapitalGain, 10000);
+    exact(fail, "the typed 2027 save holds the sale basis", saved2027.saleBasis, 10000);
+    exact(fail, "the typed 2027 save holds the taxable cash", saved2027.taxableFunded, 0);
+    const stored2027 = decemberStoredProvenanceOf(saved2027);
+    exact(fail, "stored provenance holds the capital gain", stored2027.ytdCapitalGain, 10000);
+    exact(fail, "stored provenance holds the sale basis", stored2027.saleBasis, 10000);
+    // LOAD 2027 derives the starting pool from the 2027
+    // sale: current pool plus proceeds plus funded cash,
+    // with the basis % converted on the same dollars.
+    const load2027 = resolveDecemberStateAtLoad({ ...saved2027 }, facts);
+    exact(fail, "2027 load derives the starting pool", load2027.harvestPoolAmount, 70000);
+    exact(fail, "2027 load converts the basis %", load2027.harvestPoolBasisPct, 57.14);
+    // FLIP TO 2028 with the flags reset (the handler's new
+    // behavior, modeled by all-false flags): the
+    // year-to-date figures blank and the pool re-derives
+    // from the blanked figures.
+    const to2028 = reresolveDecemberStateForYear(
+      { ...load2027, taxYear: 2028 },
+      stored2027,
+      none,
+      facts,
+    );
+    exact(fail, "the flip blanks the interest", to2028.ytdInterest, 0);
+    exact(fail, "the flip blanks the ordinary dividends", to2028.ytdOrdinaryDividends, 0);
+    exact(fail, "the flip blanks the qualified dividends", to2028.ytdQualifiedDividends, 0);
+    exact(fail, "the flip blanks the capital gain", to2028.ytdCapitalGain, 0);
+    if (to2028.saleBasis !== null) fail("the flip must blank the sale basis");
+    if (to2028.taxableFunded !== null) fail("the flip must blank the taxable cash");
+    exact(fail, "the flipped pool re-derives", to2028.harvestPoolAmount, 50000);
+    exact(fail, "the flipped basis % re-derives", to2028.harvestPoolBasisPct, 60);
+    // FRESH 2028 LOAD agrees exactly: the flip answers as
+    // a fresh load would.
+    const fresh2028 = resolveDecemberStateAtLoad(
+      defaultDecemberState(2028),
+      facts,
+    );
+    exact(fail, "fresh 2028 load pool", fresh2028.harvestPoolAmount, 50000);
+    exact(fail, "fresh 2028 load basis %", fresh2028.harvestPoolBasisPct, 60);
+    if (to2028.harvestPoolAmount !== fresh2028.harvestPoolAmount) {
+      fail("the flipped pool must equal the fresh load's pool");
+    }
+    if (to2028.harvestPoolBasisPct !== fresh2028.harvestPoolBasisPct) {
+      fail("the flipped basis % must equal the fresh load's basis %");
+    }
+    // PRICING: the harvest on, low ordinary income so the
+    // 0% band does not bind and the harvest is pool-limited.
+    const price2028 = (s: DecemberState) => {
+      const st = {
+        ...s,
+        agePrimary: 60,
+        ageSpouse: 58,
+        harvestOn: true,
+        ytdOtherOrdinary: 0,
+        ytdCapitalGain: 0,
+        saleBasis: 0,
+      };
+      return pricePlaygroundYear(decemberCaseInputs(st, "likely", 0));
+    };
+    const flippedPrice = price2028(to2028);
+    const freshPrice = price2028(fresh2028);
+    exact(fail, "flipped 2028 harvested gain", flippedPrice.harvestedGain, 20000);
+    exact(fail, "flipped 2028 MAGI", flippedPrice.acaMagi, 20000);
+    exact(fail, "fresh 2028 harvested gain", freshPrice.harvestedGain, 20000);
+    exact(fail, "fresh 2028 MAGI", freshPrice.acaMagi, 20000);
+    // The STALE pool prices the defect's figures
+    // (hand-built stale state: the old year's pool with the
+    // new year's blanked figures).
+    const stale2028 = {
+      ...to2028,
+      harvestPoolAmount: 70000,
+      harvestPoolBasisPct: 57.14,
+    };
+    const stalePrice = price2028(stale2028);
+    exact(fail, "stale-pool 2028 harvested gain", stalePrice.harvestedGain, 30002);
+    exact(fail, "stale-pool 2028 MAGI", stalePrice.acaMagi, 30002);
+    // EDIT AT 2028 (an unrelated field): the payload the
+    // edit builds carries no re-stamp — it stamps 2028
+    // with blank year-to-date figures, never the 2027
+    // figures. (The payload is asserted, not adopted: see
+    // the header comment for why a landed 2028 save ends
+    // the round trip.)
+    const edited2028 = { ...to2028, ytdOtherOrdinary: 900 };
+    const payload2028 = decemberStateForSave(edited2028, stored2027, noEdit);
+    exact(fail, "the 2028 edit's payload stamps 2028", payload2028.taxYear, 2028);
+    exact(fail, "the 2028 edit must not re-stamp the 2027 interest", payload2028.ytdInterest, 0);
+    exact(fail, "the 2028 edit must not re-stamp the 2027 gain", payload2028.ytdCapitalGain, 0);
+    if (payload2028.saleBasis !== null) fail("the 2028 edit must not re-stamp the 2027 sale basis to 2028");
+    if (payload2028.taxableFunded !== null) fail("the 2028 edit must not re-stamp the 2027 taxable cash to 2028");
+    exact(fail, "the unrelated 2028 edit itself lands", payload2028.ytdOtherOrdinary, 900);
+    // FLIP BACK TO 2027 (no save landed at 2028): the
+    // stored figures restore exactly, and the pool
+    // re-derives from them.
+    const back2027 = reresolveDecemberStateForYear(
+      { ...to2028, taxYear: 2027 },
+      stored2027,
+      none,
+      facts,
+    );
+    exact(fail, "flipping back restores the interest", back2027.ytdInterest, 1500);
+    exact(fail, "flipping back restores the ordinary dividends", back2027.ytdOrdinaryDividends, 20000);
+    exact(fail, "flipping back restores the qualified dividends", back2027.ytdQualifiedDividends, 15000);
+    exact(fail, "flipping back restores the capital gain", back2027.ytdCapitalGain, 10000);
+    exact(fail, "flipping back restores the sale basis", back2027.saleBasis, 10000);
+    exact(fail, "flipping back restores the taxable cash", back2027.taxableFunded, 0);
+    exact(fail, "flipping back restores the pool", back2027.harvestPoolAmount, 70000);
+    exact(fail, "flipping back restores the basis %", back2027.harvestPoolBasisPct, 57.14);
+    // THE RE-SAVE of the round-tripped display against the
+    // 2027 stamp holds the figures, and the re-saved blob's
+    // own provenance still stamps 2027 and holds them.
+    const resaved = decemberStateForSave(back2027, stored2027, noEdit);
+    exact(fail, "the re-save holds the interest", resaved.ytdInterest, 1500);
+    exact(fail, "the re-save holds the capital gain", resaved.ytdCapitalGain, 10000);
+    exact(fail, "the re-save holds the sale basis", resaved.saleBasis, 10000);
+    exact(fail, "the re-save holds the taxable cash", resaved.taxableFunded, 0);
+    const resavedProv = decemberStoredProvenanceOf(resaved);
+    exact(fail, "the re-saved blob stamps 2027", resavedProv.taxYear, 2027);
+    exact(fail, "the re-saved blob holds the interest", resavedProv.ytdInterest, 1500);
+    exact(fail, "the re-saved blob holds the capital gain", resavedProv.ytdCapitalGain, 10000);
+    // RELOAD from the re-saved blob holds the figures and
+    // derives the pool.
+    const reloaded = resolveDecemberStateAtLoad({ ...resaved }, facts);
+    exact(fail, "reload holds the capital gain", reloaded.ytdCapitalGain, 10000);
+    exact(fail, "reload holds the sale basis", reloaded.saleBasis, 10000);
+    exact(fail, "reload derives the starting pool", reloaded.harvestPoolAmount, 70000);
+    exact(fail, "reload converts the basis %", reloaded.harvestPoolBasisPct, 57.14);
+    // ORDERING (the flush must send the queued payload as
+    // built): the queued payload at type time was built with
+    // the OLD flag (edited=true) and holds the typed figures
+    // under 2027 — while the SAME display saved after the
+    // flag reset, against a stored provenance that does not
+    // yet hold the figures, persists blank and the typed
+    // figures are lost. That is why the handler flushes the
+    // queued payload BEFORE resetting the flags.
+    const queuedPayload = decemberStateForSave(display2027Typed, storedNull2027, {
+      ...noEdit,
+      ytd: true,
+    });
+    exact(fail, "the queued payload holds the typed gain", queuedPayload.ytdCapitalGain, 10000);
+    exact(fail, "the queued payload holds the typed sale basis", queuedPayload.saleBasis, 10000);
+    exact(fail, "the queued payload stamps 2027", queuedPayload.taxYear, 2027);
+    const afterResetPayload = decemberStateForSave(display2027Typed, storedNull2027, noEdit);
+    if (
+      afterResetPayload.ytdCapitalGain !== 0 ||
+      afterResetPayload.saleBasis !== null ||
+      afterResetPayload.ytdInterest !== 0
+    ) {
+      fail("a save built after the flag reset, against a stored provenance without the figures, must persist blank — the typed figures are lost unless the queued payload was flushed first");
+    }
+    // GUARDS: a user-entered or previously saved non-null
+    // pool stays across the flip, and a deliberately cleared
+    // pool is never revived.
+    const storedPool = decemberStoredProvenanceOf({
+      ...defaultDecemberState(2027),
+      harvestPoolAmount: 45000,
+      harvestPoolBasisPct: 80,
+    });
+    const keptPool = reresolveDecemberStateForYear(
+      {
+        ...load2027,
+        taxYear: 2028,
+        harvestPoolAmount: 45000,
+        harvestPoolBasisPct: 80,
+      },
+      storedPool,
+      none,
+      facts,
+    );
+    exact(fail, "a saved pool stays across the flip", keptPool.harvestPoolAmount, 45000);
+    exact(fail, "a saved basis % stays across the flip", keptPool.harvestPoolBasisPct, 80);
+    const cleared = reresolveDecemberStateForYear(
+      {
+        ...load2027,
+        taxYear: 2028,
+        harvestPoolAmount: null,
+        harvestPoolBasisPct: null,
+      },
+      stored2027,
+      none,
+      facts,
+    );
+    if (
+      cleared.harvestPoolAmount !== null ||
+      cleared.harvestPoolBasisPct !== null
+    ) {
+      fail("a year change must not revive a deliberately cleared harvest fact");
+    }
+    // GUARD: a pool the user edited in this console stays,
+    // even with a null stored pool.
+    const typedPool = reresolveDecemberStateForYear(
+      {
+        ...load2027,
+        taxYear: 2028,
+        harvestPoolAmount: 65000,
+        harvestPoolBasisPct: 70,
+      },
+      stored2027,
+      { ...none, harvestPoolAmount: true, harvestPoolBasisPct: true },
+      facts,
+    );
+    exact(fail, "an edited pool stays across the flip", typedPool.harvestPoolAmount, 65000);
+    exact(fail, "an edited basis % stays across the flip", typedPool.harvestPoolBasisPct, 70);
+  });
+
   /* ---- Build v112 fixtures: character splits on the
      two strays (round-17 F4 + F5) ----
      F4: Schedule K-1 box 9a net long-term capital gain
@@ -8781,9 +9293,11 @@ export function runDecemberFixtures(): {
     // Persistence: the field survives a serialize/parse
     // round trip; a blob written before it existed parses
     // it as null; the writer schema accepts it; and it is
-    // a plain console answer — decemberStateForSave passes
-    // it through as displayed with no edited flag (no
-    // record resolution, no provenance entry).
+    // one of the year-to-date group (internal review round
+    // 6, SHOULD-2) — a typed figure saves as displayed
+    // with the group's edited flag (the live console sets
+    // it on any year-to-date edit), while an unedited
+    // group saves stamp-aware, like a carry-in.
     const s = { ...defaultDecemberState(2026), taxableFunded: 10000 };
     const blob = serializeDecemberState(s, 1);
     const back = parseDecemberState(blob, 2026);
@@ -8798,7 +9312,7 @@ export function runDecemberFixtures(): {
     const saved = decemberStateForSave(
       { ...fresh, taxableFunded: 10000 },
       stored,
-      { beneficiary: false, balances: false },
+      { beneficiary: false, balances: false, ytd: true },
     );
     exact(fail, "save passes it through", saved.taxableFunded, 10000);
   });
@@ -8969,10 +9483,11 @@ export function runDecemberFixtures(): {
     // Persistence: the basis field survives a
     // serialize/parse round trip; a blob written before
     // it existed parses it as null; the writer schema
-    // accepts it; and it is a plain console answer —
-    // decemberStateForSave passes it through as displayed
-    // with no edited flag (no record resolution, no
-    // provenance entry).
+    // accepts it; and it is one of the year-to-date group
+    // (internal review round 6, SHOULD-2) — a typed figure
+    // saves as displayed with the group's edited flag (the
+    // live console sets it on any year-to-date edit), while
+    // an unedited group saves stamp-aware, like a carry-in.
     const s = { ...defaultDecemberState(2026), saleBasis: 40000 };
     const blob = serializeDecemberState(s, 1);
     const back = parseDecemberState(blob, 2026);
@@ -8987,7 +9502,7 @@ export function runDecemberFixtures(): {
     const saved = decemberStateForSave(
       { ...fresh, saleBasis: 40000 },
       stored,
-      { beneficiary: false, balances: false },
+      { beneficiary: false, balances: false, ytd: true },
     );
     exact(fail, "save passes it through", saved.saleBasis, 40000);
   });

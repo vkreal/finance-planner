@@ -666,6 +666,7 @@ export function December() {
       setCarryInLtEdited(false);
       setCarryInStWaEdited(false);
       setCarryInLtWaEdited(false);
+      setYtdEdited(false);
       setHarvestPoolAmountEdited(false);
       setHarvestPoolBasisPctEdited(false);
       setForm(
@@ -783,6 +784,12 @@ export function December() {
     carryInCapitalLossLtWa: null,
     harvestPoolAmount: null,
     harvestPoolBasisPct: null,
+    ytdInterest: 0,
+    ytdOrdinaryDividends: 0,
+    ytdQualifiedDividends: 0,
+    ytdCapitalGain: 0,
+    saleBasis: null,
+    taxableFunded: null,
   });
   const [beneficiaryEdited, setBeneficiaryEdited] = useState(false);
   const [balancesEdited, setBalancesEdited] = useState(false);
@@ -806,6 +813,19 @@ export function December() {
   const [carryInLtEdited, setCarryInLtEdited] = useState(false);
   const [carryInStWaEdited, setCarryInStWaEdited] = useState(false);
   const [carryInLtWaEdited, setCarryInLtWaEdited] = useState(false);
+  // Year-to-date provenance (internal review round 6,
+  // SHOULD-2): whether the user has edited ANY of the six
+  // year-to-date figures in this console since hydration —
+  // until then a save preserves the stored figures
+  // stamp-aware, like a carry-in. One flag for the group:
+  // the figures are one year's facts together, so editing
+  // any of them saves the group as displayed. The
+  // year-change handler resets it on a flip (round-6
+  // SHOULD-1's shape), so a group typed for the old year
+  // never survives into the new one — the flush before
+  // that reset saves the typed figures under the old
+  // year's stamp first.
+  const [ytdEdited, setYtdEdited] = useState(false);
   // Harvest provenance (v113, per field round-17 defect
   // 3): whether the user has edited EACH harvest fact in
   // this console since hydration — until then a save
@@ -888,6 +908,7 @@ export function December() {
     setCarryInLtEdited(false);
     setCarryInStWaEdited(false);
     setCarryInLtWaEdited(false);
+    setYtdEdited(false);
     setHarvestPoolAmountEdited(false);
     setHarvestPoolBasisPctEdited(false);
     let initial = formFromState(
@@ -1111,6 +1132,17 @@ export function December() {
         // its initial entries, like the balances.
         harvestPoolAmount: preseeded.harvestPoolAmount,
         harvestPoolBasisPct: preseeded.harvestPoolBasisPct,
+        // The preseeded year-to-date figures likewise become
+        // this console's own stored values (internal review
+        // round 6, SHOULD-2) — they are its initial entries,
+        // like the balances; a first-open console has none
+        // entered yet, so these read blank.
+        ytdInterest: preseeded.ytdInterest,
+        ytdOrdinaryDividends: preseeded.ytdOrdinaryDividends,
+        ytdQualifiedDividends: preseeded.ytdQualifiedDividends,
+        ytdCapitalGain: preseeded.ytdCapitalGain,
+        saleBasis: preseeded.saleBasis,
+        taxableFunded: preseeded.taxableFunded,
       };
     }
     setForm(initial);
@@ -1315,6 +1347,7 @@ export function December() {
         carryInLtWa: carryInLtWaEdited,
         harvestPoolAmount: harvestPoolAmountEdited,
         harvestPoolBasisPct: harvestPoolBasisPctEdited,
+        ytd: ytdEdited,
       },
     );
     pendingDecSaveRef.current = payload;
@@ -2140,12 +2173,17 @@ export function December() {
             // behind a save still in flight, exactly as the
             // unmount cleanup does. The reset is scoped to
             // the year-dependent provenance fields (the four
-            // carry-ins + education students) — the balances
-            // keep their flag (round 3 settled their survival
-            // deliberately) and the harvest facts keep theirs
-            // (round-6 SHOULD-2, separate). Every other
-            // field is left untouched, so no other typed
-            // value is reformatted or disturbed. When the
+            // carry-ins + education students + the
+            // year-to-date group, whose figures are the
+            // displayed year's facts — internal review round
+            // 6, SHOULD-2) — the balances keep their flag
+            // (round 3 settled their survival deliberately)
+            // and the harvest facts keep theirs (a pool the
+            // user edited stays; an overlay-derived pool
+            // re-derives from the reset year-to-date figures
+            // instead). Every other field is left untouched,
+            // so no other typed value is reformatted or
+            // disturbed. When the
             // Tax Plan record has not loaded there is no
             // overlay to re-resolve — an overlay can only
             // exist after a hydration that had the record —
@@ -2194,6 +2232,16 @@ export function December() {
               setCarryInStWaEdited(false);
               setCarryInLtWaEdited(false);
               setEducationEdited(false);
+              // The year-to-date group resets with the five
+              // flags (internal review round 6, SHOULD-2):
+              // the new year starts with the group unedited,
+              // so the re-resolution below blanks it (or
+              // restores the stored figures on a flip-back)
+              // and the stamp-aware save governs it — a group
+              // typed for the old year never prices the new
+              // one. The flush above already carried the old
+              // year's figures under the old stamp.
+              setYtdEdited(false);
             }
             setForm((f) => {
               if (!f) return f;
@@ -2210,11 +2258,21 @@ export function December() {
                   // the old year's values exactly as it does
                   // for a loaded value — a value typed for
                   // the old year never prices the new one.
+                  // The year-to-date group resets the same
+                  // way (internal review round 6, SHOULD-2).
                   carryInSt: false,
                   carryInLt: false,
                   carryInStWa: false,
                   carryInLtWa: false,
                   education: false,
+                  ytd: false,
+                  // The harvest facts keep their own flags:
+                  // a pool the user edited stays, and an
+                  // overlay-derived pool re-derives from the
+                  // reset year-to-date figures — never from
+                  // the old year's.
+                  harvestPoolAmount: harvestPoolAmountEdited,
+                  harvestPoolBasisPct: harvestPoolBasisPctEdited,
                   balances: balancesEdited,
                 },
                 recordFactsOf(rothQ.data, year),
@@ -2241,6 +2299,41 @@ export function December() {
                 expenses: moneyStr(x.expenses),
                 aotcEligible: x.aotcEligible,
               }));
+              // The year-to-date group follows the
+              // re-resolution (internal review round 6,
+              // SHOULD-2): blank for the new year, restored
+              // from stored provenance on a flip-back — the
+              // blanking itself sets no flag (this update
+              // runs directly, not through edit()), so the
+              // group stays unedited for the new year and
+              // the next save of it is stamp-aware. The
+              // harvest pool and basis % follow the same
+              // way: re-derived when overlay-derived, kept
+              // when the console owns them or the user
+              // edited them — the re-resolution already
+              // applies those gates, so these updates are
+              // unconditional, like the carry-ins above.
+              next.ytdInterest = moneyStr(reresolved.ytdInterest);
+              next.ytdOrdinaryDividends = moneyStr(
+                reresolved.ytdOrdinaryDividends,
+              );
+              next.ytdQualifiedDividends = moneyStr(
+                reresolved.ytdQualifiedDividends,
+              );
+              next.ytdCapitalGain = moneyStr(reresolved.ytdCapitalGain);
+              next.saleBasis = decemberNullableMoneyFormValue(
+                reresolved.saleBasis,
+              );
+              next.taxableFunded = decemberNullableMoneyFormValue(
+                reresolved.taxableFunded,
+              );
+              next.harvestPoolAmount = decemberNullableMoneyFormValue(
+                reresolved.harvestPoolAmount,
+              );
+              next.harvestPoolBasisPct =
+                reresolved.harvestPoolBasisPct == null
+                  ? ""
+                  : String(reresolved.harvestPoolBasisPct);
               // No provenance patch follows the cleared
               // display (internal review round 5, SHOULD-1):
               // the round-4 patch nulled the stored carry-ins
@@ -2554,27 +2647,38 @@ export function December() {
             set("ytdOtherOrdinary", v),
           { idLabel: "December YTD other ordinary", hint: "Includes any RMD already received — enter that amount in “RMD already received this year” above so it isn’t counted twice." },
           )}
-          {moneyField("Interest", form.ytdInterest, (v) => set("ytdInterest", v), {
+          {moneyField("Interest", form.ytdInterest, (v) => {
+            setYtdEdited(true);
+            set("ytdInterest", v);
+          }, {
             idLabel: "December YTD interest",
           })}
-          {moneyField("Ordinary dividends (total)", form.ytdOrdinaryDividends, (v) =>
-            set("ytdOrdinaryDividends", v),
+          {moneyField("Ordinary dividends (total)", form.ytdOrdinaryDividends, (v) => {
+            setYtdEdited(true);
+            set("ytdOrdinaryDividends", v);
+          },
           { idLabel: "December YTD ordinary dividends", hint: "The total — it includes the qualified part below." },
           )}
-          {moneyField("Qualified dividends", form.ytdQualifiedDividends, (v) =>
-            set("ytdQualifiedDividends", v),
+          {moneyField("Qualified dividends", form.ytdQualifiedDividends, (v) => {
+            setYtdEdited(true);
+            set("ytdQualifiedDividends", v);
+          },
           { idLabel: "December YTD qualified dividends", hint: "Part of the total above — entered above that total, only the total prices." },
           )}
           {moneyField("Tax-exempt interest", form.ytdTaxExemptInterest, (v) =>
             set("ytdTaxExemptInterest", v),
           { idLabel: "December YTD tax-exempt interest", hint: "Tax-free, but it counts toward ACA MAGI." },
           )}
-          {moneyField("Realized capital gain / loss so far", form.ytdCapitalGain, (v) =>
-            set("ytdCapitalGain", v),
+          {moneyField("Realized capital gain / loss so far", form.ytdCapitalGain, (v) => {
+            setYtdEdited(true);
+            set("ytdCapitalGain", v);
+          },
           { idLabel: "December YTD capital gain", hint: "Signed — enter a net loss as a negative amount." },
           )}
-          {moneyField("Cost basis of the sales behind that gain", form.saleBasis, (v) =>
-            set("saleBasis", v),
+          {moneyField("Cost basis of the sales behind that gain", form.saleBasis, (v) => {
+            setYtdEdited(true);
+            set("saleBasis", v);
+          },
           {
             idLabel: "December sale basis",
             hint: "The basis returned on the sales behind the gains above — a sale's proceeds are its gain plus its basis, and cash left counts the proceeds. Leave blank when there were no sales, or when the basis is unknown (cash left counts only the gains until the basis is entered). Distributions have no basis.",
@@ -2752,8 +2856,10 @@ export function December() {
           dollar.
         </p>
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {moneyField("Taxable cash for the year (100% basis)", form.taxableFunded, (v) =>
-            set("taxableFunded", v),
+          {moneyField("Taxable cash for the year (100% basis)", form.taxableFunded, (v) => {
+            setYtdEdited(true);
+            set("taxableFunded", v);
+          },
           { idLabel: "December taxable cash", hint: "Cash from taxable at 100% basis — the part already taxed, so selling it realizes no gain and adds nothing to MAGI. Leave blank if none; enter 0 when explicitly none." },
           )}
         </div>
@@ -3433,6 +3539,7 @@ export function December() {
                 setCarryInLtEdited(true);
                 setCarryInStWaEdited(true);
                 setCarryInLtWaEdited(true);
+                setYtdEdited(true);
                 setHarvestPoolAmountEdited(true);
                 setHarvestPoolBasisPctEdited(true);
                 setForm(formFromState(blank));
