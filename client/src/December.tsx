@@ -2128,7 +2128,28 @@ export function December() {
             // hydration that had the record — so the year
             // changes alone and the fields keep their stored
             // values.
-            edit((f) => {
+            // A pure year change is NOT an edit (internal
+            // review round 5, SHOULD-1): it must not trigger
+            // the debounced autosave, or the autosave would
+            // persist the cleared display under the new year
+            // and overwrite the stored provenance with the
+            // new year's nulls before the user switches
+            // back. The dirty flag is sticky — a successful
+            // save never clears it, only the CAS-conflict
+            // path does — so merely not setting it here
+            // would not be enough once anything was typed
+            // earlier; it is cleared outright, and the form
+            // updates directly instead of through edit().
+            // setResetArmed(false) preserves the disarm
+            // edit() provided. A payload queued by a prior
+            // real edit stays in pendingDecSaveRef for the
+            // unmount flush, and the next real edit
+            // re-dirties and saves normally, so no typed
+            // edit is lost.
+            dirtyRef.current = false;
+            setResetArmed(false);
+            setForm((f) => {
+              if (!f) return f;
               const next = { ...f, taxYear: v };
               if (rothQ.data == null) return next;
               const year = parseIntOrNull(v) ?? new Date().getFullYear();
@@ -2177,41 +2198,21 @@ export function December() {
                   aotcEligible: x.aotcEligible,
                 }));
               }
-              // The year gate can clear a stored carry-in or
-              // student whose stamp year is not the new year
-              // (internal review round 4, SHOULD-1): the
-              // stored provenance must follow the cleared
-              // display, or the next save would persist the
-              // old year's values and the reload would revive
-              // them. Only the cleared fields are patched —
-              // an edited field keeps its typed value, and a
-              // same-year restore needs no patch. The patch
-              // is to null even when the overlay filled a
-              // new-year value (education students for the
-              // new year): an overlay re-fill is display-only
-              // and the save must not own it, so the save
-              // persists null and the reload overlays again.
-              if (storedProvenanceRef.current.taxYear !== year) {
-                const stored = storedProvenanceRef.current;
-                storedProvenanceRef.current = {
-                  ...stored,
-                  ...(carryInStEdited
-                    ? {}
-                    : { carryInCapitalLossSt: null }),
-                  ...(carryInLtEdited
-                    ? {}
-                    : { carryInCapitalLossLt: null }),
-                  ...(carryInStWaEdited
-                    ? {}
-                    : { carryInCapitalLossStWa: null }),
-                  ...(carryInLtWaEdited
-                    ? {}
-                    : { carryInCapitalLossLtWa: null }),
-                  ...(educationEdited
-                    ? {}
-                    : { educationStudents: null }),
-                };
-              }
+              // No provenance patch follows the cleared
+              // display (internal review round 5, SHOULD-1):
+              // the round-4 patch nulled the stored carry-ins
+              // and students here so a later save could not
+              // revive a stale year, but that destroyed a
+              // non-first year's saved values permanently —
+              // switching back found provenance already
+              // nulled and no refill path exists for a
+              // non-first year. The save is stamp-aware now
+              // (decemberStateForSave persists a stored
+              // carry-in or student only into its stamped
+              // year, and null otherwise), so the stale-year
+              // direction is closed at the save and the
+              // stored provenance stays intact for the
+              // switch-back restore.
               if (!balancesEdited) {
                 next.pretaxBalancePrimary =
                   decemberNullableMoneyFormValue(

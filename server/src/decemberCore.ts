@@ -1525,10 +1525,14 @@ export type DecemberStoredProvenance = {
   // year, carried by decemberStoredProvenanceOf, so no blob
   // format change is needed and it is correct by
   // construction at every derivation point (load, save
-  // success, CAS reload, first-open preseed). It gates only
-  // the year-change restore (reresolveDecemberStateForYear):
-  // load resolution never changes the year, so the stamp
-  // always matches there, and the save path is untouched.
+  // success, CAS reload, first-open preseed). It gates the
+  // year-change restore (reresolveDecemberStateForYear)
+  // and, since internal review round 5 (SHOULD-1), the
+  // save itself: decemberStateForSave persists a stored
+  // carry-in or student only when the stamp equals the
+  // display year, and null otherwise. Load resolution
+  // never changes the year, so the stamp always matches
+  // there.
   taxYear: number;
   primarySoleBeneficiaryOfSpouse: boolean | null;
   pretaxBalancePrimary: number | null;
@@ -1600,7 +1604,12 @@ export function decemberStoredProvenanceOf(
    record-resolved beneficiary fact stays unanswered
    (null) in the blob no matter what else was edited, and
    a record-supplied balance split stays un-owned by the
-   console. Once the user edits that control, the display
+   console. The one qualification (internal review round
+   5, SHOULD-1): an unedited carry-in or education
+   student writes its stored value only when the stored
+   stamp year IS the display year, and null otherwise —
+   see the stamp-aware note at those branches below. Once
+   the user edits that control, the display
    value is theirs and governs from then on (an edited
    balance split is explicit). The provenance FLAGS
    follow the same discipline (round-6): each flag
@@ -1634,23 +1643,61 @@ export function decemberStateForSave(
     harvestPoolBasisPct?: boolean;
   },
 ): DecemberState {
+  // The carry-ins and the education students are
+  // STAMP-AWARE (internal review round 5, SHOULD-1): an
+  // unedited one persists its STORED value only when the
+  // stored blob was saved for the very year on display.
+  // On a stamp mismatch it persists NULL — never the
+  // display value: on a mismatch the display value is
+  // either null already (cleared by the year-change
+  // re-resolution) or an overlay re-fill the save must
+  // not own (the new year's record students, or the
+  // record's first-year carry-ins when switching INTO the
+  // first year), and persisting it would make the console
+  // own a record value and break the first-year
+  // discipline (the blob's null is the console not owning
+  // the first-year value; the overlay refills it on
+  // reload). Before this, the save persisted the stored
+  // value with no year check at all, and the year-change
+  // handler compensated by patching the stored provenance
+  // itself to nulls — which destroyed a non-first year's
+  // saved carry-ins and typed students permanently on a
+  // switch away and back, because no refill path exists
+  // for a non-first year. The stamp-aware save closes
+  // both directions at the root: no stale-year value is
+  // saved under the wrong year, and nothing is destroyed
+  // on switch-back. The harvest pool is deliberately NOT
+  // year-gated here (round 5 noted it uncounted, with no
+  // wrong pricing demonstrated), and neither are the
+  // balances below.
+  const storedForDisplayYear = stored.taxYear === display.taxYear;
   return {
     ...display,
     educationStudents: edited.education
       ? display.educationStudents
-      : stored.educationStudents,
+      : storedForDisplayYear
+        ? stored.educationStudents
+        : null,
     carryInCapitalLossSt: edited.carryInSt
       ? display.carryInCapitalLossSt
-      : stored.carryInCapitalLossSt,
+      : storedForDisplayYear
+        ? stored.carryInCapitalLossSt
+        : null,
     carryInCapitalLossLt: edited.carryInLt
       ? display.carryInCapitalLossLt
-      : stored.carryInCapitalLossLt,
+      : storedForDisplayYear
+        ? stored.carryInCapitalLossLt
+        : null,
     carryInCapitalLossStWa: edited.carryInStWa
       ? display.carryInCapitalLossStWa
-      : stored.carryInCapitalLossStWa,
+      : storedForDisplayYear
+        ? stored.carryInCapitalLossStWa
+        : null,
     carryInCapitalLossLtWa: edited.carryInLtWa
       ? display.carryInCapitalLossLtWa
-      : stored.carryInCapitalLossLtWa,
+      : storedForDisplayYear
+        ? stored.carryInCapitalLossLtWa
+        : null,
     harvestPoolAmount: edited.harvestPoolAmount
       ? display.harvestPoolAmount
       : stored.harvestPoolAmount,
@@ -6971,6 +7018,242 @@ export function runDecemberFixtures(): {
     exact(fail, "fixed 2027 MAGI", fixed.pg.acaMagi, 108000);
     exact(fail, "fixed 2027 federal tax", fixed.pg.federalTax, 7640);
     exact(fail, "fixed 2027 non-draw MAGI", fixed.nonDrawMagi, 108000);
+  });
+
+  run("dec-stored-carryin-switchback-save", (fail) => {
+    // (Internal review round 5, SHOULD-1 — settled STAND):
+    // the round-4 year gate held at the function level but
+    // NOT in the live console for non-first years. The
+    // year-change handler patched the stored provenance
+    // itself to nulls whenever the stamp year differed
+    // from the new year, and decemberStateForSave persisted
+    // the STORED value for every unedited field with no
+    // year check at all — so the patch was what made the
+    // save correct, at the price of destroying the stored
+    // values: a carry-in (or typed students) saved for a
+    // non-first year was permanently lost on a switch away
+    // and back, because the record overlay refills only
+    // the plan's first year. THE FIX: the save is
+    // stamp-aware (an unedited carry-in or student
+    // persists its stored value only when the stamp IS
+    // the display year, and null otherwise — never the
+    // display value, which on a mismatch is either the
+    // cleared null or an overlay re-fill the save must
+    // not own), the destructive patch is removed, and a
+    // pure year change no longer dirties the form, so no
+    // autosave fires on the switch itself. This fixture
+    // pins the switch-back round trip THROUGH THE SAVE at
+    // the engine level — the gap the round-4 fixture
+    // (which pinned only the pure reresolve) left open.
+    // THE WORKED EXAMPLE (settlement, engine-run): saved
+    // 2027 LT carry-in $10,000, stamp 2027; pricing of
+    // 2027 (MFJ, ages 59/57, other ordinary $100,000,
+    // $8,000 LT gain): with the carry-in MAGI $98,000,
+    // ltcgNet −$2,000, federal tax $7,400; without it MAGI
+    // $108,000, ltcgNet $8,000, federal tax $7,640.
+    // Education leg: saved 2027 typed students $5,000
+    // (AOTC-eligible) + $3,000; the record holds no 2027
+    // students.
+    const none = {
+      carryInSt: false,
+      carryInLt: false,
+      carryInStWa: false,
+      carryInLtWa: false,
+      education: false,
+      balances: false,
+    };
+    const noEdit = { beneficiary: false, balances: false };
+    const typedStudents = [
+      { expenses: 5000, aotcEligible: true },
+      { expenses: 3000, aotcEligible: false },
+    ];
+    const stored2027 = decemberStoredProvenanceOf({
+      ...defaultDecemberState(2027),
+      carryInCapitalLossLt: 10000,
+      educationStudents: typedStudents,
+    });
+    exact(fail, "stored provenance stamps 2027", stored2027.taxYear, 2027);
+    // The record holds NO students for 2027 or 2028 (an
+    // empty answer), and its carry-in answers the plan's
+    // first year only, so nothing refills a non-first year.
+    const facts2027: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossLt: 10000,
+      educationStudents: [],
+    };
+    const facts2028: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossLt: 10000,
+      educationStudents: [],
+    };
+    const facts2028Students: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossLt: 10000,
+      educationStudents: [{ expenses: 8000, aotcEligible: false }],
+    };
+    const facts2026: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossLt: 10000,
+      educationStudents: [{ expenses: 4000, aotcEligible: true }],
+    };
+    // LOAD 2027: the saved carry-in and the typed students
+    // are what the console shows.
+    const load2027 = resolveDecemberStateAtLoad(
+      {
+        ...defaultDecemberState(2027),
+        carryInCapitalLossLt: 10000,
+        educationStudents: typedStudents,
+      },
+      facts2027,
+    );
+    exact(fail, "load 2027 shows the saved carry-in", load2027.carryInCapitalLossLt, 10000);
+    const ls = load2027.educationStudents;
+    if (
+      ls == null ||
+      ls.length !== 2 ||
+      ls[0]!.expenses !== 5000 ||
+      ls[0]!.aotcEligible !== true ||
+      ls[1]!.expenses !== 3000 ||
+      ls[1]!.aotcEligible !== false
+    ) {
+      fail("load 2027 must show the two typed students");
+    }
+    // SWITCH TO 2028 (re-resolution only — the provenance
+    // is NOT patched; the patch is removed): the display
+    // clears, and the students resolve to the empty list
+    // the record answers for 2028 — an empty list, not
+    // null.
+    const to2028 = reresolveDecemberStateForYear(
+      { ...load2027, taxYear: 2028 },
+      stored2027,
+      none,
+      facts2028,
+    );
+    if (to2028.carryInCapitalLossLt !== null) fail("switching to 2028 must clear the carry-in");
+    if (to2028.educationStudents == null || to2028.educationStudents.length !== 0) {
+      fail("switching to 2028 must resolve the students to the record's empty answer, not null");
+    }
+    // SWITCH BACK TO 2027: the stored values restore
+    // exactly, because the provenance survived the switch
+    // away.
+    const back2027 = reresolveDecemberStateForYear(
+      { ...to2028, taxYear: 2027 },
+      stored2027,
+      none,
+      facts2027,
+    );
+    exact(fail, "switching back restores the carry-in", back2027.carryInCapitalLossLt, 10000);
+    const bs = back2027.educationStudents;
+    if (
+      bs == null ||
+      bs.length !== 2 ||
+      bs[0]!.expenses !== 5000 ||
+      bs[0]!.aotcEligible !== true ||
+      bs[1]!.expenses !== 3000 ||
+      bs[1]!.aotcEligible !== false
+    ) {
+      fail("switching back must restore the two typed students");
+    }
+    // THE RE-SAVE of the round-tripped display against the
+    // 2027 stamp holds both values, and the re-saved blob's
+    // own provenance still stamps 2027 and holds them.
+    const resaved = decemberStateForSave(back2027, stored2027, noEdit);
+    exact(fail, "the re-save holds the carry-in", resaved.carryInCapitalLossLt, 10000);
+    const rs = resaved.educationStudents;
+    if (
+      rs == null ||
+      rs.length !== 2 ||
+      rs[0]!.expenses !== 5000 ||
+      rs[0]!.aotcEligible !== true ||
+      rs[1]!.expenses !== 3000 ||
+      rs[1]!.aotcEligible !== false
+    ) {
+      fail("the re-save must hold the two typed students");
+    }
+    const resavedProv = decemberStoredProvenanceOf(resaved);
+    exact(fail, "the re-saved blob stamps 2027", resavedProv.taxYear, 2027);
+    exact(fail, "the re-saved blob holds the carry-in", resavedProv.carryInCapitalLossLt, 10000);
+    // STAMP-AWARE SAVE ON MISMATCH: a 2028 display saved
+    // against the 2027 stamp persists NULL for the carry-in
+    // and the students — the stored 2027 values must not be
+    // written under 2028 (the direction the removed patch
+    // used to guard, now closed at the save).
+    const saveMismatch = decemberStateForSave(
+      { ...defaultDecemberState(2028), carryInCapitalLossLt: null, educationStudents: null },
+      stored2027,
+      noEdit,
+    );
+    if (saveMismatch.carryInCapitalLossLt !== null) fail("a mismatched save must persist no carry-in");
+    if (saveMismatch.educationStudents !== null) {
+      fail("a mismatched save must persist null students, not the stored ones");
+    }
+    // The overlay case of the same rule: switching into
+    // 2028 with record students fills the display with the
+    // 2028 record student as an overlay — the save against
+    // the 2027 stamp persists null, never the overlay.
+    const display2028Overlay = reresolveDecemberStateForYear(
+      { ...load2027, taxYear: 2028 },
+      stored2027,
+      none,
+      facts2028Students,
+    );
+    const os = display2028Overlay.educationStudents;
+    if (
+      os == null ||
+      os.length !== 1 ||
+      os[0]!.expenses !== 8000 ||
+      os[0]!.aotcEligible !== false
+    ) {
+      fail("the 2028 display must carry the 2028 record student as an overlay");
+    }
+    if (display2028Overlay.carryInCapitalLossLt !== null) fail("the overlay display must clear the carry-in");
+    const saveOverlay = decemberStateForSave(display2028Overlay, stored2027, noEdit);
+    if (saveOverlay.carryInCapitalLossLt !== null) fail("the overlay save must persist no carry-in");
+    if (saveOverlay.educationStudents !== null) {
+      fail("the save must persist null, never the overlay students");
+    }
+    // FIRST-YEAR DISCIPLINE PRESERVED: a 2026 display
+    // carrying the record overlay (carry-in and student)
+    // over a null stored blob still saves null for both —
+    // the record owns the first-year values and the overlay
+    // refills them on reload.
+    const storedFirstNull = decemberStoredProvenanceOf(defaultDecemberState(2026));
+    const load2026 = resolveDecemberStateAtLoad(defaultDecemberState(2026), facts2026);
+    exact(fail, "the first year resolves the record carry-in", load2026.carryInCapitalLossLt, 10000);
+    const fs = load2026.educationStudents;
+    if (
+      fs == null ||
+      fs.length !== 1 ||
+      fs[0]!.expenses !== 4000 ||
+      fs[0]!.aotcEligible !== true
+    ) {
+      fail("the first year must resolve the record student as an overlay");
+    }
+    const saveFirst = decemberStateForSave(load2026, storedFirstNull, noEdit);
+    if (saveFirst.carryInCapitalLossLt !== null) fail("the first-year save must persist null carry-in");
+    if (saveFirst.educationStudents !== null) {
+      fail("the first-year save must persist null students — the record owns them");
+    }
+    // PRICING: the round-tripped 2027 display prices the
+    // settlement's with-carry-in figures; the lost-carry-in
+    // control prices the without figures.
+    const price2027 = (carryIn: number | null) => {
+      const s = defaultDecemberState(2027);
+      s.agePrimary = 59;
+      s.ageSpouse = 57;
+      s.ytdOtherOrdinary = 100000;
+      s.ytdCapitalGain = 8000;
+      s.carryInCapitalLossLt = carryIn;
+      return pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    };
+    const restored = price2027(back2027.carryInCapitalLossLt);
+    exact(fail, "round-tripped 2027 MAGI", restored.acaMagi, 98000);
+    exact(fail, "round-tripped 2027 ltcgNet", restored.ltcgNet, -2000);
+    exact(fail, "round-tripped 2027 federal tax", restored.federalTax, 7400);
+    const lost = price2027(null);
+    exact(fail, "lost-carry-in 2027 MAGI", lost.acaMagi, 108000);
+    exact(fail, "lost-carry-in 2027 ltcgNet", lost.ltcgNet, 8000);
+    exact(fail, "lost-carry-in 2027 federal tax", lost.federalTax, 7640);
   });
 
   /* ---- Build v112 fixtures: character splits on the
