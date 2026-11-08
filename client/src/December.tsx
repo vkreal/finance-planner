@@ -2230,15 +2230,24 @@ export function December() {
             // re-derives from the reset year-to-date figures
             // instead). Every other field is left untouched,
             // so no other typed value is reformatted or
-            // disturbed. When the
-            // Tax Plan record has not loaded there is no
-            // overlay to re-resolve — an overlay can only
-            // exist after a hydration that had the record —
-            // so the year changes alone and the fields keep
-            // their stored values (and the flags with them:
-            // resetting the flags while the display still
-            // holds the typed values would make the next
-            // save discard them as unedited).
+            // disturbed. The stamp reset applies even when
+            // the Tax Plan record has not loaded — a failed
+            // or still-running record query (ChatGPT review
+            // MUST-4, settled STAND): the year-stamp reset
+            // runs on the stored-provenance stamp alone, not
+            // on record facts, so the flags reset and the
+            // re-resolution below run on EVERY year change,
+            // with all-null facts when the record is
+            // unavailable. Only the record-derived refill is
+            // record-conditional — the balances preseed, the
+            // harvest-pool derivation, and the first-year
+            // carry-in gate read the facts, and with no facts
+            // they simply do not answer, exactly as an empty
+            // record would. Resetting the flags is safe
+            // without the record because the re-resolution
+            // blanks the year-stamped fields for the new
+            // year, so the display no longer holds the typed
+            // values a later save could discard as unedited.
             // A pure year change is NOT an edit (internal
             // review round 5, SHOULD-1): it must not trigger
             // the debounced autosave, or the autosave would
@@ -2273,27 +2282,24 @@ export function December() {
             }
             dirtyRef.current = false;
             setResetArmed(false);
-            if (rothQ.data != null) {
-              setCarryInStEdited(false);
-              setCarryInLtEdited(false);
-              setCarryInStWaEdited(false);
-              setCarryInLtWaEdited(false);
-              setEducationEdited(false);
-              // The year-to-date group resets with the five
-              // flags (internal review round 6, SHOULD-2):
-              // the new year starts with the group unedited,
-              // so the re-resolution below blanks it (or
-              // restores the stored figures on a flip-back)
-              // and the stamp-aware save governs it — a group
-              // typed for the old year never prices the new
-              // one. The flush above already carried the old
-              // year's figures under the old stamp.
-              setYtdEdited(false);
-            }
+            setCarryInStEdited(false);
+            setCarryInLtEdited(false);
+            setCarryInStWaEdited(false);
+            setCarryInLtWaEdited(false);
+            setEducationEdited(false);
+            // The year-to-date group resets with the five
+            // flags (internal review round 6, SHOULD-2):
+            // the new year starts with the group unedited,
+            // so the re-resolution below blanks it (or
+            // restores the stored figures on a flip-back)
+            // and the stamp-aware save governs it — a group
+            // typed for the old year never prices the new
+            // one. The flush above already carried the old
+            // year's figures under the old stamp.
+            setYtdEdited(false);
             setForm((f) => {
               if (!f) return f;
               const next = { ...f, taxYear: v };
-              if (rothQ.data == null) return next;
               const year = parseIntOrNull(v) ?? new Date().getFullYear();
               const reresolved = reresolveDecemberStateForYear(
                 stateFromForm(next),

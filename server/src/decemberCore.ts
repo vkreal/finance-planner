@@ -8535,6 +8535,174 @@ export function runDecemberFixtures(): {
     exact(fail, "$0-loss basis equals the old derivation", zeroLossIn.stockBasis, oldNoLoss.basisDollars);
   });
 
+  run("dec-year-change-unavailable-record", (fail) => {
+    // (ChatGPT review MUST-4 — settled STAND): a loaded
+    // December console whose Tax Plan record query has
+    // failed (or never loaded) let a year change carry the
+    // old year's figures into the new year: the handler
+    // guarded BOTH the edited-flag reset and the
+    // re-resolution on the record being present, so with
+    // no record the form kept the old year's year-to-date
+    // figures, carry-ins, and students under the new
+    // year's stamp, and priced them there. THE FIX (client
+    // handler only): the year-stamp reset always applies —
+    // the five edited flags plus the year-to-date flag
+    // reset on every year change, and the re-resolution
+    // always runs, with all-null facts when the record is
+    // unavailable (recordFactsOf already answers all-null
+    // for a missing record). Only the record-derived
+    // refill stays record-conditional: the balances
+    // preseed, the harvest-pool derivation, and the
+    // first-year carry-in gate read the facts, and with no
+    // facts they simply do not answer. The re-resolution
+    // itself is unchanged — its stamp reset runs on the
+    // stored-provenance stamp alone. This fixture pins the
+    // fixed handler's modeled inputs and outputs (the
+    // flags it passes, the empty facts, the priced
+    // result), and the same states price live through the
+    // console's own pricing action; the staged console's
+    // year change is driven on the record-loaded path,
+    // which behaves exactly as before. The failed-record
+    // state itself cannot be forced in the staged sandbox
+    // — the record read degrades to an unreadable-record
+    // response rather than erroring — so this fixture is
+    // its pin. THE WORKED EXAMPLE (the settlement's,
+    // engine-run on the shared fictional sample
+    // household): the sample pre-tax balance all the
+    // primary's; a year's interest typed for 2026 at 2% of
+    // that balance; the console flips to 2027 (household
+    // of 2: cliff $86,560, target $81,560 = cliff − the
+    // $5,000 buffer) with no current-year income.
+    const interest = (SAMPLE_PRETAX_CENTS / 100) * 0.02;
+    const oldForm = (): DecemberState => {
+      const s = base();
+      s.pretaxBalance = SAMPLE_PRETAX_CENTS / 100;
+      s.pretaxBalancePrimary = SAMPLE_PRETAX_CENTS / 100;
+      s.pretaxBalanceSpouse = 0;
+      s.pretaxSplitExplicit = true;
+      s.ytdInterest = interest;
+      return s;
+    };
+    // The flags the fixed handler passes on a year change:
+    // the five year-dependent flags and the year-to-date
+    // flag reset; the balances and harvest flags as the
+    // console holds them (unedited here).
+    const resetFlags = {
+      carryInSt: false,
+      carryInLt: false,
+      carryInStWa: false,
+      carryInLtWa: false,
+      education: false,
+      balances: false,
+      ytd: false,
+      harvestPoolAmount: false,
+      harvestPoolBasisPct: false,
+    };
+    // ---- Leg 1: the worked example. PRE-FIX CONTROL: the
+    // old handler's output with the record unavailable —
+    // the old form with only the tax year changed — keeps
+    // the typed interest pricing 2027, so the headline
+    // draw is the target less the whole stale interest.
+    const control = oldForm();
+    const storedControl = decemberStoredProvenanceOf(control);
+    const stale = { ...control, taxYear: 2027 };
+    exact(fail, "the stale form keeps the typed interest", stale.ytdInterest, interest);
+    const pStale = computeDecemberProjection(stale, SAMPLE_ANNUAL_SPENDING_CENTS);
+    if (!pStale.priced) return fail("stale shape not priced");
+    exact(fail, "2027 cliff", pStale.cliff, 86560);
+    exact(fail, "2027 target", pStale.targetMagi, 81560);
+    near(fail, "stale headline prices the old year's interest", pStale.headlineDraw, 81560 - interest);
+    // THE FIX: the same flip through the re-resolution
+    // with empty facts (the record unavailable) blanks the
+    // interest, and the headline prices the target exactly.
+    const fixed = reresolveDecemberStateForYear(
+      { ...control, taxYear: 2027 },
+      storedControl,
+      resetFlags,
+      {},
+    );
+    exact(fail, "the reset blanks the interest", fixed.ytdInterest, 0);
+    const pFixed = computeDecemberProjection(fixed, SAMPLE_ANNUAL_SPENDING_CENTS);
+    if (!pFixed.priced) return fail("fixed shape not priced");
+    exact(fail, "fixed target", pFixed.targetMagi, 81560);
+    near(fail, "fixed headline prices the target", pFixed.headlineDraw, 81560);
+    // The console's own balances survive the empty-facts
+    // re-resolution: no facts answer, so nothing refills
+    // and nothing clears — the record-derived side is the
+    // only record-conditional part.
+    exact(fail, "the primary balance survives", fixed.pretaxBalancePrimary, SAMPLE_PRETAX_CENTS / 100);
+    exact(fail, "the spouse balance survives", fixed.pretaxBalanceSpouse, 0);
+    if (fixed.harvestPoolAmount !== null || fixed.harvestPoolBasisPct !== null) {
+      fail("empty facts must not derive a harvest pool");
+    }
+    // ---- Leg 2: the carry-ins and students clear too.
+    // The old form also holds 2026's carry-ins and a
+    // student; the stale flip prices the carry-in (its
+    // $3,000 allowance lifts the draw by exactly that),
+    // while the fixed flip clears all four carry-ins and
+    // the students along with the interest.
+    const loaded = oldForm();
+    loaded.carryInCapitalLossSt = 1000;
+    loaded.carryInCapitalLossLt = 10000;
+    loaded.carryInCapitalLossStWa = 250;
+    loaded.carryInCapitalLossLtWa = 2000;
+    loaded.educationStudents = [{ expenses: 4000, aotcEligible: true }];
+    const storedLoaded = decemberStoredProvenanceOf(loaded);
+    const pStaleLoaded = computeDecemberProjection(
+      { ...loaded, taxYear: 2027 },
+      SAMPLE_ANNUAL_SPENDING_CENTS,
+    );
+    if (!pStaleLoaded.priced) return fail("stale loaded shape not priced");
+    near(
+      fail,
+      "the stale flip also prices the old year's carry-in",
+      pStaleLoaded.headlineDraw,
+      81560 - interest + 3000,
+    );
+    const fixedLoaded = reresolveDecemberStateForYear(
+      { ...loaded, taxYear: 2027 },
+      storedLoaded,
+      resetFlags,
+      {},
+    );
+    if (
+      fixedLoaded.carryInCapitalLossSt !== null ||
+      fixedLoaded.carryInCapitalLossLt !== null ||
+      fixedLoaded.carryInCapitalLossStWa !== null ||
+      fixedLoaded.carryInCapitalLossLtWa !== null
+    ) {
+      fail("the reset must clear all four carry-ins for the new year");
+    }
+    if ((fixedLoaded.educationStudents ?? []).length !== 0) {
+      fail("the reset must clear the old year's education students");
+    }
+    exact(fail, "the reset blanks the loaded interest too", fixedLoaded.ytdInterest, 0);
+    const pFixedLoaded = computeDecemberProjection(fixedLoaded, SAMPLE_ANNUAL_SPENDING_CENTS);
+    if (!pFixedLoaded.priced) return fail("fixed loaded shape not priced");
+    near(fail, "the cleared year prices the target", pFixedLoaded.headlineDraw, 81560);
+    // FLIP BACK to the stamped year (still no save at the
+    // new year): the stored figures restore exactly — the
+    // reset is stamp-based, not destructive.
+    const back = reresolveDecemberStateForYear(
+      { ...fixedLoaded, taxYear: 2026 },
+      storedLoaded,
+      resetFlags,
+      {},
+    );
+    exact(fail, "flipping back restores the interest", back.ytdInterest, interest);
+    exact(fail, "flipping back restores the ST carry-in", back.carryInCapitalLossSt, 1000);
+    exact(fail, "flipping back restores the LT carry-in", back.carryInCapitalLossLt, 10000);
+    exact(fail, "flipping back restores the ST WA carry-in", back.carryInCapitalLossStWa, 250);
+    exact(fail, "flipping back restores the LT WA carry-in", back.carryInCapitalLossLtWa, 2000);
+    if (
+      back.educationStudents == null ||
+      back.educationStudents.length !== 1 ||
+      back.educationStudents[0]!.expenses !== 4000
+    ) {
+      fail("flipping back must restore the stored students");
+    }
+  });
+
   /* ---- Build v112 fixtures: character splits on the
      two strays (round-17 F4 + F5) ----
      F4: Schedule K-1 box 9a net long-term capital gain
