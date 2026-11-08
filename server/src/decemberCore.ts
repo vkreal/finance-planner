@@ -9,7 +9,10 @@ import {
   decideRothBlobWrite,
   parseRothBlobRevision,
 } from "./rothRevisionCore";
-import { SAMPLE_PRETAX_CENTS } from "./sampleHousehold";
+import {
+  SAMPLE_ANNUAL_SPENDING_CENTS,
+  SAMPLE_PRETAX_CENTS,
+} from "./sampleHousehold";
 
 /* ---------------- December projection console ----------------
    A December year-end projection for a household managing MAGI
@@ -2223,6 +2226,20 @@ export function decemberCaseInputs(
       k1CapGain -
       strayAmount(state.strayLossHarvest),
   );
+  // The loss harvest's own amount, and the year's gain
+  // BEFORE it (ChatGPT MUST-3): totalGain above is the
+  // year's NET gain — the loss must still offset the
+  // year's gains there, because that net is what the tax
+  // prices. But the loss is a SEPARATE sale whose proceeds
+  // were reinvested: it never touched the cash the year's
+  // completed sale already delivered. The derivation below
+  // therefore rebuilds the completed sale's proceeds from
+  // the pre-loss gain wherever proceeds are reconstructible
+  // (the entered-basis branch), and the loss rides the
+  // basis side instead, so proceeds − basis still nets to
+  // totalGain while cash-in counts the full proceeds.
+  const lossHarvest = strayAmount(state.strayLossHarvest);
+  const saleGain = r2(totalGain + lossHarvest);
   const otherOrdinary = r2(
     state.ytdOtherOrdinary +
       state.remOtherOrdinary[kind] +
@@ -2253,8 +2270,29 @@ export function decemberCaseInputs(
   // The shared sale derivation (decemberSaleAmounts —
   // the same one load resolution's starting-pool
   // conversion inverts, S-8).
+  //
+  // MUST-3: on the entered-basis branch the derivation
+  // runs on the PRE-LOSS gain (saleGain), because the
+  // completed sale's proceeds are a fact the separate
+  // loss harvest cannot change — reconstructing them from
+  // the net gain understated cash-in by exactly the loss.
+  // The basis side then carries the loss (saleBasisWithLoss
+  // below): the harvested lot's basis left the pool net of
+  // its reinvested proceeds, so the basis retired by the
+  // year's sales is the sale's basis plus the loss, and
+  // the priced gain stays the net totalGain. On the
+  // no-basis fallback there is no separate proceeds figure
+  // to preserve — the gain alone rides as proceeds and a
+  // loss rides the basis side — so the derivation still
+  // runs on the net totalGain there, exactly as before:
+  // running it on saleGain would lose the loss entirely.
+  const saleUsesBasis =
+    state.saleBasis != null && saleGain + state.saleBasis > 0;
   const { proceeds: saleProceeds, basisDollars: saleBasisDollars } =
-    decemberSaleAmounts(totalGain, state.saleBasis);
+    decemberSaleAmounts(saleUsesBasis ? saleGain : totalGain, state.saleBasis);
+  const saleBasisWithLoss = saleUsesBasis
+    ? r2(saleBasisDollars + lossHarvest)
+    : saleBasisDollars;
   // The harvest's starting pool (round-17 defect 1, as
   // re-homed by SHOULD-3): the console's pool fact is the
   // STARTING pool — the pool at the start of the year,
@@ -2359,9 +2397,15 @@ export function decemberCaseInputs(
     // same fallback applies when an entered basis is
     // smaller than the loss (inconsistent input: a real
     // sale's proceeds cannot go negative), so the loss
-    // never vanishes from the tax.
+    // never vanishes from the tax. On the entered-basis
+    // branch the basis here additionally carries the
+    // year's separate loss harvest (MUST-3 — see the
+    // derivation above): the proceeds stay the completed
+    // sale's own, and proceeds − basis still nets to the
+    // year's net gain, so only the gain/loss ledger —
+    // never the cash in hand — moves with the loss.
     stockSold: saleProceeds,
-    stockBasis: saleBasisDollars,
+    stockBasis: saleBasisWithLoss,
     qualifiedDividends: r2(
       ytdQualified +
         remQualified +
@@ -8352,6 +8396,143 @@ export function runDecemberFixtures(): {
     ) {
       fail("a sale edit must not revive a deliberately cleared harvest fact");
     }
+  });
+
+  run("dec-loss-harvest-preserves-sale-proceeds", (fail) => {
+    // (ChatGPT review MUST-3 — settled STAND): a separate
+    // harvested loss erased cash proceeds from a completed
+    // sale. decemberCaseInputs aggregates the year's NET
+    // capital gain (totalGain — the year-to-date gain less
+    // the loss-harvest stray, among the other components),
+    // and the sale derivation then reconstructed the
+    // completed sale's proceeds from that NET figure: a
+    // sale that delivered its full proceeds in cash priced
+    // cash-in short by exactly the loss, because the loss
+    // is a SEPARATE sale whose proceeds were reinvested —
+    // it changed the year's gain/loss ledger, never the
+    // cash the completed sale already paid. THE FIX (case
+    // assembly only): totalGain stays the net the tax
+    // prices, but on the entered-basis branch the proceeds
+    // derive from the PRE-LOSS gain (saleGain), and the
+    // loss rides the basis side instead — the harvested
+    // lot's basis left the pool net of its reinvested
+    // proceeds, so the basis the year's sales retired is
+    // the sale's basis plus the loss, and proceeds − basis
+    // still nets to totalGain. On the no-basis fallback
+    // there is no separate proceeds figure to preserve
+    // (a gain alone rides as proceeds, a loss rides the
+    // basis side), so the derivation still runs on the net
+    // there, exactly as before. THE WORKED EXAMPLE (the
+    // settlement's, on the shared fictional sample
+    // household): a completed sale with a $5,000 gain on a
+    // $15,000 basis ($20,000 of proceeds in hand) and a
+    // separate $10,000 loss harvest.
+    const gain = 5000;
+    const basis = 15000;
+    const loss = 10000;
+    const saleState = (
+      opts: { withLoss?: boolean; withBasis?: boolean; netted?: boolean } = {},
+    ): DecemberState => {
+      const s = base();
+      s.pretaxBalance = SAMPLE_PRETAX_CENTS / 100;
+      s.pretaxBalancePrimary = SAMPLE_PRETAX_CENTS / 100;
+      s.pretaxBalanceSpouse = 0;
+      s.pretaxSplitExplicit = true;
+      s.spouseSoleBeneficiary = true;
+      s.ytdCapitalGain = opts.netted ? gain - loss : gain;
+      s.saleBasis = opts.withBasis === false ? null : basis;
+      if (opts.withLoss) {
+        s.strayLossHarvest = { status: "amount", amount: loss };
+      }
+      return s;
+    };
+    // ---- Leg 1: the worked example at a $0 draw. The
+    // proceeds and the cash-in are $20,000 with AND without
+    // the loss; only the gain/loss ledger moves.
+    const noLossIn = decemberCaseInputs(saleState(), "likely", 0);
+    exact(fail, "no-loss proceeds", noLossIn.stockSold, gain + basis);
+    exact(fail, "no-loss basis", noLossIn.stockBasis, basis);
+    exact(fail, "no-loss priced gain", noLossIn.stockSold - noLossIn.stockBasis, gain);
+    exact(fail, "no-loss cash-in", pricePlaygroundYear(noLossIn).cashIn, gain + basis);
+    const lossIn = decemberCaseInputs(saleState({ withLoss: true }), "likely", 0);
+    exact(fail, "with-loss proceeds preserved", lossIn.stockSold, gain + basis);
+    exact(fail, "with-loss basis carries the loss", lossIn.stockBasis, basis + loss);
+    exact(fail, "with-loss priced gain is the net", lossIn.stockSold - lossIn.stockBasis, gain - loss);
+    exact(fail, "with-loss cash-in preserved", pricePlaygroundYear(lossIn).cashIn, gain + basis);
+    exact(fail, "with-loss net gain priced", pricePlaygroundYear(lossIn).ltcgNet, gain - loss);
+    // PRE-FIX CONTROL: the old derivation on the NET gain
+    // prices the proceeds short by exactly the loss — the
+    // defect this fixture's legs above correct.
+    const oldDerivation = decemberSaleAmounts(gain - loss, basis);
+    exact(fail, "pre-fix derivation proceeds (the defect)", oldDerivation.proceeds, gain + basis - loss);
+    exact(fail, "pre-fix derivation basis", oldDerivation.basisDollars, basis);
+    // ---- Leg 2: the headline. The console solves the
+    // draw to the cliff less the buffer (target MAGI
+    // $79,600 = the $84,600 cliff − the $5,000 buffer);
+    // with a net capital loss the $3,000 capital-loss
+    // allowance is what the draw replaces, so the solved
+    // draw is $82,600 on BOTH the fixed and the pre-fix
+    // pricing — the solve prices the same net gain either
+    // way, and only the cash-in (and so the cash left)
+    // was wrong. Federal tax at the headline, by hand:
+    // taxable $47,400 ($79,600 AGI − the $32,200 standard
+    // deduction), all ordinary (the capital result is a
+    // loss) → 10% × $24,800 + 12% × $22,600 = $5,192. The
+    // credit is the $20,000 benchmark less 9.96% of MAGI
+    // = $12,071.84, of which $71.84 is still due over the
+    // $12,000 taken, so cash left = cash-in − tax + $71.84.
+    const headline = (s: DecemberState) => {
+      const p = computeDecemberProjection(s, SAMPLE_ANNUAL_SPENDING_CENTS);
+      return { draw: p.headlineDraw, likely: p.cases.find((c) => c.kind === "likely")! };
+    };
+    const headLoss = headline(saleState({ withLoss: true }));
+    near(fail, "with-loss headline draw", headLoss.draw, 82600);
+    exact(fail, "with-loss MAGI at headline", headLoss.likely.magiAtHeadline, 79600);
+    exact(fail, "with-loss cash-in at headline", headLoss.likely.cashInAtHeadline, 82600 + gain + basis);
+    exact(fail, "with-loss cash left at headline", headLoss.likely.cashLeftAtHeadline, 97479.84);
+    exact(fail, "with-loss federal tax at headline", headLoss.likely.federalTaxAtHeadline, 5192);
+    exact(fail, "with-loss credit at headline", headLoss.likely.creditAtHeadline, 12071.84);
+    // PRE-FIX CONTROL, priced through the console itself:
+    // the same year with the loss NETTED into the entered
+    // gain (no separate loss stray) assembles the exact
+    // case inputs the pre-fix derivation produced — the
+    // same solved draw and the same tax, with the cash-in
+    // and the cash left short by exactly the loss.
+    const headNetted = headline(saleState({ netted: true }));
+    near(fail, "netted headline draw (the same solve)", headNetted.draw, 82600);
+    exact(fail, "netted cash-in at headline (the defect)", headNetted.likely.cashInAtHeadline, 92600);
+    exact(fail, "netted cash left at headline (the defect)", headNetted.likely.cashLeftAtHeadline, 87479.84);
+    exact(fail, "netted federal tax at headline (unchanged)", headNetted.likely.federalTaxAtHeadline, 5192);
+    exact(
+      fail,
+      "the fix restores exactly the loss of cash",
+      (headLoss.likely.cashLeftAtHeadline ?? 0) - (headNetted.likely.cashLeftAtHeadline ?? 0),
+      loss,
+    );
+    // ---- Leg 3: the no-basis guard. With no entered
+    // basis there is no proceeds figure to preserve, so
+    // the fallback still nets the loss: the net loss rides
+    // the basis side and the priced gain is the net.
+    const noBasisIn = decemberCaseInputs(
+      saleState({ withLoss: true, withBasis: false }),
+      "likely",
+      0,
+    );
+    exact(fail, "no-basis proceeds", noBasisIn.stockSold, 0);
+    exact(fail, "no-basis loss rides the basis side", noBasisIn.stockBasis, loss - gain);
+    exact(fail, "no-basis priced gain still nets the loss", noBasisIn.stockSold - noBasisIn.stockBasis, gain - loss);
+    exact(fail, "no-basis net gain priced", pricePlaygroundYear(noBasisIn).ltcgNet, gain - loss);
+    // ---- Leg 4: the no-loss control. Without a loss
+    // harvest (absent, or entered at $0) the derivation is
+    // the old one bit for bit.
+    const oldNoLoss = decemberSaleAmounts(gain, basis);
+    exact(fail, "no-loss proceeds equal the old derivation", noLossIn.stockSold, oldNoLoss.proceeds);
+    exact(fail, "no-loss basis equals the old derivation", noLossIn.stockBasis, oldNoLoss.basisDollars);
+    const zeroLossState = saleState();
+    zeroLossState.strayLossHarvest = { status: "amount", amount: 0 };
+    const zeroLossIn = decemberCaseInputs(zeroLossState, "likely", 0);
+    exact(fail, "$0-loss proceeds equal the old derivation", zeroLossIn.stockSold, oldNoLoss.proceeds);
+    exact(fail, "$0-loss basis equals the old derivation", zeroLossIn.stockBasis, oldNoLoss.basisDollars);
   });
 
   /* ---- Build v112 fixtures: character splits on the
