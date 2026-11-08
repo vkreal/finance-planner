@@ -8943,214 +8943,222 @@ export function RothConversion({
               <FoldChevron open={bucketsOpen} />
             </button>
           </h2>
-          {bucketsOpen && (
-            <div id="roth-buckets-panel">
-              {bucketBarTotalCents != null && bucketBarTotalCents > 0 && (
-                <div className="mt-4">
-                  {/* Stacked bar: one horizontal bar, segments
-                      sized by dollars over the de-duplicated
-                      total computed above. Bucket 2 is two
-                      adjacent sub-segments (taxable remainder,
-                      pre-tax) so each taps to its own field,
-                      reading as one Bucket 2 segment. The
-                      Bucket 1 shortfall is an outlined,
-                      hatched extension — not a filled segment
-                      and not part of the total — spanning from
-                      the free-cash position to the two-year
-                      target position on the bar's scale; it is
-                      drawn only while free cash is below the
-                      target, and moves live with the Cash set
-                      aside field and the Annual spending dial. */}
-                  <div className="relative">
-                    <div className="flex h-8 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]">
-                      <button
-                        type="button"
-                        aria-label={`Bucket 1 cash ${fmtCentsExact(snap.cashCents ?? 0)} — go to the Cash set aside field in Your money`}
-                        className="h-full shrink-0 bg-[var(--accent)] text-left"
-                        style={{
-                          width: `${((snap.cashCents ?? 0) / bucketBarTotalCents) * 100}%`,
-                        }}
-                        onClick={() =>
-                          jumpToField("roth-Cash-set-aside", "money")
-                        }
-                      >
-                        {(snap.cashCents ?? 0) / bucketBarTotalCents >= 0.3 && (
-                          <span className="tnum block truncate px-2 text-xs font-semibold leading-8 text-[var(--surface)]">
-                            Bucket 1 · {fmtCentsExact(snap.cashCents ?? 0)}
-                          </span>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Bucket 2 taxable remainder ${fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)} — go to the Taxable field in Your money`}
-                        className="h-full shrink-0 bg-[var(--accent-soft)] text-left"
-                        style={{
-                          width: `${((bucketBarTaxableRemainderCents ?? 0) / bucketBarTotalCents) * 100}%`,
-                        }}
-                        onClick={() =>
-                          jumpToField("roth-Taxable-brokerage-bank-", "money")
-                        }
-                      >
-                        {(bucketBarTaxableRemainderCents ?? 0) /
-                          bucketBarTotalCents >=
-                          0.45 && (
-                          <span className="tnum block truncate px-2 text-xs font-semibold leading-8">
-                            Taxable ·{" "}
-                            {fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)}
-                          </span>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Bucket 2 pre-tax ${fmtCentsExact(bucketPretaxPoolCents ?? 0)} — go to the Pre-tax field in Your money`}
-                        className="h-full shrink-0 bg-[var(--surface-alt)] text-left"
-                        style={{
-                          width: `${((bucketPretaxPoolCents ?? 0) / bucketBarTotalCents) * 100}%`,
-                        }}
-                        onClick={() => jumpToField("roth-Pre-tax-You", "money")}
-                      >
-                        {(bucketPretaxPoolCents ?? 0) / bucketBarTotalCents >=
-                          0.4 && (
-                          <span className="tnum block truncate px-2 text-xs font-semibold leading-8">
-                            Pre-tax · {fmtCentsExact(bucketPretaxPoolCents ?? 0)}
-                          </span>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Bucket 3 Roth ${fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)} — go to the Roth field in Your money`}
-                        className="h-full shrink-0 bg-[var(--dim)] text-left"
-                        style={{
-                          width: `${((headerEffectiveInputs.rothCents ?? 0) / bucketBarTotalCents) * 100}%`,
-                        }}
-                        onClick={() => jumpToField("roth-Roth", "money")}
-                      >
-                        {(headerEffectiveInputs.rothCents ?? 0) /
-                          bucketBarTotalCents >=
-                          0.3 && (
-                          <span className="tnum block truncate px-2 text-xs font-semibold leading-8 text-[var(--surface)]">
-                            Bucket 3 ·{" "}
-                            {fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)}
-                          </span>
-                        )}
-                      </button>
-                    </div>
-                    {bucketGapCents != null &&
-                      bucketGapCents > 0 &&
-                      bucketFreeCashCents != null &&
-                      bucketTargetCents != null && (
-                        <div
-                          aria-hidden="true"
-                          className="pointer-events-none absolute inset-y-0 rounded-r-[var(--radius)] border-2 border-dashed border-[var(--bad)]"
-                          style={{
-                            left: `${(bucketFreeCashCents / bucketBarTotalCents) * 100}%`,
-                            width: `${Math.min(
-                              ((bucketTargetCents - bucketFreeCashCents) /
-                                bucketBarTotalCents) *
-                                100,
-                              100 -
-                                (bucketFreeCashCents / bucketBarTotalCents) *
-                                  100,
-                            )}%`,
-                            backgroundImage:
-                              "repeating-linear-gradient(45deg, transparent 0 5px, var(--bad-soft) 5px 10px)",
-                          }}
-                        />
-                      )}
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
-                    <button
-                      type="button"
-                      aria-label={`Bucket 1 cash ${fmtCentsExact(snap.cashCents ?? 0)} — go to the Cash set aside field in Your money`}
-                      className="flex items-baseline gap-1.5 text-left"
-                      onClick={() =>
-                        jumpToField("roth-Cash-set-aside", "money")
-                      }
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--accent)]"
-                      />
-                      <span className="text-[var(--dim)]">Bucket 1</span>
-                      <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
-                        {fmtCentsExact(snap.cashCents ?? 0)}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Bucket 2 taxable remainder ${fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)} — go to the Taxable field in Your money`}
-                      className="flex items-baseline gap-1.5 text-left"
-                      onClick={() =>
-                        jumpToField("roth-Taxable-brokerage-bank-", "money")
-                      }
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--accent-soft)]"
-                      />
-                      <span className="text-[var(--dim)]">
-                        Bucket 2 · Taxable
-                      </span>
-                      <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
-                        {fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Bucket 2 pre-tax ${fmtCentsExact(bucketPretaxPoolCents ?? 0)} — go to the Pre-tax field in Your money`}
-                      className="flex items-baseline gap-1.5 text-left"
-                      onClick={() => jumpToField("roth-Pre-tax-You", "money")}
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--surface-alt)]"
-                      />
-                      <span className="text-[var(--dim)]">
-                        Bucket 2 · Pre-tax
-                      </span>
-                      <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
-                        {fmtCentsExact(bucketPretaxPoolCents ?? 0)}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Bucket 3 Roth ${fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)} — go to the Roth field in Your money`}
-                      className="flex items-baseline gap-1.5 text-left"
-                      onClick={() => jumpToField("roth-Roth", "money")}
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--dim)]"
-                      />
-                      <span className="text-[var(--dim)]">Bucket 3</span>
-                      <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
-                        {fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)}
-                      </span>
-                    </button>
-                    <span className="flex items-baseline gap-1.5">
-                      <span className="text-[var(--dim)]">Buckets total</span>
-                      <span className="tnum font-semibold">
-                        {fmtCentsExact(bucketBarTotalCents)}
-                      </span>
-                    </span>
-                    {bucketGapCents != null && bucketGapCents > 0 && (
-                      <span className="flex items-baseline gap-1.5">
-                        <span
-                          aria-hidden="true"
-                          className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm border border-dashed border-[var(--bad)]"
-                        />
-                        <span className="text-[var(--dim)]">
-                          Outlined: shortfall to the two-year target
-                        </span>
+          {bucketBarTotalCents != null && bucketBarTotalCents > 0 && (
+            <div className="mt-4">
+              {/* Stacked bar: rendered OUTSIDE the fold
+                  below, so the bar and its legend stay
+                  visible as a summary when the panel is
+                  collapsed — only the text readout folds
+                  away. One horizontal bar, segments
+                  sized by dollars over the de-duplicated
+                  total computed above. Bucket 2 is two
+                  adjacent sub-segments (taxable remainder,
+                  pre-tax) so each taps to its own field,
+                  reading as one Bucket 2 segment. The
+                  Bucket 1 shortfall is an outlined,
+                  hatched extension — not a filled segment
+                  and not part of the total — spanning from
+                  the free-cash position to the two-year
+                  target position on the bar's scale; it is
+                  drawn only while free cash is below the
+                  target, and moves live with the Cash set
+                  aside field and the Annual spending dial. */}
+              <div className="relative">
+                <div className="flex h-8 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]">
+                  <button
+                    type="button"
+                    aria-label={`Bucket 1 cash ${fmtCentsExact(snap.cashCents ?? 0)} — go to the Cash set aside field in Your money`}
+                    className="h-full shrink-0 bg-[var(--accent)] text-left"
+                    style={{
+                      width: `${((snap.cashCents ?? 0) / bucketBarTotalCents) * 100}%`,
+                    }}
+                    onClick={() =>
+                      jumpToField("roth-Cash-set-aside", "money")
+                    }
+                  >
+                    {(snap.cashCents ?? 0) / bucketBarTotalCents >= 0.3 && (
+                      <span className="tnum block truncate px-2 text-xs font-semibold leading-8 text-[var(--surface)]">
+                        Bucket 1 · {fmtCentsExact(snap.cashCents ?? 0)}
                       </span>
                     )}
-                  </div>
-                  <p className="mt-1 text-sm text-[var(--dim)]">
-                    Bucket 2's segment excludes the cash already shown in
-                    Bucket 1, and HSA sits outside the buckets.
-                  </p>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Bucket 2 taxable remainder ${fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)} — go to the Taxable field in Your money`}
+                    className="h-full shrink-0 bg-[var(--accent-soft)] text-left"
+                    style={{
+                      width: `${((bucketBarTaxableRemainderCents ?? 0) / bucketBarTotalCents) * 100}%`,
+                    }}
+                    onClick={() =>
+                      jumpToField("roth-Taxable-brokerage-bank-", "money")
+                    }
+                  >
+                    {(bucketBarTaxableRemainderCents ?? 0) /
+                      bucketBarTotalCents >=
+                      0.45 && (
+                      <span className="tnum block truncate px-2 text-xs font-semibold leading-8">
+                        Taxable ·{" "}
+                        {fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Bucket 2 pre-tax ${fmtCentsExact(bucketPretaxPoolCents ?? 0)} — go to the Pre-tax field in Your money`}
+                    className="h-full shrink-0 bg-[var(--surface-alt)] text-left"
+                    style={{
+                      width: `${((bucketPretaxPoolCents ?? 0) / bucketBarTotalCents) * 100}%`,
+                    }}
+                    onClick={() => jumpToField("roth-Pre-tax-You", "money")}
+                  >
+                    {(bucketPretaxPoolCents ?? 0) / bucketBarTotalCents >=
+                      0.4 && (
+                      <span className="tnum block truncate px-2 text-xs font-semibold leading-8">
+                        Pre-tax · {fmtCentsExact(bucketPretaxPoolCents ?? 0)}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Bucket 3 Roth ${fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)} — go to the Roth field in Your money`}
+                    className="h-full shrink-0 bg-[var(--dim)] text-left"
+                    style={{
+                      width: `${((headerEffectiveInputs.rothCents ?? 0) / bucketBarTotalCents) * 100}%`,
+                    }}
+                    onClick={() => jumpToField("roth-Roth", "money")}
+                  >
+                    {(headerEffectiveInputs.rothCents ?? 0) /
+                      bucketBarTotalCents >=
+                      0.3 && (
+                      <span className="tnum block truncate px-2 text-xs font-semibold leading-8 text-[var(--surface)]">
+                        Bucket 3 ·{" "}
+                        {fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)}
+                      </span>
+                    )}
+                  </button>
                 </div>
-              )}
+                {bucketGapCents != null &&
+                  bucketGapCents > 0 &&
+                  bucketFreeCashCents != null &&
+                  bucketTargetCents != null && (
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-y-0 rounded-r-[var(--radius)] border-2 border-dashed border-[var(--bad)]"
+                      style={{
+                        left: `${(bucketFreeCashCents / bucketBarTotalCents) * 100}%`,
+                        width: `${Math.min(
+                          ((bucketTargetCents - bucketFreeCashCents) /
+                            bucketBarTotalCents) *
+                            100,
+                          100 -
+                            (bucketFreeCashCents / bucketBarTotalCents) *
+                              100,
+                        )}%`,
+                        backgroundImage:
+                          "repeating-linear-gradient(45deg, transparent 0 5px, var(--bad-soft) 5px 10px)",
+                      }}
+                    />
+                  )}
+              </div>
+              <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+                <button
+                  type="button"
+                  aria-label={`Bucket 1 cash ${fmtCentsExact(snap.cashCents ?? 0)} — go to the Cash set aside field in Your money`}
+                  className="flex items-baseline gap-1.5 text-left"
+                  onClick={() =>
+                    jumpToField("roth-Cash-set-aside", "money")
+                  }
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--accent)]"
+                  />
+                  <span className="text-[var(--dim)]">
+                    Bucket 1 · Cash
+                  </span>
+                  <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
+                    {fmtCentsExact(snap.cashCents ?? 0)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Bucket 2 taxable remainder ${fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)} — go to the Taxable field in Your money`}
+                  className="flex items-baseline gap-1.5 text-left"
+                  onClick={() =>
+                    jumpToField("roth-Taxable-brokerage-bank-", "money")
+                  }
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--accent-soft)]"
+                  />
+                  <span className="text-[var(--dim)]">
+                    Bucket 2 · Taxable remainder
+                  </span>
+                  <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
+                    {fmtCentsExact(bucketBarTaxableRemainderCents ?? 0)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Bucket 2 pre-tax ${fmtCentsExact(bucketPretaxPoolCents ?? 0)} — go to the Pre-tax field in Your money`}
+                  className="flex items-baseline gap-1.5 text-left"
+                  onClick={() => jumpToField("roth-Pre-tax-You", "money")}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--surface-alt)]"
+                  />
+                  <span className="text-[var(--dim)]">
+                    Bucket 2 · Pre-tax
+                  </span>
+                  <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
+                    {fmtCentsExact(bucketPretaxPoolCents ?? 0)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Bucket 3 Roth ${fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)} — go to the Roth field in Your money`}
+                  className="flex items-baseline gap-1.5 text-left"
+                  onClick={() => jumpToField("roth-Roth", "money")}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm bg-[var(--dim)]"
+                  />
+                  <span className="text-[var(--dim)]">
+                    Bucket 3 · Roth
+                  </span>
+                  <span className="tnum font-semibold underline decoration-dotted underline-offset-4">
+                    {fmtCentsExact(headerEffectiveInputs.rothCents ?? 0)}
+                  </span>
+                </button>
+                <span className="flex items-baseline gap-1.5">
+                  <span className="text-[var(--dim)]">Buckets total</span>
+                  <span className="tnum font-semibold">
+                    {fmtCentsExact(bucketBarTotalCents)}
+                  </span>
+                </span>
+                {bucketGapCents != null && bucketGapCents > 0 && (
+                  <span className="flex items-baseline gap-1.5">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-sm border border-dashed border-[var(--bad)]"
+                    />
+                    <span className="text-[var(--dim)]">
+                      Outlined: shortfall to the two-year target
+                    </span>
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-sm text-[var(--dim)]">
+                Bucket 2's segment excludes the cash already shown in
+                Bucket 1, and HSA sits outside the buckets.
+              </p>
+            </div>
+          )}
+          {bucketsOpen && (
+            <div id="roth-buckets-panel">
               <div className="mt-4">
                 <h3 className="text-sm font-semibold">
                   Bucket 1 — 0–2 years · risk off
