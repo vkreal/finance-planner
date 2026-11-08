@@ -5662,6 +5662,11 @@ export function projectPlaygroundYears(
   let harvestPoolBalance: number | null = harvestPoolAmount;
   const templateCashDraw = Math.max(0, template.cashDraw ?? 0);
   const templateRothDraw = Math.max(0, template.rothDraw ?? 0);
+  // ChatGPT SHOULD-3 (see the per-year override below):
+  // the received RMD the template carries — the part of
+  // the template year's RMD already received, already
+  // counted in the template's other ordinary income.
+  const receivedRmd = Math.max(0, template.rmdAlreadyReceived ?? 0);
   // A template Medicare flag is an override exactly
   // when it disagrees with the age rule at the
   // template's own age; otherwise it is the follow-age
@@ -5901,6 +5906,28 @@ export function projectPlaygroundYears(
       // sale out of the pool it is handed.
       harvestPoolAmount: harvestPoolBalance,
       harvestPoolBasisPct: harvestBasisPctEffective,
+      // ChatGPT SHOULD-3 (ChatGPT review, SHOULD —
+      // settled STAND): the received RMD is a ONE-YEAR
+      // fact, so from the second walked year on it is
+      // neither income nor a netting. The recurring other
+      // ordinary income drops the received amount — it
+      // prices only in the template year it was received
+      // in — and the netting input is zero, so the walked
+      // year prices its own gross RMD whole. Before, the
+      // spread repeated BOTH facts into every year: the
+      // income half outlived the netting half the moment
+      // the walked gross RMD fell below the received
+      // amount, so a year whose pre-tax account was empty
+      // still priced the received amount as income and
+      // cash. While the gross RMD stays above the received
+      // amount the two halves cancel exactly as P-S4
+      // states, so those years price bit-identically; the
+      // first walked year prices the template whole,
+      // exactly as before.
+      otherOrdinary: firstWalkYear
+        ? template.otherOrdinary
+        : template.otherOrdinary - receivedRmd,
+      rmdAlreadyReceived: firstWalkYear ? template.rmdAlreadyReceived : 0,
       // IRMAA payable this year (internal review round 3
       // SHOULD-2): the walk prices NONE, whatever the
       // template carries — the entered amount states the

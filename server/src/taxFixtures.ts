@@ -29679,7 +29679,7 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
   {
     id: "tax-engines-playground-projection-one-year-facts-ps4",
     kind: "tax",
-    note: "P-S4 (parity audit, SHOULD — settled STAND in substance, sub-case (a) rejected as written): the Playground projection repeated four one-year / ledger facts from its template into every future year. THE FIX (rothOptimizer.ts, projectPlaygroundYears): (b) the entering capital-loss carryforward CHAINS — each projected year enters with the prior year's reconciled carry-out (the shared pricer's lossCarryOut*, federal short / long and their Washington-attributable portions), exactly as the plan march chains its ledger; (c) the cash / Roth funding draws price whole in the walk's first year only — from the second year the cash draw is $0 (the walk tracks no cash balance that could fund a repeat) and the Roth draw repeats only up to the tracked Roth balance, which every year's draw depletes in the year's end Roth balance; (d) a template Medicare flag that DISAGREES with the age rule at the template's own age is a user override and carries through the walk, while a flag that agrees is the follow-age default and each year keeps pricing by its own age. Sub-case (a) needed no walk change: the settlement rejected the audit's income figure (the repeated other-ordinary the received amount sits inside cancels the repeated RMD netting exactly) and its proposed close (zeroing the netting would OVERSTATE each projected year's AGI by the received amount, because the receipt stays inside the repeated other-ordinary) — the correct close is the balance depleting by the GROSS RMD, and the walk's balance math already reads the gross per-owner RMDs since the R3-S2 rewrite (at the audit's anchor it still subtracted the priced net RMD); leg A pins both halves of that disposition. All legs use the shared fictional sample household (server/src/sampleHousehold.ts) or figures constructed arithmetically from it in-case. LEG A — RMD ALREADY RECEIVED (the settlement's worked example): MFJ, 2043, primary 75 / spouse 73 (the sample birth years), no sole-beneficiary fact (Uniform Lifetime table), a primary pre-tax balance of the filed ordinary dividends × the Uniform divisor at 75 (24.6), so the gross RMD is the filed ordinary dividends exactly; the received amount is two-fifths of the gross, entered BOTH as rmdAlreadyReceived and inside otherOrdinary (the input contract: the received amount is already counted in the entered income); no money out, 0% return, walked to age 76. HAND-DERIVED: year 1 prices net RMD = gross − received, AGI = net + other-ordinary = the gross itself, and the balance ends at start − GROSS (the pre-fix form, start − net, is computed in-case and ends two-fifths of the gross higher — the compounding overstatement the settlement's balance half named). Year 2 starts from that depleted balance; its gross is start ÷ the Uniform divisor at 76 (23.7); the netting repeats and cancels the same way, so year-2 AGI is again the gross exactly — NOT the gross less the received amount (the audit's rejected income figure) — and the balance again depletes by the gross. THE ZEROED COUNTERFACTUAL (the rejected close, priced in-case from year 2's own inputs with the received amount removed): AGI rises by the whole received amount over the corrected year — the overstatement the settlement warned the naive close would create. LEG B — CARRY-IN CHAIN (the settlement's worked example): 2026, MFJ at the sample ages 58 / 56, other ordinary income of twice the filed ordinary dividends (so taxable income before the allowance clears the $3,000 §1211(b) cap every year), a stock sale each year at a gain of half the filed ordinary dividends against the sample taxable balance, and an entering short-term carry-in of three times that gain. HAND-DERIVED through the shared ledger: year 1 nets the gain against the carry-in (priced gain $0), claims the $3,000 allowance, and carries out the carry-in less the gain less the allowance; year 2 enters with THAT carry-out (not the template's figure again) and repeats the shape; year 3 enters with the twice-reduced carry-in, nets only that much of the gain, and prices the rest as gain with no allowance and no carry-out. Taxes: years 1–2 AGI is the other income less the $3,000 allowance and federal tax is 10% of the taxable remainder over the $32,200 standard deduction; year 3 AGI is the other income plus the priced gain and its tax is 10% of the ordinary part (the gain prices at 0% at this taxable income). THE PRE-FIX FORM (year 3's facts priced in-case with the template carry-in re-fed whole): gain $0, allowance $3,000, tax at the year-1 figure — the repeat the chain replaces. CONTROL (the same template with no carry-in entered): year 2 enters with $0 and prices its gain whole — a template with no ledger fact walks exactly as before. LEG C — FUNDING DRAWS (the settlement's worked example): 2026, MFJ at the sample ages, no income, no tax, annual spending at the sample figure, a cash draw of the filed ordinary dividends and a Roth draw of half that, the sample Roth balance, 0% return, walked three years. HAND-DERIVED: year 1 IS the template year — both draws count in full (cash in = the two draws, the enough-for-the-year verdict = cash in less the sample spending), matching the single-year pricer on the same template figure for figure, and the Roth balance ends lower by the Roth draw. From year 2 the cash draw is $0 and the Roth draw repeats only while the tracked balance funds it, depleting each year — so year 2's cash in is the Roth draw alone and its verdict falls by the cash draw the pre-fix repeat invented. EXHAUSTION LEG (the starting Roth at the filed qualified dividends instead): year 2's Roth draw caps at what year 1 left, year 3's is $0, and the balance ends at $0 — no projected year counts funding no balance pays for. LEG D — MEDICARE OVERRIDE (the settlement's worked example): 2026, MFJ, primary 63 with Medicare ON (an override — the age rule at 63 is off), spouse 61 with Medicare off (the follow-age default), a per-person Medicare premium of a quarter of the filed ordinary dividends, no marketplace premium and no benchmark, walked to primary 67. HAND-DERIVED: the corrected walk carries the override — the primary is on Medicare in every projected year, so the Medicare premium prices from age 63 (the pre-fix age rule priced $0 of it at 63 and 64); the spouse still follows age, switching on at her own 65 (the primary-67 year), when the premium doubles. FOLLOW-AGE CONTROL (the same template with the primary's flag off, agreeing with the rule at 63): $0 of premium at 63 and 64, the per-person premium from 65, doubled at 67 — bit-identical to the pre-fix walk, so a template that never overrode moves nothing. OVERRIDE-OFF LEG (a template at primary 66 with Medicare explicitly OFF, disagreeing with the rule at 66): the walk carries the off answer at 66 and 67 — the only premium is the spouse's when she reaches 65. The template year itself prices the per-person premium under the single-year pricer too — the override was always a single-year fact; only the projection discarded it.",
+    note: "P-S4 (parity audit, SHOULD — settled STAND in substance, sub-case (a) rejected as written): the Playground projection repeated four one-year / ledger facts from its template into every future year. THE FIX (rothOptimizer.ts, projectPlaygroundYears): (b) the entering capital-loss carryforward CHAINS — each projected year enters with the prior year's reconciled carry-out (the shared pricer's lossCarryOut*, federal short / long and their Washington-attributable portions), exactly as the plan march chains its ledger; (c) the cash / Roth funding draws price whole in the walk's first year only — from the second year the cash draw is $0 (the walk tracks no cash balance that could fund a repeat) and the Roth draw repeats only up to the tracked Roth balance, which every year's draw depletes in the year's end Roth balance; (d) a template Medicare flag that DISAGREES with the age rule at the template's own age is a user override and carries through the walk, while a flag that agrees is the follow-age default and each year keeps pricing by its own age. Sub-case (a) needed no walk change: the settlement rejected the audit's income figure (the repeated other-ordinary the received amount sits inside cancels the repeated RMD netting exactly) and its proposed close (zeroing the netting would OVERSTATE each projected year's AGI by the received amount, because the receipt stays inside the repeated other-ordinary) — the correct close is the balance depleting by the GROSS RMD, and the walk's balance math already reads the gross per-owner RMDs since the R3-S2 rewrite (at the audit's anchor it still subtracted the priced net RMD); leg A pins both halves of that disposition. CORRECTION (ChatGPT SHOULD-3, settled STAND — the case this disposition did not consider): the cancellation holds only while the walked gross RMD stays above the received amount. Once the gross falls below it — including the account-empty case, where the gross is zero — the income half outlives the netting half and the received amount prices again as income and cash in every later year. The fix removes the received amount from the recurring other ordinary income after year 1 and zeroes the netting input, so the walked year prices its own gross RMD whole. Leg A's year-2 TOTAL is unchanged (its AGI is still the gross exactly), but the decomposition moves: the year-2 net RMD is now the gross (the re-pinned aY2Net), and the zeroed counterfactual — repricing year 2's inputs with the netting removed — is now a no-op on the walk's already-corrected inputs, so it prices the corrected year-2 AGI (the re-pinned aZeroedY2Agi); the overstatement it used to demonstrate can no longer be constructed from the walk's inputs. All legs use the shared fictional sample household (server/src/sampleHousehold.ts) or figures constructed arithmetically from it in-case. LEG A — RMD ALREADY RECEIVED (the settlement's worked example): MFJ, 2043, primary 75 / spouse 73 (the sample birth years), no sole-beneficiary fact (Uniform Lifetime table), a primary pre-tax balance of the filed ordinary dividends × the Uniform divisor at 75 (24.6), so the gross RMD is the filed ordinary dividends exactly; the received amount is two-fifths of the gross, entered BOTH as rmdAlreadyReceived and inside otherOrdinary (the input contract: the received amount is already counted in the entered income); no money out, 0% return, walked to age 76. HAND-DERIVED: year 1 prices net RMD = gross − received, AGI = net + other-ordinary = the gross itself, and the balance ends at start − GROSS (the pre-fix form, start − net, is computed in-case and ends two-fifths of the gross higher — the compounding overstatement the settlement's balance half named). Year 2 starts from that depleted balance; its gross is start ÷ the Uniform divisor at 76 (23.7); the corrected year prices the gross whole — the repeated received amount is out of the income and the netting is zero — so year-2 AGI is again the gross exactly — NOT the gross less the received amount (the audit's rejected income figure) — and the balance again depletes by the gross. THE ZEROED COUNTERFACTUAL (the rejected close, priced in-case from year 2's own inputs with the netting removed): before this build's fix it priced AGI above the corrected year by the whole received amount — the overstatement the settlement warned the naive close would create; after the fix the walk's year-2 inputs already carry the corrected facts (no repeated received amount, no netting), so the repricing is a no-op and prices the corrected year-2 AGI. LEG B — CARRY-IN CHAIN (the settlement's worked example): 2026, MFJ at the sample ages 58 / 56, other ordinary income of twice the filed ordinary dividends (so taxable income before the allowance clears the $3,000 §1211(b) cap every year), a stock sale each year at a gain of half the filed ordinary dividends against the sample taxable balance, and an entering short-term carry-in of three times that gain. HAND-DERIVED through the shared ledger: year 1 nets the gain against the carry-in (priced gain $0), claims the $3,000 allowance, and carries out the carry-in less the gain less the allowance; year 2 enters with THAT carry-out (not the template's figure again) and repeats the shape; year 3 enters with the twice-reduced carry-in, nets only that much of the gain, and prices the rest as gain with no allowance and no carry-out. Taxes: years 1–2 AGI is the other income less the $3,000 allowance and federal tax is 10% of the taxable remainder over the $32,200 standard deduction; year 3 AGI is the other income plus the priced gain and its tax is 10% of the ordinary part (the gain prices at 0% at this taxable income). THE PRE-FIX FORM (year 3's facts priced in-case with the template carry-in re-fed whole): gain $0, allowance $3,000, tax at the year-1 figure — the repeat the chain replaces. CONTROL (the same template with no carry-in entered): year 2 enters with $0 and prices its gain whole — a template with no ledger fact walks exactly as before. LEG C — FUNDING DRAWS (the settlement's worked example): 2026, MFJ at the sample ages, no income, no tax, annual spending at the sample figure, a cash draw of the filed ordinary dividends and a Roth draw of half that, the sample Roth balance, 0% return, walked three years. HAND-DERIVED: year 1 IS the template year — both draws count in full (cash in = the two draws, the enough-for-the-year verdict = cash in less the sample spending), matching the single-year pricer on the same template figure for figure, and the Roth balance ends lower by the Roth draw. From year 2 the cash draw is $0 and the Roth draw repeats only while the tracked balance funds it, depleting each year — so year 2's cash in is the Roth draw alone and its verdict falls by the cash draw the pre-fix repeat invented. EXHAUSTION LEG (the starting Roth at the filed qualified dividends instead): year 2's Roth draw caps at what year 1 left, year 3's is $0, and the balance ends at $0 — no projected year counts funding no balance pays for. LEG D — MEDICARE OVERRIDE (the settlement's worked example): 2026, MFJ, primary 63 with Medicare ON (an override — the age rule at 63 is off), spouse 61 with Medicare off (the follow-age default), a per-person Medicare premium of a quarter of the filed ordinary dividends, no marketplace premium and no benchmark, walked to primary 67. HAND-DERIVED: the corrected walk carries the override — the primary is on Medicare in every projected year, so the Medicare premium prices from age 63 (the pre-fix age rule priced $0 of it at 63 and 64); the spouse still follows age, switching on at her own 65 (the primary-67 year), when the premium doubles. FOLLOW-AGE CONTROL (the same template with the primary's flag off, agreeing with the rule at 63): $0 of premium at 63 and 64, the per-person premium from 65, doubled at 67 — bit-identical to the pre-fix walk, so a template that never overrode moves nothing. OVERRIDE-OFF LEG (a template at primary 66 with Medicare explicitly OFF, disagreeing with the rule at 66): the walk carries the off answer at 66 and 67 — the only premium is the spouse's when she reaches 65. The template year itself prices the per-person premium under the single-year pricer too — the override was always a single-year fact; only the projection discarded it.",
     expected: {
       aY1Gross: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
       aY1Net:
@@ -29694,10 +29694,10 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
       aY2Start:
         (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 23.6,
       aY2Gross: 19915.61,
-      aY2Net: 11915.61,
+      aY2Net: 19915.61,
       aY2Agi: 19915.61,
       aY2End: 452084.39,
-      aZeroedY2Agi: 27915.61,
+      aZeroedY2Agi: 19915.61,
       bY1InSt:
         (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 1.5,
       bY2InSt: 17000,
@@ -36307,6 +36307,139 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         eY2BasisEff: e.y2.stockBasisEffective,
         eY2Magi: e.y2.result.acaMagi,
         eY2Tax: e.y2.result.federalTax,
+      };
+    },
+  },
+  {
+    id: "tax-engines-playground-projection-received-rmd-one-year",
+    kind: "tax",
+    note: "SHOULD-3 (ChatGPT review, SHOULD — settled STAND): a received RMD produced income and cash after the account was empty. The projection walk repeated the template's other ordinary income — which already counts the received amount, the input contract — into every walked year through the spread, while the pricer nets the received amount against only the current year's gross RMD — so once the pre-tax account was empty and the current RMD was $0, the received amount still flowed in as ordinary income and cash in year 2 and later (the settlement's worked example: year 2 prices cash in / MAGI of the whole received amount with endPretax $0). THE FIX (rothOptimizer.ts, projectPlaygroundYears): the received RMD is a one-year fact — from the second walked year on, the recurring other ordinary income drops the received amount and the netting input is zero, so the walked year prices its own gross RMD whole; the first walked year prices the template whole, exactly as before. While the gross RMD stays above the received amount the two halves cancel exactly as P-S4 states, so those years price bit-identically. THE WORKED EXAMPLE is built on the shared fictional sample household (server/src/sampleHousehold.ts): the sample start year, joint filing, household of the sample size, the sample family benchmark, no Social Security, no yields, no carry-in, 0% return; the primary at RMD age with the spouse below it and no spouse balance, other ordinary income of half the filed ordinary dividends — all of it the RMD already received that year — a pre-tax balance of the filed ordinary dividends, and a spending draw of the balance less the first year's gross RMD, so the account empties in year 1. HAND-DERIVED: the first year's gross RMD is the balance over the age-75 Uniform divisor, so the draw is the balance less that RMD and the account ends at $0; year 1 prices the template whole — its MAGI and cash in are the other ordinary income plus the draw, matching the single-year pricer on the same template pin-for-pin, its net RMD $0 (the gross is below the received amount) and its federal tax $0 (the standard deduction covers the income); year 2 prices nothing — MAGI and cash in $0, gross RMD $0, the walked year's own inputs carrying no other ordinary income and no received amount, so a year loaded from the walk shows the same dials. PRE-FIX (verified by the gate probe on the tree as received) year 2 priced cash in / MAGI of the whole received amount with endPretax $0. NON-EMPTY LEG: the same template on the sample pre-tax balance — the account survives year 1 and year 2's gross RMD stays above the received amount — so year 2's MAGI, cash in, and federal tax are bit-identical before and after the fix; the received amount merely moves from other ordinary income into the gross RMD the pricer now prices whole (the net RMD becomes the gross). CONTROL — no received RMD: the same template with no other ordinary income and no received amount walks bit-identically before and after, and the main leg's post-fix year 2 equals the control's year 2.",
+    expected: {
+      singleMagi: 29186.99,
+      singleCashIn: 29186.99,
+      y1Magi: 29186.99,
+      y1CashIn: 29186.99,
+      y1RmdGross: 813.01,
+      y1Rmd: 0,
+      y1Tax: 0,
+      y1MoneyOut: 19186.99,
+      y1EndPretax: 0,
+      y2Magi: 0,
+      y2CashIn: 0,
+      y2RmdGross: 0,
+      y2Tax: 0,
+      y2InOtherOrdinary: 0,
+      y2InReceived: 0,
+      nY1Magi: 80162.6,
+      nY1Tax: 3423.51,
+      nY2Magi: 79095.74,
+      nY2CashIn: 79095.74,
+      nY2Tax: 3295.49,
+      nY2Rmd: 59908.75,
+      nY2RmdGross: 59908.75,
+      nY2InOtherOrdinary: 0,
+      nY2InReceived: 0,
+      cY1Magi: 20000,
+      cY2Magi: 0,
+      cY2CashIn: 0,
+    },
+    actual: () => {
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      const RECEIVED = ORD / 2;
+      const BALANCE = ORD;
+      const base: PlaygroundYearInputs = {
+        taxYear: SAMPLE_START_YEAR,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 75,
+        ageSpouse: 73,
+        onMedicarePrimary: true,
+        onMedicareSpouse: true,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: RECEIVED,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        spendingDraw: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: BALANCE,
+        pretaxBalanceSpouse: null,
+        rmdAlreadyReceived: RECEIVED,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        stateRatePct: 0,
+      };
+      // The draw that empties the account in year 1: the balance
+      // less the first year's gross RMD, read off the single-year
+      // pricer on the same template (the RMD itself is pinned by
+      // the projection's balance fixtures).
+      const draw = BALANCE - pricePlaygroundYear(base).rmdGross;
+      const opts = {
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSchedule: null,
+        startTaxable: null,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "draw" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const walk2 = (t: PlaygroundYearInputs) => {
+        const walk = projectPlaygroundYears(t, { ...opts, toAge: 76 });
+        return {
+          y1: walk.years.find((y) => y.agePrimary === 75)!,
+          y2: walk.years.find((y) => y.agePrimary === 76)!,
+        };
+      };
+      const main = { ...base, spendingDraw: draw };
+      const single = pricePlaygroundYear(main);
+      const m = walk2(main);
+      const n = walk2({
+        ...main,
+        pretaxBalance: SAMPLE_PRETAX_CENTS / 100,
+      });
+      const c = walk2({
+        ...main,
+        otherOrdinary: 0,
+        rmdAlreadyReceived: 0,
+      });
+      return {
+        singleMagi: single.magi,
+        singleCashIn: single.cashIn,
+        y1Magi: m.y1.result.magi,
+        y1CashIn: m.y1.result.cashIn,
+        y1RmdGross: m.y1.result.rmdGross,
+        y1Rmd: m.y1.result.rmd,
+        y1Tax: m.y1.result.federalTax,
+        y1MoneyOut: m.y1.moneyOut,
+        y1EndPretax: m.y1.endBalances.pretax,
+        y2Magi: m.y2.result.magi,
+        y2CashIn: m.y2.result.cashIn,
+        y2RmdGross: m.y2.result.rmdGross,
+        y2Tax: m.y2.result.federalTax,
+        y2InOtherOrdinary: m.y2.inputs.otherOrdinary,
+        y2InReceived: m.y2.inputs.rmdAlreadyReceived ?? null,
+        nY1Magi: n.y1.result.magi,
+        nY1Tax: n.y1.result.federalTax,
+        nY2Magi: n.y2.result.magi,
+        nY2CashIn: n.y2.result.cashIn,
+        nY2Tax: n.y2.result.federalTax,
+        nY2Rmd: n.y2.result.rmd,
+        nY2RmdGross: n.y2.result.rmdGross,
+        nY2InOtherOrdinary: n.y2.inputs.otherOrdinary,
+        nY2InReceived: n.y2.inputs.rmdAlreadyReceived ?? null,
+        cY1Magi: c.y1.result.magi,
+        cY2Magi: c.y2.result.magi,
+        cY2CashIn: c.y2.result.cashIn,
       };
     },
   },
