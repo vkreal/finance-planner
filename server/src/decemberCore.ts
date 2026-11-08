@@ -1416,21 +1416,50 @@ export function reresolveDecemberStateForYear(
   },
   facts: DecemberRecordFacts,
 ): DecemberState {
+  // A stored carry-in or student belongs to the year it was
+  // saved for — the provenance stamp (internal review round
+  // 4, SHOULD-1). The reset restores a stored value only
+  // into that same year; into any other year it clears the
+  // field instead, so a balance saved in an earlier session
+  // cannot price a later year (the M-3 defect through
+  // stored provenance: the edited flags are session state,
+  // reset on reload, so a carry-in saved in an earlier
+  // session returned as unedited and was restored into a
+  // later year, bypassing the first-year-only gate). The
+  // stamp is precise where clearing would not be: a
+  // carry-in can legitimately be unchanged into the next
+  // year if the intervening year consumed nothing, and
+  // switching back to the stamped year restores the stored
+  // value exactly. An edited field is never touched — an
+  // explicit answer for the new year survives, by design.
+  // The balances below do not use the stamp: they carry
+  // their own equality-against-record-facts clear.
+  const storedForYear = stored.taxYear === display.taxYear;
   const reset: Partial<DecemberState> = {};
   if (!edited.carryInSt) {
-    reset.carryInCapitalLossSt = stored.carryInCapitalLossSt;
+    reset.carryInCapitalLossSt = storedForYear
+      ? stored.carryInCapitalLossSt
+      : null;
   }
   if (!edited.carryInLt) {
-    reset.carryInCapitalLossLt = stored.carryInCapitalLossLt;
+    reset.carryInCapitalLossLt = storedForYear
+      ? stored.carryInCapitalLossLt
+      : null;
   }
   if (!edited.carryInStWa) {
-    reset.carryInCapitalLossStWa = stored.carryInCapitalLossStWa;
+    reset.carryInCapitalLossStWa = storedForYear
+      ? stored.carryInCapitalLossStWa
+      : null;
   }
   if (!edited.carryInLtWa) {
-    reset.carryInCapitalLossLtWa = stored.carryInCapitalLossLtWa;
+    reset.carryInCapitalLossLtWa = storedForYear
+      ? stored.carryInCapitalLossLtWa
+      : null;
   }
   if (!edited.education) {
-    reset.educationStudents = stored.educationStudents;
+    reset.educationStudents = storedForYear
+      ? stored.educationStudents
+      : null;
   }
   if (!edited.balances) {
     // A saved split restores like every other unedited field.
@@ -1488,6 +1517,19 @@ export function reresolveDecemberStateForYear(
    user has not edited in the console: the STORED blob's
    own values (as parsed, before any load resolution). */
 export type DecemberStoredProvenance = {
+  // The tax year of the saved blob these stored values were
+  // saved for (internal review round 4, SHOULD-1): a stored
+  // carry-in or student belongs to its year — restoring it
+  // into another year prices that year's entering balance
+  // with a stale figure. The stamp is the blob's own tax
+  // year, carried by decemberStoredProvenanceOf, so no blob
+  // format change is needed and it is correct by
+  // construction at every derivation point (load, save
+  // success, CAS reload, first-open preseed). It gates only
+  // the year-change restore (reresolveDecemberStateForYear):
+  // load resolution never changes the year, so the stamp
+  // always matches there, and the save path is untouched.
+  taxYear: number;
   primarySoleBeneficiaryOfSpouse: boolean | null;
   pretaxBalancePrimary: number | null;
   pretaxBalanceSpouse: number | null;
@@ -1528,6 +1570,7 @@ export function decemberStoredProvenanceOf(
   state: DecemberState,
 ): DecemberStoredProvenance {
   return {
+    taxYear: state.taxYear,
     primarySoleBeneficiaryOfSpouse: state.primarySoleBeneficiaryOfSpouse,
     pretaxBalancePrimary: state.pretaxBalancePrimary,
     pretaxBalanceSpouse: state.pretaxBalanceSpouse,
@@ -6747,6 +6790,187 @@ export function runDecemberFixtures(): {
       decemberCaseInputs({ ...staleState, pretaxBalancePrimary: null }, "likely", 0),
     );
     exact(fail, "blank balance prices no RMD", blankPg.rmdPrimary, 0);
+  });
+
+  run("dec-stored-carryin-year-gated", (fail) => {
+    // (Internal review round 4, SHOULD-1 — settled STAND):
+    // round-3 SHOULD-1 gated the December console's RECORD
+    // balances to the plan's first year, but the same
+    // stale-year defect survived for carry-ins through the
+    // STORED-provenance path: reresolveDecemberStateForYear
+    // reset every unedited carry-in to its STORED value with
+    // no year gate, and the edited flags are session state
+    // (reset on reload), so a carry-in saved in an earlier
+    // session returned as unedited and was restored into a
+    // later year, bypassing the first-year-only gate. THE
+    // WORKED EXAMPLE (settlement, engine-run): stored LT
+    // carry-in $10,000 saved for 2026. 2026 consumption leg:
+    // carry-in $10,000 + $10,000 LT gain → ltcgNet $0,
+    // allowance $0, carry-out $0, MAGI $100,000 (the balance
+    // is fully consumed). 2027 pricing leg (MFJ, ages 59/57,
+    // other ordinary $100,000, $8,000 LT gain): stale MAGI
+    // $98,000, ltcgNet −$2,000, allowance $2,000, federal
+    // tax $7,400; true MAGI $108,000, ltcgNet $8,000,
+    // federal tax $7,640 — MAGI understated by $10,000, the
+    // full stale balance ($8,000 gain sheltered + $2,000
+    // allowance), and the cliff-sized draw overshoots in the
+    // non-conservative direction. Education leg, same
+    // mechanism: a stored 2026 student ($4,000,
+    // AOTC-eligible) survived into 2027 instead of the 2027
+    // student ($8,000, not AOTC-eligible). THE FIX: the
+    // stored provenance carries the tax year of the blob it
+    // was saved for (the stamp — the blob's own tax year,
+    // so no format change), and the year-change reset
+    // restores a stored carry-in or student only into that
+    // same year; into any other year it clears the field.
+    // The fixture pins the console's behavior through its
+    // own paths (reresolve + December pricing), and the
+    // pricing legs pin the worked example to the cent.
+    const none = {
+      carryInSt: false,
+      carryInLt: false,
+      carryInStWa: false,
+      carryInLtWa: false,
+      education: false,
+      balances: false,
+    };
+    const facts2026: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+      educationStudents: [{ expenses: 4000, aotcEligible: true }],
+    };
+    const facts2027: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+      educationStudents: [{ expenses: 8000, aotcEligible: false }],
+    };
+    // Stored provenance as saved for 2026: all four
+    // carry-ins non-null, stamped 2026.
+    const stored2026 = decemberStoredProvenanceOf({
+      ...defaultDecemberState(2026),
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+    });
+    exact(fail, "stored provenance stamps the saved year", stored2026.taxYear, 2026);
+    const display2026 = {
+      ...defaultDecemberState(2026),
+      carryInCapitalLossSt: 1000,
+      carryInCapitalLossLt: 10000,
+      carryInCapitalLossStWa: 250,
+      carryInCapitalLossLtWa: 2000,
+      educationStudents: [{ expenses: 4000, aotcEligible: true }],
+    };
+    // YEAR CHANGE 2026 -> 2027: the stamped stored values
+    // do NOT restore — every carry-in clears.
+    const to2027 = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2027 },
+      stored2026,
+      none,
+      facts2027,
+    );
+    if (
+      to2027.carryInCapitalLossSt !== null ||
+      to2027.carryInCapitalLossLt !== null ||
+      to2027.carryInCapitalLossStWa !== null ||
+      to2027.carryInCapitalLossLtWa !== null
+    ) {
+      fail("a stored carry-in must not restore into a later year");
+    }
+    // The 2027 students resolve instead of the stored 2026
+    // ones.
+    if (
+      to2027.educationStudents == null ||
+      to2027.educationStudents.length !== 1 ||
+      to2027.educationStudents[0]!.expenses !== 8000 ||
+      to2027.educationStudents[0]!.aotcEligible !== false
+    ) {
+      fail("switching years must resolve the new year's education students, not restore the stored ones");
+    }
+    // Null-stored control still clears.
+    const storedNull = decemberStoredProvenanceOf(defaultDecemberState(2026));
+    const to2027null = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2027, carryInCapitalLossLt: null },
+      storedNull,
+      none,
+      facts2027,
+    );
+    if (to2027null.carryInCapitalLossLt !== null) {
+      fail("a null stored carry-in must stay cleared");
+    }
+    // Same-session EDITED carry-in survives the year change
+    // even with a mismatched stamp — an explicit answer for
+    // the new year, pinned by fixture and by design.
+    const editedLt = reresolveDecemberStateForYear(
+      { ...display2026, taxYear: 2027, carryInCapitalLossLt: 500 },
+      stored2026,
+      { ...none, carryInLt: true },
+      facts2027,
+    );
+    exact(fail, "an edited LT carry-in survives the year change", editedLt.carryInCapitalLossLt, 500);
+    if (
+      editedLt.carryInCapitalLossSt !== null ||
+      editedLt.carryInCapitalLossStWa !== null ||
+      editedLt.carryInCapitalLossLtWa !== null
+    ) {
+      fail("unedited carry-in siblings must still clear around an edited field");
+    }
+    // ROUND-TRIP at the function level: switching back to
+    // the stamped year restores the stored value exactly —
+    // the stamp is precise where blind clearing would not
+    // be. (The live console patches the provenance to null
+    // on the clear, so its round-trip re-fills through the
+    // record overlay instead; this leg pins the function's
+    // own contract.)
+    const back2026 = reresolveDecemberStateForYear(
+      { ...to2027, taxYear: 2026 },
+      stored2026,
+      none,
+      facts2026,
+    );
+    exact(fail, "switching back to the stamped year restores the carry-in", back2026.carryInCapitalLossLt, 10000);
+    // PRICING: the 2026 consumption leg fully consumes the
+    // balance; the 2027 leg prices the true MAGI once the
+    // stale carry-in no longer restores.
+    const s26 = defaultDecemberState(2026);
+    s26.ytdOtherOrdinary = 100000;
+    s26.ytdCapitalGain = 10000;
+    s26.carryInCapitalLossLt = 10000;
+    const pg26 = pricePlaygroundYear(decemberCaseInputs(s26, "likely", 0));
+    exact(fail, "2026 ltcgNet fully sheltered", pg26.ltcgNet, 0);
+    exact(fail, "2026 allowance fully consumed", pg26.capitalLossAllowance, 0);
+    exact(fail, "2026 carry-out fully consumed", pg26.lossCarryOutLt, 0);
+    exact(fail, "2026 MAGI", pg26.acaMagi, 100000);
+    const price2027 = (carryIn: number | null) => {
+      const s = defaultDecemberState(2027);
+      s.agePrimary = 59;
+      s.ageSpouse = 57;
+      s.ytdOtherOrdinary = 100000;
+      s.ytdCapitalGain = 8000;
+      s.carryInCapitalLossLt = carryIn;
+      const pg = pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+      const proj = computeDecemberProjection(s);
+      return { pg, nonDrawMagi: proj.cases[1]!.nonDrawAcaMagi };
+    };
+    const stale = price2027(10000);
+    exact(fail, "stale 2027 ltcgNet", stale.pg.ltcgNet, -2000);
+    exact(fail, "stale 2027 allowance", stale.pg.capitalLossAllowance, 2000);
+    exact(fail, "stale 2027 MAGI", stale.pg.acaMagi, 98000);
+    exact(fail, "stale 2027 federal tax", stale.pg.federalTax, 7400);
+    exact(fail, "stale 2027 non-draw MAGI", stale.nonDrawMagi, 98000);
+    const fixed = price2027(to2027.carryInCapitalLossLt);
+    exact(fail, "fixed 2027 ltcgNet", fixed.pg.ltcgNet, 8000);
+    exact(fail, "fixed 2027 allowance", fixed.pg.capitalLossAllowance, 0);
+    exact(fail, "fixed 2027 MAGI", fixed.pg.acaMagi, 108000);
+    exact(fail, "fixed 2027 federal tax", fixed.pg.federalTax, 7640);
+    exact(fail, "fixed 2027 non-draw MAGI", fixed.nonDrawMagi, 108000);
   });
 
   /* ---- Build v112 fixtures: character splits on the

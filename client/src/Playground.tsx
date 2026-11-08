@@ -3182,6 +3182,12 @@ export function Playground({
     // SHOULD-2): Reset clears it like every other money
     // dial — the fresh snapshot below stores it blank.
     setPgIrmaaPayable("");
+    // Health-premium dials (internal review round 4
+    // SHOULD-2): Reset clears them like every other
+    // money dial — the fresh snapshot below stores
+    // both premium fields blank.
+    setPgHealthAca("");
+    setPgHealthMedicare("");
     setPgAptcTaken("");
     setPgCoverageReduction("");
     setPgCarryInSt("");
@@ -3206,6 +3212,16 @@ export function Playground({
     setPgPastedSpending(undefined);
     // Reset clears any held harvest facts (P-S3).
     setPgPastedHarvest(undefined);
+    // Itemized-deduction dials and education students
+    // (internal review round 4 SHOULD-2): Reset clears
+    // them like every other priced dial — the fresh
+    // snapshot below stores all five blank. Blank year
+    // already cleared them; Reset was missing them.
+    setPgItemizedMortgage("");
+    setPgItemizedSalt("");
+    setPgItemizedCharitable("");
+    setPgItemizedOther("");
+    setPgEduStudents([]);
     setPgSoleBeneficiary(true);
     setPgPrimarySoleBeneficiaryOfSpouse(null);
     // Reset releases the hold.
@@ -4762,6 +4778,11 @@ export function Playground({
     // SHOULD-2): a blank year zeroes it with the other
     // single-year dials.
     setPgIrmaaPayable("");
+    // Health-premium dials (internal review round 4
+    // SHOULD-2): a blank year zeroes them with the
+    // other single-year dials.
+    setPgHealthAca("");
+    setPgHealthMedicare("");
     setPgAptcTaken("");
     setPgCoverageReduction("");
     setPgCarryInSt("");

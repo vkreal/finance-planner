@@ -5063,6 +5063,16 @@ const playgroundPasteOut = z.object({
   itemizedSaltPaid: z.number().nullable(),
   itemizedCharitable: z.number().nullable(),
   itemizedOther: z.number().nullable(),
+  // ACA reconciliation facts (S-1): the payload carries
+  // both (null when unset) so a replayed paste reprices
+  // the same filing settlement the copied year priced.
+  // Before this build the payload object the builder
+  // emits carried both but this response schema did not,
+  // so the action's own paste payload dropped them and a
+  // settled year replayed from the payload object priced
+  // un-reconciled.
+  aptcTaken: z.number().nullable(),
+  acaCoverageReduction: z.number().nullable(),
   // Enrollment premium (P-M3): the payload carries it
   // (null when unset) so a replayed paste reprices the
   // same capped filing-settlement credit the copied year
@@ -5079,6 +5089,22 @@ const playgroundPasteOut = z.object({
   // a pasted year carried no spending and the comparison
   // fell back to the live record's figure.
   annualSpending: z.number().nullable(),
+  // Health premiums and the payable IRMAA surcharge
+  // (v208 / internal review round 3 SHOULD-2): the
+  // payload carries all three (null when unset) so a
+  // replayed paste reprices the same cash left after
+  // health premiums the copied year priced. Before this
+  // build the payload object the builder emits carried
+  // all three but this response schema did not, so the
+  // action's own paste payload dropped them — the same
+  // failure mode the pretaxBalanceSpouse note above
+  // documents — while pasteText (the JSON string of the
+  // same object) carried them, so a year replayed from
+  // the payload object priced no premium and no payable
+  // surcharge, silently.
+  healthPremiumAcaAnnual: z.number().nullable(),
+  healthPremiumMedicarePerPerson: z.number().nullable(),
+  irmaaPayableAnnual: z.number().nullable(),
   // Gain-harvest facts (P-S3): the payload carries both
   // (null when unset) so a replayed paste reprices the
   // same harvest the copied year priced. Before this

@@ -133,6 +133,7 @@ import {
 import { CHARITABLE_CEILING, CURRENT_LAW, DEDUCTION_2026, EARLIEST_LAW, TAX_LAW_2025, TAX_LAW_2026, TAX_LAW_YEARS, acaTableFor, fplFor, jointDivisor, lawForYear, rmdAgeForBirthYear, saltScheduleForYear } from "./taxLaw";
 import { ACA_HOUSEHOLD_SCHEDULE_SEMANTICS, ACA_SEMANTICS, AMT_SEMANTICS, EDUCATION_CREDIT_SEMANTICS, IRMAA_LOOKBACK_SEMANTICS, ITEMIZED_DEDUCTION_SEMANTICS, LOSS_CARRYFORWARD_SEMANTICS, bracketTopPctField, playgroundInputsFromArgs, playgroundYearIn } from "./apiContractCore";
 import { computeGiftComparison, parseRothGift } from "./giftModel";
+import { blendedExpected, STOCKS_PCT_DEFAULT } from "./retirementEngines";
 import { DEFAULT_HEIR_RATE_PCT, SEED_HEIR_RATE, seedRothInputs } from "./rothSeed";
 import { impliedYieldPctsFromTaxReturn, parseRothTaxReturn, qualifiedDividendSharePctFromTaxReturn, rejectedNegativeTaxReturnActuals, taxReturnPrefillDollars } from "./taxReturnCore";
 import {
@@ -36511,6 +36512,76 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
         y1AtZeroMagi: atZero1.magi,
         y1AtZeroTaxable: atZero1.taxableIncome,
         y1Target: fill1.target,
+      };
+    },
+  },
+  {
+    id: "tax-blank-return-seeds-blended",
+    kind: "tax",
+    note: "Blank expected return seeds the blended default server-side (round-4 SHOULD-3): the save/request schema keeps the return nullable — null stays the blank and the caller's default applies — so a record whose return was never entered reaches planInputsFromSaved as null. The seed resolves it to blendedExpected of the record's stocks mix, falling back to blendedExpected(STOCKS_PCT_DEFAULT) when no mix rides the record — the same substitution every client path applies before pricing or saving — and NEVER to 0%: a blank return is not 'no growth'. Priced through the compare action's own path (runRothCompare on the golden compare base, Do Nothing): the null-return base prices EXACTLY the leg whose return is entered as the blended default — ending wealth and net cost identical to the cent, so their difference is 0 — while the explicit-0% leg prices strictly lower ending wealth than the null leg (0 is an entered answer and prices as entered; null no longer coincides with it). Construction-level pins: planInputsFromSaved resolves null to the blended default, resolves null with a threaded 50% mix to that mix's blend, and passes an entered 0 through untouched. All comparisons are identities between legs priced in this run; no figure is pinned as a literal.",
+    expected: {
+      nullSeededPct: blendedExpected(STOCKS_PCT_DEFAULT),
+      threadedMixPct: blendedExpected(50),
+      enteredZeroPct: 0,
+      wealthDiffCents: 0,
+      netCostDiffCents: 0,
+      nullBeatsZero: 1,
+    },
+    actual: () => {
+      const scenarios = [{ name: "Do Nothing", overrides: { ceilings: null } }];
+      const nullCmp = runRothCompare(
+        { ...goldenCompareBase(), expectedReturnPct: null },
+        scenarios,
+        2026,
+      );
+      const seededCmp = runRothCompare(
+        {
+          ...goldenCompareBase(),
+          expectedReturnPct: blendedExpected(STOCKS_PCT_DEFAULT),
+        },
+        scenarios,
+        2026,
+      );
+      const zeroCmp = runRothCompare(
+        { ...goldenCompareBase(), expectedReturnPct: 0 },
+        scenarios,
+        2026,
+      );
+      const nullRow = nullCmp.scenarios[0];
+      const seededRow = seededCmp.scenarios[0];
+      const zeroRow = zeroCmp.scenarios[0];
+      const nullInputs = planInputsFromSaved(
+        { ...goldenCompareBase(), expectedReturnPct: null },
+        2026,
+      );
+      const mixInputs = planInputsFromSaved(
+        { ...goldenCompareBase(), expectedReturnPct: null, stocksPct: 50 },
+        2026,
+      );
+      const zeroInputs = planInputsFromSaved(
+        { ...goldenCompareBase(), expectedReturnPct: 0 },
+        2026,
+      );
+      return {
+        nullSeededPct: nullInputs?.expectedReturnPct ?? null,
+        threadedMixPct: mixInputs?.expectedReturnPct ?? null,
+        enteredZeroPct: zeroInputs?.expectedReturnPct ?? null,
+        wealthDiffCents:
+          nullRow != null && seededRow != null
+            ? nullRow.endingAfterTaxWealthCents -
+              seededRow.endingAfterTaxWealthCents
+            : null,
+        netCostDiffCents:
+          nullRow != null && seededRow != null
+            ? nullRow.netCostCents - seededRow.netCostCents
+            : null,
+        nullBeatsZero:
+          nullRow != null &&
+          zeroRow != null &&
+          nullRow.endingAfterTaxWealthCents >
+            zeroRow.endingAfterTaxWealthCents
+            ? 1
+            : 0,
       };
     },
   },

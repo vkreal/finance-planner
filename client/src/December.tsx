@@ -761,6 +761,13 @@ export function December() {
   // priced, but never becomes the console's saved answer
   // just because another field was edited.
   const storedProvenanceRef = useRef<DecemberStoredProvenance>({
+    // The stamp is the tax year of the saved blob the stored
+    // values were saved for (internal review round 4,
+    // SHOULD-1). The placeholder below is replaced at
+    // hydration, before any year change can read it; the
+    // current year is the honest placeholder for a fresh
+    // console.
+    taxYear: new Date().getFullYear(),
     primarySoleBeneficiaryOfSpouse: null,
     pretaxBalancePrimary: null,
     pretaxBalanceSpouse: null,
@@ -1073,6 +1080,10 @@ export function December() {
       // display and pricing until the user answers here.
       const preseeded = stateFromForm(initial);
       storedProvenanceRef.current = {
+        // The preseeded values are this console's initial
+        // entries for its own tax year (internal review
+        // round 4, SHOULD-1).
+        taxYear: preseeded.taxYear,
         primarySoleBeneficiaryOfSpouse: null,
         pretaxBalancePrimary: preseeded.pretaxBalancePrimary,
         pretaxBalanceSpouse: preseeded.pretaxBalanceSpouse,
@@ -2165,6 +2176,41 @@ export function December() {
                   expenses: moneyStr(x.expenses),
                   aotcEligible: x.aotcEligible,
                 }));
+              }
+              // The year gate can clear a stored carry-in or
+              // student whose stamp year is not the new year
+              // (internal review round 4, SHOULD-1): the
+              // stored provenance must follow the cleared
+              // display, or the next save would persist the
+              // old year's values and the reload would revive
+              // them. Only the cleared fields are patched —
+              // an edited field keeps its typed value, and a
+              // same-year restore needs no patch. The patch
+              // is to null even when the overlay filled a
+              // new-year value (education students for the
+              // new year): an overlay re-fill is display-only
+              // and the save must not own it, so the save
+              // persists null and the reload overlays again.
+              if (storedProvenanceRef.current.taxYear !== year) {
+                const stored = storedProvenanceRef.current;
+                storedProvenanceRef.current = {
+                  ...stored,
+                  ...(carryInStEdited
+                    ? {}
+                    : { carryInCapitalLossSt: null }),
+                  ...(carryInLtEdited
+                    ? {}
+                    : { carryInCapitalLossLt: null }),
+                  ...(carryInStWaEdited
+                    ? {}
+                    : { carryInCapitalLossStWa: null }),
+                  ...(carryInLtWaEdited
+                    ? {}
+                    : { carryInCapitalLossLtWa: null }),
+                  ...(educationEdited
+                    ? {}
+                    : { educationStudents: null }),
+                };
               }
               if (!balancesEdited) {
                 next.pretaxBalancePrimary =

@@ -104,6 +104,7 @@ import {
   type RothTaxReturnStored,
 } from "./taxReturnCore";
 import { DEFAULT_HEIR_RATE_PCT } from "./rothSeed";
+import { blendedExpected, STOCKS_PCT_DEFAULT } from "./retirementEngines";
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -2330,6 +2331,15 @@ export type RothSavedLike = {
   retirementAge: number | null;
   endAge: number | null;
   expectedReturnPct: number | null;
+  // Stocks mix % (round-4 SHOULD-3): the mix the blank-return
+  // seed below blends from. The Roth record itself carries no
+  // mix — the household's mix lives on the Retirement record —
+  // so this is an OPTIONAL transient a caller that holds both
+  // records may thread; absent / null = no mix available here,
+  // and the seed falls back to STOCKS_PCT_DEFAULT, exactly the
+  // fallback the clients apply (retSaved?.stocksPct ??
+  // STOCKS_PCT_DEFAULT) before they price or save.
+  stocksPct?: number | null;
   ssPrimaryAnnualCents: number | null;
   ssPrimaryStartAge: number | null;
   // Declared "No benefit" flags (generic, symmetric). Optional:
@@ -6225,7 +6235,12 @@ export type PlaygroundPastePayload = Omit<
   | "rothDraw"
   | "pretaxBalanceSpouse"
   | "primarySoleBeneficiaryOfSpouse"
+  | "aptcTaken"
+  | "acaCoverageReduction"
   | "acaEnrollmentPremiumAnnual"
+  | "healthPremiumAcaAnnual"
+  | "healthPremiumMedicarePerPerson"
+  | "irmaaPayableAnnual"
   | "itemizedMortgageInterest"
   | "itemizedSaltPaid"
   | "itemizedCharitable"
@@ -6324,6 +6339,26 @@ export type PlaygroundPastePayload = Omit<
   // carries it always-present nullable, like every other
   // unset dial here.)
   acaEnrollmentPremiumAnnual: number | null;
+  // The ACA reconciliation facts (S-1): always present
+  // in a payload this builder emits (null when unset), so
+  // a replay prices the same filing settlement the copied
+  // year priced. (The engine inputs type the pair as
+  // optional nullables; the payload carries them
+  // always-present nullable, like every other unset fact
+  // here.)
+  aptcTaken: number | null;
+  acaCoverageReduction: number | null;
+  // The health premiums and the payable IRMAA surcharge
+  // (v208 / internal review round 3 SHOULD-2): always
+  // present in a payload this builder emits (null when
+  // unset), so a replay prices the same cash left after
+  // health premiums the copied year priced. (The engine
+  // inputs type the three as optional nullables; the
+  // payload carries them always-present nullable, like
+  // every other unset dial here.)
+  healthPremiumAcaAnnual: number | null;
+  healthPremiumMedicarePerPerson: number | null;
+  irmaaPayableAnnual: number | null;
   // The annual spending (P-S2, parity audit): always
   // present in a payload this builder emits (null when
   // the priced year carried no spending), so a replay
@@ -7651,7 +7686,27 @@ export function planInputsFromSaved(
     flexFloorPct: saved.flexFloorPct ?? null,
     annualSpending: dollars(saved.annualSpendingCents),
     retirementAge,
-    expectedReturnPct: saved.expectedReturnPct ?? 0,
+    // Blank-return seed (round-4 SHOULD-3): the save/request
+    // schema keeps a null return legal — "null stays the blank
+    // (the caller's default applies)" — and a blank return is
+    // NOT "no growth": nobody who leaves the return blank
+    // means their portfolio earns 0% forever. Every client
+    // path seeds the blank before pricing or saving with the
+    // blended expectation of the household's stocks mix
+    // (retSaved?.expectedReturnPct ?? blendedExpected(stocksPct
+    // ?? STOCKS_PCT_DEFAULT)); this construction now applies
+    // the SAME seed server-side, so an API caller that passes
+    // the record through unseeded prices the same plan the
+    // in-app paths price. An entered return — including an
+    // explicit 0% — prices exactly as entered. When no mix
+    // rides the record, the seed falls back to
+    // blendedExpected(STOCKS_PCT_DEFAULT). Every pricing path
+    // (compare, funding, march, optimizer candidates) builds
+    // its engine inputs from this one construction or spreads
+    // it, so the seed reaches every path exactly once.
+    expectedReturnPct:
+      saved.expectedReturnPct ??
+      blendedExpected(saved.stocksPct ?? STOCKS_PCT_DEFAULT),
     ssPrimaryAnnual:
       saved.ssPrimaryNoBenefit === true ? 0 : dollars(saved.ssPrimaryAnnualCents),
     ssPrimaryStartAge: saved.ssPrimaryStartAge,
