@@ -2118,16 +2118,42 @@ export function December() {
             // overlays (round-17 defect 2): the carry-in and
             // the education students belong to a year, so an
             // overlay resolved for the old year must not keep
-            // pricing the new one. Only the unedited fields
-            // move — a field the user edited keeps its typed
-            // value exactly — and every other field is left
-            // untouched, so no other typed value is
-            // reformatted or disturbed. When the Tax Plan
-            // record has not loaded there is no overlay to
-            // re-resolve — an overlay can only exist after a
-            // hydration that had the record — so the year
-            // changes alone and the fields keep their stored
-            // values.
+            // pricing the new one. (Internal review round 6,
+            // SHOULD-1 — settled STAND): the same holds for
+            // a value the user TYPED in the session — the
+            // edited flags reset on the flip, so the new
+            // year starts with all five flags false and the
+            // round-5 machinery (reresolve + stamp-aware
+            // save) governs it. Before the reset, any save
+            // queued by a real edit at the old year is
+            // flushed — the queued payload was built from
+            // the old year's form with the old flags, so it
+            // saves the typed values under the old year's
+            // stamp; if it stayed queued, the first edit at
+            // the new year would supersede it with a payload
+            // built from the new form (flags now false) and
+            // the typed values would never land. The flush
+            // mirrors the unmount flush below: clear the
+            // shared save timer so the debounce cannot fire
+            // the same payload a second time, then send
+            // through the retrying flush send — or defer
+            // behind a save still in flight, exactly as the
+            // unmount cleanup does. The reset is scoped to
+            // the year-dependent provenance fields (the four
+            // carry-ins + education students) — the balances
+            // keep their flag (round 3 settled their survival
+            // deliberately) and the harvest facts keep theirs
+            // (round-6 SHOULD-2, separate). Every other
+            // field is left untouched, so no other typed
+            // value is reformatted or disturbed. When the
+            // Tax Plan record has not loaded there is no
+            // overlay to re-resolve — an overlay can only
+            // exist after a hydration that had the record —
+            // so the year changes alone and the fields keep
+            // their stored values (and the flags with them:
+            // resetting the flags while the display still
+            // holds the typed values would make the next
+            // save discard them as unedited).
             // A pure year change is NOT an edit (internal
             // review round 5, SHOULD-1): it must not trigger
             // the debounced autosave, or the autosave would
@@ -2141,13 +2167,34 @@ export function December() {
             // earlier; it is cleared outright, and the form
             // updates directly instead of through edit().
             // setResetArmed(false) preserves the disarm
-            // edit() provided. A payload queued by a prior
-            // real edit stays in pendingDecSaveRef for the
-            // unmount flush, and the next real edit
-            // re-dirties and saves normally, so no typed
-            // edit is lost.
+            // edit() provided.
+            if (decSaveTimerRef.current != null) {
+              window.clearTimeout(decSaveTimerRef.current);
+              decSaveTimerRef.current = null;
+            }
+            if (
+              pendingDecSaveRef.current &&
+              pendingDecSaveRef.current !== decSaveInFlightPayloadRef.current
+            ) {
+              const queued = pendingDecSaveRef.current;
+              if (decSaveInFlightRef.current) {
+                deferredDecFlushRef.current = () =>
+                  sendDecFlushWithRetryRef.current(queued);
+                armDeferredDecFlushGiveUp();
+              } else {
+                sendDecFlushWithRetryRef.current(queued);
+              }
+              pendingDecSaveRef.current = null;
+            }
             dirtyRef.current = false;
             setResetArmed(false);
+            if (rothQ.data != null) {
+              setCarryInStEdited(false);
+              setCarryInLtEdited(false);
+              setCarryInStWaEdited(false);
+              setCarryInLtWaEdited(false);
+              setEducationEdited(false);
+            }
             setForm((f) => {
               if (!f) return f;
               const next = { ...f, taxYear: v };
@@ -2157,47 +2204,43 @@ export function December() {
                 stateFromForm(next),
                 storedProvenanceRef.current,
                 {
-                  carryInSt: carryInStEdited,
-                  carryInLt: carryInLtEdited,
-                  carryInStWa: carryInStWaEdited,
-                  carryInLtWa: carryInLtWaEdited,
-                  education: educationEdited,
+                  // The flags reset above (internal review
+                  // round 6, SHOULD-1): the new year starts
+                  // unedited, so the re-resolution clears
+                  // the old year's values exactly as it does
+                  // for a loaded value — a value typed for
+                  // the old year never prices the new one.
+                  carryInSt: false,
+                  carryInLt: false,
+                  carryInStWa: false,
+                  carryInLtWa: false,
+                  education: false,
                   balances: balancesEdited,
                 },
                 recordFactsOf(rothQ.data, year),
               );
-              if (!carryInStEdited) {
-                next.carryInCapitalLossSt =
-                  decemberNullableMoneyFormValue(
-                    reresolved.carryInCapitalLossSt,
-                  );
-              }
-              if (!carryInLtEdited) {
-                next.carryInCapitalLossLt =
-                  decemberNullableMoneyFormValue(
-                    reresolved.carryInCapitalLossLt,
-                  );
-              }
-              if (!carryInStWaEdited) {
-                next.carryInCapitalLossStWa =
-                  decemberNullableMoneyFormValue(
-                    reresolved.carryInCapitalLossStWa,
-                  );
-              }
-              if (!carryInLtWaEdited) {
-                next.carryInCapitalLossLtWa =
-                  decemberNullableMoneyFormValue(
-                    reresolved.carryInCapitalLossLtWa,
-                  );
-              }
-              if (!educationEdited) {
-                next.educationStudents = (
-                  reresolved.educationStudents ?? []
-                ).map((x) => ({
-                  expenses: moneyStr(x.expenses),
-                  aotcEligible: x.aotcEligible,
-                }));
-              }
+              next.carryInCapitalLossSt =
+                decemberNullableMoneyFormValue(
+                  reresolved.carryInCapitalLossSt,
+                );
+              next.carryInCapitalLossLt =
+                decemberNullableMoneyFormValue(
+                  reresolved.carryInCapitalLossLt,
+                );
+              next.carryInCapitalLossStWa =
+                decemberNullableMoneyFormValue(
+                  reresolved.carryInCapitalLossStWa,
+                );
+              next.carryInCapitalLossLtWa =
+                decemberNullableMoneyFormValue(
+                  reresolved.carryInCapitalLossLtWa,
+                );
+              next.educationStudents = (
+                reresolved.educationStudents ?? []
+              ).map((x) => ({
+                expenses: moneyStr(x.expenses),
+                aotcEligible: x.aotcEligible,
+              }));
               // No provenance patch follows the cleared
               // display (internal review round 5, SHOULD-1):
               // the round-4 patch nulled the stored carry-ins

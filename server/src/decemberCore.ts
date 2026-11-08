@@ -7256,6 +7256,292 @@ export function runDecemberFixtures(): {
     exact(fail, "lost-carry-in 2027 federal tax", lost.federalTax, 7640);
   });
 
+  run("dec-stored-carryin-switchback-typed", (fail) => {
+    // (Internal review round 6, SHOULD-1 — settled STAND):
+    // the round-5 fix closed the year-change path for LOADED
+    // (unedited) values, but NOT for values the user TYPED in
+    // the session. The edited flags are session-level useState
+    // booleans, reset only on load / CAS-conflict reload — not
+    // on save success and not on year change — so a typed
+    // carry-in (or typed students) kept its display value
+    // across a flip, priced the new year wrong, and one edit
+    // there re-stamped it under the new year, where it was
+    // lost to its true year forever after a reload. THE FIX
+    // (the settlement's close): on a year change, first flush
+    // any save queued by a real edit at the old year — the
+    // queued payload was built from the old year's form with
+    // the old flags, so it saves the typed values under the
+    // old year's stamp — then reset the four carry-in flags
+    // and the education flag to false (balances and harvest
+    // flags untouched), so the new year starts unedited and
+    // the round-5 machinery (reresolve + stamp-aware save)
+    // governs it. This fixture pins the TYPED round trip
+    // through the console's own paths (save + reresolve +
+    // save + load) — the gap the round-5 fixture (which pins
+    // only the unedited path) left open. The flag reset
+    // itself is client code; this fixture models it by
+    // passing all-false flags to the re-resolution on the
+    // flip, exactly as the handler now does.
+    // ON THE "EDIT AT 2028" LEG, read carefully: the leg
+    // asserts on the PAYLOAD the edit builds (no re-stamp —
+    // it carries null, never the $10,000) and does NOT adopt
+    // that payload as the new stored provenance before the
+    // flip-back. A landed save at 2028 re-stamps the blob to
+    // 2028 with nulls — the round-5 NULL rule, pinned by the
+    // existing fixture's mismatch legs — so no round trip,
+    // typed or loaded, can restore after a landed save at
+    // the new year. The guarantee, exactly as for the loaded
+    // path, is the round trip with no intervening save at
+    // the new year; the edit-at-2028 leg pins the no-re-stamp
+    // property instead. THE WORKED EXAMPLE (the settlement's,
+    // engine-run): a TYPED 2027 long-term carry-in of
+    // $10,000 — pricing of 2028 (MFJ, ages 60/58, other
+    // ordinary $100,000, an $8,000 long-term gain): with the
+    // stale carry-in MAGI $98,000, net long-term gain
+    // −$2,000, federal tax $7,400; without it MAGI $108,000,
+    // net long-term gain $8,000, federal tax $7,640. The
+    // students leg: typed 2027 students of $5,000
+    // (AOTC-eligible) plus $3,000, the record holding none —
+    // 2028 with the stale students taxes $5,540 vs $7,640
+    // without them. The draw leg is built on the shared
+    // fictional sample household (never the household's
+    // figures): 2028, ages 60/58 (sample birth years
+    // 1968/1970), household of 4, family benchmark $36,000,
+    // buffer $5,000, pre-tax $1,500,000, sample year-to-date
+    // actuals, other ordinary (an interior draw needs
+    // the non-draw income below the cliff-minus-buffer
+    // target), an $8,000 long-term gain, spending $180,000 a
+    // year — the stale carry-in sizes the draw $10,000 too
+    // large and the true year at that draw lands over the
+    // cliff and forfeits the whole credit.
+    const none = {
+      carryInSt: false,
+      carryInLt: false,
+      carryInStWa: false,
+      carryInLtWa: false,
+      education: false,
+      balances: false,
+    };
+    const noEdit = { beneficiary: false, balances: false };
+    const typedStudents = [
+      { expenses: 5000, aotcEligible: true },
+      { expenses: 3000, aotcEligible: false },
+    ];
+    const facts2027: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossLt: 10000,
+      educationStudents: [],
+    };
+    const facts2028: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      carryInCapitalLossLt: 10000,
+      educationStudents: [],
+    };
+    // TYPE at 2027 (carry-in + students) and AUTOSAVE: the
+    // edited branches take the display values, so the blob
+    // stamps 2027 and holds both.
+    const storedNull2027 = decemberStoredProvenanceOf(defaultDecemberState(2027));
+    const display2027Typed = {
+      ...defaultDecemberState(2027),
+      carryInCapitalLossLt: 10000,
+      educationStudents: typedStudents,
+    };
+    const saved2027 = decemberStateForSave(display2027Typed, storedNull2027, {
+      ...noEdit,
+      carryInLt: true,
+      education: true,
+    });
+    exact(fail, "the typed 2027 save stamps 2027", decemberStoredProvenanceOf(saved2027).taxYear, 2027);
+    exact(fail, "the typed 2027 save holds the carry-in", saved2027.carryInCapitalLossLt, 10000);
+    const ss = saved2027.educationStudents;
+    if (
+      ss == null ||
+      ss.length !== 2 ||
+      ss[0]!.expenses !== 5000 ||
+      ss[0]!.aotcEligible !== true ||
+      ss[1]!.expenses !== 3000 ||
+      ss[1]!.aotcEligible !== false
+    ) {
+      fail("the typed 2027 save must hold the two typed students");
+    }
+    const stored2027 = decemberStoredProvenanceOf(saved2027);
+    exact(fail, "stored provenance stamps 2027", stored2027.taxYear, 2027);
+    exact(fail, "stored provenance holds the typed carry-in", stored2027.carryInCapitalLossLt, 10000);
+    // LOAD 2027 shows the typed values.
+    const load2027 = resolveDecemberStateAtLoad({ ...saved2027 }, facts2027);
+    exact(fail, "load 2027 shows the typed carry-in", load2027.carryInCapitalLossLt, 10000);
+    const ls = load2027.educationStudents;
+    if (
+      ls == null ||
+      ls.length !== 2 ||
+      ls[0]!.expenses !== 5000 ||
+      ls[0]!.aotcEligible !== true ||
+      ls[1]!.expenses !== 3000 ||
+      ls[1]!.aotcEligible !== false
+    ) {
+      fail("load 2027 must show the two typed students");
+    }
+    // FLIP TO 2028 with the flags reset (the handler's new
+    // behavior, modeled by all-false flags): the display
+    // clears — the typed values no longer survive the flip.
+    const to2028 = reresolveDecemberStateForYear(
+      { ...load2027, taxYear: 2028 },
+      stored2027,
+      none,
+      facts2028,
+    );
+    if (to2028.carryInCapitalLossLt !== null) fail("the typed carry-in must clear on the flip to 2028");
+    if (to2028.educationStudents == null || to2028.educationStudents.length !== 0) {
+      fail("the typed students must clear on the flip to 2028");
+    }
+    // EDIT AT 2028: the payload the edit builds carries no
+    // re-stamp — it stamps 2028 with nulls for both fields.
+    // (The payload is asserted, not adopted: see the header
+    // comment for why a landed 2028 save ends the round trip.)
+    const edited2028 = { ...to2028, ytdInterest: 900 };
+    const payload2028 = decemberStateForSave(edited2028, stored2027, noEdit);
+    exact(fail, "the 2028 edit's payload stamps 2028", payload2028.taxYear, 2028);
+    if (payload2028.carryInCapitalLossLt !== null) fail("the 2028 edit must not re-stamp the 2027 carry-in to 2028");
+    if (payload2028.educationStudents !== null) fail("the 2028 edit must not re-stamp the 2027 students to 2028");
+    // PRICING: the cleared 2028 display prices the TRUE
+    // figures; the stale values price the defect's figures.
+    const price2028 = (carryIn: number | null, students: { expenses: number; aotcEligible: boolean }[] | null) => {
+      const s = defaultDecemberState(2028);
+      s.agePrimary = 60;
+      s.ageSpouse = 58;
+      s.ytdOtherOrdinary = 100000;
+      s.ytdCapitalGain = 8000;
+      s.carryInCapitalLossLt = carryIn;
+      s.educationStudents = students;
+      return pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    };
+    const cleared2028 = price2028(to2028.carryInCapitalLossLt, to2028.educationStudents);
+    exact(fail, "cleared 2028 MAGI", cleared2028.acaMagi, 108000);
+    exact(fail, "cleared 2028 ltcgNet", cleared2028.ltcgNet, 8000);
+    exact(fail, "cleared 2028 federal tax", cleared2028.federalTax, 7640);
+    const staleCarry2028 = price2028(10000, null);
+    exact(fail, "stale-carry-in 2028 MAGI", staleCarry2028.acaMagi, 98000);
+    exact(fail, "stale-carry-in 2028 ltcgNet", staleCarry2028.ltcgNet, -2000);
+    exact(fail, "stale-carry-in 2028 federal tax", staleCarry2028.federalTax, 7400);
+    const staleStudents2028 = price2028(null, typedStudents);
+    exact(fail, "stale-students 2028 MAGI", staleStudents2028.acaMagi, 108000);
+    exact(fail, "stale-students 2028 federal tax", staleStudents2028.federalTax, 5540);
+    // FLIP BACK TO 2027 (no save landed at 2028): the stored
+    // values restore exactly, because the provenance
+    // survived the switch away.
+    const back2027 = reresolveDecemberStateForYear(
+      { ...to2028, taxYear: 2027 },
+      stored2027,
+      none,
+      facts2027,
+    );
+    exact(fail, "flipping back restores the typed carry-in", back2027.carryInCapitalLossLt, 10000);
+    const bs = back2027.educationStudents;
+    if (
+      bs == null ||
+      bs.length !== 2 ||
+      bs[0]!.expenses !== 5000 ||
+      bs[0]!.aotcEligible !== true ||
+      bs[1]!.expenses !== 3000 ||
+      bs[1]!.aotcEligible !== false
+    ) {
+      fail("flipping back must restore the two typed students");
+    }
+    // THE RE-SAVE of the round-tripped display against the
+    // 2027 stamp holds both values, and the re-saved blob's
+    // own provenance still stamps 2027 and holds them.
+    const resaved = decemberStateForSave(back2027, stored2027, noEdit);
+    exact(fail, "the re-save holds the typed carry-in", resaved.carryInCapitalLossLt, 10000);
+    const rs = resaved.educationStudents;
+    if (
+      rs == null ||
+      rs.length !== 2 ||
+      rs[0]!.expenses !== 5000 ||
+      rs[0]!.aotcEligible !== true ||
+      rs[1]!.expenses !== 3000 ||
+      rs[1]!.aotcEligible !== false
+    ) {
+      fail("the re-save must hold the two typed students");
+    }
+    const resavedProv = decemberStoredProvenanceOf(resaved);
+    exact(fail, "the re-saved blob stamps 2027", resavedProv.taxYear, 2027);
+    exact(fail, "the re-saved blob holds the typed carry-in", resavedProv.carryInCapitalLossLt, 10000);
+    // RELOAD from the re-saved blob holds both values.
+    const reloaded = resolveDecemberStateAtLoad({ ...resaved }, facts2027);
+    exact(fail, "reload holds the typed carry-in", reloaded.carryInCapitalLossLt, 10000);
+    const rl = reloaded.educationStudents;
+    if (
+      rl == null ||
+      rl.length !== 2 ||
+      rl[0]!.expenses !== 5000 ||
+      rl[0]!.aotcEligible !== true ||
+      rl[1]!.expenses !== 3000 ||
+      rl[1]!.aotcEligible !== false
+    ) {
+      fail("reload must hold the two typed students");
+    }
+    // ORDERING (the flush must send the queued payload as
+    // built): the queued payload at type time was built with
+    // the OLD flags (edited=true) and holds the typed value
+    // under 2027 — while the SAME display saved after the
+    // flag reset, against a stored provenance that does not
+    // yet hold the value, persists null and the typed edit
+    // is lost. That is why the handler flushes the queued
+    // payload BEFORE resetting the flags.
+    const queuedPayload = decemberStateForSave(display2027Typed, storedNull2027, {
+      ...noEdit,
+      carryInLt: true,
+    });
+    exact(fail, "the queued payload holds the typed carry-in", queuedPayload.carryInCapitalLossLt, 10000);
+    exact(fail, "the queued payload stamps 2027", queuedPayload.taxYear, 2027);
+    const afterResetPayload = decemberStateForSave(display2027Typed, storedNull2027, noEdit);
+    if (afterResetPayload.carryInCapitalLossLt !== null) {
+      fail("a save built after the flag reset, against a stored provenance without the value, must persist null — the typed edit is lost unless the queued payload was flushed first");
+    }
+    // DRAW / CLIFF (sample household — see the header
+    // comment): the stale carry-in sizes the 2028 draw
+    // $10,000 too large, and the true year at that draw
+    // lands over the cliff and forfeits the whole credit.
+    const base2028Draw = (carryIn: number | null) => {
+      const s = defaultDecemberState(2028);
+      s.agePrimary = 60;
+      s.ageSpouse = 58;
+      s.acaHouseholdSize = 4;
+      s.acaBenchmarkAnnual = 36000;
+      s.bufferDollars = 5000;
+      s.pretaxBalance = 1500000;
+      s.pretaxBalancePrimary = 1500000;
+      s.pretaxBalanceSpouse = 0;
+      s.pretaxSplitExplicit = true;
+      s.ytdInterest = 1500;
+      s.ytdOrdinaryDividends = 20000;
+      s.ytdQualifiedDividends = 15000;
+      s.ytdOtherOrdinary = 60000 + 20000;
+      s.ytdCapitalGain = 8000;
+      s.carryInCapitalLossLt = carryIn;
+      s.spouseSoleBeneficiary = true;
+      return s;
+    };
+    const projStaleDraw = computeDecemberProjection(base2028Draw(10000), 18000000);
+    const projFixedDraw = computeDecemberProjection(base2028Draw(null), 18000000);
+    exact(fail, "the stale draw overshoots", projStaleDraw.headlineDraw, 27500);
+    exact(fail, "the fixed draw", projFixedDraw.headlineDraw, 17500);
+    const trueAtWrongDraw = pricePlaygroundYear(
+      decemberCaseInputs(base2028Draw(null), "likely", projStaleDraw.headlineDraw ?? 0),
+    );
+    exact(fail, "true 2028 at the wrong draw MAGI", trueAtWrongDraw.acaMagi, 137000);
+    exact(fail, "true 2028 at the wrong draw tax", trueAtWrongDraw.federalTax, 10205);
+    if (trueAtWrongDraw.aca.overCliff !== true) fail("the wrong draw must push true 2028 over the cliff");
+    exact(fail, "the wrong draw forfeits the benchmark credit", trueAtWrongDraw.aca.credit, 0);
+    const trueAtRightDraw = pricePlaygroundYear(
+      decemberCaseInputs(base2028Draw(null), "likely", projFixedDraw.headlineDraw ?? 0),
+    );
+    exact(fail, "true 2028 at the right draw MAGI", trueAtRightDraw.acaMagi, 127000);
+    exact(fail, "true 2028 at the right draw tax", trueAtRightDraw.federalTax, 8120);
+    if (trueAtRightDraw.aca.overCliff !== false) fail("the right draw must keep true 2028 under the cliff");
+    exact(fail, "the right draw keeps the benchmark credit", trueAtRightDraw.aca.credit, 23350.8);
+  });
+
   /* ---- Build v112 fixtures: character splits on the
      two strays (round-17 F4 + F5) ----
      F4: Schedule K-1 box 9a net long-term capital gain
