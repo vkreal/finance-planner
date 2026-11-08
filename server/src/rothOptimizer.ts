@@ -5778,11 +5778,27 @@ export function projectPlaygroundYears(
     // against a pool whose true remaining gain was zero).
     // With no harvest facts, or an empty pool, the
     // template basis above stands.
+    // SHOULD-2 (ChatGPT review, settled STAND): in the
+    // FIRST walked year the sale is the KNOWN sale, and
+    // its typed lot basis stands — the pool ratio would
+    // overwrite the known lot's basis (the settlement's
+    // worked example: a full-basis lot priced at the
+    // pool's ratio, $10,000 of gain the lot never had).
+    // From the second year on the sale is a MODELED
+    // repeat, and the pool ratio applies as before. A
+    // first-year sale with NO typed basis (blank reads
+    // $0) still takes the pool ratio, exactly as before,
+    // so a plan without a typed first-year sale basis
+    // does not move. The ledger update below retires
+    // stockBasisEffective — the typed amount, in year 1
+    // — from the pool's basis dollars, so the lot's
+    // basis is not counted again in later years.
     if (
       harvestBasisDollars != null &&
       harvestPoolBalance != null &&
       harvestPoolBalance > 0 &&
-      stockSoldEffective > 0
+      stockSoldEffective > 0 &&
+      !(firstWalkYear && template.stockBasis > 0)
     ) {
       stockBasisEffective = r2(
         (stockSoldEffective * harvestBasisDollars) / harvestPoolBalance,

@@ -36182,6 +36182,135 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-engines-playground-projection-first-year-typed-sale-basis",
+    kind: "tax",
+    note: "SHOULD-2 (ChatGPT review, SHOULD — settled STAND): the projection walk overwrote the basis of a KNOWN sale in its first year. The R2/SHOULD-3 block replaced the template's typed basis with the pool's tracked ratio whenever harvest facts were carried — including the first walked year, where the sale is the known sale with its typed lot basis — so a full-basis lot priced a phantom gain (the settlement's worked example: a sale with no gain priced a gain equal to the gap between its typed basis and the pool-ratio basis, MAGI overstated by that gap, tax by fifteen percent of it). THE FIX (rothOptimizer.ts, projectPlaygroundYears): in the first walked year a TYPED basis (a positive template stockBasis) stands and the pool ratio does not apply; from the second year on the repeated sale is a MODELED sale and retires basis at the pool's tracked ratio, as before. The ledger update retires the priced basis — the typed amount in year 1 — from the pool's basis dollars, so the lot's basis is not counted again in later years. THE WORKED EXAMPLE is built on the shared fictional sample household (server/src/sampleHousehold.ts): the start year, joint filing at the sample ages, household of the sample size, the sample family benchmark, no Social Security, no conversions, no yields, no carry-in, 0% return; other ordinary income of ten times the filed ordinary dividends, a typed sale of the filed dividends against a basis of the filed dividends (a full-basis lot, no gain), and a harvest pool of five times the filed dividends at the sample basis percent. HAND-DERIVED: year 1 prices the typed basis whole — its MAGI is the income alone and its federal tax is the priced tax on that MAGI with no gains, matching the single-year pricer on the same template pin-for-pin; the pool retires the typed basis, so year 2 enters with a basis percent of fifty and the modeled repeat sale prices at that ratio, its gain half the filed dividends. CONTROL — no typed basis: the same sale with the basis left blank (reads $0) still takes the pool ratio in year 1, exactly as before — the walk's year 1 and year 2 both price the pool-ratio basis, bit-identical before and after the fix (the single-year pricer on the same template prices the blank basis as $0, so its MAGI is the income plus the whole sale — the walk's untyped-sale model is the pool ratio, as the SHOULD-3 settlement states it). EDGE — basis larger than the pool's basis dollars: a typed basis of four times the filed dividends on the same sale (a loss sale) is honored in year 1; the loss absorbs a harvest of three times the filed dividends, so the pool's basis steps back up by the harvested gain and year 2 enters at a ratio of fifty, the same pool state as the main leg — the edge leg's year 1 MAGI and tax match the single-year pricer, as the main leg's do.",
+    expected: {
+      singleMagi: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 10,
+      singleTax: 26340,
+      y1BasisEff: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+      y1Magi: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 10,
+      y1Tax: 26340,
+      y1Harvest: 0,
+      y1EndTaxable: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 4,
+      y1Credit: 0,
+      y2PoolPct: 50,
+      y2BasisEff: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      y2Magi: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 10.5,
+      y2Tax: 27840,
+      y2Harvest: 0,
+      cY1BasisEff:
+        (SAMPLE_TAXABLE_BASIS_PCT / 100) *
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100),
+      cY1Magi: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 10.4,
+      cY1Tax: 27540,
+      cY2PoolPct: SAMPLE_TAXABLE_BASIS_PCT,
+      cY2BasisEff:
+        (SAMPLE_TAXABLE_BASIS_PCT / 100) *
+        (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100),
+      eY1BasisEff: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 4,
+      eY1Magi: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 10,
+      eY1Tax: 26340,
+      eY1Harvest: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 3,
+      eY2PoolPct: 50,
+      eY2BasisEff: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      eY2Magi: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 10.5,
+      eY2Tax: 27840,
+    },
+    actual: () => {
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      const POOL = 5 * ORD;
+      const base: PlaygroundYearInputs = {
+        taxYear: SAMPLE_START_YEAR,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: null,
+        acaBenchmarkAnnual: null,
+        stateRatePct: 0,
+      };
+      const template = (stockBasis: number): PlaygroundYearInputs => ({
+        ...base,
+        otherOrdinary: 10 * ORD,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        stockSold: ORD,
+        stockBasis,
+        harvestPoolAmount: POOL,
+        harvestPoolBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+      });
+      const opts = {
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSchedule: null,
+        startTaxable: POOL,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const walk2 = (t: PlaygroundYearInputs) => {
+        const walk = projectPlaygroundYears(t, { ...opts, toAge: 59 });
+        return {
+          y1: walk.years.find((y) => y.agePrimary === 58)!,
+          y2: walk.years.find((y) => y.agePrimary === 59)!,
+        };
+      };
+      const main = template(ORD);
+      const single = pricePlaygroundYear(main);
+      const m = walk2(main);
+      const c = walk2(template(0));
+      const e = walk2(template(4 * ORD));
+      return {
+        singleMagi: single.acaMagi,
+        singleTax: single.federalTax,
+        y1BasisEff: m.y1.stockBasisEffective,
+        y1Magi: m.y1.result.acaMagi,
+        y1Tax: m.y1.result.federalTax,
+        y1Harvest: m.y1.result.harvestedGain,
+        y1EndTaxable: m.y1.endBalances.taxable,
+        y1Credit: m.y1.result.aca.credit,
+        y2PoolPct: m.y2.inputs.harvestPoolBasisPct ?? null,
+        y2BasisEff: m.y2.stockBasisEffective,
+        y2Magi: m.y2.result.acaMagi,
+        y2Tax: m.y2.result.federalTax,
+        y2Harvest: m.y2.result.harvestedGain,
+        cY1BasisEff: c.y1.stockBasisEffective,
+        cY1Magi: c.y1.result.acaMagi,
+        cY1Tax: c.y1.result.federalTax,
+        cY2PoolPct: c.y2.inputs.harvestPoolBasisPct ?? null,
+        cY2BasisEff: c.y2.stockBasisEffective,
+        eY1BasisEff: e.y1.stockBasisEffective,
+        eY1Magi: e.y1.result.acaMagi,
+        eY1Tax: e.y1.result.federalTax,
+        eY1Harvest: e.y1.result.harvestedGain,
+        eY2PoolPct: e.y2.inputs.harvestPoolBasisPct ?? null,
+        eY2BasisEff: e.y2.stockBasisEffective,
+        eY2Magi: e.y2.result.acaMagi,
+        eY2Tax: e.y2.result.federalTax,
+      };
+    },
+  },
+  {
     id: "tax-engines-plan-march-zero-premium-credit-cap-r3",
     kind: "tax",
     note: "R3 (parity re-review, SHOULD — settled STAND): an explicitly entered $0 marketplace premium permitted a phantom ACA credit in the plan score. An explicit zero counts as an entered premium field and activates the health premium term, but the retained credit was capped at the enrolled premium only when the applicable gross was positive (the cap keyed on healthAcaThisYear, which requires gross > 0), so a year whose applicable premium was explicitly $0 fell into the uncapped branch and kept the whole benchmark credit against a $0 premium — the score subtracted a credit no premium ever offset. THE FIX (taxEngine.ts, simulateRothPlan): the retained-credit cap now keys on the term being active for an ACA-covered person (healthAcaCapThisYear), including a gross of exactly $0, where the cap keeps $0. The funded net premium and the settlement's credit feedback keep the narrower gate — at a $0 gross the net premium is $0 under either condition — and a null applicable amount still falls back to the benchmark, against which the credit can never exceed, so no other shape moves. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): a retired joint-filing household of the sample size in the sample start year (both spouses under 65, retired from the start year, one priced year, no balances, no spending, no Social Security, no conversions), its ACA MAGI set by other ordinary income alone at exactly twice the guideline-year FPL for the sample household size (read from the law table in-case) — exactly 200% FPL. HAND-DERIVED: at exactly 200% FPL the start year's applicable-percentage table takes the 200–250% band's initial percentage (band edges are lower-inclusive), so the expected contribution is that percentage of MAGI and the benchmark credit is the sample family benchmark less that contribution — the figure pinned as benchmarkCredit and re-derived in-case through the engine's own credit function. EXPLICIT-ZERO LEG (the marketplace household premium entered as exactly $0): the year's retained credit, the lifetime kept credit, and the score's credit are all $0, the year's gross and net marketplace premiums are $0, and the score's net cost sits above the blank leg's by exactly the whole benchmark credit — the phantom benefit removed, nothing else moved. BLANK LEG (no premium field entered): the term never engages and the year keeps the whole benchmark credit, exactly as before — the known, deliberate blank-premium gap, unchanged by this fix. POSITIVE LEGS: a premium entered at the sample couple benchmark (below the credit) caps the kept credit at the premium itself; a premium entered at the family benchmark (above the credit) keeps the whole credit — the cap binds only below the credit, as before. MEDICARE-ONLY CONTROL: the term activated by the Medicare per-person amount alone, with nobody on Medicare this year and both marketplace amounts blank, prices the applicable gross off the benchmark fallback, so the kept credit is the whole benchmark credit, bit-identical to the blank leg — the widened cap gate moves nothing when the applicable amount was never entered.",
