@@ -597,6 +597,14 @@ export function RothConversion({
   // wins and this amount is inert — the field says so on the
   // Plan tab whenever that is the case.
   const [taxableExclude, setTaxableExclude] = useState("");
+  // Cash set aside (BUCKET READOUT build): an amount of the
+  // snapshot's Cash bucket already spoken for — for example a
+  // college fund held in cash. Display only: it feeds nothing
+  // but the Bucket readout's free-cash line (the Cash bucket
+  // less this amount); the plan still prices the whole
+  // taxable pool exactly as before. Blank = nothing set
+  // aside, so free cash is the whole Cash bucket.
+  const [cashSetAside, setCashSetAside] = useState("");
   const [hsaBal, setHsaBal] = useState("");
   // Which of the four starting balances are the user's own saved
   // entries (true) versus following the latest snapshot's bucket
@@ -1072,6 +1080,16 @@ export function RothConversion({
     "roth.whatIfFolded",
   );
   const whatIfOpen = !whatIfFolded;
+  /* Plan face "Buckets" section fold (BUCKET READOUT build):
+     the same persisted-fold pattern as whatIfFolded above —
+     an entry under "roth.bucketsFolded" means the user left
+     the section folded shut; no entry means expanded, its
+     default. Display only: folding hides the readout's body;
+     every figure in it is derived live on each render. */
+  const [bucketsFolded, setBucketsFolded] = usePersistedFold(
+    "roth.bucketsFolded",
+  );
+  const bucketsOpen = !bucketsFolded;
   // "Show the math" drill-down: the year whose engine detail
   // panel is open under the year-by-year table (display only).
   // The expanded year persists in the Roth UI state like the
@@ -1424,6 +1442,7 @@ export function RothConversion({
     rothCents: number | null;
     taxableCents: number | null;
     taxableExcludeCents?: number | null;
+    cashSetAsideCents?: number | null;
     hsaCents: number | null;
     taxableBasisPct: number | null;
     taxableTiers?: { sharePct: number; basisPct: number }[] | null;
@@ -1533,6 +1552,7 @@ export function RothConversion({
     setRothBal(money(resolvedRoth));
     setTaxableBal(money(resolvedTaxable));
     setTaxableExclude(money(src.taxableExcludeCents ?? null));
+    setCashSetAside(money(src.cashSetAsideCents ?? null));
     setHsaBal(money(resolvedHsa));
     // Only a balance actually present in the source counts as
     // the user's own — a snapshot-filled balance is following,
@@ -2467,6 +2487,11 @@ export function RothConversion({
       rothCents: parseMoney(rothBal),
       taxableCents: taxableEffectiveCents,
       taxableExcludeCents,
+      // Display only (BUCKET READOUT build): rides the payload
+      // like taxableExcludeCents so it saves with the record;
+      // no pricing path reads it — the Bucket readout reads
+      // the field's own state, never this payload.
+      cashSetAsideCents: parseMoney(cashSetAside),
       hsaCents: parseMoney(hsaBal),
       taxableBasisPct: pct(basisPct),
       taxableTiers: tiersFromRows(basisTiers),
@@ -2899,7 +2924,7 @@ export function RothConversion({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     init, birthYearP, birthYearS, filingStatus, pretax, pretaxSpouse,
-    survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude, hsaBal,
+    survivorOn, survivorWho, survivorDeathYear, rothBal, taxableBal, taxableExclude, cashSetAside, hsaBal,
     basisPct, basisTiers, divYieldPct, intYieldPct, spendFromCashPct, flexCutPct, flexFloorPct, spending, retirementAge, endAge, expectedPct, ssP, ssPAge, ssS, ssSAge,
     ssPrimaryNoBenefit, ssSpouseNoBenefit,
     otherOrd, taxExempt, convertedAlready, winStart, winStop, payTaxFrom, protectMin,
@@ -3519,6 +3544,7 @@ export function RothConversion({
       rothCents: sc.rothCents ?? null,
       taxableCents: sc.taxableCents ?? null,
       taxableExcludeCents: sc.taxableExcludeCents ?? null,
+      cashSetAsideCents: sc.cashSetAsideCents ?? null,
       hsaCents: sc.hsaCents ?? null,
       taxableBasisPct: clampPct(sc.taxableBasisPct ?? null),
       taxableTiers:
@@ -4914,6 +4940,7 @@ export function RothConversion({
     rothBal: moneyChanged(rothBal, savedResolved?.rothCents),
     taxableBal: moneyChanged(taxableBal, savedResolved?.taxableCents),
     taxableExclude: moneyChanged(taxableExclude, savedResolved?.taxableExcludeCents),
+    cashSetAside: moneyChanged(cashSetAside, savedResolved?.cashSetAsideCents),
     hsaBal: moneyChanged(hsaBal, savedResolved?.hsaCents),
     basisPct: numChanged(basisPct, savedResolved?.taxableBasisPct),
     divYieldPct: numChanged(divYieldPct, savedResolved?.taxableDividendYieldPct),
@@ -6590,6 +6617,36 @@ export function RothConversion({
     snap?.totalCents != null
       ? Math.max(0, snap.totalCents - excludeLiveCents)
       : planTotalCents;
+  // Bucket readout (BUCKET READOUT build): the three-bucket
+  // lens over the same live figures the rest of this view
+  // reads — the latest snapshot's Cash bucket, the typed
+  // cash set aside, the Annual spending dial, the cliff
+  // safety buffer, and the effective pools pricing uses
+  // (headerEffectiveInputs). Display only: nothing here is
+  // saved and no figure feeds the engine. Free cash is the
+  // Cash bucket less the amount set aside, floored at $0;
+  // the target is two years of the spending dial; the gap
+  // is target − free cash (a gap of $0 or less = the target
+  // is met).
+  const bucketSetAsideCents = Math.max(0, parseMoney(cashSetAside) ?? 0);
+  const bucketFreeCashCents =
+    snap?.cashCents == null
+      ? null
+      : Math.max(0, snap.cashCents - bucketSetAsideCents);
+  const bucketSpendingCents = parseMoney(spending);
+  const bucketTargetCents =
+    bucketSpendingCents == null ? null : 2 * bucketSpendingCents;
+  const bucketGapCents =
+    bucketTargetCents == null || bucketFreeCashCents == null
+      ? null
+      : bucketTargetCents - bucketFreeCashCents;
+  const bucketPretaxPoolCents =
+    headerEffectiveInputs.pretaxCents == null &&
+    headerEffectiveInputs.pretaxSpouseCents == null
+      ? null
+      : (headerEffectiveInputs.pretaxCents ?? 0) +
+        (headerEffectiveInputs.pretaxSpouseCents ?? 0);
+  const bucketBufferCents = parseMoney(cliffBuffer);
   const planTotalHeader =
     planTotalCents != null ? (
       <span className="mt-1.5 flex flex-wrap items-baseline gap-x-2">
@@ -7625,7 +7682,7 @@ export function RothConversion({
 
       {face === "settings" && (
         <>
-      {rothSection("money", "Your money", moneySummary + (sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"]) > 0 ? ` · ${sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"])} changed` : ""), (
+      {rothSection("money", "Your money", moneySummary + (sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "cashSetAside", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"]) > 0 ? ` · ${sectionChangedCount(["pretax", "pretaxSpouse", "rothBal", "taxableBal", "taxableExclude", "cashSetAside", "hsaBal", "basisPct", "divYieldPct", "intYieldPct", "basisTiers"])} changed` : ""), (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {moneyField("Pre-tax — You", pretax, setPretax, {
@@ -7652,6 +7709,10 @@ export function RothConversion({
           {moneyField("Exclude from plan", taxableExclude, setTaxableExclude, {
             hint: "Part of the taxable pool (Taxable plus Cash) the plan leaves out of its calculations entirely — not spent, not sold, not counted in ending wealth. The Tax Plan and the Playground both model the pool without it. It stays in Net Worth in full — no Net Worth balance changes. Blank = nothing excluded.",
             changed: changedFields.taxableExclude,
+          })}
+          {moneyField("Cash set aside", cashSetAside, setCashSetAside, {
+            hint: "Cash in the Cash bucket already spoken for — for example a college fund — so the Bucket 1 readout counts only the free remainder. It changes no pricing: the plan still prices the whole taxable pool. Blank = nothing set aside.",
+            changed: changedFields.cashSetAside,
           })}
           {moneyField("HSA", hsaBal, setHsaBal, {
             onEdit: () =>
@@ -8802,6 +8863,219 @@ export function RothConversion({
               Edit the exclusion in Your money
             </span>
           </button>
+        </section>
+      )}
+
+      {/* Bucket readout (BUCKET READOUT build): the plan's
+          live pools read as three buckets by horizon — the
+          cash reserve for years 0–2, the taxable and pre-tax
+          pools funding years 2–10 on a glide path, and the
+          Roth pool for 10+ years. Every figure is read live
+          from the records: the Net Worth snapshot's Cash
+          bucket, the cash set aside, the Annual spending
+          dial, the cliff safety buffer, and the same
+          effective pools the view already prices. Nothing
+          here is saved and nothing feeds pricing. Shown only
+          on the plan face and only when a Net Worth snapshot
+          exists — the Plan total section's precedent. The
+          figure lines are provenance taps, each jumping to
+          the field that owns the number. */}
+      {face === "plan" && snap != null && (
+        <section className={sectionCls} aria-label="Bucket readout">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <span>Your money in three buckets</span>
+            <InfoNote
+              ariaLabel="About the bucket readout"
+              align="left"
+              text="The same money, sorted by when you will spend it: cash for the first two years, the taxable and pre-tax pools for years 2–10, and Roth money for ten years and beyond. A lens by horizon — it changes no pricing and moves no money."
+            />
+            <button
+              type="button"
+              aria-expanded={bucketsOpen}
+              aria-controls="roth-buckets-panel"
+              aria-label="Your money in three buckets"
+              className="ml-auto flex items-center"
+              onClick={() => setBucketsFolded(bucketsOpen)}
+            >
+              <FoldChevron open={bucketsOpen} />
+            </button>
+          </h2>
+          {bucketsOpen && (
+            <div id="roth-buckets-panel">
+              <div className="mt-4">
+                <h3 className="text-sm font-semibold">
+                  Bucket 1 — 0–2 years · risk off
+                </h3>
+                <p className="mt-1 text-sm text-[var(--dim)]">
+                  The cash reserve — spent first, so a bad market year never
+                  forces a sale.
+                </p>
+                <div className="mt-2 flex flex-wrap items-baseline gap-x-2 text-sm">
+                  <span className="text-[var(--dim)]">Cash bucket</span>
+                  <span className="tnum font-semibold">
+                    {snap.cashCents != null
+                      ? fmtCentsExact(snap.cashCents)
+                      : "—"}
+                  </span>
+                  {bucketSetAsideCents > 0 && (
+                    <>
+                      <span className="text-[var(--dim)]">set aside</span>
+                      <span className="tnum font-semibold">
+                        −{fmtCentsExact(bucketSetAsideCents)}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  aria-label={
+                    bucketFreeCashCents != null
+                      ? `Free cash ${fmtCentsExact(bucketFreeCashCents)} — go to the Cash set aside field in Your money`
+                      : "Free cash not recorded — go to the Cash set aside field in Your money"
+                  }
+                  className="mt-1 flex w-full flex-wrap items-baseline gap-x-2 text-left"
+                  onClick={() => jumpToField("roth-Cash-set-aside", "money")}
+                >
+                  <span className="text-sm text-[var(--dim)]">Free cash</span>
+                  <span className="tnum text-lg font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+                    {bucketFreeCashCents != null
+                      ? fmtCentsExact(bucketFreeCashCents)
+                      : "—"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={
+                    bucketTargetCents != null
+                      ? `Two-year target ${fmtCentsExact(bucketTargetCents)} — go to the Annual spending field`
+                      : "Two-year target — yearly spending is not entered; go to the Annual spending field"
+                  }
+                  className="mt-1 flex w-full flex-wrap items-baseline gap-x-2 text-left"
+                  onClick={() =>
+                    jumpToField("roth-Annual-spending", "household")
+                  }
+                >
+                  <span className="text-sm text-[var(--dim)]">
+                    Two-year target (2 × yearly spending)
+                  </span>
+                  <span className="tnum text-lg font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+                    {bucketTargetCents != null
+                      ? fmtCentsExact(bucketTargetCents)
+                      : "—"}
+                  </span>
+                  {bucketTargetCents == null && (
+                    <span className="text-sm text-[var(--dim)]">
+                      yearly spending is not entered yet
+                    </span>
+                  )}
+                </button>
+                {bucketGapCents != null &&
+                  (bucketGapCents > 0 ? (
+                    <p className="mt-1 text-sm font-medium text-[var(--bad)]">
+                      {fmtCentsExact(bucketGapCents)} short of the two-year
+                      target
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm font-medium text-[var(--accent)]">
+                      The two-year target is met
+                    </p>
+                  ))}
+                <p className="mt-2 text-sm text-[var(--dim)]">
+                  {bucketBufferCents != null
+                    ? `The December draw refills this bucket each year, sized to the ACA cliff less the ${fmtCentsExact(bucketBufferCents)} safety buffer.`
+                    : "The December draw refills this bucket each year, sized to the ACA cliff less the safety buffer."}
+                </p>
+              </div>
+
+              <div className="mt-5">
+                <h3 className="text-sm font-semibold">
+                  Bucket 2 — 2–10 years · glide path
+                </h3>
+                <p className="mt-1 text-sm text-[var(--dim)]">
+                  The pools that fund years 2–10. Glide rule: money needed in
+                  N years holds N×10% in stocks — the nearer the year, the
+                  safer the money.
+                </p>
+                <button
+                  type="button"
+                  aria-label={
+                    headerEffectiveInputs.taxableCents != null
+                      ? `Taxable pool ${fmtCentsExact(headerEffectiveInputs.taxableCents)} — go to the Taxable field in Your money`
+                      : "Taxable pool not entered — go to the Taxable field in Your money"
+                  }
+                  className="mt-2 flex w-full flex-wrap items-baseline gap-x-2 text-left"
+                  onClick={() =>
+                    jumpToField("roth-Taxable-brokerage-bank-", "money")
+                  }
+                >
+                  <span className="text-sm text-[var(--dim)]">
+                    Taxable pool (after the exclusion)
+                  </span>
+                  <span className="tnum text-lg font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+                    {headerEffectiveInputs.taxableCents != null
+                      ? fmtCentsExact(headerEffectiveInputs.taxableCents)
+                      : "—"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={
+                    bucketPretaxPoolCents != null
+                      ? `Pre-tax pool ${fmtCentsExact(bucketPretaxPoolCents)} — go to the Pre-tax field in Your money`
+                      : "Pre-tax pool not entered — go to the Pre-tax field in Your money"
+                  }
+                  className="mt-1 flex w-full flex-wrap items-baseline gap-x-2 text-left"
+                  onClick={() => jumpToField("roth-Pre-tax-You", "money")}
+                >
+                  <span className="text-sm text-[var(--dim)]">
+                    Pre-tax pool (you + wife)
+                  </span>
+                  <span className="tnum text-lg font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+                    {bucketPretaxPoolCents != null
+                      ? fmtCentsExact(bucketPretaxPoolCents)
+                      : "—"}
+                  </span>
+                </button>
+              </div>
+
+              <div className="mt-5">
+                <h3 className="text-sm font-semibold">
+                  Bucket 3 — 10+ years · risk on
+                </h3>
+                <p className="mt-1 text-sm text-[var(--dim)]">
+                  The longest horizon, held at 100% stocks — and never touched
+                  in the ACA years, so it is the last money spent.
+                </p>
+                <button
+                  type="button"
+                  aria-label={
+                    headerEffectiveInputs.rothCents != null
+                      ? `Roth pool ${fmtCentsExact(headerEffectiveInputs.rothCents)} — go to the Roth field in Your money`
+                      : "Roth pool not entered — go to the Roth field in Your money"
+                  }
+                  className="mt-2 flex w-full flex-wrap items-baseline gap-x-2 text-left"
+                  onClick={() => jumpToField("roth-Roth", "money")}
+                >
+                  <span className="text-sm text-[var(--dim)]">Roth pool</span>
+                  <span className="tnum text-lg font-bold text-[var(--accent)] underline decoration-dotted underline-offset-4">
+                    {headerEffectiveInputs.rothCents != null
+                      ? fmtCentsExact(headerEffectiveInputs.rothCents)
+                      : "—"}
+                  </span>
+                </button>
+              </div>
+
+              <p className="mt-5 text-sm text-[var(--dim)]">
+                The cash reserve is the first two years of the taxable pool —
+                the buckets are a lens by horizon, not a separate split of the
+                balances.
+              </p>
+              <p className="mt-1 text-sm text-[var(--dim)]">
+                Outside the three buckets sit HSA, College / 529, and
+                Non-Taxable money.
+              </p>
+            </div>
+          )}
         </section>
       )}
 

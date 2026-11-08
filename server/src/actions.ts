@@ -2673,6 +2673,21 @@ const rothInputFields = {
   // balance it is inert there, exactly as it is beside any
   // explicit override.
   taxableExcludeCents: z.number().int().nullable(),
+  // Cash set aside (BUCKET READOUT build): an amount of the
+  // snapshot's Cash bucket already spoken for — for example a
+  // college fund held in cash — so the Tax Plan view's
+  // Bucket 1 readout counts only the free remainder of the
+  // cash reserve. DISPLAY ONLY: it never prices.
+  // planInputsFromSaved does not map it, no pricer reads it,
+  // and no scenario dials it (exactly like
+  // taxableExcludeCents, it is NOT a Strategy Lab dial — it
+  // rides the shared record shape only). Null on records
+  // written before this build = blank = $0 set aside = the
+  // readout's free cash is the whole Cash bucket, so an
+  // untouched record reads and prices bit-identically. A
+  // required key like every field here: null accepted,
+  // omission rejected.
+  cashSetAsideCents: z.number().int().nullable(),
   hsaCents: rothBalanceField,
   taxableBasisPct: z.number().min(0).max(100).nullable(),
   // Basis tiers: see rothTaxableTiers above. Null on records
@@ -3020,6 +3035,11 @@ const rothComputeFields = {
   // education students — absent prices exactly as null (no
   // expenses entered, no credits).
   educationStudents: rothInputFields.educationStudents.optional(),
+  // Compute path only (BUCKET READOUT build): a pricing
+  // payload may omit the cash set aside — absent prices
+  // exactly as null (nothing set aside). The field is
+  // display-only and never priced either way.
+  cashSetAsideCents: rothInputFields.cashSetAsideCents.optional(),
   // Compute path only (build v208): a pricing payload may
   // omit the health premium amounts — absent prices exactly
   // as null (that part not entered; all three absent = the
@@ -3488,6 +3508,11 @@ function parseRothInputs(raw: unknown): RothInputs | null {
     // absent on a pre-build record reads as null = blank = no
     // exclusion, bit-identical pricing.
     taxableExcludeCents: num(r.taxableExcludeCents),
+    // Cash set aside, read leniently like every field here:
+    // absent on a pre-build record reads as null = blank =
+    // nothing set aside, bit-identical. Display only — no
+    // pricer ever reads this value back off the record.
+    cashSetAsideCents: num(r.cashSetAsideCents),
     hsaCents: num(r.hsaCents),
     taxableBasisPct: num(r.taxableBasisPct),
     // Basis tiers, read leniently (readers lenient is the

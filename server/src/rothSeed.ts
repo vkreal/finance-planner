@@ -87,6 +87,10 @@ export type RothSeedInputs = {
   // Exclude-from-plan seeds blank (null = no exclusion), like
   // every optional pricing input the seed does not presume.
   taxableExcludeCents: null;
+  // Cash set aside seeds blank (null = nothing set aside):
+  // the seed never invents a household's earmark — the Bucket 1
+  // readout counts the seed's whole Cash bucket as free.
+  cashSetAsideCents: null;
   hsaCents: null;
   taxableBasisPct: null;
   taxableTiers: null;
@@ -217,6 +221,7 @@ export function seedRothInputs(derived: {
     rothCents: null,
     taxableCents: null,
     taxableExcludeCents: null,
+    cashSetAsideCents: null,
     hsaCents: null,
     taxableBasisPct: null,
     taxableTiers: null,
