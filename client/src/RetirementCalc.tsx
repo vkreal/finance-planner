@@ -18,6 +18,7 @@ import { api, type ApiResponse } from "./api";
 import { Explainer } from "./Explainer";
 import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
+import { usePersistedChoice } from "./persistedChoice";
 import {
 HISTORICAL,
 HISTORICAL_SOURCE_NAME,
@@ -487,7 +488,15 @@ export function RetirementCalc() {
     };
   }, [rothQ.data, data]);
 
-  const [tab, setTab] = useState<Tab>("projection");
+  /* Which tab is showing. The last tab shown is remembered in
+     this browser (usePersistedChoice, key "fp.retirement.tab");
+     a first visit, or a missing or unknown stored value, opens
+     on "projection". Display only. */
+  const [tab, setTab] = usePersistedChoice<Tab>(
+    "fp.retirement.tab",
+    "projection",
+    ["projection", "historical", "montecarlo", "maxspending"],
+  );
   /* Plan-inputs form fold: the whole inputs panel collapses
      behind the chip chevron on its top row, so it can be hidden
      once set. Persisted in the generic fold store (server-backed,

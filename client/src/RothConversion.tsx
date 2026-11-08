@@ -77,6 +77,7 @@ import { impliedYieldPctsFromTaxReturn, qualifiedDividendSharePctFromTaxReturn }
 import { seedRothInputs, SEED_RETIREMENT_AGE_FALLBACK } from "@space/server/rothSeed";
 import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
+import { usePersistedChoice } from "./persistedChoice";
 import { December } from "./December";
 import { ExplainerInfoTip } from "./Explainer";
 
@@ -665,10 +666,19 @@ export function RothConversion({
   // shows annual ÷ 12 and turns a typed monthly amount into
   // annual at exactly monthly × 12. The stored value is annual
   // dollars everywhere, and switching units never rewrites it.
-  // The unit is a local display preference (not persisted, no
-  // new stored field, no new action); the field opens per year,
-  // the Tax Plan's long-standing display.
-  const [spendingUnit, setSpendingUnit] = useState<"year" | "month">("year");
+  // The unit itself is a remembered display preference in the
+  // generic server-side fold store (the "roth.spendingPerMonth"
+  // flag, the same store and pattern the Spending target unit
+  // uses): a stored entry means the user last left it on per
+  // month; no entry is the per-year default, so the field opens
+  // per year for a user who has never toggled it, and the last
+  // pick comes back after a reload, in a new session, and on
+  // another device. Display only — it changes no stored figure.
+  const [spendingPerMonth, setSpendingPerMonth] =
+    usePersistedFold("roth.spendingPerMonth");
+  const spendingUnit: "year" | "month" = spendingPerMonth ? "month" : "year";
+  const setSpendingUnit = (unit: "year" | "month") =>
+    setSpendingPerMonth(unit === "month");
   // Per-month draft (build v141): while the spending field
   // is focused in per-month mode, the input shows the monthly
   // figure as the user types it — the stored state is annual
@@ -1103,9 +1113,15 @@ export function RothConversion({
      table). "change" is the guided change path — five plain
      questions writing the same fields the full form edits.
      "settings" is the full folded form ("All settings") plus the
-     results workspaces, exactly as the view worked before. A
-     fresh visit always opens on "plan". */
-  const [face, setFace] = useState<"plan" | "change" | "settings">("plan");
+     results workspaces, exactly as the view worked before. The
+     last face shown is remembered in this browser
+     (usePersistedChoice, key "fp.roth.face"); a first visit, or
+     a missing or unknown stored value, opens on "plan". */
+  const [face, setFace] = usePersistedChoice<"plan" | "change" | "settings">(
+    "fp.roth.face",
+    "plan",
+    ["plan", "change", "settings"],
+  );
   /* December draw console (display only — never saved here,
      never priced here): the December projection console lives
      inside this view since the nav-crowding move (the user's pick
@@ -1114,8 +1130,7 @@ export function RothConversion({
      December component, with its own saved state, that used
      to sit behind the December tab — and the console's back
      control returns here, to the face the user left. In-session
-     only, exactly like the face above: a fresh visit always
-     opens on the Tax Plan itself. */
+     only: a fresh visit always opens on the Tax Plan itself. */
   const [decemberOpen, setDecemberOpen] = useState(false);
   /* Pretax Spending (proof) scratch overrides — this tab only.
      Blank = the plan's own value; a typed value replaces that

@@ -69,6 +69,7 @@ import {
   usePersistedFold,
   useSetFold,
 } from "./foldState";
+import { usePersistedChoice } from "./persistedChoice";
 import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
 import { RothConversion } from "./RothConversion";
@@ -2099,12 +2100,31 @@ export function App() {
   const [openTip, setOpenTip] = useState<string | null>(null);
   /* Quick view mode: "month" is the single-month strip; "year" stacks
      the months with data of the flipped-to year, each month panel
-     carrying that month's own Quick view. In-session only. */
-  const [quickMode, setQuickMode] = useState<"month" | "year">("month");
+     carrying that month's own Quick view. The mode is a remembered
+     display preference in the generic server-side fold store (the
+     "spending.quickModeYear" flag): a stored entry means the user
+     last left it on the year stack; no entry is the single-month
+     default, and the last pick comes back after a reload. */
+  const [quickModeYear, setQuickModeYear] =
+    usePersistedFold("spending.quickModeYear");
+  const quickMode: "month" | "year" = quickModeYear ? "year" : "month";
+  const setQuickMode = (mode: "month" | "year") =>
+    setQuickModeYear(mode === "year");
   /* Top-level view switch: "spending" is the whole existing dashboard;
      "networth" is its own self-contained view — while it is active
-     none of the spending sections render. In-session only. */
-  const [topView, setTopView] = useState<"spending" | "networth" | "retirement" | "roth" | "playground">("spending");
+     none of the spending sections render. The last view shown is
+     remembered in this browser (usePersistedChoice, key
+     "fp.topView"); a first visit, or a missing or unknown stored
+     value, opens on "spending". */
+  const [topView, setTopView] = usePersistedChoice<
+    "spending" | "networth" | "retirement" | "roth" | "playground"
+  >("fp.topView", "spending", [
+    "spending",
+    "networth",
+    "retirement",
+    "roth",
+    "playground",
+  ]);
   /* Cross-view jump target for the Tax Plan (PLAN TOTAL
      VISIBILITY build): set by the Playground's Plan total tap —
      RothConversion's existing jumpTarget mechanism

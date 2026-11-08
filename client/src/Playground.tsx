@@ -2,6 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type R
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import { usePersistedFold } from "./foldState";
+import { usePersistedChoice } from "./persistedChoice";
 import { FoldChevron } from "./FoldChevron";
 import { ExplainerInfoTip } from "./Explainer";
 import {
@@ -844,10 +845,16 @@ export function Playground({
      dollars directly; per month shows annual ÷ 12 and turns a
      typed monthly amount into annual at exactly monthly × 12,
      with a reference line under the field showing the annual
-     equivalent. The unit is a local display preference (not
-     persisted, no new stored field, no new action); the field
-     opens per year. The per-month draft keeps what was typed
-     while the field is focused in per-month mode, so a
+     equivalent. The unit itself is a remembered display
+     preference in the generic server-side fold store (the
+     "playground.dialPerMonth" flag — a different flag from the
+     "playground.spendPerMonth" one the spend readouts' Month /
+     Year pills use): a stored entry means the user last left it
+     on per month; no entry is the per-year default, so the field
+     opens per year for a user who has never toggled it, and the
+     last pick comes back after a reload. Display only — it
+     changes no stored figure. The per-month draft keeps what
+     was typed while the field is focused in per-month mode, so a
      half-typed monthly figure is never rewritten mid-edit.
      The comparison (buildPgInputs' annualSpending) reads the
      local field when it parses to a positive figure, so the
@@ -862,7 +869,11 @@ export function Playground({
      Single-year dials group, which the Projection face
      never renders. */
   const [pgSpending, setPgSpending] = useState("");
-  const [pgSpendingUnit, setPgSpendingUnit] = useState<"year" | "month">("year");
+  const [pgDialPerMonth, setPgDialPerMonth] =
+    usePersistedFold("playground.dialPerMonth");
+  const pgSpendingUnit: "year" | "month" = pgDialPerMonth ? "month" : "year";
+  const setPgSpendingUnit = (unit: "year" | "month") =>
+    setPgDialPerMonth(unit === "month");
   const [pgSpendingMonthlyDraft, setPgSpendingMonthlyDraft] = useState<string | null>(null);
   const [pgSpendingMsg, setPgSpendingMsg] = useState<string | null>(null);
   const pgSpendingFocusedRef = useRef(false);
@@ -2168,16 +2179,22 @@ export function Playground({
      strip (the pinned single-year answer), and the single-year
      readout; the "Projection" face carries the projection
      sentence, the projection dials, and the projection charts
-     with their click-a-year readouts. Session-only, like the
-     super-group folds above: BOTH faces read and write the
-     SAME dial state declared above, so switching faces loses
-     nothing and changes no value — it only changes which tool
-     is on screen. The projection still runs only while its
-     panel is open (pgProjOpen, a dial like any other): opening
-     the Projection face opens that panel, and returning to
-     One year leaves it open, exactly as the group fold left
+     with their click-a-year readouts. The last face shown is
+     remembered in this browser (usePersistedChoice, key
+     "fp.playground.face"); a first visit, or a missing or
+     unknown stored value, opens on "year". BOTH faces read and
+     write the SAME dial state declared above, so switching
+     faces loses nothing and changes no value — it only changes
+     which tool is on screen. The projection still runs only
+     while its panel is open (pgProjOpen, a dial like any other):
+     opening the Projection face opens that panel, and returning
+     to One year leaves it open, exactly as the group fold left
      it — the face switch itself writes no dial. */
-  const [pgFace, setPgFace] = useState<"year" | "projection">("year");
+  const [pgFace, setPgFace] = usePersistedChoice<"year" | "projection">(
+    "fp.playground.face",
+    "year",
+    ["year", "projection"],
+  );
   /* The "Start from a known point" preset cards' fold, in the
      generic server-side fold store (foldState.ts) like the
      Spending section folds — the choice survives reloads and

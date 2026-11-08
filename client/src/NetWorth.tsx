@@ -50,6 +50,7 @@ type NwImportSettingsBlob,
 import { looksLikeOfx, parseOfx } from "./ofxCore";
 import { Explainer } from "./Explainer";
 import { usePersistedFold } from "./foldState";
+import { usePersistedChoice } from "./persistedChoice";
 import { TrendBlock } from "./YearBlocks";
 
 type NwData = ApiResponse<typeof api, "getNetWorth">;
@@ -2417,8 +2418,20 @@ function NwExplorerModal({
   const latestDate = snapshots[snapshots.length - 1]?.date ?? "";
   const [fromDate, setFromDate] = useState(earliestDate);
   const [toDate, setToDate] = useState(latestDate);
-  const [groupBy, setGroupBy] = useState<NwExplorerGroupBy>("account");
-  const [columnsMode, setColumnsMode] = useState<NwExplorerColumns>("snapshots");
+  /* The explorer's grouping and column picks are remembered in
+     this browser (usePersistedChoice): a first open, or a
+     missing or unknown stored value, falls back to grouping by
+     account with one column per snapshot. Display only. */
+  const [groupBy, setGroupBy] = usePersistedChoice<NwExplorerGroupBy>(
+    "fp.nw.groupBy",
+    "account",
+    ["account", "bucket", "property"],
+  );
+  const [columnsMode, setColumnsMode] = usePersistedChoice<NwExplorerColumns>(
+    "fp.nw.columnsMode",
+    "snapshots",
+    ["snapshots", "month-end", "quarter-end", "year-end"],
+  );
   // The popup's own include-property switch: seeded from the main
   // view's toggle when the popup opens, independent afterwards.
   const [includeProp, setIncludeProp] = useState(defaultIncludeProperty);
@@ -2861,8 +2874,18 @@ export function NetWorthView() {
   });
   const data = nw.data;
 
-  const [chartMode, setChartMode] = useState<"total" | "accounts" | "buckets" | "share">("accounts");
-  const [growthOn, setGrowthOn] = useState(false);
+  /* The chart mode is remembered in this browser
+     (usePersistedChoice, key "fp.nw.chartMode"); a first visit,
+     or a missing or unknown stored value, opens on "accounts".
+     Display only. */
+  const [chartMode, setChartMode] = usePersistedChoice<
+    "total" | "accounts" | "buckets" | "share"
+  >("fp.nw.chartMode", "accounts", ["total", "accounts", "buckets", "share"]);
+  /* The Growth overlay is a remembered display preference in
+     the generic server-side fold store (the "nw.growthOn"
+     flag): a stored entry means the user last left it on; no
+     entry is off, the long-standing default. Display only. */
+  const [growthOn, setGrowthOn] = usePersistedFold("nw.growthOn");
   // The Growth chart's "Change since" baseline: a snapshot date
   // picked in the chart header, persisted server-side
   // (nw_growth_since via setNwGrowthSince). Initialized once
@@ -2881,7 +2904,15 @@ export function NetWorthView() {
     setGrowthSinceInit(true);
   }, [data, growthSinceInit]);
   const [highlightId, setHighlightId] = useState<number | null>(null);
-  const [period, setPeriod] = useState<ChangePeriod>("last");
+  /* The change period is remembered in this browser
+     (usePersistedChoice, key "fp.nw.period"); a first visit,
+     or a missing or unknown stored value, opens on "last".
+     Display only. */
+  const [period, setPeriod] = usePersistedChoice<ChangePeriod>(
+    "fp.nw.period",
+    "last",
+    ["last", "ytd", "all"],
+  );
   const [editorSnapshot, setEditorSnapshot] = useState<NwSnapshot | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [balanceEdit, setBalanceEdit] = useState<{
@@ -4115,7 +4146,7 @@ export function NetWorthView() {
                   : "Show change since the first snapshot"
             }
             disabled={chartMode === "share"}
-            onClick={() => setGrowthOn((g) => !g)}
+            onClick={() => setGrowthOn(!growthOn)}
             className={`rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${growthOn && chartMode !== "share" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
           >
             Growth
