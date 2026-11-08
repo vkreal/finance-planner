@@ -1259,6 +1259,60 @@ function deriveHarvestBasisPct(
   return facts.harvestPoolBasisPct;
 }
 
+/* The harvest starting-pool RE-derivation, shared by the
+   year-change re-resolution (reresolveDecemberStateForYear
+   below) and the console's in-session year-to-date edits
+   (internal review round 7, SHOULD-1): when the displayed
+   pool is overlay-derived — no stored pool, and the user
+   has not edited the pool fact in this console — and it is
+   currently shown, the pool (and basis %) re-derive from
+   the state's year-to-date figures through the shared
+   derivation above, so the displayed starting pool always
+   contains the year's typed sale and taxable cash, exactly
+   as a fresh load would derive it. A stored non-null pool
+   is the console's own answer and stays; a pool the user
+   edited in this console stays too (per fact, like the
+   save's harvest flags); and a pool that is blank stays
+   blank — a deliberately cleared fact is never revived by
+   a re-derivation. The basis % follows the same per-fact
+   rule, converting against the re-derived (or kept) pool.
+   Pure: the caller passes the state whose year-to-date
+   figures the derivation should read (the merged flip
+   state on a year change; the just-edited form state on
+   an in-session sale edit). */
+export function rederiveHarvestPool(
+  state: DecemberState,
+  stored: DecemberStoredProvenance,
+  edited: { harvestPoolAmount: boolean; harvestPoolBasisPct: boolean },
+  facts: DecemberRecordFacts,
+): DecemberState {
+  let out = state;
+  if (
+    stored.harvestPoolAmount == null &&
+    !edited.harvestPoolAmount &&
+    out.harvestPoolAmount != null
+  ) {
+    const startingPool = deriveHarvestStartingPool(out, facts);
+    if (startingPool != null) {
+      out = { ...out, harvestPoolAmount: startingPool };
+    }
+  }
+  if (
+    stored.harvestPoolBasisPct == null &&
+    !edited.harvestPoolBasisPct &&
+    out.harvestPoolBasisPct != null &&
+    facts.harvestPoolBasisPct != null
+  ) {
+    const startPool =
+      out.harvestPoolAmount ?? deriveHarvestStartingPool(out, facts);
+    const derivedBasis = deriveHarvestBasisPct(out, facts, startPool);
+    if (derivedBasis != null) {
+      out = { ...out, harvestPoolBasisPct: derivedBasis };
+    }
+  }
+  return out;
+}
+
 export function resolveDecemberStateAtLoad(
   state: DecemberState,
   record: boolean | null | undefined | DecemberRecordFacts,
@@ -1616,43 +1670,16 @@ export function reresolveDecemberStateForYear(
   // one — the old year's sale left the pool before the new
   // year began. The re-derivation runs on the merged
   // state, so it reads the reset (or restored) year-to-date
-  // figures above, through the same shared derivation the
-  // load resolution uses — a flip answers exactly as a
-  // fresh load would. It runs ONLY when the pool is
-  // overlay-derived AND currently shown: a stored non-null
-  // pool is the console's own answer and stays, a pool the
-  // user edited in this console stays too (per fact, like
-  // the save's harvest flags), and a pool that is blank
-  // stays blank — a deliberately cleared fact is never
-  // revived by a year change (pinned by
-  // dec-reresolve-year-change), so the re-derivation
-  // re-derives what is shown and never fills what is not.
-  // The basis % follows the same per-fact rule,
-  // converting against the re-derived (or kept) pool.
-  if (
-    stored.harvestPoolAmount == null &&
-    !edited.harvestPoolAmount &&
-    merged.harvestPoolAmount != null
-  ) {
-    const startingPool = deriveHarvestStartingPool(merged, facts);
-    if (startingPool != null) {
-      merged.harvestPoolAmount = startingPool;
-    }
-  }
-  if (
-    stored.harvestPoolBasisPct == null &&
-    !edited.harvestPoolBasisPct &&
-    merged.harvestPoolBasisPct != null &&
-    facts.harvestPoolBasisPct != null
-  ) {
-    const startPool =
-      merged.harvestPoolAmount ?? deriveHarvestStartingPool(merged, facts);
-    const derivedBasis = deriveHarvestBasisPct(merged, facts, startPool);
-    if (derivedBasis != null) {
-      merged.harvestPoolBasisPct = derivedBasis;
-    }
-  }
-  return resolveYearDependentOverlays(merged, facts);
+  // figures above, through the shared rederiveHarvestPool
+  // helper the load resolution's derivation feeds — a flip
+  // answers exactly as a fresh load would, and the same
+  // helper re-derives the pool on an in-session
+  // year-to-date edit (internal review round 7, SHOULD-1).
+  const pooled = rederiveHarvestPool(merged, stored, {
+    harvestPoolAmount: edited.harvestPoolAmount ?? false,
+    harvestPoolBasisPct: edited.harvestPoolBasisPct ?? false,
+  }, facts);
+  return resolveYearDependentOverlays(pooled, facts);
 }
 
 /* The provenance a save must preserve for fields the
@@ -8052,6 +8079,279 @@ export function runDecemberFixtures(): {
     );
     exact(fail, "an edited pool stays across the flip", typedPool.harvestPoolAmount, 65000);
     exact(fail, "an edited basis % stays across the flip", typedPool.harvestPoolBasisPct, 70);
+  });
+
+  run("dec-ytd-typed-sale", (fail) => {
+    // (Internal review round 7, SHOULD-1 — settled STAND):
+    // the console's pool fact is the STARTING pool, and the
+    // shared pricer nets the year's typed sale out of it, so
+    // the starting pool must already contain the sale's
+    // proceeds — that is what the load derivation adds back.
+    // But before this fix the pool re-derived ONLY at load
+    // and at a year change: a sale typed after load left the
+    // displayed pool at the load-derived value (derived with
+    // the sale at $0), and the pricer netted the sale out of
+    // a pool that never contained it — the available gain
+    // understated by the sale's gain, exactly the S-8
+    // double-netting shape, but in-session. On a household
+    // year where the 0% band has room at the headline draw,
+    // the console sized the draw too big by the same amount
+    // and the true pricing at that draw crossed the ACA
+    // cliff, forfeiting the whole year's credit. THE FIX:
+    // the flip's pool re-derivation is extracted into the
+    // shared pure helper rederiveHarvestPool (same gates,
+    // same arithmetic), and the console's year-to-date sale,
+    // sale-basis, and taxable-cash edit handlers run it over
+    // the just-edited form state, writing the re-derived
+    // pool and basis % back into the form — an overlay
+    // re-derivation, not a user edit of the pool, so the
+    // harvest edited flags stay unset and a save still
+    // persists the stored pool for unedited harvest facts.
+    // This fixture pins the helper's legs: a sale typed
+    // in-session re-derives the pool and prices exactly as
+    // the load-with-sale state does; the stale control (the
+    // same typed state WITHOUT the helper) prices the
+    // defect's figures; and the guards hold — an edited
+    // pool stays, a stored pool stays, a cleared pool stays
+    // cleared. THE WORKED EXAMPLE (the settlement's,
+    // engine-run): a record current pool of $50,000 at 60%
+    // basis, with a 2027 year-to-date sale of $20,000
+    // proceeds ($10,000 gain, $10,000 basis).
+    const facts: DecemberRecordFacts = {
+      planFirstYear: 2026,
+      harvestPoolAmount: 50000,
+      harvestPoolBasisPct: 60,
+    };
+    const storedNull2027 = decemberStoredProvenanceOf(
+      defaultDecemberState(2027),
+    );
+    const uneditedHarvest = {
+      harvestPoolAmount: false,
+      harvestPoolBasisPct: false,
+    };
+    const baseState = (
+      householdSize: number,
+      benchmark: number,
+    ): DecemberState => ({
+      ...defaultDecemberState(2027),
+      agePrimary: 60,
+      ageSpouse: 58,
+      acaHouseholdSize: householdSize,
+      acaBenchmarkAnnual: benchmark,
+      bufferDollars: 5000,
+      pretaxBalance: 1500000,
+      pretaxBalancePrimary: 1500000,
+      pretaxBalanceSpouse: 0,
+      pretaxSplitExplicit: true,
+      spouseSoleBeneficiary: true,
+      ytdInterest: 1500,
+      ytdOrdinaryDividends: 20000,
+      ytdQualifiedDividends: 15000,
+      ytdOtherOrdinary: 0,
+      harvestOn: true,
+    });
+    const zeroDraw = (s: DecemberState) =>
+      pricePlaygroundYear(decemberCaseInputs(s, "likely", 0));
+    const headlineOf = (s: DecemberState) => {
+      const p = computeDecemberProjection(s, 18000000);
+      return { draw: p.headlineDraw, likely: p.cases[1]! };
+    };
+    // ---- Leg 1: type a sale in-session (household of 5).
+    // LOAD with a $0 sale derives the record's pool as-is.
+    const loaded5 = resolveDecemberStateAtLoad(baseState(5, 36000), facts);
+    exact(fail, "HH5 load pool", loaded5.harvestPoolAmount, 50000);
+    exact(fail, "HH5 load basis %", loaded5.harvestPoolBasisPct, 60);
+    // TYPE the sale in-session: the state the console held
+    // before the fix — the sale's figures with the stale,
+    // load-derived pool.
+    const typed5: DecemberState = {
+      ...loaded5,
+      ytdCapitalGain: 10000,
+      saleBasis: 10000,
+    };
+    const stale5 = zeroDraw(typed5);
+    exact(fail, "stale HH5 $0-draw harvested gain", stale5.harvestedGain, 10000);
+    exact(fail, "stale HH5 $0-draw MAGI", stale5.acaMagi, 41500);
+    // THE FIX: the sale edit re-derives the pool through the
+    // shared helper — the starting pool now contains the
+    // sale's proceeds, with the basis % converted on the
+    // same dollars.
+    const rederived5 = rederiveHarvestPool(
+      typed5,
+      storedNull2027,
+      uneditedHarvest,
+      facts,
+    );
+    exact(fail, "typed-sale pool re-derives", rederived5.harvestPoolAmount, 70000);
+    exact(fail, "typed-sale basis % re-derives", rederived5.harvestPoolBasisPct, 57.14);
+    // A LOAD that already carries the sale derives the same
+    // pool — the in-session edit now answers as a load does.
+    const loadWithSale5 = resolveDecemberStateAtLoad(
+      { ...baseState(5, 36000), ytdCapitalGain: 10000, saleBasis: 10000 },
+      facts,
+    );
+    exact(fail, "load-with-sale pool", loadWithSale5.harvestPoolAmount, 70000);
+    exact(fail, "load-with-sale basis %", loadWithSale5.harvestPoolBasisPct, 57.14);
+    if (rederived5.harvestPoolAmount !== loadWithSale5.harvestPoolAmount) {
+      fail("the typed-sale pool must equal the load-with-sale pool");
+    }
+    if (rederived5.harvestPoolBasisPct !== loadWithSale5.harvestPoolBasisPct) {
+      fail("the typed-sale basis % must equal the load-with-sale basis %");
+    }
+    // $0-DRAW PRICING of the re-derived state equals the
+    // load-with-sale state's, to the figure.
+    const zeroRederived5 = zeroDraw(rederived5);
+    const zeroLoadSale5 = zeroDraw(loadWithSale5);
+    exact(fail, "re-derived $0-draw harvested gain", zeroRederived5.harvestedGain, 20002);
+    exact(fail, "re-derived $0-draw MAGI", zeroRederived5.acaMagi, 51502);
+    exact(fail, "load-with-sale $0-draw harvested gain", zeroLoadSale5.harvestedGain, 20002);
+    exact(fail, "load-with-sale $0-draw MAGI", zeroLoadSale5.acaMagi, 51502);
+    // HEADLINE: at this household's draw the 0% band binds
+    // (harvest $0), so the headline figures agree too.
+    const headRederived5 = headlineOf(rederived5);
+    const headLoadSale5 = headlineOf(loadWithSale5);
+    exact(fail, "re-derived headline draw", headRederived5.draw, 118220);
+    exact(fail, "re-derived MAGI at headline", headRederived5.likely.magiAtHeadline, 149720);
+    exact(fail, "re-derived credit at headline", headRederived5.likely.creditAtHeadline, 20698.62);
+    exact(fail, "re-derived harvest at headline", headRederived5.likely.harvestedGainAtHeadline, 0);
+    exact(fail, "load-with-sale headline draw", headLoadSale5.draw, 118220);
+    exact(fail, "load-with-sale MAGI at headline", headLoadSale5.likely.magiAtHeadline, 149720);
+    exact(fail, "load-with-sale credit at headline", headLoadSale5.likely.creditAtHeadline, 20698.62);
+    exact(fail, "load-with-sale harvest at headline", headLoadSale5.likely.harvestedGainAtHeadline, 0);
+    // ---- Leg 2: the draw/cliff leg (household of 2). The
+    // band has room at the headline here, so the stale pool
+    // oversizes the draw by the sale's gain and the true
+    // pricing at that draw forfeits the year's credit.
+    const loaded2 = resolveDecemberStateAtLoad(baseState(2, 25000), facts);
+    const typed2: DecemberState = {
+      ...loaded2,
+      ytdCapitalGain: 10000,
+      saleBasis: 10000,
+    };
+    const rederived2 = rederiveHarvestPool(
+      typed2,
+      storedNull2027,
+      uneditedHarvest,
+      facts,
+    );
+    exact(fail, "HH2 typed-sale pool re-derives", rederived2.harvestPoolAmount, 70000);
+    exact(fail, "HH2 typed-sale basis % re-derives", rederived2.harvestPoolBasisPct, 57.14);
+    const headTyped2 = headlineOf(rederived2);
+    exact(fail, "HH2 typed headline draw", headTyped2.draw, 30058);
+    exact(fail, "HH2 typed MAGI at headline", headTyped2.likely.magiAtHeadline, 81560);
+    exact(fail, "HH2 typed credit at headline", headTyped2.likely.creditAtHeadline, 16664.57);
+    exact(fail, "HH2 typed harvest at headline", headTyped2.likely.harvestedGainAtHeadline, 20002);
+    // TRUE PRICING at the typed draw keeps the credit.
+    const trueAtTyped2 = pricePlaygroundYear(
+      decemberCaseInputs(rederived2, "likely", headTyped2.draw ?? 0),
+    );
+    exact(fail, "true MAGI at the typed draw", trueAtTyped2.acaMagi, 81560);
+    if (trueAtTyped2.aca.overCliff) fail("true pricing at the typed draw must keep the credit");
+    exact(fail, "true credit at the typed draw", trueAtTyped2.aca.credit, 16664.57);
+    // STALE CONTROL: the same typed state without the
+    // helper sizes the draw too big by exactly the
+    // understatement, and true pricing at that draw crosses
+    // the cliff — the whole year's credit gone.
+    const headStale2 = headlineOf(typed2);
+    exact(fail, "HH2 stale headline draw", headStale2.draw, 40060);
+    exact(fail, "HH2 stale draw overshoot", (headStale2.draw ?? 0) - (headTyped2.draw ?? 0), 10002);
+    const trueAtStale2 = pricePlaygroundYear(
+      decemberCaseInputs(rederived2, "likely", headStale2.draw ?? 0),
+    );
+    exact(fail, "true MAGI at the stale draw", trueAtStale2.acaMagi, 91562);
+    if (!trueAtStale2.aca.overCliff) fail("true pricing at the stale draw must cross the cliff");
+    exact(fail, "true credit at the stale draw", trueAtStale2.aca.credit, 0);
+    // ---- Leg 3: a LOSS sale typed in-session (household
+    // of 2). Proceeds are gain plus basis, so the loss
+    // sale's smaller proceeds still add back into the
+    // starting pool, and the basis % converts against them.
+    const loadedLoss = resolveDecemberStateAtLoad(baseState(2, 25000), facts);
+    const typedLoss: DecemberState = {
+      ...loadedLoss,
+      ytdCapitalGain: -5000,
+      saleBasis: 20000,
+    };
+    const rederivedLoss = rederiveHarvestPool(
+      typedLoss,
+      storedNull2027,
+      uneditedHarvest,
+      facts,
+    );
+    exact(fail, "loss-sale pool re-derives", rederivedLoss.harvestPoolAmount, 65000);
+    exact(fail, "loss-sale basis % re-derives", rederivedLoss.harvestPoolBasisPct, 76.92);
+    const zeroLoss = zeroDraw(rederivedLoss);
+    exact(fail, "loss re-derived $0-draw harvested gain", zeroLoss.harvestedGain, 20002);
+    exact(fail, "loss re-derived $0-draw MAGI", zeroLoss.acaMagi, 36502);
+    const zeroLossStale = zeroDraw(typedLoss);
+    exact(fail, "loss stale $0-draw harvested gain", zeroLossStale.harvestedGain, 25000);
+    exact(fail, "loss stale $0-draw MAGI", zeroLossStale.acaMagi, 41500);
+    // ---- Leg 4: taxable funded cash rides along in the
+    // same re-derivation (household of 5): the shared
+    // derivation takes the whole state, so typing the cash
+    // beside the sale re-derives the pool with both
+    // add-backs — the cash at 100% basis, so the basis %
+    // converts back to the record's own.
+    const typedFunded: DecemberState = {
+      ...loaded5,
+      ytdCapitalGain: 10000,
+      saleBasis: 10000,
+      taxableFunded: 5000,
+    };
+    const rederivedFunded = rederiveHarvestPool(
+      typedFunded,
+      storedNull2027,
+      uneditedHarvest,
+      facts,
+    );
+    exact(fail, "funded pool re-derives", rederivedFunded.harvestPoolAmount, 75000);
+    exact(fail, "funded basis % re-derives", rederivedFunded.harvestPoolBasisPct, 60);
+    const zeroFunded = zeroDraw(rederivedFunded);
+    exact(fail, "funded $0-draw harvested gain", zeroFunded.harvestedGain, 20000);
+    exact(fail, "funded $0-draw MAGI", zeroFunded.acaMagi, 51500);
+    // ---- Leg 5: the guards. A pool the user edited in
+    // this console is theirs — a sale edit never re-derives
+    // over it.
+    const editedGuard = rederiveHarvestPool(
+      typed5,
+      storedNull2027,
+      { harvestPoolAmount: true, harvestPoolBasisPct: true },
+      facts,
+    );
+    exact(fail, "an edited pool stays on a sale edit", editedGuard.harvestPoolAmount, 50000);
+    exact(fail, "an edited basis % stays on a sale edit", editedGuard.harvestPoolBasisPct, 60);
+    // A stored non-null pool is the console's own saved
+    // answer — it stays too.
+    const storedPoolProv = decemberStoredProvenanceOf({
+      ...defaultDecemberState(2027),
+      harvestPoolAmount: 45000,
+      harvestPoolBasisPct: 80,
+    });
+    const storedGuard = rederiveHarvestPool(
+      { ...typed5, harvestPoolAmount: 45000, harvestPoolBasisPct: 80 },
+      storedPoolProv,
+      uneditedHarvest,
+      facts,
+    );
+    exact(fail, "a stored pool stays on a sale edit", storedGuard.harvestPoolAmount, 45000);
+    exact(fail, "a stored basis % stays on a sale edit", storedGuard.harvestPoolBasisPct, 80);
+    // A deliberately cleared pool is never revived by a
+    // sale edit.
+    const clearedGuard = rederiveHarvestPool(
+      {
+        ...typed5,
+        harvestPoolAmount: null,
+        harvestPoolBasisPct: null,
+      },
+      storedNull2027,
+      uneditedHarvest,
+      facts,
+    );
+    if (
+      clearedGuard.harvestPoolAmount !== null ||
+      clearedGuard.harvestPoolBasisPct !== null
+    ) {
+      fail("a sale edit must not revive a deliberately cleared harvest fact");
+    }
   });
 
   /* ---- Build v112 fixtures: character splits on the

@@ -25,6 +25,7 @@ import {
   decemberStateForSave,
   decemberStoredProvenanceOf,
   defaultDecemberState,
+  rederiveHarvestPool,
   reresolveDecemberStateForYear,
   resolveDecemberStateAtLoad,
   snapshotFollowPrimaryCents,
@@ -1424,6 +1425,52 @@ export function December() {
   const set = <K extends keyof DecForm>(key: K, value: DecForm[K]) =>
     edit((f) => ({ ...f, [key]: value }));
 
+  /* In-session harvest-pool re-derivation (internal review
+     round 7, SHOULD-1): the displayed pool is the STARTING
+     pool — it must already contain the year's year-to-date
+     sale and taxable cash, because the shared pricer nets
+     them back out of it. Load and year change re-derive it
+     through the shared derivation, but a sale typed after
+     load left the pool at its load-derived value, so the
+     pricer netted the sale out of a pool that never
+     contained it. The year-to-date sale, sale-basis, and
+     taxable-cash edits therefore run the shared
+     rederiveHarvestPool over the just-edited form state
+     and write the re-derived pool and basis % back into
+     the form, exactly as the year-change handler writes
+     its re-resolution back. This is an overlay
+     re-derivation, NOT a user edit of the pool: it never
+     sets the harvest edited flags, so a save still
+     persists the stored pool for unedited harvest facts
+     and a reload re-derives the pool from the saved sale.
+     The helper's own gates keep an edited or stored pool
+     untouched and never revive a cleared one. */
+  const rederivePoolIntoForm = (f: DecForm): DecForm => {
+    if (rothQ.data == null) return f;
+    const rederived = rederiveHarvestPool(
+      stateFromForm(f),
+      storedProvenanceRef.current,
+      {
+        harvestPoolAmount: harvestPoolAmountEdited,
+        harvestPoolBasisPct: harvestPoolBasisPctEdited,
+      },
+      recordFactsOf(
+        rothQ.data,
+        parseIntOrNull(f.taxYear) ?? new Date().getFullYear(),
+      ),
+    );
+    return {
+      ...f,
+      harvestPoolAmount: decemberNullableMoneyFormValue(
+        rederived.harvestPoolAmount,
+      ),
+      harvestPoolBasisPct:
+        rederived.harvestPoolBasisPct == null
+          ? ""
+          : String(rederived.harvestPoolBasisPct),
+    };
+  };
+
   const state = useMemo(() => (form ? stateFromForm(form) : null), [form]);
   /* Annual spending for the "enough for the year" comparison
      (build v126): the Tax Plan record's annual spending,
@@ -2671,13 +2718,13 @@ export function December() {
           )}
           {moneyField("Realized capital gain / loss so far", form.ytdCapitalGain, (v) => {
             setYtdEdited(true);
-            set("ytdCapitalGain", v);
+            edit((f) => rederivePoolIntoForm({ ...f, ytdCapitalGain: v }));
           },
           { idLabel: "December YTD capital gain", hint: "Signed — enter a net loss as a negative amount." },
           )}
           {moneyField("Cost basis of the sales behind that gain", form.saleBasis, (v) => {
             setYtdEdited(true);
-            set("saleBasis", v);
+            edit((f) => rederivePoolIntoForm({ ...f, saleBasis: v }));
           },
           {
             idLabel: "December sale basis",
@@ -2858,7 +2905,7 @@ export function December() {
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {moneyField("Taxable cash for the year (100% basis)", form.taxableFunded, (v) => {
             setYtdEdited(true);
-            set("taxableFunded", v);
+            edit((f) => rederivePoolIntoForm({ ...f, taxableFunded: v }));
           },
           { idLabel: "December taxable cash", hint: "Cash from taxable at 100% basis — the part already taxed, so selling it realizes no gain and adds nothing to MAGI. Leave blank if none; enter 0 when explicitly none." },
           )}
