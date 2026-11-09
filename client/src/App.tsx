@@ -6774,8 +6774,10 @@ export function App() {
 
             {/* year in spending — the dissolved Year Summary view's
                 spending block, below the monthly sections; it joins
-                the sections' persisted Collapse all / Expand all
-                system and defaults to collapsed on first load. */}
+                the sections' persisted collapsed-state system (its
+                header carries the same circled +/− fold toggle as
+                Monthly bills) and defaults to collapsed on first
+                load. */}
             <YearInSpendingBlock
               collapsed={yearInSpendingCollapsedAll}
               onToggleCollapsed={() =>
