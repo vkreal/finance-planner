@@ -3115,15 +3115,17 @@ export function App() {
   /* Smoothed spend breakdown provenance taps (taps only — nothing
      is edited in place): each input line's amount goes to where
      that figure comes from, as the user mapped them. The cash-out
-     line goes to this month's Transactions list (unfiltered);
-     for a month whose cash out was entered as one total, the
-     entered-total line — a different label — goes to Monthly
-     cash out, where that total lives. The smoothed-bills-paid
-     line goes to the Transactions list filtered to this month's
-     smoothed-bill payments. The set-aside line uses
+     line goes to Monthly cash out for a summary month (an entered
+     total lives there) and for an items month (the figure is the
+     sum of the month's cash-out items, which live there too);
+     only the plain variant — where the figure derives from the
+     month's transactions — goes to this month's Transactions list
+     (unfiltered). The smoothed-bills-paid line goes to the
+     Transactions list filtered to this month's smoothed-bill
+     payments. The set-aside line uses
      scrollToSection("section-yearly-expenses") directly. */
   function goToCashOutSource() {
-    if (data?.isSummaryMonth && !data?.isItemsMonth) {
+    if (data?.isSummaryMonth || data?.isItemsMonth) {
       scrollToSection("section-cash-out");
     } else {
       setSmoothedOnly(false);
@@ -5144,11 +5146,7 @@ export function App() {
                     <dd className="font-medium">
                       <button
                         type="button"
-                        aria-label={
-                          data.isItemsMonth
-                            ? `Go to Transactions for ${monthLabel(month)}`
-                            : `Go to Monthly cash out for ${monthLabel(month)}`
-                        }
+                        aria-label={`Go to Monthly cash out for ${monthLabel(month)}`}
                         className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
                         onClick={goToCashOutSource}
                       >
