@@ -357,9 +357,9 @@ function QuickTile({
   return (
     <div
       ref={ref}
-      className={`relative flex flex-col p-3.5 sm:p-4 ${className}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      className={`group relative flex flex-col p-3.5 sm:p-4 ${className}`}
     >
       {onDetails && (
         <button
@@ -4516,6 +4516,14 @@ export function App() {
     const key = (name: string) => `${opts.idPrefix}-${name}`;
     const captionCls =
       "text-xs font-medium tracking-wide text-[var(--dim)] uppercase";
+    /* In Month mode (withNav) every tile's figure taps through to
+       its section, so the figure carries the app's dotted-underline
+       tap cue — the same style the other provenance taps use — so
+       it reads as tappable. Year-mode panels have no tap target and
+       keep the plain figure. */
+    const navValueCls = opts.withNav
+      ? `${tileValueCls} underline decoration-dotted underline-offset-4 group-hover:text-[var(--accent)]`
+      : tileValueCls;
     return (
       <>
         {/* Grouped by kind, one card per group (2026-10-25,
@@ -4549,7 +4557,7 @@ export function App() {
               onClose={() => setOpenTip(null)}
               onDetails={opts.withNav ? () => scrollToSection("section-true-cost") : undefined}
             >
-              <p className={tileValueCls}>{fmt(opts.trueCostCents)}</p>
+              <p className={navValueCls}>{fmt(opts.trueCostCents)}</p>
               {opts.withNav && opts.ytd && opts.ytd.trueCostCents !== opts.trueCostCents && (
                 <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
                   YTD {fmt(opts.ytd.trueCostCents)}
@@ -4569,7 +4577,7 @@ export function App() {
               onClose={() => setOpenTip(null)}
               onDetails={opts.withNav ? () => scrollToSection("section-cash-out") : undefined}
             >
-              <p className={tileValueCls}>{fmt(opts.cashOutCents)}</p>
+              <p className={navValueCls}>{fmt(opts.cashOutCents)}</p>
               {opts.withNav && opts.ytd && opts.ytd.cashOutCents !== opts.cashOutCents && (
                 <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
                   YTD {fmt(opts.ytd.cashOutCents)}
@@ -4591,7 +4599,7 @@ export function App() {
               onClose={() => setOpenTip(null)}
               onDetails={opts.withNav ? () => openExplorer("month") : undefined}
             >
-              <p className={tileValueCls}>{fmt(opts.everythingElseCents)}</p>
+              <p className={navValueCls}>{fmt(opts.everythingElseCents)}</p>
               {opts.withNav && opts.ytd && opts.ytd.everythingElseCents !== opts.everythingElseCents && (
                 <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
                   YTD {fmt(opts.ytd.everythingElseCents)}
@@ -4619,7 +4627,7 @@ export function App() {
               onClose={() => setOpenTip(null)}
               onDetails={opts.withNav ? () => scrollToSection("section-yearly-expenses") : undefined}
             >
-              <p className={tileValueCls}>{fmt(opts.yearlyPaidOutCents)}</p>
+              <p className={navValueCls}>{fmt(opts.yearlyPaidOutCents)}</p>
               {opts.withNav && opts.ytd && opts.ytd.yearlyPaidOutCents !== opts.yearlyPaidOutCents && (
                 <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
                   YTD {fmt(opts.ytd.yearlyPaidOutCents)}
@@ -4644,7 +4652,7 @@ export function App() {
               onClose={() => setOpenTip(null)}
               onDetails={opts.withNav ? () => scrollToSection("section-monthly-bills") : undefined}
             >
-              <p className={tileValueCls}>
+              <p className={navValueCls}>
                 {fmt(opts.totalMonthlyCents)}
                 {opts.withNav && (
                   <span className="text-[11px] font-normal text-[var(--dim)]"> /mo</span>
@@ -4668,7 +4676,7 @@ export function App() {
               onClose={() => setOpenTip(null)}
               onDetails={opts.withNav ? () => scrollToSection("section-keep-lights-on") : undefined}
             >
-              <p className={tileValueCls}>{fmt(opts.keepLightsOnCents)}</p>
+              <p className={navValueCls}>{fmt(opts.keepLightsOnCents)}</p>
               {opts.withNav && opts.ytd && opts.ytd.keepLightsOnCents !== opts.keepLightsOnCents && (
                 <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
                   YTD {fmt(opts.ytd.keepLightsOnCents)}
