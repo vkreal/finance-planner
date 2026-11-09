@@ -2935,6 +2935,12 @@ export function NetWorthView() {
   const [renameError, setRenameError] = useState("");
   const [confirmDeleteAllBackups, setConfirmDeleteAllBackups] =
     useState(false);
+  // Filename whose per-backup Delete is showing its confirmation;
+  // null = none. Tapping Delete only opens this — the delete
+  // itself runs from the confirmation's Delete button, so one
+  // stray tap can't remove a backup.
+  const [confirmDeleteBackupName, setConfirmDeleteBackupName] =
+    useState<string | null>(null);
   const [confirmDeleteAccountId, setConfirmDeleteAccountId] =
     useState<number | null>(null);
   const [deleteAccountError, setDeleteAccountError] = useState("");
@@ -5824,13 +5830,39 @@ export function NetWorthView() {
                         {fmtBytes(b.sizeBytes)}
                       </span>
                     </span>
-                    {b.source === "legacy" ? null : (
+                    {b.source === "legacy" ? null : confirmDeleteBackupName === b.name ? (
+                      <span className="flex shrink-0 flex-wrap items-center gap-2">
+                        <span className="text-sm text-[var(--bad)]">
+                          Delete this backup?
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Confirm delete ${b.name}`}
+                          className="rounded-[var(--radius)] bg-[var(--bad)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                          disabled={deleteBackup.isPending}
+                          onClick={() => {
+                            deleteBackup.mutate(b.name);
+                            setConfirmDeleteBackupName(null);
+                          }}
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Cancel delete ${b.name}`}
+                          className={btnGhost}
+                          onClick={() => setConfirmDeleteBackupName(null)}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
                       <button
                         type="button"
                         aria-label={`Delete ${b.name}`}
                         className="shrink-0 rounded-[var(--radius)] border border-[var(--bad)] px-3 py-1.5 text-sm font-medium text-[var(--bad)] disabled:opacity-50"
                         disabled={deleteBackup.isPending || deleteAllBackups.isPending || createBackup.isPending}
-                        onClick={() => deleteBackup.mutate(b.name)}
+                        onClick={() => setConfirmDeleteBackupName(b.name)}
                       >
                         Delete
                       </button>

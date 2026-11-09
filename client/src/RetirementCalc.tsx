@@ -591,6 +591,12 @@ export function RetirementCalc() {
   // Inline rename: which scenario is being renamed, and the draft name.
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
+  // Scenario whose Delete is showing its confirmation; null =
+  // none. Tapping Delete only opens this — the delete itself
+  // runs from the confirmation's Delete button, so one stray
+  // tap can't remove a saved scenario.
+  const [confirmDeleteScenarioName, setConfirmDeleteScenarioName] =
+    useState<string | null>(null);
   // Last known at-risk state of the Max spending tab. The settled
   // solver result drives the tab indicator directly; this is only
   // the fallback for the brief unknown windows (before the first
@@ -5365,15 +5371,43 @@ export function RetirementCalc() {
                           >
                             Rename
                           </button>
-                          <button
-                            type="button"
-                            aria-label={`Delete ${sc.name}`}
-                            className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-medium text-[var(--text)] hover:text-[var(--bad)] disabled:opacity-50"
-                            disabled={deleteScenario.isPending}
-                            onClick={() => deleteScenario.mutate(sc.name)}
-                          >
-                            Delete
-                          </button>
+                          {confirmDeleteScenarioName === sc.name ? (
+                            <>
+                              <span className="inline-flex items-center text-sm text-[var(--bad)]">
+                                Delete {sc.name}?
+                              </span>
+                              <button
+                                type="button"
+                                aria-label={`Confirm delete ${sc.name}`}
+                                className="rounded-[var(--radius)] border border-[var(--bad)] px-3 py-1.5 text-sm font-medium text-[var(--bad)] disabled:opacity-50"
+                                disabled={deleteScenario.isPending}
+                                onClick={() => {
+                                  deleteScenario.mutate(sc.name);
+                                  setConfirmDeleteScenarioName(null);
+                                }}
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Cancel delete ${sc.name}`}
+                                className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-medium text-[var(--text)]"
+                                onClick={() => setConfirmDeleteScenarioName(null)}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              aria-label={`Delete ${sc.name}`}
+                              className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-medium text-[var(--text)] hover:text-[var(--bad)] disabled:opacity-50"
+                              disabled={deleteScenario.isPending}
+                              onClick={() => setConfirmDeleteScenarioName(sc.name)}
+                            >
+                              Delete
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>

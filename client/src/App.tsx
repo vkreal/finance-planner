@@ -3003,6 +3003,16 @@ export function App() {
   // opens this — the delete itself runs from the confirmation's
   // Delete button, so one stray tap can't remove a month.
   const [confirmDeleteSummaryMonth, setConfirmDeleteSummaryMonth] = useState<string | null>(null);
+  // Same one-tap protection for every other row delete in this
+  // view: each ✕ only opens its row's confirmation — the delete
+  // itself runs from the confirmation's Delete button, so one
+  // stray tap can't remove a bill, expense, transaction, item,
+  // or one-off. Null = no confirmation open.
+  const [confirmDeleteBillId, setConfirmDeleteBillId] = useState<number | null>(null);
+  const [confirmDeleteYearlyId, setConfirmDeleteYearlyId] = useState<number | null>(null);
+  const [confirmDeleteTxnId, setConfirmDeleteTxnId] = useState<number | null>(null);
+  const [confirmDeleteCashOutItemId, setConfirmDeleteCashOutItemId] = useState<number | null>(null);
+  const [confirmDeleteOneOffId, setConfirmDeleteOneOffId] = useState<number | null>(null);
   const [versionDeleteError, setVersionDeleteError] = useState("");
   const [recordingYearlyId, setRecordingYearlyId] = useState<number | null>(null);
 
@@ -5527,20 +5537,51 @@ export function App() {
                 <>
                   <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)]">
                     {data.oneOffs.map((o) => (
-                      <li key={o.id} className="flex items-start justify-between gap-3 p-3">
-                        <div className="min-w-0">
-                          <p className="text-base font-medium">{o.description}</p>
-                          {o.note && <p className="text-sm text-[var(--dim)]">{o.note}</p>}
+                      <li key={o.id} className="p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-base font-medium">{o.description}</p>
+                            {o.note && <p className="text-sm text-[var(--dim)]">{o.note}</p>}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <span className="tnum text-base font-medium">{fmt(o.amountCents)}</span>
+                            <button type="button" aria-label={`Edit ${o.description}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditOneOff(o)}>
+                              Edit
+                            </button>
+                            {confirmDeleteOneOffId !== o.id && (
+                              <button type="button" aria-label={`Delete ${o.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteOneOffId(o.id)}>
+                                ✕
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <span className="tnum text-base font-medium">{fmt(o.amountCents)}</span>
-                          <button type="button" aria-label={`Edit ${o.description}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditOneOff(o)}>
-                            Edit
-                          </button>
-                          <button type="button" aria-label={`Delete ${o.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteOneOff.mutate(o.id)}>
-                            ✕
-                          </button>
-                        </div>
+                        {confirmDeleteOneOffId === o.id && (
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <span className="text-sm text-[var(--bad)]">
+                              Delete {o.description}?
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`Confirm delete ${o.description}`}
+                              className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                              disabled={deleteOneOff.isPending}
+                              onClick={() => {
+                                deleteOneOff.mutate(o.id);
+                                setConfirmDeleteOneOffId(null);
+                              }}
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Cancel delete ${o.description}`}
+                              className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                              onClick={() => setConfirmDeleteOneOffId(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -5891,27 +5932,58 @@ export function App() {
                             ) : (
                               <ul className="divide-y divide-[var(--border)]">
                                 {cm.items.map((it) => (
-                                  <li key={it.id} className="flex items-start justify-between gap-3 py-2">
-                                    <div className="min-w-0">
-                                      <p className="text-base">
-                                        {it.description}{" "}
-                                        <span className="text-sm text-[var(--dim)] opacity-40">
-                                          · paid on the {ordinalDay(it.day)}
+                                  <li key={it.id} className="py-2">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <p className="text-base">
+                                          {it.description}{" "}
+                                          <span className="text-sm text-[var(--dim)] opacity-40">
+                                            · paid on the {ordinalDay(it.day)}
+                                          </span>
+                                        </p>
+                                        {it.note && (
+                                          <p className="text-xs text-[var(--dim)]">{it.note}</p>
+                                        )}
+                                      </div>
+                                      <div className="flex shrink-0 items-center gap-1">
+                                        <span className="tnum text-base font-medium">{fmt(it.amountCents)}</span>
+                                        <button type="button" aria-label={`Edit ${it.description}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditItem(it)}>
+                                          Edit
+                                        </button>
+                                        {confirmDeleteCashOutItemId !== it.id && (
+                                          <button type="button" aria-label={`Delete ${it.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteCashOutItemId(it.id)}>
+                                            ✕
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {confirmDeleteCashOutItemId === it.id && (
+                                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                                        <span className="text-sm text-[var(--bad)]">
+                                          Delete {it.description}?
                                         </span>
-                                      </p>
-                                      {it.note && (
-                                        <p className="text-xs text-[var(--dim)]">{it.note}</p>
-                                      )}
-                                    </div>
-                                    <div className="flex shrink-0 items-center gap-1">
-                                      <span className="tnum text-base font-medium">{fmt(it.amountCents)}</span>
-                                      <button type="button" aria-label={`Edit ${it.description}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditItem(it)}>
-                                        Edit
-                                      </button>
-                                      <button type="button" aria-label={`Delete ${it.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteCashOutItem.mutate(it.id)}>
-                                        ✕
-                                      </button>
-                                    </div>
+                                        <button
+                                          type="button"
+                                          aria-label={`Confirm delete ${it.description}`}
+                                          className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                                          disabled={deleteCashOutItem.isPending}
+                                          onClick={() => {
+                                            deleteCashOutItem.mutate(it.id);
+                                            setConfirmDeleteCashOutItemId(null);
+                                          }}
+                                        >
+                                          Delete
+                                        </button>
+                                        <button
+                                          type="button"
+                                          aria-label={`Cancel delete ${it.description}`}
+                                          className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                                          onClick={() => setConfirmDeleteCashOutItemId(null)}
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    )}
                                   </li>
                                 ))}
                               </ul>
@@ -6142,12 +6214,41 @@ export function App() {
                               <button type="button" aria-label={`Edit ${b.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditBill(b)}>
                                 Edit
                               </button>
-                              <button type="button" aria-label={`Delete ${b.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteBill.mutate(b.id)}>
-                                ✕
-                              </button>
+                              {confirmDeleteBillId !== b.id && (
+                                <button type="button" aria-label={`Delete ${b.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteBillId(b.id)}>
+                                  ✕
+                                </button>
+                              )}
                             </span>
                           )}
                         </div>
+                        {confirmDeleteBillId === b.id && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="text-sm text-[var(--bad)]">
+                              Delete {b.name}? This removes the bill and its amount history.
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`Confirm delete ${b.name}`}
+                              className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                              disabled={deleteBill.isPending}
+                              onClick={() => {
+                                deleteBill.mutate(b.id);
+                                setConfirmDeleteBillId(null);
+                              }}
+                            >
+                              Delete
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Cancel delete ${b.name}`}
+                              className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                              onClick={() => setConfirmDeleteBillId(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
                         {rowOpen && (
                           <div id={`monthly-bill-detail-${b.id}`}>
                         <BillAmountEditor bill={b} onSave={saveBillAmountFromRow} />
@@ -6473,10 +6574,39 @@ export function App() {
                       <button type="button" aria-label={`Edit ${t.description}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditTxn(t)}>
                         Edit
                       </button>
-                      <button type="button" aria-label={`Delete ${t.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteTxn.mutate(t.id)}>
-                        ✕
-                      </button>
+                      {confirmDeleteTxnId !== t.id && (
+                        <button type="button" aria-label={`Delete ${t.description}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteTxnId(t.id)}>
+                          ✕
+                        </button>
+                      )}
                     </span>
+                    {confirmDeleteTxnId === t.id && (
+                      <span className="flex w-full flex-wrap items-center gap-2">
+                        <span className="text-sm text-[var(--bad)]">
+                          Delete {t.description}?
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Confirm delete ${t.description}`}
+                          className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                          disabled={deleteTxn.isPending}
+                          onClick={() => {
+                            deleteTxn.mutate(t.id);
+                            setConfirmDeleteTxnId(null);
+                          }}
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Cancel delete ${t.description}`}
+                          className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                          onClick={() => setConfirmDeleteTxnId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -6805,14 +6935,43 @@ export function App() {
                           <button type="button" aria-label={`Edit ${y.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditYearly(y)}>
                             Edit
                           </button>
-                          <button type="button" aria-label={`Delete ${y.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteYearly.mutate(y.id)}>
-                            ✕
-                          </button>
+                          {confirmDeleteYearlyId !== y.id && (
+                            <button type="button" aria-label={`Delete ${y.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => setConfirmDeleteYearlyId(y.id)}>
+                              ✕
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
                     {!yearlyBillsCollapsedAll && (
                       <>
+                    {confirmDeleteYearlyId === y.id && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="text-sm text-[var(--bad)]">
+                          Delete {y.name}? This removes the expense and its amount history.
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Confirm delete ${y.name}`}
+                          className="rounded border border-[var(--bad)] px-2 py-1 text-sm font-medium text-[var(--bad)]"
+                          disabled={deleteYearly.isPending}
+                          onClick={() => {
+                            deleteYearly.mutate(y.id);
+                            setConfirmDeleteYearlyId(null);
+                          }}
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Cancel delete ${y.name}`}
+                          className="rounded border border-[var(--border)] px-2 py-1 text-sm"
+                          onClick={() => setConfirmDeleteYearlyId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
                     <label className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                       <span className="text-[var(--dim)]">Category</span>
                       <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-medium text-[var(--accent)]">
