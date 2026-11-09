@@ -512,10 +512,12 @@ function QuickViewReturnLink({ onReturn }: { onReturn: () => void }) {
   );
 }
 
-/* Chip chevron expand/collapse affordance for the two bills
-   rosters' section headers. The visible control is the shared
-   FoldChevron chip (crisp SVG chevron that rotates with state);
-   the accessible name stays "Show bills" / "Hide bills", and the caller
+/* Chip chevron expand/collapse affordance for the bills
+   rosters' and the Transactions list's section headers. The
+   visible control is the shared FoldChevron chip (crisp SVG
+   chevron that rotates with state); the accessible name stays
+   "Show bills" / "Hide bills" (or the caller's show/hide labels,
+   e.g. "Show transactions" / "Hide transactions"), and the caller
    keeps aria-expanded / aria-controls wired to the same persisted
    fold state as before. The button box stays a comfortable 36px
    tap target around the 28px chip. */
@@ -523,15 +525,19 @@ function BillsFoldChevron({
   open,
   controlsId,
   onToggle,
+  showLabel = "Show bills",
+  hideLabel = "Hide bills",
 }: {
   open: boolean;
   controlsId: string;
   onToggle: () => void;
+  showLabel?: string;
+  hideLabel?: string;
 }) {
   return (
     <button
       type="button"
-      aria-label={open ? "Hide bills" : "Show bills"}
+      aria-label={open ? hideLabel : showLabel}
       aria-expanded={open}
       aria-controls={controlsId}
       onClick={onToggle}
@@ -2831,6 +2837,21 @@ export function App() {
   const [yearlyBillsOpen, setYearlyBillsOpen] = usePersistedFold(
     "spending.yearlyBills",
   );
+  /* The Transactions list's open/closed state: unlike the two
+     bills rosters the list is the section's main content and has
+     always been on screen, so it stays DEFAULT OPEN — and the
+     fold store only records a fold's non-default state, so this
+     stores the inverse flag (same pattern as the Retirement
+     inputs fold): an entry under "spending.transactionsFolded"
+     means the user left the list folded shut; no entry means
+     open, its default. The section header (title, info tip, fold
+     toggle) stays visible either way; the Import and Add buttons
+     live at the top of the panel body, hidden when folded.
+     Display only — no figure reads this flag. */
+  const [transactionsFolded, setTransactionsFolded] = usePersistedFold(
+    "spending.transactionsFolded",
+  );
+  const transactionsOpen = !transactionsFolded;
   const [showExplorer, setShowExplorer] = useState(false);
   const [explorerGroupBy, setExplorerGroupBy] =
     useState<ExplorerGroupBy>("category");
@@ -6052,12 +6073,6 @@ export function App() {
                   Transactions — {monthLabel(month)}
                 </h2>
                 <div className="ml-auto flex flex-nowrap items-center gap-2">
-                  <button type="button" className={btnGhost} onClick={() => setShowImport(!showImport)} aria-expanded={showImport}>
-                    Import
-                  </button>
-                  <button type="button" className={btnAdd} onClick={() => openNewTxn()}>
-                    + Add
-                  </button>
                   <ExplainerInfoTip id="spending.transactions" label="Transactions">
                     <p>
                       Transactions are records of money that actually left an account — typed in by hand or imported from a file.
@@ -6069,8 +6084,26 @@ export function App() {
                       If a month has a cash-out items list, the items are that month's Cash out total and transactions are not added on top. If a month has no items and no typed-in total, Cash out is counted from its transactions instead.
                     </p>
                   </ExplainerInfoTip>
+                  <BillsFoldChevron
+                    open={transactionsOpen}
+                    controlsId="transactions-body"
+                    onToggle={() => setTransactionsFolded(transactionsOpen)}
+                    showLabel="Show transactions"
+                    hideLabel="Hide transactions"
+                  />
                 </div>
               </div>
+
+              {transactionsOpen && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button type="button" className={btnGhost} onClick={() => setShowImport(!showImport)} aria-expanded={showImport}>
+                    Import
+                  </button>
+                  <button type="button" className={btnAdd} onClick={() => openNewTxn()}>
+                    + Add
+                  </button>
+                </div>
+              )}
 
               {showImport && (
                 <ImportPanel
@@ -6170,6 +6203,8 @@ export function App() {
                 </form>
               )}
 
+              {transactionsOpen && (
+                <div id="transactions-body">
               {data.monthTransactions.length === 0 && !showTxnForm && (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
                   {data.isItemsMonth
@@ -6205,6 +6240,8 @@ export function App() {
                   </li>
                 ))}
               </ul>
+                </div>
+              )}
             </section>
 
             {/* yearly & periodic (smoothed) bills */}
