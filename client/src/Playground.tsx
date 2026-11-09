@@ -9395,6 +9395,37 @@ export function Playground({
                         fmtDollars(pg.acaMagi),
                         "MAGI plus the untaxed part of Social Security",
                       )}
+                    {/* Dial split of the pre-tax money out: the
+                        year's pre-tax money out sits on TWO dials
+                        in the Pre-tax money out section above —
+                        the Conversion to Roth dial and the Pre-tax
+                        draw for spending dial — and the two are
+                        priced the same as income but opposite as
+                        cash. Naming both amounts here, on the card
+                        itself, is what keeps a year whose money
+                        out is all conversion from reading as a
+                        cash shortfall: the conversion is real
+                        income (it is inside MAGI above) but it
+                        lands in Roth, so the cash-left rows below
+                        never count it, while a draw is cash in
+                        hand and they do. Shown whenever either
+                        dial is non-zero, both rows together, so
+                        the empty dial reads $0 beside the filled
+                        one. Figures are the priced result's own
+                        echoes (pg.conversion / pg.spendingDraw);
+                        no figure changes. */}
+                    {(pg.conversion > 0 || pg.spendingDraw > 0) &&
+                      stackRow(
+                        "On the Conversion to Roth dial",
+                        fmtDollars(pg.conversion),
+                        "Goes to Roth — income, but not cash in hand, so it is not counted in the cash left below.",
+                      )}
+                    {(pg.conversion > 0 || pg.spendingDraw > 0) &&
+                      stackRow(
+                        "On the Pre-tax draw for spending dial",
+                        fmtDollars(pg.spendingDraw),
+                        "Cash in hand — counted in the cash left below.",
+                      )}
                     {/* Cash left after tax (build v114, fixed
                         text + ⓘ build v116): the
                         engine-priced readout on the same pricing
@@ -9419,7 +9450,7 @@ export function Playground({
                       <>
                         Cash left after tax
                         <InfoNote
-                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — ${PLAYGROUND_CASH_LEFT_BASIS} It's what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                          text={`Cash in ${fmtDollars(pg.cashIn)} minus the net tax bill ${fmtDollars(pg.netTaxBill)} — ${PLAYGROUND_CASH_LEFT_BASIS} It's what's left to spend next ${spendPerMonth ? "month" : "year"}, before any spending.${pg.conversion > 0 || pg.spendingDraw > 0 ? ` Cash in counts the ${fmtDollars(pg.spendingDraw)} on the Pre-tax draw for spending dial and does not count the ${fmtDollars(pg.conversion)} on the Conversion to Roth dial — a conversion goes to Roth, not cash in hand.` : ""}${pg.cashDraw > 0 || pg.rothDraw > 0 ? ` Cash in also counts the funding dials in Spending: Cash drawn for spending ${fmtDollars(pg.cashDraw)} and Roth drawn for spending ${fmtDollars(pg.rothDraw)}.` : ""}${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
                           ariaLabel="About the cash left after tax"
                         />
                       </>,
@@ -9470,7 +9501,14 @@ export function Playground({
                         or a payable IRMAA prices, the
                         premium-charged derivation),
                         and carries the refund-timing sentence
-                        whenever the net bill is a refund. In
+                        whenever the net bill is a refund. The ⓘ
+                        and the visible sub-line also name the two
+                        pre-tax dials whenever either is non-zero —
+                        the comparison's cash counts the Pre-tax
+                        draw for spending dial and never the
+                        Conversion to Roth dial — so a shortfall
+                        priced off a conversion never reads as
+                        missing spendable cash. In
                         Month mode (the shared persisted
                         spendPerMonth toggle) the label, value,
                         and sub-line name the month — the value
@@ -9483,7 +9521,7 @@ export function Playground({
                           Left after a {spendPerMonth ? "month" : "year"}
                           &rsquo;s spending
                           <InfoNote
-                            text={pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0 ? `Cash left after health premiums ${fmtDollars(pg.cashLeftAfterHealthPremium)} — cash left after tax ${fmtDollars(pg.cashLeftAfterTax)}${pg.healthPremiumNet > 0 ? ` minus the net health premium ${fmtDollars(pg.healthPremiumNet)}` : ""}${pg.irmaaPayableAnnual > 0 ? ` minus the IRMAA payable this year ${fmtDollars(pg.irmaaPayableAnnual)}` : ""} — minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}, which excludes health premiums.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}` : `Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`}
+                            text={(pg.healthPremiumNet > 0 || pg.irmaaPayableAnnual > 0 ? `Cash left after health premiums ${fmtDollars(pg.cashLeftAfterHealthPremium)} — cash left after tax ${fmtDollars(pg.cashLeftAfterTax)}${pg.healthPremiumNet > 0 ? ` minus the net health premium ${fmtDollars(pg.healthPremiumNet)}` : ""}${pg.irmaaPayableAnnual > 0 ? ` minus the IRMAA payable this year ${fmtDollars(pg.irmaaPayableAnnual)}` : ""} — minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}, which excludes health premiums.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}` : `Cash left after tax ${fmtDollars(pg.cashLeftAfterTax)} minus annual spending ${fmtDollars(pg.annualSpending)} — ${pgPastedSpending !== undefined ? "the annual spending the loaded year was priced with" : "the annual spending from the Tax Plan"}.${pg.netTaxBill < 0 ? " If the tax bill is a refund, that part arrives at filing in the spring, not in December." : ""}`) + (pg.conversion > 0 || pg.spendingDraw > 0 ? ` The cash this comparison runs on counts the Pre-tax draw for spending dial (${fmtDollars(pg.spendingDraw)}) and not the Conversion to Roth dial (${fmtDollars(pg.conversion)}) — a conversion goes to Roth, so it cannot pay this spending; money taken out to spend belongs on the draw dial.` : "")}
                             ariaLabel={`About the amount left after a ${spendPerMonth ? "month" : "year"}'s spending`}
                           />
                         </>,
@@ -9494,11 +9532,14 @@ export function Playground({
                             ? `${fmtDollarsExact(pg.cashLeftVsSpending / 12)}/mo`
                             : fmtDollars(pg.cashLeftVsSpending)}
                         </span>,
-                        pg.cashLeftVsSpending > 0
+                        (pg.cashLeftVsSpending > 0
                           ? `Enough for the ${spendPerMonth ? "month" : "year"}.`
                           : pg.cashLeftVsSpending < 0
                             ? `Short of a ${spendPerMonth ? "month" : "year"}'s spending.`
-                            : `Exactly enough for the ${spendPerMonth ? "month" : "year"}.`,
+                            : `Exactly enough for the ${spendPerMonth ? "month" : "year"}.`) +
+                          (pg.conversion > 0
+                            ? ` The ${fmtDollars(pg.conversion)} on the Conversion to Roth dial goes to Roth — it is not cash for spending.`
+                            : ""),
                       )
                     )}
                   </dl>
@@ -9506,29 +9547,34 @@ export function Playground({
                     <p className="mt-2 text-sm">
                       {pg.spendingDraw > 0 ? (
                         <>
-                          The conversion itself costs{" "}
+                          The money on the Conversion to Roth dial itself costs{" "}
                           <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
                           of federal tax —{" "}
                           {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
-                          of the amount converted
+                          of the amount on that dial
                           {pg.conversionTotalCost !== pg.conversionFederalCost
                             ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
                             : ""}
-                          . That&rsquo;s the year&rsquo;s tax with the conversion minus
-                          the same year priced with no conversion — the draw still taken.
+                          . That&rsquo;s the year&rsquo;s tax with the Conversion to Roth dial minus
+                          the same year priced at $0 on that dial — the money on the
+                          Pre-tax draw for spending dial still taken.
                         </>
                       ) : (
                         <>
-                          The pre-tax money out itself costs{" "}
+                          The money on the Conversion to Roth dial itself costs{" "}
                           <strong className="tnum">{fmtDollars(pg.conversionFederalCost)}</strong>{" "}
                           of federal tax —{" "}
                           {((pg.conversionFederalCost / pg.conversion) * 100).toFixed(1)}%
-                          of the amount taken out
+                          of the amount on that dial
                           {pg.conversionTotalCost !== pg.conversionFederalCost
                             ? ` (${fmtDollars(pg.conversionTotalCost)} with state tax included)`
                             : ""}
-                          . That&rsquo;s the year&rsquo;s tax with the pre-tax money out minus
-                          the same year priced at $0 of pre-tax money out.
+                          . That&rsquo;s the year&rsquo;s tax with the Conversion to Roth dial minus
+                          the same year priced at $0 on that dial. All of this
+                          year&rsquo;s pre-tax money out is on that dial — it goes to
+                          Roth, not to spending, so none of it is cash in hand.
+                          Money taken out to spend belongs on the Pre-tax draw
+                          for spending dial, which is $0 here.
                         </>
                       )}
                     </p>
