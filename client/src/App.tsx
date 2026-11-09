@@ -303,7 +303,12 @@ function currentMonth(): string {
    tooltip on tap/click; hovering or focusing the badge itself
    shows it too (hovering the rest of the cell does not) — the
    tooltip carries the cell's definition, which does not
-   print on the cell's face. Tapping outside or pressing Escape
+   print on the cell's face. The tooltip panel hangs directly
+   below the badge, aligned to it (panelCls picks the horizontal
+   alignment relative to the badge: centred under it, or its
+   right edge flush with the badge's), so it opens beside the
+   badge that triggered it rather than at the card's edge below
+   the whole cell. Tapping outside or pressing Escape
    closes a toggled tooltip. The label reserves right padding so
    it never runs under the badge. Cells are compact: height fits
    the label + value. When the cell has a details target, the
@@ -374,49 +379,51 @@ function QuickTile({
         </p>
         {children}
       </div>
-      <button
-        type="button"
-        aria-label={`How ${label} is calculated`}
-        aria-expanded={open}
-        aria-controls={tipId}
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle();
-        }}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        onFocus={() => setHovered(true)}
-        onBlur={() => setHovered(false)}
-        className="absolute top-2 right-2 z-20 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          aria-hidden="true"
-        >
-          <circle cx="8" cy="8" r="6.4" stroke="currentColor" strokeWidth="1.3" />
-          <path
-            d="M8 7.3v3.4"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-          />
-          <circle cx="8" cy="5.1" r="0.95" fill="currentColor" />
-        </svg>
-      </button>
-      {show && (
-        <div
-          id={tipId}
-          role="tooltip"
+      <div className="absolute top-2 right-2 z-20">
+        <button
+          type="button"
+          aria-label={`How ${label} is calculated`}
+          aria-expanded={open}
+          aria-controls={tipId}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
-          className={`absolute top-full z-30 mt-2 w-64 max-w-[calc(100vw-2.5rem)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-[13px] leading-snug font-normal whitespace-normal normal-case shadow-lg ${panelCls}`}
+          onFocus={() => setHovered(true)}
+          onBlur={() => setHovered(false)}
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
         >
-          {tip}
-        </div>
-      )}
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <circle cx="8" cy="8" r="6.4" stroke="currentColor" strokeWidth="1.3" />
+            <path
+              d="M8 7.3v3.4"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+            />
+            <circle cx="8" cy="5.1" r="0.95" fill="currentColor" />
+          </svg>
+        </button>
+        {show && (
+          <div
+            id={tipId}
+            role="tooltip"
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            className={`absolute top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2.5rem)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-[13px] leading-snug font-normal whitespace-normal normal-case shadow-lg ${panelCls}`}
+          >
+            {tip}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4552,7 +4559,7 @@ export function App() {
               label="True cost"
               tipId={`qtip-${key("true-cost")}`}
               tip="Real monthly cost — yearly & periodic bills spread evenly. What the month really cost. The month's base (the entered total, the itemized total, or the spending recorded that month), minus any yearly/periodic lump sums that base includes, plus the monthly set-aside for yearly & periodic bills — so big yearly bills are spread evenly instead of spiking one month."
-              panelCls="left-0"
+              panelCls="left-1/2 -translate-x-1/2"
               open={openTip === key("true-cost")}
               onToggle={() =>
                 setOpenTip(openTip === key("true-cost") ? null : key("true-cost"))
@@ -4572,7 +4579,7 @@ export function App() {
               label="Cash out"
               tipId={`qtip-${key("cash-out")}`}
               tip="Money that actually went out this month — all the money that actually left this month. If the month is itemized, that's the items added up; otherwise if you entered a monthly total, that's the number; otherwise it's the month's checking transactions added up. Paying off a credit card isn't counted twice. A charge paid by credit card lands here in the month the card payment leaves the bank, which can be the month after the charge."
-              panelCls="right-0 sm:right-auto sm:left-0"
+              panelCls="right-0"
               open={openTip === key("cash-out")}
               onToggle={() =>
                 setOpenTip(openTip === key("cash-out") ? null : key("cash-out"))
@@ -4592,7 +4599,7 @@ export function App() {
               label="Everything else"
               tipId={`qtip-${key("everything-else")}`}
               tip="Cash out − monthly bills − yearly & periodic bills paid this month. Cash out minus Total monthly (the monthly bills) minus the yearly & periodic bills paid this month. What's left is everything that isn't a bill — day-to-day spending like groceries, eating out, and shopping, plus anything else that left the account, such as transfers or card payments. It can be negative: negative for now means this month's recorded cash out is still below its bills and yearly payments — it can be negative mid-month, when the recorded cash out so far is still below the month's bills and yearly payments."
-              panelCls="left-0 sm:left-auto sm:right-0"
+              panelCls="left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0"
               open={openTip === key("everything-else")}
               onToggle={() =>
                 setOpenTip(
@@ -4647,7 +4654,7 @@ export function App() {
               label="Total monthly"
               tipId={`qtip-${key("total-monthly")}`}
               tip="Your recurring monthly bills — all your monthly bills for this month added together (the Monthly bills list)."
-              panelCls="left-0"
+              panelCls="left-1/2 -translate-x-1/2"
               open={openTip === key("total-monthly")}
               onToggle={() =>
                 setOpenTip(openTip === key("total-monthly") ? null : key("total-monthly"))
@@ -4671,7 +4678,7 @@ export function App() {
               label="Keep the lights on"
               tipId={`qtip-${key("lights-on")}`}
               tip="Bare-minimum bills to keep things running. The bills you checked as essential: checked monthly bills plus the set-asides of checked yearly/periodic bills. The must-pay floor for the month."
-              panelCls="right-0 sm:right-auto sm:left-0"
+              panelCls="right-0"
               open={openTip === key("lights-on")}
               onToggle={() =>
                 setOpenTip(openTip === key("lights-on") ? null : key("lights-on"))
