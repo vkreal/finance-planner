@@ -8590,7 +8590,7 @@ export const Actions = {
             members: [
               part("Cash out", "all money out that month", monthRows.map((r) => r.cashOutCents)),
               part("Monthly bills", "counted in the bill rows above", monthRows.map((r) => -r.totalMonthlyCents)),
-              part("Yearly bills paid out", "money that left checking that month", monthRows.map((r) => -r.yearlyPaidOutCents)),
+              part("Yearly bills paid out", "net settlements that month", monthRows.map((r) => -r.yearlyPaidOutCents)),
             ],
           });
         }
@@ -8621,7 +8621,7 @@ export const Actions = {
   // the month's cash-out items when it has any, the entered month
   // total when one was entered, otherwise the month's checking
   // transactions. Yearly bills paid out is the settlement-basis
-  // figure (money that left checking that month), and it now
+  // figure (net settlements that month), and it now
   // carries its per-attribution breakdown lines from the core's
   // FIFO walk (settlementLinesForMonth): one line per bill a
   // settlement is attributed to, at the attributed portion — a

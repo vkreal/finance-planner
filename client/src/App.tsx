@@ -1089,7 +1089,7 @@ function yearlyPaidOutDrillLines(ml: ExplorerMonthLinesData): DrillLine[] {
     return [
       {
         label: "Yearly & periodic bills paid out",
-        detail: "counted in the month the money left checking — nothing settled this month",
+        detail: "counted in the settlement month, net of refunds — nothing settled this month",
         amountCents: ml.yearlyPaidOutCents,
       },
     ];
@@ -1341,7 +1341,7 @@ function ExplorerModal({
       return [
         ...cashOutBlock,
         { label: "Monthly bills", detail: "counted in the bill rows", amountCents: -ml.monthlyTotalCents },
-        { label: "Yearly bills paid out", detail: "money that left checking this month", amountCents: -ml.yearlyPaidOutCents },
+        { label: "Yearly bills paid out", detail: "net settlements this month", amountCents: -ml.yearlyPaidOutCents },
       ];
     }
     switch (d.measure) {
@@ -1350,7 +1350,7 @@ function ExplorerModal({
       case "trueCost":
         return [
           { label: "Cash out", detail: basisDetail, amountCents: ml.cashOutCents },
-          { label: "Yearly bills paid out", detail: "money that left checking this month", amountCents: -ml.yearlyPaidOutCents },
+          { label: "Yearly bills paid out", detail: "net settlements this month", amountCents: -ml.yearlyPaidOutCents },
           { label: "Set-asides", detail: "yearly & periodic bills, smoothed", amountCents: ml.accrualCents },
           ...ml.accrualLines
             .filter((l) => l.amountCents !== 0)
@@ -1364,7 +1364,7 @@ function ExplorerModal({
         return [
           { label: "Cash out", detail: basisDetail, amountCents: ml.cashOutCents },
           { label: "Total monthly bills", amountCents: -ml.monthlyTotalCents },
-          { label: "Yearly bills paid out", detail: "money that left checking this month", amountCents: -ml.yearlyPaidOutCents },
+          { label: "Yearly bills paid out", detail: "net settlements this month", amountCents: -ml.yearlyPaidOutCents },
         ];
       case "oneOffs":
         return ml.oneOffLines.map((l) => ({ label: l.label, detail: l.detail, amountCents: l.amountCents }));
@@ -3421,10 +3421,11 @@ export function App() {
   const [smoothedOnly, setSmoothedOnly] = useState(false);
   /* Settlement-basis breakdown for "Smoothed bills paid this
      month": opened by that line's tap in the Smoothed spend
-     breakdown. The figure counts a smoothed bill in the month
-     its money left checking (the settlement month) — a bill
-     charged to a card counts when the card payment settles it,
-     not in the charge month — so the breakdown is the month's
+     breakdown. The figure counts net settlements in the
+     settlement month — a bill charged to a card counts when
+     the card payment settles it, not in the charge month, and
+     a refund counts in its own month as a reversal of a
+     previously settled charge — so the breakdown is the month's
      settlement lines from the same spending core (through
      getExplorerMonthLines, the explorer drill-down's read),
      footing exactly to the figure. Session-local view state,
@@ -3590,8 +3591,10 @@ export function App() {
      month's transactions — goes to this month's Transactions list
      (unfiltered). The smoothed-bills-paid line opens the
      settlement-basis breakdown panel under the breakdown (below):
-     the figure counts money in the month it left checking, so a
-     charge-month filter of the Transactions list cannot show it —
+     the figure counts net settlements in the settlement month
+     (a refund counts in its own month, as a reversal of a
+     previously settled charge), so a charge-month filter of the
+     Transactions list cannot show it —
      a card charge sits in its charge month carrying the bill
      link, while the checking card payment that settles it (the
      transaction the figure actually counts) carries none. The
@@ -5438,8 +5441,8 @@ export function App() {
                   Prefer one number a month? Enter the month's total cash
                   out instead of individual transactions. For a month with
                   an entered total, smoothed spend = entered cash out −
-                  smoothed bills that left checking that month + the
-                  set-aside. The entered total replaces that month's
+                  smoothed bills settled that month (net of refunds) +
+                  the set-aside. The entered total replaces that month's
                   transactions — the two are never added together.
                 </p>
                 <p>
@@ -5744,11 +5747,14 @@ export function App() {
                     </button>
                   </div>
                   <p className="mt-1 text-sm text-[var(--dim)]">
-                    Counted in the month the money left checking: a bill
-                    paid straight from checking counts in its own month,
-                    and a bill charged to a card counts when the card
-                    payment settles it — not in the month the charge was
-                    recorded. Each line is the portion of a payment
+                    Counted in the month each bill settles, net of
+                    refunds: a bill paid straight from checking counts
+                    in its own month, and a bill charged to a card
+                    counts when the card payment settles it — not in
+                    the month the charge was recorded. A refund counts
+                    here too, as a reversal of a previously settled
+                    charge, so the figure is the month&rsquo;s net
+                    settlements. Each line is the portion of a payment
                     counted here; a payment&rsquo;s full amount is named
                     in its line when only part of it counts.
                   </p>
@@ -5762,7 +5768,7 @@ export function App() {
                     <>
                       <p className="mt-2 text-sm text-[var(--dim)]">
                         No smoothed bill settled in {monthLabel(month)} —
-                        nothing left checking for one this month.
+                        nothing settled for one this month.
                       </p>
                       <DrillLines
                         lines={[]}
@@ -5848,7 +5854,7 @@ export function App() {
                       double-counting, that total is the month's number
                       and the transactions are <strong>not</strong> added on top
                       of it. The one exception: smoothed bills (yearly or
-                      periodic) whose money left checking this month (
+                      periodic) settled this month, net of refunds, (
                       {fmt(data.yearlyLumpsCents)}) are still subtracted
                       in the formula above, so they aren't counted twice.
                       {data.isItemsMonth
@@ -7236,8 +7242,9 @@ export function App() {
                     {visibleMonthTransactions.length} of{" "}
                     {data.monthTransactions.length} transaction
                     {data.monthTransactions.length === 1 ? "" : "s"}. The
-                    Smoothed bills paid figure itself counts the month the
-                    money left checking; its breakdown sits under the
+                    Smoothed bills paid figure itself counts net
+                    settlements in the settlement month; its breakdown
+                    sits under the
                     Smoothed spend breakdown above.
                   </p>
                   <button
