@@ -46,6 +46,48 @@ export type CoreTxn = {
   // Optional: older fixture datasets omit it; the card-settlement
   // attribution below does not depend on it (see settledLumps).
   accountName?: string;
+  // Optional identity/display fields, carried only so the
+  // settlement breakdown (settlementLinesForMonth below) can name
+  // the transactions behind a month's settled figure. Optional:
+  // older fixture datasets omit them; no total reads them.
+  id?: number;
+  description?: string;
+};
+
+/* One line of a month's settlement-basis breakdown: a single
+   attribution of money that left checking in that month to a
+   smoothed bill, produced by the same FIFO walk that builds
+   settledLumps / yearlyPaidOut, so a month's lines always foot
+   exactly to settledLumpsForMonth(month). Three kinds:
+   - "checking_bill": a smoothed bill paid straight from checking;
+     the transaction IS the settlement, so attributedCents and
+     transactionCents are the same amount.
+   - "card_payment": the portion of a checking card payment the
+     FIFO walk attributes to one outstanding card charge.
+     attributedCents can be smaller than transactionCents (the
+     payment's full amount) when the payment also settles other
+     charges or other spending, and smaller than chargeCents when
+     the payment settles only part of that charge — consumers
+     must show the attributed portion as the line's amount and
+     name the full payment / charge amounts as context, never
+     foot the full payment amount.
+   - "refund_reversal": the part of a card refund that exceeded
+     that bill's unsettled charges and so reverses a settlement
+     already counted in an earlier month; attributedCents is
+     negative and lands in the refund's own month. */
+export type CoreSettlementLine = {
+  date: string;
+  kind: "checking_bill" | "card_payment" | "refund_reversal";
+  // Display label of the underlying transaction (its description
+  // when the dataset carries one, else a generic label).
+  label: string;
+  billId: number | null;
+  billName: string | null;
+  attributedCents: number;
+  transactionCents: number;
+  chargeDate: string | null;
+  chargeLabel: string | null;
+  chargeCents: number | null;
 };
 
 export type CoreMonthlyBill = { id: number; keepLightsOn: number };
@@ -438,10 +480,28 @@ export function createSpendingCore<
      its figures are exactly the pre-v59 figures. */
   const settledByMonth = new Map<string, number>();
   const paidOutByMonth = new Map<string, number>();
+  // The same walk's per-attribution lines, grouped by settlement
+  // month in chronological order. Every addTo below that moves a
+  // month's settled total has exactly one matching line push with
+  // the same cents, so each month's lines foot to its total by
+  // construction.
+  const settlementLinesByMonth = new Map<string, CoreSettlementLine[]>();
   {
     const addTo = (map: Map<string, number>, m: string, cents: number) =>
       map.set(m, (map.get(m) ?? 0) + cents);
-    const outstanding: { expenseId: number; remaining: number }[] = [];
+    const billNameById = new Map(yearly.map((y) => [y.id, y.name]));
+    const addLine = (m: string, line: CoreSettlementLine) => {
+      const arr = settlementLinesByMonth.get(m) ?? [];
+      arr.push(line);
+      settlementLinesByMonth.set(m, arr);
+    };
+    const outstanding: {
+      expenseId: number;
+      remaining: number;
+      chargeDate: string;
+      chargeLabel: string | null;
+      chargeCents: number;
+    }[] = [];
     const chronological = [...txns].sort((a, b) =>
       a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
     );
@@ -451,11 +511,26 @@ export function createSpendingCore<
         if (t.sourceType === "checking") {
           addTo(settledByMonth, m, t.amountCents);
           addTo(paidOutByMonth, m, t.amountCents);
+          addLine(m, {
+            date: t.date,
+            kind: "checking_bill",
+            label: t.description ?? billNameById.get(t.yearlyExpenseId) ?? "Smoothed bill payment",
+            billId: t.yearlyExpenseId,
+            billName: billNameById.get(t.yearlyExpenseId) ?? null,
+            attributedCents: t.amountCents,
+            transactionCents: t.amountCents,
+            chargeDate: t.date,
+            chargeLabel: t.description ?? null,
+            chargeCents: t.amountCents,
+          });
         } else if (t.sourceType === "card") {
           if (t.amountCents > 0) {
             outstanding.push({
               expenseId: t.yearlyExpenseId,
               remaining: t.amountCents,
+              chargeDate: t.date,
+              chargeLabel: t.description ?? null,
+              chargeCents: t.amountCents,
             });
           } else if (t.amountCents < 0) {
             let refund = -t.amountCents;
@@ -471,6 +546,18 @@ export function createSpendingCore<
             if (refund > 0) {
               addTo(settledByMonth, m, -refund);
               addTo(paidOutByMonth, m, -refund);
+              addLine(m, {
+                date: t.date,
+                kind: "refund_reversal",
+                label: t.description ?? billNameById.get(t.yearlyExpenseId) ?? "Card refund",
+                billId: t.yearlyExpenseId,
+                billName: billNameById.get(t.yearlyExpenseId) ?? null,
+                attributedCents: -refund,
+                transactionCents: t.amountCents,
+                chargeDate: null,
+                chargeLabel: null,
+                chargeCents: null,
+              });
             }
           }
         }
@@ -485,6 +572,18 @@ export function createSpendingCore<
           remaining -= take;
           addTo(settledByMonth, m, take);
           addTo(paidOutByMonth, m, take);
+          addLine(m, {
+            date: t.date,
+            kind: "card_payment",
+            label: t.description ?? "Card payment",
+            billId: o.expenseId,
+            billName: billNameById.get(o.expenseId) ?? null,
+            attributedCents: take,
+            transactionCents: t.amountCents,
+            chargeDate: o.chargeDate,
+            chargeLabel: o.chargeLabel,
+            chargeCents: o.chargeCents,
+          });
         }
       }
     }
@@ -493,6 +592,8 @@ export function createSpendingCore<
     settledByMonth.get(m) ?? 0;
   const yearlyPaidOutForMonth = (m: string): number =>
     paidOutByMonth.get(m) ?? 0;
+  const settlementLinesForMonth = (m: string): CoreSettlementLine[] =>
+    settlementLinesByMonth.get(m) ?? [];
 
   const summaryByMonth = new Map(
     summaries.map((s) => [s.month, s.cashOutCents]),
@@ -839,6 +940,7 @@ export function createSpendingCore<
     recordedPaymentsAfter,
     settledLumpsForMonth,
     yearlyPaidOutForMonth,
+    settlementLinesForMonth,
   };
 }
 

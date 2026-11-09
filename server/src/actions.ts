@@ -6419,7 +6419,7 @@ const ACTION_PURPOSES: Record<string, string> = {
   getDashboard: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles. restoreEpoch (build v121) is the dataset's current restore generation — the epoch base the spending editors and deletes pass back as baseEpoch, so a view that predates a backup restore is refused.",
   getYearView: "One calendar year's spending: monthly true cost and cash out, totals, and the year's bills.",
   getExplorer: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range. Each grouped row also carries its drill-down members — the individual bills in the group on the same month columns, or, for the Other spending row, its three composition parts (cash out, monthly bills, yearly bills paid out) — which foot to the row per month.",
-  getExplorerMonthLines: "Slice & dice drill-down: the recorded lines behind one month's explorer figures, from the same spending core — cash-out lines on the month's own basis (cash-out items, the entered month total, or checking transactions), the monthly bills in effect that month, each yearly bill's set-aside, the settlement-basis yearly paid-out aggregate, and the month's one-offs. Read-only.",
+  getExplorerMonthLines: "Slice & dice drill-down: the recorded lines behind one month's explorer figures, from the same spending core — cash-out lines on the month's own basis (cash-out items, the entered month total, or checking transactions), the monthly bills in effect that month, each yearly bill's set-aside, the settlement-basis yearly paid-out total with its per-attribution breakdown lines (each line's amount is the portion attributed to one bill; a card-payment line also carries the payment's full amount and the charge it settles, so a partial or shared payment is never footed at its full amount), and the month's one-offs. Read-only.",
   addTransaction: "Record one spending transaction (checking or card).",
   updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (build v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
@@ -8611,11 +8611,18 @@ export const Actions = {
   // the month's cash-out items when it has any, the entered month
   // total when one was entered, otherwise the month's checking
   // transactions. Yearly bills paid out is the settlement-basis
-  // aggregate (money that left checking that month); the core
-  // attributes settlements across bills by FIFO matching, so no
-  // per-bill split of that figure exists and none is claimed.
+  // figure (money that left checking that month), and it now
+  // carries its per-attribution breakdown lines from the core's
+  // FIFO walk (settlementLinesForMonth): one line per bill a
+  // settlement is attributed to, at the attributed portion — a
+  // card payment that settles several bills, or only part of one
+  // charge, contributes one line per bill at its portion, with
+  // the payment's full amount and the charge's amount carried as
+  // context fields, never as the line amount — so the lines foot
+  // exactly to the paid-out total. (This is also the breakdown
+  // the dashboard's "Smoothed bills paid" tap opens.)
   getExplorerMonthLines: defineAction({
-    description: "Slice & dice drill-down: the recorded lines behind one month's explorer figures (cash-out lines, monthly bills in effect, yearly set-asides, one-offs).",
+    description: "Slice & dice drill-down: the recorded lines behind one month's explorer figures (cash-out lines, monthly bills in effect, yearly set-asides, settlement-basis paid-out lines, one-offs).",
     privileged: [privileged.ensureEncryptionKey],
     request: z.object({
       month: z.string().regex(monthRe),
@@ -8636,6 +8643,28 @@ export const Actions = {
         z.object({ label: z.string(), amountCents: z.number() }),
       ),
       yearlyPaidOutCents: z.number(),
+      // The paid-out total's settlement-basis breakdown lines, in
+      // chronological order: their amountCents sum to
+      // yearlyPaidOutCents exactly. kind is "checking_bill" (paid
+      // straight from checking; fullAmountCents equals the line
+      // amount), "card_payment" (fullAmountCents is the card
+      // payment's full amount and chargeCents the charge this
+      // portion settles — either can exceed the line's attributed
+      // amount), or "refund_reversal" (a negative line reversing
+      // part of an earlier settlement; fullAmountCents is the
+      // refund transaction's amount).
+      yearlyPaidOutLines: z.array(
+        z.object({
+          label: z.string(),
+          detail: z.string().nullable(),
+          amountCents: z.number(),
+          kind: z.enum(["checking_bill", "card_payment", "refund_reversal"]),
+          billName: z.string().nullable(),
+          date: z.string(),
+          fullAmountCents: z.number(),
+          chargeCents: z.number().nullable(),
+        }),
+      ),
       accrualCents: z.number(),
       accrualLines: z.array(
         z.object({ label: z.string(), amountCents: z.number() }),
@@ -8718,6 +8747,40 @@ export const Actions = {
         .filter((o) => o.month === m)
         .map((o) => ({ label: o.description, detail: o.note ?? null, amountCents: o.amountCents }));
 
+      // Settlement-basis breakdown of the paid-out total, from
+      // the core's FIFO walk: the detail names the bill each
+      // portion settles and, for a card charge, when the charge
+      // was recorded — the charge month is context only; the
+      // line counts in THIS month, when the money left checking.
+      const yearlyPaidOutLines = core.settlementLinesForMonth(m).map((l) => {
+        let detail: string;
+        if (l.kind === "checking_bill") {
+          detail =
+            `Paid from checking · ${dayLabel(l.date)}` +
+            (l.billName && l.billName !== l.label ? ` · ${l.billName}` : "");
+        } else if (l.kind === "card_payment") {
+          detail =
+            `Card payment · ${dayLabel(l.date)} · settles ${l.billName ?? "a smoothed bill"}` +
+            (l.chargeDate
+              ? ` — charged ${dayLabel(l.chargeDate)}${l.chargeLabel && l.chargeLabel !== l.label ? ` (${l.chargeLabel})` : ""}`
+              : "");
+        } else {
+          detail =
+            `Card refund · ${dayLabel(l.date)} · reverses part of an earlier settlement` +
+            (l.billName ? ` of ${l.billName}` : "");
+        }
+        return {
+          label: l.label,
+          detail,
+          amountCents: l.attributedCents,
+          kind: l.kind,
+          billName: l.billName,
+          date: l.date,
+          fullAmountCents: l.transactionCents,
+          chargeCents: l.chargeCents,
+        };
+      });
+
       return {
         month: m,
         cashOutCents: e.cashOut,
@@ -8726,6 +8789,7 @@ export const Actions = {
         monthlyTotalCents,
         monthlyBillLines,
         yearlyPaidOutCents,
+        yearlyPaidOutLines,
         accrualCents: e.accrual,
         accrualLines,
         trueCostCents: e.smoothed,

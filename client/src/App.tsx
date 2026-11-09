@@ -1066,6 +1066,42 @@ function csvMoney(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
+/* The settlement-basis lines behind one month's yearly
+   paid-out / smoothed-bills-paid figure, composed from the
+   month-lines read: each line's amount is the portion the
+   core's FIFO walk attributes to one bill, so the lines foot
+   to the figure exactly. A card payment's full amount (and the
+   charge's amount, when the payment settles only part of it)
+   is named in the detail as context — never as the line
+   amount. Shared by the explorer's yearly-paid-out drill and
+   the dashboard's Smoothed bills paid breakdown panel, so both
+   surfaces show the same lines for the same month. */
+function yearlyPaidOutDrillLines(ml: ExplorerMonthLinesData): DrillLine[] {
+  if (ml.yearlyPaidOutLines.length === 0) {
+    return [
+      {
+        label: "Yearly & periodic bills paid out",
+        detail: "counted in the month the money left checking — nothing settled this month",
+        amountCents: ml.yearlyPaidOutCents,
+      },
+    ];
+  }
+  return ml.yearlyPaidOutLines.map((l) => {
+    let detail = l.detail ?? "";
+    if (l.kind === "card_payment") {
+      const parts: string[] = [];
+      if (l.fullAmountCents !== l.amountCents) {
+        parts.push(`${fmt(l.amountCents)} of the ${fmt(l.fullAmountCents)} payment counts here`);
+      }
+      if (l.chargeCents != null && l.chargeCents !== l.amountCents) {
+        parts.push(`part of the ${fmt(l.chargeCents)} charge`);
+      }
+      if (parts.length > 0) detail = detail ? `${detail} · ${parts.join(" · ")}` : parts.join(" · ");
+    }
+    return { label: l.label, detail: detail || null, amountCents: l.amountCents };
+  });
+}
+
 /* The drill-down panel's line list: the lines behind one
    tapped number, footing to its total. */
 function DrillLines({ lines, totalCents }: { lines: DrillLine[]; totalCents: number }) {
@@ -1245,13 +1281,7 @@ function ExplorerModal({
       case "totalMonthly":
         return ml.monthlyBillLines.map((l) => ({ label: l.label, detail: "Monthly bill", amountCents: l.amountCents }));
       case "yearlyPaidOut":
-        return [
-          {
-            label: "Yearly & periodic bills paid out",
-            detail: "counted in the month the money left checking — a bill charged to a card counts when the card payment settles it",
-            amountCents: ml.yearlyPaidOutCents,
-          },
-        ];
+        return yearlyPaidOutDrillLines(ml);
       case "everythingElse":
         return [
           { label: "Cash out", detail: basisDetail, amountCents: ml.cashOutCents },
@@ -2782,6 +2812,7 @@ export function App() {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     queryClient.invalidateQueries({ queryKey: ["yearview"] });
+    queryClient.invalidateQueries({ queryKey: ["smoothedPaidBreakdown"] });
   };
 
   /* ---- Spending target (one source, multiple edit locations) ----
@@ -3294,8 +3325,38 @@ export function App() {
      month's transactions marked as a smoothed bill, with a
      notice and a way back to the full list. Session-local view
      state, cleared when the month changes. Display only — no
-     figure reads it. */
+     figure reads it. NOTE (round-9 SHOULD-2): the breakdown tap
+     no longer uses this filter — the figure it explains is on
+     the settlement basis, which this charge-month filter cannot
+     show; the tap opens the settlement breakdown panel below
+     instead. This state remains for the Transactions list's own
+     filtered rendering and is deliberately left as it is. */
   const [smoothedOnly, setSmoothedOnly] = useState(false);
+  /* Settlement-basis breakdown for "Smoothed bills paid this
+     month": opened by that line's tap in the Smoothed spend
+     breakdown. The figure counts a smoothed bill in the month
+     its money left checking (the settlement month) — a bill
+     charged to a card counts when the card payment settles it,
+     not in the charge month — so the breakdown is the month's
+     settlement lines from the same spending core (through
+     getExplorerMonthLines, the explorer drill-down's read),
+     footing exactly to the figure. Session-local view state,
+     cleared when the month changes. Display only — no figure
+     reads it. */
+  const [smoothedBreakdownOpen, setSmoothedBreakdownOpen] = useState(false);
+  const smoothedBreakdown = useQuery({
+    queryKey: ["smoothedPaidBreakdown", month],
+    queryFn: () => api.getExplorerMonthLines({ month }),
+    enabled: smoothedBreakdownOpen,
+    retry: retryReadOnlyLoad,
+    retryDelay: actionRetryDelay,
+  });
+  const smoothedBreakdownRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (smoothedBreakdownOpen) {
+      smoothedBreakdownRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [smoothedBreakdownOpen]);
   const [showExplorer, setShowExplorer] = useState(false);
   const [explorerGroupBy, setExplorerGroupBy] =
     useState<ExplorerGroupBy>("category");
@@ -3346,13 +3407,17 @@ export function App() {
   useEffect(() => {
     setRecordingYearlyId(null);
     setSmoothedOnly(false);
+    setSmoothedBreakdownOpen(false);
   }, [month]);
 
   const data = dash.data;
 
-  // The Transactions list as shown: the full month, or — after the
-  // Smoothed spend breakdown's smoothed-bills-paid tap — only the
-  // month's transactions marked as a smoothed bill.
+  // The Transactions list as shown: the full month, or — while
+  // the smoothedOnly filter is on — only the month's transactions
+  // marked as a smoothed bill. (The Smoothed spend breakdown's
+  // smoothed-bills-paid tap no longer drives this filter: the
+  // figure is settlement-basis, so the tap opens the settlement
+  // breakdown panel instead — see goToSmoothedBillsPaid.)
   const visibleMonthTransactions = smoothedOnly
     ? (data?.monthTransactions ?? []).filter((t) => t.yearlyExpenseId != null)
     : (data?.monthTransactions ?? []);
@@ -3436,9 +3501,14 @@ export function App() {
      sum of the month's cash-out items, which live there too);
      only the plain variant — where the figure derives from the
      month's transactions — goes to this month's Transactions list
-     (unfiltered). The smoothed-bills-paid line goes to the
-     Transactions list filtered to this month's smoothed-bill
-     payments. The set-aside line uses
+     (unfiltered). The smoothed-bills-paid line opens the
+     settlement-basis breakdown panel under the breakdown (below):
+     the figure counts money in the month it left checking, so a
+     charge-month filter of the Transactions list cannot show it —
+     a card charge sits in its charge month carrying the bill
+     link, while the checking card payment that settles it (the
+     transaction the figure actually counts) carries none. The
+     set-aside line uses
      scrollToSection("section-yearly-expenses") directly. */
   function goToCashOutSource() {
     if (data?.isSummaryMonth || data?.isItemsMonth) {
@@ -3450,8 +3520,7 @@ export function App() {
   }
 
   function goToSmoothedBillsPaid() {
-    setSmoothedOnly(true);
-    scrollToSection("section-transactions");
+    setSmoothedBreakdownOpen((open) => !open);
   }
 
   function scrollToQuickView() {
@@ -5483,7 +5552,9 @@ export function App() {
                     <dd>
                       <button
                         type="button"
-                        aria-label={`Go to smoothed-bill payments in Transactions for ${monthLabel(month)}`}
+                        aria-label={`Show the settlement breakdown for smoothed bills paid in ${monthLabel(month)}`}
+                        aria-expanded={smoothedBreakdownOpen}
+                        aria-controls="smoothed-bills-paid-breakdown"
                         className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
                         onClick={goToSmoothedBillsPaid}
                       >
@@ -5533,7 +5604,9 @@ export function App() {
                     <dd>
                       <button
                         type="button"
-                        aria-label={`Go to smoothed-bill payments in Transactions for ${monthLabel(month)}`}
+                        aria-label={`Show the settlement breakdown for smoothed bills paid in ${monthLabel(month)}`}
+                        aria-expanded={smoothedBreakdownOpen}
+                        aria-controls="smoothed-bills-paid-breakdown"
                         className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
                         onClick={goToSmoothedBillsPaid}
                       >
@@ -5563,6 +5636,59 @@ export function App() {
                     <dd>{fmt(data.smoothedCents)}</dd>
                   </div>
                 </dl>
+              )}
+              {smoothedBreakdownOpen && (
+                <div
+                  ref={smoothedBreakdownRef}
+                  id="smoothed-bills-paid-breakdown"
+                  className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="font-semibold">
+                      Smoothed bills paid — {monthLabel(month)}
+                    </h3>
+                    <button
+                      type="button"
+                      aria-label="Close smoothed bills paid breakdown"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-[var(--text)]"
+                      onClick={() => setSmoothedBreakdownOpen(false)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm text-[var(--dim)]">
+                    Counted in the month the money left checking: a bill
+                    paid straight from checking counts in its own month,
+                    and a bill charged to a card counts when the card
+                    payment settles it — not in the month the charge was
+                    recorded. Each line is the portion of a payment
+                    counted here; a payment&rsquo;s full amount is named
+                    in its line when only part of it counts.
+                  </p>
+                  {smoothedBreakdown.error ? (
+                    <p className="mt-2 text-sm text-[var(--bad)]">
+                      Something went wrong loading the breakdown. Try again.
+                    </p>
+                  ) : !smoothedBreakdown.data || smoothedBreakdown.data.month !== month ? (
+                    <p className="mt-2 text-sm text-[var(--dim)]">Loading…</p>
+                  ) : smoothedBreakdown.data.yearlyPaidOutLines.length === 0 ? (
+                    <>
+                      <p className="mt-2 text-sm text-[var(--dim)]">
+                        No smoothed bill settled in {monthLabel(month)} —
+                        nothing left checking for one this month.
+                      </p>
+                      <DrillLines
+                        lines={[]}
+                        totalCents={smoothedBreakdown.data.yearlyPaidOutCents}
+                      />
+                    </>
+                  ) : (
+                    <DrillLines
+                      lines={yearlyPaidOutDrillLines(smoothedBreakdown.data)}
+                      totalCents={smoothedBreakdown.data.yearlyPaidOutCents}
+                    />
+                  )}
+                </div>
               )}
               <div className="tnum mt-4 flex flex-wrap items-start justify-between gap-2 border-t border-[var(--border)] pt-3">
                 <div className="min-w-0">
@@ -7017,10 +7143,15 @@ export function App() {
               {smoothedOnly && (
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--accent-soft)] px-3 py-2 text-sm">
                   <p>
-                    Showing smoothed-bill payments for {monthLabel(month)} only
-                    — {visibleMonthTransactions.length} of{" "}
+                    Showing transactions marked as a smoothed bill in{" "}
+                    {monthLabel(month)} — recorded in this month, in the
+                    month the charge or payment was recorded —{" "}
+                    {visibleMonthTransactions.length} of{" "}
                     {data.monthTransactions.length} transaction
-                    {data.monthTransactions.length === 1 ? "" : "s"}.
+                    {data.monthTransactions.length === 1 ? "" : "s"}. The
+                    Smoothed bills paid figure itself counts the month the
+                    money left checking; its breakdown sits under the
+                    Smoothed spend breakdown above.
                   </p>
                   <button
                     type="button"

@@ -1639,6 +1639,74 @@ export const EXTENDED_FIXTURES: ExtendedFixtureCase[] = [
     },
   },
   {
+    id: "sp-settlement-breakdown-lines",
+    kind: "spending",
+    note: "Settlement-basis breakdown lines (ChatGPT round-9 SHOULD-2): the same FIFO walk that totals settledLumps also yields one line per attribution, and each month's lines foot exactly to that month's settled total. Dataset: three card charges land in January; in February one card payment settles the two oldest charges in full and part of the third (oldest first) — each of its lines carries the attributed portion beside the payment's full amount, which is larger than every portion; a fourth bill paid straight from checking in February is its own line at its full amount; a March card refund on the first bill, already fully settled, reverses part of its settlement in March; a March card payment settles more of the third bill's January charge; and an April card payment settles the rest of that charge, counting only the remaining portion of the payment, not its full amount. January — the charge month — has NO lines and a zero settled total, so a charge is never presented as paid in its charge month.",
+    expected: {
+      janLines: 0, janSum: 0, janSettled: 0,
+      febLines: 4, febSum: 112000, febSettled: 112000,
+      febFirstKind: 1, febFirstAttr: 12000, febFirstFull: 12000,
+      febSecondKind: 2, febSecondAttr: 60000, febSecondFull: 100000, febSecondCharge: 60000,
+      febThirdAttr: 30000, febThirdFull: 100000,
+      febFourthAttr: 10000, febFourthFull: 100000, febFourthCharge: 50000,
+      marLines: 2, marSum: 12500, marSettled: 12500,
+      marFirstKind: 3, marFirstAttr: -7500,
+      marSecondAttr: 20000, marSecondFull: 20000, marSecondCharge: 50000,
+      aprLines: 1, aprSum: 20000, aprSettled: 20000, aprFirstAttr: 20000, aprFirstFull: 30000,
+    },
+    actual: () => {
+      const bills: CoreYearlyBillNamed[] = [
+        { id: 1, name: "SettleA", frequency: "yearly", expectedCents: 60000, dueMonth: 1, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+        { id: 2, name: "SettleB", frequency: "yearly", expectedCents: 30000, dueMonth: 1, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+        { id: 3, name: "SettleC", frequency: "yearly", expectedCents: 50000, dueMonth: 1, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+        { id: 4, name: "SettleD", frequency: "yearly", expectedCents: 12000, dueMonth: 2, backfillBeforeFirstVersion: 0, keepLightsOn: 0 },
+      ];
+      const txns: CoreTxn[] = [
+        { date: "2026-01-10", kind: "spending", sourceType: "card", amountCents: 60000, yearlyExpenseId: 1, description: "Charge A" },
+        { date: "2026-01-12", kind: "spending", sourceType: "card", amountCents: 30000, yearlyExpenseId: 2, description: "Charge B" },
+        { date: "2026-01-20", kind: "spending", sourceType: "card", amountCents: 50000, yearlyExpenseId: 3, description: "Charge C" },
+        { date: "2026-02-05", kind: "spending", sourceType: "checking", amountCents: 12000, yearlyExpenseId: 4, description: "Direct D" },
+        { date: "2026-02-15", kind: "card_payment", sourceType: "checking", amountCents: 100000, yearlyExpenseId: null, description: "Card payment" },
+        { date: "2026-03-05", kind: "spending", sourceType: "card", amountCents: -7500, yearlyExpenseId: 1, description: "Refund A" },
+        { date: "2026-03-10", kind: "card_payment", sourceType: "checking", amountCents: 20000, yearlyExpenseId: null, description: "Card payment" },
+        { date: "2026-04-10", kind: "card_payment", sourceType: "checking", amountCents: 30000, yearlyExpenseId: null, description: "Card payment" },
+      ];
+      const c = createSpendingCore({
+        txns,
+        yearly: bills,
+        yearlyVersions: [],
+        summaries: [],
+        cashOutItems: [],
+        bills: [],
+        billVersions: [],
+        oneOffs: [],
+        openingReserveCents: 0,
+        reserveStartSetting: null,
+      });
+      const kindCode = (k: string | undefined): number =>
+        k === "checking_bill" ? 1 : k === "card_payment" ? 2 : k === "refund_reversal" ? 3 : 0;
+      const sum = (m: string) =>
+        c.settlementLinesForMonth(m).reduce((s, l) => s + l.attributedCents, 0);
+      const jan = c.settlementLinesForMonth("2026-01");
+      const feb = c.settlementLinesForMonth("2026-02");
+      const mar = c.settlementLinesForMonth("2026-03");
+      const apr = c.settlementLinesForMonth("2026-04");
+      return {
+        janLines: jan.length, janSum: sum("2026-01"), janSettled: c.settledLumpsForMonth("2026-01"),
+        febLines: feb.length, febSum: sum("2026-02"), febSettled: c.settledLumpsForMonth("2026-02"),
+        febFirstKind: kindCode(feb[0]?.kind), febFirstAttr: feb[0]?.attributedCents ?? null, febFirstFull: feb[0]?.transactionCents ?? null,
+        febSecondKind: kindCode(feb[1]?.kind), febSecondAttr: feb[1]?.attributedCents ?? null, febSecondFull: feb[1]?.transactionCents ?? null, febSecondCharge: feb[1]?.chargeCents ?? null,
+        febThirdAttr: feb[2]?.attributedCents ?? null, febThirdFull: feb[2]?.transactionCents ?? null,
+        febFourthAttr: feb[3]?.attributedCents ?? null, febFourthFull: feb[3]?.transactionCents ?? null, febFourthCharge: feb[3]?.chargeCents ?? null,
+        marLines: mar.length, marSum: sum("2026-03"), marSettled: c.settledLumpsForMonth("2026-03"),
+        marFirstKind: kindCode(mar[0]?.kind), marFirstAttr: mar[0]?.attributedCents ?? null,
+        marSecondAttr: mar[1]?.attributedCents ?? null, marSecondFull: mar[1]?.transactionCents ?? null, marSecondCharge: mar[1]?.chargeCents ?? null,
+        aprLines: apr.length, aprSum: sum("2026-04"), aprSettled: c.settledLumpsForMonth("2026-04"),
+        aprFirstAttr: apr[0]?.attributedCents ?? null, aprFirstFull: apr[0]?.transactionCents ?? null,
+      };
+    },
+  },
+  {
     id: "sp-late-start-bill-zero-before-start",
     kind: "spending",
     note: "LateStart's only version starts Mar 2025: it contributes $0 in Feb (annualised still $4,800.00) and its full $2,400.00/yr from Mar (total $7,200.00, set-aside $600.00, its own set-aside $200.00).",
