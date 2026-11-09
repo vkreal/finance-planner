@@ -1925,19 +1925,28 @@ export function Playground({
      fill chip — a bracket pct (10/12/22/24) or "aca" for the
      ACA cliff chip (null until a chip is tapped this session).
      While pgHoldOn && pgHeldTarget != null, any change to
-     another dial re-solves the conversion for that target (see
-     the hold effect below) so the year stays on the bracket top
-     or on the ACA cliff − buffer (Hold's "aca" target IS
-     cliff − buffer, build v71). Typing in the conversion dial releases
-     the hold (pgHoldOn off; the target is kept as the
-     last-tapped target, so toggling Hold back on resumes it);
-     switching Hold off also releases while keeping the target.
+     another dial re-solves the pre-tax money out for that
+     target (see the hold effect below) so the year stays on
+     the bracket top or on the ACA cliff − buffer (Hold's
+     "aca" target IS cliff − buffer, build v71). The conversion
+     is the solved dial first; when the typed draw ALONE
+     already runs past the target, so no conversion can land
+     the year on it, Hold solves the DRAW down instead (the
+     total money out lands on the target with the conversion
+     at $0) — pgHoldDrawSolved records that the draw is the
+     dial Hold is currently solving, for the draw dial's
+     "Auto" hint. Typing in the conversion dial OR the draw
+     dial releases the hold (pgHoldOn off; the target is kept
+     as the last-tapped target, so toggling Hold back on
+     resumes it); switching Hold off also releases while
+     keeping the target.
      Loading a projected year from the chart does NOT release
      it — the loaded dials re-solve against the held target,
      like any other dial change. Reset / prefill / a successful
      paste-load clear BOTH. */
   const [pgHoldOn, setPgHoldOn] = useState(false);
   const [pgHeldTarget, setPgHeldTarget] = useState<PgHeldTarget | null>(null);
+  const [pgHoldDrawSolved, setPgHoldDrawSolved] = useState(false);
   /* Projection controls — remembered with the rest of the
      form, like every other playground dial. Blank override
      dials (return, claiming ages and amounts, ACA step-down,
@@ -3598,6 +3607,9 @@ export function Playground({
   // captions read their overage from it (display arithmetic
   // only, through the same pricePlaygroundYear the readout
   // uses). Null until an age is entered, like the readout.
+  // NOTE: this pricing zeroes only the CONVERSION — the typed
+  // draw still counts in it, so it is NOT a "no money out"
+  // pricing (see pgZeroOutResult below).
   const pgZeroResult: PlaygroundYearResult | null = useMemo(() => {
     if (pgAgePNum == null || pgAgePNum <= 0) return null;
     return pricePlaygroundYear(buildPgInputs(0));
@@ -3605,6 +3617,29 @@ export function Playground({
   }, [
     pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
     pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS, pgSpendingDraw,
+    pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
+    pgBenchmark, pgHealthAca, pgHealthMedicare, pgIrmaaPayable, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
+    pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
+    pgSpendingCents, pgPastedSpending, pgPastedHarvest, pgPrefillSource,
+  ]);
+
+  // Zero-MONEY-OUT pricing of the same dials — conversion $0
+  // AND draw $0. The can't-hold captions read their overage
+  // from THIS pricing, so "past the target without any
+  // pre-tax money out" is measured with no money out at all:
+  // pgZeroResult zeroes only the conversion and still counts
+  // the typed draw, which is how the stale caption came to
+  // say "without any pre-tax money out" while the draw was
+  // inside its MAGI. Display arithmetic only, through the
+  // same pricePlaygroundYear. pgSpendingDraw is deliberately
+  // NOT a memo key — the pricing overrides it to $0.
+  const pgZeroOutResult: PlaygroundYearResult | null = useMemo(() => {
+    if (pgAgePNum == null || pgAgePNum <= 0) return null;
+    return pricePlaygroundYear({ ...buildPgInputs(0), spendingDraw: 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    pgYear, pgFiling, pgAgePNum, pgAgeSNum, pgMedPEffective, pgMedSEffective,
+    pgInterest, pgOrdDiv, pgOther, pgTaxExempt, pgSsP, pgSsS,
     pgSold, pgBasis, pgQualDiv, pgPretax, pgPretaxSpouse, pgSoleBeneficiary, pgPrimarySoleBeneficiaryOfSpouse, pgAcaSize,
     pgBenchmark, pgHealthAca, pgHealthMedicare, pgIrmaaPayable, pgAptcTaken, pgCoverageReduction, pgCarryInSt, pgCarryInLt, pgCarryInStWa, pgCarryInLtWa, pgRmdReceived, pgDependentMagi, pgCashDraw, pgRothDraw, pgYieldReinvested, pgStateRate, pgResidence,
     pgItemizedMortgage, pgItemizedSalt, pgItemizedCharitable, pgItemizedOther, pgEduStudents,
@@ -3683,44 +3718,167 @@ export function Playground({
   /* Hold-the-fill effect: while Hold is on and a target is
      set, ANY change to any other dial (every input that feeds
      buildPgInputs except the conversion itself) re-solves the
-     conversion for the held target and updates the conversion
-     dial, so the year stays on that bracket top — or, for the
-     ACA target, ACA MAGI stays on cliff − buffer (Hold's
-     "aca" target IS cliff − buffer, build v71; the buffer
-     dial is a trigger too, so editing the buffer while Hold
-     is on re-solves to the new line) — and the
+     pre-tax money out for the held target, so the year stays
+     on that bracket top — or, for the ACA target, ACA MAGI
+     stays on cliff − buffer (Hold's "aca" target IS
+     cliff − buffer, build v71; the buffer dial is a trigger
+     too, so editing the buffer while Hold is on re-solves to
+     the new line) — and the
      stacking chart below re-renders from the same priced
-     result, so the conversion segment's end stays glued to the
-     held line. The solve is
+     result, so the money-out segment's end stays glued to the
+     held line. The solve runs in two phases over the SAME
+     engine solvers the fill chips use (the tax pricing cannot
+     tell the two money-out dials apart — it prices their sum):
+     phase 1 solves the CONVERSION with the draw as typed,
+     exactly as Hold always has. Phase 2 engages only when
+     phase 1 cannot land the year on the target because the
+     typed DRAW alone (with the conversion at $0) already runs
+     past it, while the year with NO money out at all still has
+     room: the draw is then solved down to the total money out
+     that lands on the target (solved with the draw zeroed)
+     and the conversion is held at $0 — Hold governs the total
+     money out, not just the conversion. When the year's other
+     income alone is already past the target there is no
+     landing for any money out, so phase 2 never engages and
+     the draw stands as typed (the can't-hold caption below
+     says why). The solve is
      idempotent: solving an already-solved state returns the
-     same value, and the effect only writes state when the
+     same values, and the effect only writes a dial when the
      solved value differs (by more than half a cent) from the
      dial's current value, so it cannot loop. Typing in the
-     conversion dial releases the hold first (its onEdit), so
-     this effect never fights a manual entry. */
+     conversion dial or the draw dial releases the hold first
+     (their onEdit), so this effect never fights a manual
+     entry. */
   useEffect(() => {
-    if (!pgHoldOn || pgHeldTarget == null) return;
+    if (!pgHoldOn || pgHeldTarget == null) {
+      setPgHoldDrawSolved(false);
+      return;
+    }
     if (pgAgePNum == null || pgAgePNum <= 0) return;
     // The held target picks the solver: a bracket pct re-solves
     // to that bracket top (unbuffered); "aca" re-solves to
     // cliff − buffer (a null cliff solve — the year no longer
-    // has a hard cliff — leaves the dial exactly as it stands).
-    let fill: number | null;
-    if (pgHeldTarget === "aca") {
-      fill = solvePlaygroundAcaCliffFill(buildPgInputs(0), pgAcaBufferDollars);
-    } else {
-      fill = solvePlaygroundBracketFill(buildPgInputs(0), pgHeldTarget);
+    // has a hard cliff — leaves the dials exactly as they stand).
+    const solveFor = (inp: PlaygroundYearInputs): number | null =>
+      pgHeldTarget === "aca"
+        ? solvePlaygroundAcaCliffFill(inp, pgAcaBufferDollars)
+        : solvePlaygroundBracketFill(inp, pgHeldTarget);
+    // Past-the-target test on a priced year, in the same
+    // measure the can't-hold captions use: ACA MAGI past
+    // cliff − buffer, or ordinary taxable income past the
+    // bracket top.
+    const pastTarget = (r: PlaygroundYearResult): boolean => {
+      if (pgHeldTarget === "aca") {
+        return (
+          r.aca.cliff != null &&
+          r.acaMagi > r.aca.cliff - pgAcaBufferDollars + 0.005
+        );
+      }
+      const law = lawForYear(parseIntField(pgYear) ?? new Date().getFullYear());
+      const idx = law.rates.indexOf(pgHeldTarget);
+      if (idx < 0) return false;
+      const top = law.brackets[pgFiling][idx];
+      return (
+        top != null &&
+        Number.isFinite(top) &&
+        r.ordinaryTaxableIncome > top + 0.005
+      );
+    };
+    // On-the-target test on a priced year, in the same
+    // measures: the landing sits within a dime UNDER the
+    // target (a solver landing is exact to the cent in the
+    // slope-1 case and within the search step where the §86
+    // phase-in steepens the slope — never dollars under, as
+    // a balance-capped landing is). It distinguishes "the
+    // draw already sits at the value Hold solved it to" from
+    // "capped short of the target" on the re-run a phase-2
+    // draw write triggers.
+    const onTarget = (r: PlaygroundYearResult): boolean => {
+      if (pgHeldTarget === "aca") {
+        if (r.aca.cliff == null) return false;
+        const gap = r.aca.cliff - pgAcaBufferDollars - r.acaMagi;
+        return gap >= -0.005 && gap <= 0.1;
+      }
+      const law = lawForYear(parseIntField(pgYear) ?? new Date().getFullYear());
+      const idx = law.rates.indexOf(pgHeldTarget);
+      if (idx < 0) return false;
+      const top = law.brackets[pgFiling][idx];
+      if (top == null || !Number.isFinite(top)) return false;
+      const gap = top - r.ordinaryTaxableIncome;
+      return gap >= -0.005 && gap <= 0.1;
+    };
+    const drawNow = Math.max(0, parseDollars(pgSpendingDraw) ?? 0);
+    const fill = solveFor(buildPgInputs(0));
+    if (fill == null) {
+      setPgHoldDrawSolved(false);
+      return;
     }
-    if (fill == null) return;
-    const current = parseDollars(pgConversion) ?? 0;
-    if (Math.abs(current - fill) > 0.005) {
-      setPgConversion(fmtMoneyInput(fill));
+    let drawFill: number | null = null;
+    let drawAlreadySolved = false;
+    if (fill <= 0.005 && drawNow > 0) {
+      // Phase 2 check: at the phase-1 solve (conversion $0,
+      // draw as typed) the year is still past the target, but
+      // with NO money out at all it is not — the overshoot is
+      // the draw's, and cutting the draw lands the year
+      // exactly on the target. OR the draw already sits at
+      // the solved value: this run was re-triggered by the
+      // phase-2 write itself (the draw dial is a trigger), the
+      // year sits exactly on the target with the conversion
+      // at $0, and the draw IS the dial Hold is solving — the
+      // flag must stay set, not fall through to the phase-1
+      // reset below.
+      const atSolved = pricePlaygroundYear({
+        ...buildPgInputs(0),
+        conversion: fill,
+      });
+      const atZeroOut = pricePlaygroundYear({
+        ...buildPgInputs(0),
+        spendingDraw: 0,
+      });
+      if (!pastTarget(atZeroOut)) {
+        const total = solveFor({ ...buildPgInputs(0), spendingDraw: 0 });
+        if (total != null) {
+          if (total < drawNow - 0.005 && pastTarget(atSolved)) {
+            drawFill = total;
+          } else if (
+            Math.abs(total - drawNow) <= 0.005 &&
+            Math.abs(parseDollars(pgConversion) ?? 0) <= 0.005 &&
+            onTarget(atSolved)
+          ) {
+            drawAlreadySolved = true;
+          }
+        }
+      }
+    }
+    if (drawFill != null) {
+      // Phase 2: the draw carries the whole solved money out;
+      // the conversion is held at $0.
+      const convNow = parseDollars(pgConversion) ?? 0;
+      if (Math.abs(convNow) > 0.005) {
+        setPgConversion(fmtMoneyInput(0));
+      }
+      if (Math.abs(drawNow - drawFill) > 0.005) {
+        setPgSpendingDraw(fmtMoneyInput(drawFill));
+      }
+      setPgHoldDrawSolved(true);
+    } else if (drawAlreadySolved) {
+      setPgHoldDrawSolved(true);
+    } else {
+      // Phase 1: the conversion solve, exactly as before.
+      const current = parseDollars(pgConversion) ?? 0;
+      if (Math.abs(current - fill) > 0.005) {
+        setPgConversion(fmtMoneyInput(fill));
+      }
+      setPgHoldDrawSolved(false);
     }
     // buildPgInputs is rebuilt every render from the dial state
     // listed below; pgConversion is read for the idempotence
     // guard but deliberately NOT a trigger — a solver write
     // must not re-trigger the solve (the guard would stop it,
-    // but there is nothing new to solve). pgAcaBuffer IS a
+    // but there is nothing new to solve). pgSpendingDraw IS a
+    // trigger: a phase-2 write re-runs the solve, which then
+    // finds the draw already at the solved value and writes
+    // nothing. pgAcaBuffer IS a
     // trigger (build v71): Hold's "aca" target is
     // cliff − buffer, so a buffer edit re-solves; for a
     // bracket target the extra solve is idempotent and the
@@ -5113,21 +5271,25 @@ export function Playground({
   };
 
   /* Hold captions — display arithmetic ONLY, from the priced
-     results above (the current-conversion readout and the
-     zero-conversion pricing), never a second calculator. The
+     results above (the current-dials readout and the
+     zero-money-out pricing), never a second calculator. The
      can't-hold captions render only while Hold is on with a
      target set, under the fill chips row, and they are mutually
-     exclusive: past-the-target requires the zero-conversion
-     pricing to already exceed the target (ordinary taxable
+     exclusive: past-the-target requires the zero-MONEY-OUT
+     pricing (conversion $0 AND draw $0 — pgZeroOutResult) to
+     already exceed the target (ordinary taxable
      income past the bracket top, or ACA MAGI past the cliff),
      while balance-capped requires it to be under the target
-     with the held conversion sitting exactly at the balance
+     with the held money out sitting exactly at the balance
      cap (balance − RMD) — its shortfall measured to the same
      target (bracket top, or the ACA target — cliff − buffer —
      minus the priced ACA MAGI). A typed
      $0 balance with income under the target lands in the capped
      case (cap $0); with no balance typed, a $0 fill from
-     income alone is the past-the-target case. */
+     income alone is the past-the-target case. A year past the
+     target only because of the typed DRAW is NOT a can't-hold
+     case anymore: Hold solves the draw down to the target
+     (see the hold effect), so no caption fires for it. */
   const pgHoldActive = pgHoldOn && pgHeldTarget != null;
   /* ACA cliff availability — the SAME applicability rule the
      chip, its disabled note, the can't-hold captions, and the
@@ -5186,25 +5348,30 @@ export function Playground({
   })();
   const pgHoldCantCaption: string | null = (() => {
     if (!pgHoldActive || pgHeldTarget == null) return null;
-    if (playgroundResult == null || pgZeroResult == null) return null;
+    if (playgroundResult == null || pgZeroResult == null || pgZeroOutResult == null) return null;
     if (pgHeldTarget === "aca") {
       // The ACA can't-hold captions mirror the bracket ones:
-      // the overage comes from the zero-pre-tax pricing, and
+      // the overage comes from the zero-MONEY-OUT pricing
+      // (conversion $0 and draw $0), and
       // the cap is the typed balance after the RMD, as today.
       // Both are measured against the held target —
       // cliff − buffer (build v71) — so a year already
-      // past the buffer line at $0 out, or capped short of
+      // past the buffer line with nothing taken out at all,
+      // or capped short of
       // it, says so; with a $0 buffer the target is the
-      // cliff and the captions read exactly as before.
+      // cliff and the captions read exactly as before. A year
+      // past the line only because of the typed draw gets NO
+      // caption: Hold solves the draw down to the line (see
+      // the hold effect), so there is nothing it can't hold.
       if (!pgAcaHasHardCliff) return null;
       const cliff = pgZeroResult.aca.cliff;
       if (cliff == null) return null;
       const target = cliff - pgAcaBufferDollars;
-      const zeroAca = pgZeroResult.acaMagi;
+      const zeroAca = pgZeroOutResult.acaMagi;
       if (zeroAca > target + 0.005) {
         return pgAcaBufferDollars > 0
-          ? `Already past ${pgAcaTargetPhrase} without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - target)} over that line.`
-          : `Already past the ACA cliff without any pre-tax money out — held at $0, still ${fmtDollars(zeroAca - target)} over the ACA cliff.`;
+          ? `Already past ${pgAcaTargetPhrase} without any pre-tax money out — the year's other income alone is ${fmtDollars(zeroAca - target)} over that line, so Hold has no money out to solve.`
+          : `Already past the ACA cliff without any pre-tax money out — the year's other income alone is ${fmtDollars(zeroAca - target)} over the ACA cliff, so Hold has no money out to solve.`;
       }
       /* The combined balance caps the fill: the money out can
          come from either spouse's account, and the RMD it is
@@ -5234,9 +5401,9 @@ export function Playground({
     }
     if (pgHeldTopDollars == null) return null;
     const top = pgHeldTopDollars;
-    const zeroOrd = pgZeroResult.ordinaryTaxableIncome;
+    const zeroOrd = pgZeroOutResult.ordinaryTaxableIncome;
     if (zeroOrd > top + 0.005) {
-      return `Already past the ${pgHeldTarget}% top without any pre-tax money out — held at $0, still ${fmtDollars(zeroOrd - top)} over.`;
+      return `Already past the ${pgHeldTarget}% top without any pre-tax money out — the year's other income alone is ${fmtDollars(zeroOrd - top)} over, so Hold has no money out to solve.`;
     }
     /* The combined balance caps the fill (see the ACA fill
        above — the money out can come from either spouse's
@@ -6494,8 +6661,22 @@ export function Playground({
             <>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {moneyField("Pre-tax draw for spending", pgSpendingDraw, setPgSpendingDraw, {
-              hint: "Money taken out of the pre-tax account to spend this year. It is taxed the same as a conversion — and, unlike one, it is cash in hand, so it counts toward the year's cash left below.",
+              hint: pgHoldActive && pgHoldDrawSolved && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
+                ? pgHeldTarget === "aca"
+                  ? pgHeldCliffDollars != null
+                    ? `Auto — Hold solved the draw down so the money out stays at ${pgAcaTargetPhrase} — ${fmtDollars(pgHeldCliffDollars)}`
+                    : "Auto — Hold solved the draw down so the money out stays at the ACA cliff"
+                  : `Auto — Hold solved the draw down so the money out stays at the ${pgHeldTarget}% top`
+                : "Money taken out of the pre-tax account to spend this year. It is taxed the same as a conversion — and, unlike one, it is cash in hand, so it counts toward the year's cash left below.",
               info: "A distribution from your traditional IRA / 401(k) taken out to spend this year. The full amount counts as ordinary income, and because the cash is in hand it also counts in the year's cash in. A conversion moves the money to your Roth instead — the same income, but no cash in hand.",
+              onEdit: () => {
+                // Typing in the draw dial releases the hold,
+                // exactly like typing in the conversion dial —
+                // the typed value stands. (Programmatic writes
+                // from the hold effect call setPgSpendingDraw
+                // directly and never land here.)
+                if (pgHoldOn) setPgHoldOn(false);
+              },
             })}
             {moneyField("Conversion to Roth", pgConversion, setPgConversion, {
               hint: pgHoldActive && pgHeldTarget != null && (pgHeldTarget !== "aca" || pgAcaHasHardCliff)
@@ -6575,8 +6756,8 @@ export function Playground({
               <InfoNote
                 text={
                   pgAcaBufferDollars > 0
-                    ? `With Hold on, changing any other dial re-solves the conversion so the year stays on the tapped target — a bracket top or the ACA cliff − ${fmtDollars(pgAcaBufferDollars)} buffer (the buffer set in ACA & state below; editing the buffer re-solves too). Typing an amount yourself, or switching Hold off, releases it.`
-                    : "With Hold on, changing any other dial re-solves the conversion so the year stays on the tapped target — a bracket top or the ACA cliff (the ACA target is the cliff minus the buffer set in ACA & state below, currently $0). Typing an amount yourself, or switching Hold off, releases it."
+                    ? `With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff − ${fmtDollars(pgAcaBufferDollars)} buffer (the buffer set in ACA & state below; editing the buffer re-solves too). The conversion is solved first; if the draw alone would still run past the target, Hold solves the draw down too, so the total money out lands on the target. Typing in the conversion or draw dial yourself, or switching Hold off, releases it.`
+                    : "With Hold on, changing any other dial re-solves the pre-tax money out so the year stays on the tapped target — a bracket top or the ACA cliff (the ACA target is the cliff minus the buffer set in ACA & state below, currently $0). The conversion is solved first; if the draw alone would still run past the target, Hold solves the draw down too, so the total money out lands on the target. Typing in the conversion or draw dial yourself, or switching Hold off, releases it."
                 }
                 ariaLabel="About hold the fill"
               />
