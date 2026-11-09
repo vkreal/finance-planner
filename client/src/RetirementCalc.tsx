@@ -3772,10 +3772,11 @@ export function RetirementCalc({
      lists: a Net Worth-following portfolio already has the 529
      exclusion applied, a typed value is used as-is), the extra
      income exactly as entered (blank / $0 reads "no extra
-     income"), and the outcome tail from the Projection result
-     above (its ending balance and the age it reaches $0 — the
-     same figures the Projection tab's "Money lasts to" tile
-     shows). Because it reads the live inputs, it always
+     income"). (The sentence once ended with an outcome tail
+     from the Projection result — "→ money lasts past age …";
+     that clause was cut on 2026-11-09 because the verdict
+     headline directly above it in the panel already states
+     the outcome.) Because it reads the live inputs, it always
      describes the current (possibly edited) inputs, and it
      renders nothing while the inputs are invalid, when there is
      no Projection result to state truthfully. Spending names its
@@ -3790,8 +3791,7 @@ export function RetirementCalc({
      + flash, via jumpToRcField), unfolding the inputs panel
      first if it is folded shut. The fields below stay editable
      in place (build v140, one source with multiple edit
-     locations); the sentence itself edits nothing. The outcome
-     clause is a solver result and stays plain text. The
+     locations); the sentence itself edits nothing. The
      extra-income taps only exist while the extra-income inputs
      are shown — otherwise the sentence reads "no extra income"
      as before. Mapping correction, recorded plainly: the
@@ -3901,15 +3901,6 @@ export function RetirementCalc({
     ) : (
       "no extra income"
     );
-    const outcomePart = !projection.hasRetiredYears
-      ? "no retired years in this projection were priced"
-      : projection.neverRunsOut
-        ? projection.ending > 0
-          ? `money lasts past age ${inputs.endAge}`
-          : `money lasts to age ${inputs.endAge}`
-        : projection.shortfallAge != null
-          ? `money runs out at age ${projection.shortfallAge}`
-          : `money runs out by age ${inputs.endAge}`;
     return (
       <>
         Retire at{" "}
@@ -3939,7 +3930,7 @@ export function RetirementCalc({
         >
           {stocksPct}
         </button>
-        /{bondsPct} · {incomePart} → {outcomePart}.
+        /{bondsPct} · {incomePart}.
       </>
     );
   })();
@@ -3989,21 +3980,26 @@ export function RetirementCalc({
         </p>
       </Explainer>
 
-      {planSummary && (
-        <p
-          aria-label="Plan summary"
-          className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
-        >
-          {planSummary}
-        </p>
-      )}
-
       {/* Plan verdict (2026-11-09, "Both"): a glanceable
-          verdict at the top of the view — (1) a verdict pill,
-          green when the plan succeeds and red when it falls
-          short, and (2) a big "lasts until" headline with
-          what's left at the end age, so how comfortably the
-          plan succeeds is visible in one glance. Display only:
+          verdict at the top of the view — a big "lasts until"
+          headline with a verdict badge right after it
+          on the same line (green "Succeeds" when the plan
+          succeeds, red "Falls short" when it falls short),
+          plus what's left at the end age below, so the
+          verdict reads once and how comfortably the plan
+          succeeds is visible in one glance. (The badge once
+          stood alone as a pill line above the headline
+          repeating the same words; the dedup build folded it
+          in after the headline, and the badge is deliberately
+          big and bright — text-base bold on a solid accent /
+          bad / dim fill with surface-coloured text — so it
+          holds its own beside the 3xl/4xl headline.) The
+          plan-summary sentence renders inside this panel as a
+          small muted line under the amount-left line (it once
+          stood alone above the panel); its dotted-underline
+          taps are unchanged and its old outcome tail is cut —
+          the headline above already states the outcome.
+          Display only:
           success is the view's own definition, priced by the
           Projection result's neverRunsOut (the engines'
           runNeverRunsOut over the steady-return path — every
@@ -4019,9 +4015,10 @@ export function RetirementCalc({
           third state (2026-11-09, round-9 SHOULD-5): when the
           retirement age is past the end age, no retired year
           was priced at all (the Projection result's
-          hasRetiredYears is false), so the block shows a
-          neutral pill and headline — "No retired years in this
-          projection" — with the ending balance still shown as
+          hasRetiredYears is false), so the block shows the
+          headline "No retired years in this projection" with
+          a short neutral "No verdict" badge after it, with
+          the ending balance still shown as
           its own figure and a note explaining why there is no
           verdict; neither the success nor the falls-short
           wording appears in that state. */}
@@ -4030,36 +4027,34 @@ export function RetirementCalc({
           aria-label="Plan verdict"
           className={`mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${flashCls}`}
         >
-          {!projection.hasRetiredYears ? (
-            <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--surface-alt)] px-3 py-1.5 text-sm font-semibold whitespace-nowrap text-[var(--text)]">
-              No retired years in this projection
-            </span>
-          ) : projection.neverRunsOut ? (
-            <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--accent-soft)] px-3 py-1.5 text-sm font-semibold whitespace-nowrap text-[var(--accent)]">
-              <span aria-hidden="true">✓</span>
-              {projection.ending > 0
-                ? `Succeeds — money lasts past ${inputs.endAge}`
-                : `Succeeds — money lasts to ${inputs.endAge}`}
-            </span>
-          ) : (
-            <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--bad-soft)] px-3 py-1.5 text-sm font-semibold whitespace-nowrap text-[var(--bad)]">
-              <span aria-hidden="true">✗</span>
-              {projection.shortfallAge != null
-                ? `Falls short — runs out at ${projection.shortfallAge}`
-                : `Falls short — runs out by ${inputs.endAge}`}
-            </span>
-          )}
-          <p className="display mt-3 text-3xl leading-tight font-semibold sm:text-4xl">
-            {!projection.hasRetiredYears
-              ? "No retired years in this projection"
-              : projection.neverRunsOut
-                ? projection.ending > 0
-                  ? `Money lasts past ${inputs.endAge}`
-                  : `Money lasts to ${inputs.endAge}`
-                : projection.shortfallAge != null
-                  ? `Money runs out at ${projection.shortfallAge}`
-                  : `Money runs out by ${inputs.endAge}`}
-          </p>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <p className="display text-3xl leading-tight font-semibold sm:text-4xl">
+              {!projection.hasRetiredYears
+                ? "No retired years in this projection"
+                : projection.neverRunsOut
+                  ? projection.ending > 0
+                    ? `Money lasts past ${inputs.endAge}`
+                    : `Money lasts to ${inputs.endAge}`
+                  : projection.shortfallAge != null
+                    ? `Money runs out at ${projection.shortfallAge}`
+                    : `Money runs out by ${inputs.endAge}`}
+            </p>
+            {!projection.hasRetiredYears ? (
+              <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--dim)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
+                No verdict
+              </span>
+            ) : projection.neverRunsOut ? (
+              <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--accent)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
+                <span aria-hidden="true">✓</span>
+                Succeeds
+              </span>
+            ) : (
+              <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--bad)] px-4 py-2 text-base font-bold whitespace-nowrap text-[var(--surface)]">
+                <span aria-hidden="true">✗</span>
+                Falls short
+              </span>
+            )}
+          </div>
           <p className="tnum mt-2 text-base leading-relaxed">
             <strong className="font-semibold">
               {`${fmt(projection.ending)} left at ${inputs.endAge}`}
@@ -4078,6 +4073,14 @@ export function RetirementCalc({
               </span>
             )}
           </p>
+          {planSummary && (
+            <p
+              aria-label="Plan summary"
+              className="tnum mt-2 text-sm leading-relaxed text-[var(--dim)]"
+            >
+              {planSummary}
+            </p>
+          )}
           {!projection.hasRetiredYears && (
             <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
               The retirement age is past the end age, so no year&rsquo;s
