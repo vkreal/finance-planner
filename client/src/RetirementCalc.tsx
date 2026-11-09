@@ -604,7 +604,12 @@ export function RetirementCalc({
      record field (jumpToRcField above), Spending / Ages /
      Expected return to the Tax Plan record via App's cross-view
      jump (the same jumpTarget mechanism the Playground's Plan
-     total tap uses). Taps only — the tiles edit nothing. */
+     total tap uses). Spending is the one strategy-aware tile:
+     in the percent strategy the tile shows this record's own
+     percentOfPortfolio, so it taps to this view's rc-percent
+     field instead of the Tax Plan's Annual spending (which is
+     not an input to that strategy's calculation). Taps only —
+     the tiles edit nothing. */
   const jumpToTaxPlan = (fieldId: string, section: RothSectionId) => {
     onJumpToTaxPlan?.({ fieldId, section, nonce: Date.now() });
   };
@@ -4353,9 +4358,17 @@ export function RetirementCalc({
             </button>
             <button
               type="button"
-              aria-label="Go to the Annual spending field in the Tax Plan"
+              aria-label={
+                inputs.strategy === "percent"
+                  ? "Go to the % of portfolio per year field"
+                  : "Go to the Annual spending field in the Tax Plan"
+              }
               className={calcTileCls}
-              onClick={() => jumpToTaxPlan("roth-Annual-spending", "household")}
+              onClick={() =>
+                inputs.strategy === "percent"
+                  ? jumpToRcField("rc-percent")
+                  : jumpToTaxPlan("roth-Annual-spending", "household")
+              }
             >
               <p className="text-xs text-[var(--dim)]">Spending</p>
               <p className={calcTileValueCls}>
