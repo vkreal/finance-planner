@@ -21,6 +21,7 @@ BarChart,
 CartesianGrid,
 Cell,
 LabelList,
+Rectangle,
 ReferenceLine,
 ResponsiveContainer,
 Tooltip,
@@ -1170,7 +1171,50 @@ type SpendingChartDatum = {
   cashOut: number;
   trueCostCents: number;
   cashOutCents: number;
+  // The Cash out bar's stacked parts (see splitCashOut): regular
+  // cash out below, the month's one-offs on top. The two always
+  // sum to cashOut / cashOutCents; oneOff is 0 in months with no
+  // one-offs recorded, where the bar renders as one regular part.
+  cashOutRegular: number;
+  cashOutOneOff: number;
+  cashOutRegularCents: number;
+  cashOutOneOffCents: number;
+  oneOffTotalCents: number;
 };
+
+/* Split a month's Cash out into its stacked-bar parts: regular
+   cash out below and the month's one-offs on top. One-offs are
+   explanation only — their total is already inside the month's
+   Cash out — so the two parts always sum back to the Cash out
+   total, and the bar's total label stays the total. The split is
+   real only for a positive one-off total that fits inside the
+   month's Cash out; anything else (no one-offs recorded, a
+   negative/refund one-off total, or no cash out at all) leaves
+   the whole bar regular, so months without one-offs render
+   exactly as before. */
+function splitCashOut(
+  cashOutCents: number,
+  oneOffTotalCents: number,
+): { regularCents: number; oneOffCents: number } {
+  const oneOffCents =
+    cashOutCents > 0 && oneOffTotalCents > 0
+      ? Math.min(oneOffTotalCents, cashOutCents)
+      : 0;
+  return { regularCents: cashOutCents - oneOffCents, oneOffCents };
+}
+
+/* Shape for the lower (regular) segment of a split Cash out bar:
+   square top corners when a one-off segment sits on top of it, so
+   the stack's sides stay straight at the join; the bar's usual
+   rounded top when the regular part is the whole bar. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cashOutBaseShape(shapeProps: any) {
+  const datum = shapeProps?.payload as { cashOutOneOff?: number } | undefined;
+  const hasOneOffOnTop = (datum?.cashOutOneOff ?? 0) > 0;
+  return (
+    <Rectangle {...shapeProps} radius={hasOneOffOnTop ? [0, 0, 0, 0] : [3, 3, 0, 0]} />
+  );
+}
 
 /* Grouped bar chart for the Month-mode Quick view: one pair of bars
    per recorded month — the month's True cost (smoothed) beside its
@@ -1199,7 +1243,12 @@ type SpendingChartDatum = {
    two series sit on staggered label shelves coloured to match
    their bars so neighbouring labels never collide, and the legend
    names the series. No recorded months renders a plain empty
-   state. */
+   state. In a month with one-offs recorded, the Cash out bar is
+   split into two stacked parts — regular cash out below, the
+   one-offs on top in a darker shade of the same orange — so a
+   spike caused by a one-off explains itself at a glance; the
+   label above the bar stays the month's total Cash out, and
+   months without one-offs keep the single solid bar. */
 function SpendingTrueCostChart({
   months,
   aheadMonths,
@@ -1248,19 +1297,28 @@ function SpendingTrueCostChart({
 }) {
   const thisMonth = currentMonth();
   const chartData: SpendingChartDatum[] = [
-    ...months.map((m) => ({
-      name: m.estimate
-        ? `${shortMonthLabel(m.month)} (est.)`
-        : shortMonthLabel(m.month),
-      monthStr: m.month,
-      estimate: m.estimate,
-      trueCost: m.smoothedCents / 100,
-      cashOut: m.cashOutCents / 100,
-      trueCostCents: m.smoothedCents,
-      cashOutCents: m.cashOutCents,
-    })),
+    ...months.map((m) => {
+      const split = splitCashOut(m.cashOutCents, m.oneOffTotalCents);
+      return {
+        name: m.estimate
+          ? `${shortMonthLabel(m.month)} (est.)`
+          : shortMonthLabel(m.month),
+        monthStr: m.month,
+        estimate: m.estimate,
+        trueCost: m.smoothedCents / 100,
+        cashOut: m.cashOutCents / 100,
+        trueCostCents: m.smoothedCents,
+        cashOutCents: m.cashOutCents,
+        cashOutRegular: split.regularCents / 100,
+        cashOutOneOff: split.oneOffCents / 100,
+        cashOutRegularCents: split.regularCents,
+        cashOutOneOffCents: split.oneOffCents,
+        oneOffTotalCents: m.oneOffTotalCents,
+      };
+    }),
     ...aheadMonths.map((m) => {
       const estimate = m.month > thisMonth;
+      const split = splitCashOut(m.cashOutCents, m.oneOffTotalCents);
       return {
         name: estimate
           ? `${shortMonthLabel(m.month)} (est.)`
@@ -1271,10 +1329,19 @@ function SpendingTrueCostChart({
         cashOut: m.cashOutCents / 100,
         trueCostCents: m.smoothedCents,
         cashOutCents: m.cashOutCents,
+        cashOutRegular: split.regularCents / 100,
+        cashOutOneOff: split.oneOffCents / 100,
+        cashOutRegularCents: split.regularCents,
+        cashOutOneOffCents: split.oneOffCents,
+        oneOffTotalCents: m.oneOffTotalCents,
       };
     }),
   ];
   const hasEstimate = chartData.some((d) => d.estimate);
+  /* Whether any plotted month's Cash out bar is actually split —
+     drives the extra legend entry and the tooltip note, so both
+     appear only when a split is on screen. */
+  const hasOneOffSplit = chartData.some((d) => d.cashOutOneOffCents > 0);
   /* Vs-target summary over the recorded months only: the
      `months` above — the same trailing months the chart plots
      and the header average uses. Entered-ahead (est.) pairs in
@@ -1356,6 +1423,14 @@ function SpendingTrueCostChart({
               line, over the same months as the Average month line above.
             </p>
           )}
+          {hasOneOffSplit && (
+            <p>
+              In a month with one-offs recorded, the Cash out bar is split:
+              regular cash out below, the one-offs on top in the darker
+              shade. The label above the bar is still the month&rsquo;s
+              total Cash out.
+            </p>
+          )}
         </ExplainerInfoTip>
       </div>
       {chartData.length === 0 ? (
@@ -1380,7 +1455,7 @@ function SpendingTrueCostChart({
                   : null;
               return (
                 <li key={d.monthStr}>
-                  {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
+                  {`${d.name}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${d.cashOutOneOffCents > 0 ? ` · One-offs ${fmt(d.cashOutOneOffCents)} of the Cash out` : ""}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
                 </li>
               );
             })}
@@ -1419,6 +1494,16 @@ function SpendingTrueCostChart({
               />
               Cash out
             </span>
+            {hasOneOffSplit && (
+              <span className="inline-flex items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-[10px] w-[14px] rounded-[2px]"
+                  style={{ background: "var(--warn-deep)" }}
+                />
+                One-offs
+              </span>
+            )}
             {targetMonthlyCents != null && (
               <span className="tnum inline-flex items-center gap-2">
                 <svg
@@ -1533,6 +1618,12 @@ function SpendingTrueCostChart({
                             True cost {fmt(datum.trueCostCents)} · Cash out{" "}
                             {fmt(datum.cashOutCents)}
                           </p>
+                          {datum.cashOutOneOffCents > 0 && (
+                            <p className="tnum mt-0.5 text-[var(--dim)]">
+                              Regular {fmt(datum.cashOutRegularCents)} ·
+                              One-offs {fmt(datum.cashOutOneOffCents)}
+                            </p>
+                          )}
                           {targetMonthlyCents != null && (
                             <p className="tnum mt-0.5 text-[var(--dim)]">
                               Target {fmt(targetMonthlyCents)}/mo
@@ -1621,11 +1712,22 @@ function SpendingTrueCostChart({
                       }}
                     />
                   </Bar>
+                  {/* Cash out is drawn as two stacked segments
+                      sharing one stack: regular cash out below and
+                      the month's one-offs on top in the darker
+                      shade. In a month with no one-offs the top
+                      segment is 0 high and invisible, and the
+                      regular segment — given its rounded top back
+                      by cashOutBaseShape — renders exactly as the
+                      old single bar did. The two segments' Cells
+                      carry the same estimate treatment the single
+                      bar's Cells did. */}
                   <Bar
-                    dataKey="cashOut"
+                    dataKey="cashOutRegular"
                     name="Cash out"
+                    stackId="cashOut"
                     fill="var(--warn)"
-                    radius={[3, 3, 0, 0]}
+                    shape={cashOutBaseShape}
                   >
                     {chartData.map((d) => (
                       <Cell
@@ -1637,21 +1739,43 @@ function SpendingTrueCostChart({
                         strokeDasharray={d.estimate ? "4 2" : undefined}
                       />
                     ))}
-                    {/* Recharts' default LabelList rendering spreads
-                        each bar entry's own SVG props onto its label
-                        (LabelList → Label via filterProps(entry)), so
-                        an estimate bar's Cell — fillOpacity 0.3, a
-                        coloured stroke, strokeWidth 1.5 and
-                        strokeDasharray "4 2" — would otherwise be
-                        inherited by the label text itself, giving it a
-                        dashed, doubled, unreadable outline. These
-                        explicit props are spread AFTER the entry in
-                        LabelList, so they override that inheritance
-                        for every label: one solid, full-contrast
-                        rendering, identical for recorded and (est.)
-                        months. The bars keep their estimate treatment
-                        via the Cells above; only the labels are pinned
-                        clean. */}
+                  </Bar>
+                  <Bar
+                    dataKey="cashOutOneOff"
+                    name="One-offs"
+                    stackId="cashOut"
+                    fill="var(--warn-deep)"
+                    radius={[3, 3, 0, 0]}
+                  >
+                    {chartData.map((d) => (
+                      <Cell
+                        key={d.monthStr}
+                        fill="var(--warn-deep)"
+                        fillOpacity={d.estimate ? 0.3 : 1}
+                        stroke={d.estimate ? "var(--warn-deep)" : "none"}
+                        strokeWidth={d.estimate ? 1.5 : 0}
+                        strokeDasharray={d.estimate ? "4 2" : undefined}
+                      />
+                    ))}
+                    {/* The bar's total label, unchanged: it sits on
+                        the stack's top segment but reads the month's
+                        total Cash out (dataKey "cashOut"), so a split
+                        bar is labelled with its total exactly as an
+                        unsplit one is. Recharts' default LabelList
+                        rendering spreads each bar entry's own SVG
+                        props onto its label (LabelList → Label via
+                        filterProps(entry)), so an estimate bar's
+                        Cell — fillOpacity 0.3, a coloured stroke,
+                        strokeWidth 1.5 and strokeDasharray "4 2" —
+                        would otherwise be inherited by the label
+                        text itself, giving it a dashed, doubled,
+                        unreadable outline. These explicit props are
+                        spread AFTER the entry in LabelList, so they
+                        override that inheritance for every label:
+                        one solid, full-contrast rendering, identical
+                        for recorded and (est.) months. The bars keep
+                        their estimate treatment via the Cells above;
+                        only the labels are pinned clean. */}
                     <LabelList
                       dataKey="cashOut"
                       position="top"
@@ -1741,6 +1865,13 @@ type YearChartDatum = {
   cashOut: number | null;
   trueCostCents: number;
   cashOutCents: number;
+  // The Cash out bar's stacked parts (see splitCashOut): regular
+  // cash out below, the month's one-offs on top; oneOff is 0 in
+  // months with no one-offs recorded.
+  cashOutRegular: number;
+  cashOutOneOff: number;
+  cashOutRegularCents: number;
+  cashOutOneOffCents: number;
 };
 
 /* Grouped bar chart for Year mode only: True cost vs Cash out,
@@ -1748,7 +1879,10 @@ type YearChartDatum = {
    exact same values the month panels below show, so the chart can
    never disagree with them. Only months with data are included,
    matching the panels; a month with data and a real $0 keeps its
-   $0 in the tooltip with no bar height. */
+   $0 in the tooltip with no bar height. As in the Month-mode
+   chart, a month with one-offs recorded has its Cash out bar
+   split — regular cash out below, one-offs on top in the darker
+   shade — and months without one-offs keep the single solid bar. */
 function YearTrueCostChart({
   year,
   months,
@@ -1764,19 +1898,30 @@ function YearTrueCostChart({
 }) {
   const chartData: YearChartDatum[] = months
     .filter((m) => m.hasData)
-    .map((m) => ({
-      name: m.estimate
-        ? `${MONTH_SHORT[m.monthNum - 1] ?? m.month} (est.)`
-        : (MONTH_SHORT[m.monthNum - 1] ?? m.month),
-      monthStr: m.month,
-      hasData: true,
-      estimate: m.estimate,
-      trueCost: m.trueCostCents / 100,
-      cashOut: m.cashOutCents / 100,
-      trueCostCents: m.trueCostCents,
-      cashOutCents: m.cashOutCents,
-    }));
+    .map((m) => {
+      const split = splitCashOut(m.cashOutCents, m.oneOffsTotalCents);
+      return {
+        name: m.estimate
+          ? `${MONTH_SHORT[m.monthNum - 1] ?? m.month} (est.)`
+          : (MONTH_SHORT[m.monthNum - 1] ?? m.month),
+        monthStr: m.month,
+        hasData: true,
+        estimate: m.estimate,
+        trueCost: m.trueCostCents / 100,
+        cashOut: m.cashOutCents / 100,
+        trueCostCents: m.trueCostCents,
+        cashOutCents: m.cashOutCents,
+        cashOutRegular: split.regularCents / 100,
+        cashOutOneOff: split.oneOffCents / 100,
+        cashOutRegularCents: split.regularCents,
+        cashOutOneOffCents: split.oneOffCents,
+      };
+    });
   const hasEstimate = chartData.some((d) => d.estimate);
+  /* Whether any plotted month's Cash out bar is actually split —
+     drives the extra legend entry, so it appears only when a
+     split is on screen. */
+  const hasOneOffSplit = chartData.some((d) => d.cashOutOneOffCents > 0);
   /* Vs-target summary over this year's recorded months only:
      (est.) pairs are never counted — an estimate may be
      revised — so the total and the per-month average are sums
@@ -1835,7 +1980,7 @@ function YearTrueCostChart({
               : null;
           return (
             <li key={d.monthStr}>
-              {`${d.name} ${year}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
+              {`${d.name} ${year}: True cost ${fmt(d.trueCostCents)} · Cash out ${fmt(d.cashOutCents)}${d.cashOutOneOffCents > 0 ? ` · One-offs ${fmt(d.cashOutOneOffCents)} of the Cash out` : ""}${diffCents != null ? ` · Target ${fmt(targetMonthlyCents ?? 0)} · Difference ${fmtSigned(diffCents)} ${vsTargetWord(diffCents)}` : ""}${d.estimate ? " (estimate — entered ahead, may be revised)" : ""}`}
             </li>
           );
         })}
@@ -1868,6 +2013,16 @@ function YearTrueCostChart({
           />
           Cash out
         </span>
+        {hasOneOffSplit && (
+          <span className="inline-flex items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="inline-block h-[10px] w-[14px] rounded-[2px]"
+              style={{ background: "var(--warn-deep)" }}
+            />
+            One-offs
+          </span>
+        )}
         {targetMonthlyCents != null && (
           <span className="tnum inline-flex items-center gap-2">
             <svg
@@ -1975,6 +2130,12 @@ function YearTrueCostChart({
                         True cost {fmt(datum.trueCostCents)} · Cash out{" "}
                         {fmt(datum.cashOutCents)}
                       </p>
+                      {datum.cashOutOneOffCents > 0 && (
+                        <p className="tnum mt-0.5 text-[var(--dim)]">
+                          Regular {fmt(datum.cashOutRegularCents)} · One-offs{" "}
+                          {fmt(datum.cashOutOneOffCents)}
+                        </p>
+                      )}
                       {targetMonthlyCents != null && (
                         <p className="tnum mt-0.5 text-[var(--dim)]">
                           Target {fmt(targetMonthlyCents)}/mo
@@ -2013,12 +2174,18 @@ function YearTrueCostChart({
                   />
                 ))}
               </Bar>
+              {/* Cash out as two stacked segments, as in the
+                  Month-mode chart: regular cash out below, the
+                  month's one-offs on top in the darker shade; a
+                  month with no one-offs is just the regular
+                  segment, exactly as the old single bar rendered. */}
               <Bar
-                dataKey="cashOut"
+                dataKey="cashOutRegular"
                 name="Cash out"
+                stackId="cashOut"
                 fill="var(--warn)"
-                radius={[3, 3, 0, 0]}
                 cursor="pointer"
+                shape={cashOutBaseShape}
               >
                 {chartData.map((d) => (
                   <Cell
@@ -2026,6 +2193,25 @@ function YearTrueCostChart({
                     fill="var(--warn)"
                     fillOpacity={d.estimate ? 0.3 : 1}
                     stroke={d.estimate ? "var(--warn)" : "none"}
+                    strokeWidth={d.estimate ? 1.5 : 0}
+                    strokeDasharray={d.estimate ? "4 2" : undefined}
+                  />
+                ))}
+              </Bar>
+              <Bar
+                dataKey="cashOutOneOff"
+                name="One-offs"
+                stackId="cashOut"
+                fill="var(--warn-deep)"
+                radius={[3, 3, 0, 0]}
+                cursor="pointer"
+              >
+                {chartData.map((d) => (
+                  <Cell
+                    key={d.monthStr}
+                    fill="var(--warn-deep)"
+                    fillOpacity={d.estimate ? 0.3 : 1}
+                    stroke={d.estimate ? "var(--warn-deep)" : "none"}
                     strokeWidth={d.estimate ? 1.5 : 0}
                     strokeDasharray={d.estimate ? "4 2" : undefined}
                   />

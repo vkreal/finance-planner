@@ -7554,6 +7554,13 @@ export const Actions = {
           month: z.string(),
           smoothedCents: z.number(),
           cashOutCents: z.number(),
+          // The month's one-off total (explanation only — already
+          // inside cashOutCents), published so the chart can split
+          // an entered-ahead month's Cash out bar the same way it
+          // splits a trailing/history month's (same fields those
+          // rows carry).
+          oneOffTotalCents: z.number(),
+          hasOneOff: z.boolean(),
         }),
       ),
       oneOffs: z.array(oneOffOut),
@@ -7840,7 +7847,14 @@ export const Actions = {
         .sort()
         .map((m) => {
           const e = eff(m);
-          return { month: m, smoothedCents: e.smoothed, cashOutCents: e.cashOut };
+          const ooTotal = oneOffsByMonth.get(m) ?? 0;
+          return {
+            month: m,
+            smoothedCents: e.smoothed,
+            cashOutCents: e.cashOut,
+            oneOffTotalCents: ooTotal,
+            hasOneOff: ooTotal !== 0,
+          };
         });
 
       // ---- Forecast: the viewed month and the next 2 ----
