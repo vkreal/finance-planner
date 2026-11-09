@@ -108,6 +108,15 @@ export const projTemplateToStored = (
   // and the after-health cash left price from, each null
   // when no premium was entered.
   healthPremiumAcaAnnual: inp.healthPremiumAcaAnnual ?? null,
+  // The two marketplace premium tiers (ChatGPT SHOULD-1):
+  // the household and single amounts the walk resolves
+  // per walked year — each null when no amount was
+  // entered for that tier (a template written before
+  // these fields existed parses them null, so the walk
+  // spreads the one amount, exactly as before).
+  healthPremiumAcaHouseholdAnnual:
+    inp.healthPremiumAcaHouseholdAnnual ?? null,
+  healthPremiumAcaSingleAnnual: inp.healthPremiumAcaSingleAnnual ?? null,
   healthPremiumMedicarePerPerson:
     inp.healthPremiumMedicarePerPerson ?? null,
   // The loss carry-ins (P-S8): the federal pair and each

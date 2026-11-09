@@ -36557,6 +36557,194 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-engines-playground-projection-premium-tier-transition",
+    kind: "tax",
+    note: "SHOULD-1 (ChatGPT review, SHOULD — settled STAND): the projection walk carried the two-person marketplace premium into spouse-only years. The template carried only ONE ACA amount (healthPremiumAcaAnnual), and the walk spread it into every year, while the plan march resolves the tier per year (taxEngine.ts healthGrossAca: the household amount while both spouses are on the marketplace, the single amount while exactly one is) — so every mixed-coverage year priced the household premium plus Medicare instead of the single premium plus Medicare (the settlement's worked example: a $9,000-a-year overstatement in every mixed-coverage year, verified by the probe on the tree as received — the walk priced the household premium plus the per-person Medicare base in the transition years while the march priced the single premium plus the base, credit $0 in both). THE FIX (rothOptimizer.ts, projectPlaygroundYears): the template carries BOTH tiers (healthPremiumAcaHouseholdAnnual / healthPremiumAcaSingleAnnual, stored through projTemplateCore.ts and the stored parse, supplied by buildPgInputs from the dial for the template year's own tier and the record for the other), and the walk resolves the applicable tier per walked year from the year's own Medicare flags — household while both are on the marketplace, single while exactly one is — overriding both the marketplace premium and the enrollment premium on the year's inputs (the entered premium IS the enrollment premium, so the retained-credit cap keys on the year's own tier). With neither tier entered the walk keeps the old spread, so an older stored template (whose tier fields parse null) reprices bit-identically. When the term is active but the applicable tier was never entered, the year's gross falls back to the template's benchmark — the march's own fallback for a null tier amount — never $0 while a premium term is entered; the fallback reads the template's benchmark (the template year's applicable benchmark), and the walk does not resolve benchmarks per year (a pre-existing gap, out of scope here), so the fallback matches the march's rule in kind, not in amount, until that gap is closed. The single-year pricer is untouched — it reads only the one applicable amount. THE WORKED EXAMPLE is built on the shared fictional sample household (server/src/sampleHousehold.ts): the sample start year, joint filing at the sample ages, household of the sample size, the sample family benchmark, no Social Security, no yields, no income (MAGI $0 — below 100% FPL, so the priced credit is $0 and net equals gross in every leg), no balances, no conversion, no sale, 0% return; the household tier at nine tenths of the filed ordinary dividends, the single tier at half of it, the Medicare per-person base at fifteen hundredths of it. HAND-DERIVED: year 1 prices both spouses on the marketplace — gross and net the household tier, the priced premium and enrollment premium the household tier; the first transition year (the primary 65, the spouse 63 — the primary on Medicare, the spouse still on the marketplace) prices gross and net the single tier plus one Medicare base, the priced premium and enrollment premium the single tier; the year after prices the same. PRE-FIX (verified by the probe on the tree as received) the transition years priced the household tier plus the Medicare base. HOUSEHOLD-ONLY LEG: the household tier entered, the single tier null — year 1 prices the household tier; the transition year falls back to the template's benchmark (the sample family benchmark) plus one Medicare base, the priced premium the benchmark. SINGLE-ONLY LEG: the single tier entered, the household tier null, the dial at the family benchmark (the prefill's dial-level fallback — the term active, the household tier null) — year 1 prices the benchmark (the fallback, equal to the dial, bit-identical to the single-year price); the transition year prices the single tier plus one Medicare base. NO-PREMIUM LEG: no premium fact at all — gross and net $0 in every year, bit-identical before and after the fix. OLD-TEMPLATE LEG: the dial alone, no tier fields (the shape an older stored template loads as) — the walk spreads the dial into every year, the transition year pricing the household tier plus the Medicare base, exactly as before the fix. RELOAD LEG: the main template round-tripped through the production chain (projTemplateToStored → JSON → the stored parse → projTemplateFromStored) walks identically — both tiers read back at their captured values and the reloaded walk's first and transition years price exactly as the direct walk's.",
+    expected: {
+      y1Gross: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      y1Net: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      y1Premium: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      y1Enroll: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      y1Credit: 0,
+      y8Gross:
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      y8Net:
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      y8Premium: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20,
+      y8Enroll: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20,
+      y8Medicare: 1,
+      y8Credit: 0,
+      y9Gross:
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      y9Net:
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      hY1Gross: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      hY8Gross:
+        SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      hY8Premium: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+      hY8Net:
+        SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      sY1Gross: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+      sY1Premium: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+      sY8Gross:
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      sY8Premium: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20,
+      nY1Gross: 0,
+      nY8Gross: 0,
+      nY8Net: 0,
+      oY1Gross: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      oY8Gross:
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+      oY8Premium: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      rStoredHousehold: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      rStoredSingle: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20,
+      rY1Gross: ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 10,
+      rY8Gross:
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9) / 20 +
+        ((SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) * 9 * 15) / 1000,
+    },
+    actual: () => {
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      const H = (ORD * 9) / 10;
+      const S = H / 2;
+      const M = (H * 15) / 100;
+      const FAM = SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100;
+      const base: PlaygroundYearInputs = {
+        taxYear: SAMPLE_START_YEAR,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: FAM,
+        stateRatePct: 0,
+      };
+      const opts = {
+        toAge: 66,
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSchedule: null,
+        startTaxable: null,
+        startRoth: 0,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const walk = (t: PlaygroundYearInputs) => projectPlaygroundYears(t, opts);
+      const main = walk({
+        ...base,
+        healthPremiumAcaAnnual: H,
+        healthPremiumAcaHouseholdAnnual: H,
+        healthPremiumAcaSingleAnnual: S,
+        healthPremiumMedicarePerPerson: M,
+      });
+      const m1 = main.years[0]!;
+      const m8 = main.years[7]!;
+      const m9 = main.years[8]!;
+      const householdOnly = walk({
+        ...base,
+        healthPremiumAcaAnnual: H,
+        healthPremiumAcaHouseholdAnnual: H,
+        healthPremiumAcaSingleAnnual: null,
+        healthPremiumMedicarePerPerson: M,
+      });
+      const h1 = householdOnly.years[0]!;
+      const h8 = householdOnly.years[7]!;
+      const singleOnly = walk({
+        ...base,
+        healthPremiumAcaAnnual: FAM,
+        healthPremiumAcaHouseholdAnnual: null,
+        healthPremiumAcaSingleAnnual: S,
+        healthPremiumMedicarePerPerson: M,
+      });
+      const s1 = singleOnly.years[0]!;
+      const s8 = singleOnly.years[7]!;
+      const nopremium = walk({ ...base });
+      const n1 = nopremium.years[0]!;
+      const n8 = nopremium.years[7]!;
+      const old = walk({
+        ...base,
+        healthPremiumAcaAnnual: H,
+        healthPremiumMedicarePerPerson: M,
+      });
+      const o1 = old.years[0]!;
+      const o8 = old.years[7]!;
+      const stored = projTemplateToStored({
+        ...base,
+        healthPremiumAcaAnnual: H,
+        healthPremiumAcaHouseholdAnnual: H,
+        healthPremiumAcaSingleAnnual: S,
+        healthPremiumMedicarePerPerson: M,
+      });
+      const parsed = parseRothUiState(
+        JSON.stringify({ playground: { projTemplate: stored } }),
+      ).playground.projTemplate;
+      const reloaded =
+        parsed == null ? null : walk(projTemplateFromStored(parsed));
+      const r1 = reloaded?.years[0];
+      const r8 = reloaded?.years[7];
+      return {
+        y1Gross: m1.result.healthPremiumGross,
+        y1Net: m1.result.healthPremiumNet,
+        y1Premium: m1.inputs.healthPremiumAcaAnnual ?? null,
+        y1Enroll: m1.inputs.acaEnrollmentPremiumAnnual ?? null,
+        y1Credit: m1.result.aca.credit ?? null,
+        y8Gross: m8.result.healthPremiumGross,
+        y8Net: m8.result.healthPremiumNet,
+        y8Premium: m8.inputs.healthPremiumAcaAnnual ?? null,
+        y8Enroll: m8.inputs.acaEnrollmentPremiumAnnual ?? null,
+        y8Medicare: m8.inputs.onMedicarePrimary ? 1 : 0,
+        y8Credit: m8.result.aca.credit ?? null,
+        y9Gross: m9.result.healthPremiumGross,
+        y9Net: m9.result.healthPremiumNet,
+        hY1Gross: h1.result.healthPremiumGross,
+        hY8Gross: h8.result.healthPremiumGross,
+        hY8Premium: h8.inputs.healthPremiumAcaAnnual ?? null,
+        hY8Net: h8.result.healthPremiumNet,
+        sY1Gross: s1.result.healthPremiumGross,
+        sY1Premium: s1.inputs.healthPremiumAcaAnnual ?? null,
+        sY8Gross: s8.result.healthPremiumGross,
+        sY8Premium: s8.inputs.healthPremiumAcaAnnual ?? null,
+        nY1Gross: n1.result.healthPremiumGross,
+        nY8Gross: n8.result.healthPremiumGross,
+        nY8Net: n8.result.healthPremiumNet,
+        oY1Gross: o1.result.healthPremiumGross,
+        oY8Gross: o8.result.healthPremiumGross,
+        oY8Premium: o8.inputs.healthPremiumAcaAnnual ?? null,
+        rStoredHousehold: stored.healthPremiumAcaHouseholdAnnual,
+        rStoredSingle: stored.healthPremiumAcaSingleAnnual,
+        rY1Gross: r1?.result.healthPremiumGross ?? null,
+        rY8Gross: r8?.result.healthPremiumGross ?? null,
+      };
+    },
+  },
+  {
     id: "tax-engines-plan-march-zero-premium-credit-cap-r3",
     kind: "tax",
     note: "R3 (parity re-review, SHOULD — settled STAND): an explicitly entered $0 marketplace premium permitted a phantom ACA credit in the plan score. An explicit zero counts as an entered premium field and activates the health premium term, but the retained credit was capped at the enrolled premium only when the applicable gross was positive (the cap keyed on healthAcaThisYear, which requires gross > 0), so a year whose applicable premium was explicitly $0 fell into the uncapped branch and kept the whole benchmark credit against a $0 premium — the score subtracted a credit no premium ever offset. THE FIX (taxEngine.ts, simulateRothPlan): the retained-credit cap now keys on the term being active for an ACA-covered person (healthAcaCapThisYear), including a gross of exactly $0, where the cap keeps $0. The funded net premium and the settlement's credit feedback keep the narrower gate — at a $0 gross the net premium is $0 under either condition — and a null applicable amount still falls back to the benchmark, against which the credit can never exceed, so no other shape moves. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): a retired joint-filing household of the sample size in the sample start year (both spouses under 65, retired from the start year, one priced year, no balances, no spending, no Social Security, no conversions), its ACA MAGI set by other ordinary income alone at exactly twice the guideline-year FPL for the sample household size (read from the law table in-case) — exactly 200% FPL. HAND-DERIVED: at exactly 200% FPL the start year's applicable-percentage table takes the 200–250% band's initial percentage (band edges are lower-inclusive), so the expected contribution is that percentage of MAGI and the benchmark credit is the sample family benchmark less that contribution — the figure pinned as benchmarkCredit and re-derived in-case through the engine's own credit function. EXPLICIT-ZERO LEG (the marketplace household premium entered as exactly $0): the year's retained credit, the lifetime kept credit, and the score's credit are all $0, the year's gross and net marketplace premiums are $0, and the score's net cost sits above the blank leg's by exactly the whole benchmark credit — the phantom benefit removed, nothing else moved. BLANK LEG (no premium field entered): the term never engages and the year keeps the whole benchmark credit, exactly as before — the known, deliberate blank-premium gap, unchanged by this fix. POSITIVE LEGS: a premium entered at the sample couple benchmark (below the credit) caps the kept credit at the premium itself; a premium entered at the family benchmark (above the credit) keeps the whole credit — the cap binds only below the credit, as before. MEDICARE-ONLY CONTROL: the term activated by the Medicare per-person amount alone, with nobody on Medicare this year and both marketplace amounts blank, prices the applicable gross off the benchmark fallback, so the kept credit is the whole benchmark credit, bit-identical to the blank leg — the widened cap gate moves nothing when the applicable amount was never entered.",

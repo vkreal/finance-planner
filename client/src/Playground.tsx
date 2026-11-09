@@ -3403,6 +3403,31 @@ export function Playground({
       return n == null ? null : clamp0(n);
     };
     const acaSize = parseIntField(pgAcaSize);
+    // The two marketplace premium tiers (ChatGPT SHOULD-1):
+    // the walk resolves the applicable tier per walked year
+    // from these, so the template carries both. The dial
+    // holds the template year's own tier — the household
+    // amount while both spouses are on the marketplace,
+    // the single amount while exactly one is — so that
+    // tier rides the dial and the other rides the record's
+    // amount (the prefill source, when the record entered
+    // one); with no record amount the other tier is null
+    // and the walk falls back to the template's benchmark
+    // for that tier's years while the term is active. A
+    // typed dial overrides the record for its own tier,
+    // exactly as the prefill does; the other tier still
+    // reads the record, the only source that states it.
+    const pgHealthAcaAmt = money0OrNull(pgHealthAca);
+    const pgBothOnMarketplace =
+      !pgMedPEffective && pgFiling === "mfj" && !pgMedSEffective;
+    const pgOneOnMarketplace =
+      !pgMedPEffective !== (pgFiling === "mfj" && !pgMedSEffective);
+    const pgHealthAcaHouseholdAnnual = pgBothOnMarketplace
+      ? pgHealthAcaAmt
+      : (pgPrefillSource?.healthPremiumAcaHousehold ?? null);
+    const pgHealthAcaSingleAnnual = pgOneOnMarketplace
+      ? pgHealthAcaAmt
+      : (pgPrefillSource?.healthPremiumAcaSingle ?? null);
     return {
       taxYear: parseIntField(pgYear) ?? new Date().getFullYear(),
       filingStatus: pgFiling,
@@ -3507,6 +3532,12 @@ export function Playground({
       inflationPct: pgPrefillSource?.inflationPct ?? SEED_INFLATION,
       acaEnrollmentPremiumAnnual: money0OrNull(pgHealthAca),
       healthPremiumAcaAnnual: money0OrNull(pgHealthAca),
+      // The two marketplace premium tiers (ChatGPT SHOULD-1):
+      // the template year's own tier rides the dial above
+      // and the other tier rides the record (see the
+      // computation above the return).
+      healthPremiumAcaHouseholdAnnual: pgHealthAcaHouseholdAnnual,
+      healthPremiumAcaSingleAnnual: pgHealthAcaSingleAnnual,
       healthPremiumMedicarePerPerson: money0OrNull(pgHealthMedicare),
       irmaaPayableAnnual: money0OrNull(pgIrmaaPayable),
       stateRatePct: clamp0(parseNum(pgStateRate) ?? 0),

@@ -3466,6 +3466,28 @@ export type PlaygroundYearInputs = {
   // enters the tax, the MAGI, or netTaxBill: it is a cash
   // cost of the year, reported beside them.
   healthPremiumAcaAnnual?: number | null;
+  // The two marketplace premium TIERS (ChatGPT SHOULD-1;
+  // optional — absent / null on every pre-existing caller,
+  // and the year then prices bit-identically to before):
+  // the household (two-person) amount and the single
+  // amount, in dollars per year. The single-year pricer
+  // above reads NEITHER — it prices the one applicable
+  // amount in healthPremiumAcaAnnual, the plan actually
+  // enrolled in for the priced year. The projection walk
+  // (projectPlaygroundYears) reads both and resolves the
+  // applicable tier per walked year — the household amount
+  // while both spouses are on the marketplace, the single
+  // amount while exactly one is — the march's own
+  // per-year resolution (taxEngine.ts healthGrossAca).
+  // Before, the template carried only the one amount and
+  // the walk spread it into every year, so a spouse-only
+  // year priced the two-person premium. A template with
+  // neither tier entered (an older stored template, or a
+  // directly built one) keeps the old spread: the walk
+  // prices the one amount in every year, exactly as
+  // before, so no stored template silently reprices.
+  healthPremiumAcaHouseholdAnnual?: number | null;
+  healthPremiumAcaSingleAnnual?: number | null;
   healthPremiumMedicarePerPerson?: number | null;
   // IRMAA surcharge payable THIS year (internal review
   // round 3 SHOULD-2; optional — absent / null on every
@@ -5837,6 +5859,60 @@ export function projectPlaygroundYears(
     // amount, with no separate unfunded readout).
     const cashDrawEffective = firstWalkYear ? templateCashDraw : 0;
     const rothDrawEffective = Math.min(templateRothDraw, Math.max(0, roth));
+    // ChatGPT SHOULD-1: the year's Medicare flags (P-S4(d)
+    // above), hoisted so the premium resolution below reads
+    // the same flags the year's inputs carry.
+    const yearOnMedicarePrimary = medicareOverridePrimary ?? age >= 65;
+    const yearOnMedicareSpouse =
+      ageSpouse == null ? false : (medicareOverrideSpouse ?? ageSpouse >= 65);
+    // ChatGPT SHOULD-1: the marketplace premium resolves
+    // per walked year from the two tiers the template
+    // carries — the household amount while both spouses
+    // are on the marketplace, the single amount while
+    // exactly one is (the march's own per-year resolution,
+    // taxEngine.ts healthGrossAca). The enrollment premium
+    // resolves to the same amount: the entered premium IS
+    // the enrollment premium, so the retained-credit cap
+    // keys on the year's own tier, not the template year's.
+    // With neither tier entered the template carries no
+    // tier facts (an older stored template, or a directly
+    // built one) and the resolution is skipped: the year's
+    // premium rides the template's one amount in every
+    // year, exactly as before, so no stored template
+    // silently reprices. When the term is active but the
+    // applicable tier was never entered, the year's gross
+    // falls back to the template's benchmark — the march's
+    // own fallback for a null tier amount (and the
+    // prefill's dial-level fallback), never $0 while a
+    // premium term is entered. The fallback reads the
+    // TEMPLATE's benchmark (the template year's applicable
+    // benchmark): the walk does not resolve benchmarks per
+    // year — a pre-existing gap, out of scope here — so
+    // the fallback matches the march's rule in kind, not
+    // in amount, until that gap is closed. In the template
+    // year itself the resolution equals the dial by
+    // construction (buildPgInputs puts the dial on the
+    // template year's tier), so the first walked year
+    // prices the template whole, exactly as before.
+    const premiumTierHousehold = template.healthPremiumAcaHouseholdAnnual ?? null;
+    const premiumTierSingle = template.healthPremiumAcaSingleAnnual ?? null;
+    const premiumHasTiers =
+      premiumTierHousehold != null || premiumTierSingle != null;
+    const primaryOnMarketplace = !yearOnMedicarePrimary;
+    const spouseOnMarketplace = joint && !yearOnMedicareSpouse;
+    const premiumApplicable =
+      primaryOnMarketplace && spouseOnMarketplace
+        ? premiumTierHousehold
+        : primaryOnMarketplace !== spouseOnMarketplace
+          ? premiumTierSingle
+          : null;
+    const premiumTermActive =
+      template.healthPremiumAcaAnnual != null ||
+      premiumTierHousehold != null ||
+      premiumTierSingle != null ||
+      template.healthPremiumMedicarePerPerson != null;
+    const premiumResolved = premiumApplicable ??
+      (premiumTermActive ? (template.acaBenchmarkAnnual ?? null) : null);
     // R2 (see the state block above the loop) as
     // extended by SHOULD-3: the year's harvest basis
     // percent is the CURRENT pool's ratio — the carried
@@ -5863,12 +5939,11 @@ export function projectPlaygroundYears(
       // template flag that disagreed with the age rule
       // at the template's age) wins over the year's age
       // rule; with no override the year's own age rule
-      // prices, exactly as before.
-      onMedicarePrimary: medicareOverridePrimary ?? age >= 65,
-      onMedicareSpouse:
-        ageSpouse == null
-          ? false
-          : (medicareOverrideSpouse ?? ageSpouse >= 65),
+      // prices, exactly as before. (Hoisted above as
+      // yearOnMedicarePrimary / yearOnMedicareSpouse so
+      // the premium resolution reads the same flags.)
+      onMedicarePrimary: yearOnMedicarePrimary,
+      onMedicareSpouse: yearOnMedicareSpouse,
       ssPrimary,
       ssSpouse,
       // The walk's money out rides the dial its kind names
@@ -5894,6 +5969,17 @@ export function projectPlaygroundYears(
       pretaxBalanceSpouse: pretaxSpouse,
       acaHouseholdSize: householdSize,
       acaConvention: "newest",
+      // ChatGPT SHOULD-1: the year's marketplace premium
+      // and enrollment premium are the resolved tier
+      // (see premiumResolved above) when the template
+      // carries tier facts; otherwise the template's own
+      // amounts ride through, exactly as before.
+      healthPremiumAcaAnnual: premiumHasTiers
+        ? premiumResolved
+        : template.healthPremiumAcaAnnual,
+      acaEnrollmentPremiumAnnual: premiumHasTiers
+        ? premiumResolved
+        : template.acaEnrollmentPremiumAnnual,
       // P-S4(b): the year's entering carryforward is
       // the chained ledger state (the template's own
       // carry-in in the first walked year, the prior

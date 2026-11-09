@@ -239,6 +239,15 @@ export const playgroundProjTemplateState = z.object({
      premium the after-health readout prices from, each
      null when none was entered. */
   healthPremiumAcaAnnual: z.number().nullable(),
+  /* The two marketplace premium tiers (ChatGPT SHOULD-1):
+     the household (two-person) and single amounts the
+     projection walk resolves per walked year — each null
+     when no amount was entered for that tier. A blob
+     written before these fields existed parses them null
+     (no tier facts — the walk spreads the one amount,
+     exactly as before). */
+  healthPremiumAcaHouseholdAnnual: z.number().nullable(),
+  healthPremiumAcaSingleAnnual: z.number().nullable(),
   healthPremiumMedicarePerPerson: z.number().nullable(),
   /* The loss carry-ins (P-S8): the federal short / long
      pair and each character's Washington-attributable
@@ -741,6 +750,16 @@ function parsePgProjTemplate(
   const acaEnrollmentPremiumAnnual =
     numOrNull(t.acaEnrollmentPremiumAnnual) ?? null;
   const healthPremiumAcaAnnual = numOrNull(t.healthPremiumAcaAnnual) ?? null;
+  /* The two marketplace premium tiers (ChatGPT SHOULD-1)
+     are lenient the same way: absent (a template written
+     before they were carried) parses as null — no tier
+     facts, so the walk spreads the one amount, exactly
+     as before — and neither is in the rejection check
+     below. */
+  const healthPremiumAcaHouseholdAnnual =
+    numOrNull(t.healthPremiumAcaHouseholdAnnual) ?? null;
+  const healthPremiumAcaSingleAnnual =
+    numOrNull(t.healthPremiumAcaSingleAnnual) ?? null;
   const healthPremiumMedicarePerPerson =
     numOrNull(t.healthPremiumMedicarePerPerson) ?? null;
   const capitalLossCarryInSt = num(t.capitalLossCarryInSt) ?? 0;
@@ -835,6 +854,8 @@ function parsePgProjTemplate(
     acaCoverageReduction,
     acaEnrollmentPremiumAnnual,
     healthPremiumAcaAnnual,
+    healthPremiumAcaHouseholdAnnual,
+    healthPremiumAcaSingleAnnual,
     healthPremiumMedicarePerPerson,
     capitalLossCarryInSt,
     capitalLossCarryInLt,
