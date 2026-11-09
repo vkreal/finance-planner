@@ -33,6 +33,7 @@
   --accent: #14594c;
   --accent-soft: #dcebe4;
   --warn: #b45309;
+  --warn-deep: #8a3c05;
   --warn-soft: #f7e8d2;
   --bad: #b3352b;
   --bad-soft: #f9e0dc;
@@ -55,6 +56,7 @@
     --accent: #4fc2a8;
     --accent-soft: #22392f;
     --warn: #e8a04c;
+    --warn-deep: #c47a24;
     --warn-soft: #3d2f1a;
     --bad: #e07a6d;
     --bad-soft: #472622;

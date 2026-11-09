@@ -4,9 +4,7 @@ import {
 Area,
 AreaChart,
 CartesianGrid,
-ComposedChart,
 Legend,
-Line,
 ResponsiveContainer,
 Tooltip,
 XAxis,
@@ -62,14 +60,13 @@ ROTH_COMPARE_STRATEGIES,
 drawOrderFromKey,
 drawOrderKey,
 drawOrderLabel,
-irmaaTierUpTo,
 simulateRothPlan,
 type FillCeilings,
 type RothPlanInputs,
 type RothStrategy,
 type RothYear,
 } from "@space/server/taxEngine";
-import { fplFor, lawForYear, rmdAgeForBirthYear } from "@space/server/taxLaw";
+import { fplFor, rmdAgeForBirthYear } from "@space/server/taxLaw";
 import { blendedExpected, STOCKS_PCT_DEFAULT } from "@space/server/retirementEngines";
 import { fafsaReportableAssets, netCostBreakdown, priceExecutionYear, ROTH_MC_CHECK_SEED, ssAnnualAtClaimAge } from "@space/server/rothOptimizer";
 import { giftAgeGuardMessage } from "@space/server/giftModel";
@@ -5592,11 +5589,27 @@ export function RothConversion({
     }));
   }, [mainResult]);
 
-  const magiChartData = useMemo(() => {
-    if (!mainResult || !planInputs) return [];
+  // Cliff-headroom data (split from the old MAGI-vs-ceilings
+  // chart): room under the ACA cliff per marketplace year —
+  // ACA cliff minus ACA MAGI, in dollars. Positive is room left
+  // under the cliff; negative is how far over the cliff that year
+  // runs. Marketplace years only, the same span the old chart's
+  // cliff line drew (the engine's inAcaScope: at/after the
+  // retirement year while anyone in the household is under 65,
+  // about 2028–2046 on the current plan). The cliff is the same
+  // 400%-of-FPL figure the old line drew — 4 × fplFor(household
+  // size, year − 1) — and ACA MAGI is the year's priced acaMagi,
+  // so each point foots to cliff − ACA MAGI for that year. This
+  // series now feeds the one-line headroom summary in place of
+  // the chart it used to draw — every figure in that line is
+  // computed from these points, so it moves with the plan.
+  // Display only: no pricing changes here.
+  const headroomChartData = useMemo(() => {
+    if (!mainResult || !planInputs || !ceilings.acaCliffCap) return [];
     const retireYear = planInputs.birthYearPrimary + planInputs.retirementAge;
-    return mainResult.years.map((y) => {
-      const law = lawForYear(y.year);
+    return mainResult.years.flatMap((y) => {
+      const inAcaScope = y.year >= retireYear && y.acaActive;
+      if (!inAcaScope) return [];
       const size = y.isSurvivorYear
         ? 1
         : acaHouseholdSizeForYear(
@@ -5604,35 +5617,13 @@ export function RothConversion({
             planInputs.acaHouseholdSchedule,
             y.year,
           );
-      const row: Record<string, number | null> = { year: y.year, MAGI: Math.round(y.magi) };
-      if (ceilings.irmaaTierCap != null) {
-        // The cap line is the SAME top-of-tier boundary the
-        // engine fills to and classifies by — irmaaTierUpTo
-        // deflates the second-to-last tier's ceiling (the top
-        // tier's floor, fixed through 2028).
-        const cap = irmaaTierUpTo(
-          ceilings.irmaaTierCap,
-          planInputs.filingStatus,
-          law,
-          y.year,
-          planInputs.inflationPct,
-        );
-        row["IRMAA cap"] = Number.isFinite(cap) ? cap : null;
-      }
-      if (ceilings.acaCliffCap) {
-        // The cliff is tested by the engine against ACA MAGI (which
-        // adds back the non-taxable part of Social Security), NOT
-        // against the MAGI line — so ACA MAGI gets its own series,
-        // and the cliff line is drawn only across in-scope years
-        // (the engine's inAcaScope: at/after the retirement year
-        // while anyone in the household is under 65). Nulls break
-        // the line outside that span.
-        row["ACA MAGI"] = Math.round(y.acaMagi);
-        const inAcaScope = y.year >= retireYear && y.acaActive;
-        row["ACA cliff"] = inAcaScope ? 4 * fplFor(size, y.year - 1) : null;
-      }
-      if (ceilings.magiCap != null) row["MAGI cap"] = ceilings.magiCap;
-      return row;
+      const cliff = 4 * fplFor(size, y.year - 1);
+      return [
+        {
+          year: y.year,
+          "Room under the ACA cliff": Math.round(cliff - y.acaMagi),
+        },
+      ];
     });
   }, [mainResult, planInputs, ceilings]);
 
@@ -12014,63 +12005,110 @@ export function RothConversion({
       )}
 
       {showPlanWorkspace && planInputs && mainResult && (ceilings.irmaaTierCap != null || ceilings.acaCliffCap || ceilings.magiCap != null) && (
-        <section className={sectionCls} aria-label="MAGI versus ceilings chart">
-          <h2 className="text-base font-semibold">MAGI vs the ceilings switched on</h2>
-          <div className="mt-3 h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={magiChartData} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="year" tick={{ fontSize: 12 }} stroke="var(--dim)" />
-                <YAxis
-                  tickFormatter={(v: number) => fmtCompactDollars(v)}
-                  tick={{ fontSize: 12 }}
-                  stroke="var(--dim)"
-                  width={72}
-                />
-                <Tooltip
-                  formatter={(value) => fmtDollars(Number(value ?? 0))}
-                  contentStyle={{
-                    background: "var(--surface)",
-                    border: "1px solid var(--border)",
-                    color: "var(--text)",
-                  }}
-                />
-                <Legend />
-                <Line type="monotone" dataKey="MAGI" stroke="var(--accent)" strokeWidth={2} dot={false} />
-                {ceilings.acaCliffCap && (
-                  <Line type="monotone" dataKey="ACA MAGI" stroke="#059669" strokeWidth={2} dot={false} />
-                )}
-                {ceilings.irmaaTierCap != null && (
-                  <Line type="monotone" dataKey="IRMAA cap" stroke="#e11d48" strokeDasharray="6 4" dot={false} />
-                )}
-                {ceilings.acaCliffCap && (
-                  <Line
-                    type="monotone"
-                    dataKey="ACA cliff"
-                    name="ACA cliff (400% FPL — tests ACA MAGI)"
-                    stroke="#d97706"
-                    strokeDasharray="6 4"
-                    dot={false}
-                  />
-                )}
-                {ceilings.magiCap != null && (
-                  <Line type="monotone" dataKey="MAGI cap" stroke="#9333ea" strokeDasharray="6 4" dot={false} />
-                )}
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-          {ceilings.acaCliffCap && (
-            <p className="mt-2 text-xs text-[var(--dim)]">
-              The cliff is tested against ACA MAGI, not MAGI — ACA MAGI adds back
-              the non-taxable part of Social Security, so it runs higher once
-              benefits flow. Drawn only for marketplace years (retirement year
-              onward, while anyone is under 65).
+        <section className={sectionCls} aria-label="Room under the ACA cliff">
+          <h2 className="text-base font-semibold">Room under the ACA cliff</h2>
+          {headroomChartData.length > 0 ? (
+            <p className="mt-2 text-sm leading-relaxed">
+              {(() => {
+                // One line in place of the old chart, computed live
+                // from the same per-year room series the chart drew
+                // (headroomChartData: cliff − ACA MAGI per marketplace
+                // year). Years are grouped into consecutive runs of
+                // the same kind — at the line (within $10k of it: the
+                // held years sit at the plan's safety buffer), over
+                // it, or with real room under it — and every year and
+                // dollar figure in the sentence comes from those
+                // runs, so the line moves when the plan does.
+                const rooms = headroomChartData.map((d) => ({
+                  year: d.year,
+                  room: d["Room under the ACA cliff"],
+                }));
+                type SegKind = "at" | "over" | "under";
+                const kindOf = (room: number): SegKind =>
+                  room < -10_000 ? "over" : room > 10_000 ? "under" : "at";
+                type Seg = {
+                  kind: SegKind;
+                  start: number;
+                  end: number;
+                  min: number;
+                  max: number;
+                };
+                const segs: Seg[] = [];
+                for (const r of rooms) {
+                  const kind = kindOf(r.room);
+                  const mag = Math.abs(r.room);
+                  const last = segs[segs.length - 1];
+                  if (last && last.kind === kind && r.year === last.end + 1) {
+                    last.end = r.year;
+                    last.min = Math.min(last.min, mag);
+                    last.max = Math.max(last.max, mag);
+                  } else {
+                    segs.push({ kind, start: r.year, end: r.year, min: mag, max: mag });
+                  }
+                }
+                const rangeOf = (s: Seg): string =>
+                  s.min === s.max
+                    ? fmtCompactDollars(s.max)
+                    : `${fmtCompactDollars(s.min)}–${fmtCompactDollars(s.max)}`;
+                const spanOf = (s: Seg): string =>
+                  s.start === s.end ? `${s.start}` : `${s.start}–${s.end}`;
+                const first = segs[0];
+                const second = segs[1];
+                // The current plan's shape: held at the line for a
+                // run of years, then over for the rest — the drop is
+                // the primary going on Medicare, leaving only the
+                // spouse on the marketplace at the smaller household
+                // cliff while joint income runs on.
+                if (
+                  segs.length === 2 &&
+                  first?.kind === "at" &&
+                  second?.kind === "over"
+                ) {
+                  return (
+                    <>
+                      Room under the ACA cliff is at the line through{" "}
+                      {first.end}, then over by about {rangeOf(second)} from{" "}
+                      {second.start} on, when you go on Medicare and only
+                      your wife is left on the marketplace.
+                    </>
+                  );
+                }
+                // Any other shape: describe each run plainly from
+                // the same live figures.
+                const describe = (s: Seg, isLast: boolean): string => {
+                  if (s.kind === "at") {
+                    return s.start === s.end
+                      ? `at the line in ${s.start}`
+                      : `at the line in ${spanOf(s)}`;
+                  }
+                  if (s.kind === "over") {
+                    return isLast
+                      ? `over by about ${rangeOf(s)} from ${s.start} on`
+                      : `over by about ${rangeOf(s)} in ${spanOf(s)}`;
+                  }
+                  return isLast
+                    ? `with about ${rangeOf(s)} of room from ${s.start} on`
+                    : `with about ${rangeOf(s)} of room in ${spanOf(s)}`;
+                };
+                const parts = segs.map((s, i) =>
+                  describe(s, i === segs.length - 1),
+                );
+                return (
+                  <>
+                    Room under the ACA cliff is{" "}
+                    {parts.length <= 1
+                      ? (parts[0] ?? "")
+                      : `${parts.slice(0, -1).join(", ")}, then ${parts[parts.length - 1] ?? ""}`}
+                    .
+                  </>
+                );
+              })()}
             </p>
-          )}
-          {(ceilings.bracketTopPct != null || ceilings.ltcgZeroCap) && (
-            <p className="mt-2 text-xs text-[var(--dim)]">
-              The bracket and 0% capital-gains ceilings limit taxable income, not
-              MAGI, so they are not drawn on this chart.
+          ) : (
+            <p className="mt-2 text-sm text-[var(--dim)]">
+              {ceilings.acaCliffCap
+                ? "No marketplace years in this plan, so there is no room under the cliff to show."
+                : "Switch on the ACA cliff cap to see the room under the cliff for the marketplace years."}
             </p>
           )}
         </section>

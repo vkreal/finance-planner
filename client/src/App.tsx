@@ -2823,8 +2823,9 @@ export function App() {
      it sits behind this persisted fold — DEFAULT COLLAPSED when no
      saved state exists (usePersistedFold's default), and whatever
      state it is left in persists across sessions like the app's
-     other section folds. The section header (title, total, More
-     explainer, Add button) stays visible either way. */
+     other section folds. The section header (title, total, info
+     tip, fold toggle) stays visible either way; the Add button
+     lives at the top of the panel body, hidden when folded. */
   const [monthlyBillsOpen, setMonthlyBillsOpen] = usePersistedFold(
     "spending.monthlyBills",
   );
@@ -2832,8 +2833,9 @@ export function App() {
      as Monthly bills — the roster is reference data, so it sits behind
      this persisted fold, DEFAULT COLLAPSED when no saved state exists,
      persisting across sessions. The section header (title, compact
-     yearly total + set-aside, More explainer, Add button) stays
-     visible either way. */
+     yearly total + set-aside, info tip, fold toggle) stays visible
+     either way; the Add button lives at the top of the panel body,
+     hidden when folded. */
   const [yearlyBillsOpen, setYearlyBillsOpen] = usePersistedFold(
     "spending.yearlyBills",
   );
@@ -5757,16 +5759,6 @@ export function App() {
                   </span>
                 </h2>
                 <div className="ml-auto flex flex-nowrap items-center gap-2">
-                  <button
-                    type="button"
-                    className={btnAdd}
-                    onClick={() => {
-                      resetBillForm();
-                      setShowBillForm(true);
-                    }}
-                  >
-                    + Add monthly bill
-                  </button>
                   {/* No summary sentence on the face: the "already included
                       in cash out, never added a second time" point lives in
                       the info tooltip in this header row's control cluster,
@@ -5794,6 +5786,21 @@ export function App() {
                   />
                 </div>
               </div>
+
+              {monthlyBillsOpen && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className={btnAdd}
+                    onClick={() => {
+                      resetBillForm();
+                      setShowBillForm(true);
+                    }}
+                  >
+                    + Add monthly bill
+                  </button>
+                </div>
+              )}
 
               {showBillForm && (
                 <form onSubmit={submitBill} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -6265,16 +6272,6 @@ export function App() {
                   </span>
                 </h2>
                 <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
-                  <button
-                    type="button"
-                    className={btnAdd}
-                    onClick={() => {
-                      resetYearlyForm();
-                      setShowYearlyForm(true);
-                    }}
-                  >
-                    + Add smoothed bill
-                  </button>
                   {/* No summary sentence on the face: the key figures now
                       live in the header above, and the spread-evenly method
                       plus the future-bill $0 rule live in the info tooltip
@@ -6307,6 +6304,21 @@ export function App() {
                   />
                 </div>
               </div>
+
+              {yearlyBillsOpen && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className={btnAdd}
+                    onClick={() => {
+                      resetYearlyForm();
+                      setShowYearlyForm(true);
+                    }}
+                  >
+                    + Add smoothed bill
+                  </button>
+                </div>
+              )}
 
               {showYearlyForm && (
                 <form onSubmit={submitYearly} className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
