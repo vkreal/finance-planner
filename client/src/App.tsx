@@ -148,6 +148,17 @@ function fmtSigned(cents: number): string {
   return cents > 0 ? `+${fmt(cents)}` : fmt(cents);
 }
 
+/* The Monthly bills header's lights-on split: the sum of the
+   in-effect amounts of the bills flagged Keep the lights on.
+   Each bill's amountCents here is the amount in effect for the
+   viewed month (0 when not yet in effect), so this plus the
+   remainder (total − this) always foots to the header total. */
+function lightsOnMonthlyCents(
+  bills: { amountCents: number; keepLightsOn: boolean }[],
+): number {
+  return bills.reduce((s, b) => s + (b.keepLightsOn ? b.amountCents : 0), 0);
+}
+
 /* Wording for a True cost minus Target difference (cents):
    positive is over the target, negative is under it, zero is
    exactly on it. Shared by the spending charts' tooltips and
@@ -6163,6 +6174,17 @@ export function App() {
                   <span className="tnum text-base font-normal text-[var(--dim)]">
                     {fmt(data.monthlyBillsTotalCents)}/mo
                   </span>
+                  {data.monthlyBills.length > 0 && (
+                    <span className="tnum text-base font-normal text-[var(--dim)]">
+                      · Lights on {fmt(lightsOnMonthlyCents(data.monthlyBills))}
+                      /mo · Regular{" "}
+                      {fmt(
+                        data.monthlyBillsTotalCents -
+                          lightsOnMonthlyCents(data.monthlyBills),
+                      )}
+                      /mo
+                    </span>
+                  )}
                 </h2>
                 <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
                   <BillsFoldChevron
