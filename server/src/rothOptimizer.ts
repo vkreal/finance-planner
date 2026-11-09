@@ -5568,15 +5568,21 @@ export function projectPlaygroundYears(
      every year, so a banked loss sheltered the same
      gains again and again and never ran down.
      (c) the cash / Roth funding draws are one-year
-     funding facts: the template's own draws price in
+     funding facts: the template's cash draw prices in
      the walk's FIRST year exactly as the single-year
-     pricer prices the template year; from the second
-     year on, the cash draw is $0 (the walk tracks no
-     cash balance that could fund a repeat) and the
-     Roth draw repeats only up to the tracked Roth
-     balance, which every year's draw — the first
-     year's included — depletes in the endRoth math
-     below. Before, both draws repeated whole forever:
+     pricer prices the template year (the walk tracks
+     no cash balance that could fund a repeat, so from
+     the second year on the cash draw is $0), and the
+     Roth draw is capped at the tracked Roth balance
+     in EVERY walked year, the first included — a
+     first-year draw larger than the balance prices
+     only up to the balance (ChatGPT SHOULD-5: before,
+     the first year priced the whole draw as cash in
+     hand against a balance that could not fund it,
+     while later years already capped). Every year's
+     draw — the first year's included — depletes the
+     tracked balance in the endRoth math below.
+     Before, both draws repeated whole forever:
      spendable funding no balance paid for.
      (d) the Medicare flags can carry a user OVERRIDE:
      the form's tri-state checkboxes resolve into the
@@ -5817,15 +5823,20 @@ export function projectPlaygroundYears(
             opts.acaHouseholdSchedule,
             calendarYear,
           );
-    // P-S4(c) (see the state block above the loop): the
-    // template's funding draws price whole in the walk's
-    // first year; from the second year on, the cash draw
-    // is $0 and the Roth draw is capped at the Roth
-    // balance the walk tracks into the year.
+    // P-S4(c) (see the state block above the loop), as
+    // extended by ChatGPT SHOULD-5: the cash draw
+    // prices whole in the walk's first year and is $0
+    // after; the Roth draw is capped at the Roth
+    // balance the walk tracks into the year in EVERY
+    // walked year, the first included — the cap is the
+    // same one later years already applied, so a
+    // first-year draw above the balance prices only up
+    // to the balance, and the unfunded part simply
+    // never enters cash in (later years present the
+    // cap the same way: the priced draw is the capped
+    // amount, with no separate unfunded readout).
     const cashDrawEffective = firstWalkYear ? templateCashDraw : 0;
-    const rothDrawEffective = firstWalkYear
-      ? templateRothDraw
-      : Math.min(templateRothDraw, Math.max(0, roth));
+    const rothDrawEffective = Math.min(templateRothDraw, Math.max(0, roth));
     // R2 (see the state block above the loop) as
     // extended by SHOULD-3: the year's harvest basis
     // percent is the CURRENT pool's ratio — the carried

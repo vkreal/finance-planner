@@ -36444,6 +36444,119 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-engines-playground-projection-first-year-roth-draw-capped",
+    kind: "tax",
+    note: "SHOULD-5 (ChatGPT review, SHOULD — settled STAND): the first projected year could spend an empty Roth account. The walk capped the Roth draw at the tracked Roth balance from the second walked year on, but the first walked year priced the template's whole Roth draw — so a first-year draw larger than the Roth balance priced as cash in hand money the balance could not fund, while the end-of-year Roth balance floored at $0 (the settlement's worked example: a draw of the filed ordinary dividends against half that balance priced the whole draw as cash in). THE FIX (rothOptimizer.ts, projectPlaygroundYears): the Roth draw is capped at the tracked Roth balance in EVERY walked year, the first included — the same cap later years already applied, so the priced draw is the capped amount and the unfunded part simply never enters cash in (later years present the cap the same way: the priced draw is the capped amount, with no separate unfunded readout). The single-year pricer is untouched — it tracks no balance, so it still prices the typed draw whole. THE WORKED EXAMPLE is built on the shared fictional sample household (server/src/sampleHousehold.ts): the sample start year, joint filing at the sample ages, household of the sample size, the sample family benchmark, no Social Security, no yields, no carry-in, no conversion, no sale, 0% return; a Roth draw of the filed ordinary dividends against a starting Roth balance of half the filed dividends. HAND-DERIVED: year 1 prices the draw only up to the balance — its priced Roth draw and its cash in are half the filed dividends, its MAGI and federal tax $0 (a Roth draw is funding, never income), and the Roth balance ends at $0; year 2 prices nothing — the balance is empty, so the priced draw and cash in are $0. PRE-FIX (verified by the probe on the tree as received) year 1 priced the whole draw as cash in against the half balance, and the empty-balance leg priced the whole draw against $0. EMPTY LEG: the same draw against a $0 starting Roth balance prices a $0 draw and $0 cash in. CONTROL — draw equals the balance: the same template with the draw at half the filed dividends walks bit-identically before and after the fix. NO-DRAW LEG: no Roth draw leaves the balance untouched at half the filed dividends and prices $0 cash in. RELOAD LEG: the main template round-tripped through projTemplateToStored and projTemplateFromStored walks identically — the stored Roth draw reads back at the filed dividends and the reloaded walk's year 1 prices the capped draw and cash in exactly as the direct walk's.",
+    expected: {
+      y1RothDraw: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      y1CashIn: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      y1Magi: 0,
+      y1Tax: 0,
+      y1EndRoth: 0,
+      y1StartRoth: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      y2RothDraw: 0,
+      y2CashIn: 0,
+      y2EndRoth: 0,
+      eY1RothDraw: 0,
+      eY1CashIn: 0,
+      eY1EndRoth: 0,
+      cY1RothDraw: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      cY1CashIn: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      cY1EndRoth: 0,
+      cY2RothDraw: 0,
+      cY2CashIn: 0,
+      nY1RothDraw: 0,
+      nY1CashIn: 0,
+      nY1EndRoth: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      rStoredRothDraw: SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100,
+      rY1RothDraw: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+      rY1CashIn: (SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100) / 2,
+    },
+    actual: () => {
+      const ORD = SAMPLE_TAX_RETURN_ORDINARY_DIVIDENDS_CENTS / 100;
+      const base: PlaygroundYearInputs = {
+        taxYear: SAMPLE_START_YEAR,
+        filingStatus: SAMPLE_FILING_STATUS,
+        agePrimary: 58,
+        ageSpouse: 56,
+        onMedicarePrimary: false,
+        onMedicareSpouse: false,
+        interest: 0,
+        ordinaryDividends: 0,
+        otherOrdinary: 0,
+        taxExemptInterest: 0,
+        ssPrimary: 0,
+        ssSpouse: 0,
+        conversion: 0,
+        stockSold: 0,
+        stockBasis: 0,
+        qualifiedDividends: 0,
+        pretaxBalance: null,
+        spouseSoleBeneficiary: true,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaBenchmarkAnnual: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS / 100,
+        stateRatePct: 0,
+      };
+      const opts = {
+        ssPrimaryClaimAge: null,
+        ssSpouseClaimAge: null,
+        ssPrimaryAnnual: null,
+        ssSpouseAnnual: null,
+        acaHouseholdSchedule: null,
+        startTaxable: null,
+        returnPct: 0,
+        drawMode: "repeat" as const,
+        moneyOutKind: "conversion" as const,
+        stopKind: "none" as const,
+        stopAge: null,
+        stopFloor: null,
+      };
+      const walk = (
+        t: PlaygroundYearInputs,
+        startRoth: number,
+        toAge: number,
+      ) => projectPlaygroundYears(t, { ...opts, toAge, startRoth });
+      const main = walk({ ...base, rothDraw: ORD }, ORD / 2, 59);
+      const m1 = main.years[0]!;
+      const m2 = main.years[1]!;
+      const empty = walk({ ...base, rothDraw: ORD }, 0, 58);
+      const e1 = empty.years[0]!;
+      const ctrl = walk({ ...base, rothDraw: ORD / 2 }, ORD / 2, 59);
+      const c1 = ctrl.years[0]!;
+      const c2 = ctrl.years[1]!;
+      const nodraw = walk({ ...base, rothDraw: 0 }, ORD / 2, 58);
+      const n1 = nodraw.years[0]!;
+      const stored = projTemplateToStored({ ...base, rothDraw: ORD });
+      const reloaded = walk(projTemplateFromStored(stored), ORD / 2, 59);
+      const r1 = reloaded.years[0]!;
+      return {
+        y1RothDraw: m1.inputs.rothDraw ?? null,
+        y1CashIn: m1.result.cashIn,
+        y1Magi: m1.result.magi,
+        y1Tax: m1.result.federalTax,
+        y1EndRoth: m1.endBalances.roth,
+        y1StartRoth: m1.startBalances.roth,
+        y2RothDraw: m2.inputs.rothDraw ?? null,
+        y2CashIn: m2.result.cashIn,
+        y2EndRoth: m2.endBalances.roth,
+        eY1RothDraw: e1.inputs.rothDraw ?? null,
+        eY1CashIn: e1.result.cashIn,
+        eY1EndRoth: e1.endBalances.roth,
+        cY1RothDraw: c1.inputs.rothDraw ?? null,
+        cY1CashIn: c1.result.cashIn,
+        cY1EndRoth: c1.endBalances.roth,
+        cY2RothDraw: c2.inputs.rothDraw ?? null,
+        cY2CashIn: c2.result.cashIn,
+        nY1RothDraw: n1.inputs.rothDraw ?? null,
+        nY1CashIn: n1.result.cashIn,
+        nY1EndRoth: n1.endBalances.roth,
+        rStoredRothDraw: stored.rothDraw,
+        rY1RothDraw: r1.inputs.rothDraw ?? null,
+        rY1CashIn: r1.result.cashIn,
+      };
+    },
+  },
+  {
     id: "tax-engines-plan-march-zero-premium-credit-cap-r3",
     kind: "tax",
     note: "R3 (parity re-review, SHOULD — settled STAND): an explicitly entered $0 marketplace premium permitted a phantom ACA credit in the plan score. An explicit zero counts as an entered premium field and activates the health premium term, but the retained credit was capped at the enrolled premium only when the applicable gross was positive (the cap keyed on healthAcaThisYear, which requires gross > 0), so a year whose applicable premium was explicitly $0 fell into the uncapped branch and kept the whole benchmark credit against a $0 premium — the score subtracted a credit no premium ever offset. THE FIX (taxEngine.ts, simulateRothPlan): the retained-credit cap now keys on the term being active for an ACA-covered person (healthAcaCapThisYear), including a gross of exactly $0, where the cap keeps $0. The funded net premium and the settlement's credit feedback keep the narrower gate — at a $0 gross the net premium is $0 under either condition — and a null applicable amount still falls back to the benchmark, against which the credit can never exceed, so no other shape moves. THE WORKED EXAMPLE is the settlement's own, built on the shared fictional sample household (server/src/sampleHousehold.ts): a retired joint-filing household of the sample size in the sample start year (both spouses under 65, retired from the start year, one priced year, no balances, no spending, no Social Security, no conversions), its ACA MAGI set by other ordinary income alone at exactly twice the guideline-year FPL for the sample household size (read from the law table in-case) — exactly 200% FPL. HAND-DERIVED: at exactly 200% FPL the start year's applicable-percentage table takes the 200–250% band's initial percentage (band edges are lower-inclusive), so the expected contribution is that percentage of MAGI and the benchmark credit is the sample family benchmark less that contribution — the figure pinned as benchmarkCredit and re-derived in-case through the engine's own credit function. EXPLICIT-ZERO LEG (the marketplace household premium entered as exactly $0): the year's retained credit, the lifetime kept credit, and the score's credit are all $0, the year's gross and net marketplace premiums are $0, and the score's net cost sits above the blank leg's by exactly the whole benchmark credit — the phantom benefit removed, nothing else moved. BLANK LEG (no premium field entered): the term never engages and the year keeps the whole benchmark credit, exactly as before — the known, deliberate blank-premium gap, unchanged by this fix. POSITIVE LEGS: a premium entered at the sample couple benchmark (below the credit) caps the kept credit at the premium itself; a premium entered at the family benchmark (above the credit) keeps the whole credit — the cap binds only below the credit, as before. MEDICARE-ONLY CONTROL: the term activated by the Medicare per-person amount alone, with nobody on Medicare this year and both marketplace amounts blank, prices the applicable gross off the benchmark fallback, so the kept credit is the whole benchmark credit, bit-identical to the blank leg — the widened cap gate moves nothing when the applicable amount was never entered.",
