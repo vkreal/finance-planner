@@ -5695,9 +5695,14 @@ export function App() {
             {/* by category — bills grouped by their category label */}
             <section aria-label="Bills by category" className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="display text-lg font-semibold">
-                  By category — {monthLabel(month)}
-                </h2>
+                <div className="min-w-0">
+                  <h2 className="display text-lg font-semibold">
+                    By category — {monthLabel(month)}
+                  </h2>
+                  <p className="tnum mt-0.5 text-sm text-[var(--dim)]">
+                    Monthly bills {fmt(data.monthlyBillsTotalCents)}/mo + yearly set-aside {fmt(data.accrualCents)}/mo
+                  </p>
+                </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <p className="display tnum text-3xl font-semibold">
                     {fmt(data.categoryBreakdownTotalCents)}
