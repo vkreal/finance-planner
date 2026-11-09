@@ -1027,8 +1027,16 @@ type DrillLine = { label: string; detail?: string | null; amountCents: number; i
      composed from getExplorerMonthLines when it loads;
    - "month": one measure cell of the Month grouping for one
      month — likewise composed from getExplorerMonthLines.
-   Every panel's lines foot exactly to totalCents, the tapped
-   number. */
+   Every panel's lines foot exactly to its total. For the
+   "lines" kind that total is the tapped number, from the same
+   grid read as the lines. For "other" / "month" the lines
+   come from the second read, so the panel's total is checked
+   against that read's own authoritative figure for the
+   measure (see authoritativeDrillTotalCents): when an edit
+   landed between the two reads the tapped total is stale,
+   and the panel totals to the current figure, says so, and
+   refreshes the grid instead of pairing fresh lines with the
+   stale total (round-9 SHOULD-4). */
 type DrillState =
   | { kind: "lines"; title: string; lines: DrillLine[]; totalCents: number }
   | { kind: "other"; title: string; month: string; totalCents: number }
@@ -1100,6 +1108,36 @@ function yearlyPaidOutDrillLines(ml: ExplorerMonthLinesData): DrillLine[] {
     }
     return { label: l.label, detail: detail || null, amountCents: l.amountCents };
   });
+}
+
+/* The authoritative total for a month-based drill, read off
+   the month-lines response itself — the figure the composed
+   lines foot to, for the tapped measure. The grid cell the
+   user tapped was priced by an earlier, independent read, so
+   after an intervening edit (for example in another tab) the
+   tapped total and this figure can disagree; this one is
+   current. The residual ("other") drill composes Cash out −
+   monthly bills − yearly paid out, which is the response's
+   everything-else figure. */
+function authoritativeDrillTotalCents(
+  d: Exclude<DrillState, { kind: "lines" }>,
+  ml: ExplorerMonthLinesData,
+): number {
+  if (d.kind === "other") return ml.everythingElseCents;
+  switch (d.measure) {
+    case "cashOut":
+      return ml.cashOutCents;
+    case "trueCost":
+      return ml.trueCostCents;
+    case "totalMonthly":
+      return ml.monthlyTotalCents;
+    case "yearlyPaidOut":
+      return ml.yearlyPaidOutCents;
+    case "everythingElse":
+      return ml.everythingElseCents;
+    case "oneOffs":
+      return ml.oneOffsCents;
+  }
 }
 
 /* The drill-down panel's line list: the lines behind one
@@ -1187,6 +1225,44 @@ function ExplorerModal({
     if (drill) drillRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [drill]);
 
+  /* Stale-total guard (round-9 SHOULD-4): for the month-based
+     drill kinds the tapped total came from the grid read while
+     the lines come from the month-lines read above — two
+     independent reads. When they disagree (an edit landed
+     between them, e.g. in another tab), the panel must not
+     pair the fresh lines with the stale tapped total: it
+     totals to the read's own authoritative figure, says the
+     figure changed, and the grid is refreshed so its cells
+     agree. The refetch fires once per distinct mismatch
+     (keyed by the tapped and current totals), never in a
+     loop — after the refresh the panel keeps showing the
+     notice for the tap that found the change. */
+  const drillMl =
+    drill && drill.kind !== "lines" && monthLines.data && monthLines.data.month === drill.month
+      ? monthLines.data
+      : null;
+  const drillCurrentTotalCents =
+    drill && drill.kind !== "lines" && drillMl
+      ? authoritativeDrillTotalCents(drill, drillMl)
+      : null;
+  const drillStale =
+    drill != null &&
+    drill.kind !== "lines" &&
+    drillCurrentTotalCents != null &&
+    drillCurrentTotalCents !== drill.totalCents;
+  const drillPanelTotalCents =
+    drillStale && drillCurrentTotalCents != null
+      ? drillCurrentTotalCents
+      : (drill?.totalCents ?? 0);
+  const staleRefetchKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!drillStale || !drill || drillCurrentTotalCents == null) return;
+    const key = `${drill.kind}:${drill.month}:${drill.kind === "month" ? drill.measure : ""}:${drill.totalCents}:${drillCurrentTotalCents}`;
+    if (staleRefetchKeyRef.current === key) return;
+    staleRefetchKeyRef.current = key;
+    void explorer.refetch();
+  }, [drillStale, drill, drillCurrentTotalCents, explorer]);
+
   function toggleRow(key: string) {
     setExpandedRows((prev) => {
       const next = new Set(prev);
@@ -1244,7 +1320,9 @@ function ExplorerModal({
 
   /* Compose the panel's lines for the month-based drill kinds
      from the loaded month lines. Every composition foots to
-     the tapped figure by construction (see the server action):
+     the read's own figure for the measure by construction
+     (see the server action) — the tapped figure whenever the
+     two reads agree, the current figure when they do not:
      Other spending / Everything else = Cash out − monthly
      bills − yearly paid out; True cost = Cash out − yearly
      paid out + set-asides. */
@@ -1603,6 +1681,15 @@ function ExplorerModal({
                   ✕
                 </button>
               </div>
+              {drillStale && drillCurrentTotalCents != null && (
+                <p className="mt-2 text-sm text-[var(--warn-deep)]" role="status">
+                  This figure changed after the grid above loaded — the grid
+                  showed {fmt(drill.totalCents)}; the current figure is{" "}
+                  {fmt(drillCurrentTotalCents)}. The lines below are the
+                  current ones, and the grid above is refreshing so it
+                  matches.
+                </p>
+              )}
               {drill.kind === "lines" ? (
                 <DrillLines lines={drill.lines} totalCents={drill.totalCents} />
               ) : monthLines.error ? (
@@ -1612,10 +1699,10 @@ function ExplorerModal({
               ) : drill.kind === "month" && drill.measure === "oneOffs" && monthLines.data.oneOffLines.length === 0 ? (
                 <>
                   <p className="mt-2 text-sm text-[var(--dim)]">No one-offs recorded for this month.</p>
-                  <DrillLines lines={[]} totalCents={drill.totalCents} />
+                  <DrillLines lines={[]} totalCents={drillPanelTotalCents} />
                 </>
               ) : (
-                <DrillLines lines={monthDrillLines(drill, monthLines.data)} totalCents={drill.totalCents} />
+                <DrillLines lines={monthDrillLines(drill, monthLines.data)} totalCents={drillPanelTotalCents} />
               )}
             </div>
           )}
