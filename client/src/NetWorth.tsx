@@ -3863,110 +3863,7 @@ export function NetWorthView() {
             <p className="mt-0.5 text-sm text-[var(--dim)]">{latest.note}</p>
           ) : null}
         </div>
-        <div className="flex max-w-full min-w-0 flex-wrap gap-2">
-          <button
-            type="button"
-            className={btnGhost}
-            onClick={() => setShowNwExplorer(true)}
-          >
-            Slice &amp; dice
-          </button>
-          <button
-            type="button"
-            className={btnGhost}
-            aria-expanded={showNwImport}
-            onClick={() => setShowNwImport(!showNwImport)}
-          >
-            Import balances
-          </button>
-          <button type="button" className={btnPrimary} onClick={openAddSnapshot}>
-            Add snapshot
-          </button>
-          <button
-            type="button"
-            className={btnGhost}
-            aria-expanded={showAccountForm}
-            onClick={() => setShowAccountForm(!showAccountForm)}
-          >
-            Add account
-          </button>
-        </div>
       </div>
-      {showAccountForm && (
-        <form
-          className="mt-3 flex flex-wrap items-end gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (newAccountName.trim())
-              addAccount.mutate({
-                name: newAccountName.trim(),
-                type: newAccountType,
-              });
-          }}
-        >
-          <div className="min-w-52 flex-1">
-            <label htmlFor="nw-new-account" className={labelCls}>Account name</label>
-            <input
-              id="nw-new-account"
-              type="text"
-              className={inputCls}
-              value={newAccountName}
-              onChange={(e) => setNewAccountName(e.target.value)}
-              placeholder="e.g. TreasuryDirect"
-            />
-          </div>
-          <div className="min-w-52 flex-1">
-            <label htmlFor="nw-new-account-type" className={labelCls}>Account type</label>
-            <select
-              id="nw-new-account-type"
-              className={inputCls}
-              value={newAccountType}
-              onChange={(e) =>
-                setNewAccountType(e.target.value as NwAccountType)
-              }
-            >
-              <option value="none">Not property</option>
-              <option value="asset">Property asset (e.g. house)</option>
-              <option value="liability">Property liability (e.g. mortgage)</option>
-              <option value="custodial">Custodial — not counted</option>
-            </select>
-          </div>
-          <button type="submit" className={btnPrimary} disabled={addAccount.isPending}>
-            {addAccount.isPending ? "Adding…" : "Add account"}
-          </button>
-          <button
-            type="button"
-            className={btnGhost}
-            onClick={() => setShowAccountForm(false)}
-          >
-            Cancel
-          </button>
-          {accountError && (
-            <p className="w-full text-sm text-[var(--bad)]">{accountError}</p>
-          )}
-          {newAccountType === "custodial" && (
-            <p className="w-full text-xs text-[var(--dim)]">
-              {CUSTODIAL_EXPLAINER}
-            </p>
-          )}
-          <p className="w-full text-xs text-[var(--dim)]">
-            A new account starts with no recorded balances — past snapshot totals
-            don&rsquo;t change. To give it a value, add or edit a snapshot.
-            Property accounts only count toward totals when
-            “Include house &amp; mortgage” is on, and never sit in a tax bucket.
-          </p>
-        </form>
-      )}
-
-      {showNwImport && (
-        <NwImportPanel
-          accounts={activeAccounts}
-          snapshots={snapshots}
-          includeProperty={includeProperty}
-          onSaved={invalidate}
-          onClose={() => setShowNwImport(false)}
-        />
-      )}
 
       {/* combined stat strip — one full-width strip: prominent
           net worth with its date, plus the two deltas as compact
@@ -5187,16 +5084,110 @@ export function NetWorthView() {
               </Explainer>
             )}
           </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={btnGhost}
+              aria-expanded={showAccountForm}
+              onClick={() => setShowAccountForm(!showAccountForm)}
+            >
+              Add account
+            </button>
+            <button
+              type="button"
+              className={btnGhost}
+              aria-expanded={showNwImport}
+              onClick={() => setShowNwImport(!showNwImport)}
+            >
+              Import balances
+            </button>
+            <button
+              type="button"
+              aria-expanded={!accountsCollapsed}
+              aria-label={accountsCollapsed ? "Expand Accounts" : "Collapse Accounts"}
+              className={btnGhost}
+              onClick={() => handleAccountsCollapsedChange(!accountsCollapsed)}
+            >
+              {accountsCollapsed ? "Expand" : "Collapse"}
+            </button>
+          </div>
+        </div>
+      {showAccountForm && (
+        <form
+          className="mt-3 flex flex-wrap items-end gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (newAccountName.trim())
+              addAccount.mutate({
+                name: newAccountName.trim(),
+                type: newAccountType,
+              });
+          }}
+        >
+          <div className="min-w-52 flex-1">
+            <label htmlFor="nw-new-account" className={labelCls}>Account name</label>
+            <input
+              id="nw-new-account"
+              type="text"
+              className={inputCls}
+              value={newAccountName}
+              onChange={(e) => setNewAccountName(e.target.value)}
+              placeholder="e.g. TreasuryDirect"
+            />
+          </div>
+          <div className="min-w-52 flex-1">
+            <label htmlFor="nw-new-account-type" className={labelCls}>Account type</label>
+            <select
+              id="nw-new-account-type"
+              className={inputCls}
+              value={newAccountType}
+              onChange={(e) =>
+                setNewAccountType(e.target.value as NwAccountType)
+              }
+            >
+              <option value="none">Not property</option>
+              <option value="asset">Property asset (e.g. house)</option>
+              <option value="liability">Property liability (e.g. mortgage)</option>
+              <option value="custodial">Custodial — not counted</option>
+            </select>
+          </div>
+          <button type="submit" className={btnPrimary} disabled={addAccount.isPending}>
+            {addAccount.isPending ? "Adding…" : "Add account"}
+          </button>
           <button
             type="button"
-            aria-expanded={!accountsCollapsed}
-            aria-label={accountsCollapsed ? "Expand Accounts" : "Collapse Accounts"}
             className={btnGhost}
-            onClick={() => handleAccountsCollapsedChange(!accountsCollapsed)}
+            onClick={() => setShowAccountForm(false)}
           >
-            {accountsCollapsed ? "Expand" : "Collapse"}
+            Cancel
           </button>
-        </div>
+          {accountError && (
+            <p className="w-full text-sm text-[var(--bad)]">{accountError}</p>
+          )}
+          {newAccountType === "custodial" && (
+            <p className="w-full text-xs text-[var(--dim)]">
+              {CUSTODIAL_EXPLAINER}
+            </p>
+          )}
+          <p className="w-full text-xs text-[var(--dim)]">
+            A new account starts with no recorded balances — past snapshot totals
+            don&rsquo;t change. To give it a value, add or edit a snapshot.
+            Property accounts only count toward totals when
+            “Include house &amp; mortgage” is on, and never sit in a tax bucket.
+          </p>
+        </form>
+      )}
+
+      {showNwImport && (
+        <NwImportPanel
+          accounts={activeAccounts}
+          snapshots={snapshots}
+          includeProperty={includeProperty}
+          onSaved={invalidate}
+          onClose={() => setShowNwImport(false)}
+        />
+      )}
+
         {!accountsCollapsed && (
         <div className="mt-3 overflow-x-auto">
           <table className="tnum w-full min-w-[700px] border-collapse text-sm">
@@ -5539,15 +5530,27 @@ export function NetWorthView() {
               </Explainer>
             )}
           </div>
-          <button
-            type="button"
-            aria-expanded={!historyCollapsed}
-            aria-label={historyCollapsed ? "Expand History" : "Collapse History"}
-            className={btnGhost}
-            onClick={() => handleHistoryCollapsedChange(!historyCollapsed)}
-          >
-            {historyCollapsed ? "Expand" : "Collapse"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={btnGhost}
+              onClick={() => setShowNwExplorer(true)}
+            >
+              Slice &amp; dice
+            </button>
+            <button type="button" className={btnPrimary} onClick={openAddSnapshot}>
+              Add snapshot
+            </button>
+            <button
+              type="button"
+              aria-expanded={!historyCollapsed}
+              aria-label={historyCollapsed ? "Expand History" : "Collapse History"}
+              className={btnGhost}
+              onClick={() => handleHistoryCollapsedChange(!historyCollapsed)}
+            >
+              {historyCollapsed ? "Expand" : "Collapse"}
+            </button>
+          </div>
         </div>
         {!historyCollapsed && (
         <div className="mt-3 overflow-x-auto">
