@@ -308,8 +308,12 @@ function currentMonth(): string {
    alignment relative to the badge: centred under it, or its
    right edge flush with the badge's), so it opens beside the
    badge that triggered it rather than at the card's edge below
-   the whole cell. Tapping outside or pressing Escape
-   closes a toggled tooltip. The label reserves right padding so
+   the whole cell. Tapping outside closes a toggled tooltip.
+   Escape dismisses the tooltip whenever it is showing — pinned
+   or hover-shown — and it stays dismissed until a fresh hover,
+   focus, or tap entry on the badge (or panel) reopens it; the
+   badge's aria-expanded always matches actual visibility. The
+   label reserves right padding so
    it never runs under the badge. Cells are compact: height fits
    the label + value. When the cell has a details target, the
    whole cell is the tap/click target: an invisible button
@@ -341,16 +345,27 @@ function QuickTile({
   children: ReactNode;
 }) {
   const [hovered, setHovered] = useState(false);
+  // Set by Escape: hides the tooltip and keeps it hidden while focus
+  // (or the pointer) merely stays on the badge. Cleared only by a
+  // fresh deliberate activation or a fresh hover/focus entry — badge
+  // mouse-enter, badge focus, badge click/tap, or tooltip-panel
+  // mouse-enter — so moving the pointer away and back, tabbing away
+  // and back, or tapping the badge reopens it, but sitting on the
+  // badge after Escape does not.
+  const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const show = open || hovered;
+  const show = (open || hovered) && !dismissed;
 
   useEffect(() => {
-    if (!open) return;
+    if (!show) return;
     const onDoc = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      onClose();
+      setHovered(false);
+      setDismissed(true);
     };
     document.addEventListener("pointerdown", onDoc);
     document.addEventListener("keydown", onKey);
@@ -358,7 +373,7 @@ function QuickTile({
       document.removeEventListener("pointerdown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose]);
+  }, [show, onClose]);
 
   return (
     <div
@@ -383,15 +398,22 @@ function QuickTile({
         <button
           type="button"
           aria-label={`How ${label} is calculated`}
-          aria-expanded={open}
+          aria-expanded={show}
           aria-controls={tipId}
           onClick={(e) => {
             e.stopPropagation();
+            setDismissed(false);
             onToggle();
           }}
-          onMouseEnter={() => setHovered(true)}
+          onMouseEnter={() => {
+            setDismissed(false);
+            setHovered(true);
+          }}
           onMouseLeave={() => setHovered(false)}
-          onFocus={() => setHovered(true)}
+          onFocus={() => {
+            setDismissed(false);
+            setHovered(true);
+          }}
           onBlur={() => setHovered(false)}
           className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
         >
@@ -416,7 +438,10 @@ function QuickTile({
           <div
             id={tipId}
             role="tooltip"
-            onMouseEnter={() => setHovered(true)}
+            onMouseEnter={() => {
+              setDismissed(false);
+              setHovered(true);
+            }}
             onMouseLeave={() => setHovered(false)}
             className={`absolute top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2.5rem)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-[13px] leading-snug font-normal whitespace-normal normal-case shadow-lg ${panelCls}`}
           >
