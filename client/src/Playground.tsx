@@ -9205,6 +9205,32 @@ export function Playground({
                     irmaa: -pg.capitalLossAllowance,
                   });
                 }
+                // 2026-11-09: four rows of the stack are
+                // placeholders at $0 — Other ordinary income,
+                // RMD for the year, Social Security received,
+                // and Tax-exempt interest hide while they price
+                // at $0 and come back when they carry a value.
+                // (The RMD row's "Not priced" state is not a $0
+                // line and stays.) Filtering them here, before
+                // the marker walk, cannot move a cliff marker:
+                // a $0 row adds 0 to both running MAGI totals,
+                // so it is never the row a crossing first lands
+                // on, and the after-the-last-row fallback still
+                // lands after the last shown row.
+                const shownAdditive = additive.filter((e) => {
+                  switch (e.key) {
+                    case "other":
+                      return pg.otherOrdinary !== 0;
+                    case "rmd":
+                      return !pg.rmdPriced || pg.rmd !== 0;
+                    case "ss":
+                      return pg.ssBenefits !== 0;
+                    case "taxexempt":
+                      return pg.taxExemptInterest !== 0;
+                    default:
+                      return true;
+                  }
+                });
                 // The ACA section applies for these markers when
                 // the result carries a cliff figure — set only
                 // when a household size was entered and not
@@ -9231,7 +9257,7 @@ export function Playground({
                 let irmaaCum = 0;
                 let acaAfter = -1;
                 let irmaaAfter = -1;
-                additive.forEach((e, i) => {
+                shownAdditive.forEach((e, i) => {
                   acaCum += e.aca;
                   irmaaCum += e.irmaa;
                   if (acaCrossed && acaAfter === -1 && acaCum > acaCliff) acaAfter = i;
@@ -9241,8 +9267,8 @@ export function Playground({
                 // running totals never passed it mid-stack (only
                 // possible on a sub-cent rounding seam), it lands
                 // after the last additive row instead.
-                if (acaCrossed && acaAfter === -1) acaAfter = additive.length - 1;
-                if (irmaaLine != null && irmaaAfter === -1) irmaaAfter = additive.length - 1;
+                if (acaCrossed && acaAfter === -1) acaAfter = shownAdditive.length - 1;
+                if (irmaaLine != null && irmaaAfter === -1) irmaaAfter = shownAdditive.length - 1;
                 const markerCls =
                   "col-span-2 rounded-[var(--radius)] bg-[var(--warn-soft)] px-2.5 py-1.5 text-xs font-medium text-[var(--warn)] sm:col-span-3 sm:text-sm";
                 const acaMarker = acaCrossed ? (
@@ -9283,7 +9309,7 @@ export function Playground({
                       How {pgYearNum} stacks up
                     </h3>
                     <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-                      {additive.map((e, i) => (
+                      {shownAdditive.map((e, i) => (
                         <Fragment key={e.key}>
                           {e.node}
                           {acaAfter === i ? acaMarker : null}

@@ -6418,7 +6418,8 @@ type AccuracySelfCheckResponse = z.infer<typeof accuracySelfCheckResponse>;
 const ACTION_PURPOSES: Record<string, string> = {
   getDashboard: "Spending dashboard for one month: true cost, cash out, bills, yearly expenses, category breakdown, and quick-view tiles. restoreEpoch (build v121) is the dataset's current restore generation — the epoch base the spending editors and deletes pass back as baseEpoch, so a view that predates a backup restore is refused.",
   getYearView: "One calendar year's spending: monthly true cost and cash out, totals, and the year's bills.",
-  getExplorer: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range.",
+  getExplorer: "Slice & dice explorer: pivot recorded spending by category, bill, paid-from, lights-on, or month over a month range. Each grouped row also carries its drill-down members — the individual bills in the group on the same month columns, or, for the Other spending row, its three composition parts (cash out, monthly bills, yearly bills paid out) — which foot to the row per month.",
+  getExplorerMonthLines: "Slice & dice drill-down: the recorded lines behind one month's explorer figures, from the same spending core — cash-out lines on the month's own basis (cash-out items, the entered month total, or checking transactions), the monthly bills in effect that month, each yearly bill's set-aside, the settlement-basis yearly paid-out aggregate, and the month's one-offs. Read-only.",
   addTransaction: "Record one spending transaction (checking or card).",
   updateTransaction: "Edit one recorded transaction. Returns { ok: false, reason } when the id does not exist. Compare-and-swap (build v65): when the caller supplies `base` (the transaction as loaded), the write is a guarded update that applies only where the stored row still equals the base fields; a mismatch returns { ok: false, conflict: true, reason } and the stored newer value stays intact. Omitting `base` keeps the legacy unchecked write. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
   deleteTransaction: "Delete one recorded transaction. Returns { ok: false, reason } when the id does not exist. Epoch-checked (build v121, round-18 F3): when the caller supplies `baseEpoch` (getDashboard's restoreEpoch as loaded), the write is refused with { ok: false, conflict: true, reason } when a backup restore has advanced the stored epoch since the load, even when the stored value still equals the base. Omitting `baseEpoch` keeps the pre-v121 behaviour.",
@@ -8368,6 +8369,21 @@ export const Actions = {
           label: z.string(),
           valuesCents: z.array(z.number()),
           totalCents: z.number(),
+          // Drill-down members: the lines that make this row up,
+          // on the same month columns — the individual bills in
+          // the group (a monthly bill at its in-effect amount, a
+          // yearly bill at its monthly set-aside), or, for the
+          // "Other spending" row, its three composition parts
+          // (Cash out, Monthly bills, Yearly bills paid out — the
+          // last two negative), which foot to the row per month.
+          members: z.array(
+            z.object({
+              name: z.string(),
+              note: z.string(),
+              valuesCents: z.array(z.number()),
+              totalCents: z.number(),
+            }),
+          ),
         }),
       ),
       columnTotalsCents: z.array(z.number()),
@@ -8470,15 +8486,15 @@ export const Actions = {
       );
 
       // --- Bill pivot (all groupings except Month) ---
-      type BillEntry = { label: string; category: string; paidFrom: string; keepLightsOn: boolean; values: number[] };
+      type BillEntry = { label: string; kind: "monthly" | "yearly"; category: string; paidFrom: string; keepLightsOn: boolean; values: number[] };
       const entries: BillEntry[] = [];
       for (const b of bills) {
         const values = months.map((m) => versionInEffect(versionsByBill.get(b.id) ?? [], m)?.amountCents ?? 0);
-        entries.push({ label: b.name, category: b.category, paidFrom: b.paidBy, keepLightsOn: b.keepLightsOn === 1, values });
+        entries.push({ label: b.name, kind: "monthly", category: b.category, paidFrom: b.paidBy, keepLightsOn: b.keepLightsOn === 1, values });
       }
       for (const y of yearly) {
         const values = months.map((m) => yearlyOutFor(y, txns, m, yearlyVersionsByExpense.get(y.id) ?? []).monthlyAccrualCents);
-        entries.push({ label: y.name, category: y.category, paidFrom: y.paidByName, keepLightsOn: y.keepLightsOn === 1, values });
+        entries.push({ label: y.name, kind: "yearly", category: y.category, paidFrom: y.paidByName, keepLightsOn: y.keepLightsOn === 1, values });
       }
       const groupLabelFor = (e: BillEntry): string => {
         if (args.groupBy === "bill") return e.label;
@@ -8486,19 +8502,36 @@ export const Actions = {
         if (args.groupBy === "keepLightsOn") return e.keepLightsOn ? "Keep the lights on" : "Not essential";
         return e.category || "Uncategorized";
       };
-      const groupMap = new Map<string, { label: string; valuesCents: number[] }>();
+      type ExplorerMember = { name: string; note: string; valuesCents: number[]; totalCents: number };
+      const groupMap = new Map<string, { label: string; valuesCents: number[]; members: ExplorerMember[] }>();
       if (args.groupBy !== "month") {
         for (const e of entries) {
           const label = groupLabelFor(e);
-          const g = groupMap.get(label) ?? { label, valuesCents: months.map(() => 0) };
+          const g = groupMap.get(label) ?? { label, valuesCents: months.map(() => 0), members: [] as ExplorerMember[] };
           e.values.forEach((v, i) => {
             g.valuesCents[i] = (g.valuesCents[i] ?? 0) + v;
+          });
+          g.members.push({
+            name: e.label,
+            note: e.kind === "monthly" ? "Monthly bill" : "Yearly · monthly set-aside",
+            valuesCents: e.values,
+            totalCents: e.values.reduce((s, v) => s + v, 0),
           });
           groupMap.set(label, g);
         }
       }
-      const rows = [...groupMap.values()]
-        .map((g) => ({ label: g.label, valuesCents: g.valuesCents, totalCents: g.valuesCents.reduce((s, v) => s + v, 0) }))
+      const rows: {
+        label: string;
+        valuesCents: number[];
+        totalCents: number;
+        members: ExplorerMember[];
+      }[] = [...groupMap.values()]
+        .map((g) => ({
+          label: g.label,
+          valuesCents: g.valuesCents,
+          totalCents: g.valuesCents.reduce((s, v) => s + v, 0),
+          members: [...g.members].sort((a, b) => b.totalCents - a.totalCents || a.name.localeCompare(b.name)),
+        }))
         .sort((a, b) => b.totalCents - a.totalCents || a.label.localeCompare(b.label));
       // "Other spending" (day-to-day, not bills) is not part of the
       // bill pivot above, but it is real money. Append it as ONE
@@ -8527,10 +8560,28 @@ export const Actions = {
         );
         const everythingElseTotal = everythingElseValues.reduce((s, v) => s + v, 0);
         if (rows.length > 0 || everythingElseValues.some((v) => v !== 0)) {
+          // Drill-down members for the residual row: its three
+          // composition parts on the same month columns. They
+          // foot to the row per month because the residual is
+          // True cost − bills = (Cash out − paid out + accrual)
+          // − (monthly total + accrual) = Cash out − monthly
+          // total − paid out (settledLumps and yearlyPaidOut are
+          // the same settlement-basis figure in the core).
+          const part = (name: string, note: string, valuesCents: number[]): ExplorerMember => ({
+            name,
+            note,
+            valuesCents,
+            totalCents: valuesCents.reduce((s, v) => s + v, 0),
+          });
           rows.push({
             label: "Other spending",
             valuesCents: everythingElseValues,
             totalCents: everythingElseTotal,
+            members: [
+              part("Cash out", "all money out that month", monthRows.map((r) => r.cashOutCents)),
+              part("Monthly bills", "counted in the bill rows above", monthRows.map((r) => -r.totalMonthlyCents)),
+              part("Yearly bills paid out", "money that left checking that month", monthRows.map((r) => -r.yearlyPaidOutCents)),
+            ],
           });
         }
       }
@@ -8548,6 +8599,139 @@ export const Actions = {
         grandTotalCents: args.groupBy === "month" ? 0 : grandTotalCents,
         monthRows,
         monthTotals,
+      };
+    },
+  }),
+
+  // Read-only drill-down behind one month's Slice & dice figures:
+  // the recorded lines each figure is made of, computed by the
+  // same spending core as getExplorer / getDashboard, so every
+  // line set foots exactly to the figure it explains. Cash out
+  // lines follow the month's cash-out basis (the eff() resolution):
+  // the month's cash-out items when it has any, the entered month
+  // total when one was entered, otherwise the month's checking
+  // transactions. Yearly bills paid out is the settlement-basis
+  // aggregate (money that left checking that month); the core
+  // attributes settlements across bills by FIFO matching, so no
+  // per-bill split of that figure exists and none is claimed.
+  getExplorerMonthLines: defineAction({
+    description: "Slice & dice drill-down: the recorded lines behind one month's explorer figures (cash-out lines, monthly bills in effect, yearly set-asides, one-offs).",
+    privileged: [privileged.ensureEncryptionKey],
+    request: z.object({
+      month: z.string().regex(monthRe),
+    }),
+    response: z.object({
+      month: z.string(),
+      cashOutCents: z.number(),
+      cashOutBasis: z.enum(["items", "entered", "transactions"]),
+      cashOutLines: z.array(
+        z.object({
+          label: z.string(),
+          detail: z.string().nullable(),
+          amountCents: z.number(),
+        }),
+      ),
+      monthlyTotalCents: z.number(),
+      monthlyBillLines: z.array(
+        z.object({ label: z.string(), amountCents: z.number() }),
+      ),
+      yearlyPaidOutCents: z.number(),
+      accrualCents: z.number(),
+      accrualLines: z.array(
+        z.object({ label: z.string(), amountCents: z.number() }),
+      ),
+      trueCostCents: z.number(),
+      everythingElseCents: z.number(),
+      oneOffsCents: z.number(),
+      oneOffLines: z.array(
+        z.object({
+          label: z.string(),
+          detail: z.string().nullable(),
+          amountCents: z.number(),
+        }),
+      ),
+    }),
+    async handler(ctx, args) {
+      const { txns, yearly, yearlyVersions, summaries, bills, billVersions, oneOffs, cashOutItems } =
+        await loadAll(ctx);
+      const m = args.month;
+      const core = createSpendingCore({
+        txns,
+        yearly,
+        yearlyVersions,
+        summaries,
+        cashOutItems,
+        bills,
+        billVersions,
+        oneOffs,
+      });
+      const e = core.eff(m);
+      const monthlyTotalCents = core.monthlyTotalForMonth(m);
+      const yearlyPaidOutCents = core.yearlyPaidOutForMonth(m);
+      const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const dayLabel = (date: string): string =>
+        `${MONTHS_SHORT[Number(date.slice(5, 7)) - 1] ?? ""} ${Number(date.slice(8, 10))}`;
+
+      const cashOutBasis: "items" | "entered" | "transactions" = core.itemsByMonth.has(m)
+        ? "items"
+        : core.summaryByMonth.has(m)
+          ? "entered"
+          : "transactions";
+      let cashOutLines: { label: string; detail: string | null; amountCents: number }[];
+      if (cashOutBasis === "items") {
+        // loadAll returns the items ordered by month, day, id —
+        // the month's lines in the order the section shows them.
+        cashOutLines = cashOutItems
+          .filter((it) => it.month === m)
+          .map((it) => ({
+            label: it.description,
+            detail: dayLabel(`${m}-${String(it.day).padStart(2, "0")}`),
+            amountCents: it.amountCents,
+          }));
+      } else if (cashOutBasis === "entered") {
+        cashOutLines = [{ label: "Entered month total", detail: null, amountCents: e.cashOut }];
+      } else {
+        // Every checking transaction counts toward the month's
+        // cash out (the core's byMonth rule), whatever its kind.
+        cashOutLines = txns
+          .filter((t) => t.sourceType === "checking" && monthOf(t.date) === m)
+          .map((t) => ({
+            label: t.description,
+            detail:
+              dayLabel(t.date) +
+              (t.kind === "card_payment" ? " · card payment" : t.kind === "transfer" ? " · transfer" : ""),
+            amountCents: t.amountCents,
+          }));
+      }
+
+      const monthlyBillLines = bills
+        .map((b) => {
+          const v = versionInEffect(core.versionsByBill.get(b.id) ?? [], m);
+          return v ? { label: b.name, amountCents: v.amountCents } : null;
+        })
+        .filter((x): x is { label: string; amountCents: number } => x != null)
+        .sort((a, b) => b.amountCents - a.amountCents || a.label.localeCompare(b.label));
+      const accrualLines = yearly
+        .map((y) => ({ label: y.name, amountCents: core.billMonthlyAccrual(y, m) }))
+        .sort((a, b) => b.amountCents - a.amountCents || a.label.localeCompare(b.label));
+      const oneOffLines = oneOffs
+        .filter((o) => o.month === m)
+        .map((o) => ({ label: o.description, detail: o.note ?? null, amountCents: o.amountCents }));
+
+      return {
+        month: m,
+        cashOutCents: e.cashOut,
+        cashOutBasis,
+        cashOutLines,
+        monthlyTotalCents,
+        monthlyBillLines,
+        yearlyPaidOutCents,
+        accrualCents: e.accrual,
+        accrualLines,
+        trueCostCents: e.smoothed,
+        everythingElseCents: e.cashOut - monthlyTotalCents - yearlyPaidOutCents,
+        oneOffsCents: oneOffLines.reduce((s, o) => s + o.amountCents, 0),
+        oneOffLines,
       };
     },
   }),

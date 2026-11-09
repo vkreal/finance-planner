@@ -1,4 +1,5 @@
 import {
+Fragment,
 useEffect,
 useId,
 useMemo,
@@ -1000,7 +1001,34 @@ function InlinePaymentForm({
 /* ---------------- slice & dice explorer ---------------- */
 
 type ExplorerData = ApiResponse<typeof api, "getExplorer">;
+type ExplorerMonthLinesData = ApiResponse<typeof api, "getExplorerMonthLines">;
 type ExplorerGroupBy = "category" | "bill" | "paidFrom" | "keepLightsOn" | "month";
+
+/* One line in the drill-down panel: part of what a tapped
+   number is made of. Indented lines sit under the line above
+   them (the cash-out lines under Cash out, the set-asides
+   under Set-asides). */
+type DrillLine = { label: string; detail?: string | null; amountCents: number; indent?: boolean };
+
+/* What the drill-down panel below the grid is showing:
+   - "lines": composed client-side from the row's members (a
+     bill group's bills for one month, or a row's range total);
+   - "other": the Other spending row's cell for one month —
+     composed from getExplorerMonthLines when it loads;
+   - "month": one measure cell of the Month grouping for one
+     month — likewise composed from getExplorerMonthLines.
+   Every panel's lines foot exactly to totalCents, the tapped
+   number. */
+type DrillState =
+  | { kind: "lines"; title: string; lines: DrillLine[]; totalCents: number }
+  | { kind: "other"; title: string; month: string; totalCents: number }
+  | {
+      kind: "month";
+      title: string;
+      month: string;
+      measure: "cashOut" | "trueCost" | "totalMonthly" | "yearlyPaidOut" | "everythingElse" | "oneOffs";
+      totalCents: number;
+    };
 
 const GROUP_BY_OPTIONS: { value: ExplorerGroupBy; label: string; column: string }[] = [
   { value: "category", label: "Category", column: "Category" },
@@ -1026,6 +1054,28 @@ function csvEscape(v: string): string {
 
 function csvMoney(cents: number): string {
   return (cents / 100).toFixed(2);
+}
+
+/* The drill-down panel's line list: the lines behind one
+   tapped number, footing to its total. */
+function DrillLines({ lines, totalCents }: { lines: DrillLine[]; totalCents: number }) {
+  return (
+    <div className="tnum mt-2 text-sm">
+      {lines.map((l, i) => (
+        <div key={i} className={`flex items-baseline justify-between gap-3 py-1${l.indent ? " pl-5" : ""}`}>
+          <span className={l.indent ? "text-[var(--dim)]" : undefined}>
+            {l.label}
+            {l.detail && <span className="block text-xs font-normal text-[var(--dim)]">{l.detail}</span>}
+          </span>
+          <span className="whitespace-nowrap">{fmt(l.amountCents)}</span>
+        </div>
+      ))}
+      <div className="mt-1 flex items-baseline justify-between gap-3 border-t border-[var(--border)] pt-2 font-semibold">
+        <span>Total</span>
+        <span className="whitespace-nowrap">{fmt(totalCents)}</span>
+      </div>
+    </div>
+  );
 }
 
 function ExplorerModal({
@@ -1066,6 +1116,142 @@ function ExplorerModal({
     enabled: !rangeInvalid && rangeMonths > 0,
   });
   const ex: ExplorerData | undefined = explorer.data;
+
+  /* ---- Drill-down: row expansion + per-cell lines ----
+     Expansion is keyed by row (label + index, the row's own
+     key); the drill panel shows one tapped cell at a time.
+     Both reset whenever the range or grouping changes, since
+     the rows they point at are rebuilt by the new query. */
+  const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(new Set());
+  const [drill, setDrill] = useState<DrillState | null>(null);
+  useEffect(() => {
+    setExpandedRows(new Set());
+    setDrill(null);
+  }, [groupBy, fromMonth, toMonth]);
+
+  const drillMonth = drill && drill.kind !== "lines" ? drill.month : null;
+  const monthLines = useQuery({
+    queryKey: ["explorerMonthLines", drillMonth],
+    queryFn: () => api.getExplorerMonthLines({ month: drillMonth ?? "" }),
+    enabled: drillMonth != null,
+  });
+
+  const drillRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (drill) drillRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [drill]);
+
+  function toggleRow(key: string) {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  /* Lines for a bill-group cell, from the row's members: one
+     line per bill in the group (zero lines dropped — they add
+     nothing to the sum — unless every line is zero). */
+  function memberLines(
+    members: ExplorerData["rows"][number]["members"],
+    pick: (mm: ExplorerData["rows"][number]["members"][number]) => number,
+  ): DrillLine[] {
+    const all = members.map((mm) => ({ label: mm.name, detail: mm.note, amountCents: pick(mm) }));
+    const nonzero = all.filter((l) => l.amountCents !== 0);
+    return nonzero.length > 0 ? nonzero : all;
+  }
+
+  function openGroupCell(
+    r: ExplorerData["rows"][number],
+    monthIdx: number | null,
+    valueCents: number,
+  ) {
+    const monthKey = monthIdx != null ? (ex?.months[monthIdx] ?? "") : "";
+    const when = monthIdx != null ? shortMonthLabel(monthKey) : "Total for the range";
+    if (r.label === "Other spending" && monthIdx != null) {
+      setDrill({ kind: "other", title: `Other spending — ${when}`, month: monthKey, totalCents: valueCents });
+      return;
+    }
+    setDrill({
+      kind: "lines",
+      title: `${r.label} — ${when}`,
+      lines: memberLines(r.members, (mm) => (monthIdx != null ? (mm.valuesCents[monthIdx] ?? 0) : mm.totalCents)),
+      totalCents: valueCents,
+    });
+  }
+
+  function openMonthCell(
+    monthKey: string,
+    measure: Extract<DrillState, { kind: "month" }>["measure"],
+    measureLabel: string,
+    valueCents: number,
+  ) {
+    setDrill({
+      kind: "month",
+      title: `${measureLabel} — ${monthLabel(monthKey)}`,
+      month: monthKey,
+      measure,
+      totalCents: valueCents,
+    });
+  }
+
+  /* Compose the panel's lines for the month-based drill kinds
+     from the loaded month lines. Every composition foots to
+     the tapped figure by construction (see the server action):
+     Other spending / Everything else = Cash out − monthly
+     bills − yearly paid out; True cost = Cash out − yearly
+     paid out + set-asides. */
+  function monthDrillLines(d: Exclude<DrillState, { kind: "lines" }>, ml: ExplorerMonthLinesData): DrillLine[] {
+    const basisDetail =
+      ml.cashOutBasis === "items"
+        ? "the month's cash-out lines"
+        : ml.cashOutBasis === "entered"
+          ? "entered as one month total"
+          : "from checking transactions";
+    const cashOutBlock: DrillLine[] = [
+      { label: "Cash out", detail: basisDetail, amountCents: ml.cashOutCents },
+      ...ml.cashOutLines.map((l) => ({ label: l.label, detail: l.detail, amountCents: l.amountCents, indent: true })),
+    ];
+    if (d.kind === "other") {
+      return [
+        ...cashOutBlock,
+        { label: "Monthly bills", detail: "counted in the bill rows", amountCents: -ml.monthlyTotalCents },
+        { label: "Yearly bills paid out", detail: "money that left checking this month", amountCents: -ml.yearlyPaidOutCents },
+      ];
+    }
+    switch (d.measure) {
+      case "cashOut":
+        return cashOutBlock;
+      case "trueCost":
+        return [
+          { label: "Cash out", detail: basisDetail, amountCents: ml.cashOutCents },
+          { label: "Yearly bills paid out", detail: "money that left checking this month", amountCents: -ml.yearlyPaidOutCents },
+          { label: "Set-asides", detail: "yearly & periodic bills, smoothed", amountCents: ml.accrualCents },
+          ...ml.accrualLines
+            .filter((l) => l.amountCents !== 0)
+            .map((l) => ({ label: l.label, detail: "monthly set-aside", amountCents: l.amountCents, indent: true })),
+        ];
+      case "totalMonthly":
+        return ml.monthlyBillLines.map((l) => ({ label: l.label, detail: "Monthly bill", amountCents: l.amountCents }));
+      case "yearlyPaidOut":
+        return [
+          {
+            label: "Yearly & periodic bills paid out",
+            detail: "counted in the month the money left checking — a bill charged to a card counts when the card payment settles it",
+            amountCents: ml.yearlyPaidOutCents,
+          },
+        ];
+      case "everythingElse":
+        return [
+          { label: "Cash out", detail: basisDetail, amountCents: ml.cashOutCents },
+          { label: "Total monthly bills", amountCents: -ml.monthlyTotalCents },
+          { label: "Yearly bills paid out", detail: "money that left checking this month", amountCents: -ml.yearlyPaidOutCents },
+        ];
+      case "oneOffs":
+        return ml.oneOffLines.map((l) => ({ label: l.label, detail: l.detail, amountCents: l.amountCents }));
+    }
+  }
 
   function downloadCsv() {
     if (!ex) return;
@@ -1139,7 +1325,7 @@ function ExplorerModal({
               summary="Explore bills by month over any date range — the first 36 months of the range are shown and exported; read-only: nothing here changes your data."
             >
               <p>
-                Explore the data — bills by month over any date range. Monthly bills count at the amount in effect that month; yearly &amp; periodic bills count at their monthly set-aside. Category and Keep-the-lights-on groupings use each bill&rsquo;s current label for every month, past and present. The final Other spending row is the day-to-day money that isn&rsquo;t bills, on the True cost basis, so each month totals to its True cost. (In the Month grouping, Everything else is the same day-to-day money on the cash-out basis.) Read-only: nothing here changes your data.
+                Explore the data — bills by month over any date range. Monthly bills count at the amount in effect that month; yearly &amp; periodic bills count at their monthly set-aside. Category and Keep-the-lights-on groupings use each bill&rsquo;s current label for every month, past and present. The final Other spending row is the day-to-day money that isn&rsquo;t bills, on the True cost basis, so each month totals to its True cost. (In the Month grouping, Everything else is the same day-to-day money on the cash-out basis.) Tap a row&rsquo;s + to open it into what makes it up; tap any number to see the lines behind that month&rsquo;s figure. Read-only: nothing here changes your data.
               </p>
             </Explainer>
           </div>
@@ -1193,53 +1379,115 @@ function ExplorerModal({
             ex.rows.length === 0 ? (
               <p className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">No bills in this range.</p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="tnum w-full min-w-[540px] border-collapse text-sm">
-                  <caption className="sr-only">Bills grouped by {colLabel}, by month</caption>
-                  <thead>
-                    <tr className="border-b border-[var(--border)] text-left">
-                      <th scope="col" className="py-2 pr-3 font-semibold">{colLabel}</th>
-                      {ex.months.map((m) => (
-                        <th key={m} scope="col" className="py-2 pr-3 text-right font-semibold whitespace-nowrap">{shortMonthLabel(m)}</th>
-                      ))}
-                      <th scope="col" className="py-2 text-right font-semibold">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ex.rows.map((r, rowIdx) => {
-                      const isEverythingElse = r.label === "Other spending";
-                      return (
-                        <tr
-                          key={`${r.label}-${rowIdx}`}
-                          className={`border-b border-[var(--border)]${isEverythingElse ? " bg-[var(--surface-alt)]" : ""}`}
-                        >
-                          <th scope="row" className="py-2 pr-3 text-left font-medium">
-                            {r.label}
-                            {isEverythingElse && (
-                              <span className="block text-xs font-normal text-[var(--dim)]">
-                                day-to-day · not bills · True cost basis
-                              </span>
-                            )}
-                          </th>
-                          {r.valuesCents.map((v, i) => (
-                            <td key={i} className="py-2 pr-3 text-right whitespace-nowrap">{fmt(v)}</td>
-                          ))}
-                          <td className="py-2 text-right font-semibold whitespace-nowrap">{fmt(r.totalCents)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr className="font-semibold">
-                      <th scope="row" className="py-2 pr-3 text-left">Grand total</th>
-                      {ex.columnTotalsCents.map((v, i) => (
-                        <td key={i} className="py-2 pr-3 text-right whitespace-nowrap">{fmt(v)}</td>
-                      ))}
-                      <td className="py-2 text-right whitespace-nowrap">{fmt(ex.grandTotalCents)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
+              <>
+                <p className="mb-2 text-xs text-[var(--dim)]">Tap + to open a row into what makes it up; tap a number for that month&rsquo;s lines.</p>
+                <div className="overflow-x-auto">
+                  <table className="tnum w-full min-w-[540px] border-collapse text-sm">
+                    <caption className="sr-only">Bills grouped by {colLabel}, by month</caption>
+                    <thead>
+                      <tr className="border-b border-[var(--border)] text-left">
+                        <th scope="col" className="py-2 pr-3 font-semibold">{colLabel}</th>
+                        {ex.months.map((m) => (
+                          <th key={m} scope="col" className="py-2 pr-3 text-right font-semibold whitespace-nowrap">{shortMonthLabel(m)}</th>
+                        ))}
+                        <th scope="col" className="py-2 text-right font-semibold">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ex.rows.map((r, rowIdx) => {
+                        const rowKey = `${r.label}-${rowIdx}`;
+                        const isOther = r.label === "Other spending";
+                        const isOpen = expandedRows.has(rowKey);
+                        const canExpand = r.members.length > 1;
+                        return (
+                          <Fragment key={rowKey}>
+                            <tr className={`border-b border-[var(--border)]${isOther ? " bg-[var(--surface-alt)]" : ""}`}>
+                              <th scope="row" className="py-2 pr-3 text-left font-medium">
+                                <span className="flex items-start gap-1">
+                                  {canExpand ? (
+                                    <button
+                                      type="button"
+                                      aria-expanded={isOpen}
+                                      aria-label={`${isOpen ? "Collapse" : "Expand"} ${r.label} row`}
+                                      onClick={() => toggleRow(rowKey)}
+                                      className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-[var(--dim)]"
+                                    >
+                                      <svg
+                                        width="10"
+                                        height="10"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                        aria-hidden="true"
+                                        className={`transition-transform duration-200 motion-reduce:transition-none${isOpen ? " rotate-90" : ""}`}
+                                      >
+                                        <path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                      </svg>
+                                    </button>
+                                  ) : (
+                                    <span aria-hidden="true" className="w-5 shrink-0" />
+                                  )}
+                                  <span>
+                                    {r.label}
+                                    {isOther && (
+                                      <span className="block text-xs font-normal text-[var(--dim)]">
+                                        day-to-day · not bills · True cost basis
+                                      </span>
+                                    )}
+                                  </span>
+                                </span>
+                              </th>
+                              {r.valuesCents.map((v, i) => (
+                                <td key={i} className="py-2 pr-3 text-right whitespace-nowrap">
+                                  <button
+                                    type="button"
+                                    aria-label={`Lines behind ${r.label}, ${shortMonthLabel(ex.months[i] ?? "")}: ${fmt(v)}`}
+                                    className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                                    onClick={() => openGroupCell(r, i, v)}
+                                  >
+                                    {fmt(v)}
+                                  </button>
+                                </td>
+                              ))}
+                              <td className="py-2 text-right font-semibold whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  aria-label={`Lines behind ${r.label} total: ${fmt(r.totalCents)}`}
+                                  className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                                  onClick={() => openGroupCell(r, null, r.totalCents)}
+                                >
+                                  {fmt(r.totalCents)}
+                                </button>
+                              </td>
+                            </tr>
+                            {isOpen &&
+                              r.members.map((mm, mi) => (
+                                <tr key={`${rowKey}-member-${mi}`} className={`border-b border-[var(--border)]${isOther ? " bg-[var(--surface-alt)]" : ""}`}>
+                                  <th scope="row" className="py-1.5 pr-3 pl-9 text-left font-normal text-[var(--dim)]">
+                                    {mm.name}
+                                    <span className="block text-xs">{mm.note}</span>
+                                  </th>
+                                  {mm.valuesCents.map((v, i) => (
+                                    <td key={i} className="py-1.5 pr-3 text-right whitespace-nowrap text-[var(--dim)]">{fmt(v)}</td>
+                                  ))}
+                                  <td className="py-1.5 text-right whitespace-nowrap text-[var(--dim)]">{fmt(mm.totalCents)}</td>
+                                </tr>
+                              ))}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="font-semibold">
+                        <th scope="row" className="py-2 pr-3 text-left">Grand total</th>
+                        {ex.columnTotalsCents.map((v, i) => (
+                          <td key={i} className="py-2 pr-3 text-right whitespace-nowrap">{fmt(v)}</td>
+                        ))}
+                        <td className="py-2 text-right whitespace-nowrap">{fmt(ex.grandTotalCents)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </>
             )
           )}
           {ex && groupBy === "month" && (
@@ -1261,12 +1509,27 @@ function ExplorerModal({
                   {ex.monthRows.map((r) => (
                     <tr key={r.month} className="border-b border-[var(--border)]">
                       <th scope="row" className="py-2 pr-3 text-left font-medium whitespace-nowrap">{monthLabel(r.month)}</th>
-                      <td className="py-2 pr-3 text-right whitespace-nowrap">{fmt(r.cashOutCents)}</td>
-                      <td className="py-2 pr-3 text-right whitespace-nowrap">{fmt(r.trueCostCents)}</td>
-                      <td className="py-2 pr-3 text-right whitespace-nowrap">{fmt(r.totalMonthlyCents)}</td>
-                      <td className="py-2 pr-3 text-right whitespace-nowrap">{fmt(r.yearlyPaidOutCents)}</td>
-                      <td className="py-2 pr-3 text-right whitespace-nowrap">{fmt(r.everythingElseCents)}</td>
-                      <td className="py-2 text-right whitespace-nowrap">{fmt(r.oneOffsCents)}</td>
+                      {(
+                        [
+                          ["cashOut", "Cash out", r.cashOutCents],
+                          ["trueCost", "True cost", r.trueCostCents],
+                          ["totalMonthly", "Total monthly", r.totalMonthlyCents],
+                          ["yearlyPaidOut", "Yearly paid out", r.yearlyPaidOutCents],
+                          ["everythingElse", "Everything else", r.everythingElseCents],
+                          ["oneOffs", "One-offs", r.oneOffsCents],
+                        ] as const
+                      ).map(([measure, measureLabel, v], ci) => (
+                        <td key={measure} className={`py-2 text-right whitespace-nowrap${ci < 5 ? " pr-3" : ""}`}>
+                          <button
+                            type="button"
+                            aria-label={`Lines behind ${measureLabel}, ${monthLabel(r.month)}: ${fmt(v)}`}
+                            className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                            onClick={() => openMonthCell(r.month, measure, measureLabel, v)}
+                          >
+                            {fmt(v)}
+                          </button>
+                        </td>
+                      ))}
                     </tr>
                   ))}
                 </tbody>
@@ -1282,6 +1545,38 @@ function ExplorerModal({
                   </tr>
                 </tfoot>
               </table>
+            </div>
+          )}
+          {drill && (
+            <div
+              ref={drillRef}
+              className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="font-semibold">{drill.title}</h3>
+                <button
+                  type="button"
+                  aria-label="Close drill-down"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] text-[var(--text)]"
+                  onClick={() => setDrill(null)}
+                >
+                  ✕
+                </button>
+              </div>
+              {drill.kind === "lines" ? (
+                <DrillLines lines={drill.lines} totalCents={drill.totalCents} />
+              ) : monthLines.error ? (
+                <p className="mt-2 text-sm text-[var(--bad)]">Something went wrong loading the lines. Try again.</p>
+              ) : !monthLines.data || monthLines.data.month !== drill.month ? (
+                <p className="mt-2 text-sm text-[var(--dim)]">Loading…</p>
+              ) : drill.kind === "month" && drill.measure === "oneOffs" && monthLines.data.oneOffLines.length === 0 ? (
+                <>
+                  <p className="mt-2 text-sm text-[var(--dim)]">No one-offs recorded for this month.</p>
+                  <DrillLines lines={[]} totalCents={drill.totalCents} />
+                </>
+              ) : (
+                <DrillLines lines={monthDrillLines(drill, monthLines.data)} totalCents={drill.totalCents} />
+              )}
             </div>
           )}
         </div>

@@ -4431,36 +4431,63 @@ export function RetirementCalc({
                   <p className="text-xs text-[var(--dim)]">
                     Guardrails corridor — each year&rsquo;s withdrawal rate against its starting rate
                   </p>
-                  <div
-                    className="relative mt-1 flex h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]"
-                    role="img"
-                    aria-label={`Guardrails corridor: spending rises by ${adj}% when the withdrawal rate falls below ${raise}% of its starting rate, and falls by ${adj}% when the rate rises above ${cut}% of its starting rate; between ${raise}% and ${cut}% spending is unchanged.`}
-                  >
-                    <div className="h-full bg-[var(--surface-alt)]" style={{ width: `${raisePos}%` }} />
-                    <div className="h-full bg-[var(--accent-soft)]" style={{ width: `${Math.max(0, cutPos - raisePos)}%` }} />
-                    <div className="h-full flex-1 bg-[var(--warn-soft)]" />
+                  {/* Provenance taps (2026-11-09): each
+                      number on the band taps to the field it
+                      comes from — Raise to the Raise trigger,
+                      Cut to the Cut trigger, the pill to the
+                      Adjustment size — with the same dotted
+                      underline + scroll-and-flash as the other
+                      provenance taps. "start 100%" is the
+                      corridor's definition baseline, not a
+                      field, so it stays plain. The band's
+                      description moves to an sr-only paragraph:
+                      the bar itself is now decorative segments
+                      plus a real button, so it no longer wears
+                      role="img". */}
+                  <p className="sr-only">
+                    {`Guardrails corridor: spending rises by ${adj}% when the withdrawal rate falls below ${raise}% of its starting rate, and falls by ${adj}% when the rate rises above ${cut}% of its starting rate; between ${raise}% and ${cut}% spending is unchanged.`}
+                  </p>
+                  <div className="relative mt-1 flex h-10 w-full overflow-hidden rounded-[var(--radius)] border border-[var(--border)]">
+                    <div aria-hidden="true" className="h-full bg-[var(--surface-alt)]" style={{ width: `${raisePos}%` }} />
+                    <div aria-hidden="true" className="h-full bg-[var(--accent-soft)]" style={{ width: `${Math.max(0, cutPos - raisePos)}%` }} />
+                    <div aria-hidden="true" className="h-full flex-1 bg-[var(--warn-soft)]" />
                     <div
                       aria-hidden="true"
                       className="absolute inset-y-0 border-l border-dashed border-[var(--dim)]"
                       style={{ left: `${startPos}%` }}
                     />
-                    <span
-                      className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap"
+                    <button
+                      type="button"
+                      aria-label="Go to the Adjustment size field"
+                      onClick={() => jumpToRcField("rc-guardrails-adjustment")}
+                      className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
                       style={{ left: `${(raisePos + cutPos) / 2}%` }}
                     >
                       Adjust ±{adj}%
-                    </span>
+                    </button>
                   </div>
                   <div className="relative mt-1 h-4 text-[11px] whitespace-nowrap text-[var(--dim)]">
-                    <span className="absolute -translate-x-1/2" style={{ left: `${raisePos}%` }}>
+                    <button
+                      type="button"
+                      aria-label="Go to the Raise trigger field"
+                      onClick={() => jumpToRcField("rc-guardrails-raise")}
+                      className={`absolute -translate-x-1/2 ${rcTapCls}`}
+                      style={{ left: `${raisePos}%` }}
+                    >
                       Raise {raise}%
-                    </span>
+                    </button>
                     <span className="absolute -translate-x-1/2" style={{ left: `${startPos}%` }}>
                       start 100%
                     </span>
-                    <span className="absolute -translate-x-1/2" style={{ left: `${cutPos}%` }}>
+                    <button
+                      type="button"
+                      aria-label="Go to the Cut trigger field"
+                      onClick={() => jumpToRcField("rc-guardrails-cut")}
+                      className={`absolute -translate-x-1/2 ${rcTapCls}`}
+                      style={{ left: `${cutPos}%` }}
+                    >
                       Cut {cut}%
-                    </span>
+                    </button>
                   </div>
                 </div>
               );
