@@ -1215,7 +1215,7 @@ function ExplorerModal({
   ) {
     const monthKey = monthIdx != null ? (ex?.months[monthIdx] ?? "") : "";
     const when = monthIdx != null ? shortMonthLabel(monthKey) : "Total for the range";
-    if (r.label === "Other spending" && monthIdx != null) {
+    if (r.kind === "residual" && monthIdx != null) {
       setDrill({ kind: "other", title: `Other spending — ${when}`, month: monthKey, totalCents: valueCents });
       return;
     }
@@ -1436,7 +1436,7 @@ function ExplorerModal({
                     <tbody>
                       {ex.rows.map((r, rowIdx) => {
                         const rowKey = `${r.label}-${rowIdx}`;
-                        const isOther = r.label === "Other spending";
+                        const isOther = r.kind === "residual";
                         const isOpen = expandedRows.has(rowKey);
                         const canExpand = r.members.length > 1;
                         return (

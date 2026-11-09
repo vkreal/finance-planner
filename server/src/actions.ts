@@ -8367,6 +8367,13 @@ export const Actions = {
       rows: z.array(
         z.object({
           label: z.string(),
+          // Explicit row kind: "billGroup" for a row built from
+          // bills (its label is a bill name, category, paid-from
+          // label, or lights-on group — any of which a user can
+          // literally name "Other spending"), "residual" for the
+          // appended Other spending residual row. The client
+          // routes and styles on this, never on the label text.
+          kind: z.enum(["billGroup", "residual"]),
           valuesCents: z.array(z.number()),
           totalCents: z.number(),
           // Drill-down members: the lines that make this row up,
@@ -8522,12 +8529,14 @@ export const Actions = {
       }
       const rows: {
         label: string;
+        kind: "billGroup" | "residual";
         valuesCents: number[];
         totalCents: number;
         members: ExplorerMember[];
       }[] = [...groupMap.values()]
         .map((g) => ({
           label: g.label,
+          kind: "billGroup" as const,
           valuesCents: g.valuesCents,
           totalCents: g.valuesCents.reduce((s, v) => s + v, 0),
           members: [...g.members].sort((a, b) => b.totalCents - a.totalCents || a.name.localeCompare(b.name)),
@@ -8575,6 +8584,7 @@ export const Actions = {
           });
           rows.push({
             label: "Other spending",
+            kind: "residual",
             valuesCents: everythingElseValues,
             totalCents: everythingElseTotal,
             members: [
