@@ -300,8 +300,9 @@ function currentMonth(): string {
    they sit inside one card per group (see renderMonthTiles) and
    are divided from their neighbours by hairlines carried in the
    className each caller passes. The badge toggles a plain-words
-   tooltip on tap/click; hovering or focusing the cell shows it
-   too — the tooltip carries the cell's definition, which does not
+   tooltip on tap/click; hovering or focusing the badge itself
+   shows it too (hovering the rest of the cell does not) — the
+   tooltip carries the cell's definition, which does not
    print on the cell's face. Tapping outside or pressing Escape
    closes a toggled tooltip. The label reserves right padding so
    it never runs under the badge. Cells are compact: height fits
@@ -357,8 +358,6 @@ function QuickTile({
   return (
     <div
       ref={ref}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       className={`group relative flex flex-col p-3.5 sm:p-4 ${className}`}
     >
       {onDetails && (
@@ -384,6 +383,8 @@ function QuickTile({
           e.stopPropagation();
           onToggle();
         }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         onFocus={() => setHovered(true)}
         onBlur={() => setHovered(false)}
         className="absolute top-2 right-2 z-20 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
@@ -409,6 +410,8 @@ function QuickTile({
         <div
           id={tipId}
           role="tooltip"
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
           className={`absolute top-full z-30 mt-2 w-64 max-w-[calc(100vw-2.5rem)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-[13px] leading-snug font-normal whitespace-normal normal-case shadow-lg ${panelCls}`}
         >
           {tip}
