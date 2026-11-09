@@ -5236,21 +5236,6 @@ export function App() {
 
         {data && (
           <>
-            {/* slice & dice entry — slim one-line row */}
-            <section aria-label="Explore the data" className="mt-5">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-left text-sm text-[var(--dim)] hover:border-[var(--accent)] hover:text-[var(--text)] sm:px-4"
-                onClick={() => openExplorer("category")}
-              >
-                <span className="min-w-0 truncate whitespace-nowrap">
-                  <span className="font-medium text-[var(--text)]">Slice &amp; dice</span>
-                  {" — explore data, download CSV"}
-                </span>
-                <span aria-hidden="true" className="shrink-0 text-[var(--accent)]">→</span>
-              </button>
-            </section>
-
             {showExplorer && (
               <ExplorerModal
                 viewedMonth={month}
@@ -5280,6 +5265,15 @@ export function App() {
                 <p className="text-xs font-medium tracking-wide text-[var(--dim)] uppercase">
                   Quick view — {inYearMode ? viewYear : monthLabel(month)}
                 </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    aria-label="Slice & dice"
+                    onClick={() => openExplorer("category")}
+                    className="text-xs font-medium whitespace-nowrap text-[var(--dim)] underline-offset-2 hover:text-[var(--accent)] hover:underline focus-visible:text-[var(--accent)] focus-visible:underline"
+                  >
+                    Slice &amp; dice <span aria-hidden="true">→</span>
+                  </button>
                 <div
                   role="group"
                   aria-label="Quick view mode"
@@ -5308,6 +5302,7 @@ export function App() {
                   >
                     Year
                   </button>
+                </div>
                 </div>
               </div>
               {inYearMode && yearView.isPending && (
