@@ -1328,10 +1328,20 @@ export function RothConversion({
   useEffect(() => {
     if (!jumpTarget || jumpTarget.nonce === lastJumpNonce.current) return;
     if (!data || !uiq.data) return;
+    // Wait for the UI-state init above to land first: until it
+    // has, this closure's openSections still holds the local
+    // defaults, so a jump to a default-open section the user
+    // left closed on the server (household, money, …) would
+    // read it as already open, never open it, and find no field
+    // to scroll to. Gating on uiInit makes the jump run on the
+    // first render whose openSections is the server's, where
+    // its open-check is true. The nonce is only consumed on
+    // that run, so the gate cannot swallow a target.
+    if (!uiInit) return;
     lastJumpNonce.current = jumpTarget.nonce;
     jumpToField(jumpTarget.fieldId, jumpTarget.section);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jumpTarget, data, uiq.data]);
+  }, [jumpTarget, data, uiq.data, uiInit]);
   // Keep the tracked revision in step with refetches (the
   // server invalidates this query after writes, ours included).
   // A stale in-flight refetch can only move it backwards into a

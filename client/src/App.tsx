@@ -73,7 +73,7 @@ import {
 import { usePersistedChoice } from "./persistedChoice";
 import { NetWorthView } from "./NetWorth";
 import { RetirementCalc } from "./RetirementCalc";
-import { RothConversion } from "./RothConversion";
+import { RothConversion, type RothSectionId } from "./RothConversion";
 import { Playground } from "./Playground";
 import { YearInSpendingBlock } from "./YearBlocks";
 import { FoldChevron } from "./FoldChevron";
@@ -2437,10 +2437,13 @@ export function App() {
      RothConversion's existing jumpTarget mechanism
      (build v133) jumps to the named field once the plan has
      loaded, opening its section on the All settings face. The
-     nonce makes each tap fire exactly once. */
+     nonce makes each tap fire exactly once. The Retirement
+     view's Calculated-with taps (Spending / Ages / Expected
+     return) set the same target, landing in the household or
+     advanced section as their field requires. */
   const [rothJumpTarget, setRothJumpTarget] = useState<{
     fieldId: string;
-    section: "money";
+    section: RothSectionId;
     nonce: number;
   } | null>(null);
   const [viewYear, setViewYear] = useState<number>(() =>
@@ -4437,7 +4440,12 @@ export function App() {
         <SafeAreaTopScrim backgroundColor="var(--bg)" />
         <main className="mx-auto w-full max-w-5xl px-4 pb-16">
           {topBar}
-          <RetirementCalc />
+          <RetirementCalc
+            onJumpToTaxPlan={(target) => {
+              setRothJumpTarget(target);
+              setTopView("roth");
+            }}
+          />
         </main>
       </div>
     );
@@ -5409,11 +5417,29 @@ export function App() {
               <dl className="tnum mt-3 space-y-1 border-t border-[var(--border)] pt-3 text-base">
                 <div className="flex justify-between gap-3 text-[var(--dim)]">
                   <dt>Checked monthly bills</dt>
-                  <dd>{fmt(data.keepLightsOnMonthlyCents)}/mo</dd>
+                  <dd>
+                    <button
+                      type="button"
+                      aria-label="Go to Monthly bills"
+                      className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                      onClick={() => scrollToSection("section-monthly-bills")}
+                    >
+                      {fmt(data.keepLightsOnMonthlyCents)}/mo
+                    </button>
+                  </dd>
                 </div>
                 <div className="flex justify-between gap-3 text-[var(--dim)]">
                   <dt>+ Checked smoothed bills (set-aside)</dt>
-                  <dd>{fmt(data.keepLightsOnSmoothedCents)}/mo</dd>
+                  <dd>
+                    <button
+                      type="button"
+                      aria-label="Go to Yearly & periodic expenses"
+                      className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                      onClick={() => scrollToSection("section-yearly-expenses")}
+                    >
+                      {fmt(data.keepLightsOnSmoothedCents)}/mo
+                    </button>
+                  </dd>
                 </div>
                 <div className="flex justify-between gap-3 border-t border-[var(--border)] pt-2 font-semibold">
                   <dt>= Keep the lights on floor</dt>

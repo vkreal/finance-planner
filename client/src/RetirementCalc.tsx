@@ -17,6 +17,7 @@ YAxis,
 import { api, type ApiResponse } from "./api";
 import { Explainer } from "./Explainer";
 import { FoldChevron } from "./FoldChevron";
+import type { RothSectionId } from "./RothConversion";
 import { usePersistedFold } from "./foldState";
 import { usePersistedChoice } from "./persistedChoice";
 import {
@@ -450,7 +451,15 @@ const SAVE_HOLD_MAX_POLLS = 100;
    (RothConversion.tsx, Playground.tsx). */
 const DEFERRED_FLUSH_GIVE_UP_MS = 30000;
 
-export function RetirementCalc() {
+export function RetirementCalc({
+  onJumpToTaxPlan,
+}: {
+  onJumpToTaxPlan?: (target: {
+    fieldId: string;
+    section: RothSectionId;
+    nonce: number;
+  }) => void;
+} = {}) {
   const queryClient = useQueryClient();
   const q = useQuery({
     queryKey: ["retirementcalc"],
@@ -514,12 +523,14 @@ export function RetirementCalc() {
     "retirement.inputsFolded",
   );
   const inputsOpen = !inputsFolded;
-  // (Build v140 — one source, multiple edit locations: the
-  // provenance taps to the Tax Plan are gone. Every value this
-  // view shows is either an editable input in place or plain
-  // text, except the header summary's values, which are taps
-  // back to the fields below (build v146); nothing jumps to
-  // the Tax Plan any more.)
+  // (Build v140 — one source, multiple edit locations: every
+  // value this view shows is either an editable input in place
+  // or plain text, except the header summary's values, which
+  // are taps back to the fields below (build v146). The
+  // Calculated-with tiles are taps to where each number lives
+  // — Portfolio to the field below, Spending / Ages / Expected
+  // return across to the Tax Plan record — taps only, they
+  // edit nothing in place.)
   const [mcSeed, setMcSeed] = useState(MONTE_CARLO_TAB_SEED_DEFAULT);
   const [init, setInit] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -588,6 +599,19 @@ export function RetirementCalc() {
   };
   const rcTapCls =
     "underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]";
+  /* Calculated-with tile taps: each tile is a tap to where its
+     number lives — Portfolio to this view's own Retirement
+     record field (jumpToRcField above), Spending / Ages /
+     Expected return to the Tax Plan record via App's cross-view
+     jump (the same jumpTarget mechanism the Playground's Plan
+     total tap uses). Taps only — the tiles edit nothing. */
+  const jumpToTaxPlan = (fieldId: string, section: RothSectionId) => {
+    onJumpToTaxPlan?.({ fieldId, section, nonce: Date.now() });
+  };
+  const calcTileCls =
+    "w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2 text-left hover:border-[var(--accent)]";
+  const calcTileValueCls =
+    "tnum text-base font-semibold underline decoration-dotted underline-offset-4";
   // Inline rename: which scenario is being renamed, and the draft name.
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -4316,15 +4340,25 @@ export function RetirementCalc() {
               dials, and a residual line for the rest — so no fact
               the line carried is dropped. */}
           <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+            <button
+              type="button"
+              aria-label="Go to the Starting portfolio field"
+              className={calcTileCls}
+              onClick={() => jumpToRcField("rc-portfolio")}
+            >
               <p className="text-xs text-[var(--dim)]">Portfolio</p>
-              <p className="tnum text-base font-semibold">
+              <p className={calcTileValueCls}>
                 {fmt(inputs.startCents)}
               </p>
-            </div>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+            </button>
+            <button
+              type="button"
+              aria-label="Go to the Annual spending field in the Tax Plan"
+              className={calcTileCls}
+              onClick={() => jumpToTaxPlan("roth-Annual-spending", "household")}
+            >
               <p className="text-xs text-[var(--dim)]">Spending</p>
-              <p className="tnum text-base font-semibold">
+              <p className={calcTileValueCls}>
                 {inputs.strategy === "percent" ? (
                   <>
                     {inputs.percentOfPortfolio}% of portfolio/yr
@@ -4345,20 +4379,30 @@ export function RetirementCalc() {
                       ? "Phased start"
                       : "Constant"}
               </p>
-            </div>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+            </button>
+            <button
+              type="button"
+              aria-label="Go to the Your birth year field in the Tax Plan"
+              className={calcTileCls}
+              onClick={() => jumpToTaxPlan("roth-Your-birth-year", "household")}
+            >
               <p className="text-xs text-[var(--dim)]">Ages</p>
-              <p className="tnum text-base font-semibold">
+              <p className={calcTileValueCls}>
                 {inputs.currentAge} → retire {inputs.retirementAge} → end{" "}
                 {inputs.endAge}
               </p>
-            </div>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2">
+            </button>
+            <button
+              type="button"
+              aria-label="Go to the Expected return field in the Tax Plan"
+              className={calcTileCls}
+              onClick={() => jumpToTaxPlan("roth-Expected-return", "advanced")}
+            >
               <p className="text-xs text-[var(--dim)]">Expected return</p>
-              <p className="tnum text-base font-semibold">
+              <p className={calcTileValueCls}>
                 {(expected * 100).toFixed(2)}%
               </p>
-            </div>
+            </button>
           </div>
           {inputs.strategy === "guardrails" ? (
             (() => {
