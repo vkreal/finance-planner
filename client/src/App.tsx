@@ -564,6 +564,121 @@ const btnGhost =
 const btnAdd =
   "inline-flex min-h-9 items-center justify-center rounded-[var(--radius)] border border-[var(--accent)] bg-transparent px-3 py-1.5 text-sm font-semibold text-[var(--accent)] disabled:opacity-50";
 
+/* In-place amount editor for one Monthly bill row: shown when the
+   row is tapped open. It carries the same fields and the same save
+   as the Edit form's amount half — a monthly amount plus the month
+   it takes effect from — and saves through the same
+   setMonthlyBillAmount action (via the caller's onSave, which adds
+   the restore epoch and the CAS base for the version at that
+   month), so an amount saved here lands exactly as one saved from
+   the form: from that month on, earlier months unchanged. The
+   component mounts fresh each time its row opens, so its fields
+   always start from the bill's latest amount and this month. */
+function BillAmountEditor({
+  bill,
+  onSave,
+}: {
+  bill: Bill;
+  onSave: (input: {
+    billId: number;
+    amountCents: number;
+    effectiveFrom: string;
+    base: { amountCents: number | null };
+  }) => Promise<{ ok: boolean; reason?: string }>;
+}) {
+  const [dollars, setDollars] = useState(String(bill.latestAmountCents / 100));
+  const [from, setFrom] = useState(currentMonth());
+  const [error, setError] = useState("");
+  const [savedFrom, setSavedFrom] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    const cents = parseDollars(dollars);
+    if (cents == null || cents < 0) {
+      setError("Enter the monthly amount.");
+      setSavedFrom(null);
+      return;
+    }
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(from)) {
+      setError("Pick the month the amount takes effect from.");
+      setSavedFrom(null);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    const r = await onSave({
+      billId: bill.id,
+      amountCents: cents,
+      effectiveFrom: from,
+      base: {
+        amountCents:
+          bill.history.find((h) => h.effectiveFrom === from)?.amountCents ??
+          null,
+      },
+    });
+    setSaving(false);
+    if (!r.ok) {
+      setError(r.reason ?? "That bill amount could not be saved.");
+      setSavedFrom(null);
+      return;
+    }
+    setSavedFrom(from);
+  }
+
+  return (
+    <form onSubmit={save} className="mt-2">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-sm">
+          <span className="mb-1 block text-[var(--dim)]">Amount ($/mo)</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            aria-label={`Monthly amount for ${bill.name}`}
+            className="w-28 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm text-[var(--text)]"
+            value={dollars}
+            onChange={(e) => {
+              setDollars(e.target.value);
+              setSavedFrom(null);
+            }}
+          />
+        </label>
+        <label className="text-sm">
+          <span className="mb-1 block text-[var(--dim)]">Takes effect from</span>
+          <input
+            type="month"
+            aria-label={`Month the amount for ${bill.name} takes effect from`}
+            className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm text-[var(--text)]"
+            value={from}
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setSavedFrom(null);
+            }}
+          />
+        </label>
+        <button
+          type="submit"
+          className={btnGhost}
+          disabled={saving}
+          aria-label={`Save amount for ${bill.name}`}
+        >
+          Save amount
+        </button>
+      </div>
+      <p className="mt-1 text-xs text-[var(--dim)]">
+        Applies from that month on — earlier months keep the amount
+        that was in effect then.
+      </p>
+      {error && <p className="mt-1 text-sm text-[var(--bad)]">{error}</p>}
+      {savedFrom && (
+        <p className="mt-1 text-sm text-[var(--accent)]">
+          Saved — applies from {monthLabel(savedFrom)}.
+        </p>
+      )}
+    </form>
+  );
+}
+
 // Category field for the bill forms: a select that ALWAYS lists every
 // preset (plus any custom categories already in use), with a
 // "Type your own…" choice that swaps in a free-text input. This replaces
@@ -2871,6 +2986,17 @@ export function App() {
   }, []);
   const [actionMsg, setActionMsg] = useState("");
   const [confirmMonthlyVersionId, setConfirmMonthlyVersionId] = useState<number | null>(null);
+  /* Per-row tap-to-open overrides for the Monthly bills roster:
+     tapping a bill row opens it in place into its edit controls
+     (amount, category, Keep the lights on) or closes it again.
+     The roster's Expand all / Collapse all flag stays the default
+     for every row; these two hold only the row the user tapped
+     against that default — expandedBillId in collapse-all mode,
+     collapsedBillId in expand-all mode. Session-local view state
+     like the other per-row UI state here; the Expand/Collapse all
+     button resets both. Display only — no figure reads them. */
+  const [expandedBillId, setExpandedBillId] = useState<number | null>(null);
+  const [collapsedBillId, setCollapsedBillId] = useState<number | null>(null);
   const [confirmYearlyVersionId, setConfirmYearlyVersionId] = useState<number | null>(null);
   // Month (YYYY-MM) whose cash-out ✕ is showing its delete
   // confirmation; null = no confirmation open. Tapping ✕ only
@@ -3219,6 +3345,18 @@ export function App() {
     },
     onError: (e) => setBillError(String(e)),
   });
+  const setBillAmountFromRow = useMutation({
+    // The roster row's in-place amount editor: the same
+    // setMonthlyBillAmount action the Edit form uses, but its own
+    // mutation, so a row save (or a CAS refusal) never touches the
+    // bill form's state — the row editor reports the outcome
+    // itself, via saveBillAmountFromRow below.
+    mutationFn: (input: ApiRequest<typeof api, "setMonthlyBillAmount">) =>
+      api.setMonthlyBillAmount(input),
+    onSuccess: (r) => {
+      if (r.ok) invalidate();
+    },
+  });
   const addOneOff = useMutation({
     mutationFn: (input: ApiRequest<typeof api, "addMonthlyOneOff">) =>
       api.addMonthlyOneOff(input),
@@ -3353,7 +3491,53 @@ export function App() {
   const handleMonthlyBillsCollapsedAllChange = (collapsed: boolean) => {
     setMonthlyBillsCollapsedAllOverride(collapsed);
     setMonthlyBillsCollapsedAll.mutate({ collapsed });
+    // The new all-rows default supersedes any per-row tap override.
+    setExpandedBillId(null);
+    setCollapsedBillId(null);
   };
+
+  /* Whether one Monthly bill row shows its in-place edit
+     controls: the Expand all / Collapse all flag is the default,
+     and the two per-row overrides record the row tapped against
+     that default. */
+  function billRowOpen(b: Bill): boolean {
+    return monthlyBillsCollapsedAll
+      ? expandedBillId === b.id
+      : collapsedBillId !== b.id;
+  }
+
+  /* Tap a Monthly bill row: open it in place into its edit
+     controls (amount, category, Keep the lights on), or close it
+     again. In expand-all mode every row is open, so tapping
+     closes just that one. */
+  function toggleBillRow(b: Bill) {
+    if (monthlyBillsCollapsedAll) {
+      setExpandedBillId(expandedBillId === b.id ? null : b.id);
+    } else {
+      setCollapsedBillId(collapsedBillId === b.id ? null : b.id);
+    }
+  }
+
+  /* The row editor's amount save: the shared setMonthlyBillAmount
+     action carrying the restore epoch of the data on screen. The
+     result — including a CAS refusal's reason — goes back to the
+     editor, which shows it in place. */
+  async function saveBillAmountFromRow(input: {
+    billId: number;
+    amountCents: number;
+    effectiveFrom: string;
+    base: { amountCents: number | null };
+  }): Promise<{ ok: boolean; reason?: string }> {
+    try {
+      const r = await setBillAmountFromRow.mutateAsync({
+        ...input,
+        baseEpoch: data?.restoreEpoch ?? 0,
+      });
+      return r.ok ? { ok: true } : { ok: false, reason: r.reason ?? undefined };
+    } catch (e) {
+      return { ok: false, reason: String(e) };
+    }
+  }
   const handleYearlyBillsCollapsedAllChange = (collapsed: boolean) => {
     setYearlyBillsCollapsedAllOverride(collapsed);
     setYearlyBillsCollapsedAll.mutate({ collapsed });
@@ -5752,18 +5936,18 @@ export function App() {
             {/* monthly bills — breakdown of cash out, never added again */}
             <section id="section-monthly-bills" aria-label="Monthly bills" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-monthly-bills")}`}>
               <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                <h2 className="display min-w-0 text-xl font-semibold">
+                {/* The ⓘ sits right after the bold title, ahead of the
+                    summary figure; the fold toggle stays alone at the
+                    far right. No summary sentence on the face: the
+                    "already included in cash out, never added a second
+                    time" point lives in the info tooltip, whose full
+                    text is the former "More" text, verbatim. The tip
+                    now sits near the left edge, so its bubble opens
+                    left-aligned (align="start") instead of clipping
+                    off the screen's left edge. */}
+                <h2 className="display flex min-w-0 flex-wrap items-center gap-x-2 text-xl font-semibold">
                   Monthly bills
-                  <span className="tnum ml-2 text-base font-normal text-[var(--dim)]">
-                    {fmt(data.monthlyBillsTotalCents)}/mo
-                  </span>
-                </h2>
-                <div className="ml-auto flex flex-nowrap items-center gap-2">
-                  {/* No summary sentence on the face: the "already included
-                      in cash out, never added a second time" point lives in
-                      the info tooltip in this header row's control cluster,
-                      whose full text is the former "More" text, verbatim. */}
-                  <ExplainerInfoTip id="spending.monthlyBills" label="Monthly bills">
+                  <ExplainerInfoTip id="spending.monthlyBills" label="Monthly bills" align="start">
                     <p>
                       Your regular monthly bills — mortgage, utilities, and so on.{" "}
                       <strong className="text-[var(--text)]">
@@ -5779,6 +5963,11 @@ export function App() {
                       that month on and earlier months keep their old amount.
                     </p>
                   </ExplainerInfoTip>
+                  <span className="tnum text-base font-normal text-[var(--dim)]">
+                    {fmt(data.monthlyBillsTotalCents)}/mo
+                  </span>
+                </h2>
+                <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
                   <BillsFoldChevron
                     open={monthlyBillsOpen}
                     controlsId="monthly-bills-roster"
@@ -5897,38 +6086,71 @@ export function App() {
                     </button>
                   </div>
                   <ul id="monthly-bills-list" className="mt-2 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
-                    {data.monthlyBills.map((b) => (
+                    {data.monthlyBills.map((b) => {
+                      const rowOpen = billRowOpen(b);
+                      return (
                       <li key={b.id} className="px-3 py-2">
-                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
-                          <div className="min-w-0">
-                            <p className="truncate text-base font-medium">{b.name}</p>
-                            {!monthlyBillsCollapsedAll && (
-                              <p className="text-xs text-[var(--dim)]">
-                                paid from {b.paidBy}
-                                {b.notes ? ` · ${b.notes}` : ""}
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex shrink-0 items-center gap-1">
-                            <span className="tnum text-base font-medium">
-                              {b.effectiveFrom
-                                ? `${fmt(b.amountCents)}/mo`
-                                : "not yet in effect"}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                          {/* Tapping the row opens it in place into
+                              its edit controls (amount, category,
+                              Keep the lights on) — or closes it
+                              again. The tap target is the name +
+                              amount button; Edit and Delete stay
+                              their own buttons beside it, shown
+                              while the row is open. A bill flagged
+                              Keep the lights on carries its "Lights
+                              on" tag beside its name, open or
+                              closed, so the essential bills scan at
+                              a glance. */}
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-left"
+                            aria-expanded={rowOpen}
+                            aria-controls={`monthly-bill-detail-${b.id}`}
+                            aria-label={`${rowOpen ? "Close" : "Open"} ${b.name} in-place editor`}
+                            onClick={() => toggleBillRow(b)}
+                          >
+                            <span className="min-w-0">
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className="truncate text-base font-medium">{b.name}</span>
+                                {b.keepLightsOn && (
+                                  <span className="shrink-0 rounded-full bg-[var(--warn-soft)] px-1.5 py-0.5 text-[10.5px] leading-none font-semibold text-[var(--warn-deep)]">
+                                    Lights on
+                                  </span>
+                                )}
+                              </span>
+                              {rowOpen && (
+                                <span className="mt-0.5 block text-xs text-[var(--dim)]">
+                                  paid from {b.paidBy}
+                                  {b.notes ? ` · ${b.notes}` : ""}
+                                </span>
+                              )}
                             </span>
-                            {!monthlyBillsCollapsedAll && (
-                              <>
-                                <button type="button" aria-label={`Edit ${b.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditBill(b)}>
-                                  Edit
-                                </button>
-                                <button type="button" aria-label={`Delete ${b.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteBill.mutate(b.id)}>
-                                  ✕
-                                </button>
-                              </>
-                            )}
-                          </div>
+                            <span className="flex shrink-0 items-center gap-1.5">
+                              <span className="tnum text-base font-medium">
+                                {b.effectiveFrom
+                                  ? `${fmt(b.amountCents)}/mo`
+                                  : "not yet in effect"}
+                              </span>
+                              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" className={`shrink-0 text-[var(--dim)] transition-transform duration-200 motion-reduce:transition-none ${rowOpen ? "rotate-180" : ""}`}>
+                                <path d="M3.5 6 8 10.5 12.5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            </span>
+                          </button>
+                          {rowOpen && (
+                            <span className="flex shrink-0 items-center gap-1">
+                              <button type="button" aria-label={`Edit ${b.name}`} className="px-1 py-1 text-sm text-[var(--accent)]" onClick={() => openEditBill(b)}>
+                                Edit
+                              </button>
+                              <button type="button" aria-label={`Delete ${b.name}`} className="px-1 py-1 text-sm text-[var(--bad)]" onClick={() => deleteBill.mutate(b.id)}>
+                                ✕
+                              </button>
+                            </span>
+                          )}
                         </div>
-                        {!monthlyBillsCollapsedAll && (
-                          <div>
+                        {rowOpen && (
+                          <div id={`monthly-bill-detail-${b.id}`}>
+                        <BillAmountEditor bill={b} onSave={saveBillAmountFromRow} />
                         <label className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                           <span className="text-[var(--dim)]">Category</span>
                           <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-medium text-[var(--accent)]">
@@ -6031,7 +6253,8 @@ export function App() {
                           </div>
                         )}
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                   <dl className="tnum mt-3 space-y-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 text-base">
                     <div className="flex justify-between gap-3 font-semibold">
@@ -6076,11 +6299,16 @@ export function App() {
             {/* transactions */}
             <section aria-label="Transactions" className="mt-6">
               <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                <h2 className="display min-w-0 text-xl font-semibold">
+                {/* Same header pattern as Monthly bills: bold title,
+                    then the ⓘ, then the quick summary — here the
+                    month's cash out, the same figure the Monthly
+                    bills footer reconciles against — and the fold
+                    toggle alone at the far right. The tip sits near
+                    the left edge now, so its bubble opens
+                    left-aligned (align="start"). */}
+                <h2 className="display flex min-w-0 flex-wrap items-center gap-x-2 text-xl font-semibold">
                   Transactions — {monthLabel(month)}
-                </h2>
-                <div className="ml-auto flex flex-nowrap items-center gap-2">
-                  <ExplainerInfoTip id="spending.transactions" label="Transactions">
+                  <ExplainerInfoTip id="spending.transactions" label="Transactions" align="start">
                     <p>
                       Transactions are records of money that actually left an account — typed in by hand or imported from a file.
                     </p>
@@ -6091,6 +6319,11 @@ export function App() {
                       If a month has a cash-out items list, the items are that month's Cash out total and transactions are not added on top. If a month has no items and no typed-in total, Cash out is counted from its transactions instead.
                     </p>
                   </ExplainerInfoTip>
+                  <span className="tnum text-base font-normal text-[var(--dim)]">
+                    {fmt(data.cashOutCents)}
+                  </span>
+                </h2>
+                <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
                   <BillsFoldChevron
                     open={transactionsOpen}
                     controlsId="transactions-body"
@@ -6254,30 +6487,22 @@ export function App() {
             {/* yearly & periodic (smoothed) bills */}
             <section id="section-yearly-expenses" aria-label="Yearly & periodic expenses" className={`mt-8 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-yearly-expenses")}`}>
               {/* Header follows the settled single-row pattern (same as
-                  Monthly bills above): title + summary on the left,
-                  control cluster on the right, fold toggle last. The
-                  row never wraps — the long summary wraps within the
-                  left side instead, so the cluster stays on the title
-                  row at every width. */}
+                  Monthly bills above): title, then the ⓘ, then the
+                  summary on the left; the fold toggle alone at the far
+                  right. The row never wraps — the long summary wraps
+                  within the left side instead, so the toggle stays on
+                  the title row at every width. */}
               <div className="flex flex-nowrap items-center justify-between gap-x-3">
-                <h2 className="display min-w-0 flex-1 text-xl font-semibold">
+                <h2 className="display flex min-w-0 flex-1 flex-wrap items-center gap-x-2 text-xl font-semibold">
                   Yearly &amp; periodic expenses
-                  {/* inline-block: a line-break opportunity before the
-                      summary (and wrapping inside it), so at narrow
-                      widths the summary wraps within the left side
-                      instead of running underneath the cluster. On one
-                      line it renders exactly as the inline span did. */}
-                  <span className="tnum ml-2 inline-block text-base font-normal text-[var(--dim)]">
-                    {fmt(data.totalAnnualCents)}/yr · set aside {fmt(data.accrualCents)}/mo
-                  </span>
-                </h2>
-                <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
-                  {/* No summary sentence on the face: the key figures now
-                      live in the header above, and the spread-evenly method
-                      plus the future-bill $0 rule live in the info tooltip
-                      in the header row's control cluster, whose full text
-                      is the former "More" text, verbatim. */}
-                  <ExplainerInfoTip id="spending.yearlyPeriodic" label="Yearly & periodic expenses">
+                  {/* No summary sentence on the face: the key figures
+                      live in the header summary beside the tip, and the
+                      spread-evenly method plus the future-bill $0 rule
+                      live in the info tooltip, whose full text is the
+                      former "More" text, verbatim. The tip sits near
+                      the left edge now, so its bubble opens
+                      left-aligned (align="start"). */}
+                  <ExplainerInfoTip id="spending.yearlyPeriodic" label="Yearly & periodic expenses" align="start">
                     <p>
                       Bills that don't land monthly, spread evenly so they don't
                       ambush one month. The bills in effect for{" "}
@@ -6297,6 +6522,16 @@ export function App() {
                       Payments already recorded never change.
                     </p>
                   </ExplainerInfoTip>
+                  {/* inline-block: a line-break opportunity before the
+                      summary (and wrapping inside it), so at narrow
+                      widths the summary wraps within the left side
+                      instead of running underneath the toggle. On one
+                      line it renders exactly as the inline span did. */}
+                  <span className="tnum inline-block text-base font-normal text-[var(--dim)]">
+                    {fmt(data.totalAnnualCents)}/yr · set aside {fmt(data.accrualCents)}/mo
+                  </span>
+                </h2>
+                <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
                   <BillsFoldChevron
                     open={yearlyBillsOpen}
                     controlsId="yearly-bills-roster"

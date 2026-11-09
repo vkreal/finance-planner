@@ -161,10 +161,13 @@ export function YearInSpendingBlock({
 }) {
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
+  // The query runs even while the section is folded: the header
+  // carries the year's true-cost / cash-out quick summary (the
+  // same totals the body's cards show), visible either way, like
+  // the other Spending section headers.
   const summary = useQuery({
     queryKey: ["yearsummary", selectedYear],
     queryFn: () => api.getYearSummary({ year: selectedYear }),
-    enabled: !collapsed,
   });
   const data = summary.data;
 
@@ -221,20 +224,33 @@ export function YearInSpendingBlock({
       className="mt-8 scroll-mt-4"
     >
       {/* Header follows the Spending sections' settled single-row
-          pattern (same as Monthly bills): title on the left, control
-          cluster on the right with the circled +/− fold toggle last
-          at the far right edge, all on one row at every width — the
-          row and the cluster never wrap; the title shrinks/wraps
-          within the left side instead. The fold toggle is the same
-          chip control as the other Spending section headers: a 36px
-          button around the shared 28px FoldChevron chip, wired to
-          the same persisted collapsed state the removed
-          Expand all / Collapse all button used. This section has
-          never carried an info tip. The year picker lives inside
-          the collapsible panel below, at the top of its body, so
-          the header holds only the title and the fold toggle. */}
+          pattern (same as Monthly bills): title and its quick
+          summary on the left — the selected year's true cost and
+          cash out, the same totals the body's cards and table
+          carry — control cluster on the right with the circled +/−
+          fold toggle last at the far right edge, all on one row at
+          every width — the row and the cluster never wrap; the
+          title shrinks/wraps within the left side instead. The fold
+          toggle is the same chip control as the other Spending
+          section headers: a 36px button around the shared 28px
+          FoldChevron chip, wired to the same persisted collapsed
+          state the removed Expand all / Collapse all button used.
+          This section has never carried an info tip. The year
+          picker lives inside the collapsible panel below, at the
+          top of its body, so the header holds only the title, the
+          summary, and the fold toggle. Until the year's figures
+          land (or when the year has no spending data) the summary
+          simply doesn't render. */}
       <div className="flex flex-nowrap items-center justify-between gap-x-3">
-        <h2 className="display min-w-0 flex-1 text-xl font-semibold">Year in spending</h2>
+        <h2 className="display min-w-0 flex-1 text-xl font-semibold">
+          Year in spending
+          {data?.spending.hasData && (
+            <span className="tnum ml-2 text-base font-normal text-[var(--dim)]">
+              true {fmt(data.spending.totalTrueCostCents)} · cash{" "}
+              {fmt(data.spending.totalCashOutCents)}
+            </span>
+          )}
+        </h2>
         <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
           <button
             type="button"
