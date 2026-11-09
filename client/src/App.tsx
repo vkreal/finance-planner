@@ -4852,22 +4852,27 @@ export function App() {
       <>
         {/* Grouped by kind, one card per group (2026-10-25,
             option C, replacing the option-A captioned tile grids):
-            the first four stats describe the viewed period, inside
+            the first three stats describe the viewed period, inside
             one card captioned "This month" by the caller in both
             modes — the tiles always show one month's figures, and
             the view header already names the specific month/year;
-            the last two are standing roster rates that do not change
-            with the period, inside their own "Standing rates"
+            the last one is a standing roster rate that does not change
+            with the period, inside its own "Standing rates"
             card. Inside
             each card the stats are borderless cells divided by
             hairlines, stretching to fill the card's full width —
             the period cells sit in one row on desktop and wrap
-            2×2 on phone width, so no cell is stranded and no slot
+            on phone width with the third cell spanning the full
+            row, so no cell is stranded and no slot
             is left dead. The cells themselves are unchanged — same
-            figures, YTD lines, tips, and order within each group. */}
+            figures, YTD lines, tips, and order within each group.
+            (The "Yearly & periodic expenses" and "Total monthly"
+            tiles were removed 2026-11-09: both figures still show
+            in their sections below — the smoothed spend breakdown
+            and the Monthly bills header.) */}
         <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
           <p className={`${captionCls} px-3.5 pt-3.5 sm:px-4 sm:pt-4`}>{opts.periodCaption}</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3">
             <QuickTile
               className="border-r border-b border-[var(--border)] sm:border-b-0"
               label="True cost"
@@ -4909,7 +4914,7 @@ export function App() {
               )}
             </QuickTile>
             <QuickTile
-              className="border-r border-[var(--border)]"
+              className="col-span-2 sm:col-span-1"
               label="Everything else"
               tipId={`qtip-${key("everything-else")}`}
               tip="Cash out − monthly bills − yearly & periodic bills paid this month. Cash out minus Total monthly (the monthly bills) minus the yearly & periodic bills paid this month. What's left is everything that isn't a bill — day-to-day spending like groceries, eating out, and shopping, plus anything else that left the account, such as transfers or card payments. It can be negative: negative for now means this month's recorded cash out is still below its bills and yearly payments — it can be negative mid-month, when the recorded cash out so far is still below the month's bills and yearly payments."
@@ -4937,57 +4942,11 @@ export function App() {
                 </p>
               )}
             </QuickTile>
-            <QuickTile
-              label="Yearly & periodic expenses"
-              tipId={`qtip-${key("yearly-paid-out")}`}
-              tip="Yearly & periodic bills actually paid this month. Yearly & periodic bills you entered as paid — the lump sums that went out, in the month the money left your bank account. A bill isn't always paid in its due month, and if it was charged to a credit card, it counts in the month the card payment left your account — enter that date when you record it."
-              panelCls="right-0"
-              open={openTip === key("yearly-paid-out")}
-              onToggle={() =>
-                setOpenTip(
-                  openTip === key("yearly-paid-out") ? null : key("yearly-paid-out"),
-                )
-              }
-              onClose={() => setOpenTip(null)}
-              onDetails={opts.withNav ? () => scrollToSection("section-yearly-expenses") : undefined}
-            >
-              <p className={navValueCls}>{fmt(opts.yearlyPaidOutCents)}</p>
-              {opts.withNav && opts.ytd && opts.ytd.yearlyPaidOutCents !== opts.yearlyPaidOutCents && (
-                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-                  YTD {fmt(opts.ytd.yearlyPaidOutCents)}
-                </p>
-              )}
-            </QuickTile>
           </div>
         </div>
         <div className="mt-3.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)]">
           <p className={`${captionCls} px-3.5 pt-3.5 sm:px-4 sm:pt-4`}>Standing rates</p>
-          <div className="grid grid-cols-2">
-            <QuickTile
-              className="border-r border-[var(--border)]"
-              label="Total monthly"
-              tipId={`qtip-${key("total-monthly")}`}
-              tip="Your recurring monthly bills — all your monthly bills for this month added together (the Monthly bills list)."
-              panelCls="left-1/2 -translate-x-1/2"
-              open={openTip === key("total-monthly")}
-              onToggle={() =>
-                setOpenTip(openTip === key("total-monthly") ? null : key("total-monthly"))
-              }
-              onClose={() => setOpenTip(null)}
-              onDetails={opts.withNav ? () => scrollToSection("section-monthly-bills") : undefined}
-            >
-              <p className={navValueCls}>
-                {fmt(opts.totalMonthlyCents)}
-                {opts.withNav && (
-                  <span className="text-[11px] font-normal text-[var(--dim)]"> /mo</span>
-                )}
-              </p>
-              {opts.withNav && opts.ytd && opts.ytd.totalMonthlyCents !== opts.totalMonthlyCents && (
-                <p className="tnum mt-1.5 text-xs whitespace-nowrap text-[var(--dim)]">
-                  YTD {fmt(opts.ytd.totalMonthlyCents)}
-                </p>
-              )}
-            </QuickTile>
+          <div className="grid grid-cols-1">
             <QuickTile
               label="Keep the lights on"
               tipId={`qtip-${key("lights-on")}`}
