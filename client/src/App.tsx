@@ -2972,6 +2972,14 @@ export function App() {
     "spending.transactionsFolded",
   );
   const transactionsOpen = !transactionsFolded;
+  /* Smoothed-bill payments filter for the Transactions list:
+     set by tapping "− Smoothed bills paid this month" in the
+     Smoothed spend breakdown — the list then shows only this
+     month's transactions marked as a smoothed bill, with a
+     notice and a way back to the full list. Session-local view
+     state, cleared when the month changes. Display only — no
+     figure reads it. */
+  const [smoothedOnly, setSmoothedOnly] = useState(false);
   const [showExplorer, setShowExplorer] = useState(false);
   const [explorerGroupBy, setExplorerGroupBy] =
     useState<ExplorerGroupBy>("category");
@@ -3021,9 +3029,17 @@ export function App() {
 
   useEffect(() => {
     setRecordingYearlyId(null);
+    setSmoothedOnly(false);
   }, [month]);
 
   const data = dash.data;
+
+  // The Transactions list as shown: the full month, or — after the
+  // Smoothed spend breakdown's smoothed-bills-paid tap — only the
+  // month's transactions marked as a smoothed bill.
+  const visibleMonthTransactions = smoothedOnly
+    ? (data?.monthTransactions ?? []).filter((t) => t.yearlyExpenseId != null)
+    : (data?.monthTransactions ?? []);
 
   // Collapse-all flags: optimistic — each section flips immediately
   // from local state and the choice persists in the background
@@ -3078,6 +3094,11 @@ export function App() {
         handleYearlyBillsCollapsedAllChange(false);
       }
     }
+    if (id === "section-transactions") {
+      /* The list fold opens (persisted) as part of the scroll, so
+         a breakdown tap never lands on a collapsed list. */
+      if (transactionsFolded) setTransactionsFolded(false);
+    }
     document
       .getElementById(id)
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -3089,6 +3110,30 @@ export function App() {
       () => setHighlightedSection(null),
       1600,
     );
+  }
+
+  /* Smoothed spend breakdown provenance taps (taps only — nothing
+     is edited in place): each input line's amount goes to where
+     that figure comes from, as the user mapped them. The cash-out
+     line goes to this month's Transactions list (unfiltered);
+     for a month whose cash out was entered as one total, the
+     entered-total line — a different label — goes to Monthly
+     cash out, where that total lives. The smoothed-bills-paid
+     line goes to the Transactions list filtered to this month's
+     smoothed-bill payments. The set-aside line uses
+     scrollToSection("section-yearly-expenses") directly. */
+  function goToCashOutSource() {
+    if (data?.isSummaryMonth && !data?.isItemsMonth) {
+      scrollToSection("section-cash-out");
+    } else {
+      setSmoothedOnly(false);
+      scrollToSection("section-transactions");
+    }
+  }
+
+  function goToSmoothedBillsPaid() {
+    setSmoothedOnly(true);
+    scrollToSection("section-transactions");
   }
 
   function scrollToQuickView() {
@@ -5097,12 +5142,32 @@ export function App() {
                         : "Cash out you entered for this month"}
                     </dt>
                     <dd className="font-medium">
-                      {fmt(data.isItemsMonth ? data.cashOutItemsTotalCents : (data.enteredCashOutCents ?? 0))}
+                      <button
+                        type="button"
+                        aria-label={
+                          data.isItemsMonth
+                            ? `Go to Transactions for ${monthLabel(month)}`
+                            : `Go to Monthly cash out for ${monthLabel(month)}`
+                        }
+                        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                        onClick={goToCashOutSource}
+                      >
+                        {fmt(data.isItemsMonth ? data.cashOutItemsTotalCents : (data.enteredCashOutCents ?? 0))}
+                      </button>
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
                     <dt>− Smoothed bills paid this month</dt>
-                    <dd>{fmt(data.yearlyLumpsCents)}</dd>
+                    <dd>
+                      <button
+                        type="button"
+                        aria-label={`Go to smoothed-bill payments in Transactions for ${monthLabel(month)}`}
+                        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                        onClick={goToSmoothedBillsPaid}
+                      >
+                        {fmt(data.yearlyLumpsCents)}
+                      </button>
+                    </dd>
                   </div>
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
                     <dt>
@@ -5110,7 +5175,16 @@ export function App() {
                       in-effect bills&rsquo; monthly amounts —{" "}
                       {fmt(data.totalAnnualCents)} a year in effect this month)
                     </dt>
-                    <dd>{fmt(data.accrualCents)}</dd>
+                    <dd>
+                      <button
+                        type="button"
+                        aria-label="Go to Yearly & periodic expenses"
+                        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                        onClick={() => scrollToSection("section-yearly-expenses")}
+                      >
+                        {fmt(data.accrualCents)}
+                      </button>
+                    </dd>
                   </div>
                   <div className="flex justify-between gap-3 border-t border-[var(--border)] pt-2 font-semibold">
                     <dt>= Smoothed spend</dt>
@@ -5121,11 +5195,29 @@ export function App() {
                 <dl className="tnum mt-4 space-y-1 border-t border-[var(--border)] pt-3 text-base">
                   <div className="flex justify-between gap-3">
                     <dt>Cash out this month</dt>
-                    <dd className="font-medium">{fmt(data.cashOutCents)}</dd>
+                    <dd className="font-medium">
+                      <button
+                        type="button"
+                        aria-label={`Go to Transactions for ${monthLabel(month)}`}
+                        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                        onClick={goToCashOutSource}
+                      >
+                        {fmt(data.cashOutCents)}
+                      </button>
+                    </dd>
                   </div>
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
                     <dt>− Smoothed bills paid this month</dt>
-                    <dd>{fmt(data.yearlyLumpsCents)}</dd>
+                    <dd>
+                      <button
+                        type="button"
+                        aria-label={`Go to smoothed-bill payments in Transactions for ${monthLabel(month)}`}
+                        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                        onClick={goToSmoothedBillsPaid}
+                      >
+                        {fmt(data.yearlyLumpsCents)}
+                      </button>
+                    </dd>
                   </div>
                   <div className="flex justify-between gap-3 text-[var(--dim)]">
                     <dt>
@@ -5133,7 +5225,16 @@ export function App() {
                       in-effect bills&rsquo; monthly amounts —{" "}
                       {fmt(data.totalAnnualCents)} a year in effect this month)
                     </dt>
-                    <dd>{fmt(data.accrualCents)}</dd>
+                    <dd>
+                      <button
+                        type="button"
+                        aria-label="Go to Yearly & periodic expenses"
+                        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                        onClick={() => scrollToSection("section-yearly-expenses")}
+                      >
+                        {fmt(data.accrualCents)}
+                      </button>
+                    </dd>
                   </div>
                   <div className="flex justify-between gap-3 border-t border-[var(--border)] pt-2 font-semibold">
                     <dt>= Smoothed spend</dt>
@@ -6424,7 +6525,7 @@ export function App() {
             </section>
 
             {/* transactions */}
-            <section aria-label="Transactions" className="mt-6">
+            <section id="section-transactions" aria-label="Transactions" className={`mt-6 scroll-mt-4 rounded-[var(--radius)]${highlightCls("section-transactions")}`}>
               <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                 {/* Same header pattern as Monthly bills: bold title,
                     then the ⓘ, then the quick summary — here the
@@ -6572,7 +6673,31 @@ export function App() {
 
               {transactionsOpen && (
                 <div id="transactions-body">
-              {data.monthTransactions.length === 0 && !showTxnForm && (
+              {smoothedOnly && (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--accent-soft)] px-3 py-2 text-sm">
+                  <p>
+                    Showing smoothed-bill payments for {monthLabel(month)} only
+                    — {visibleMonthTransactions.length} of{" "}
+                    {data.monthTransactions.length} transaction
+                    {data.monthTransactions.length === 1 ? "" : "s"}.
+                  </p>
+                  <button
+                    type="button"
+                    aria-label="Show all transactions"
+                    className="shrink-0 font-medium whitespace-nowrap underline underline-offset-2"
+                    onClick={() => setSmoothedOnly(false)}
+                  >
+                    Show all
+                  </button>
+                </div>
+              )}
+              {smoothedOnly && visibleMonthTransactions.length === 0 && (
+                <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
+                  No transactions for {monthLabel(month)} are marked as a
+                  smoothed-bill payment.
+                </p>
+              )}
+              {data.monthTransactions.length === 0 && !showTxnForm && !smoothedOnly && (
                 <p className="mt-3 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
                   {data.isItemsMonth
                     ? `No individual transactions for ${monthLabel(month)} — this month is covered by its cash-out items above, so none are needed.`
@@ -6582,7 +6707,7 @@ export function App() {
                 </p>
               )}
               <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] empty:hidden">
-                {data.monthTransactions.map((t) => (
+                {visibleMonthTransactions.map((t) => (
                   <li key={t.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2">
                     <span className="min-w-0 text-base font-medium">{t.description}</span>
                     <span className="text-xs whitespace-nowrap text-[var(--dim)]">
