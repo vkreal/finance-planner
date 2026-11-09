@@ -6385,7 +6385,10 @@ export function App() {
                               </p>
                             ) : (
                               <ul className="divide-y divide-[var(--border)]">
-                                {cm.items.map((it) => (
+                                {/* Latest paid first: items arrive day-ascending, so render a copy sorted by paid day descending (newest entry first within the same day). */}
+                                {[...cm.items]
+                                  .sort((a, b) => b.day - a.day || b.id - a.id)
+                                  .map((it) => (
                                   <li key={it.id} className="py-2">
                                     <div className="flex items-start justify-between gap-3">
                                       <div className="min-w-0">
