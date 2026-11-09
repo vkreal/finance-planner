@@ -36557,6 +36557,142 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-engines-prefill-source-prior-balances-reproduce-march-rmd",
+    kind: "tax",
+    note: "SHOULD-4 (ChatGPT review, SHOULD — settled STAND): 'Start from my numbers' used the starting balance for a future RMD. The prefill set the pre-tax dials from the record's starting balances (pretaxStart / pretaxSpouseStart) while looking up the chosen march row only for carry-ins — so prefilling a later year priced that year's RMD off a balance years out of date, while the saved-year loader reads the row's prior-December balances (priorPretaxPrimary / priorPretaxSpouse). THE FIX (client/src/Playground.tsx, prefillPlayground): the march-row lookup is hoisted above the balances and the dials take the row's prior balances when the march prices the chosen year — the same figures the loader loads — falling back to the starting balances for a year the march does not price. This fixture pins the source data the prefill now reads: pricing a later RMD year standalone from the march row's prior balances reproduces the march's RMD, AGI, and federal tax exactly, while pricing from the starting balances does not. THE WORKED EXAMPLE is built on the shared fictional sample household (server/src/sampleHousehold.ts): the sample start year, joint filing at the sample ages, household of the sample size, the sample family benchmark, the sample Social Security amounts at the sample claiming ages, the sample yields and spending, the sample expected return, Do Nothing; the spouse's starting pre-tax balance is the sample pre-tax figure divided by five. HAND-DERIVED: the primary's first RMD year is the year he turns 75 and the spouse's the year she turns 75; by then the prior balances have grown well past the starting balances under Do Nothing, so the starting-balance pricing understates both RMDs. CONTROL — the plan's first year: the march's prior balances equal the starting balances, so both pricings agree exactly. PRE-FIX (verified by the probe on the tree as received) the prior-balance pricing already reproduced the march exactly while the starting-balance pricing ran low — the defect was the prefill's source, not the pricer.",
+    expected: {
+      ctrlPriorPrimary: SAMPLE_PRETAX_CENTS / 100,
+      ctrlPriorSpouse: SAMPLE_PRETAX_CENTS / 100 / 5,
+      ctrlRmdDiff: 0,
+      ctrlAgiDiff: 0,
+      ctrlFedDiff: 0,
+      y43PriorPrimary: 3438027.48,
+      y43PriorSpouse: 687605.5,
+      y43MarchRmd: 139757.21,
+      y43PriorRmd: 139757.21,
+      y43StartRmd: 60975.61,
+      y43PriorAgi: 226304.59,
+      y43StartAgi: 147522.99,
+      y43PriorFed: 31181.58,
+      y43StartFed: 13220.08,
+      y45PriorPrimary: 3482910.77,
+      y45PriorSpouse: 758085.06,
+      y45MarchRmd: 182908.64,
+      y45PriorRmd: 182908.64,
+      y45StartRmd: 77697.3,
+      y45PriorAgi: 271737.04,
+      y45StartAgi: 166525.7,
+      y45PriorFed: 41334.39,
+      y45StartFed: 17534.89,
+    },
+    actual: () => {
+      const plan = samplePlanInputs({
+        pretaxSpouseStart: SAMPLE_PRETAX_CENTS / 100 / 5,
+      });
+      const march = simulateRothPlan(plan, DO_NOTHING);
+      const inputsFor = (year: number, balances: "prior" | "starting") => {
+        const y = march.years.find((yy) => yy.year === year)!;
+        const taxableSold =
+          y.funding.taxableSoldForSpending + y.funding.taxableSoldForTax;
+        return {
+          taxYear: y.year,
+          filingStatus: y.filingStatus,
+          agePrimary: y.agePrimary,
+          ageSpouse: y.ageSpouse,
+          onMedicarePrimary: y.agePrimary >= 65,
+          onMedicareSpouse: y.ageSpouse != null ? y.ageSpouse >= 65 : false,
+          interest: y.detail.interestIncome,
+          ordinaryDividends: y.detail.dividendIncome,
+          otherOrdinary: y.detail.otherOrdinary,
+          taxExemptInterest: y.detail.taxExemptInterest,
+          ssPrimary:
+            plan.ssPrimaryStartAge != null &&
+            y.agePrimary >= plan.ssPrimaryStartAge
+              ? plan.ssPrimaryAnnual
+              : 0,
+          ssSpouse:
+            y.ageSpouse != null &&
+            plan.ssSpouseStartAge != null &&
+            y.ageSpouse >= plan.ssSpouseStartAge
+              ? plan.ssSpouseAnnual
+              : 0,
+          conversion: y.conversion + y.detail.extraPreTaxDraw,
+          stockSold: taxableSold > 0 ? taxableSold : 0,
+          stockBasis:
+            taxableSold > 0 ? taxableSold - y.detail.drawGains : 0,
+          qualifiedDividends:
+            Math.round(
+              ((y.detail.dividendIncome *
+                (plan.taxableDividendQualifiedPct ?? 100)) /
+                100) *
+                100,
+            ) / 100,
+          pretaxBalance:
+            balances === "prior"
+              ? y.detail.priorPretaxPrimary
+              : plan.pretaxStart,
+          pretaxBalanceSpouse:
+            balances === "prior"
+              ? y.detail.priorPretaxSpouse > 0
+                ? y.detail.priorPretaxSpouse
+                : null
+              : (plan.pretaxSpouseStart ?? 0) > 0
+                ? (plan.pretaxSpouseStart ?? 0)
+                : null,
+          spouseSoleBeneficiary: plan.spouseSoleBeneficiary,
+          acaHouseholdSize: y.detail.aca.householdSize,
+          acaBenchmarkAnnual: y.detail.aca.benchmark,
+          stateRatePct: plan.stateRatePct,
+          residenceState: "other" as const,
+          aptcTaken: 0,
+          acaCoverageReduction: 0,
+          acaEnrollmentPremiumAnnual: null,
+          annualSpending: plan.annualSpending,
+          yieldReinvested: true,
+          inflationPct: plan.inflationPct,
+          capitalLossCarryInSt: y.detail.lossCarryInSt,
+          capitalLossCarryInLt: y.detail.lossCarryInLt,
+          capitalLossCarryInStWa: y.detail.lossCarryInWaSt,
+          capitalLossCarryInLtWa: y.detail.lossCarryInWaLt,
+        };
+      };
+      const priceBoth = (year: number) => {
+        const y = march.years.find((yy) => yy.year === year)!;
+        const prior = pricePlaygroundYear(inputsFor(year, "prior"));
+        const start = pricePlaygroundYear(inputsFor(year, "starting"));
+        return { y, prior, start };
+      };
+      const c = priceBoth(2026);
+      const a43 = priceBoth(2043);
+      const a45 = priceBoth(2045);
+      return {
+        ctrlPriorPrimary: c.y.detail.priorPretaxPrimary,
+        ctrlPriorSpouse: c.y.detail.priorPretaxSpouse,
+        ctrlRmdDiff: c.prior.rmd - c.start.rmd,
+        ctrlAgiDiff: c.prior.agi - c.start.agi,
+        ctrlFedDiff: c.prior.federalTax - c.start.federalTax,
+        y43PriorPrimary: a43.y.detail.priorPretaxPrimary,
+        y43PriorSpouse: a43.y.detail.priorPretaxSpouse,
+        y43MarchRmd: a43.y.detail.rmdPrimary + a43.y.detail.rmdSpouse,
+        y43PriorRmd: a43.prior.rmd,
+        y43StartRmd: a43.start.rmd,
+        y43PriorAgi: a43.prior.agi,
+        y43StartAgi: a43.start.agi,
+        y43PriorFed: a43.prior.federalTax,
+        y43StartFed: a43.start.federalTax,
+        y45PriorPrimary: a45.y.detail.priorPretaxPrimary,
+        y45PriorSpouse: a45.y.detail.priorPretaxSpouse,
+        y45MarchRmd: a45.y.detail.rmdPrimary + a45.y.detail.rmdSpouse,
+        y45PriorRmd: a45.prior.rmd,
+        y45StartRmd: a45.start.rmd,
+        y45PriorAgi: a45.prior.agi,
+        y45StartAgi: a45.start.agi,
+        y45PriorFed: a45.prior.federalTax,
+        y45StartFed: a45.start.federalTax,
+      };
+    },
+  },
+  {
     id: "tax-engines-playground-projection-premium-tier-transition",
     kind: "tax",
     note: "SHOULD-1 (ChatGPT review, SHOULD — settled STAND): the projection walk carried the two-person marketplace premium into spouse-only years. The template carried only ONE ACA amount (healthPremiumAcaAnnual), and the walk spread it into every year, while the plan march resolves the tier per year (taxEngine.ts healthGrossAca: the household amount while both spouses are on the marketplace, the single amount while exactly one is) — so every mixed-coverage year priced the household premium plus Medicare instead of the single premium plus Medicare (the settlement's worked example: a $9,000-a-year overstatement in every mixed-coverage year, verified by the probe on the tree as received — the walk priced the household premium plus the per-person Medicare base in the transition years while the march priced the single premium plus the base, credit $0 in both). THE FIX (rothOptimizer.ts, projectPlaygroundYears): the template carries BOTH tiers (healthPremiumAcaHouseholdAnnual / healthPremiumAcaSingleAnnual, stored through projTemplateCore.ts and the stored parse, supplied by buildPgInputs from the dial for the template year's own tier and the record for the other), and the walk resolves the applicable tier per walked year from the year's own Medicare flags — household while both are on the marketplace, single while exactly one is — overriding both the marketplace premium and the enrollment premium on the year's inputs (the entered premium IS the enrollment premium, so the retained-credit cap keys on the year's own tier). With neither tier entered the walk keeps the old spread, so an older stored template (whose tier fields parse null) reprices bit-identically. When the term is active but the applicable tier was never entered, the year's gross falls back to the template's benchmark — the march's own fallback for a null tier amount — never $0 while a premium term is entered; the fallback reads the template's benchmark (the template year's applicable benchmark), and the walk does not resolve benchmarks per year (a pre-existing gap, out of scope here), so the fallback matches the march's rule in kind, not in amount, until that gap is closed. The single-year pricer is untouched — it reads only the one applicable amount. THE WORKED EXAMPLE is built on the shared fictional sample household (server/src/sampleHousehold.ts): the sample start year, joint filing at the sample ages, household of the sample size, the sample family benchmark, no Social Security, no yields, no income (MAGI $0 — below 100% FPL, so the priced credit is $0 and net equals gross in every leg), no balances, no conversion, no sale, 0% return; the household tier at nine tenths of the filed ordinary dividends, the single tier at half of it, the Medicare per-person base at fifteen hundredths of it. HAND-DERIVED: year 1 prices both spouses on the marketplace — gross and net the household tier, the priced premium and enrollment premium the household tier; the first transition year (the primary 65, the spouse 63 — the primary on Medicare, the spouse still on the marketplace) prices gross and net the single tier plus one Medicare base, the priced premium and enrollment premium the single tier; the year after prices the same. PRE-FIX (verified by the probe on the tree as received) the transition years priced the household tier plus the Medicare base. HOUSEHOLD-ONLY LEG: the household tier entered, the single tier null — year 1 prices the household tier; the transition year falls back to the template's benchmark (the sample family benchmark) plus one Medicare base, the priced premium the benchmark. SINGLE-ONLY LEG: the single tier entered, the household tier null, the dial at the family benchmark (the prefill's dial-level fallback — the term active, the household tier null) — year 1 prices the benchmark (the fallback, equal to the dial, bit-identical to the single-year price); the transition year prices the single tier plus one Medicare base. NO-PREMIUM LEG: no premium fact at all — gross and net $0 in every year, bit-identical before and after the fix. OLD-TEMPLATE LEG: the dial alone, no tier fields (the shape an older stored template loads as) — the walk spreads the dial into every year, the transition year pricing the household tier plus the Medicare base, exactly as before the fix. RELOAD LEG: the main template round-tripped through the production chain (projTemplateToStored → JSON → the stored parse → projTemplateFromStored) walks identically — both tiers read back at their captured values and the reloaded walk's first and transition years price exactly as the direct walk's.",

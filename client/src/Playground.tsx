@@ -4275,19 +4275,32 @@ export function Playground({
               : null;
     setPgBenchmark(benchPick != null ? fmtMoneyInput(benchPick.value) : "");
     setPgBenchmarkLoaded(benchPick);
+    /* The march year for the chosen tax year, when the plan
+       march prices it — the carry-ins below already read it,
+       and the balances now do too. */
+    const pgPrefillMarchYear =
+      pgSavedPlanYears?.years.find((yr) => yr.year === taxYear) ?? null;
     /* The split balances, not their sum: the sum priced the
        spouse's share on the primary's RMD clock. Each side
-       is blank when $0 (no balance, no RMD on that side). */
-    setPgPretax(
-      pgPrefillSource.pretaxStart > 0
-        ? fmtMoneyInput(pgPrefillSource.pretaxStart)
-        : "",
-    );
-    setPgPretaxSpouse(
-      (pgPrefillSource.pretaxSpouseStart ?? 0) > 0
-        ? fmtMoneyInput(pgPrefillSource.pretaxSpouseStart ?? 0)
-        : "",
-    );
+       is blank when $0 (no balance, no RMD on that side).
+       The balances are the chosen year's own prior-December
+       balances off the march row when the march prices that
+       year — the same figures the saved-year loader loads —
+       so a future year's RMD reprices from the balance that
+       year actually enters with. The prefill used to set the
+       record's starting balances for every year, which
+       priced a later year's RMD off a balance years out of
+       date. For a year the march does not price, the
+       record's starting balances are the only source and
+       are used as they stand. */
+    const pretaxP = pgPrefillMarchYear
+      ? pgPrefillMarchYear.detail.priorPretaxPrimary
+      : pgPrefillSource.pretaxStart;
+    const pretaxS = pgPrefillMarchYear
+      ? pgPrefillMarchYear.detail.priorPretaxSpouse
+      : (pgPrefillSource.pretaxSpouseStart ?? 0);
+    setPgPretax(pretaxP > 0 ? fmtMoneyInput(pretaxP) : "");
+    setPgPretaxSpouse(pretaxS > 0 ? fmtMoneyInput(pretaxS) : "");
     setPgStateRate(String(pgPrefillSource.stateRatePct));
     setPgResidence(pgPrefillSource.residenceState === "WA" ? "WA" : "other");
     setPgItemizedMortgage(
@@ -4342,8 +4355,6 @@ export function Playground({
        march does not price, the record's entering lines are
        the only source and are used as they stand. Blank at
        $0, like the loader's dials. */
-    const pgPrefillMarchYear =
-      pgSavedPlanYears?.years.find((yr) => yr.year === taxYear) ?? null;
     const carryInSt = pgPrefillMarchYear
       ? pgPrefillMarchYear.detail.lossCarryInSt
       : pgPrefillSource.capitalLossCarryInSt;
