@@ -1047,21 +1047,27 @@ type DrillLine = { label: string; detail?: string | null; amountCents: number; i
 
 /* What the drill-down panel below the grid is showing:
    - "lines": composed client-side from the row's members (a
-     bill group's bills for one month, or a row's range total);
+     bill group's bills for one month, or a row's range total)
+     — also a single expanded member's own lines (itself for
+     one month, or one line per month for its range total);
    - "other": the Other spending row's cell for one month —
      composed from getExplorerMonthLines when it loads;
    - "month": one measure cell of the Month grouping for one
-     month — likewise composed from getExplorerMonthLines.
+     month — likewise composed from getExplorerMonthLines;
+   - "memberPart": one composition part of the Other spending
+     row for one month (an expanded member cell) — likewise
+     composed from getExplorerMonthLines.
    Every panel's lines foot exactly to its total. For the
    "lines" kind that total is the tapped number, from the same
-   grid read as the lines. For "other" / "month" the lines
-   come from the second read, so the panel's total is checked
-   against that read's own authoritative figure for the
-   measure (see authoritativeDrillTotalCents): when an edit
-   landed between the two reads the tapped total is stale,
-   and the panel totals to the current figure, says so, and
-   refreshes the grid instead of pairing fresh lines with the
-   stale total (round-9 SHOULD-4). */
+   grid read as the lines. For "other" / "month" /
+   "memberPart" the lines come from the second read, so the
+   panel's total is checked against that read's own
+   authoritative figure for the measure (see
+   authoritativeDrillTotalCents): when an edit landed between
+   the two reads the tapped total is stale, and the panel
+   totals to the current figure, says so, and refreshes the
+   grid instead of pairing fresh lines with the stale total
+   (round-9 SHOULD-4). */
 type DrillState =
   | { kind: "lines"; title: string; lines: DrillLine[]; totalCents: number }
   | { kind: "other"; title: string; month: string; totalCents: number }
@@ -1070,6 +1076,18 @@ type DrillState =
       title: string;
       month: string;
       measure: "cashOut" | "trueCost" | "totalMonthly" | "yearlyPaidOut" | "everythingElse" | "oneOffs";
+      totalCents: number;
+    }
+  | {
+      kind: "memberPart";
+      title: string;
+      month: string;
+      /* Which of the residual row's three composition parts.
+         Identified by the member's index in the row's members
+         array — the server's construction order in getExplorer
+         (actions.ts) is fixed: 0 "Cash out", 1 "Monthly bills",
+         2 "Yearly bills paid out" — never by the member's name. */
+      partIndex: 0 | 1 | 2;
       totalCents: number;
     };
 
@@ -1149,6 +1167,16 @@ function authoritativeDrillTotalCents(
   ml: ExplorerMonthLinesData,
 ): number {
   if (d.kind === "other") return ml.everythingElseCents;
+  if (d.kind === "memberPart") {
+    // The part's own figure in the month-lines read: Cash out
+    // at cashOutCents; the other two parts are the negative of
+    // their bill totals, matching how getExplorer built them.
+    return d.partIndex === 0
+      ? ml.cashOutCents
+      : d.partIndex === 1
+        ? -ml.monthlyTotalCents
+        : -ml.yearlyPaidOutCents;
+  }
   switch (d.measure) {
     case "cashOut":
       return ml.cashOutCents;
@@ -1282,7 +1310,7 @@ function ExplorerModal({
   const staleRefetchKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!drillStale || !drill || drillCurrentTotalCents == null) return;
-    const key = `${drill.kind}:${drill.month}:${drill.kind === "month" ? drill.measure : ""}:${drill.totalCents}:${drillCurrentTotalCents}`;
+    const key = `${drill.kind}:${drill.month}:${drill.kind === "month" ? drill.measure : drill.kind === "memberPart" ? `part${drill.partIndex}` : ""}:${drill.totalCents}:${drillCurrentTotalCents}`;
     if (staleRefetchKeyRef.current === key) return;
     staleRefetchKeyRef.current = key;
     void explorer.refetch();
@@ -1328,6 +1356,72 @@ function ExplorerModal({
     });
   }
 
+  /* One expanded member's own cell (round-9 NICE-8): a bill
+     group's member drills to its own lines — itself for one
+     month, one line per month for its range total. The
+     residual row's members are its three composition parts:
+     a range total still composes client-side (one line per
+     month), but a single month needs the month-lines read, so
+     it opens the "memberPart" drill. The part is identified
+     by the member's index in the row — the server's
+     construction order in getExplorer (actions.ts) is fixed:
+     index 0 "Cash out", 1 "Monthly bills", 2 "Yearly bills
+     paid out" — never by matching the member's name text. */
+  function openMemberCell(
+    r: ExplorerData["rows"][number],
+    mm: ExplorerData["rows"][number]["members"][number],
+    memberIdx: number,
+    monthIdx: number | null,
+    valueCents: number,
+  ) {
+    const monthKey = monthIdx != null ? (ex?.months[monthIdx] ?? "") : "";
+    /* One line per month of the range for a member's range
+       total — the memberLines convention: zero months dropped
+       unless every month is zero. */
+    const perMonthLines = (): DrillLine[] => {
+      const all = (ex?.months ?? []).map((m, i) => ({
+        label: shortMonthLabel(m),
+        amountCents: mm.valuesCents[i] ?? 0,
+      }));
+      const nonzero = all.filter((l) => l.amountCents !== 0);
+      return nonzero.length > 0 ? nonzero : all;
+    };
+    if (r.kind === "residual") {
+      if (monthIdx != null) {
+        setDrill({
+          kind: "memberPart",
+          title: `Other spending — ${mm.name} — ${shortMonthLabel(monthKey)}`,
+          month: monthKey,
+          partIndex: memberIdx as 0 | 1 | 2,
+          totalCents: valueCents,
+        });
+        return;
+      }
+      setDrill({
+        kind: "lines",
+        title: `Other spending — ${mm.name} — Total for the range`,
+        lines: perMonthLines(),
+        totalCents: valueCents,
+      });
+      return;
+    }
+    if (monthIdx != null) {
+      setDrill({
+        kind: "lines",
+        title: `${mm.name} — ${shortMonthLabel(monthKey)}`,
+        lines: [{ label: mm.name, detail: mm.note, amountCents: valueCents }],
+        totalCents: valueCents,
+      });
+      return;
+    }
+    setDrill({
+      kind: "lines",
+      title: `${mm.name} — Total for the range`,
+      lines: perMonthLines(),
+      totalCents: valueCents,
+    });
+  }
+
   function openMonthCell(
     monthKey: string,
     measure: Extract<DrillState, { kind: "month" }>["measure"],
@@ -1368,6 +1462,24 @@ function ExplorerModal({
         { label: "Monthly bills", detail: "counted in the bill rows", amountCents: -ml.monthlyTotalCents },
         { label: "Yearly bills paid out", detail: "net settlements this month", amountCents: -ml.yearlyPaidOutCents },
       ];
+    }
+    if (d.kind === "memberPart") {
+      // One composition part of the Other spending row for one
+      // month, identified by the member's index (the server's
+      // construction order in getExplorer: 0 Cash out,
+      // 1 Monthly bills, 2 Yearly bills paid out). Each part's
+      // lines foot to the part's own figure: Cash out to
+      // cashOutCents, the bill parts negated to
+      // −monthlyTotalCents / −yearlyPaidOutCents.
+      if (d.partIndex === 0) return cashOutBlock;
+      if (d.partIndex === 1) {
+        return ml.monthlyBillLines.map((l) => ({
+          label: l.label,
+          detail: "Monthly bill",
+          amountCents: -l.amountCents,
+        }));
+      }
+      return yearlyPaidOutDrillLines(ml).map((l) => ({ ...l, amountCents: -l.amountCents }));
     }
     switch (d.measure) {
       case "cashOut":
@@ -1610,9 +1722,27 @@ function ExplorerModal({
                                     <span className="block text-xs">{mm.note}</span>
                                   </th>
                                   {mm.valuesCents.map((v, i) => (
-                                    <td key={i} className="py-1.5 pr-3 text-right whitespace-nowrap text-[var(--dim)]">{fmt(v)}</td>
+                                    <td key={i} className="py-1.5 pr-3 text-right whitespace-nowrap text-[var(--dim)]">
+                                      <button
+                                        type="button"
+                                        aria-label={`Lines behind ${mm.name}, ${shortMonthLabel(ex.months[i] ?? "")}: ${fmt(v)}`}
+                                        className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                                        onClick={() => openMemberCell(r, mm, mi, i, v)}
+                                      >
+                                        {fmt(v)}
+                                      </button>
+                                    </td>
                                   ))}
-                                  <td className="py-1.5 text-right whitespace-nowrap text-[var(--dim)]">{fmt(mm.totalCents)}</td>
+                                  <td className="py-1.5 text-right whitespace-nowrap text-[var(--dim)]">
+                                    <button
+                                      type="button"
+                                      aria-label={`Lines behind ${mm.name} total: ${fmt(mm.totalCents)}`}
+                                      className="underline decoration-dotted underline-offset-4 hover:text-[var(--accent)]"
+                                      onClick={() => openMemberCell(r, mm, mi, null, mm.totalCents)}
+                                    >
+                                      {fmt(mm.totalCents)}
+                                    </button>
+                                  </td>
                                 </tr>
                               ))}
                           </Fragment>
