@@ -2502,6 +2502,21 @@ export function RetirementCalc({
     // net withdrawal against the balance on hand at its start,
     // det.balances[i]) — the two always agree.
     const neverRunsOut = runNeverRunsOut(inputs, returns);
+    // No-retired-years state (2026-11-09, round-9 SHOULD-5):
+    // when the retirement age is past the end age, the engine
+    // prices zero retired years — no spending is ever tested —
+    // yet runNeverRunsOut still returns success, so without a
+    // separate flag the verdict would declare "Succeeds"
+    // without having priced a single year. hasRetiredYears
+    // marks that out: every verdict readout below (the verdict
+    // block, the plan summary, the Projection tab's lasts-to
+    // readout, and the at-risk indicator) routes through this
+    // flag and shows the explicit "No retired years in this
+    // projection" state instead of a success. The comparison
+    // is strict the other way: the engine prices the end-age
+    // year inclusively, so retirementAge == endAge still
+    // prices one retired year and is NOT this state.
+    const hasRetiredYears = inputs.retirementAge <= inputs.endAge;
     let shortfallAge: number | null = null;
     for (let i = 0; i < det.netWithdrawals.length; i++) {
       if (inputs.currentAge + i < inputs.retirementAge) continue;
@@ -2519,8 +2534,10 @@ export function RetirementCalc({
     // by income. Every readout below that states a verdict —
     // the verdict block, the plan summary, the Projection tab's
     // lasts-to readout, and the at-risk indicator — reads
-    // neverRunsOut / shortfallAge above instead. The ending
-    // balance stays available as its own figure (ending).
+    // neverRunsOut / shortfallAge above instead — except in
+    // the no-retired-years state (hasRetiredYears false), where
+    // no readout states a success or a shortfall at all. The
+    // ending balance stays available as its own figure (ending).
     // Tail disclosure (display-only, percent strategy): the final
     // retired year's gross spending and the first retired year's,
     // from this same path's per-year withdrawals. Null when the
@@ -2539,6 +2556,7 @@ export function RetirementCalc({
       path,
       ending,
       neverRunsOut,
+      hasRetiredYears,
       shortfallAge,
       finalYearSpending,
       firstRetiredYearSpending,
@@ -2690,8 +2708,12 @@ export function RetirementCalc({
   // a fully funded run can end at exactly $0 and succeed, and
   // a shortfall run can end positive after later income refills
   // it (round-9 MUST-1). The projection recomputes on every
-  // edit, so this updates live.
-  const projectionAtRisk = projection != null && !projection.neverRunsOut;
+  // edit, so this updates live. In the no-retired-years state
+  // (round-9 SHOULD-5) the projection is NOT at risk: no year's
+  // spending was tested, so there is no shortfall to flag —
+  // the ending balance renders as the plain figure.
+  const projectionAtRisk =
+    projection != null && projection.hasRetiredYears && !projection.neverRunsOut;
 
   // Short-form at-risk explanations for the engine tabs (the pill
   // tooltips carry the full version). Null for a healthy tab — a
@@ -3879,13 +3901,15 @@ export function RetirementCalc({
     ) : (
       "no extra income"
     );
-    const outcomePart = projection.neverRunsOut
-      ? projection.ending > 0
-        ? `money lasts past age ${inputs.endAge}`
-        : `money lasts to age ${inputs.endAge}`
-      : projection.shortfallAge != null
-        ? `money runs out at age ${projection.shortfallAge}`
-        : `money runs out by age ${inputs.endAge}`;
+    const outcomePart = !projection.hasRetiredYears
+      ? "no retired years in this projection were priced"
+      : projection.neverRunsOut
+        ? projection.ending > 0
+          ? `money lasts past age ${inputs.endAge}`
+          : `money lasts to age ${inputs.endAge}`
+        : projection.shortfallAge != null
+          ? `money runs out at age ${projection.shortfallAge}`
+          : `money runs out by age ${inputs.endAge}`;
     return (
       <>
         Retire at{" "}
@@ -3991,13 +4015,26 @@ export function RetirementCalc({
           is the ending balance at the end age. It updates live
           with every edit, like every other result here, and
           renders nothing while the inputs are invalid (there
-          is no Projection result to state truthfully). */}
+          is no Projection result to state truthfully). One
+          third state (2026-11-09, round-9 SHOULD-5): when the
+          retirement age is past the end age, no retired year
+          was priced at all (the Projection result's
+          hasRetiredYears is false), so the block shows a
+          neutral pill and headline — "No retired years in this
+          projection" — with the ending balance still shown as
+          its own figure and a note explaining why there is no
+          verdict; neither the success nor the falls-short
+          wording appears in that state. */}
       {inputs && projection && (
         <section
           aria-label="Plan verdict"
           className={`mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${flashCls}`}
         >
-          {projection.neverRunsOut ? (
+          {!projection.hasRetiredYears ? (
+            <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--surface-alt)] px-3 py-1.5 text-sm font-semibold whitespace-nowrap text-[var(--text)]">
+              No retired years in this projection
+            </span>
+          ) : projection.neverRunsOut ? (
             <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--accent-soft)] px-3 py-1.5 text-sm font-semibold whitespace-nowrap text-[var(--accent)]">
               <span aria-hidden="true">✓</span>
               {projection.ending > 0
@@ -4013,24 +4050,26 @@ export function RetirementCalc({
             </span>
           )}
           <p className="display mt-3 text-3xl leading-tight font-semibold sm:text-4xl">
-            {projection.neverRunsOut
-              ? projection.ending > 0
-                ? `Money lasts past ${inputs.endAge}`
-                : `Money lasts to ${inputs.endAge}`
-              : projection.shortfallAge != null
-                ? `Money runs out at ${projection.shortfallAge}`
-                : `Money runs out by ${inputs.endAge}`}
+            {!projection.hasRetiredYears
+              ? "No retired years in this projection"
+              : projection.neverRunsOut
+                ? projection.ending > 0
+                  ? `Money lasts past ${inputs.endAge}`
+                  : `Money lasts to ${inputs.endAge}`
+                : projection.shortfallAge != null
+                  ? `Money runs out at ${projection.shortfallAge}`
+                  : `Money runs out by ${inputs.endAge}`}
           </p>
           <p className="tnum mt-2 text-base leading-relaxed">
             <strong className="font-semibold">
               {`${fmt(projection.ending)} left at ${inputs.endAge}`}
             </strong>
-            {projection.neverRunsOut && projection.ending <= 0 && (
+            {projection.hasRetiredYears && projection.neverRunsOut && projection.ending <= 0 && (
               <span className="text-[var(--dim)]">
                 {" — every year's spending fully funded, with nothing to spare"}
               </span>
             )}
-            {!projection.neverRunsOut && projection.shortfallAge != null && (
+            {projection.hasRetiredYears && !projection.neverRunsOut && projection.shortfallAge != null && (
               <span className="text-[var(--dim)]">
                 {` — runs out ${inputs.endAge - projection.shortfallAge} ${inputs.endAge - projection.shortfallAge === 1 ? "year" : "years"} before the end age`}
                 {projection.ending > 0
@@ -4039,6 +4078,13 @@ export function RetirementCalc({
               </span>
             )}
           </p>
+          {!projection.hasRetiredYears && (
+            <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">
+              The retirement age is past the end age, so no year&rsquo;s
+              spending was tested. Lower the retirement age or raise the
+              end age for a verdict.
+            </p>
+          )}
           <p className="mt-1 text-xs leading-relaxed text-[var(--dim)]">
             {`Projection at a steady ${(expected * 100).toFixed(2)}% real return — the same figures as the Projection tab below.`}
           </p>
@@ -4807,15 +4853,17 @@ export function RetirementCalc({
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Money lasts to</p>
               <p className="tnum display text-base font-semibold">
-                {!projection.neverRunsOut
-                  ? projection.shortfallAge != null
-                    ? `Age ${projection.shortfallAge}`
-                    : `By age ${inputs.endAge}`
-                  : projection.ending > 0
-                    ? `Age ${inputs.endAge}+`
-                    : `Age ${inputs.endAge}`}
+                {!projection.hasRetiredYears
+                  ? "—"
+                  : !projection.neverRunsOut
+                    ? projection.shortfallAge != null
+                      ? `Age ${projection.shortfallAge}`
+                      : `By age ${inputs.endAge}`
+                    : projection.ending > 0
+                      ? `Age ${inputs.endAge}+`
+                      : `Age ${inputs.endAge}`}
               </p>
-              {!projection.neverRunsOut && (
+              {projection.hasRetiredYears && !projection.neverRunsOut && (
                 <p className="text-xs text-[var(--dim)]">The portfolio runs out at this age at a steady {(expected * 100).toFixed(2)}% real return.</p>
               )}
             </div>
