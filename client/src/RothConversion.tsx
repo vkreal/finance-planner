@@ -12523,14 +12523,29 @@ export function RothConversion({
                     <FoldChevron open={taxYearNumbersOpen} />
                   </button>
                   {taxYearNumbersOpen && (
-                    <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3 lg:grid-cols-4">
-                      {planYears.map((y) => (
-                        <p key={y.year} className="tnum flex justify-between gap-3">
-                          <span className="text-[var(--dim)]">{y.year}</span>
-                          <span>{fmtCents(y.federalTaxCents)}</span>
+                    <>
+                      <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3 lg:grid-cols-4">
+                        {planYears.map((y) => (
+                          <p key={y.year} className="tnum flex justify-between gap-3">
+                            <span className="text-[var(--dim)]">
+                              {y.year}
+                              {y.settlementConverged === false ? " · unsettled" : ""}
+                              {y.ceilingBreached ? " · ceiling" : ""}
+                            </span>
+                            <span>{fmtCents(y.federalTaxCents)}</span>
+                          </p>
+                        ))}
+                      </div>
+                      {(planYears.some((y) => y.settlementConverged === false) ||
+                        planYears.some((y) => y.ceilingBreached)) && (
+                        <p className="mt-2 text-sm text-[var(--dim)]">
+                          Unsettled — the year&rsquo;s settlement did not converge, so it
+                          was priced from the iteration&rsquo;s best state. Ceiling — a
+                          switched-on ceiling is still breached at $0 conversion, so a $0
+                          conversion there means no room, not a fill failure.
                         </p>
-                      ))}
-                    </div>
+                      )}
+                    </>
                   )}
                   {firstDrawYear && (
                     <div
@@ -12662,6 +12677,29 @@ export function RothConversion({
                           Survivor — single filer
                         </span>
                       )}
+                      {y.settlementConverged === false && (
+                        <span className="block text-xs font-medium whitespace-normal text-[var(--bad)]">
+                          Did not settle
+                          {y.settlementMismatchCents.gains !== 0 ||
+                          y.settlementMismatchCents.pretax !== 0
+                            ? ` — off by ${[
+                                y.settlementMismatchCents.gains !== 0
+                                  ? `${fmtCents(y.settlementMismatchCents.gains)} gains`
+                                  : "",
+                                y.settlementMismatchCents.pretax !== 0
+                                  ? `${fmtCents(y.settlementMismatchCents.pretax)} pre-tax`
+                                  : "",
+                              ]
+                                .filter(Boolean)
+                                .join(" + ")}`
+                            : ""}
+                        </span>
+                      )}
+                      {y.ceilingBreached && (
+                        <span className="block text-xs whitespace-normal text-[var(--dim)]">
+                          Ceiling breached at $0 conversion — no room
+                        </span>
+                      )}
                     </td>
                     <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">
                       {y.conversion > 0 ? (
@@ -12725,6 +12763,21 @@ export function RothConversion({
                   to Medicaid rather than a marketplace plan in most states; the credit
                   shown is the priced figure, flagged because it may not be a marketplace
                   result.
+                </p>
+              )}
+              {mainResult.years.some((y) => y.settlementConverged === false) && (
+                <p className={hintCls}>
+                  Did not settle — the year&rsquo;s settlement iteration did not reach
+                  an exact fixed point, so the year was priced from the iteration&rsquo;s
+                  best state; the mark names the kept round&rsquo;s residual mismatch.
+                </p>
+              )}
+              {mainResult.years.some((y) => y.ceilingBreached) && (
+                <p className={hintCls}>
+                  Ceiling breached at $0 conversion — a switched-on ceiling is still
+                  breached by the year&rsquo;s final figures with no conversion at all,
+                  so the draws alone breach it and no fill could fix it; a $0 conversion
+                  in such a year means no room, not a fill failure.
                 </p>
               )}
               <p className={hintCls}>

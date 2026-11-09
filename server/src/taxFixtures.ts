@@ -26676,6 +26676,277 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "tax-engines-compare-settlement-flags-round8-should1",
+    kind: "tax",
+    note: "Settlement flags on the compare year readouts (internal review round-8 SHOULD-1, settled STAND; same defect as ChatGPT NICE-1, built once here). DEFECT (pre-fix, reproduced by probe on the shared fictional sample household, server/src/sampleHousehold.ts, in its resolved compare shape): runRothCompare's year mapping dropped the settlement flags the march and the funding rows both carry — settlementConverged, settlementMismatchCents, ceilingBreached — so all 38 compare years of every scenario carried none of the three keys (0 years with any flag key) while the funding rows for the same plan showed 27 ceiling-breached Fill 12% years (2037–2063) and a non-converged Fill 22% year (2056, 1c gains mismatch), all invisible in the Tax Plan. FIX: the mapping carries the three flags through from the same priced march row (the mismatch is already integer cents on the march row, so it passes through unscaled, exactly as the funding rows carry it), the runRothCompare response schema carries them, and the Tax Plan year rows mark a non-converged year and a ceiling-breached year. ENGINE-DERIVED REGRESSION PIN: on the sample household's full plan the compare path now carries all three flags on every year of every scenario (38/38 each) — Fill 12% 27 breached years, first 2037 last 2063, 0 non-converged, 2037 converged with a $0 mismatch and a $0 conversion (the draws alone breach: a breached year is NOT a defect and NOT a fill failure, it means no room at $0 conversion); Fill 22% 0 breached, 3 non-converged years — 2038, 2049, 2056 — each a 1c gains mismatch with pre-tax $0, 2056 with a $0 conversion, priced from the iteration's best state; Do Nothing 0 breached, 0 non-converged. (The reviewer's probe counted 1 non-converged Fill 22% year — 2056 — on the DIRECT samplePlanInputs funding shape; the compare path's own buildCompareScenario shape prices 3 — 2038, 2049, 2056 — because the two input constructions differ in normalization/defaults enough to move the settlement in those edge years by a cent. The fixture pins the compare path's own counts, and its cross-check is same-construction: every compare year's three flags equal the funding row's flags for the same year built from the same compare scenario — 0 differing years on all three scenarios.)",
+    expected: {
+      dnYears: 38,
+      dnYearsWithFlags: 38,
+      dnBreached: 0,
+      dnBreachedFirst: null,
+      dnBreachedLast: null,
+      dnNonConverged: 0,
+      dnNonConvergedYears: "",
+      dnY2037Converged: 1,
+      dnY2037MismatchGains: 0,
+      dnY2037MismatchPretax: 0,
+      dnY2037Breached: 0,
+      dnY2037Conversion: 0,
+      dnY2056Converged: 1,
+      dnY2056MismatchGains: 0,
+      dnY2056MismatchPretax: 0,
+      dnY2056Breached: 0,
+      dnY2056Conversion: 0,
+      dnFlagDiffs: 0,
+      f12Years: 38,
+      f12YearsWithFlags: 38,
+      f12Breached: 27,
+      f12BreachedFirst: 2037,
+      f12BreachedLast: 2063,
+      f12NonConverged: 0,
+      f12NonConvergedYears: "",
+      f12Y2037Converged: 1,
+      f12Y2037MismatchGains: 0,
+      f12Y2037MismatchPretax: 0,
+      f12Y2037Breached: 1,
+      f12Y2037Conversion: 0,
+      f12Y2056Converged: 1,
+      f12Y2056MismatchGains: 0,
+      f12Y2056MismatchPretax: 0,
+      f12Y2056Breached: 1,
+      f12Y2056Conversion: 0,
+      f12FlagDiffs: 0,
+      f22Years: 38,
+      f22YearsWithFlags: 38,
+      f22Breached: 0,
+      f22BreachedFirst: null,
+      f22BreachedLast: null,
+      f22NonConverged: 3,
+      f22NonConvergedYears: "2038,2049,2056",
+      f22Y2037Converged: 1,
+      f22Y2037MismatchGains: 0,
+      f22Y2037MismatchPretax: 0,
+      f22Y2037Breached: 0,
+      f22Y2037Conversion: 7610000,
+      f22Y2038Converged: 0,
+      f22Y2038MismatchGains: 1,
+      f22Y2038MismatchPretax: 0,
+      f22Y2049Converged: 0,
+      f22Y2049MismatchGains: 1,
+      f22Y2049MismatchPretax: 0,
+      f22Y2056Converged: 0,
+      f22Y2056MismatchGains: 1,
+      f22Y2056MismatchPretax: 0,
+      f22Y2056Breached: 0,
+      f22Y2056Conversion: 0,
+      f22FlagDiffs: 0,
+    },
+    actual: () => {
+      const base: RothCompareBaseSaved = {
+        birthYearPrimary: SAMPLE_BIRTH_YEAR_PRIMARY,
+        birthYearSpouse: SAMPLE_BIRTH_YEAR_SPOUSE,
+        filingStatus: SAMPLE_FILING_STATUS,
+        pretaxCents: SAMPLE_PRETAX_CENTS,
+        pretaxSpouseCents: null,
+        survivorEnabled: false,
+        survivorWho: null,
+        survivorDeathYear: null,
+        rothCents: SAMPLE_ROTH_CENTS,
+        taxableCents: SAMPLE_TAXABLE_CENTS,
+        taxableExcludeCents: 0,
+        hsaCents: SAMPLE_HSA_CENTS,
+        taxableBasisPct: SAMPLE_TAXABLE_BASIS_PCT,
+        taxableTiers: null,
+        taxableDividendYieldPct: SAMPLE_DIVIDEND_YIELD_PCT,
+        taxableInterestYieldPct: SAMPLE_INTEREST_YIELD_PCT,
+        qualifiedDividendSharePct: SAMPLE_QUALIFIED_SHARE_PCT,
+        spendFromCashPct: null,
+        spendFromCashSleeveCents: null,
+        flexCutPct: null,
+        flexFloorPct: null,
+        annualSpendingCents: SAMPLE_ANNUAL_SPENDING_CENTS,
+        retirementAge: SAMPLE_RETIREMENT_AGE,
+        endAge: SAMPLE_END_AGE,
+        expectedReturnPct: SAMPLE_EXPECTED_RETURN_PCT,
+        ssPrimaryAnnualCents: SAMPLE_SS_PRIMARY_CENTS,
+        ssPrimaryStartAge: SAMPLE_SS_PRIMARY_START_AGE,
+        ssPrimaryNoBenefit: false,
+        ssSpouseAnnualCents: SAMPLE_SS_SPOUSE_CENTS,
+        ssSpouseStartAge: SAMPLE_SS_SPOUSE_START_AGE,
+        ssSpouseNoBenefit: false,
+        otherOrdinaryCents: null,
+        taxExemptInterestCents: null,
+        convertedAlreadyCents: null,
+        windowStartAge: SAMPLE_WINDOW_START_AGE,
+        windowStopAge: SAMPLE_WINDOW_STOP_AGE,
+        payTaxFrom: "taxable",
+        protectMinTaxableCents: SAMPLE_PROTECT_MIN_TAXABLE_CENTS,
+        preservePretaxCents: SAMPLE_PRESERVE_PRETAX_CENTS,
+        preserveExitRatePct: 10,
+        claimAgeFloor: null,
+        spouseSoleBeneficiary: true,
+        primarySoleBeneficiaryOfSpouse: null,
+        acaHouseholdSize: SAMPLE_HOUSEHOLD_SIZE,
+        acaHouseholdSchedule: null,
+        collegeFallFromYear: null,
+        collegeFallThroughYear: null,
+        acaBenchmarkCoupleCents: SAMPLE_ACA_BENCHMARK_COUPLE_CENTS,
+        acaBenchmarkSingleCents: SAMPLE_ACA_BENCHMARK_SINGLE_CENTS,
+        acaBenchmarkFamilyCents: SAMPLE_ACA_BENCHMARK_FAMILY_CENTS,
+        acaSpouseEndAge: null,
+        inflationPct: SAMPLE_INFLATION_PCT,
+        stateRatePct: 0,
+        heirRatePct: SAMPLE_HEIR_RATE_PCT,
+        ceilings: null,
+        optimizerGuardrail: null,
+        optimizerBunching: null,
+        gainsHarvest: null,
+        drawOrder: null,
+        drawOrderAfter: null,
+        drawOrderSwitchAge: null,
+        yearlySalaryCents: null,
+        employer401kCents: null,
+        employerHsaCents: null,
+        fafsaReportableAssetsCents: null,
+      };
+      const fillCeilings = (pct: number) => ({
+        bracketTopPct: pct,
+        irmaaTierCap: null,
+        ltcgZeroCap: false,
+        acaCliffCap: false,
+        acaCliffCapFamilyOnly: false,
+        magiCapCents: null,
+        acaCliffBufferCents: null,
+      });
+      const fill12 = fillCeilings(12);
+      const fill22 = fillCeilings(22);
+      const cmp = runRothCompare(
+        base,
+        [
+          { name: "Do Nothing", overrides: {} },
+          { name: "Fill 12%", overrides: { ceilings: fill12 } },
+          { name: "Fill 22%", overrides: { ceilings: fill22 } },
+        ],
+        SAMPLE_START_YEAR,
+      );
+      const sc = (name: string) => cmp.scenarios.find((s) => s.name === name)!;
+      const summarize = (name: string) => {
+        const years = sc(name).years;
+        const breached = years.filter((y) => y.ceilingBreached);
+        const nonConv = years.filter((y) => !y.settlementConverged);
+        const y = (yr: number) => years.find((v) => v.year === yr);
+        return { years, breached, nonConv, y };
+      };
+      // Same-construction cross-check: every compare year's three
+      // flags against the funding row for the same year, built
+      // from the same compare scenario.
+      const flagDiffs = (name: string, ceilings: typeof fill12 | null) => {
+        const built = buildCompareScenario(
+          base,
+          name,
+          ceilings ? { ceilings } : {},
+          SAMPLE_START_YEAR,
+        );
+        const fund = built ? buildRothFunding(built.inputs, built.strategy) : [];
+        let diffs = 0;
+        for (const y of sc(name).years) {
+          const f = fund.find((r) => r.year === y.year);
+          if (
+            !f ||
+            f.settlementConverged !== y.settlementConverged ||
+            f.ceilingBreached !== y.ceilingBreached ||
+            f.settlementMismatchCents.gains !== y.settlementMismatchCents.gains ||
+            f.settlementMismatchCents.pretax !== y.settlementMismatchCents.pretax
+          )
+            diffs++;
+        }
+        return diffs;
+      };
+      const dn = summarize("Do Nothing");
+      const f12 = summarize("Fill 12%");
+      const f22 = summarize("Fill 22%");
+      const y2038 = f22.y(2038);
+      const y2049 = f22.y(2049);
+      return {
+        dnYears: dn.years.length,
+        dnYearsWithFlags: dn.years.filter(
+          (y) =>
+            "settlementConverged" in y &&
+            "ceilingBreached" in y &&
+            "settlementMismatchCents" in y,
+        ).length,
+        dnBreached: dn.breached.length,
+        dnBreachedFirst: dn.breached[0]?.year ?? null,
+        dnBreachedLast: dn.breached[dn.breached.length - 1]?.year ?? null,
+        dnNonConverged: dn.nonConv.length,
+        dnNonConvergedYears: dn.nonConv.map((y) => y.year).join(","),
+        dnY2037Converged: dn.y(2037)?.settlementConverged ? 1 : 0,
+        dnY2037MismatchGains: dn.y(2037)?.settlementMismatchCents.gains ?? null,
+        dnY2037MismatchPretax: dn.y(2037)?.settlementMismatchCents.pretax ?? null,
+        dnY2037Breached: dn.y(2037)?.ceilingBreached ? 1 : 0,
+        dnY2037Conversion: dn.y(2037)?.conversionCents ?? null,
+        dnY2056Converged: dn.y(2056)?.settlementConverged ? 1 : 0,
+        dnY2056MismatchGains: dn.y(2056)?.settlementMismatchCents.gains ?? null,
+        dnY2056MismatchPretax: dn.y(2056)?.settlementMismatchCents.pretax ?? null,
+        dnY2056Breached: dn.y(2056)?.ceilingBreached ? 1 : 0,
+        dnY2056Conversion: dn.y(2056)?.conversionCents ?? null,
+        dnFlagDiffs: flagDiffs("Do Nothing", null),
+        f12Years: f12.years.length,
+        f12YearsWithFlags: f12.years.filter(
+          (y) =>
+            "settlementConverged" in y &&
+            "ceilingBreached" in y &&
+            "settlementMismatchCents" in y,
+        ).length,
+        f12Breached: f12.breached.length,
+        f12BreachedFirst: f12.breached[0]?.year ?? null,
+        f12BreachedLast: f12.breached[f12.breached.length - 1]?.year ?? null,
+        f12NonConverged: f12.nonConv.length,
+        f12NonConvergedYears: f12.nonConv.map((y) => y.year).join(","),
+        f12Y2037Converged: f12.y(2037)?.settlementConverged ? 1 : 0,
+        f12Y2037MismatchGains: f12.y(2037)?.settlementMismatchCents.gains ?? null,
+        f12Y2037MismatchPretax: f12.y(2037)?.settlementMismatchCents.pretax ?? null,
+        f12Y2037Breached: f12.y(2037)?.ceilingBreached ? 1 : 0,
+        f12Y2037Conversion: f12.y(2037)?.conversionCents ?? null,
+        f12Y2056Converged: f12.y(2056)?.settlementConverged ? 1 : 0,
+        f12Y2056MismatchGains: f12.y(2056)?.settlementMismatchCents.gains ?? null,
+        f12Y2056MismatchPretax: f12.y(2056)?.settlementMismatchCents.pretax ?? null,
+        f12Y2056Breached: f12.y(2056)?.ceilingBreached ? 1 : 0,
+        f12Y2056Conversion: f12.y(2056)?.conversionCents ?? null,
+        f12FlagDiffs: flagDiffs("Fill 12%", fill12),
+        f22Years: f22.years.length,
+        f22YearsWithFlags: f22.years.filter(
+          (y) =>
+            "settlementConverged" in y &&
+            "ceilingBreached" in y &&
+            "settlementMismatchCents" in y,
+        ).length,
+        f22Breached: f22.breached.length,
+        f22BreachedFirst: f22.breached[0]?.year ?? null,
+        f22BreachedLast: f22.breached[f22.breached.length - 1]?.year ?? null,
+        f22NonConverged: f22.nonConv.length,
+        f22NonConvergedYears: f22.nonConv.map((y) => y.year).join(","),
+        f22Y2037Converged: f22.y(2037)?.settlementConverged ? 1 : 0,
+        f22Y2037MismatchGains: f22.y(2037)?.settlementMismatchCents.gains ?? null,
+        f22Y2037MismatchPretax: f22.y(2037)?.settlementMismatchCents.pretax ?? null,
+        f22Y2037Breached: f22.y(2037)?.ceilingBreached ? 1 : 0,
+        f22Y2037Conversion: f22.y(2037)?.conversionCents ?? null,
+        f22Y2038Converged: y2038?.settlementConverged ? 1 : 0,
+        f22Y2038MismatchGains: y2038?.settlementMismatchCents.gains ?? null,
+        f22Y2038MismatchPretax: y2038?.settlementMismatchCents.pretax ?? null,
+        f22Y2049Converged: y2049?.settlementConverged ? 1 : 0,
+        f22Y2049MismatchGains: y2049?.settlementMismatchCents.gains ?? null,
+        f22Y2049MismatchPretax: y2049?.settlementMismatchCents.pretax ?? null,
+        f22Y2056Converged: f22.y(2056)?.settlementConverged ? 1 : 0,
+        f22Y2056MismatchGains: f22.y(2056)?.settlementMismatchCents.gains ?? null,
+        f22Y2056MismatchPretax: f22.y(2056)?.settlementMismatchCents.pretax ?? null,
+        f22Y2056Breached: f22.y(2056)?.ceilingBreached ? 1 : 0,
+        f22Y2056Conversion: f22.y(2056)?.conversionCents ?? null,
+        f22FlagDiffs: flagDiffs("Fill 22%", fill22),
+      };
+    },
+  },
+  {
     id: "health-premium-terminal-tier-rule",
     kind: "tax",
     note: "Terminal tier rule (build v208 pin of the rule the step-(a) re-price resolved): the score's terminal tax on the ending pre-tax balance prices in two tiers — the preserved part (ending pre-tax up to the preserve floor) at the preserve's EXIT rate, and only the excess above the floor at the HEIR rate. Pinned directly on netCostBreakdown with a stub result (all lifetime components $0, so the net cost IS the terminal): ending pre-tax $800,000 with a $500,000 preserve at a 10% exit rate and a 22% heir rate → preserved $500,000 × 10% = $50,000 plus excess $300,000 × 22% = $66,000, terminal $116,000. Below the floor the whole balance prices at the exit rate: ending $300,000 → $30,000, excess $0. (The stub's other lifetime fields are the RothPlanResult fields netCostBreakdown reads; every one is $0 here, including the health premium fields the v208 score added.)",

@@ -8439,6 +8439,21 @@ export type RothCompareScenarioYear = {
   pretaxSpendingDrawCents: number;
   pretaxTaxDebitCents: number;
   extraPreTaxDrawCents: number;
+  // Settlement convergence (round-8 SHOULD-1, from the engine's
+  // RothYear): whether the year's kept settlement was an exact fixed
+  // point of the settlement iteration, and — when it was not — the
+  // kept round's residual mismatch per component in integer cents
+  // (both 0 when converged). A non-converged year was priced from
+  // the iteration's best iterated state. Display only — no score,
+  // ranking, or delta is derived from them, and no pricing changed.
+  settlementConverged: boolean;
+  settlementMismatchCents: { gains: number; pretax: number };
+  // Ceiling breached (round-8 SHOULD-1, from the engine's
+  // RothYear): true when a switched-on ceiling is still breached
+  // by the year's final priced figures at conversion $0 — the
+  // draws alone breach. See the ceilingBreachedSemantics
+  // convention describeApi publishes. Display only.
+  ceilingBreached: boolean;
 };
 
 export type RothCompareScenarioResult = {
@@ -8602,6 +8617,14 @@ export function runRothCompare(
         pretaxSpendingDrawCents: toCents(y.detail.pretaxSpendingDraw),
         pretaxTaxDebitCents: toCents(y.detail.pretaxTaxDebit),
         extraPreTaxDrawCents: toCents(y.detail.extraPreTaxDraw),
+        // Settlement flags (round-8 SHOULD-1): carried through
+        // from the same priced march row the other readouts read
+        // — the mismatch is already integer cents on the march
+        // row, so it passes through unscaled, exactly as the
+        // funding rows carry it. Display only.
+        settlementConverged: y.settlementConverged,
+        settlementMismatchCents: y.settlementMismatchCents,
+        ceilingBreached: y.ceilingBreached,
       })),
       penaltyCents: toCents(cost.penalty),
       irmaaCents: toCents(cost.irmaa),
