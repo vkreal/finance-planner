@@ -26569,6 +26569,113 @@ export const TAX_FIXTURES: TaxFixtureCase[] = [
     },
   },
   {
+    id: "health-premium-zero-spending-retired-year",
+    kind: "tax",
+    note: "Health premium term (ChatGPT SHOULD-6) on the shared fictional sample household (server/src/sampleHousehold.ts: MFJ, born 1968 / 1970, retire at 62 in 2030, benchmarks family $36,000 / couple $25,000 / single $17,500), Do Nothing, with the term entered: marketplace household $40,000/yr, marketplace single $22,000/yr, Medicare base $3,600 per person/yr — the same entered amounts as the v208 schedule fixture — plus $40,000/yr of other ordinary income, which lifts the year's MAGI above 100% FPL at $0 spending so a credit prices there. DEFECT (pre-fix): a retired year with explicit $0 non-health spending dropped the entered premium (gross and net $0) while the credit — priced independently of spending — was kept: at $0 spending 2030 priced gross $0, net $0, credit $31,359.40; at $1 spending the same year priced gross $40,000, net $8,640.60, credit $31,359.40 identical, MAGI $68,006.53 identical. FIX: the premium gate is the retirement status alone (retiredYear), not the spending amount, so the $0 leg now prices exactly the $1 leg: gross $40,000, net $8,640.60 (gross less the kept credit), credit $31,359.40, MAGI $68,006.53, converged; the funding row carries the net as its own need (spending $0, health 864,060c, federal tax 162,671c, total need 1,026,731c, identity gap $0). The lifetime figures move with the restored premiums: lifetime gross $380,000 (the v208 schedule exactly — the $0 leg's years now carry their premiums), lifetime net $262,932.62, lifetime credit kept $117,067.38; the $1 leg is 1c apart on both lifetime figures ($262,932.61 / $117,067.39 — the $1 of spending). WORKING-YEAR CONTROL: 2029 (primary 61, before retirement) prices gross and net $0 on every leg — a working year charges $0, unchanged by the fix. NORMAL-SPENDING CONTROL: at $180,000 spending the 2030 year is over the cliff (MAGI $149,837.31), credit $0, net = gross $40,000 — the same figures as before the fix, so the fix moves nothing at normal spending. (Without the other ordinary income the $0/$1 pair sits at the FPL cliff edge and the settlement alternates without converging — the $1 leg was already non-converged pre-fix — so the pair is pinned on the converged other-income shape, not the cliff-edge one.)",
+    expected: {
+      gross2029Zero: 0,
+      net2029Zero: 0,
+      gross2030Zero: 40000,
+      net2030Zero: 8640.6,
+      credit2030Zero: 31359.4,
+      magi2030Zero: 68006.53,
+      converged2030Zero: 1,
+      gross2030One: 40000,
+      net2030One: 8640.6,
+      credit2030One: 31359.4,
+      magi2030One: 68006.53,
+      fundingHealthCents2030Zero: 864060,
+      fundingSpendingCents2030Zero: 0,
+      fundingTotalNeedCents2030Zero: 1026731,
+      fundingIdentityGap2030Zero: 0,
+      fundingHealthCents2030One: 864060,
+      fundingSpendingCents2030One: 100,
+      fundingTotalNeedCents2030One: 1026831,
+      lifetimeGrossZero: 380000,
+      lifetimeNetZero: 262932.62,
+      lifetimeCreditKeptZero: 117067.38,
+      lifetimeNetOne: 262932.61,
+      lifetimeCreditKeptOne: 117067.39,
+      gross2030Normal: 40000,
+      net2030Normal: 40000,
+      credit2030Normal: 0,
+      magi2030Normal: 149837.31,
+    },
+    actual: () => {
+      const run = (annualSpending: number) => {
+        const inputs = samplePlanInputs({
+          annualSpending,
+          otherOrdinaryAnnual: 40000,
+          healthPremiumAcaHousehold: 40000,
+          healthPremiumAcaSingle: 22000,
+          healthPremiumMedicarePerPerson: 3600,
+        });
+        const res = simulateRothPlan(inputs, DO_NOTHING);
+        const yr = (y: number) => res.years.find((v) => v.year === y);
+        const funding = buildRothFunding(inputs, DO_NOTHING);
+        const f30 = funding.find((f) => f.year === 2030);
+        const sources30 =
+          (f30?.ssCents ?? 0) + (f30?.rmdCents ?? 0) + (f30?.otherIncomeCents ?? 0) +
+          (f30?.taxExemptCents ?? 0) + (f30?.interestYieldCents ?? 0) +
+          (f30?.dividendYieldCents ?? 0) + (f30?.pretaxDrawCents ?? 0) +
+          (f30?.taxableSoldForSpendingCents ?? 0) + (f30?.taxableSoldForTaxCents ?? 0) +
+          (f30?.cashSpendCents ?? 0) + (f30?.rothDrawCents ?? 0) +
+          (f30?.salarySurplusCents ?? 0);
+        return {
+          gross2029: yr(2029)?.healthPremiumGross ?? null,
+          net2029: yr(2029)?.healthPremiumNet ?? null,
+          gross2030: yr(2030)?.healthPremiumGross ?? null,
+          net2030: yr(2030)?.healthPremiumNet ?? null,
+          credit2030: yr(2030)?.acaCreditKept ?? null,
+          magi2030: yr(2030)?.acaMagi ?? null,
+          converged2030: yr(2030)?.settlementConverged ?? null,
+          fundingHealthCents2030: f30?.healthPremiumCents ?? null,
+          fundingSpendingCents2030: f30?.spendingCents ?? null,
+          fundingTotalNeedCents2030: f30?.totalNeedCents ?? null,
+          fundingIdentityGap2030:
+            f30 == null
+              ? null
+              : sources30 + f30.spendShortfallCents + f30.unpaidTaxCents - f30.totalNeedCents,
+          lifetimeGross: res.lifetimeHealthPremiumGross,
+          lifetimeNet: res.lifetimeHealthPremiumNet,
+          lifetimeCreditKept: res.lifetimeAcaKept,
+        };
+      };
+      const zero = run(0);
+      const one = run(1);
+      const normal = run(180000);
+      return {
+        gross2029Zero: zero.gross2029,
+        net2029Zero: zero.net2029,
+        gross2030Zero: zero.gross2030,
+        net2030Zero: zero.net2030,
+        credit2030Zero: zero.credit2030,
+        magi2030Zero: zero.magi2030,
+        converged2030Zero: zero.converged2030 ? 1 : 0,
+        gross2030One: one.gross2030,
+        net2030One: one.net2030,
+        credit2030One: one.credit2030,
+        magi2030One: one.magi2030,
+        fundingHealthCents2030Zero: zero.fundingHealthCents2030,
+        fundingSpendingCents2030Zero: zero.fundingSpendingCents2030,
+        fundingTotalNeedCents2030Zero: zero.fundingTotalNeedCents2030,
+        fundingIdentityGap2030Zero: zero.fundingIdentityGap2030,
+        fundingHealthCents2030One: one.fundingHealthCents2030,
+        fundingSpendingCents2030One: one.fundingSpendingCents2030,
+        fundingTotalNeedCents2030One: one.fundingTotalNeedCents2030,
+        lifetimeGrossZero: zero.lifetimeGross,
+        lifetimeNetZero: zero.lifetimeNet,
+        lifetimeCreditKeptZero: zero.lifetimeCreditKept,
+        lifetimeNetOne: one.lifetimeNet,
+        lifetimeCreditKeptOne: one.lifetimeCreditKept,
+        gross2030Normal: normal.gross2030,
+        net2030Normal: normal.net2030,
+        credit2030Normal: normal.credit2030,
+        magi2030Normal: normal.magi2030,
+      };
+    },
+  },
+  {
     id: "health-premium-terminal-tier-rule",
     kind: "tax",
     note: "Terminal tier rule (build v208 pin of the rule the step-(a) re-price resolved): the score's terminal tax on the ending pre-tax balance prices in two tiers — the preserved part (ending pre-tax up to the preserve floor) at the preserve's EXIT rate, and only the excess above the floor at the HEIR rate. Pinned directly on netCostBreakdown with a stub result (all lifetime components $0, so the net cost IS the terminal): ending pre-tax $800,000 with a $500,000 preserve at a 10% exit rate and a 22% heir rate → preserved $500,000 × 10% = $50,000 plus excess $300,000 × 22% = $66,000, terminal $116,000. Below the floor the whole balance prices at the exit rate: ending $300,000 → $30,000, excess $0. (The stub's other lifetime fields are the RothPlanResult fields netCostBreakdown reads; every one is $0 here, including the health premium fields the v208 score added.)",

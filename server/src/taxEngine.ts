@@ -5154,6 +5154,13 @@ export function simulateRothPlan(
     // the settlement fixed-point is untouched (the flex
     // decision feeds nothing back into its own inputs).
     const spendNeedBase = age >= inputs.retirementAge ? inputs.annualSpending : 0;
+    // HEALTH PREMIUM TERM (ChatGPT SHOULD-6): the premium gate
+    // is the RETIREMENT status alone — a retired year carries
+    // its entered premium even when its non-health spending is
+    // $0. (Before: the gate read spendNeedBase > 0, so a retired
+    // year with explicit $0 spending dropped the premium while
+    // the credit — priced independently of spending — was kept.)
+    const retiredYear = age >= inputs.retirementAge;
     const spendNeedYear = flexSpendingNeed(spendNeedBase, priorYearReturnPct, inputs.flexCutPct, inputs.flexFloorPct);
     // Settle one candidate additional conversion from the
     // year's STARTING balances: price the year, pay its tax
@@ -5232,10 +5239,10 @@ export function simulateRothPlan(
       // year's net health premium at the assumed credit —
       // the Medicare base premium in full, and the
       // marketplace gross less the assumed credit (capped at
-      // the gross) — charged only in years with a spending
-      // need (retired years; a working year charges $0).
-      // spendNeedBase > 0 is that gate: it is annualSpending
-      // from the retirement-age year on, $0 before it.
+      // the gross) — charged in retired years (a working year
+      // charges $0), whatever the year's non-health spending
+      // is — even $0 (ChatGPT SHOULD-6: the gate is the
+      // retirement status, retiredYear, not spendNeedBase > 0).
       const spendNeed = premiumReconcile
         ? Math.max(
             0,
@@ -5245,7 +5252,7 @@ export function simulateRothPlan(
                 Math.max(0, (benchmark as number) - fbCreditIn),
             ),
           )
-        : healthActive && spendNeedBase > 0
+        : healthActive && retiredYear
           ? r2(
               spendNeedYear +
                 healthMedicarePremium +
@@ -6978,7 +6985,8 @@ export function simulateRothPlan(
     // as the funding ledger's need was funded — the Medicare
     // base premium in full plus the marketplace gross less
     // the settlement's own created credit (capped at the
-    // gross), charged only in a year with a spending need.
+    // gross), charged in a retired year, whatever its
+    // non-health spending (ChatGPT SHOULD-6).
     // The reported acaCreditKept above (priced after any
     // gain harvest) can differ from the settlement's credit
     // by the harvest's credit effect alone — the same
@@ -6987,7 +6995,7 @@ export function simulateRothPlan(
     // (R3-M2), so the gap is the harvest effect alone, never
     // the enrollment cap.
     const healthPremiumNetYear =
-      healthActive && spendNeedBase > 0
+      healthActive && retiredYear
         ? r2(
             healthMedicarePremium +
               (healthAcaThisYear
@@ -7000,7 +7008,7 @@ export function simulateRothPlan(
           )
         : 0;
     const healthPremiumGrossYear =
-      healthActive && spendNeedBase > 0 ? healthGrossYear : 0;
+      healthActive && retiredYear ? healthGrossYear : 0;
 
     // YEAR FUNDING assembly (display only — see RothYearFunding
     // for the definitions): attribute the settled year's needs
