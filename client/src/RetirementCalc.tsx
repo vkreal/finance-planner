@@ -238,25 +238,35 @@ function AtRiskPill({
   );
 }
 // At-risk ending balance for the Projection tab, which has no
-// success rate: its failure state is an ending balance of $0
-// (the portfolio depletes at or before the end age — the same
-// depletion the other engines count as failure). Rendered as the
-// same soft-red pill as at-risk percentages, with the same kind
-// of tooltip: it states the age the money reaches $0 and the
-// plan's end age it falls short of.
+// success rate: its failure state is the same funding test every
+// verdict in this view uses — a retired year whose spending was
+// not fully funded (the Projection result's neverRunsOut /
+// shortfallAge, from the engines' runNeverRunsOut), NOT an
+// ending balance of $0. A shortfall year can be followed by
+// later income that refills the balance to a positive ending,
+// and a fully funded run can end at exactly $0 and succeed, so
+// neither the ending balance nor the first $0 balance in the
+// path can decide this pill. Rendered as the same soft-red pill
+// as at-risk percentages, with the same kind of tooltip: it
+// states the first unfunded age and the plan's end age it falls
+// short of. The pill still carries the ending balance itself as
+// its figure — the ending stays a displayed figure in its own
+// right; only the verdict changed.
 function AtRiskEndingPill({
-  lastsToAge,
+  shortfallAge,
   endAge,
+  ending,
 }: {
-  lastsToAge: number | null;
+  shortfallAge: number | null;
   endAge: number;
+  ending: number;
 }) {
   const [open, setOpen] = useState(false);
   const tipId = useId();
   const text =
-    lastsToAge != null
-      ? `At the assumed steady return, this plan's portfolio reaches $0 at age ${lastsToAge} — before the plan's end age of ${endAge}. In the other tests, a plan that runs out of money is counted as not succeeding.`
-      : `At the assumed steady return, this plan's portfolio ends at $0 by the end age of ${endAge} — nothing is left over. In the other tests, a plan that runs out of money is counted as not succeeding.`;
+    shortfallAge != null
+      ? `At the assumed steady return, this plan's spending is not fully funded at age ${shortfallAge} — that year's spending exceeds the money on hand, before the plan's end age of ${endAge}. In the other tests, a plan that runs out of money is counted as not succeeding.`
+      : `At the assumed steady return, this plan's spending is not fully funded by the end age of ${endAge}. In the other tests, a plan that runs out of money is counted as not succeeding.`;
   return (
     <span
       className="relative inline-flex"
@@ -277,7 +287,7 @@ function AtRiskEndingPill({
         }}
         className={pillCls}
       >
-        <span aria-hidden="true">⚠</span> At risk · $0
+        <span aria-hidden="true">⚠</span> At risk · {fmt(ending)}
       </span>
       {open && <TipBubble id={tipId} text={text} />}
     </span>
@@ -2500,15 +2510,17 @@ export function RetirementCalc({
         break;
       }
     }
-    let lastsToAge: number | null = null;
-    if (ending <= 0) {
-      for (let i = 1; i < path.length; i++) {
-        if ((path[i] ?? 0) <= 0) {
-          lastsToAge = inputs.currentAge + i;
-          break;
-        }
-      }
-    }
+    // No balance-index "lasts to" age is computed here any more
+    // (round-9 MUST-1): the first $0 balance in the path is not
+    // a funding verdict — it reported a run-out at the age AFTER
+    // the end age for a fully funded run ending at exactly $0
+    // (the $0 balance sits one index past the end-age year), and
+    // it missed a shortfall year whose balance was later refilled
+    // by income. Every readout below that states a verdict —
+    // the verdict block, the plan summary, the Projection tab's
+    // lasts-to readout, and the at-risk indicator — reads
+    // neverRunsOut / shortfallAge above instead. The ending
+    // balance stays available as its own figure (ending).
     // Tail disclosure (display-only, percent strategy): the final
     // retired year's gross spending and the first retired year's,
     // from this same path's per-year withdrawals. Null when the
@@ -2528,7 +2540,6 @@ export function RetirementCalc({
       ending,
       neverRunsOut,
       shortfallAge,
-      lastsToAge,
       finalYearSpending,
       firstRetiredYearSpending,
       finalYearAge,
@@ -2672,11 +2683,15 @@ export function RetirementCalc({
   const monteCarloAtRisk =
     monteCarlo != null && successAtRisk(monteCarlo.neverOutSuccessRate, "montecarlo");
   const maxSpendingAtRisk = solverAtRisk ?? lastMaxAtRisk;
-  // Projection has no success rate: it is at risk when its ending
-  // balance is $0 — the portfolio depletes at or before the end
-  // age, the same depletion the other engines count as failure.
-  // The projection recomputes on every edit, so this updates live.
-  const projectionAtRisk = projection != null && projection.ending <= 0;
+  // Projection has no success rate: it is at risk when its
+  // funding test fails — some retired year's spending was not
+  // fully funded (neverRunsOut false), the same failure the
+  // other engines count. NOT when its ending balance is $0:
+  // a fully funded run can end at exactly $0 and succeed, and
+  // a shortfall run can end positive after later income refills
+  // it (round-9 MUST-1). The projection recomputes on every
+  // edit, so this updates live.
+  const projectionAtRisk = projection != null && !projection.neverRunsOut;
 
   // Short-form at-risk explanations for the engine tabs (the pill
   // tooltips carry the full version). Null for a healthy tab — a
@@ -2684,7 +2699,7 @@ export function RetirementCalc({
   const tabTips: Record<Tab, string | null> = {
     projection:
       projectionAtRisk && projection
-        ? `At risk: at the assumed return, the portfolio reaches $0${projection.lastsToAge != null ? ` at age ${projection.lastsToAge}` : ""} — before the plan's end age of ${inputs?.endAge ?? "—"}.`
+        ? `At risk: at the assumed return, the money runs out${projection.shortfallAge != null ? ` at age ${projection.shortfallAge}` : ""} — spending is not fully funded before the plan's end age of ${inputs?.endAge ?? "—"}.`
         : null,
     historical:
       historicalAtRisk && historical
@@ -3864,12 +3879,13 @@ export function RetirementCalc({
     ) : (
       "no extra income"
     );
-    const outcomePart =
-      projection.ending > 0
+    const outcomePart = projection.neverRunsOut
+      ? projection.ending > 0
         ? `money lasts past age ${inputs.endAge}`
-        : projection.lastsToAge != null
-          ? `money runs out at age ${projection.lastsToAge}`
-          : `money runs out by age ${inputs.endAge}`;
+        : `money lasts to age ${inputs.endAge}`
+      : projection.shortfallAge != null
+        ? `money runs out at age ${projection.shortfallAge}`
+        : `money runs out by age ${inputs.endAge}`;
     return (
       <>
         Retire at{" "}
@@ -4774,7 +4790,7 @@ export function RetirementCalc({
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Ending balance at {inputs.endAge}</p>
               {projectionAtRisk ? (
-                <AtRiskEndingPill lastsToAge={projection.lastsToAge} endAge={inputs.endAge} />
+                <AtRiskEndingPill shortfallAge={projection.shortfallAge} endAge={inputs.endAge} ending={projection.ending} />
               ) : (
                 <p className="tnum display text-base font-semibold">{fmt(projection.ending)}</p>
               )}
@@ -4791,9 +4807,15 @@ export function RetirementCalc({
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <p className="text-[10.5px] font-medium tracking-[0.02em] text-[var(--dim)] uppercase">Money lasts to</p>
               <p className="tnum display text-base font-semibold">
-                {projection.lastsToAge != null ? `Age ${projection.lastsToAge}` : `Age ${inputs.endAge}+`}
+                {!projection.neverRunsOut
+                  ? projection.shortfallAge != null
+                    ? `Age ${projection.shortfallAge}`
+                    : `By age ${inputs.endAge}`
+                  : projection.ending > 0
+                    ? `Age ${inputs.endAge}+`
+                    : `Age ${inputs.endAge}`}
               </p>
-              {projection.lastsToAge != null && (
+              {!projection.neverRunsOut && (
                 <p className="text-xs text-[var(--dim)]">The portfolio runs out at this age at a steady {(expected * 100).toFixed(2)}% real return.</p>
               )}
             </div>
