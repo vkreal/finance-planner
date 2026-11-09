@@ -3968,52 +3968,6 @@ export function NetWorthView() {
         />
       )}
 
-      {/* property include toggle — slim one-line row */}
-      <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 sm:px-4">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-          <label
-            htmlFor="nw-include-property"
-            className="flex cursor-pointer items-center gap-2.5 text-base font-medium whitespace-nowrap text-[var(--text)]"
-          >
-            <input
-              id="nw-include-property"
-              type="checkbox"
-              role="switch"
-              aria-label="Include house & mortgage"
-              className="h-5 w-5 shrink-0 accent-[var(--accent)]"
-              checked={includeProperty}
-              disabled={setIncludeProperty.isPending}
-              onChange={(e) => setIncludeProperty.mutate(e.target.checked)}
-            />
-            Include house &amp; mortgage
-          </label>
-          <span className="text-sm whitespace-nowrap text-[var(--dim)]">
-            {latestPropertyNet != null
-              ? includeProperty
-                ? `· property net ${fmt(latestPropertyNet)} counted`
-                : `· property net ${fmt(latestPropertyNet)} not counted`
-              : includeProperty
-                ? "· property counted"
-                : "· property not counted"}
-          </span>
-        </div>
-        {propertyAccountsWithoutValue.length > 0 && latest && (
-          <p className="mt-1.5 w-full text-sm text-[var(--warn)]">
-            {propertyAccountsWithoutValue.map((a) => a.name).join(", ")}{" "}
-            {propertyAccountsWithoutValue.length === 1 ? "has" : "have"} no
-            recorded value in any snapshot yet, so there is nothing for this
-            toggle to include.{" "}
-            <button
-              type="button"
-              className="font-medium text-[var(--accent)] underline underline-offset-2"
-              onClick={() => openEditSnapshot(latest)}
-            >
-              Record a value in the {fmtDateLong(latest.date)} snapshot
-            </button>
-          </p>
-        )}
-      </div>
-
       {/* combined stat strip — one full-width strip: prominent
           net worth with its date, plus the two deltas as compact
           lines beside it on wide screens and below it on phones */}
@@ -4065,6 +4019,53 @@ export function NetWorthView() {
               )}
             </p>
           </div>
+        </div>
+        {/* property include toggle — small muted line at the bottom
+            of the summary panel (moved here from its own full-width
+            row; same control, state, and effect on the totals) */}
+        <div className="mt-3">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <label
+              htmlFor="nw-include-property"
+              className="flex cursor-pointer items-center gap-1.5 text-sm whitespace-nowrap text-[var(--dim)]"
+            >
+              <input
+                id="nw-include-property"
+                type="checkbox"
+                role="switch"
+                aria-label="Include house & mortgage"
+                className="h-4 w-4 shrink-0 accent-[var(--accent)]"
+                checked={includeProperty}
+                disabled={setIncludeProperty.isPending}
+                onChange={(e) => setIncludeProperty.mutate(e.target.checked)}
+              />
+              Include house &amp; mortgage
+            </label>
+            <span className="text-sm whitespace-nowrap text-[var(--dim)]">
+              {latestPropertyNet != null
+                ? includeProperty
+                  ? `· property net ${fmt(latestPropertyNet)} counted`
+                  : `· property net ${fmt(latestPropertyNet)} not counted`
+                : includeProperty
+                  ? "· property counted"
+                  : "· property not counted"}
+            </span>
+          </div>
+          {propertyAccountsWithoutValue.length > 0 && latest && (
+            <p className="mt-1.5 w-full text-sm text-[var(--warn)]">
+              {propertyAccountsWithoutValue.map((a) => a.name).join(", ")}{" "}
+              {propertyAccountsWithoutValue.length === 1 ? "has" : "have"} no
+              recorded value in any snapshot yet, so there is nothing for this
+              toggle to include.{" "}
+              <button
+                type="button"
+                className="font-medium text-[var(--accent)] underline underline-offset-2"
+                onClick={() => openEditSnapshot(latest)}
+              >
+                Record a value in the {fmtDateLong(latest.date)} snapshot
+              </button>
+            </p>
+          )}
         </div>
       </section>
 
