@@ -49,6 +49,7 @@ RETIREMENT_AGE_DEFAULT,
 STOCKS_PCT_DEFAULT,
 runHistorical,
 runMonteCarlo,
+runNeverRunsOut,
 simulate,
 simulateDetailed,
 solveMaxSpending,
@@ -2477,6 +2478,28 @@ export function RetirementCalc({
     const det = simulateDetailed(inputs, returns);
     const path = det.balances;
     const ending = path[path.length - 1] ?? 0;
+    // The plan verdict's success test (2026-11-09): the
+    // view's own definition of success — every retired year's
+    // spending fully funded through the end age — priced by
+    // the engines' runNeverRunsOut over this same steady-return
+    // path, NOT by the ending balance alone. An ending of
+    // exactly $0 still succeeds when that final year was fully
+    // funded, and a run whose balance later climbs back above
+    // $0 (surplus extra income refilling a floored balance)
+    // still falls short: some year's spending went unfunded.
+    // shortfallAge is that first unfunded year, found by the
+    // same funding test runNeverRunsOut applies (the year's
+    // net withdrawal against the balance on hand at its start,
+    // det.balances[i]) — the two always agree.
+    const neverRunsOut = runNeverRunsOut(inputs, returns);
+    let shortfallAge: number | null = null;
+    for (let i = 0; i < det.netWithdrawals.length; i++) {
+      if (inputs.currentAge + i < inputs.retirementAge) continue;
+      if ((det.netWithdrawals[i] ?? 0) > (path[i] ?? 0)) {
+        shortfallAge = inputs.currentAge + i;
+        break;
+      }
+    }
     let lastsToAge: number | null = null;
     if (ending <= 0) {
       for (let i = 1; i < path.length; i++) {
@@ -2503,6 +2526,8 @@ export function RetirementCalc({
     return {
       path,
       ending,
+      neverRunsOut,
+      shortfallAge,
       lastsToAge,
       finalYearSpending,
       firstRetiredYearSpending,
@@ -3931,6 +3956,77 @@ export function RetirementCalc({
         >
           {planSummary}
         </p>
+      )}
+
+      {/* Plan verdict (2026-11-09, "Both"): a glanceable
+          verdict at the top of the view — (1) a verdict pill,
+          green when the plan succeeds and red when it falls
+          short, and (2) a big "lasts until" headline with
+          what's left at the end age, so how comfortably the
+          plan succeeds is visible in one glance. Display only:
+          success is the view's own definition, priced by the
+          Projection result's neverRunsOut (the engines'
+          runNeverRunsOut over the steady-return path — every
+          year's spending fully funded through the end age,
+          even a landing at exactly $0; a year whose spending
+          exceeded the money on hand falls short even if later
+          income refills the balance). The run-out age is the
+          first unfunded year (shortfallAge), and what's left
+          is the ending balance at the end age. It updates live
+          with every edit, like every other result here, and
+          renders nothing while the inputs are invalid (there
+          is no Projection result to state truthfully). */}
+      {inputs && projection && (
+        <section
+          aria-label="Plan verdict"
+          className={`mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5${flashCls}`}
+        >
+          {projection.neverRunsOut ? (
+            <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--accent-soft)] px-3 py-1.5 text-sm font-semibold whitespace-nowrap text-[var(--accent)]">
+              <span aria-hidden="true">✓</span>
+              {projection.ending > 0
+                ? `Succeeds — money lasts past ${inputs.endAge}`
+                : `Succeeds — money lasts to ${inputs.endAge}`}
+            </span>
+          ) : (
+            <span className="tnum inline-flex max-w-full items-center gap-1.5 rounded-full bg-[var(--bad-soft)] px-3 py-1.5 text-sm font-semibold whitespace-nowrap text-[var(--bad)]">
+              <span aria-hidden="true">✗</span>
+              {projection.shortfallAge != null
+                ? `Falls short — runs out at ${projection.shortfallAge}`
+                : `Falls short — runs out by ${inputs.endAge}`}
+            </span>
+          )}
+          <p className="display mt-3 text-3xl leading-tight font-semibold sm:text-4xl">
+            {projection.neverRunsOut
+              ? projection.ending > 0
+                ? `Money lasts past ${inputs.endAge}`
+                : `Money lasts to ${inputs.endAge}`
+              : projection.shortfallAge != null
+                ? `Money runs out at ${projection.shortfallAge}`
+                : `Money runs out by ${inputs.endAge}`}
+          </p>
+          <p className="tnum mt-2 text-base leading-relaxed">
+            <strong className="font-semibold">
+              {`${fmt(projection.ending)} left at ${inputs.endAge}`}
+            </strong>
+            {projection.neverRunsOut && projection.ending <= 0 && (
+              <span className="text-[var(--dim)]">
+                {" — every year's spending fully funded, with nothing to spare"}
+              </span>
+            )}
+            {!projection.neverRunsOut && projection.shortfallAge != null && (
+              <span className="text-[var(--dim)]">
+                {` — runs out ${inputs.endAge - projection.shortfallAge} ${inputs.endAge - projection.shortfallAge === 1 ? "year" : "years"} before the end age`}
+                {projection.ending > 0
+                  ? " (later income refills the balance, but that year's spending was not fully funded)"
+                  : ""}
+              </span>
+            )}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-[var(--dim)]">
+            {`Projection at a steady ${(expected * 100).toFixed(2)}% real return — the same figures as the Projection tab below.`}
+          </p>
+        </section>
       )}
 
       {/* inputs: the top row (Reset / plan status / Save
