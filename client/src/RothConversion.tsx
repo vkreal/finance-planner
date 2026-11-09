@@ -12161,10 +12161,15 @@ export function RothConversion({
           foots to the year's MAGI: the pieces sum to AGI and the
           tax-exempt interest completes MAGI, exactly as priceYear
           composes them. The line across the top is the table's MAGI
-          column (magi); the dashed line is the ACA cliff
-          (detail.aca.cliff) drawn only for marketplace years
-          (acaActive with a priced cliff). Picking a bar opens that
-          year's "Show the math" panel under the table below. */}
+          column (magi). The ACA cliff is not drawn on this chart —
+          its room-under-the-cliff view is the headroom line above.
+          Picking a bar opens that
+          year's "Show the math" panel under the table below, and
+          shows that year's breakdown directly under this chart:
+          every segment in the legend's set with its amount for
+          the picked year (read through the same segDefs amounts
+          the bar stacks), the lines' total (stackTotal — the
+          bar's own height), and the year's MAGI line value. */}
       {showPlanWorkspace && planInputs && mainResult && (() => {
         const planYears = mainResult.years;
         // Income-stack palette (build v136, "brighter, same
@@ -12176,8 +12181,8 @@ export function RothConversion({
         // extra pre-tax draw the brighter one. The Playground's
         // single-year and projection charts carry the same
         // brightened set for the segments they share, so the
-        // charts stay in sync. The ACA cliff line, the 0%
-        // gains-end marker, and the line-chart strokes are not
+        // charts stay in sync. The 0%
+        // gains-end marker and the line-chart strokes are not
         // income segments and keep their own colors.
         // The §1211(b) allowance segment's hatch (P-S9): the
         // same overlay the Playground's stacking chart draws
@@ -12202,46 +12207,27 @@ export function RothConversion({
         ] as const;
         const stackTotal = (y: RothYear): number =>
           segDefs.reduce((a, d) => a + d.amount(y), 0);
-        const cliffOf = (y: RothYear): number | null =>
-          y.acaActive ? y.detail.aca.cliff : null;
         const n = planYears.length;
         const yMax = Math.max(
           1,
-          ...planYears.map((y) =>
-            Math.max(stackTotal(y), y.magi, cliffOf(y) ?? 0),
-          ),
+          ...planYears.map((y) => Math.max(stackTotal(y), y.magi)),
         );
         const magiPoints = planYears
           .map((y, i) => `${i + 0.5},${100 - (y.magi / yMax) * 100}`)
           .join(" ");
-        // ACA cliff line runs: consecutive marketplace years that
-        // carry a priced cliff, drawn the Playground way — a step
-        // segment across each year, joined to the next year's level.
-        const cliffRuns: { x1: number; y1: number; x2: number; y2: number }[] = [];
-        planYears.forEach((y, i) => {
-          const cliff = cliffOf(y);
-          if (cliff == null) return;
-          const prev = i > 0 ? planYears[i - 1] : undefined;
-          const prevCliff = prev != null ? cliffOf(prev) : null;
-          if (prevCliff != null) {
-            cliffRuns.push({
-              x1: i - 0.5,
-              y1: 100 - (prevCliff / yMax) * 100,
-              x2: i + 0.5,
-              y2: 100 - (cliff / yMax) * 100,
-            });
-          } else {
-            cliffRuns.push({
-              x1: i + 0.1,
-              y1: 100 - (cliff / yMax) * 100,
-              x2: i + 0.9,
-              y2: 100 - (cliff / yMax) * 100,
-            });
-          }
-        });
         const presentSegs = segDefs.filter((d) =>
           planYears.some((y) => d.amount(y) !== 0),
         );
+        // The tapped year's breakdown, shown below the chart:
+        // the same year the bars already select (detailYear —
+        // picking a bar opens that year's math under the table
+        // below, exactly as before), priced from that year's
+        // own row through the same segDefs amounts the bar
+        // itself stacks, so the lines below foot to the bar.
+        const breakdownYear =
+          detailYear != null
+            ? (planYears.find((y) => y.year === detailYear) ?? null)
+            : null;
         const openYearFromChart = (yr: number) => {
           openDetailYear(yr);
           if (!yearTableOpen) {
@@ -12256,7 +12242,7 @@ export function RothConversion({
               {planYears[n - 1]?.agePrimary}
               <InfoNote
                 ariaLabel="About the income stack chart"
-                text="One bar per plan year, stacking the priced income pieces from the year-by-year table below — the money out and RMD columns, taxable Social Security, and the other income in that year's math. The line across the top is each year's MAGI from the table; the dashed line is the ACA cliff while someone is on the marketplace. Pick a bar to open that year's math under the table."
+                text="One bar per plan year, stacking the priced income pieces from the year-by-year table below — the money out and RMD columns, taxable Social Security, and the other income in that year's math. The line across the top is each year's MAGI from the table. Pick a bar to see that year's breakdown below the chart and open that year's math under the table."
               />
             </h2>
             <div className="relative mt-3 h-56">
@@ -12307,19 +12293,6 @@ export function RothConversion({
                 preserveAspectRatio="none"
                 aria-hidden="true"
               >
-                {cliffRuns.map((r, i) => (
-                  <line
-                    key={i}
-                    x1={r.x1}
-                    y1={r.y1}
-                    x2={r.x2}
-                    y2={r.y2}
-                    stroke="var(--warn)"
-                    strokeWidth={1.5}
-                    strokeDasharray="5 3"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
                 <polyline
                   points={magiPoints}
                   fill="none"
@@ -12368,16 +12341,66 @@ export function RothConversion({
                 />
                 MAGI
               </span>
-              {cliffRuns.length > 0 && (
-                <span className="inline-flex items-center gap-1.5">
-                  <span
-                    aria-hidden="true"
-                    className="inline-block h-0 w-4 border-t-2 border-dashed border-[var(--warn)]"
-                  />
-                  ACA cliff
-                </span>
-              )}
             </p>
+            {breakdownYear == null ? (
+              <p className="mt-2 text-xs text-[var(--dim)]">
+                Tap a year to see its breakdown.
+              </p>
+            ) : (
+              <div
+                className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3 sm:px-4"
+                role="region"
+                aria-label={`Income breakdown for ${breakdownYear.year}`}
+              >
+                <p className="text-sm font-semibold">
+                  {breakdownYear.year} — age {breakdownYear.agePrimary}
+                  {breakdownYear.ageSpouse != null
+                    ? ` / spouse ${breakdownYear.ageSpouse}`
+                    : ""}
+                </p>
+                <div className="mt-2 text-sm">
+                  {presentSegs.map((d) => (
+                    <div
+                      key={d.key}
+                      className="flex items-baseline justify-between gap-4 py-0.5"
+                    >
+                      <span className="inline-flex min-w-0 items-center gap-1.5">
+                        <span
+                          className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                          style={{
+                            background: d.color,
+                            ...(d.hatch ? allowanceHatchStyle : {}),
+                          }}
+                          aria-hidden="true"
+                        />
+                        {d.label}
+                      </span>
+                      <span className="tnum shrink-0">
+                        {fmtDollars(d.amount(breakdownYear))}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="mt-1 flex items-baseline justify-between gap-4 border-t border-[var(--border)] pt-1.5">
+                    <span className="font-semibold">Total</span>
+                    <span className="tnum font-bold">
+                      {fmtDollars(stackTotal(breakdownYear))}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline justify-between gap-4 py-0.5">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        aria-hidden="true"
+                        className="inline-block h-0 w-4 shrink-0 border-t-2 border-[var(--text)]"
+                      />
+                      MAGI
+                    </span>
+                    <span className="tnum shrink-0">
+                      {fmtDollars(breakdownYear.magi)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
         );
       })()}
