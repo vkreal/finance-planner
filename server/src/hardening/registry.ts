@@ -92,8 +92,40 @@
      the fast suite now takes tens of seconds, still well inside
      the 120s worker cap.
 
-   Later builds register further families here (sensitivity
-   review) without touching the runner. runHardeningChecks("fast") is the
+   Registered checks (Part 4 — sensitivity review, the
+   directional/monotonicity probes: a small input change must
+   move the output in the expected direction, never the other
+   way; each module prices the fictional sample household and
+   carries its own teeth check):
+   - sens-return: ending wealth non-decreasing in expected
+     return (Do Nothing ladder 3–7%, full adds 4.75/5.25%).
+   - sens-spending: ending wealth non-increasing in annual
+     spending (Do Nothing ladder $165k–$190k/yr, full adds
+     $179k/$181k).
+   - sens-caps: conversion-cap net-cost ordering (Fill 22% <
+     Fill to cliff < Fill 12% < Do Nothing) stable across a
+     9-point perturbation grid (spending ±$1,000, return
+     ±0.25%, corners); a pair may swap only inside the $5,000
+     near-tie band (only Do Nothing / Fill 12% is within it).
+   - sens-cliff: ACA credit non-increasing in MAGI across the
+     cliff (direct ladder, HH4/HH2/HH5 in full) and in pre-tax
+     draw at $1 steps through the December path; the 100%
+     FPL edge is out of scope by design (the credit jumps
+     from $0 below it to the full credit at it).
+   - sens-mc-seed: runMonteCarlo never-out rate agrees across
+     seeds within 4 standard errors of binomial sampling
+     noise (two plans, fast 2 seeds, full 6).
+   - sens-strips: the optimizer's return strip (winner net
+     cost non-decreasing at 4/5/6%) and heir-rate strip
+     (winner and Do Nothing net cost non-decreasing at
+     0/22/32%); winner names are never asserted — the return
+     strip's winner legitimately changes brackets. Fast runs
+     the return strip only (~10s); full runs both (~20s);
+     teeth re-prices both strips (~18s) in either mode, so
+     the module costs the suite ~28s fast / ~37s full.
+
+   Later builds register further families here without
+   touching the runner. runHardeningChecks("fast") is the
    suite-safe run (small seeded subsets, seconds); "full"
    is the committed bun script's run (thousands of
    households). The teeth result aggregates each module's
@@ -120,6 +152,12 @@ import { knownPub915Check } from "./knownPub915";
 import { knownSsaCheck } from "./knownSsa";
 import { knownTrinityCheck } from "./knownTrinity";
 import { roundingCheck } from "./rounding";
+import { sensCapsCheck } from "./sensCaps";
+import { sensCliffCheck } from "./sensCliff";
+import { sensMcSeedCheck } from "./sensMcSeed";
+import { sensReturnCheck } from "./sensReturn";
+import { sensSpendingCheck } from "./sensSpending";
+import { sensStripsCheck } from "./sensStrips";
 import type {
   HardeningCheckResult,
   HardeningTeethResult,
@@ -146,6 +184,12 @@ export const HARDENING_REGISTRY = [
   knownTrinityCheck,
   knownMcGoldenCheck,
   knownMaxifiCheck,
+  sensReturnCheck,
+  sensSpendingCheck,
+  sensCapsCheck,
+  sensCliffCheck,
+  sensMcSeedCheck,
+  sensStripsCheck,
 ];
 
 export type HardeningReport = {
