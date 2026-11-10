@@ -31,7 +31,7 @@ export type HardeningCheckResult = {
 
 // The teeth-check result, in the same shape the existing
 // teeth suites report (corruptedCaseId / failedCount /
-// pass): corrupt one pin by 1 cent and exactly that check
+// pass): corrupt one pin and exactly that check
 // must fail. A module's runTeeth proves its own assertions
 // have teeth — a check that cannot fail is not a check.
 export type HardeningTeethResult = {
@@ -51,7 +51,7 @@ export type HardeningCheckModule = {
   // of seeded households, full sweeps). Same assertions,
   // larger N.
   runFull(): HardeningCheckResult;
-  // The module's own teeth check: corrupt one pin by 1 cent
+  // The module's own teeth check: corrupt one pin
   // and prove exactly that check fails.
   runTeeth(): HardeningTeethResult;
 };

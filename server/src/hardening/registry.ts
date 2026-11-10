@@ -59,8 +59,41 @@
      the march warnings, kiddie $2,700 threshold,
      cgStackTax straddle.
 
-   Later builds register further families here (known-answer
-   checks, sensitivity review) without touching the runner. runHardeningChecks("fast") is the
+   Registered checks (Part 3 — known-answer checks, published
+   worked examples priced by the engine vs the published answer;
+   each module cites its publication, section, and example number):
+   - known-pub915: IRS Pub. 915 (2025) Worksheet 1 Examples 1–3
+     (§86 taxable Social Security; Ex. 4 MFS out of scope — no MFS
+     thresholds; Ex. 2 direct-only — priceYear has no Schedule 1
+     adjustments input).
+   - known-pub590b: IRS Pub. 590-B (2025) RMD worked examples
+     ($100,000 ÷ 24.6 and ÷ 25.3, both legs of the excess-distribution
+     example). The 2026 leg is pinned to the corrected $1,364.71
+     (divisor 25.5 at age 74); the publication's printed $1,313
+     (divisor 26.5) contradicts its own rule and Table III — an
+     adjudicated disagreement, engine right.
+   - known-ssa: SSA Benefits Planner age-62 chart ($1,000-at-FRA
+     dollars by birth year) and POMS RS 00615.693 age-70 percentages,
+     vs the claiming-age derivation (SSA truncates monthly dollars;
+     factors pinned exact, dollars within $1).
+   - known-pub17: IRS Pub. 17 (2025) Ch. 10 standard-deduction
+     Examples 1 and 3 end-to-end through priceYear, plus the 2025
+     and 2026 law rows (blind Example 2 and dependent Table 10-3
+     out of scope — no blindness or dependent concept; Tax Table
+     out of scope — formula brackets, not the $50-range table).
+   - known-trinity: the Trinity benchmark, wired in (Cooley,
+     Hubbard & Walz 1998 Table 3, ±6pt).
+   - known-mc-golden: the Monte Carlo golden shocks, wired in
+     (externally computed mulberry32/Box–Muller literals, 1e-9).
+   - known-maxifi: the MaxiFi property, wired in (joint beats both
+     separate optima). No MaxiFi-published dollar figure exists in
+     the repo; the check pins the named property, not a published
+     figure. Costs ~7–15s per invocation (two per registry run);
+     the fast suite now takes tens of seconds, still well inside
+     the 120s worker cap.
+
+   Later builds register further families here (sensitivity
+   review) without touching the runner. runHardeningChecks("fast") is the
    suite-safe run (small seeded subsets, seconds); "full"
    is the committed bun script's run (thousands of
    households). The teeth result aggregates each module's
@@ -79,6 +112,13 @@ import { boundarySaltCheck } from "./boundarySalt";
 import { boundaryWaCheck } from "./boundaryWa";
 import { differentialCheck } from "./differential";
 import { invariantsCheck } from "./invariants";
+import { knownMaxifiCheck } from "./knownMaxifi";
+import { knownMcGoldenCheck } from "./knownMcGolden";
+import { knownPub17Check } from "./knownPub17";
+import { knownPub590bCheck } from "./knownPub590b";
+import { knownPub915Check } from "./knownPub915";
+import { knownSsaCheck } from "./knownSsa";
+import { knownTrinityCheck } from "./knownTrinity";
 import { roundingCheck } from "./rounding";
 import type {
   HardeningCheckResult,
@@ -99,6 +139,13 @@ export const HARDENING_REGISTRY = [
   boundaryPhaseOutsCheck,
   boundaryWaCheck,
   boundaryFafsaKiddieCheck,
+  knownPub915Check,
+  knownPub590bCheck,
+  knownSsaCheck,
+  knownPub17Check,
+  knownTrinityCheck,
+  knownMcGoldenCheck,
+  knownMaxifiCheck,
 ];
 
 export type HardeningReport = {

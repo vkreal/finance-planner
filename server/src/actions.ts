@@ -16586,7 +16586,7 @@ export const Actions = {
      "retirement-cas" (the two Retirement records' revision/CAS
      write contract), or "replay" (the optimizer-determinism
      replay diagnostic — see runReplayDiagnostic in
-     taxFixtures.ts; its report is the `replay` field), or "hardening" (the hardening registry's fast checks — the single-year differential on a 50-household seeded subset, the trajectory invariants, the rounding sweep, and the ten boundary-case packs, plus each module's teeth check; its report is the `hardening` field; the full run is the committed bun script server/src/hardening/run.ts). The full verification is the
+     taxFixtures.ts; its report is the `replay` field), or "hardening" (the hardening registry's fast checks — the single-year differential on a 50-household seeded subset, the trajectory invariants, the rounding sweep, the ten boundary-case packs, and the seven known-answer checks (Pub. 915, Pub. 590-B, SSA, Pub. 17, Trinity, Monte Carlo golden shocks, MaxiFi property), plus each module's teeth check; its report is the `hardening` field; the full run is the committed bun script server/src/hardening/run.ts). The full verification is the
      sequence of those per-suite calls; each returns the same
      per-suite counts/results shape as before, with the suites
      that did not run left null. A call with no `suite` does NOT
@@ -16745,7 +16745,7 @@ export const Actions = {
           return {
             ...empty,
             suite: "hardening",
-            note: "Runs the hardening registry (fast checks: the single-year differential on a 50-household seeded subset, the trajectory invariants, the rounding sweep, and the ten boundary-case packs, plus each module's teeth check) only. Run the committed bun script (bun server/src/hardening/run.ts) for the full thousands-of-households differential.",
+            note: "Runs the hardening registry (fast checks: the single-year differential on a 50-household seeded subset, the trajectory invariants, the rounding sweep, the ten boundary-case packs, and the seven known-answer checks, plus each module's teeth check) only. Run the committed bun script (bun server/src/hardening/run.ts) for the full thousands-of-households differential.",
             hardening: runHardeningChecks("fast"),
           };
         case "replay":
