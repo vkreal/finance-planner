@@ -525,8 +525,10 @@ export function RetirementCalc({
      their non-default state, so this stores the inverse flag: an
      entry under "retirement.inputsFolded" means the user left the
      form folded shut; no entry means expanded, its default. The
-     top row (Reset / plan status / Save controls) stays visible
-     as the fold's header either way; the results below the form
+     header row — the "Plan inputs" title and the fold chevron —
+     stays visible as the fold's header either way, while the
+     action row (Reset / plan status / Save controls) sits inside
+     the panel body and folds away with it; the results below the form
      are outside the fold and keep recalculating exactly as
      before. Display only — no field, save, or figure reads this
      flag. */
@@ -4094,17 +4096,35 @@ export function RetirementCalc({
         </section>
       )}
 
-      {/* inputs: the top row (Reset / plan status / Save
-          controls) is the fold header and stays visible
-          whether the form is open or hidden; everything
-          under it — the autosave note, the baseline notes,
-          and the fields grouped You / Money / Assumptions —
-          hides when folded. Display only, every field keeps
-          its control and behavior exactly as before. */}
+      {/* inputs: the header row is the fold header and stays
+          visible whether the form is open or hidden — it
+          carries only the "Plan inputs" title and the fold
+          chevron. Everything under it hides when folded,
+          starting with the action row (Reset / plan status /
+          Save controls) at the top of the panel body, then
+          the autosave note, the baseline notes, and the
+          fields grouped You / Money / Assumptions. Display
+          only, every field keeps its control and behavior
+          exactly as before. */}
       <section
         aria-label="Retirement inputs"
         className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
       >
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="display text-base font-semibold">Plan inputs</h2>
+          <button
+            type="button"
+            aria-label={inputsOpen ? "Hide plan inputs" : "Show plan inputs"}
+            aria-expanded={inputsOpen}
+            aria-controls="retirement-inputs-panel"
+            onClick={() => setInputsFolded(inputsOpen)}
+            className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+          >
+            <FoldChevron open={inputsOpen} />
+          </button>
+        </div>
+        {inputsOpen && (
+          <div id="retirement-inputs-panel">
         <div className="flex flex-wrap items-center gap-2">
           {!confirmReset ? (
             <button
@@ -4179,19 +4199,7 @@ export function RetirementCalc({
           {data.scenarios.length >= 3 && (
             <span className="text-xs text-[var(--dim)]">Maximum 3 scenarios saved — delete one below to save another.</span>
           )}
-          <button
-            type="button"
-            aria-label={inputsOpen ? "Hide plan inputs" : "Show plan inputs"}
-            aria-expanded={inputsOpen}
-            aria-controls="retirement-inputs-panel"
-            onClick={() => setInputsFolded(inputsOpen)}
-            className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
-          >
-            <FoldChevron open={inputsOpen} />
-          </button>
         </div>
-        {inputsOpen && (
-          <div id="retirement-inputs-panel">
         <p className="mt-3 text-xs text-[var(--dim)]" aria-live="polite">
           {save.isPending ? "Saving…" : init ? "Inputs save automatically, and the results below recalculate as you type." : ""}
           {!inputs && " Check the inputs below — the plan needs a portfolio, spending, and an end age after the current age."}
