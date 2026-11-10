@@ -119,10 +119,15 @@
      cost non-decreasing at 4/5/6%) and heir-rate strip
      (winner and Do Nothing net cost non-decreasing at
      0/22/32%); winner names are never asserted — the return
-     strip's winner legitimately changes brackets. Fast runs
-     the return strip only (~10s); full runs both (~20s);
-     teeth re-prices both strips (~18s) in either mode, so
-     the module costs the suite ~28s fast / ~37s full.
+     strip's winner legitimately changes brackets. At every
+     point on both strips the winner must also STRICTLY beat
+     Do Nothing repriced independently (the same two calls
+     scoreAllCandidates uses for its Do Nothing entry,
+     applied directly), never the sensitivity helper's own
+     doNothing field. Fast runs the return strip only
+     (~10s); full runs both (~20s); teeth re-prices both
+     strips (~18s) in either mode, so the module costs the
+     suite ~28s fast / ~37s full.
 
    Later builds register further families here without
    touching the runner. runHardeningChecks("fast") is the
