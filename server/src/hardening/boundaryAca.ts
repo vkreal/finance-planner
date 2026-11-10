@@ -6,17 +6,21 @@
    (acaCreditFor) and by the independent second
    implementation (acaCreditIndependent), diffed to the
    cent, AND checked against a hand-derived expected
-   credit computed from the published band tables below
-   (never from engine source). A pin that fails is a
-   FINDING, never a reason to loosen the pin.
+   credit computed from the published band tables and
+   the literal guideline table below (never from engine
+   source, and never from production fplFor — round-10
+   F3). A pin that fails is a FINDING, never a reason to
+   loosen the pin.
 
    Construction (all MAGIs in dollars; with no Social
    Security, no tax-exempt interest, and no gains, MAGI
    is the other-ordinary figure the pin passes in):
-   - fpl = fplFor(householdSize, coverageYear - 1); the
-     cliff is 4 x fpl and applies 2026 on; 2025 prices
-     under the enhanced schedule with NO cliff (a flat
-     8.5% applicable percentage above 400% FPL).
+   - fpl = the literal guideline table below
+     (GUIDELINE_LITERALS, transcribed from the published
+     HHS poverty guidelines); the cliff is 4 x fpl and
+     applies 2026 on; 2025 prices under the enhanced
+     schedule with NO cliff (a flat 8.5% applicable
+     percentage above 400% FPL).
    - Bands are LOWER-INCLUSIVE; the last band takes its
      top edge, so exactly 400% FPL still pays a credit
      and 1c above it pays $0 (2026+).
@@ -40,10 +44,16 @@
      all compare magiCents x 100 against upToPctFpl x
      fplCents. The +1c pin above the edge still covers the
      true discontinuity, and the literal pins below pin the
-     exact edge independently of any derived value. */
+     exact edge independently of any derived value.
+
+   Residual (known, round-10 F3): the engine-vs-independent
+   leg still shares production fplFor — both pricers read
+   the same law table — so that leg alone cannot catch a
+   wrong guideline in the law table. The literal pins are
+   the leg that catches it: their MAGIs and expectations
+   are fixed dollars, independent of any derived value. */
 
 import { acaCreditFor } from "../taxEngine";
-import { fplFor } from "../taxLaw";
 import { acaCreditIndependent } from "./independentAcaCredit";
 import {
   SAMPLE_ACA_BENCHMARK_COUPLE_CENTS,
@@ -97,6 +107,42 @@ const BAND_TABLES: Record<number, AcaBandPin[]> = {
 
 const BAND_LOWS = [0, 133, 150, 200, 250, 300];
 
+/* Source-derived literal poverty guidelines (round-10
+   F3): the HHS poverty guidelines 2024–2026, transcribed
+   as base + per-additional-person (the published form;
+   FPL for a household = base + perAdditional x (size -
+   1)). The 2026 row is Federal Register, Jan. 15, 2026;
+   FR Doc. 2026-00755. These literals — never production
+   fplFor — locate every pin MAGI (magiForKind) and every
+   hand-derived expectation (deriveExpected): a wrong
+   guideline in the production law table must move
+   neither. Guideline years beyond the table fall back to
+   the newest row, mirroring fplFor's convention. */
+type GuidelineRow = { base: number; perAdditional: number };
+const GUIDELINE_LITERALS: Record<number, GuidelineRow> = {
+  2024: { base: 15060, perAdditional: 5380 },
+  2025: { base: 15650, perAdditional: 5500 },
+  2026: { base: 15960, perAdditional: 5680 },
+};
+
+/* FPL for a household from the literal table above
+   (guidelineYear = coverageYear - 1). The `guidelines`
+   parameter exists only so the teeth check can prove a
+   corrupted guideline fails the check; production runs
+   always use the literals above. */
+function fplLiteral(
+  householdSize: number,
+  guidelineYear: number,
+  guidelines: Record<number, GuidelineRow> = GUIDELINE_LITERALS,
+): number {
+  const years = Object.keys(guidelines).map(Number);
+  const newest =
+    guidelines[Math.max(...years)] ?? { base: 15960, perAdditional: 5680 };
+  const g = guidelines[guidelineYear] ?? newest;
+  const size = Math.max(1, Math.round(householdSize));
+  return g.base + g.perAdditional * (size - 1);
+}
+
 /* Hand-derived expectation for one MAGI: the raw
    interpolated applicable percentage (band classified in
    integer cents, fraction interpolated from pctFpl,
@@ -108,6 +154,7 @@ function deriveExpected(
   householdSize: number,
   coverageYear: number,
   benchmark: number,
+  guidelines: Record<number, GuidelineRow> = GUIDELINE_LITERALS,
 ): {
   credit: number;
   applicablePct: number;
@@ -115,7 +162,7 @@ function deriveExpected(
 } | null {
   const bands = BAND_TABLES[coverageYear] ?? BAND_TABLES[2026];
   if (!bands) return null;
-  const fpl = fplFor(householdSize, coverageYear - 1);
+  const fpl = fplLiteral(householdSize, coverageYear - 1, guidelines);
   const cliff = 4 * fpl;
   const pctFpl = fpl > 0 ? (magi / fpl) * 100 : 0;
   // Integer-cents band classification (round-10 F1): the
@@ -207,8 +254,9 @@ function magiForKind(
   kind: PinKind,
   householdSize: number,
   coverageYear: number,
+  guidelines: Record<number, GuidelineRow> = GUIDELINE_LITERALS,
 ): number {
-  const fpl = fplFor(householdSize, coverageYear - 1);
+  const fpl = fplLiteral(householdSize, coverageYear - 1, guidelines);
   switch (kind) {
     case "cliff-at":
       return 4 * fpl;
@@ -299,16 +347,60 @@ const LITERAL_EDGE_PINS: AcaPin[] = [
   },
 ];
 
+/* Source-derived literal cliff pins (round-10 F3): the
+   generated cliff-at pins above derive their MAGI from
+   magiForKind, so a wrong guideline in the table that
+   locates them would move both the test income and the
+   expectation together. These two pins carry literal
+   dollars on both sides, so they pin the published 2026
+   cliff independently of any derived value:
+   - MAGI $84,600 is exactly the 2026 cliff for a
+     household of 2 (4 x the 2025 guideline $21,150);
+     at the cliff the credit still pays: benchmark
+     $25,000 - 9.96% x $84,600 = $16,573.84 (2026 band
+     300–400% final 9.96%, Rev. Proc. 2025-25 §3.01).
+   - MAGI $84,601 is $1 above the cliff: the credit is
+     $0 and overCliff is true. */
+const LITERAL_CLIFF_PINS: AcaPin[] = [
+  {
+    id: "aca-hh2-y2026-cliff-at-literal",
+    magi: 84600,
+    householdSize: 2,
+    coverageYear: 2026,
+    benchmark: 25000,
+    expectedCredit: 16573.84,
+    expectedApplicablePct: 9.96,
+    expectedOverCliff: false,
+  },
+  {
+    id: "aca-hh2-y2026-cliff-plus-1-literal",
+    magi: 84601,
+    householdSize: 2,
+    coverageYear: 2026,
+    benchmark: 25000,
+    expectedCredit: 0,
+    expectedApplicablePct: 0,
+    expectedOverCliff: true,
+  },
+];
+
 function pinsFor(
   householdSize: number,
   coverageYear: number,
   kinds: PinKind[],
+  guidelines: Record<number, GuidelineRow> = GUIDELINE_LITERALS,
 ): AcaPin[] {
   const benchmark = benchmarkFor(householdSize);
   const pins: AcaPin[] = [];
   for (const kind of kinds) {
-    const magi = magiForKind(kind, householdSize, coverageYear);
-    const expected = deriveExpected(magi, householdSize, coverageYear, benchmark);
+    const magi = magiForKind(kind, householdSize, coverageYear, guidelines);
+    const expected = deriveExpected(
+      magi,
+      householdSize,
+      coverageYear,
+      benchmark,
+      guidelines,
+    );
     if (!expected) continue;
     pins.push({
       id: `aca-hh${householdSize}-y${coverageYear}-${kind}`,
@@ -324,23 +416,30 @@ function pinsFor(
   return pins;
 }
 
-function buildFastPins(): AcaPin[] {
+function buildFastPins(
+  guidelines: Record<number, GuidelineRow> = GUIDELINE_LITERALS,
+): AcaPin[] {
   return [
     // The full edge set for the sample couple in 2026.
-    ...pinsFor(2, 2026, ALL_KINDS),
+    ...pinsFor(2, 2026, ALL_KINDS, guidelines),
     // Cliff pairs for the largest and smallest households.
-    ...pinsFor(5, 2026, ["cliff-at", "cliff-plus-1c"]),
-    ...pinsFor(1, 2026, ["cliff-at"]),
+    ...pinsFor(5, 2026, ["cliff-at", "cliff-plus-1c"], guidelines),
+    ...pinsFor(1, 2026, ["cliff-at"], guidelines),
     // 2025: no cliff above 400% FPL.
-    ...pinsFor(2, 2025, ["cliff-at", "cliff-plus-1c"]),
+    ...pinsFor(2, 2025, ["cliff-at", "cliff-plus-1c"], guidelines),
     // 2027: cliff pair plus the discontinuous 133% trio.
-    ...pinsFor(2, 2027, [
-      "cliff-at",
-      "cliff-plus-1c",
-      "edge133-at",
-      "edge133-plus-1c",
-      "edge133-below-1c",
-    ]),
+    ...pinsFor(
+      2,
+      2027,
+      [
+        "cliff-at",
+        "cliff-plus-1c",
+        "edge133-at",
+        "edge133-plus-1c",
+        "edge133-below-1c",
+      ],
+      guidelines,
+    ),
     // Literal exact-edge pins (round-10 F1): the fast
     // check's 2027 edge-133 trio is HH2-only, and HH2's
     // float computes exactly — so the fast check passed
@@ -348,17 +447,25 @@ function buildFastPins(): AcaPin[] {
     // test-side float error. These literal pins make the
     // fast check catch it too.
     ...LITERAL_EDGE_PINS,
+    // Literal cliff pins (round-10 F3): the generated
+    // cliff pins above still derive their MAGIs from the
+    // guideline table, so only these fixed dollars pin
+    // the published cliff independently.
+    ...LITERAL_CLIFF_PINS,
   ];
 }
 
-function buildFullPins(): AcaPin[] {
+function buildFullPins(
+  guidelines: Record<number, GuidelineRow> = GUIDELINE_LITERALS,
+): AcaPin[] {
   const pins: AcaPin[] = [];
   for (let hh = 1; hh <= 5; hh++) {
     for (let year = 2025; year <= 2028; year++) {
-      pins.push(...pinsFor(hh, year, ALL_KINDS));
+      pins.push(...pinsFor(hh, year, ALL_KINDS, guidelines));
     }
   }
   pins.push(...LITERAL_EDGE_PINS);
+  pins.push(...LITERAL_CLIFF_PINS);
   return pins;
 }
 
@@ -442,14 +549,26 @@ function runBoundaryAcaFull(): HardeningCheckResult {
   return runInner(buildFullPins(), "full");
 }
 
-// Teeth: corrupt the hand-derived cliff credit for the
-// sample couple in 2026 by 1c; exactly that pin must
-// fail (the engine-vs-independent leg still agrees, so
-// the failure count proves the hand pin has teeth). The
-// clean fast run must pass first.
+// Teeth: two variants, both must fire. (1) Corrupt the
+// hand-derived cliff credit for the sample couple in 2026
+// by 1c; exactly that pin must fail (the
+// engine-vs-independent leg still agrees, so the failure
+// count proves the hand pin has teeth). (2, round-10 F3)
+// Corrupt the guideline the pins derive from — the 2025
+// base +$100, exactly the corruption the round-10
+// verifier demonstrated ($15,650 -> $15,750, moving the
+// 2026 couple cliff $84,600 -> $85,000) — rebuild the
+// fast pins from the corrupted table and require the run
+// to fail, with the generated cliff-at pin among the
+// failures: the literal pins and the hand-derived leg
+// must not move with a corrupted guideline. A clean fast
+// run must pass first.
 function runBoundaryAcaTeeth(): HardeningTeethResult {
   const clean = runBoundaryAcaFast();
-  const corruptedCaseId = "aca-hh2-y2026-cliff-at:expected-credit-1c";
+  const corruptedCreditCaseId =
+    "aca-hh2-y2026-cliff-at:expected-credit-1c";
+  const corruptedGuidelineCaseId =
+    "aca-2025-guideline-base-plus-100";
   if (!clean.pass) {
     return {
       corruptedCaseId: "boundary-aca:clean-run-failed",
@@ -460,17 +579,28 @@ function runBoundaryAcaTeeth(): HardeningTeethResult {
   const pins = buildFastPins();
   const target = pins.find((p) => p.id === "aca-hh2-y2026-cliff-at");
   if (!target) {
-    return { corruptedCaseId, failedCount: 0, pass: false };
+    return { corruptedCaseId: corruptedCreditCaseId, failedCount: 0, pass: false };
   }
   const corrupted: AcaPin = {
     ...target,
     expectedCredit: roundCent(target.expectedCredit - 0.01),
   };
-  const failures = checkPins([corrupted]);
+  const creditFailures = checkPins([corrupted]);
+  const corruptedGuidelines: Record<number, GuidelineRow> = {
+    ...GUIDELINE_LITERALS,
+    2025: {
+      base: (GUIDELINE_LITERALS[2025]?.base ?? 15650) + 100,
+      perAdditional: GUIDELINE_LITERALS[2025]?.perAdditional ?? 5500,
+    },
+  };
+  const guidelineFailures = checkPins(buildFastPins(corruptedGuidelines));
+  const guidelineCaught = guidelineFailures.some((f) =>
+    f.startsWith("aca-hh2-y2026-cliff-at:"),
+  );
   return {
-    corruptedCaseId,
-    failedCount: failures.length,
-    pass: failures.length === 1,
+    corruptedCaseId: `${corruptedCreditCaseId} | ${corruptedGuidelineCaseId}`,
+    failedCount: creditFailures.length + guidelineFailures.length,
+    pass: creditFailures.length === 1 && guidelineFailures.length > 0 && guidelineCaught,
   };
 }
 
