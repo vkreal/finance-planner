@@ -32,14 +32,15 @@
      exactly 133% FPL the second band's initial
      percentage prices (3.14% in 2026, 3.23% in 2027);
      1c below, the first band's final prices (2.10% /
-     2.15%). Note the float wrinkle, verified against
-     the engine: for 2025 HH1/HH3 and 2027/2028 HH1/HH3
-     the cent-rounded 1.33 x FPL MAGI computes to a
-     pctFpl a hair BELOW 133 (132.99999999999997), so
-     the first band prices there too — the pin derives
-     its expectation from the ACTUAL float pctFpl, and
-     the +1c pin above the edge covers the true
-     discontinuity for those combos. */
+     2.15%). Band edges are classified in integer cents
+     everywhere (round-10 F1): the float pctFpl computes
+     132.99999999999997 at an exact 133% edge for HH1/HH3
+     and would price the lower band, so the engine, the
+     independent implementation, and the derivation below
+     all compare magiCents x 100 against upToPctFpl x
+     fplCents. The +1c pin above the edge still covers the
+     true discontinuity, and the literal pins below pin the
+     exact edge independently of any derived value. */
 
 import { acaCreditFor } from "../taxEngine";
 import { fplFor } from "../taxLaw";
@@ -97,10 +98,11 @@ const BAND_TABLES: Record<number, AcaBandPin[]> = {
 const BAND_LOWS = [0, 133, 150, 200, 250, 300];
 
 /* Hand-derived expectation for one MAGI: the raw
-   interpolated applicable percentage (from the actual
-   float pctFpl, lower-inclusive bands, last band taking
-   its top edge), the cent-rounded credit, and the cliff
-   flag. Returns null only for a year with no table. */
+   interpolated applicable percentage (band classified in
+   integer cents, fraction interpolated from pctFpl,
+   lower-inclusive bands, last band taking its top edge),
+   the cent-rounded credit, and the cliff flag. Returns
+   null only for a year with no table. */
 function deriveExpected(
   magi: number,
   householdSize: number,
@@ -116,16 +118,22 @@ function deriveExpected(
   const fpl = fplFor(householdSize, coverageYear - 1);
   const cliff = 4 * fpl;
   const pctFpl = fpl > 0 ? (magi / fpl) * 100 : 0;
+  // Integer-cents band classification (round-10 F1): the
+  // float pctFpl computes 132.99999999999997 at an exact
+  // 133% edge for HH1/HH3. The float is kept only for the
+  // interpolation fraction below.
+  const magiCents = Math.round(magi * 100);
+  const fplCents = Math.round(fpl * 100);
   const hasCliff = coverageYear >= 2026;
   const overCliff = hasCliff && magi > cliff;
-  if (overCliff || pctFpl < 100) {
+  if (overCliff || magiCents < fplCents) {
     return { credit: 0, applicablePct: 0, overCliff };
   }
   let rawPct = bands[bands.length - 1]?.finalPct ?? 9.96;
   for (let i = 0; i < bands.length; i++) {
     const band = bands[i];
     if (!band) continue;
-    if (pctFpl < band.upToPctFpl || i === bands.length - 1) {
+    if (magiCents * 100 < band.upToPctFpl * fplCents || i === bands.length - 1) {
       const lo = BAND_LOWS[i] ?? 0;
       const span = band.upToPctFpl - lo;
       const frac =
@@ -235,6 +243,62 @@ function magiForKind(
   }
 }
 
+/* Source-derived literal 133% pins (round-10 F1): the
+   generated edge133-at pins above derive their
+   expectations from deriveExpected, so all three legs
+   could share one wrong comparison. These three pins
+   carry literal expectations hand-computed from the
+   published sources, so they pin the exact edge
+   independently of any derived value:
+   - HH3, coverage 2027: 2026 guideline $27,320
+     (FPL_GUIDELINES 2026 row: $15,960 + 2 x $5,680);
+     edge MAGI 1.33 x 27,320 = $36,335.60; 2027 band 2
+     initial 3.23% (Rev. Proc. 2026-26); benchmark
+     $36,000 -> credit 36,000 - 0.0323 x 36,335.60
+     = $34,826.36.
+   - HH1, coverage 2027: guideline $15,960; edge MAGI
+     1.33 x 15,960 = $21,226.80; 3.23%; benchmark
+     $17,500 -> credit 17,500 - 0.0323 x 21,226.80
+     = $16,814.37.
+   - HH1, coverage 2028: guideline $15,960 (the 2027
+     row falls back to the newest 2026 row); edge MAGI
+     $21,226.80; 2028 prices on the 2026 row, band 2
+     initial 3.14% (Rev. Proc. 2025-25 §3.01);
+     benchmark $17,500 -> credit 17,500 - 0.0314 x
+     21,226.80 = $16,833.48. */
+const LITERAL_EDGE_PINS: AcaPin[] = [
+  {
+    id: "aca-hh3-y2027-edge133-at-literal",
+    magi: 36335.6,
+    householdSize: 3,
+    coverageYear: 2027,
+    benchmark: 36000,
+    expectedCredit: 34826.36,
+    expectedApplicablePct: 3.23,
+    expectedOverCliff: false,
+  },
+  {
+    id: "aca-hh1-y2027-edge133-at-literal",
+    magi: 21226.8,
+    householdSize: 1,
+    coverageYear: 2027,
+    benchmark: 17500,
+    expectedCredit: 16814.37,
+    expectedApplicablePct: 3.23,
+    expectedOverCliff: false,
+  },
+  {
+    id: "aca-hh1-y2028-edge133-at-literal",
+    magi: 21226.8,
+    householdSize: 1,
+    coverageYear: 2028,
+    benchmark: 17500,
+    expectedCredit: 16833.48,
+    expectedApplicablePct: 3.14,
+    expectedOverCliff: false,
+  },
+];
+
 function pinsFor(
   householdSize: number,
   coverageYear: number,
@@ -277,6 +341,13 @@ function buildFastPins(): AcaPin[] {
       "edge133-plus-1c",
       "edge133-below-1c",
     ]),
+    // Literal exact-edge pins (round-10 F1): the fast
+    // check's 2027 edge-133 trio is HH2-only, and HH2's
+    // float computes exactly — so the fast check passed
+    // even with the engine-only fix and the residual
+    // test-side float error. These literal pins make the
+    // fast check catch it too.
+    ...LITERAL_EDGE_PINS,
   ];
 }
 
@@ -287,6 +358,7 @@ function buildFullPins(): AcaPin[] {
       pins.push(...pinsFor(hh, year, ALL_KINDS));
     }
   }
+  pins.push(...LITERAL_EDGE_PINS);
   return pins;
 }
 

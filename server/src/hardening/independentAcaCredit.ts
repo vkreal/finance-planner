@@ -77,11 +77,20 @@ export function acaCreditIndependent(
   const fpl = fplFor(args.householdSize, args.coverageYear - 1);
   const cliff = 4 * fpl;
   const pctFpl = fpl > 0 ? (args.magi / fpl) * 100 : 0;
+  // Band edges are classified in integer cents, never from
+  // the float pctFpl: at an exact edge the float can compute
+  // a hair below the edge (132.99999999999997 at 133% for
+  // HH1/HH3) and the lower band would price instead of the
+  // edge band's initial percentage (round-10 F1). The float
+  // pctFpl below is kept only for the interpolation fraction
+  // and the reported value.
+  const magiCents = Math.round(args.magi * 100);
+  const fplCents = Math.round(fpl * 100);
   // The 400% FPL cliff applies from 2026 on. 2025 coverage
   // priced under the enhanced schedule, which has NO cliff.
   const hasCliff = args.coverageYear >= 2026;
   const overCliff = hasCliff && args.magi > cliff;
-  if (overCliff || pctFpl < 100) {
+  if (overCliff || magiCents < fplCents) {
     return {
       credit: 0,
       pctFpl: roundCent(pctFpl),
@@ -100,13 +109,13 @@ export function acaCreditIndependent(
     const band = bands[i];
     if (!band) continue;
     // LOWER-INCLUSIVE band edges: a band matches only BELOW
-    // its top edge — pctFpl < upToPctFpl, never <= — so
-    // income exactly at a lower edge takes that band's
-    // INITIAL percentage. The last band also takes its top
-    // edge (exactly 400% still pays a credit; the cliff is
-    // the separate overCliff test above) and, in 2025,
-    // everything above it.
-    if (pctFpl < band.upToPctFpl || i === bands.length - 1) {
+    // its top edge — magiCents * 100 < upToPctFpl * fplCents,
+    // never <= — so income exactly at a lower edge takes
+    // that band's INITIAL percentage. The last band also
+    // takes its top edge (exactly 400% still pays a credit;
+    // the cliff is the separate overCliff test above) and,
+    // in 2025, everything above it.
+    if (magiCents * 100 < band.upToPctFpl * fplCents || i === bands.length - 1) {
       const lo = lows[i] ?? 0;
       const span = band.upToPctFpl - lo;
       const frac =

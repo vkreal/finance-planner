@@ -1835,13 +1835,22 @@ export function acaCreditFor(args: {
   const fpl = fplFor(args.householdSize, args.coverageYear - 1);
   const cliff = 4 * fpl;
   const pctFpl = fpl > 0 ? (args.magi / fpl) * 100 : 0;
+  // Band edges are classified in integer cents, never from
+  // the float pctFpl: at an exact edge (MAGI $36,335.60 =
+  // 133% of a $27,320 guideline) the float computes
+  // 132.99999999999997 and the lower band prices instead of
+  // the edge band's initial percentage (round-10 F1). The
+  // float pctFpl below is kept only for the interpolation
+  // fraction and the reported value.
+  const magiCents = Math.round(args.magi * 100);
+  const fplCents = Math.round(fpl * 100);
   // The 400% FPL cliff applies from 2026 on. 2025 coverage priced
   // under the enhanced schedule (Rev. Proc. 2024-35), which has
   // NO cliff: above 400% FPL the applicable percentage stays at
   // its 8.5% cap and a credit is still priced (overCliff false).
   const hasCliff = args.coverageYear >= 2026;
   const overCliff = hasCliff && args.magi > cliff;
-  if (overCliff || pctFpl < 100) {
+  if (overCliff || magiCents < fplCents) {
     return { credit: 0, pctFpl: r2(pctFpl), applicablePct: 0, fpl, cliff, overCliff };
   }
   const bands = acaTableFor(args.tableYear ?? args.coverageYear, {
@@ -1857,14 +1866,15 @@ export function acaCreditFor(args: {
     // least X% but less than Y%"): income exactly at a
     // band's lower edge takes that band's INITIAL
     // percentage, so a band matches only BELOW its top
-    // edge — pctFpl < upToPctFpl, never <=. (Before this
-    // fix, exactly 133% FPL matched the first band and
-    // priced its 2.10% final percentage instead of the
-    // second band's 3.14% initial percentage for 2026.)
+    // edge — magiCents * 100 < upToPctFpl * fplCents, never
+    // <=. (Before this fix, exactly 133% FPL matched the
+    // first band and priced its 2.10% final percentage
+    // instead of the second band's 3.14% initial percentage
+    // for 2026.)
     // The last band also takes its top edge (exactly
     // 400% still pays a credit; the cliff is the separate
     // overCliff test above) and, in 2025, everything above.
-    if (pctFpl < band.upToPctFpl || i === bands.length - 1) {
+    if (magiCents * 100 < band.upToPctFpl * fplCents || i === bands.length - 1) {
       const lo = lows[i] ?? 0;
       const span = band.upToPctFpl - lo;
       const frac = span > 0 ? Math.min(1, Math.max(0, (pctFpl - lo) / span)) : 0;
