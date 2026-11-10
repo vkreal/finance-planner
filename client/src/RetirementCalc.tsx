@@ -631,6 +631,11 @@ export function RetirementCalc({
     "w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2 text-left hover:border-[var(--accent)]";
   const calcTileValueCls =
     "tnum text-base font-semibold underline decoration-dotted underline-offset-4";
+  // Standout treatment for the three key money figures (the
+  // verdict's amount left, the Projection strip's ending
+  // balance, and the Portfolio tile value) — one shared class
+  // so all three match exactly.
+  const keyFigureCls = "tnum text-xl font-bold";
   // Inline rename: which scenario is being renamed, and the draft name.
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -4088,9 +4093,8 @@ export function RetirementCalc({
             )}
           </div>
           <p className="tnum mt-2 text-base leading-relaxed">
-            <strong className="font-semibold">
-              {`${fmt(projection.ending)} left at ${inputs.endAge}`}
-            </strong>
+            <span className={keyFigureCls}>{fmt(projection.ending)}</span>
+            {` left at ${inputs.endAge}`}
             {projection.hasRetiredYears && projection.neverRunsOut && projection.ending <= 0 && (
               <span className="text-[var(--dim)]">
                 {" — every year's spending fully funded, with nothing to spare"}
@@ -4560,7 +4564,7 @@ export function RetirementCalc({
               onClick={() => jumpToRcField("rc-portfolio")}
             >
               <p className="text-xs text-[var(--dim)]">Portfolio</p>
-              <p className={calcTileValueCls}>
+              <p className={keyFigureCls}>
                 {fmt(inputs.startCents)}
               </p>
             </button>
@@ -4913,7 +4917,7 @@ export function RetirementCalc({
               {projectionAtRisk ? (
                 <AtRiskEndingPill shortfallAge={projection.shortfallAge} endAge={inputs.endAge} ending={projection.ending} />
               ) : (
-                <p className="tnum display text-base font-semibold">{fmt(projection.ending)}</p>
+                <p className={keyFigureCls}>{fmt(projection.ending)}</p>
               )}
               {projDeltaText && (
                 <p className="text-xs font-medium text-[var(--dim)]">{projDeltaText}</p>
