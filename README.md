@@ -38,7 +38,7 @@ Finance Planner connects the questions households actually ask when retirement g
 
 ## 🤖 For AI assistants
 
-If you're an AI assistant analyzing a household's plan with this repo, start with [HANDOVER.md](HANDOVER.md). It carries the operating model, the engine quirks that trip people up, how to answer questions, and a checklist of what a household's handover should record — with no household figures in it. Every figure lives in the saved record, retrievable through the API; the version log ([DATA-PLAN.md](DATA-PLAN.md)) is figure-free, and [AGENTS.md](AGENTS.md) carries the build rules.
+If you're an AI assistant analyzing a household's plan with this repo, start with [HANDOVER.md](HANDOVER.md). It carries the operating model, the engine quirks that trip people up, how to answer questions, and a checklist of what a household's handover should record — with no household figures in it. Every figure lives in the saved record, retrievable through the API; the version log ([DATA-PLAN.md](DATA-PLAN.md)) is figure-free, and [AGENTS.md](AGENTS.md) carries the build rules. For reviewing the engine itself, see the [reviewer guide](docs/REVIEWER_GUIDE.md), which covers its semantics, invariants, test suites, and describeApi.
 
 ## 🧭 The five views
 
