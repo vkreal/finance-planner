@@ -49,6 +49,7 @@ type NwImportSettingsBlob,
 } from "./nwImportCore";
 import { looksLikeOfx, parseOfx } from "./ofxCore";
 import { Explainer } from "./Explainer";
+import { FoldChevron } from "./FoldChevron";
 import { usePersistedFold } from "./foldState";
 import { usePersistedChoice } from "./persistedChoice";
 import { TrendBlock } from "./YearBlocks";
@@ -2923,6 +2924,11 @@ export function NetWorthView() {
   /* The balance-import panel's open/closed state persists in
      the generic fold store, so it comes back as left. */
   const [showNwImport, setShowNwImport] = usePersistedFold("nw.import");
+  /* The Backups panel's open/closed state persists in the
+     generic fold store the same way. No stored entry reads as
+     collapsed — its default — so the panel first renders with
+     only its header showing until it is expanded. */
+  const [backupsOpen, setBackupsOpen] = usePersistedFold("nw.backups");
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountType, setNewAccountType] =
@@ -5768,17 +5774,34 @@ export function NetWorthView() {
         aria-label="Backups"
         className="mt-4 min-w-0 overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5"
       >
-        <h3 className="display text-lg font-semibold">Backups</h3>
-        <Explainer
-          id="networth.backups"
-          label="Backups"
-          className="mt-0.5"
-          summary="Encrypted backup files stored outside this app — deleting here removes the actual file."
-        >
-          <p>
-            Encrypted backup files stored outside this app. Deleting here removes the actual file.
-          </p>
-        </Explainer>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="display text-lg font-semibold">Backups</h3>
+            <Explainer
+              id="networth.backups"
+              label="Backups"
+              className="mt-0.5"
+              summary="Encrypted backup files stored outside this app — deleting here removes the actual file."
+            >
+              <p>
+                Encrypted backup files stored outside this app. Deleting here removes the actual file.
+              </p>
+            </Explainer>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              aria-expanded={backupsOpen}
+              aria-label={backupsOpen ? "Collapse Backups" : "Expand Backups"}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+              onClick={() => setBackupsOpen(!backupsOpen)}
+            >
+              <FoldChevron open={backupsOpen} />
+            </button>
+          </div>
+        </div>
+        {backupsOpen && (
+        <>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -5927,6 +5950,8 @@ export function NetWorthView() {
         )}
         {backupError && (
           <p className="mt-2 text-sm text-[var(--bad)]">{backupError}</p>
+        )}
+        </>
         )}
       </section>
 
