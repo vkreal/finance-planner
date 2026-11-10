@@ -5534,6 +5534,22 @@ export function Playground({
   const pgInterestDollars = Math.max(0, parseDollars(pgInterest) ?? 0);
   const pgOrdinaryDollars = Math.max(0, parseDollars(pgOrdDiv) ?? 0);
   const pgQualifiedDollars = Math.max(0, parseDollars(pgQualDiv) ?? 0);
+  /* Single-year group header summary — display ONLY, derived
+     live from the same dials the section summaries above read:
+     the tax year, the pre-tax draw for spending, the conversion,
+     and the year's income (interest + the ordinary dividends
+     total, per the note above — the qualified part is inside
+     that total, never added again). It rides under the group's
+     title in BOTH fold states as plain text with no taps, the
+     same treatment as the Retirement view's "Plan inputs"
+     header summary, so a folded group still shows its
+     important dials and the line updates as the dials change. */
+  const pgSingleGroupSummary = [
+    pgYear.trim() !== "" ? pgYear.trim() : "—",
+    `draw ${pgMoneySummary(pgSpendingDraw)}`,
+    `conversion ${pgMoneySummary(pgConversion)}`,
+    `income ${fmtDollars(pgInterestDollars + pgOrdinaryDollars)}`,
+  ].join(" · ");
   /* The PRICED qualified figure (N-2, engines review round
      2): the engine clamps the qualified part to the total
      before pricing (min(qualified, ordinary) — audit S-8 +
@@ -6166,15 +6182,13 @@ export function Playground({
         )}
         {pgFace === "year" && (
           <>
-        {/* Single-year dials (build v69): the group gets
-            the same outer shell as the section cards inside
-            it, but quieter — a dashed border on the page
-            background instead of a filled surface card — and
-            its explainer sentence rides the title's ⓘ. */}
-        <section
-          className="mt-4 rounded-[var(--radius)] border border-dashed border-[var(--border)] px-3 py-3"
-          aria-label="Single-year dials"
-        >
+        {/* Single-year dials (build v69): the group header is
+            a plain title row — no box around the group (the
+            section cards inside keep their own card treatment)
+            — its explainer sentence rides the title's ⓘ, and
+            the live dials summary rides under the title in
+            both fold states, plain text with no taps. */}
+        <section className="mt-4" aria-label="Single-year dials">
           <h3>
             <button
               type="button"
@@ -6183,14 +6197,19 @@ export function Playground({
               className="flex w-full items-start justify-between gap-3 pr-1 text-left"
               onClick={() => togglePgGroup("single")}
             >
-              <span className="flex items-center">
-                <span className="text-base font-semibold">
-                  Single-year dials
+              <span>
+                <span className="flex items-center">
+                  <span className="text-base font-semibold">
+                    Single-year dials
+                  </span>
+                  <InfoNote
+                    text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
+                    ariaLabel="About the single-year dials"
+                  />
                 </span>
-                <InfoNote
-                  text="One standalone year — its income, the pre-tax money out, a stock sale, and ACA & state. These dials price the single year in the readout below."
-                  ariaLabel="About the single-year dials"
-                />
+                <span className="tnum mt-0.5 block text-sm text-[var(--dim)]">
+                  {pgSingleGroupSummary}
+                </span>
               </span>
               <FoldChevron open={!!pgGroupOpen.single} className="mt-0.5" />
             </button>
