@@ -852,13 +852,15 @@ export function runRetirementFixtures(
    Savings: Choosing a Withdrawal Rate That Is Sustainable", AAII
    Journal, Feb 1998 — the Trinity Study), inflation-adjusted
    withdrawals, 30-year payout period, 4% initial withdrawal:
-   50/50 succeeded in 95% of periods and 75/25 in 100%.
+   50/50 succeeded in 95% of periods and 75/25 in 98%.
    Sources: the study's Table 3 as analysed by Wade Pfau,
    "Safe Withdrawal Rates for Retirement and the Trinity Study",
    retirementresearcher.com (the original study's 95% figure for
    the 50/50 mix, and its use of long-term high-grade CORPORATE
-   bonds), and the study summary at keepthrifty.com (100% for
-   portfolios of 75% stocks or more).
+   bonds), and Table 3 itself for the 75/25 mix (98% at the 4%
+   withdrawal rate). An earlier revision cited a secondary
+   summary giving 100% for 75/25; that figure matches Table 3's
+   3% row, not its 4% row.
 
    Exact equality is NOT expected and is not the pass bar: the
    published study replays 1926–1995 Ibbotson data (this app
@@ -890,10 +892,10 @@ export const TRINITY_CASE = {
 };
 export const TRINITY_PUBLISHED = {
   mix5050SuccessRate: 95,
-  mix7525SuccessRate: 100,
+  mix7525SuccessRate: 98,
   tolerancePoints: 6,
   citation:
-    "Cooley, Hubbard & Walz (1998), the Trinity Study, Table 3 (inflation-adjusted, 30-year, 4%): 50/50 = 95%, 75/25 = 100%, on 1926–1995 Ibbotson data with corporate bonds.",
+    "Cooley, Hubbard & Walz (1998), the Trinity Study, Table 3 (inflation-adjusted, 30-year, 4%): 50/50 = 95%, 75/25 = 98%, on 1926–1995 Ibbotson data with corporate bonds.",
 };
 
 export type TrinityResult = {

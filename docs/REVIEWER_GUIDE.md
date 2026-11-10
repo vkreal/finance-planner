@@ -566,8 +566,8 @@ until the audit lands.
   2026) plus its own Table III (73 → 26.5, 74 → 25.5) require 25.5 —
   the owner turned 73 on Dec 15, 2025 and is 74 in 2026. The pin
   uses the corrected **$1,364.71** and documents the disagreement.
-- **Trinity 75/25 passes by 0.1 pt** (app 94.1% vs. published 100%,
-  tolerance ±6pt; 50/50 is 92.6% vs. 95%). Thin, recorded in the
+- **Trinity 75/25 passes by 2.1 pt** (app 94.1% vs. published 98%,
+  tolerance ±6pt; 50/50 is 92.6% vs. 95%). Recorded in the
   module and the version log, not a failure — and a future data or
   method change that nudges the app rate down will fail this check
   first, which is correct pin behavior.

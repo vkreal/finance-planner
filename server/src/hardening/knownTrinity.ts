@@ -16,7 +16,7 @@
    50/50 and a 75/25 stock/bond mix, against Cooley, Hubbard
    & Walz (1998), the Trinity Study, Table 3
    (inflation-adjusted, 30-year, 4%): 50/50 = 95% success,
-   75/25 = 100%. The published rates and the ±6-point
+   75/25 = 98%. The published rates and the ±6-point
    tolerance are read from the fixture module's own
    TRINITY_PUBLISHED constant, not restated here.
 
@@ -133,6 +133,11 @@ function runTrinityTeeth(): HardeningTeethResult {
   // app 50/50 rate sits below the published 95%, so +7
   // moves the published figure away from it; the 75/25
   // mix is untouched and must keep passing).
+  // Only the 50/50 pin is corruption-tested: a re-introduced
+  // 75/25 pin of 100 still passes tolerance (5.9 ≤ 6), so a
+  // matching 75/25 corruption leg (+7 → 105, diff 10.9) would
+  // be needed to cover both pins — recorded as an option for a
+  // later pick, not built here.
   const corruptedCaseId = "trinity 50/50 publishedRate";
   const set = runSet({ mix: "50/50", deltaPoints: 7 });
   return {
