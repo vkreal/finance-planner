@@ -6032,40 +6032,6 @@ export function Playground({
             )}
           </p>
         )}
-        {/* Income strip — always visible at the top of the
-            Playground, one line naming the three income
-            figures for the selected Tax year, so Interest,
-            Ordinary dividends and Qualified dividends are
-            seen without scrolling to the dials. Display only:
-            it reads the dials exactly as priced (see
-            pgInterestDollars above) and writes nothing. The
-            Qualified figure is the PRICED one
-            (pgQualifiedPricedDollars — the dial clamped to
-            the total, as the engine prices it), so on an
-            impossible pair the strip shows the priced
-            figure, not the raw dial (N-2). */}
-        <div
-          aria-label={`${pgTaxYearNum} income summary`}
-          className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2"
-        >
-          <p className="tnum text-sm font-medium text-[var(--text)]">
-            {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedPricedDollars)}.
-          </p>
-        </div>
-        {/* $0 income warning — only when the year's income
-            (Interest + Ordinary dividends; Qualified is part
-            of Ordinary, not added again) is $0. Tapping it
-            jumps to the income dials (Interest first), using
-            the same jump-and-highlight as the provenance taps. */}
-        {pgIncomeIsZero && (
-          <button
-            type="button"
-            className="mt-2 w-full rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--text)] hover:opacity-90"
-            onClick={() => jumpToPgField("roth-Interest", "income")}
-          >
-            Your income for {pgTaxYearNum} is $0 — is that right?
-          </button>
-        )}
         {/* Face switch — two faces, one tool at a time. Both
             faces share the one dial state, so switching loses
             nothing and changes no value; it only chooses
@@ -6123,21 +6089,6 @@ export function Playground({
             )}
             Projection
           </button>
-        </div>
-        {/* Plain-English summary — the sentence composed above
-            for the face on screen (pgPlainYearSentence on One
-            year, pgPlainProjSentence on Projection), updated
-            live from the dials on every render. */}
-        <div aria-label="Playground summary in plain English" className="mt-3 max-w-3xl">
-          {pgFace === "year" ? (
-            <p className="text-sm text-[var(--text)]">
-              {pgPlainYearSentence}
-            </p>
-          ) : (
-            <p className="text-sm text-[var(--text)]">
-              {pgPlainProjSentence}
-            </p>
-          )}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button
@@ -6213,237 +6164,6 @@ export function Playground({
             figures are used as stored.
           </p>
         )}
-        {/* Exclude-from-plan visibility (EXCLUDE VISIBILITY
-            build): the resolved taxable pool this view prices
-            from the saved plan, with the Tax Plan record's
-            exclusion named beside it — the same pool
-            pgPrefillSourceFrom resolves (Taxable + Cash less
-            the exclusion). Shown only while an exclusion
-            actually applies; Net Worth balances never move. */}
-        {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
-          <p className="tnum mt-2 text-sm text-[var(--text)]">
-            <strong>
-              Taxable pool after exclusion:{" "}
-              {fmtDollarsExact(pgPrefillSource.taxableStart)}
-            </strong>{" "}
-            — Taxable plus Cash ({fmtDollarsExact(pgPrefillSource.taxablePoolGross)})
-            less the {fmtDollarsExact(pgPrefillSource.taxableExclude)}{" "}
-            excluded from the plan in the Tax Plan.
-          </p>
-        )}
-
-        {/* Load inputs from a paste — an occasional-use tool,
-            folded by default (see pasteOpen above): the heading
-            row carries the shared fold toggle at its right end,
-            and the fold covers the helper line, the textarea,
-            and the Load inputs button. The "Start from my
-            numbers" button and "Reset playground" link above
-            stay outside the fold, always visible. */}
-        <section className={sectionCls} aria-label="Load inputs from a paste">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <span>
-              <label
-                className="block text-base font-semibold"
-                htmlFor="roth-pg-paste"
-              >
-                Load inputs from a paste
-              </label>
-              <span className="mt-0.5 block text-sm text-[var(--dim)]">
-                {pgPasteLoaded
-                  ? "Inputs loaded from the paste"
-                  : pgPasteText.trim() !== ""
-                    ? "Paste entered — not loaded yet"
-                    : "Nothing pasted yet"}
-              </span>
-            </span>
-            <button
-              type="button"
-              aria-label={
-                pasteOpen ? "Hide paste loader" : "Show paste loader"
-              }
-              aria-expanded={pasteOpen}
-              aria-controls="playground-paste-inputs"
-              onClick={() => setPasteOpen(!pasteOpen)}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
-            >
-              <FoldChevron open={pasteOpen} />
-            </button>
-          </div>
-          {pasteOpen && (
-            <div id="playground-paste-inputs" className="max-w-3xl">
-              <p className={hintCls}>
-                Paste the inputs block from a priced answer and every dial
-                below fills at once — the same as typing them.
-              </p>
-              <textarea
-                id="roth-pg-paste"
-                aria-label="Load inputs paste box"
-                className={`${inputCls} mt-2 font-mono text-xs`}
-                rows={3}
-                value={pgPasteText}
-                onChange={(e) => {
-                  setPgPasteText(e.target.value);
-                  setPgPasteLoaded(false);
-                }}
-                placeholder='{"kind":"playground-year","version":1,…}'
-              />
-              <div className="mt-2 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  aria-label="Load inputs"
-                  className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-                  disabled={pgPasteText.trim() === ""}
-                  onClick={applyPgPaste}
-                >
-                  Load inputs
-                </button>
-                {pgPasteLoaded && !pgPasteError && (
-                  <span className="text-sm text-[var(--dim)]" role="note">
-                    Loaded — the dials below now hold the pasted inputs.
-                  </span>
-                )}
-              </div>
-              {pgPasteError && (
-                <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
-                  {pgPasteError}
-                </p>
-              )}
-            </div>
-          )}
-        </section>
-
-        {/* Known starting points — preset cards that load the
-            dials (see the loaders above). Loading a preset
-            sets dials only; nothing here writes the saved
-            plan record. Shown on both faces: the dials are
-            shared, so a starting point is useful from either
-            tool. The section folds behind the same chevron
-            toggle the Spending section folds use (see
-            knownPointsFolded above): expanded by default, and
-            folded shut it leaves only this header row. */}
-        <section className={sectionCls} aria-label="Start from a known point">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <span>
-              <span className="block text-base font-semibold">
-                Start from a known point
-              </span>
-              <span className="mt-0.5 block text-sm text-[var(--dim)]">
-                {pgPresetNote ??
-                  `My ${pgTaxReturnYear} return as filed · a year from my saved plan · a blank year`}
-              </span>
-            </span>
-            <button
-              type="button"
-              aria-label={
-                knownPointsOpen
-                  ? "Hide starting points"
-                  : "Show starting points"
-              }
-              aria-expanded={knownPointsOpen}
-              aria-controls="playground-known-points"
-              onClick={() => setKnownPointsFolded(knownPointsOpen)}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
-            >
-              <FoldChevron open={knownPointsOpen} />
-            </button>
-          </div>
-          {knownPointsOpen && (
-            <div id="playground-known-points">
-          <div className="mt-2 grid gap-2 sm:grid-cols-3">
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
-              <p className="text-sm font-semibold">My {pgTaxReturnYear} return as filed</p>
-              <p className="mt-1 text-xs text-[var(--dim)]">
-                {pgPrefillSource?.taxReturnInterest != null ||
-                pgPrefillSource?.taxReturnOrdinaryDividends != null
-                  ? `The Form 1040 figures on your plan record — interest ${fmtDollars(pgPrefillSource?.taxReturnInterest ?? 0)}, qualified dividends ${fmtDollars(pgPrefillSource?.taxReturnQualifiedDividends ?? 0)}, ordinary dividends ${fmtDollars(pgPrefillSource?.taxReturnOrdinaryDividends ?? 0)} — from ${pgReturnYearPhrase}. Loads the year ${pgTaxReturnYear} and those three dials; every other dial stays as it is.`
-                  : "The Form 1040 figures stored on your plan record. No figures are stored yet, so there is nothing to load."}
-              </p>
-              <button
-                type="button"
-                aria-label={`Load my ${pgTaxReturnYear} return as filed`}
-                className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-                disabled={
-                  !pgPrefillSource ||
-                  (pgPrefillSource.taxReturnInterest == null &&
-                    pgPrefillSource.taxReturnQualifiedDividends == null &&
-                    pgPrefillSource.taxReturnOrdinaryDividends == null)
-                }
-                onClick={applyPgAsFiled}
-              >
-                Load
-              </button>
-            </div>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
-              <p className="text-sm font-semibold">A year from my saved plan</p>
-              <p className="mt-1 text-xs text-[var(--dim)]">
-                Pick a year the saved plan prices and load that year&rsquo;s
-                priced income and conversion as the dials. Your saved plan
-                is not changed.
-              </p>
-              {pgSavedPlanYears != null &&
-              pgSavedPlanYears.years.length > 0 ? (
-                <>
-                  <label
-                    className="mt-2 block text-xs font-medium text-[var(--text)]"
-                    htmlFor="pg-plan-preset-year"
-                  >
-                    Plan year
-                  </label>
-                  <select
-                    id="pg-plan-preset-year"
-                    aria-label="Plan year to load"
-                    className={inputCls}
-                    value={pgPlanPresetYear ?? ""}
-                    onChange={(e) =>
-                      setPgPlanPresetYear(parseIntField(e.target.value))
-                    }
-                  >
-                    {pgSavedPlanYears.years.map((y) => (
-                      <option key={y.year} value={y.year}>
-                        {y.year} — age {y.agePrimary}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    aria-label="Load the chosen plan year"
-                    className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
-                    disabled={pgPlanPresetYear == null}
-                    onClick={() => {
-                      if (pgPlanPresetYear != null) {
-                        loadPgSavedPlanYear(pgPlanPresetYear);
-                      }
-                    }}
-                  >
-                    Load this year
-                  </button>
-                </>
-              ) : (
-                <p className="mt-2 text-xs text-[var(--dim)]">
-                  Needs a pricable saved plan.
-                </p>
-              )}
-            </div>
-            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
-              <p className="text-sm font-semibold">Blank year</p>
-              <p className="mt-1 text-xs text-[var(--dim)]">
-                Every single-year dial cleared — a clean sheet. The
-                projection still runs from its captured template.
-              </p>
-              <button
-                type="button"
-                aria-label="Load a blank year"
-                className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)]"
-                onClick={applyPgBlankYear}
-              >
-                Load
-              </button>
-            </div>
-          </div>
-            </div>
-          )}
-        </section>
-
         {pgFace === "year" && (
           <>
         {/* Single-year dials (build v69): the group gets
@@ -7921,6 +7641,76 @@ export function Playground({
         </section>
         )}
           </>
+        )}
+
+        {/* Plain-English summary — the sentence composed above
+            for the face on screen (pgPlainYearSentence on One
+            year, pgPlainProjSentence on Projection), updated
+            live from the dials on every render. */}
+        <div aria-label="Playground summary in plain English" className="mt-3 max-w-3xl">
+          {pgFace === "year" ? (
+            <p className="text-sm text-[var(--text)]">
+              {pgPlainYearSentence}
+            </p>
+          ) : (
+            <p className="text-sm text-[var(--text)]">
+              {pgPlainProjSentence}
+            </p>
+          )}
+        </div>
+
+        {/* Exclude-from-plan visibility (EXCLUDE VISIBILITY
+            build): the resolved taxable pool this view prices
+            from the saved plan, with the Tax Plan record's
+            exclusion named beside it — the same pool
+            pgPrefillSourceFrom resolves (Taxable + Cash less
+            the exclusion). Shown only while an exclusion
+            actually applies; Net Worth balances never move. */}
+        {pgPrefillSource && pgPrefillSource.taxableExclude > 0 && (
+          <p className="tnum mt-2 text-sm text-[var(--text)]">
+            <strong>
+              Taxable pool after exclusion:{" "}
+              {fmtDollarsExact(pgPrefillSource.taxableStart)}
+            </strong>{" "}
+            — Taxable plus Cash ({fmtDollarsExact(pgPrefillSource.taxablePoolGross)})
+            less the {fmtDollarsExact(pgPrefillSource.taxableExclude)}{" "}
+            excluded from the plan in the Tax Plan.
+          </p>
+        )}
+
+        {/* Income strip — one line naming the three income
+            figures for the selected Tax year, shown below
+            the dials with the other results (Playground
+            reorg A+C): a summary of the dial values, not a
+            dial itself. Display only:
+            it reads the dials exactly as priced (see
+            pgInterestDollars above) and writes nothing. The
+            Qualified figure is the PRICED one
+            (pgQualifiedPricedDollars — the dial clamped to
+            the total, as the engine prices it), so on an
+            impossible pair the strip shows the priced
+            figure, not the raw dial (N-2). */}
+        <div
+          aria-label={`${pgTaxYearNum} income summary`}
+          className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] px-3 py-2"
+        >
+          <p className="tnum text-sm font-medium text-[var(--text)]">
+            {pgTaxYearNum} income: Interest {fmtDollars(pgInterestDollars)} · Ordinary {fmtDollars(pgOrdinaryDollars)} · Qualified {fmtDollars(pgQualifiedPricedDollars)}.
+          </p>
+        </div>
+        {/* $0 income warning — only when the year's income
+            (Interest + Ordinary dividends; Qualified is part
+            of Ordinary, not added again) is $0. Tapping it
+            jumps to the income dials (Interest first), using
+            the same jump-and-highlight as the provenance taps. */}
+        {pgIncomeIsZero && (
+          <button
+            type="button"
+            className="mt-2 w-full rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--text)] hover:opacity-90"
+            onClick={() => jumpToPgField("roth-Interest", "income")}
+          >
+            Your income for {pgTaxYearNum} is $0 — is that right?
+          </button>
         )}
 
         {/* The single-year readout — the One year face's
@@ -9909,6 +9699,219 @@ export function Playground({
               </>
             );
           })()}
+
+        {/* Load inputs from a paste — an occasional-use tool,
+            folded by default (see pasteOpen above): the heading
+            row carries the shared fold toggle at its right end,
+            and the fold covers the helper line, the textarea,
+            and the Load inputs button. The "Start from my
+            numbers" button and "Reset playground" link above
+            stay outside the fold, always visible. */}
+        <section className={sectionCls} aria-label="Load inputs from a paste">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <span>
+              <label
+                className="block text-base font-semibold"
+                htmlFor="roth-pg-paste"
+              >
+                Load inputs from a paste
+              </label>
+              <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                {pgPasteLoaded
+                  ? "Inputs loaded from the paste"
+                  : pgPasteText.trim() !== ""
+                    ? "Paste entered — not loaded yet"
+                    : "Nothing pasted yet"}
+              </span>
+            </span>
+            <button
+              type="button"
+              aria-label={
+                pasteOpen ? "Hide paste loader" : "Show paste loader"
+              }
+              aria-expanded={pasteOpen}
+              aria-controls="playground-paste-inputs"
+              onClick={() => setPasteOpen(!pasteOpen)}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+            >
+              <FoldChevron open={pasteOpen} />
+            </button>
+          </div>
+          {pasteOpen && (
+            <div id="playground-paste-inputs" className="max-w-3xl">
+              <p className={hintCls}>
+                Paste the inputs block from a priced answer and every dial
+                below fills at once — the same as typing them.
+              </p>
+              <textarea
+                id="roth-pg-paste"
+                aria-label="Load inputs paste box"
+                className={`${inputCls} mt-2 font-mono text-xs`}
+                rows={3}
+                value={pgPasteText}
+                onChange={(e) => {
+                  setPgPasteText(e.target.value);
+                  setPgPasteLoaded(false);
+                }}
+                placeholder='{"kind":"playground-year","version":1,…}'
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  aria-label="Load inputs"
+                  className="rounded-[var(--radius)] border border-[var(--border)] px-3.5 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                  disabled={pgPasteText.trim() === ""}
+                  onClick={applyPgPaste}
+                >
+                  Load inputs
+                </button>
+                {pgPasteLoaded && !pgPasteError && (
+                  <span className="text-sm text-[var(--dim)]" role="note">
+                    Loaded — the dials below now hold the pasted inputs.
+                  </span>
+                )}
+              </div>
+              {pgPasteError && (
+                <p className="mt-2 text-sm text-[var(--bad)]" role="alert">
+                  {pgPasteError}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Known starting points — preset cards that load the
+            dials (see the loaders above). Loading a preset
+            sets dials only; nothing here writes the saved
+            plan record. Shown on both faces: the dials are
+            shared, so a starting point is useful from either
+            tool. The section folds behind the same chevron
+            toggle the Spending section folds use (see
+            knownPointsFolded above): expanded by default, and
+            folded shut it leaves only this header row. */}
+        <section className={sectionCls} aria-label="Start from a known point">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <span>
+              <span className="block text-base font-semibold">
+                Start from a known point
+              </span>
+              <span className="mt-0.5 block text-sm text-[var(--dim)]">
+                {pgPresetNote ??
+                  `My ${pgTaxReturnYear} return as filed · a year from my saved plan · a blank year`}
+              </span>
+            </span>
+            <button
+              type="button"
+              aria-label={
+                knownPointsOpen
+                  ? "Hide starting points"
+                  : "Show starting points"
+              }
+              aria-expanded={knownPointsOpen}
+              aria-controls="playground-known-points"
+              onClick={() => setKnownPointsFolded(knownPointsOpen)}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[var(--dim)] hover:text-[var(--accent)] focus-visible:text-[var(--accent)]"
+            >
+              <FoldChevron open={knownPointsOpen} />
+            </button>
+          </div>
+          {knownPointsOpen && (
+            <div id="playground-known-points">
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
+              <p className="text-sm font-semibold">My {pgTaxReturnYear} return as filed</p>
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                {pgPrefillSource?.taxReturnInterest != null ||
+                pgPrefillSource?.taxReturnOrdinaryDividends != null
+                  ? `The Form 1040 figures on your plan record — interest ${fmtDollars(pgPrefillSource?.taxReturnInterest ?? 0)}, qualified dividends ${fmtDollars(pgPrefillSource?.taxReturnQualifiedDividends ?? 0)}, ordinary dividends ${fmtDollars(pgPrefillSource?.taxReturnOrdinaryDividends ?? 0)} — from ${pgReturnYearPhrase}. Loads the year ${pgTaxReturnYear} and those three dials; every other dial stays as it is.`
+                  : "The Form 1040 figures stored on your plan record. No figures are stored yet, so there is nothing to load."}
+              </p>
+              <button
+                type="button"
+                aria-label={`Load my ${pgTaxReturnYear} return as filed`}
+                className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                disabled={
+                  !pgPrefillSource ||
+                  (pgPrefillSource.taxReturnInterest == null &&
+                    pgPrefillSource.taxReturnQualifiedDividends == null &&
+                    pgPrefillSource.taxReturnOrdinaryDividends == null)
+                }
+                onClick={applyPgAsFiled}
+              >
+                Load
+              </button>
+            </div>
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
+              <p className="text-sm font-semibold">A year from my saved plan</p>
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                Pick a year the saved plan prices and load that year&rsquo;s
+                priced income and conversion as the dials. Your saved plan
+                is not changed.
+              </p>
+              {pgSavedPlanYears != null &&
+              pgSavedPlanYears.years.length > 0 ? (
+                <>
+                  <label
+                    className="mt-2 block text-xs font-medium text-[var(--text)]"
+                    htmlFor="pg-plan-preset-year"
+                  >
+                    Plan year
+                  </label>
+                  <select
+                    id="pg-plan-preset-year"
+                    aria-label="Plan year to load"
+                    className={inputCls}
+                    value={pgPlanPresetYear ?? ""}
+                    onChange={(e) =>
+                      setPgPlanPresetYear(parseIntField(e.target.value))
+                    }
+                  >
+                    {pgSavedPlanYears.years.map((y) => (
+                      <option key={y.year} value={y.year}>
+                        {y.year} — age {y.agePrimary}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    aria-label="Load the chosen plan year"
+                    className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)] disabled:opacity-60"
+                    disabled={pgPlanPresetYear == null}
+                    onClick={() => {
+                      if (pgPlanPresetYear != null) {
+                        loadPgSavedPlanYear(pgPlanPresetYear);
+                      }
+                    }}
+                  >
+                    Load this year
+                  </button>
+                </>
+              ) : (
+                <p className="mt-2 text-xs text-[var(--dim)]">
+                  Needs a pricable saved plan.
+                </p>
+              )}
+            </div>
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-3">
+              <p className="text-sm font-semibold">Blank year</p>
+              <p className="mt-1 text-xs text-[var(--dim)]">
+                Every single-year dial cleared — a clean sheet. The
+                projection still runs from its captured template.
+              </p>
+              <button
+                type="button"
+                aria-label="Load a blank year"
+                className="mt-2 rounded-[var(--radius)] border border-[var(--border)] px-3 py-1.5 text-sm font-medium hover:text-[var(--accent)]"
+                onClick={applyPgBlankYear}
+              >
+                Load
+              </button>
+            </div>
+          </div>
+            </div>
+          )}
+        </section>
+
     </div>
   );
 }
