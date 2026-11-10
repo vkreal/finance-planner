@@ -4564,7 +4564,7 @@ export function RetirementCalc({
               onClick={() => jumpToRcField("rc-portfolio")}
             >
               <p className="text-xs text-[var(--dim)]">Portfolio</p>
-              <p className={keyFigureCls}>
+              <p className={`${keyFigureCls} underline decoration-dotted underline-offset-4`}>
                 {fmt(inputs.startCents)}
               </p>
             </button>
