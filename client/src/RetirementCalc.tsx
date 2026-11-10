@@ -3622,13 +3622,13 @@ export function RetirementCalc({
   // difference can disagree by 1¢ / 0.1 pts in fractional cases.
   const fmtDeltaMoney = (scenarioCents: number, currentCents: number): string => {
     const diffCents = displayedMoneyDeltaCents(scenarioCents, currentCents);
-    if (diffCents === 0) return "same as Current";
+    if (diffCents === 0) return "Same as Current";
     const sign = diffCents > 0 ? "+" : "−";
     return `${sign}${fmt(Math.abs(diffCents)).replace("−", "")} vs Current`;
   };
   const fmtDeltaPct = (scenarioRate: number, currentRate: number): string => {
     const diff = displayedRateDeltaPoints(scenarioRate, currentRate);
-    if (diff === 0) return "same as Current";
+    if (diff === 0) return "Same as Current";
     return `${diff > 0 ? "+" : "−"}${Math.abs(diff).toFixed(1)} pts vs Current`;
   };
 
@@ -4339,7 +4339,7 @@ export function RetirementCalc({
                       onClick={() => handleSpendingUnitChange("year")}
                       className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
                     >
-                      per year
+                      Per year
                     </button>
                     <button
                       type="button"
@@ -4348,7 +4348,7 @@ export function RetirementCalc({
                       onClick={() => handleSpendingUnitChange("month")}
                       className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
                     >
-                      per month
+                      Per month
                     </button>
                   </div>
                 </div>
@@ -5596,7 +5596,7 @@ export function RetirementCalc({
                               <p className="font-semibold">{tp.label}</p>
                               {tp.payload.map((p) => (
                                 <p key={p.name} className="tnum mt-0.5">
-                                  {p.name}: {typeof p.value === "number" ? `${p.value.toFixed(1)}%` : "no run fits"}
+                                  {p.name}: {typeof p.value === "number" ? `${p.value.toFixed(1)}%` : "No run fits"}
                                 </p>
                               ))}
                             </div>
@@ -5637,7 +5637,7 @@ export function RetirementCalc({
                               <p className="font-semibold">{tp.label}</p>
                               {tp.payload.map((p) => (
                                 <p key={p.name} className="tnum mt-0.5">
-                                  {p.name}: {typeof p.value === "number" ? tooltipMoney(p.value) : "no run fits"}
+                                  {p.name}: {typeof p.value === "number" ? tooltipMoney(p.value) : "No run fits"}
                                 </p>
                               ))}
                             </div>

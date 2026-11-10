@@ -5639,7 +5639,7 @@ export function App() {
                       onClick={() => setSpendingTargetUnit("year")}
                       className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
                     >
-                      per year
+                      Per year
                     </button>
                     <button
                       type="button"
@@ -5648,7 +5648,7 @@ export function App() {
                       onClick={() => setSpendingTargetUnit("month")}
                       className={`px-2 py-1 text-xs font-medium ${spendingTargetUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
                     >
-                      per month
+                      Per month
                     </button>
                   </div>
                 </div>
@@ -6625,7 +6625,7 @@ export function App() {
                           >
                             {monthLabel(cm.month)}
                             {cm.month === month && (
-                              <span className="ml-2 text-xs font-normal text-[var(--accent)]">viewing</span>
+                              <span className="ml-2 text-xs font-normal text-[var(--accent)]">Viewing</span>
                             )}
                           </button>
                           <div className="flex shrink-0 items-center gap-1">
@@ -6986,7 +6986,7 @@ export function App() {
                               <span className="tnum text-base font-medium">
                                 {b.effectiveFrom
                                   ? `${fmt(b.amountCents)}/mo`
-                                  : "not yet in effect"}
+                                  : "Not yet in effect"}
                               </span>
                               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" className={`shrink-0 text-[var(--dim)] transition-transform duration-200 motion-reduce:transition-none ${rowOpen ? "rotate-180" : ""}`}>
                                 <path d="M3.5 6 8 10.5 12.5 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />

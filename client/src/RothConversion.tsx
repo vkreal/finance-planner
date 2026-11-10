@@ -1710,40 +1710,40 @@ export function RothConversion({
     const centsOrBlank = (c: number | null | undefined) =>
       c == null ? "blank" : String(c);
     return [
-      { label: "birth years", value: `${SEED_BIRTH_YEAR_PRIMARY}/${SEED_BIRTH_YEAR_SPOUSE}` },
-      { label: "filing status", value: "mfj" },
+      { label: "Birth years", value: `${SEED_BIRTH_YEAR_PRIMARY}/${SEED_BIRTH_YEAR_SPOUSE}` },
+      { label: "Filing status", value: "mfj" },
       {
-        label: "starting balances",
+        label: "Starting balances",
         value: `${centsOrBlank(snap?.pretaxCents)}|blank|${centsOrBlank(snap?.rothCents)}|${centsOrBlank(snapTaxableCents)}|${centsOrBlank(snap?.hsaCents)}`,
       },
-      { label: "survivor scenario", value: "off" },
-      { label: "taxable cost basis", value: "blank" },
-      { label: "taxable excluded from plan", value: "blank" },
-      { label: "taxable yields", value: "blank/blank" },
-      { label: "annual spending", value: String(seedSpendingCents) },
-      { label: "retirement age", value: String(seedRetAge) },
-      { label: "end age", value: "95" },
-      { label: "expected return", value: String(seedReturn) },
-      { label: "your Social Security", value: `${SEED_SS_PRIMARY_CENTS}@${SEED_SS_START_AGE}` },
-      { label: "spouse Social Security", value: "blank@" },
-      { label: "other ordinary income", value: "blank" },
-      { label: "tax-exempt interest", value: "blank" },
-      { label: "already converted this year", value: "blank" },
-      { label: "conversion window", value: `${seedRetAge}→${rmdAgeForBirthYear(SEED_BIRTH_YEAR_PRIMARY) - 1}` },
-      { label: "pay tax from", value: "taxable" },
-      { label: "protect-minimum taxable", value: String(SEED_PROTECT_MIN_CENTS) },
-      { label: "pre-tax reserve", value: `${SEED_PRESERVE_PRETAX_CENTS}/blank` },
-      { label: "earliest claim age", value: "blank" },
-      { label: "draw order", value: drawOrderLabel(drawOrderFromKey(null)) },
-      { label: "spouse sole beneficiary", value: "yes" },
-      { label: "primary sole beneficiary of spouse", value: "blank" },
+      { label: "Survivor scenario", value: "off" },
+      { label: "Taxable cost basis", value: "blank" },
+      { label: "Taxable excluded from plan", value: "blank" },
+      { label: "Taxable yields", value: "blank/blank" },
+      { label: "Annual spending", value: String(seedSpendingCents) },
+      { label: "Retirement age", value: String(seedRetAge) },
+      { label: "End age", value: "95" },
+      { label: "Expected return", value: String(seedReturn) },
+      { label: "Your Social Security", value: `${SEED_SS_PRIMARY_CENTS}@${SEED_SS_START_AGE}` },
+      { label: "Spouse Social Security", value: "blank@" },
+      { label: "Other ordinary income", value: "blank" },
+      { label: "Tax-exempt interest", value: "blank" },
+      { label: "Already converted this year", value: "blank" },
+      { label: "Conversion window", value: `${seedRetAge}→${rmdAgeForBirthYear(SEED_BIRTH_YEAR_PRIMARY) - 1}` },
+      { label: "Pay tax from", value: "taxable" },
+      { label: "Protect-minimum taxable", value: String(SEED_PROTECT_MIN_CENTS) },
+      { label: "Pre-tax reserve", value: `${SEED_PRESERVE_PRETAX_CENTS}/blank` },
+      { label: "Earliest claim age", value: "blank" },
+      { label: "Draw order", value: drawOrderLabel(drawOrderFromKey(null)) },
+      { label: "Spouse sole beneficiary", value: "yes" },
+      { label: "Primary sole beneficiary of spouse", value: "blank" },
       { label: "ACA household size", value: "5" },
       { label: "ACA household steps", value: "none" },
       { label: "ACA benchmark premiums", value: "blank/blank/blank" },
-      { label: "inflation", value: String(SEED_INFLATION) },
-      { label: "state rate", value: "0" },
-      { label: "heir rate", value: String(SEED_HEIR_RATE) },
-      { label: "fill ceiling", value: "top of the 12% bracket" },
+      { label: "Inflation", value: String(SEED_INFLATION) },
+      { label: "State rate", value: "0" },
+      { label: "Heir rate", value: String(SEED_HEIR_RATE) },
+      { label: "Fill ceiling", value: "top of the 12% bracket" },
     ];
   };
 
@@ -4764,7 +4764,7 @@ export function RothConversion({
     if (!ceilings.acaCliffCap && ceilings.acaCliffBuffer != null && ceilings.acaCliffBuffer > 0)
       parts.push(`cliff safety buffer ${fmtDollars(ceilings.acaCliffBuffer)} (saved — not active while the cliff cap is off)`);
     if (ceilings.magiCap != null) parts.push(`MAGI cap ${fmtDollars(ceilings.magiCap)}`);
-    return parts.length ? parts.join(" · ") : "no ceilings switched on — no conversions";
+    return parts.length ? parts.join(" · ") : "No ceilings switched on — no conversions";
   }, [ceilings]);
 
   // The preset whose field combination the current ceilings
@@ -4799,35 +4799,35 @@ export function RothConversion({
 
   const diffLabels = useMemo(() => {
     const cur: Record<string, string> = {
-      "birth years": `${birthYearP}/${birthYearS}`,
-      "filing status": filingStatus,
-      "starting balances": `${parseMoney(pretax) ?? "blank"}|${parseMoney(pretaxSpouse) ?? "blank"}|${parseMoney(rothBal) ?? "blank"}|${parseMoney(taxableBal) ?? "blank"}|${parseMoney(hsaBal) ?? "blank"}`,
-      "survivor scenario": survivorOn
+      "Birth years": `${birthYearP}/${birthYearS}`,
+      "Filing status": filingStatus,
+      "Starting balances": `${parseMoney(pretax) ?? "blank"}|${parseMoney(pretaxSpouse) ?? "blank"}|${parseMoney(rothBal) ?? "blank"}|${parseMoney(taxableBal) ?? "blank"}|${parseMoney(hsaBal) ?? "blank"}`,
+      "Survivor scenario": survivorOn
         ? `${survivorWho}@${survivorDeathYear || "blank"}`
         : "off",
-      "taxable cost basis": basisPct === "" ? "blank" : basisPct,
-      "taxable excluded from plan": String(parseMoney(taxableExclude) ?? "blank"),
-      "taxable yields": `${divYieldPct === "" ? "blank" : divYieldPct}/${intYieldPct === "" ? "blank" : intYieldPct}`,
-      "annual spending": String(parseMoney(spending) ?? "blank"),
-      "retirement age": retirementAge,
-      "end age": endAge,
-      "expected return": expectedPct,
-      "your Social Security": `${parseMoney(ssP) ?? "blank"}@${ssPAge}${ssPrimaryNoBenefit ? ":none" : ""}`,
-      "spouse Social Security": `${parseMoney(ssS) ?? "blank"}@${ssSAge}${ssSpouseNoBenefit ? ":none" : ""}`,
-      "other ordinary income": String(parseMoney(otherOrd) ?? "blank"),
-      "tax-exempt interest": String(parseMoney(taxExempt) ?? "blank"),
-      "already converted this year": String(parseMoney(convertedAlready) ?? "blank"),
-      "conversion window": `${winStart}→${winStop}`,
-      "pay tax from": payTaxFrom,
-      "protect-minimum taxable": String(parseMoney(protectMin) ?? "blank"),
-      "pre-tax reserve": `${parseMoney(preservePretax) ?? "blank"}/${preserveExitRate === "" ? "blank" : preserveExitRate}`,
-      "earliest claim age": claimAgeFloor === "" ? "blank" : claimAgeFloor,
-      "draw order":
+      "Taxable cost basis": basisPct === "" ? "blank" : basisPct,
+      "Taxable excluded from plan": String(parseMoney(taxableExclude) ?? "blank"),
+      "Taxable yields": `${divYieldPct === "" ? "blank" : divYieldPct}/${intYieldPct === "" ? "blank" : intYieldPct}`,
+      "Annual spending": String(parseMoney(spending) ?? "blank"),
+      "Retirement age": retirementAge,
+      "End age": endAge,
+      "Expected return": expectedPct,
+      "Your Social Security": `${parseMoney(ssP) ?? "blank"}@${ssPAge}${ssPrimaryNoBenefit ? ":none" : ""}`,
+      "Spouse Social Security": `${parseMoney(ssS) ?? "blank"}@${ssSAge}${ssSpouseNoBenefit ? ":none" : ""}`,
+      "Other ordinary income": String(parseMoney(otherOrd) ?? "blank"),
+      "Tax-exempt interest": String(parseMoney(taxExempt) ?? "blank"),
+      "Already converted this year": String(parseMoney(convertedAlready) ?? "blank"),
+      "Conversion window": `${winStart}→${winStop}`,
+      "Pay tax from": payTaxFrom,
+      "Protect-minimum taxable": String(parseMoney(protectMin) ?? "blank"),
+      "Pre-tax reserve": `${parseMoney(preservePretax) ?? "blank"}/${preserveExitRate === "" ? "blank" : preserveExitRate}`,
+      "Earliest claim age": claimAgeFloor === "" ? "blank" : claimAgeFloor,
+      "Draw order":
         parseIntField(drawOrderSwitchAge) != null
           ? `${drawOrderLabel(drawOrderFromKey(drawOrder))}, then ${drawOrderLabel(drawOrderFromKey(drawOrderAfter))} from ${parseIntField(drawOrderSwitchAge)}`
           : drawOrderLabel(drawOrderFromKey(drawOrder)),
-      "spouse sole beneficiary": soleBeneficiary ? "yes" : "no",
-      "primary sole beneficiary of spouse": primarySoleBeneficiaryOfSpouse
+      "Spouse sole beneficiary": soleBeneficiary ? "yes" : "no",
+      "Primary sole beneficiary of spouse": primarySoleBeneficiaryOfSpouse
         ? "yes"
         : "blank",
       "ACA household size": acaSize,
@@ -4838,10 +4838,10 @@ export function RothConversion({
               .map((r) => `${r.householdSize || "?"} from ${r.fromYear || "?"}`)
               .join(", "),
       "ACA benchmark premiums": `${parseMoney(benchCouple) ?? "blank"}/${parseMoney(benchSingle) ?? "blank"}/${parseMoney(benchFamily) ?? "blank"}`,
-      inflation: inflation,
-      "state rate": stateRate,
-      "heir rate": heirRate,
-      "fill ceiling": ceilingsSummary,
+      "Inflation": inflation,
+      "State rate": stateRate,
+      "Heir rate": heirRate,
+      "Fill ceiling": ceilingsSummary,
     };
     return defaultsRef.current
       .filter((d) => cur[d.label] !== undefined && cur[d.label] !== d.value)
@@ -7514,7 +7514,7 @@ export function RothConversion({
                   onClick={() => setSpendingUnit("year")}
                   className={`px-2 py-1 text-xs font-medium ${spendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
                 >
-                  per year
+                  Per year
                 </button>
                 <button
                   type="button"
@@ -7523,7 +7523,7 @@ export function RothConversion({
                   onClick={() => setSpendingUnit("month")}
                   className={`px-2 py-1 text-xs font-medium ${spendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
                 >
-                  per month
+                  Per month
                 </button>
               </div>
             </div>
@@ -9640,7 +9640,7 @@ export function RothConversion({
           </div>
           <p className="mt-3 text-sm text-[var(--dim)]">
             <strong className="text-[var(--text)]">Filling to:</strong>{" "}
-            {anyCeiling ? ceilingsSummary : "no ceilings switched on"}. Ceilings are
+            {anyCeiling ? ceilingsSummary : "No ceilings switched on"}. Ceilings are
             the plan&rsquo;s own (set in Advanced) — this panel has no separate
             settings. Everything else in {startYear} — Social Security, RMDs, draw
             order, pay-tax-from, protect-minimum — also comes from the plan,
@@ -12801,7 +12801,7 @@ export function RothConversion({
                       {y.acaPriced
                         ? `${fmtDollars(y.acaCreditKept)}${y.acaUnder138 ? " †" : ""}`
                         : acaNotPricedYears.some((ny) => ny.year === y.year)
-                          ? "not priced"
+                          ? "Not priced"
                           : "—"}
                     </td>
                     <td className="tnum px-2 py-1.5 text-right whitespace-nowrap">{fmtDollars(y.pretaxEnd)}</td>

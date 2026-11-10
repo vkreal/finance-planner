@@ -4382,7 +4382,7 @@ export function NetWorthView() {
                                 const g = point[`ga${highlightedAccount.id}`];
                                 return typeof g === "number"
                                   ? fmtSigned(Math.round(g * 100))
-                                  : "not recorded";
+                                  : "Not recorded";
                               }
                               const b = snap.balances.find(
                                 (x) => x.accountId === highlightedAccount.id,
@@ -4397,7 +4397,7 @@ export function NetWorthView() {
                                       b.balanceCents,
                                     ),
                                   )
-                                : "not recorded";
+                                : "Not recorded";
                             })()}
                           </p>
                         )}

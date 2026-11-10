@@ -3119,7 +3119,7 @@ export function December() {
               ? `American Opportunity Credit ${fmtDollars(likelyCase.educationAotcAtHeadline)}`
               : likelyCase.educationChoiceAtHeadline === "llc"
                 ? `Lifetime Learning Credit ${fmtDollars(likelyCase.educationLlcAtHeadline)}`
-                : "no credit after the phase-out"}
+                : "No credit after the phase-out"}
             {likelyCase.educationNonrefundableAtHeadline > 0 &&
               ` — ${fmtDollars(likelyCase.educationNonrefundableAtHeadline)} applied against the tax`}
             {likelyCase.educationRefundableAtHeadline > 0 &&

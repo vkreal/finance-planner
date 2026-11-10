@@ -7021,7 +7021,7 @@ export function Playground({
                 onClick={() => setPgSpendingUnit("year")}
                 className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "year" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
               >
-                per year
+                Per year
               </button>
               <button
                 type="button"
@@ -7030,7 +7030,7 @@ export function Playground({
                 onClick={() => setPgSpendingUnit("month")}
                 className={`px-2 py-1 text-xs font-medium ${pgSpendingUnit === "month" ? "bg-[var(--accent)] text-white" : "text-[var(--text)] hover:text-[var(--accent)]"}`}
               >
-                per month
+                Per month
               </button>
             </div>
           </div>
