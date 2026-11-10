@@ -4724,7 +4724,32 @@ export function RetirementCalc({
             </div>
           )}
           <p className="tnum mt-2 text-sm">
-            {stocks}% stocks · Volatility {(vol * 100).toFixed(2)}%
+            <button
+              type="button"
+              aria-label="Go to the Portfolio mix stocks percent field"
+              className={rcTapCls}
+              onClick={() => jumpToRcField("rc-stocks")}
+            >
+              {stocks}% stocks
+            </button>
+            {" · "}
+            <button
+              type="button"
+              aria-label="Go to the Volatility field"
+              className={rcTapCls}
+              onClick={() => {
+                // The Assumptions group defaults to collapsed, so
+                // rc-vol is not in the DOM until it opens — expand
+                // it first (persisted, the same as tapping Expand),
+                // then jump with the usual scroll-and-flash.
+                if (assumptionsCollapsed) {
+                  handleAssumptionsCollapsedChange(false);
+                }
+                jumpToRcField("rc-vol");
+              }}
+            >
+              Volatility {(vol * 100).toFixed(2)}%
+            </button>
             {inputs.extraIncomeCents > 0 && (
               <>
                 {" · Extra income "}
